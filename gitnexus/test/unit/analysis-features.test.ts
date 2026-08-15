@@ -12,6 +12,7 @@ import {
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 import {
   JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
@@ -22,6 +23,7 @@ const FEATURES = [
   SPRING_CONDITIONALS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
   JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
 ] as const;
 
 describe('analysis feature versions', () => {
@@ -32,6 +34,7 @@ describe('analysis feature versions', () => {
     expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
       'java.heritage-captures': 1,
+      'java.record-component-accessors': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,

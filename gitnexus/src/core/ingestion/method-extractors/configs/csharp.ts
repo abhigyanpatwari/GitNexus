@@ -316,6 +316,7 @@ export const csharpMethodConfig: MethodExtractionConfig = {
       annotations: [], // C# has no syntax for attributes on primary constructors
       sourceFile: context.filePath,
       line: paramList.startPosition.row + 1,
+      column: paramList.startPosition.column,
     };
   },
 };

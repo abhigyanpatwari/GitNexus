@@ -68,6 +68,7 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { collectNamespaceTargets } from '../scope/namespace-targets.js';
 import {
+  bindsTypeParameter,
   findClassBindingInScope,
   findEnclosingClassDef,
   isReceiverOwnedButUnbound,
@@ -86,8 +87,17 @@ import {
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
-import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
-import { erasedTypeApplication } from '../../utils/template-arguments.js';
+import {
+  resolveCompoundReceiverClass,
+  resolveCompoundReceiverTyped,
+} from '../passes/compound-receiver.js';
+import { erasedTypeApplication, typeApplicationArguments } from '../../utils/template-arguments.js';
+import {
+  heritageTypeArgumentsKey,
+  stepHeritageInstantiation,
+  type GroundedTypeArgument,
+  type HeritageTypeArguments,
+} from '../utils/generic-instantiation.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   narrowOverloadCandidates,
@@ -124,6 +134,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
   | 'isStaticOnly'
+  | 'normalizeTypeArgument'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -298,6 +309,14 @@ export function emitReceiverBoundCalls(
      *  degrades a drop's label to `unknown` (the safe direction) and changes no
      *  edge. */
     readonly isBuiltInName?: (name: string) => boolean;
+    /** The generic arguments each heritage clause instantiated its base with,
+     *  from the passes that emitted those heritage edges — the inheritance
+     *  pre-pass, and the language resolvers that emit their own (Rust `impl T
+     *  for S`, Dart `implements` / `with`) (#2912). Read
+     *  ONLY by the interface-dispatch fan-out, to refuse an implementor of an
+     *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
+     *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
+    readonly heritageTypeArguments?: HeritageTypeArguments;
   } = {},
 ): ReceiverBoundResult {
   let emitted = 0;
@@ -331,6 +350,26 @@ export function emitReceiverBoundCalls(
   // DefIds, and `pickOverload` keys member lookup by those DefIds. Preserving
   // every part makes dispatch independent of declaration order.
   const graphIdToClassDefs = new Map<string, SymbolDefinition[]>();
+  // The same correspondence read the other way, so the dispatch walk can name a
+  // heritage EDGE (which is keyed by graph ids) from the two DEFS it holds.
+  const classGraphIdByDefId = new Map<string, string>();
+  /**
+   * Does THIS language record generic type parameters (#2912)?
+   *
+   * `SymbolDefinition.typeParameters` is absent both for a non-generic
+   * declaration and for every declaration in a language whose captures do not
+   * emit `@declaration.type-parameters`, and instantiation filtering needs the
+   * two told apart: in the second case a heritage argument `T` is a type
+   * VARIABLE that would otherwise read as a concrete type named "T", and
+   * `class Box<T> : IValidator<T>` would be pruned out of every instantiation.
+   *
+   * Evidence rather than a declared capability, because the evidence is exactly
+   * as good and costs nothing: one run resolves one language (`phase.ts` loops
+   * per language), so a single generic declaration anywhere in it proves the
+   * captures record parameters. A run where none exists cannot be harmed by the
+   * answer — with no generic declaration there is no type variable to mistake.
+   */
+  let languageCapturesTypeParameters = false;
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       if (!isClassLike(def.type)) continue;
@@ -342,6 +381,10 @@ export function emitReceiverBoundCalls(
         graphIdToClassDefs.set(graphId, defs);
       }
       defs.push(def);
+      classGraphIdByDefId.set(def.nodeId, graphId);
+      if (def.typeParameters !== undefined && def.typeParameters.length > 0) {
+        languageCapturesTypeParameters = true;
+      }
     }
   }
   // Direct subtypes of a type, keyed by the SUPERtype's def id.
@@ -434,6 +477,34 @@ export function emitReceiverBoundCalls(
   };
 
   /**
+   * What does this written type argument NAME, as seen from `scopeId` (#2912)?
+   *
+   * The scope is load-bearing: a heritage argument is resolved from the
+   * declaring class's own scope and a receiver argument from the call site's,
+   * because a name means what it means where it was WRITTEN. Resolving both
+   * makes `Models.User` and an imported `User` one type, which a string
+   * comparison could only get wrong.
+   *
+   * Neither answer is an error: a name that binds nothing and is not built in
+   * comes back ungrounded, which the matcher reads as "unknown" and keeps.
+   *
+   * A TYPE PARAMETER is reported as such rather than left to the ungrounded
+   * path, because `resolveClassBindingForName` answers a bounded one with its
+   * BOUND's declaration — grounded, and the wrong thing to compare.
+   */
+  const groundTypeArgument = (name: string, scopeId: string | undefined): GroundedTypeArgument => {
+    const def =
+      scopeId === undefined ? undefined : resolveClassBindingForName(scopeId, name, scopes);
+    return {
+      ...(def !== undefined ? { definitionId: def.nodeId } : {}),
+      builtIn: options.isBuiltInName?.(name) === true,
+      ...(scopeId !== undefined && bindsTypeParameter(scopeId, name, scopes)
+        ? { typeVariable: true }
+        : {}),
+    };
+  };
+
+  /**
    * Emit secondary CALLS edges with reason='interface-dispatch' when the primary
    * receiver-typed edge targeted an Interface's method.
    *
@@ -454,6 +525,17 @@ export function emitReceiverBoundCalls(
    * override further down is an equally real runtime target — dispatch is an
    * over-approximation by design, and stopping early would silently prefer the
    * base.
+   *
+   * The closure is walked carrying the receiver's generic INSTANTIATION (#2912).
+   * `IValidator<string>` and `IValidator<int>` are one declaration and therefore
+   * one subtype list, so without the substitution a `IValidator<string>` call
+   * reaches `IntValidator.Check(int)` — a target no dispatch can produce. Each
+   * hop unifies the arguments the subtype wrote against the ones the supertype
+   * is known to hold; an incompatible hop is skipped BEFORE the visit is
+   * recorded, so a type reachable by a second, compatible path still gets its
+   * edge, and skipped WITHOUT descending, because its own subtypes inherit the
+   * mismatch.
+   * Every uncertainty keeps the target — see `generic-instantiation.ts`.
    */
   const emitInterfaceDispatchFor = (
     ownerDef: SymbolDefinition,
@@ -462,9 +544,26 @@ export function emitReceiverBoundCalls(
     site: ParsedFile['referenceSites'][number],
     confidence: number,
     calleeCapture: CalleeIdCaptureCtx | undefined,
+    /** The receiver's declared type AS WRITTEN (`IValidator<string>`), or
+     *  `undefined` where the case could not recover it — which restores the
+     *  unfiltered fan-out for that site rather than guessing.
+     *
+     *  The SPELLING rather than the parsed arguments, so the parse happens after
+     *  the two gates below rather than at every resolved receiver site: all five
+     *  cases call this unconditionally, and the overwhelming majority of
+     *  receivers are concrete classes that return at the first line. */
+    receiverTypeSpelling: string | undefined,
   ): number => {
     if (ownerDef.type !== 'Interface') return 0;
     if (subtypesBySupertypeDefId.get(ownerDef.nodeId) === undefined) return 0;
+    const receiverTypeArguments =
+      receiverTypeSpelling === undefined
+        ? undefined
+        : typeApplicationArguments(receiverTypeSpelling);
+    // Captures only `site`, so it is built once per SITE rather than once per
+    // subtype visited. Its partner below cannot be: it is keyed by the subtype.
+    const resolveSupertypeArgument = (name: string): GroundedTypeArgument =>
+      groundTypeArgument(name, site.inScope);
 
     // Collect concrete targets across the closure first, so the cap below counts
     // real dispatch targets rather than types visited. Source-written owners
@@ -483,16 +582,31 @@ export function emitReceiverBoundCalls(
     type DispatchTraversal = {
       readonly typeId: string;
       readonly ancestorImplementationCount: number;
+      /** The instantiation this type is known to hold ON THIS PATH (#2912), or
+       *  `undefined` where it is not known — which restores the unfiltered
+       *  fan-out for the subtree below it rather than guessing. */
+      readonly typeArguments: readonly string[] | undefined;
     };
     const targetByMemberId = new Map<string, DispatchTarget>();
     const bestIncomingCount = new Map<string, number>([[ownerDef.nodeId, 0]]);
     const queue: DispatchTraversal[] = [
-      { typeId: ownerDef.nodeId, ancestorImplementationCount: 0 },
+      {
+        typeId: ownerDef.nodeId,
+        ancestorImplementationCount: 0,
+        typeArguments: receiverTypeArguments,
+      },
     ];
     let head = 0;
     let discoveryOrder = 0;
     while (head < queue.length) {
       const current = queue[head++]!;
+      // The whole instantiation apparatus hangs off ONE question: is the
+      // supertype's own instantiation known? It is not for a non-generic
+      // receiver, nor for any language that captures no heritage arguments, so
+      // those walks skip every lookup below and emit exactly what they did
+      // before #2912.
+      const superGraphId =
+        current.typeArguments === undefined ? undefined : classGraphIdByDefId.get(current.typeId);
       for (const subDef of subtypesBySupertypeDefId.get(current.typeId) ?? []) {
         const previousIncomingCount = bestIncomingCount.get(subDef.nodeId);
         if (
@@ -501,6 +615,42 @@ export function emitReceiverBoundCalls(
         ) {
           continue;
         }
+
+        // What THIS heritage clause instantiated its base with. `superGraphId`
+        // already answers "is the supertype's instantiation known?", so it gates
+        // the whole lookup once instead of being re-asked at each step below.
+        let subtypeArguments: readonly string[] | undefined;
+        if (superGraphId !== undefined) {
+          const subGraphId = classGraphIdByDefId.get(subDef.nodeId);
+          const heritageArguments =
+            subGraphId === undefined
+              ? undefined
+              : options.heritageTypeArguments?.get(
+                  heritageTypeArgumentsKey(subGraphId, superGraphId),
+                );
+          if (heritageArguments !== undefined) {
+            const subtypeScopeId = index.classScopeByDefId.get(subDef.nodeId)?.id;
+            const step = stepHeritageInstantiation({
+              supertypeArguments: current.typeArguments,
+              heritageArguments,
+              subtypeParameters: subDef.typeParameters,
+              // The "this subtype declares parameters" disjunct an earlier
+              // revision carried here could never decide: `subDef` comes out of
+              // the same loop that sets this flag, from exactly these defs, so a
+              // subtype with parameters has already set it.
+              subtypeParametersComplete: languageCapturesTypeParameters,
+              resolveSupertypeArgument,
+              resolveHeritageArgument: (name) => groundTypeArgument(name, subtypeScopeId),
+              normalize: provider.normalizeTypeArgument,
+            });
+            // Skipped BEFORE the visit is recorded, so a type reachable by a
+            // second, compatible path still gets its edge; and without
+            // descending, because its own subtypes inherit the mismatch.
+            if (!step.compatible) continue;
+            subtypeArguments = step.subtypeArguments;
+          }
+        }
+
         bestIncomingCount.set(subDef.nodeId, current.ancestorImplementationCount);
 
         const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
@@ -533,6 +683,7 @@ export function emitReceiverBoundCalls(
         queue.push({
           typeId: subDef.nodeId,
           ancestorImplementationCount: descendantImplementationCount,
+          typeArguments: subtypeArguments,
         });
       }
     }
@@ -789,7 +940,7 @@ export function emitReceiverBoundCalls(
         receiverName.includes('(') ||
         site.receiverChain !== undefined
       ) {
-        const currentClass = resolveCompoundReceiverClass(
+        const resolved = resolveCompoundReceiverTyped(
           receiverName,
           site.inScope,
           scopes,
@@ -798,8 +949,9 @@ export function emitReceiverBoundCalls(
           // captured chain describes it and the structural fold applies.
           { ...fileCompoundOpts, receiverChain: site.receiverChain },
         );
+        const currentClass = resolved?.def;
         compoundReceiverUnresolved = currentClass === undefined;
-        if (currentClass !== undefined) {
+        if (resolved !== undefined && currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguousOwnerId: string | undefined;
@@ -902,6 +1054,10 @@ export function emitReceiverBoundCalls(
             // Deliberately not "fixed" here: changing Case 0's primary
             // confidence is a separate behavioural change affecting every
             // language, and is out of scope for #2813.
+            //
+            // The instantiation the FOLD typed this receiver from — the
+            // declared spelling of `this.repo` / `svc.get().repo`, which the
+            // folded class alone no longer carries (#2912).
             emitted += emitInterfaceDispatchFor(
               currentClass,
               memberName,
@@ -909,6 +1065,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
+              resolved.declaredSpelling,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1379,15 +1536,18 @@ export function emitReceiverBoundCalls(
         // already contain `()` (Ruby member-call-return captures),
         // pass through directly — the compound resolver handles the
         // full expression including the call syntax.
-        let ownerDef = resolveCompoundReceiverClass(
+        // Each attempt carries its OWN spelling: the retry below used to reuse a
+        // recorder reset once, before the first call, so a spelling reported by
+        // the attempt that FAILED could be read as the retry's.
+        let resolved = resolveCompoundReceiverTyped(
           typeRef.rawName,
           typeRef.declaredAtScope,
           scopes,
           index,
           fileCompoundOpts,
         );
-        if (ownerDef === undefined && !typeRef.rawName.includes('(')) {
-          ownerDef = resolveCompoundReceiverClass(
+        if (resolved === undefined && !typeRef.rawName.includes('(')) {
+          resolved = resolveCompoundReceiverTyped(
             typeRef.rawName + '()',
             typeRef.declaredAtScope,
             scopes,
@@ -1395,7 +1555,8 @@ export function emitReceiverBoundCalls(
             fileCompoundOpts,
           );
         }
-        if (ownerDef !== undefined) {
+        const ownerDef = resolved?.def;
+        if (resolved !== undefined && ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguousOwnerId: string | undefined;
@@ -1496,6 +1657,7 @@ export function emitReceiverBoundCalls(
             // value instead because ITS primary varies that way; Case 3b's
             // primary, like Case 0's, does not, so there is no 1.0 arm here to
             // mirror.
+            // Same fold, same recovered spelling as Case 0.
             emitted += emitInterfaceDispatchFor(
               ownerDef,
               memberName,
@@ -1503,6 +1665,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
+              resolved.declaredSpelling,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1776,6 +1939,12 @@ export function emitReceiverBoundCalls(
             // Interface dispatch: when the primary owner is an
             // Interface, emit secondary CALLS edges to every
             // implementing class's same-named method.
+            //
+            // This case is the one that KNOWS the instantiation: the receiver
+            // has a declared type, and `typeApplication` is that type restored
+            // to its written `Base<Args>` spelling (`rawName` is the erasure).
+            // A language whose `rawName` was never erased carries the arguments
+            // itself, so both spellings are read (#2912).
             emitted += emitInterfaceDispatchFor(
               ownerDef,
               memberName,
@@ -1783,6 +1952,7 @@ export function emitReceiverBoundCalls(
               site,
               confidence,
               calleeCapture,
+              typeApplication ?? typeRef.rawName,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -2054,6 +2224,8 @@ export function emitReceiverBoundCalls(
               // way. Omitting it would make the static spelling emit fewer
               // targets than the identical instance field, which is the very
               // spelling-dependence #2829/#2842 closed elsewhere.
+              // The field's DECLARED type is the spelling the source wrote, so
+              // its arguments are available here exactly as in Case 4 (#2912).
               emitted += emitInterfaceDispatchFor(
                 receiverClass,
                 memberName,
@@ -2061,6 +2233,7 @@ export function emitReceiverBoundCalls(
                 site,
                 confidence,
                 calleeCapture,
+                fieldDeclaredType,
               );
               handledSites.add(siteKey);
               continue;
