@@ -130,6 +130,9 @@ MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
 LIMIT 2`;
 
+// determinism: probe — uniqueness discriminator, not a window. The consumer
+// accepts exactly one row and rejects a 2-row result whole, so row identity
+// cannot affect the resolution decision.
 export const RESOLVE_IN_EXACT_MODULE_QUERY = `
 MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
   AND n.name = $name AND n.filePath IN $filePaths
