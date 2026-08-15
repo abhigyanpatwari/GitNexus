@@ -42,6 +42,8 @@ import { javascriptProvider } from '../typescript.js';
 import { jsMergeBindings } from './merge-bindings.js';
 import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
+import { loadTsconfigIndex } from '../typescript/tsconfig.js';
+import { loadNodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
 
 const javascriptScopeResolver: ScopeResolver = {
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
@@ -51,6 +53,15 @@ const javascriptScopeResolver: ScopeResolver = {
   importEdgeReason: 'javascript-scope: import',
 
   resolveImportTarget: makeJsResolveImportTarget(),
+
+  // JavaScript resolution reads the same declared inputs TypeScript does —
+  // `jsconfig.json` is a tsconfig by another name, and `package.json` is shared
+  // outright. Without them a bare specifier used to fall through to suffix
+  // matching (#2953); now it simply does not resolve.
+  loadResolutionConfig: async (repoPath: string) => ({
+    tsconfigs: await loadTsconfigIndex(repoPath),
+    nodeWorkspacePackages: await loadNodeWorkspacePackages(repoPath),
+  }),
 
   // JavaScript LEGB — same tier ordering as TypeScript; no declaration-
   // merging across type/value/namespace spaces.

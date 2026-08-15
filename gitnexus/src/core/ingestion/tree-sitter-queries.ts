@@ -1205,6 +1205,17 @@ export const JAVA_QUERIES = `
 (record_declaration name: (identifier) @name) @definition.record
 (annotation_type_declaration name: (identifier) @name) @definition.annotation
 
+; Canonical record-component accessors are implicit public zero-argument methods.
+(record_declaration
+  parameters: (formal_parameters
+    (formal_parameter
+      name: (identifier) @name) @definition.method))
+(record_declaration
+  parameters: (formal_parameters
+    (spread_parameter
+      (variable_declarator
+        name: (identifier) @name)) @definition.method))
+
 ; Anonymous class bodies: new Runnable() { ... } — no @name capture; the
 ; class extractor synthesizes the javac-style Worker$N name (#2550)
 (object_creation_expression (class_body)) @definition.class

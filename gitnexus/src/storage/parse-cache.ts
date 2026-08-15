@@ -507,10 +507,33 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // Warm v63 ParsedFiles lack those captures and must be re-extracted.
 // 64 -> 66 adds the synthetic-declaration sidecar used to keep anonymous class
 // implementations from evicting ordinary implementors at the dispatch cap.
-// This PR already published a v64 head, while #2936 uses 65 for its independent
-// record accessor shape, so 66 keeps all three cached shapes distinct.
+// That PR published a v64 head first, so 66 kept all the shapes in flight at the
+// time distinct. (It also named a v65 claim from this branch; that claim was
+// superseded before either landed — see the 66 -> 67 entry below. Nothing holds
+// 65 now.)
+//
+// 66 -> 67 for #2917's implicit Java record-component accessor definitions and
+// scope declarations. A warm cache would otherwise replay ParsedFiles without
+// the synthesized accessors. This branch staged 65 before #2918's 66 landed on
+// main; 67 is the next free value above every in-flight claim (main 66, #2939's
+// 64), which is the ledger rule above — re-check against the claims, not just
+// against main.
+//
+// 67 -> 68 for #2912's `ReferenceSite.typeArguments`: the generic arguments a
+// heritage reference was written with (`: IValidator<string>`), derived at
+// EXTRACTION time from the anchor's spelling. A warm cache replays `inherits`
+// sites with the field absent, absence is the fail-open "unknown", and
+// generic-instantiation filtering therefore degrades to the pre-fix fan-out on
+// exactly the unchanged files — silent, and passing every cold-run test.
+//
+// This branch staged 64 when main held 60 and #2935/#2936/#2934 claimed 61/62/63.
+// All three have since landed and cascaded main to 67, burying 64 inside main's
+// own ledger — the EIGHTH time the re-check moved a number, and the reason the
+// re-check is a merge step rather than a one-time choice. 68 is the next free
+// value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
+// stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 66;
+const SCHEMA_BUMP = 68;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
