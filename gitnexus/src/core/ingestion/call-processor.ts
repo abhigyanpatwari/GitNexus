@@ -317,6 +317,13 @@ export function resolveRouteHandlerSymbols(
   const routeCallables = (defs: readonly SymbolDefinition[]): readonly SymbolDefinition[] =>
     defs.filter((def) => def.type === 'Function' || def.type === 'Method');
 
+  const exportedRouteCallables = (
+    defs: readonly SymbolDefinition[],
+  ): readonly SymbolDefinition[] =>
+    routeContext === undefined
+      ? []
+      : routeCallables(defs).filter((def) => routeContext.isExportedSymbol(def.nodeId));
+
   const filesByPath = new Map(routeContext?.files.map((file) => [file.filePath, file]) ?? []);
 
   const uniqueImport = (filePath: string, localName: string): ParsedImport | undefined => {
@@ -361,7 +368,7 @@ export function resolveRouteHandlerSymbols(
         return undefined;
       }
       return uniqueById(
-        routeCallables(
+        exportedRouteCallables(
           model.symbols.lookupExactAll(imported.targetFile, imported.parsedImport.importedName),
         ),
       )?.nodeId;
@@ -377,13 +384,16 @@ export function resolveRouteHandlerSymbols(
     const imported = importedTarget(filePath, receiver);
     if (imported === undefined || imported.parsedImport.kind === 'wildcard') return undefined;
     if (imported.parsedImport.kind === 'namespace') {
-      return uniqueById(routeCallables(model.symbols.lookupExactAll(imported.targetFile, member)))
-        ?.nodeId;
+      return uniqueById(
+        exportedRouteCallables(model.symbols.lookupExactAll(imported.targetFile, member)),
+      )?.nodeId;
     }
     if (!('importedName' in imported.parsedImport)) return undefined;
     if (imported.parsedImport.importedName === 'default') return undefined;
     const owner = uniqueById(
-      model.symbols.lookupExactAll(imported.targetFile, imported.parsedImport.importedName),
+      model.symbols
+        .lookupExactAll(imported.targetFile, imported.parsedImport.importedName)
+        .filter((def) => routeContext?.isExportedSymbol(def.nodeId) === true),
     );
     return owner === undefined
       ? undefined

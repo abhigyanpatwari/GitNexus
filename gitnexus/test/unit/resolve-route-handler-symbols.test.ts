@@ -140,6 +140,129 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     expect(out.get(GET_ORDERS)).toBe('function:list');
   });
 
+  it('data-table named imports resolve only exported callables', () => {
+    const model = createSemanticModel();
+    const exported = model.symbols.add(
+      'src/handlers.js',
+      'listUsers',
+      'function:listUsers',
+      'Function',
+    );
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [
+        decoratorRoute({
+          filePath: 'src/routes.js',
+          source: DATA_ROUTE_TABLE_SOURCE,
+          handlerName: 'handleUsers',
+        }),
+      ],
+      {
+        files: [
+          {
+            filePath: 'src/routes.js',
+            localDefs: [],
+            parsedImports: [
+              {
+                kind: 'named',
+                localName: 'handleUsers',
+                importedName: 'listUsers',
+                targetRaw: './handlers.js',
+              },
+            ],
+          },
+        ],
+        resolveImportTarget: () => 'src/handlers.js',
+        isExportedSymbol: (nodeId) => nodeId === exported.nodeId,
+      },
+    );
+
+    expect(out.get(GET_ORDERS)).toBe(exported.nodeId);
+  });
+
+  it('data-table named imports reject private callables', () => {
+    const model = createSemanticModel();
+    model.symbols.add('src/handlers.js', 'listUsers', 'function:listUsers', 'Function');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [
+        decoratorRoute({
+          filePath: 'src/routes.js',
+          source: DATA_ROUTE_TABLE_SOURCE,
+          handlerName: 'handleUsers',
+        }),
+      ],
+      {
+        files: [
+          {
+            filePath: 'src/routes.js',
+            localDefs: [],
+            parsedImports: [
+              {
+                kind: 'named',
+                localName: 'handleUsers',
+                importedName: 'listUsers',
+                targetRaw: './handlers.js',
+              },
+            ],
+          },
+        ],
+        resolveImportTarget: () => 'src/handlers.js',
+        isExportedSymbol: () => false,
+      },
+    );
+
+    expect(out.has(GET_ORDERS)).toBe(false);
+  });
+
+  it('data-table named-import members reject private owners', () => {
+    const model = createSemanticModel();
+    const owner = model.symbols.add('src/handlers.js', 'auth', 'object:auth', 'Variable');
+    model.methods.register(owner.nodeId, 'getCurrentUser', {
+      filePath: 'src/handlers.js',
+      name: 'getCurrentUser',
+      nodeId: 'method:auth.getCurrentUser',
+      type: 'Method',
+      ownerId: owner.nodeId,
+    });
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [
+        decoratorRoute({
+          filePath: 'src/routes.js',
+          source: DATA_ROUTE_TABLE_SOURCE,
+          handlerName: 'authService.getCurrentUser',
+        }),
+      ],
+      {
+        files: [
+          {
+            filePath: 'src/routes.js',
+            localDefs: [],
+            parsedImports: [
+              {
+                kind: 'named',
+                localName: 'authService',
+                importedName: 'auth',
+                targetRaw: './handlers.js',
+              },
+            ],
+          },
+        ],
+        resolveImportTarget: () => 'src/handlers.js',
+        isExportedSymbol: () => false,
+      },
+    );
+
+    expect(out.has(GET_ORDERS)).toBe(false);
+  });
+
   it('data-table members resolve through their proven same-file owner', () => {
     const model = createSemanticModel();
     model.symbols.add('src/routes.js', 'auth', 'object:auth', 'Variable');
@@ -279,7 +402,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
     expect(out.has(GET_ORDERS)).toBe(false);
   });
 
-  it('fails closed for default imports without explicit export provenance', () => {
+  it('fails closed for default imports even when the target file has an exported callable', () => {
     const model = createSemanticModel();
     const exported = model.symbols.add(
       'src/handlers.js',
@@ -321,10 +444,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
           },
           {
             filePath: 'src/handlers.js',
-            localDefs: [
-              { ...exported, nodeId: 'def:listUsers', qualifiedName: 'listUsers' },
-              { ...privateHelper, nodeId: 'def:helper', qualifiedName: 'helper' },
-            ],
+            localDefs: [exported, privateHelper],
             parsedImports: [],
           },
         ],
