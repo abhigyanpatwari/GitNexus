@@ -324,6 +324,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
       [],
       [
         decoratorRoute({
+          filePath: 'src/routes.js',
           source: DATA_ROUTE_TABLE_SOURCE,
           handlerName: 'services.auth.getCurrentUser',
         }),
