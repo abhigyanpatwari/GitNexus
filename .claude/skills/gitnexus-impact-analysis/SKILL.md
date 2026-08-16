@@ -14,27 +14,40 @@ description: "Use when the user wants to know what will break if they change som
 - Before making non-trivial code changes
 - Before committing — to understand what your changes affect
 
+## Bind the repository first
+
+Impact analysis is the gate that authorizes an edit, so it must answer for the
+repository you are about to edit. Call `list_repos {}`. With one indexed
+repository, use the examples below as written. With more than one, pass `repo`
+explicitly on every call — an omitted `repo` errors, or silently resolves to a
+configured default — and stop and ask if the intended repository is ambiguous.
+Pass `worktree` to `detect_changes` when your changes live in a linked worktree
+the server was not launched from. See `references/repository-identity.md`.
+
 ## Workflow
 
 ```
-1. impact({target: "X", direction: "upstream"}) or `node .gitnexus/run.cjs impact "X" --direction upstream --repo .`
+0. list_repos {}                                           → Bind repo (and worktree)
+1. impact({target: "X", direction: "upstream"[, repo: "<repo>"]}) or `node .gitnexus/run.cjs impact "X" --direction upstream --repo <path>`
 2. READ gitnexus://repo/{name}/processes                   → Check affected execution flows
-3. detect_changes({scope: "all"}) or `node .gitnexus/run.cjs detect-changes --scope all --repo .`
-4. Assess risk and report to user
+3. detect_changes({scope: "all"[, repo: "<repo>"][, worktree: "<path>"]}) or `node .gitnexus/run.cjs detect-changes --scope all --repo <path>`
+4. Assess risk and report to user, echoing the bound repo/worktree/index
 ```
 
-> If "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
+> If "Index is stale" → run `node .gitnexus/run.cjs analyze` in the bound checkout.
 > If `.gitnexus/run.cjs` is missing, replace `node .gitnexus/run.cjs` with `npx gitnexus` in the fallback commands.
 
 ## Checklist
 
 ```
+- [ ] list_repos {} — bind repo; explicit repo when total > 1, ask if ambiguous
 - [ ] impact({target, direction: "upstream"}) or CLI fallback to find dependents
 - [ ] Review d=1 items first (these WILL BREAK)
 - [ ] Check high-confidence (>0.8) dependencies
 - [ ] READ processes to check affected execution flows
 - [ ] detect_changes({scope: "all"}) or CLI fallback for pre-commit check
-- [ ] Assess risk level and report to user
+- [ ] Confirm the checkout you edited is the checkout that was diffed
+- [ ] Assess risk level and report, stating repo/worktree/index freshness
 ```
 
 ## Understanding Output
@@ -64,11 +77,12 @@ treating the symbol as safe to change or delete.
 
 ## Tools
 
-**impact** — the primary tool for symbol blast radius. If MCP is unavailable, use `node .gitnexus/run.cjs impact <symbol> --direction upstream --repo .` instead:
+**impact** — the primary tool for symbol blast radius. If MCP is unavailable, use `node .gitnexus/run.cjs impact <symbol> --direction upstream --repo <path>` instead:
 
 ```
 impact({
   target: "validateUser",
+  repo: "my-app",          // required once >1 repository is indexed
   direction: "upstream",
   minConfidence: 0.8,
   maxDepth: 3
@@ -82,25 +96,36 @@ impact({
   - authRouter (src/routes/auth.ts:22) [CALLS, 95%]
 ```
 
-**detect_changes** — git-diff based impact analysis. If MCP is unavailable, use `node .gitnexus/run.cjs detect-changes --scope all --repo .` instead:
+**detect_changes** — git-diff based impact analysis. If MCP is unavailable, use `node .gitnexus/run.cjs detect-changes --scope all --repo <path>` instead:
 
 ```
-detect_changes({scope: "all"})
+detect_changes({scope: "all", repo: "my-app", worktree: "/abs/path/to/checkout"})
 
 → Changed: 5 symbols in 3 files
 → Affected: LoginFlow, TokenRefresh, APIMiddlewarePipeline
 → Risk: MEDIUM
 ```
 
+`repo` is required once more than one repository is indexed. `worktree` is
+needed when your changes are in a linked worktree the MCP server was not
+launched from — omit it there and `git diff` runs in the wrong checkout,
+reporting zero changed symbols for a tree full of edits.
+
 `partial: true` (a graph query failed) or `truncated: true` (the changed-symbol
 listing was capped) means the result is short of the truth, and reads like
-`UNKNOWN` above: a zero there means unseen, not unaffected. Re-run it rather
-than tick the pre-commit check.
+`UNKNOWN` above: a zero there means unseen, not unaffected. A wrong-worktree
+zero carries none of those flags and looks exactly like a clean result, so
+confirm the checkout you edited is the checkout that was diffed. Re-run it
+rather than tick the pre-commit check.
 
 ## Example: "What breaks if I change validateUser?"
 
 ```
-1. impact({target: "validateUser", direction: "upstream"}) or `node .gitnexus/run.cjs impact "validateUser" --direction upstream --repo .`
+0. list_repos {}
+   → total: 2 (my-app, billing-api) — both define validateUser, so bind explicitly
+
+1. impact({target: "validateUser", repo: "my-app", direction: "upstream"})
+   or `node .gitnexus/run.cjs impact "validateUser" --direction upstream --repo /abs/path/my-app`
    → d=1: loginHandler, apiMiddleware (WILL BREAK)
    → d=2: authRouter, sessionManager (LIKELY AFFECTED)
 
@@ -108,4 +133,8 @@ than tick the pre-commit check.
    → LoginFlow and TokenRefresh touch validateUser
 
 3. Risk: 2 direct callers, 2 processes = MEDIUM
+   Repository: my-app (/abs/path/my-app)  Worktree: same  Index: current
 ```
+
+With a single indexed repository, step 0 returns `total: 1` and the `repo`
+argument drops out of every call above.
