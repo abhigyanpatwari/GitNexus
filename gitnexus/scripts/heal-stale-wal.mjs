@@ -30,6 +30,11 @@
  * script refuses to run while an analyze is in flight. It also copies each WAL to
  * a backup directory before unlinking, and only targets WAL files at or below a
  * header-only size threshold (4 KB) to avoid touching legitimate transactions.
+ *
+ * The process scan is a courtesy pre-check, not a lock. An analyze could start
+ * between the check and the unlink. On Windows the unlink will fail with EBUSY
+ * if the WAL is held open, making the race benign. On POSIX the fd stays valid
+ * after unlink, so the writer is also unaffected.
  */
 
 import { execSync } from 'node:child_process';
@@ -37,8 +42,9 @@ import { existsSync, mkdirSync, copyFileSync, unlinkSync, readFileSync, statSync
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 
-const REGISTRY_PATH = join(homedir(), '.gitnexus', 'registry.json');
-const BACKUP_DIR = join(homedir(), '.gitnexus', 'wal-backups');
+const GITNEXUS_DIR = process.env.GITNEXUS_HOME || join(homedir(), '.gitnexus');
+const REGISTRY_PATH = join(GITNEXUS_DIR, 'registry.json');
+const BACKUP_DIR = join(GITNEXUS_DIR, 'wal-backups');
 const HEADER_ONLY_BYTES = 4096;
 
 function isAnalyzeRunning() {
@@ -79,6 +85,15 @@ function formatTimestamp() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
+function uniqueBackupPath(name, index) {
+  mkdirSync(BACKUP_DIR, { recursive: true });
+  const ts = formatTimestamp();
+  const suffix = index > 0 ? `-${index}` : '';
+  const candidate = join(BACKUP_DIR, `${name}${suffix}-${ts}.wal`);
+  if (!existsSync(candidate)) return candidate;
+  return join(BACKUP_DIR, `${name}${suffix}-${ts}-${process.pid}.wal`);
+}
+
 function heal({ checkOnly = false } = {}) {
   if (isAnalyzeRunning()) {
     console.log('gitnexus analyze is running; refusing to touch any WAL.');
@@ -93,7 +108,8 @@ function heal({ checkOnly = false } = {}) {
 
   let cleared = 0;
 
-  for (const { name, storagePath } of indexes) {
+  for (let i = 0; i < indexes.length; i++) {
+    const { name, storagePath } = indexes[i];
     const walPath = join(storagePath, 'lbug.wal');
 
     if (!existsSync(walPath)) {
@@ -124,9 +140,8 @@ function heal({ checkOnly = false } = {}) {
     }
 
     try {
-      mkdirSync(BACKUP_DIR, { recursive: true });
-      const backupName = `${name}-${formatTimestamp()}.wal`;
-      copyFileSync(walPath, join(BACKUP_DIR, backupName));
+      const backupPath = uniqueBackupPath(name, i);
+      copyFileSync(walPath, backupPath);
       unlinkSync(walPath);
       console.log(`  ${name}: cleared stale WAL (${size} bytes)`);
       cleared++;
@@ -142,7 +157,7 @@ const args = process.argv.slice(2);
 const checkOnly = args.includes('--check');
 
 if (!existsSync(REGISTRY_PATH)) {
-  console.log('No GitNexus registry found at ~/.gitnexus/registry.json');
+  console.log(`No GitNexus registry found at ${REGISTRY_PATH}`);
   process.exit(0);
 }
 
