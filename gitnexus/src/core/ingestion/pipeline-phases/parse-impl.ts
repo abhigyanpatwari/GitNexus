@@ -92,6 +92,7 @@ import {
   resolveOperands,
   type ModuleConstants,
 } from '../route-extractors/python-const-resolver.js';
+import { foldJavaOperands } from '../route-extractors/java-const-resolver.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -1303,8 +1304,11 @@ export async function runChunkedParseAndResolve(
         resolvedRoutes.push(dr);
         continue;
       }
+      const isJavaRoute = dr.filePath.endsWith('.java');
       const value = dr.routePathOperands
-        ? resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
+        ? isJavaRoute
+          ? foldJavaOperands(dr.filePath, dr.routePathOperands, repoConstants)
+          : resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
         : null;
       if (value === null) {
         skipped++;

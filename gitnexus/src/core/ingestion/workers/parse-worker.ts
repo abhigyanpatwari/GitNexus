@@ -1426,6 +1426,7 @@ import {
   type ModuleConstants,
   type Operand,
 } from '../route-extractors/python-const-resolver.js';
+import { extractJavaModuleConstants } from '../route-extractors/java-const-resolver.js';
 
 /**
  * Report a non-fatal worker issue to the pool over IPC so a caught error is not
@@ -2970,6 +2971,27 @@ const processFileGroup = (
       const constants = extractPythonModuleConstants(tree);
       if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });
+      }
+    }
+
+    // Java parity of the #2391 constant harvest: static-final String fields +
+    // class/static imports, folded cross-file by parse-impl for non-literal
+    // Spring mapping paths (`@WinPostMapping(ApiPathConstants.SAVE_V1)`).
+    // Cost-gated on file content — a file with no `static final String` and no
+    // constants-bearing import is not parsed for constants.
+    if (language === SupportedLanguages.Java) {
+      if (
+        /static\s+final\s+String\s/.test(parseContent) ||
+        /import\s+(static\s+)?[\w.]*Constants/.test(parseContent)
+      ) {
+        const javaConstants = extractJavaModuleConstants(tree);
+        if (
+          javaConstants.literals.size > 0 ||
+          javaConstants.exprs.size > 0 ||
+          javaConstants.imports.size > 0
+        ) {
+          (result.moduleConstants ??= []).push({ filePath: file.path, constants: javaConstants });
+        }
       }
     }
 

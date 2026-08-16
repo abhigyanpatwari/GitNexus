@@ -29,6 +29,12 @@ import {
   EXCHANGE_CONFIDENCE,
 } from './spring-consumer-shared.js';
 import {
+  extractJavaModuleConstants,
+  foldJavaOperands,
+  parseJavaConstOperands,
+  type RepoConstants,
+} from '../../../ingestion/route-extractors/java-const-resolver.js';
+import {
   extractStaticPathExpression,
   inferOkHttpMethod,
   inferHttpClientMethod,
@@ -164,6 +170,21 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
                   (element_value_pair
                     key: (identifier) @key
                     value: [(string_literal) @value (element_value_array_initializer (string_literal) @value)]))))
+            name: (identifier) @member) @node
+          (method_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr])))
+            name: (identifier) @member) @node
+          (method_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list
+                  (element_value_pair
+                    key: (identifier) @key
+                    value: [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr]))))
             name: (identifier) @member) @node
         ]
       `,
@@ -469,6 +490,12 @@ interface MethodRouteAnnotation {
   rawPath: string;
   /** OpenFeign's single effective verb; null means its contract is invalid/ambiguous. */
   feignHttpMethod?: string | null;
+  /**
+   * Non-literal path operands (constant ref or `+`-concat), captured when the
+   * annotation value is not a string literal. Resolved against the repo-wide
+   * Java constant map in scan(); a failed fold drops the route (skip floor).
+   */
+  pathOperands?: readonly import('../../../ingestion/route-extractors/constant-resolver.js').Operand[];
 }
 
 interface RequestLineAnnotation {
@@ -527,7 +554,10 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const annNode = captures.ann;
     const node = captures.node;
     const valueNode = captures.value;
-    if (!annNode || !node || !valueNode) continue;
+    // A non-literal annotation value (constant ref / `+`-concat) is captured
+    // as @value_expr instead of @value — one of the two must be present.
+    const valueExprNode = captures.value_expr;
+    if (!annNode || !node || (!valueNode && !valueExprNode)) continue;
     // Discrimination is on the trailing segment only (`simpleName`), so a
     // non-Spring annotation whose last segment collides with a route annotation
     // (e.g. `@com.evil.GetMapping("/x")`) is treated as a route. This is the
@@ -550,7 +580,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
         const feignHttpMethod =
           httpMethods.length === 1 ? (httpMethods[0] === '*' ? 'GET' : httpMethods[0]) : null;
         if (!isRouteMemberKey(keyNode)) continue;
-        const rawPath = unquoteLiteral(valueNode.text);
+        const rawPath = valueNode ? unquoteLiteral(valueNode.text) : null;
         if (rawPath !== null) {
           for (const httpMethod of httpMethods) {
             methodRoutes.push({
@@ -560,6 +590,25 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
               rawPath,
               feignHttpMethod,
             });
+          }
+        } else {
+          // Non-literal path (a constant reference or `+`-concatenation).
+          // Defer to scan(): the fold needs the repo-wide constant map built
+          // by prepareRepo. Capture the operand list now; resolution happens
+          // in scan() against JavaRepoContext, and an unresolvable operand
+          // list leaves the route skipped (KTD5 skip floor).
+          const operands = parseJavaConstOperands(valueExprNode);
+          if (operands !== null) {
+            for (const httpMethod of httpMethods) {
+              methodRoutes.push({
+                methodNode: node,
+                methodName: captures.member?.text ?? null,
+                httpMethod,
+                rawPath: '',
+                feignHttpMethod,
+                pathOperands: operands,
+              });
+            }
           }
         }
       } else if (ann === 'RequestLine') {
@@ -579,7 +628,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
         // `url` or `value` attribute (or positionally); other attributes
         // (`accept`, `contentType`, …) are not routes.
         if (keyNode && keyNode.text !== 'url' && keyNode.text !== 'value') continue;
-        const rawPath = unquoteLiteral(valueNode.text);
+        const rawPath = valueNode ? unquoteLiteral(valueNode.text) : null;
         if (rawPath !== null) {
           exchangeRoutes.push({
             methodNode: node,
@@ -781,8 +830,57 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       content,
     );
   },
-  scan(tree) {
+  prepareRepo(args) {
+    // Build the repo-wide Java string-constant map once per extract() run
+    // (mirrors the Python binding's cost-gated pre-pass). A cheap content
+    // gate keeps literal-only repos at zero parses: only files containing a
+    // `static final String` declaration are parsed for constants.
+    try {
+      // The orchestrator hands over a bare Parser (no language set yet);
+      // bind Java explicitly — Python's prepareRepo does the same — otherwise
+      // parseSourceSafe spins to its 15 s budget per file.
+      args.parser.setLanguage(Java);
+    } catch {
+      // fall through: a parser that rejects binding cannot produce a constant
+      // map; per-file try/catch below then skips everything harmlessly.
+    }
+    const constants = new Map<
+      string,
+      import('../../../ingestion/route-extractors/constant-resolver.js').ModuleConstants
+    >();
+    for (const rel of args.files) {
+      if (!rel.endsWith('.java')) continue;
+      try {
+        const src = args.readFile(rel);
+        // Cheap content gate: only constant-DEFINITION candidates get parsed
+        // here (~hundreds of files). Import-only files (every controller)
+        // are deliberately NOT parsed in this pass — scan() lazily extracts
+        // the importing file's own import table from the tree it already
+        // holds when a constant-referencing route actually needs the fold.
+        // A gate that also matched `import ...;` would parse the entire
+        // repository here (tens of thousands of files) just to build import
+        // tables the fold can derive per-file on demand.
+        if (!src || !/static\s+final\s+String\s|interface\s+[A-Z]\w*\s*\{/.test(src)) {
+          continue;
+        }
+        const tree = args.parseSource(args.parser, src);
+        if (!tree) continue;
+        const mc = extractJavaModuleConstants(tree);
+        if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
+          constants.set(rel, mc);
+        }
+      } catch {
+        // Per-file resilience: one unreadable/oversized/ill-formed file must
+        // not forfeit the whole repo's constant map (a missing constants
+        // class only degrades refs that pointed at it).
+        continue;
+      }
+    }
+    return { constants };
+  },
+  scan(tree, repoContext, fileRel) {
     const out: HttpDetection[] = [];
+    const javaCtx = repoContext as { constants: RepoConstants } | undefined;
 
     // ─── Spring providers + OpenFeign consumers (one query pass) ────
     // `scanRouteAnnotations` resolves every route-defining annotation —
@@ -802,7 +900,42 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // class is a Spring *provider*. A mapping on a non-Feign interface has no
     // enclosing class and is dropped here — interface→controller inheritance is
     // handled by `scanProject`.
+    // Lazy per-file constants view. prepareRepo only indexes constant-
+    // DEFINING files (cheap gate); an importing controller is absent from
+    // that map. When a route actually references a constant, extract THIS
+    // file's import table from the tree scan() already holds (zero extra
+    // parses) and overlay it for the fold. Files whose routes are all
+    // literal — the overwhelming majority — never pay this cost.
+    let foldConstants: RepoConstants | undefined;
+    const getFoldConstants = (): RepoConstants | undefined => {
+      if (foldConstants !== undefined) return foldConstants;
+      foldConstants = javaCtx?.constants;
+      if (!javaCtx?.constants || !fileRel) return foldConstants;
+      if (javaCtx.constants.has(fileRel)) return foldConstants;
+      try {
+        const mc = extractJavaModuleConstants(tree);
+        if (mc.imports.size > 0) {
+          const merged = new Map(javaCtx.constants);
+          merged.set(fileRel, mc);
+          foldConstants = merged;
+        }
+      } catch {
+        // fold falls back to the repo-wide map (imports stay unresolved)
+      }
+      return foldConstants;
+    };
+
     for (const route of methodRoutes) {
+      // Non-literal route path: fold the operand list against the repo-wide
+      // constant map. Skip (never a guessed path) when the fold fails or the
+      // repo context is absent (context-less fallback scanning).
+      if (route.pathOperands && javaCtx && fileRel) {
+        const resolved = foldJavaOperands(fileRel, route.pathOperands, getFoldConstants()!);
+        if (resolved === null) continue;
+        route.rawPath = resolved;
+      } else if (route.pathOperands) {
+        continue;
+      }
       const enclosingInterface = findEnclosingInterface(route.methodNode);
       if (enclosingInterface && hasAnnotation(enclosingInterface, 'FeignClient')) {
         if (!route.feignHttpMethod) continue;

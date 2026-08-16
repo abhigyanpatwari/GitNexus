@@ -30,6 +30,7 @@ import {
   unquoteSpringLiteral,
   type SharedSpringType,
 } from './spring-shared.js';
+import { parseJavaConstOperands } from './java-const-resolver.js';
 
 /**
  * Single predicate-free tree-sitter query that captures all route annotations
@@ -90,6 +91,24 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
               key: (identifier) @key
               value: [(string_literal) @value
                       (element_value_array_initializer (string_literal) @value)]))))) @node
+    (method_declaration
+      (modifiers
+        (annotation
+          name: [(identifier) (scoped_identifier)] @ann
+          arguments: (annotation_argument_list
+            [(identifier) @value_expr
+             (field_access) @value_expr
+             (binary_expression) @value_expr])))) @node
+    (method_declaration
+      (modifiers
+        (annotation
+          name: [(identifier) (scoped_identifier)] @ann
+          arguments: (annotation_argument_list
+            (element_value_pair
+              key: (identifier) @key
+              value: [(identifier) @value_expr
+                      (field_access) @value_expr
+                      (binary_expression) @value_expr]))))) @node
   ]
 `,
 );
@@ -181,8 +200,12 @@ export function extractSpringRoutes(
     if (methodMethods.length === 0) continue;
     if (!isRouteMemberKey(keyNode)) continue;
 
+    // #2391-style non-literal path (constant ref or `+`-concat): emit with
+    // operands for cross-file folding in the parse phase. The match carries
+    // either @value (literal) or @value_expr (non-literal) — never both.
+    const valueExprNode = match.captures.find((c) => c.name === 'value_expr')?.node ?? null;
     const routePath = unquoteSpringLiteral(valueNode.text);
-    if (routePath === null) continue;
+    if (routePath === null && !valueExprNode) continue;
     const enclosingType = findEnclosingType(node);
 
     // Interface-declared `@*Mapping`s are not concrete routes on their own — the
@@ -217,6 +240,25 @@ export function extractSpringRoutes(
     const handlerName = node.childForFieldName('name')?.text;
 
     for (const httpMethod of httpMethods) {
+      if (routePath === null && valueExprNode) {
+        // Non-literal annotation value: parse operands now; the parse phase
+        // folds them against the repo-wide Java constant map (KTD5 skip floor
+        // on failure — never a phantom `POST /`).
+        const operands = parseJavaConstOperands(valueExprNode);
+        if (operands === null) continue;
+        routes.push({
+          filePath,
+          routePath: '',
+          routePathExpr: valueExprNode.text,
+          routePathOperands: operands,
+          httpMethod,
+          decoratorName: ann,
+          lineNumber: annNode.startPosition.row + lineOffset,
+          ...(classPrefix ? { prefix: classPrefix } : {}),
+          ...(handlerName ? { handlerName } : {}),
+        });
+        continue;
+      }
       routes.push({
         filePath,
         routePath,
