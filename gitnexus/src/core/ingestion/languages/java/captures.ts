@@ -39,6 +39,7 @@ import {
   setJavaSpringConfigConsumerFacts,
   setJavaSpringConditionalFacts,
   setJavaSpringDiFacts,
+  setJavaSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
@@ -50,6 +51,10 @@ import {
   captureJavaSpringConditionalFacts,
   type JavaSpringConditionalFact,
 } from './spring-conditionals.js';
+import {
+  captureJavaSpringNonHttpHandlerFacts,
+  type JavaSpringNonHttpHandlerFact,
+} from './spring-non-http-handlers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
@@ -139,6 +144,7 @@ export function emitJavaScopeCaptures(
   const springAopTypeNodeIds = new Set<number>();
   const springConditionalFacts: JavaSpringConditionalFact[] = [];
   const springDiFacts: JavaSpringDiClassFact[] = [];
+  const springNonHttpHandlerFacts: JavaSpringNonHttpHandlerFact[] = [];
   const springDiClassNodeIds = new Set<number>();
 
   for (const m of rawMatches) {
@@ -173,6 +179,9 @@ export function emitJavaScopeCaptures(
       springDiClassNodeIds.add(springDiClassNode.id);
       springConditionalFacts.push(
         ...captureJavaSpringConditionalFacts(springDiClassNode, filePath),
+      );
+      springNonHttpHandlerFacts.push(
+        ...captureJavaSpringNonHttpHandlerFacts(springDiClassNode, filePath),
       );
       const fact = captureJavaSpringDiClassFact(springDiClassNode, filePath);
       if (fact !== null) springDiFacts.push(fact);
@@ -392,6 +401,7 @@ export function emitJavaScopeCaptures(
   setJavaSpringAopFacts(filePath, springAopFacts);
   setJavaSpringConditionalFacts(filePath, springConditionalFacts);
   setJavaSpringDiFacts(filePath, springDiFacts);
+  setJavaSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
 
   return [
     ...resolveVarTypeBindings(out),

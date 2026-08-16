@@ -533,7 +533,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
 // stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 68;
+//
+// 68 -> 70 for Spring non-HTTP handler side-channel facts (#2417 / #2891).
+// Java and Kotlin ParsedFiles now persist scheduled, event, messaging, and
+// managed-job handler syntax. A warm cache without these facts would stamp the
+// analysis feature as complete while promoting zero handlers. This PR's former
+// value 59 is now part of main's ledger, main currently holds 68, and open PR
+// #2972 publishes 69; 70 is the next free value above every known claim.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 70;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
