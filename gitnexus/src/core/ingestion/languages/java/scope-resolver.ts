@@ -55,8 +55,10 @@ const javaScopeResolver: ScopeResolver = {
     return undefined;
   },
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: JavaResolveContext = { fromFile, allFilePaths };
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, _resolutionConfig, context) => {
+    // `context.parsedFiles` is the whole input now: a Java import names a type
+    // in a DECLARED package, and the declarations live on those files (#2953).
+    const ws: JavaResolveContext = { fromFile, allFilePaths, parsedFiles: context?.parsedFiles };
     return resolveJavaImportTarget(
       { kind: 'named', localName: '_', importedName: '_', targetRaw },
       ws,

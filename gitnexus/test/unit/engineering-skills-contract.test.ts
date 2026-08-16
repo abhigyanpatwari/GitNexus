@@ -109,8 +109,12 @@ describe('gitnexus-plan evidence provenance contract', () => {
         /absent cited path[\s\S]*descriptor[\s\S]*checked both before and after/i,
       ],
       [
-        'nonstandard trusted Python paths are supported',
-        /Python may live in[\s\S]*Nix[\s\S]*absolute\s+PATH/i,
+        'publication is a no-replace link, not an interpreter',
+        /spawns no interpreter[\s\S]*link\(2\)[\s\S]*fails `EEXIST`/i,
+      ],
+      [
+        'the macOS guarantee is stated, not smoothed over',
+        /Linux anchors, macOS verifies[\s\S]*detection rather than prevention/i,
       ],
     ]);
   });

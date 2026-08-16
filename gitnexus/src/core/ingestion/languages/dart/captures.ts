@@ -1069,9 +1069,15 @@ function emitHeritage(classNode: SyntaxNode, out: CaptureMatch[]): void {
     for (let i = 0; i < superclass.namedChildCount; i++) {
       const c = superclass.namedChild(i);
       if (c !== null && c.type === 'type_identifier') {
+        // `extends Base<User>` spells the arguments in a SIBLING node, so the
+        // anchor's own text cannot carry them; the sub-tag does (#2912).
+        const args = typeArgumentsAfter(superclass, i);
         out.push({
           '@reference.inherits': nodeToCapture('@reference.inherits', c),
           '@reference.name': nodeToCapture('@reference.name', c),
+          ...(args === null
+            ? {}
+            : { '@reference.type-arguments': nodeToCapture('@reference.type-arguments', args) }),
         });
         break;
       }
@@ -1144,7 +1150,26 @@ function emitHeritageMarkers(
   for (let i = 0; i < container.namedChildCount; i++) {
     const c = container.namedChild(i);
     if (c === null || c.type !== 'type_identifier') continue;
-    const payload = encodeMarker('heritage', [kind, c.text, className]);
+    // `implements Validator<String>` / `with M<int>`: the arguments ride the
+    // marker payload, because this heritage never becomes a reference SITE —
+    // `emitDartHeritageEdges` reads the marker and emits the edge (#2912).
+    // Dropped rather than encoded when the spelling contains the marker's own
+    // ':' delimiter, which `encodeMarker` rejects outright; absence is the
+    // fail-open value everywhere this is read.
+    const args = typeArgumentsAfter(container, i)?.text;
+    const fields =
+      args === undefined || args.includes(':')
+        ? [kind, c.text, className]
+        : [kind, c.text, className, args];
+    const payload = encodeMarker('heritage', fields);
     out.push({ '@import.heritage': syntheticCapture('@import.heritage', c, payload) });
   }
+}
+
+/** The `type_arguments` node written immediately after `container`'s named
+ *  child at `index` — the arguments of the type that child names — or `null`
+ *  when that type was written without any. */
+function typeArgumentsAfter(container: SyntaxNode, index: number): SyntaxNode | null {
+  const next = container.namedChild(index + 1);
+  return next !== null && next.type === 'type_arguments' ? next : null;
 }

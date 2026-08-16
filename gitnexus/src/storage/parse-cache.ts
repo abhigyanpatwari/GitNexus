@@ -387,17 +387,161 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // origin/main at the moment of merge surfaces it. Every value this branch
 // published (46, 47) is superseded by 48, so a warm cache stamped with either is
 // correctly invalidated.
+//
+// 53 -> 54 for W2-8: `@declaration.type-parameters` is now captured on generic
+// FUNCTIONS, generator functions and type ALIASES in TYPESCRIPT_SCOPE_QUERY, not
+// only on class/interface declarations. Parse-time emission, so a warm cache
+// replays ParsedFiles whose defs carry no parameter list and the shadowing guard
+// that consumes it silently does nothing — the feature would look implemented
+// and be inert, which is the failure this constant exists to prevent.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-// 53 -> 59 for Spring non-HTTP handler side-channel facts (#2417 / #2891).
+// 54 -> 55 for W2-9: the dispatch-guard verb walk now tracks boolean POLARITY,
+// so `(req.method === 'GET' ? false : true) && pathname === '/x'` no longer
+// reports GET — the one method that branch guarantees the request does not have
+// — and `!!(req.method === 'GET')` no longer loses its verb. Routes are emitted
+// at parse time and replayed verbatim from a warm cache, so without this bump an
+// already-indexed repo keeps serving the inverted verb and the fix looks inert.
+// Same reason 51 and 52 were taken for R3-7.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 55 -> 56 for R3-8 (part 1): a dispatch guard's verb walk now returns ALL the
+// methods a guard serves, so `(req.method === 'GET' || req.method === 'POST') &&
+// pathname === '/x'` emits two routes instead of reporting GET alone, and a
+// disjunction with a non-verb operand emits none instead of the first verb it
+// saw. Routes are parse-time output replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 56 -> 57 for R3-8 (part 2): `pathname.match(RE)` is read as a route test
+// alongside `RE.test(pathname)`, a bound match takes its verb from where the
+// binding is TESTED rather than where it is bound, a regex named by a same-file
+// const resolves, and `regexToRoutePath` accepts a CAPTURING segment wildcard
+// (`([^/]+)`) — the form every real dispatcher writes and the one it refused.
+// All parse-time route output, replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 57 -> 58 for #2897: the fetch capture no longer requires a LITERAL url, so a
+// call passing a variable is recorded as an outward-action site. Measured, 44 of
+// 47 fetch calls in this repo pass a variable, so the R3-6 sink signal was
+// absent from 94% of them. Parse-time capture output replayed verbatim from a
+// warm cache, so without the bump an indexed repo keeps its empty sink set and
+// the fix looks inert.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 58 -> 59 for the #2899 REVIEW FOLLOW-UP to the dispatch-guard route walk. Two
+// route-output changes, both parse-time and both replayed verbatim from a warm
+// cache, so without this bump an already-indexed repo keeps serving the wrong
+// routes and both fixes look implemented while being inert:
+//   (a) `matchBindings` / `tested` are keyed on (enclosing function, name)
+//       instead of the bare identifier. A same-named non-match binding in
+//       ANOTHER function used to mint a fabricated verbed route under the wrong
+//       handler — reproduced: `DELETE /api/live/positions/{param1}/replay
+//       handler=handleSettings` — which then EVICTED the true verb-less route
+//       through `reconcileDispatchGuardRoutes`. `buildRegexConstantMap` refuses
+//       a name rebound to a non-regex for the same reason.
+//   (b) `verbsFromTernary` INTERSECTS the operands of a conjunction instead of
+//       taking the first non-empty set. `(GET||POST) ? (POST||PUT) : false`
+//       emitted GET and POST where only POST is reachable, and
+//       `GET ? POST : false` emitted GET for an unsatisfiable guard.
+// Both changes strictly REMOVE routes, so a stale cache serves strictly more
+// wrong answers than a cold one — which is exactly the state this constant
+// exists to make unreachable. Same reason 55, 56 and 57 were taken.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 59 -> 60 for #2864's `ParsedImport.reexportsName` plus the `@import.publishes`
+// capture that gates it. The FIELD is the easy half to miss: it is not a
+// capture, but `parsedfile-store.ts` serializes the whole ParsedFile
+// generically, so a new optional property on `ParsedImport` is part of the
+// cached shape all the same. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, `isNamedReexport`'s strict `=== true` takes
+// the old path, and the whole fix is a silent no-op on incremental analyze while
+// every cold-run test passes — landing hardest on `__init__.py`, the
+// rarest-changing and highest-cache-hit files in a Python repo. The MARKER makes
+// it a capture change too, confirmed independently by
+// `bench/python-scope/measure.mjs` drifting.
+//
+// This branch is the SIXTH exact clash, and the first one the re-check caught
+// where the number did NOT have to move. It staged 60 while main was 53,
+// deliberately clearing the two claims visible at the time (#2899 and #2891).
+// #2899 then merged and cascaded main 53 -> 59 in five steps — far past the 54
+// its diff appeared to claim, because reading a PR's LAST bump hunk understates a
+// branch that bumps repeatedly. 60 survived only because it was chosen above the
+// highest claim rather than at main + 1; had it been staged at 54 it would now be
+// buried four deep inside main's own ledger. Take the next free value above every
+// in-flight MAXIMUM, not above origin/main.
+//
+// Still open at this commit: #2891 also claims 59, which main now holds. That is
+// a live exact clash for #2891 to renumber, not for this branch.
+//
+// 60 -> 62 for the two optional `ParsedImport` fields the cycle-checker fix
+// adds: `typeOnly` (TS `import type`) and `runsOnlyWhenCalled` (an import
+// written inside a function body). This is #2864's lesson arriving again, in
+// the same shape and for the same reason — neither field is a capture, but
+// `parsedfile-store.ts` serializes the whole ParsedFile generically, so both are
+// part of the cached shape. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, the strict `=== true` reads in
+// `finalize-algorithm.ts` and `imports-to-edges.ts` take the untagged path, and
+// `check --cycles` keeps reporting the erased and deferred imports this branch
+// exists to stop reporting — a silent no-op on incremental analyze while every
+// cold-run test in the branch passes. The failure is toward OVER-reporting, so
+// it is loud rather than dangerous, but it is still the whole fix not applying.
+// (`typeOnly` also has a capture half — `@import.type-only` from
+// `typescript/import-decomposer.ts` — so that side would drift a capture bench;
+// `runsOnlyWhenCalled` is decided in scope-extractor Pass 3 from the scope tree
+// and has no marker at all, which is exactly the half that gets missed.)
+//
+// 63, not 62, and not 61: main holds 60, #2935 claims 61, and #2936 claims 62.
+// Per the rule three paragraphs up, this is the next free value above every
+// in-flight MAXIMUM, not above origin/main. #2891's 59 is already buried by main
+// and is theirs to renumber; #1616's 2 is stale.
+//
+// This staged 62 first and was correct when written. #2936 opened four hours
+// later and also took 62 — bumping for #2917's implicit Java record-component
+// accessors, a genuinely different cached shape — because it re-checked against
+// main (60) rather than against the in-flight claims, which is the SEVENTH exact
+// clash and the same mistake the ledger above keeps recording. Moving rather
+// than standing on seniority: 63 is above every claim, so it is correct whichever
+// of the two merges first, and needs no coordination to stay correct. An exact
+// clash is the dangerous shape precisely because neither side invalidates the
+// other — a warm cache written by #2936's build would be read as valid by this
+// one, and the accessor definitions it materializes are not in this branch's
+// ParsedFile shape at all.
+//
+// 63 -> 64 for Java enum heritage plus annotated class, record, interface,
+// enum, and explicit-super base names emitting corrected captures (#2918).
+// Warm v63 ParsedFiles lack those captures and must be re-extracted.
+// 64 -> 66 adds the synthetic-declaration sidecar used to keep anonymous class
+// implementations from evicting ordinary implementors at the dispatch cap.
+// That PR published a v64 head first, so 66 kept all the shapes in flight at the
+// time distinct. (It also named a v65 claim from this branch; that claim was
+// superseded before either landed — see the 66 -> 67 entry below. Nothing holds
+// 65 now.)
+//
+// 66 -> 67 for #2917's implicit Java record-component accessor definitions and
+// scope declarations. A warm cache would otherwise replay ParsedFiles without
+// the synthesized accessors. This branch staged 65 before #2918's 66 landed on
+// main; 67 is the next free value above every in-flight claim (main 66, #2939's
+// 64), which is the ledger rule above — re-check against the claims, not just
+// against main.
+//
+// 67 -> 68 for #2912's `ReferenceSite.typeArguments`: the generic arguments a
+// heritage reference was written with (`: IValidator<string>`), derived at
+// EXTRACTION time from the anchor's spelling. A warm cache replays `inherits`
+// sites with the field absent, absence is the fail-open "unknown", and
+// generic-instantiation filtering therefore degrades to the pre-fix fan-out on
+// exactly the unchanged files — silent, and passing every cold-run test.
+//
+// This branch staged 64 when main held 60 and #2935/#2936/#2934 claimed 61/62/63.
+// All three have since landed and cascaded main to 67, burying 64 inside main's
+// own ledger — the EIGHTH time the re-check moved a number, and the reason the
+// re-check is a merge step rather than a one-time choice. 68 is the next free
+// value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
+// stale 2), which is the rule above: above every claim, not above origin/main.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 68 -> 70 for Spring non-HTTP handler side-channel facts (#2417 / #2891).
 // Java and Kotlin ParsedFiles now persist scheduled, event, messaging, and
-// managed-job handler syntax. A v53 warm cache has no such facts, so the graph
-// rebuild would stamp the analysis feature as complete while promoting zero
-// handlers. Values 54-58 are already claimed by the current open #2899 head,
-// so 59 avoids that known collision while main remains at 53. Whichever PR
-// merges second must allocate a fresh value after rebasing; if #2899 lands
-// first, bump this value again before merging.
+// managed-job handler syntax. A warm cache without these facts would stamp the
+// analysis feature as complete while promoting zero handlers. This PR's former
+// value 59 is now part of main's ledger, main currently holds 68, and open PR
+// #2972 publishes 69; 70 is the next free value above every known claim.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 59;
+const SCHEMA_BUMP = 70;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

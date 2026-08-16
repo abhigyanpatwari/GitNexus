@@ -170,6 +170,46 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  // Same shape as the UNKNOWN guard above, for the other half of the verdict:
+  // `detect_changes` can come back SHORT — `partial` when a batched graph query
+  // failed, `truncated` when the changed-symbol listing hit its cap — and both
+  // read as a clean gate if the agent only looks at the count (#2915). The
+  // wording differs per copy (the Cursor mirror compresses it to one blockquote
+  // line), so the fragments here are the parts every copy shares.
+  it('keeps the partial/truncated degradation guidance in every impact-analysis copy', () => {
+    const required = [
+      '`partial: true` (a graph query failed) or `truncated: true` (the changed-symbol',
+      'listing was capped)',
+      'a zero there means unseen, not unaffected.',
+      'tick the pre-commit check.',
+    ];
+    const copies = standardSkillCopies('gitnexus-impact-analysis');
+    // Guard the guard: an empty copy list would make the loop below vacuous.
+    expect(copies.length).toBeGreaterThan(1);
+    for (const file of copies) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
+  // The refactoring copies carry the same warning for the verification step a
+  // refactor ends on: there, a short list reads as "only the expected files
+  // changed" rather than as a low risk score.
+  it('keeps the partial/truncated degradation guidance in every refactoring copy', () => {
+    const required = [
+      '`partial: true` (a graph query failed) or `truncated: true` (the changed-symbol',
+      'listing was capped)',
+      'is not proof that only the expected files changed.',
+      'treat the refactor as verified.',
+    ];
+    const copies = standardSkillCopies('gitnexus-refactoring');
+    expect(copies.length).toBeGreaterThan(1);
+    for (const file of copies) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
   it('documents the current tools, schema, and cross-repo trace in every guide copy', () => {
     const required = [
       '`route_map`',
@@ -188,12 +228,117 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  // #2899: the "Inline staleness signal" section was deleted from the
+  // canonical `.claude/` copy by an unrelated commit while the plugin mirror
+  // kept it — the same silent-deletion shape as the UNKNOWN-risk guard above,
+  // just for a hand-authored section instead of the machine-managed block.
+  // Scoped to canonical + plugin only: at the time of writing the npm mirror
+  // (gitnexus/skills/gitnexus-guide.md) already lacks this section as
+  // pre-existing, unrelated drift, so folding it into the loop above would
+  // fail on that unrelated copy instead of guarding this regression.
+  it('keeps the inline-staleness-signal section in the canonical and plugin guide copies', () => {
+    for (const file of [
+      path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-guide', 'SKILL.md'),
+      path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills', 'gitnexus-guide', 'SKILL.md'),
+    ]) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain('### Inline staleness signal');
+      expect(content).toContain('commitsBehind');
+    }
+  });
+
   it("uses the rename API's text_search vocabulary in every refactoring copy", () => {
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
       const content = fs.readFileSync(file, 'utf-8');
       expect(content).toContain('text_search');
       expect(content).not.toContain('ast_search');
     }
+  });
+});
+
+/**
+ * The body of the root AGENTS.md / CLAUDE.md machine-managed block
+ * (`<!-- gitnexus:start -->` … `<!-- gitnexus:end -->`), which
+ * generateGitNexusContent (src/cli/ai-context.ts) regenerates on every
+ * `gitnexus analyze`. Shared by the policy guards below.
+ */
+function extractManagedBlock(file: string): string {
+  const content = fs.readFileSync(path.join(REPO_ROOT, file), 'utf-8');
+  // Markers must occupy their own line — CLAUDE.md's "GitNexus rules"
+  // section links to AGENTS.md with an inline prose mention of both
+  // marker strings ("See the `<!-- gitnexus:start --> ... `" etc.) that a
+  // bare indexOf would mistake for the real block (mirrors
+  // findSectionMarkerIndex in ai-context.ts, #1041).
+  const match =
+    /(?:^|\n)<!-- gitnexus:start -->\r?\n([\s\S]*?)\n<!-- gitnexus:end -->(?:\r?\n|$)/.exec(
+      content,
+    );
+  expect(match, `${file} must contain an own-line gitnexus:start/end block`).not.toBeNull();
+  return match![1];
+}
+
+// The `risk: UNKNOWN` Always-Do bullet and its Never-Do clause were hand-added
+// INSIDE the machine-managed region instead of living in the template, so a
+// real analyze run silently deleted them on regeneration — twice (#2856's
+// 8f8261021, then #2899's 9e602aef0, which piggybacked an unrelated
+// fetch-parsing fix and also regressed the index stats 248612/565510/918 ->
+// 42853/135955/758, itself evidence the block had been rebuilt from a stale
+// local index). ai-context.ts now generates both lines directly regardless of
+// `hasPdg` (see ai-context.test.ts's hasPdg-independent UNKNOWN test), so a
+// real analyze cannot drop them again. This guard is the second line of
+// defense: it reads the committed docs themselves, so a hand-revert or a stale
+// generator binary landing the same regression fails here even if the template
+// is fine.
+describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN policy (#2899)', () => {
+  const REQUIRED_FRAGMENTS = [
+    'MUST treat `risk: UNKNOWN` as unresolved, not as low.',
+    'never read `UNKNOWN` as an all-clear',
+  ];
+
+  it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
+    const block = extractManagedBlock(file);
+    for (const fragment of REQUIRED_FRAGMENTS) expect(block).toContain(fragment);
+  });
+
+  it.each(['AGENTS.md', 'CLAUDE.md'])(
+    "%s managed block's Always Do / Never Do bullet counts do not drop below the known floor",
+    (file) => {
+      const block = extractManagedBlock(file);
+      const alwaysDoSection = block.slice(
+        block.indexOf('## Always Do'),
+        block.indexOf('## Never Do'),
+      );
+      const neverDoSection = block.slice(block.indexOf('## Never Do'));
+      // 7 Always-Do bullets are unconditional; an 8th (pdg_query) only
+      // appears when the index was built with --pdg, so the floor is 7, not 8.
+      expect((alwaysDoSection.match(/^- /gm) || []).length).toBeGreaterThanOrEqual(7);
+      // Never Do never varies with hasPdg — exactly 4 today, so 4 is the floor.
+      expect((neverDoSection.match(/^- NEVER /gm) || []).length).toBeGreaterThanOrEqual(4);
+    },
+  );
+});
+
+// The same second-line-of-defense reading for the OTHER thing the block now
+// says about the pre-commit gate: a `detect_changes` that came back `partial`
+// (a batched graph query failed) or `truncated` (the changed-symbol listing hit
+// its cap) has not cleared anything (#2915). It lives inside the machine-managed
+// region, so it survives only as long as ai-context.ts keeps generating it —
+// exactly the shape that was silently deleted twice above. Reading the
+// committed docs catches a stale generator binary or a hand-revert too.
+describe('root AGENTS.md / CLAUDE.md managed block keeps the degraded-detect_changes policy (#2915)', () => {
+  const REQUIRED_FRAGMENTS = [
+    // Deliberately short. The block is under a hard size cap (#856), so this
+    // sentence gets re-trimmed whenever anything else in the block grows — it
+    // already lost both parentheticals to pay for restoring the `detect-changes`
+    // subcommand in the regression example. Pin the two claims that carry the
+    // policy, not the prose around them.
+    '`partial: true` or `truncated: true` is not a clean check',
+    'a zero means unseen, not unaffected; re-run it',
+  ];
+
+  it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
+    const block = extractManagedBlock(file);
+    for (const fragment of REQUIRED_FRAGMENTS) expect(block).toContain(fragment);
   });
 });
 

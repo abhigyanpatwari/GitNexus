@@ -54,7 +54,10 @@ import {
   SPRING_AOP_EVIDENCE_ID_PREFIX,
 } from '../../src/core/ingestion/frameworks/spring/aop.js';
 import { SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX } from '../../src/core/ingestion/frameworks/spring/auto-configuration.js';
-import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
+import {
+  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
+} from '../../src/core/ingestion/languages/java/analysis-features.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
 
@@ -94,6 +97,24 @@ async function setupSpringBeanIncrementalRepo() {
   );
   execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
   gitCommitAll(repo.dbPath, 'initial spring bean candidate');
+  return repo;
+}
+
+async function setupJavaEnumHeritageIncrementalRepo() {
+  const repo = await createTempDir('gitnexus-incr-java-enum-heritage-');
+  const src = path.join(repo.dbPath, 'src');
+  await mkdir(src, { recursive: true });
+  await writeFile(
+    path.join(src, 'Status.java'),
+    'interface Named { String label(); }\n' +
+      'enum Status implements Named {\n' +
+      '  ACTIVE;\n' +
+      '  public String label() { return "active"; }\n' +
+      '}\n',
+    'utf-8',
+  );
+  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  gitCommitAll(repo.dbPath, 'initial Java enum heritage');
   return repo;
 }
 
@@ -220,6 +241,35 @@ async function readSpringConfigPropertyNames(repoPath: string): Promise<string[]
         'RETURN p.name AS name ORDER BY p.name',
     )) as Array<{ name?: unknown }>;
     return rows.map((row) => String(row.name));
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function countStatusImplementsNamed(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      "MATCH (e:Enum {name: 'Status'})-[r:CodeRelation]->(i:Interface {name: 'Named'}) " +
+        "WHERE r.type = 'IMPLEMENTS' RETURN count(r) AS c",
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function deleteStatusImplementsNamed(repoPath: string): Promise<void> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    await adapter.executeQuery(
+      "MATCH (e:Enum {name: 'Status'})-[r:CodeRelation]->(i:Interface {name: 'Named'}) " +
+        "WHERE r.type = 'IMPLEMENTS' DELETE r",
+    );
   } finally {
     await adapter.closeLbug();
   }
@@ -461,6 +511,43 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
       });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('a Java index missing enum heritage evidence rebuilds before the fast path (#2918)', async () => {
+    const repo = await setupJavaEnumHeritageIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta!.analysisFeatures).toMatchObject({
+        [JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id]: JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.version,
+      });
+      expect(await countStatusImplementsNamed(repo.dbPath)).toBe(1);
+
+      await deleteStatusImplementsNamed(repo.dbPath);
+      expect(await countStatusImplementsNamed(repo.dbPath)).toBe(0);
+
+      await saveMeta(
+        storagePath,
+        withoutAnalysisFeature(meta!, JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id),
+      );
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain(`missing:${JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id}`);
+      expect((await loadMeta(storagePath))!.analysisFeatures).toMatchObject({
+        [JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id]: JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.version,
+      });
+      expect(await countStatusImplementsNamed(repo.dbPath)).toBe(1);
     } finally {
       await repo.cleanup();
     }

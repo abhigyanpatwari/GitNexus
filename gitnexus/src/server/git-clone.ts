@@ -10,7 +10,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { isIP } from 'net';
 import { logger } from '../core/logger.js';
-import { parseRepoNameFromUrl } from '../storage/git.js';
+import { parseRepoNameFromUrl, stripUrlCredentials } from '../storage/git.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 
 /**
@@ -410,7 +410,10 @@ export async function assertRemoteMatchesRequestedUrl(
   }
   if (normalizeGitUrlForCompare(remoteUrl) !== normalizeGitUrlForCompare(requestedUrl)) {
     throw new Error(
-      `Existing clone at ${targetDir} has remote ${remoteUrl}, not the requested URL ${requestedUrl}`,
+      // Both URLs are echoed to the API caller and the server log, and either
+      // can carry `https://user:token@` userinfo — strip it here too (#2914).
+      `Existing clone at ${targetDir} has remote ${stripUrlCredentials(remoteUrl)}, ` +
+        `not the requested URL ${stripUrlCredentials(requestedUrl)}`,
     );
   }
 }

@@ -5,8 +5,23 @@
  * Uses the MCP-style pooled lbug-adapter for connection management.
  */
 
-import { initLbug, executeQuery, closeLbug, touchRepo, pinRepo } from '../lbug/pool-adapter.js';
-import { escapeCypherString } from '../lbug/cypher-escape.js';
+import {
+  initLbug,
+  executeQuery,
+  executeParameterized,
+  closeLbug,
+  touchRepo,
+  pinRepo,
+} from '../lbug/pool-adapter.js';
+
+/**
+ * Rows kept by each call-edge query. Owned by prompts.ts, where the reason for
+ * a limit lives: every one of these lists reaches the LLM through
+ * `formatCallEdges`, which slices to the same value. Fetching rows that slice
+ * would discard is waste, so the cut happens here too — but as the same number,
+ * not a second one, because a second one could only ever drift from it.
+ */
+import { CALL_EDGE_LIMIT } from './prompts.js';
 
 const REPO_ID = '__wiki__';
 
@@ -51,6 +66,101 @@ export interface ProcessInfo {
   }>;
 }
 
+/** A process without its step trace — one row of the process header query. */
+type ProcessHeader = Omit<ProcessInfo, 'steps'>;
+
+/**
+ * One result row, keyed by its query's `AS` aliases. The adapter hands back
+ * `getAll()`'s `Record<string, LbugValue>` — alias keys only, never the
+ * positional form these mappers used to fall back to — so each row type below
+ * names its aliases, and reading a column the query does not return is a
+ * compile error rather than a silent `undefined`.
+ */
+type QueryRow<Alias extends string> = Record<Alias, unknown>;
+
+type CallEdgeRow = QueryRow<'fromFile' | 'fromName' | 'toFile' | 'toName'>;
+type ProcessHeaderRow = QueryRow<'id' | 'label' | 'type' | 'stepCount'>;
+type ProcessStepRow = QueryRow<'pid' | 'name' | 'filePath' | 'type' | 'step'>;
+
+function toCallEdge(row: CallEdgeRow): CallEdge {
+  return {
+    fromFile: row.fromFile as string,
+    fromName: row.fromName as string,
+    toFile: row.toFile as string,
+    toName: row.toName as string,
+  };
+}
+
+// The defaults below use `??`, not `||`: only an absent property falls back, so
+// a process genuinely labelled '' or a step numbered 0 keeps its own value.
+function toProcessHeader(row: ProcessHeaderRow): ProcessHeader {
+  const id = row.id as string;
+  return {
+    id,
+    label: (row.label as string | null) ?? id,
+    type: (row.type as string | null) ?? 'unknown',
+    stepCount: (row.stepCount as number | null) ?? 0,
+  };
+}
+
+function toProcessStep(row: ProcessStepRow): ProcessInfo['steps'][number] {
+  return {
+    step: (row.step as number | null) ?? 0,
+    name: row.name as string,
+    filePath: row.filePath as string,
+    type: row.type as string,
+  };
+}
+
+/**
+ * Attach each header's full step trace, in one query for the whole set.
+ *
+ * One query per process cost 105ms for 20 processes against this repo's index;
+ * grouping them on `p.id IN $ids` costs 13ms. `stepsById` below does the
+ * grouping, so the rows need not arrive grouped — only in step order.
+ *
+ * `ORDER BY step`, and deliberately not `ORDER BY pid, step`: leading the sort
+ * with the same property the `IN` list matches on makes the engine stop after
+ * that key, and the trace comes back in insertion order (2,7,1,3,4,5,6 for
+ * `proc_1_incrementalupdate` on this repo's index). The identical query with
+ * `p.id = '…'` sorts fine, as does this one — a global sort by `step` keeps
+ * each process's own rows ascending, which is all the grouping needs.
+ *
+ * `labels(s)`, not `labels(s)[0]`: the engine returns a node's label as a
+ * scalar string, and subscripting a string is 1-based over its characters, so
+ * `[0]` was always '' and `[1]` would have been 'F'. Verified against this
+ * repo's index — `labels(s)` yields 'Function'.
+ */
+async function withSteps(headers: ProcessHeader[]): Promise<ProcessInfo[]> {
+  if (headers.length === 0) return [];
+
+  const stepRows: ProcessStepRow[] = await executeParameterized(
+    REPO_ID,
+    `
+      MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+      WHERE p.id IN $ids
+      RETURN p.id AS pid, s.name AS name, s.filePath AS filePath,
+             labels(s) AS type, r.step AS step
+      ORDER BY step
+    `,
+    { ids: headers.map((header) => header.id) },
+  );
+
+  const stepsById = new Map<string, ProcessInfo['steps']>();
+  for (const row of stepRows) {
+    const pid = String(row.pid);
+
+    let steps = stepsById.get(pid);
+    if (!steps) {
+      steps = [];
+      stepsById.set(pid, steps);
+    }
+    steps.push(toProcessStep(row));
+  }
+
+  return headers.map((header) => ({ ...header, steps: stepsById.get(header.id) ?? [] }));
+}
+
 /**
  * Initialize the LadybugDB connection for wiki generation.
  */
@@ -72,33 +182,33 @@ export async function closeWikiDb(): Promise<void> {
  * longer have a direct File→DEFINES edge.
  */
 export async function getFilesWithExports(): Promise<FileWithExports[]> {
-  const rows = await executeQuery(
+  // `labels(n)`, not `labels(n)[0]` — see withSteps. `prompts.ts` renders this
+  // type as `name (type)`, so the subscript printed every symbol as `name ()`.
+  const rows: Array<QueryRow<'filePath' | 'name' | 'type'>> = await executeQuery(
     REPO_ID,
     `
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(n)
     WHERE n.isExported = true
-    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    RETURN f.filePath AS filePath, n.name AS name, labels(n) AS type
     UNION
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(c)
           -[mr:CodeRelation]->(n)
     WHERE mr.type IN ['HAS_METHOD', 'HAS_PROPERTY'] AND n.isExported = true
-    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    RETURN f.filePath AS filePath, n.name AS name, labels(n) AS type
     ORDER BY filePath
   `,
   );
 
   const fileMap = new Map<string, FileWithExports>();
   for (const row of rows) {
-    const fp = row.filePath || row[0];
-    const name = row.name || row[1];
-    const type = row.type || row[2];
+    const filePath = row.filePath as string;
 
-    let entry = fileMap.get(fp);
+    let entry = fileMap.get(filePath);
     if (!entry) {
-      entry = { filePath: fp, symbols: [] };
-      fileMap.set(fp, entry);
+      entry = { filePath, symbols: [] };
+      fileMap.set(filePath, entry);
     }
-    entry.symbols.push({ name, type });
+    entry.symbols.push({ name: row.name as string, type: row.type as string });
   }
 
   return Array.from(fileMap.values());
@@ -108,7 +218,7 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
  * Get all files tracked in the graph (including those with no exports).
  */
 export async function getAllFiles(): Promise<string[]> {
-  const rows = await executeQuery(
+  const rows: Array<QueryRow<'filePath'>> = await executeQuery(
     REPO_ID,
     `
     MATCH (f:File)
@@ -116,14 +226,14 @@ export async function getAllFiles(): Promise<string[]> {
     ORDER BY f.filePath
   `,
   );
-  return rows.map((r) => r.filePath || r[0]);
+  return rows.map((row) => row.filePath as string);
 }
 
 /**
  * Get inter-file call edges (calls between different files).
  */
 export async function getInterFileCallEdges(): Promise<CallEdge[]> {
-  const rows = await executeQuery(
+  const rows: CallEdgeRow[] = await executeQuery(
     REPO_ID,
     `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
@@ -133,12 +243,7 @@ export async function getInterFileCallEdges(): Promise<CallEdge[]> {
   `,
   );
 
-  return rows.map((r) => ({
-    fromFile: r.fromFile || r[0],
-    fromName: r.fromName || r[1],
-    toFile: r.toFile || r[2],
-    toName: r.toName || r[3],
-  }));
+  return rows.map(toCallEdge);
 }
 
 /**
@@ -147,23 +252,37 @@ export async function getInterFileCallEdges(): Promise<CallEdge[]> {
 export async function getIntraModuleCallEdges(filePaths: string[]): Promise<CallEdge[]> {
   if (filePaths.length === 0) return [];
 
-  const fileList = filePaths.map((f) => `'${escapeCypherString(f)}'`).join(', ');
-  const rows = await executeQuery(
+  // The file list is BOUND, not spliced into the query text. A module can hold
+  // every file under a parent, so an `IN [...]` literal would grow the query
+  // with the repo — the shape that crashed the engine in #2915 (see
+  // `coalesceHunks` in src/storage/git.ts). As a parameter the text is constant
+  // at any list length, and measured ~3x faster than the equivalent literal, so
+  // both arms of the predicate can stay in Cypher where the engine can use them.
+  // Ordered and cut in Cypher, like getInterModuleCallEdges below and for the
+  // same two reasons. Determinism: the original had no ORDER BY, so the engine's
+  // arbitrary order decided which 30 `formatCallEdges` (prompts.ts) kept, and
+  // the cut landed on a different subset per machine (#2787). Volume: a root
+  // parent page passes every file under it, i.e. the whole repo — over 2298
+  // paths this query returned 18299 rows in 1064ms to use 30 of them, against
+  // 30 rows in 97ms with the LIMIT below, same leading rows.
+  //
+  // The engine orders by UTF-8 bytes where the JS sort this replaces compared
+  // UTF-16 code units — identical for ASCII identifiers, divergent only above
+  // the BMP, and the sibling already relies on the engine, so the two agree.
+  const rows: CallEdgeRow[] = await executeParameterized(
     REPO_ID,
     `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
-    WHERE a.filePath IN [${fileList}] AND b.filePath IN [${fileList}]
+    WHERE a.filePath IN $paths AND b.filePath IN $paths
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
+    ORDER BY fromName, toName, fromFile, toFile
+    LIMIT ${CALL_EDGE_LIMIT}
   `,
+    { paths: filePaths },
   );
 
-  return rows.map((r) => ({
-    fromFile: r.fromFile || r[0],
-    fromName: r.fromName || r[1],
-    toFile: r.toFile || r[2],
-    toName: r.toName || r[3],
-  }));
+  return rows.map(toCallEdge);
 }
 
 /**
@@ -175,8 +294,10 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
 }> {
   if (filePaths.length === 0) return { outgoing: [], incoming: [] };
 
-  const fileList = filePaths.map((f) => `'${escapeCypherString(f)}'`).join(', ');
-
+  // Bound list, as in getIntraModuleCallEdges — which also keeps the `NOT ...
+  // IN` arm honest: `NOT null IN [...]` is null, so a callee with no filePath
+  // is dropped by the engine, where a JS membership test would admit it.
+  //
   // The sort leads with the symbol names, not the file paths. Ordering by
   // `fromFile` first makes the LIMIT a single-file prefix — on this repo's own
   // index the 30 outgoing edges of `core/wiki` all came from 1 of its 7 files,
@@ -184,44 +305,25 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
   // The four columns are the whole DISTINCT tuple, so any permutation is a
   // total order and equally deterministic (#2787); leading with the names just
   // spreads the window across files (1 → 7 of 7 here).
-  const outRows = await executeQuery(
-    REPO_ID,
-    `
+  const edgeQuery = (membership: string): string => `
     MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
-    WHERE a.filePath IN [${fileList}] AND NOT b.filePath IN [${fileList}]
+    WHERE ${membership}
     RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
            b.filePath AS toFile, b.name AS toName
     ORDER BY fromName, toName, fromFile, toFile
-    LIMIT 30
-  `,
-  );
+    LIMIT ${CALL_EDGE_LIMIT}
+  `;
 
-  const inRows = await executeQuery(
-    REPO_ID,
-    `
-    MATCH (a)-[:CodeRelation {type: 'CALLS'}]->(b)
-    WHERE NOT a.filePath IN [${fileList}] AND b.filePath IN [${fileList}]
-    RETURN DISTINCT a.filePath AS fromFile, a.name AS fromName,
-           b.filePath AS toFile, b.name AS toName
-    ORDER BY fromName, toName, fromFile, toFile
-    LIMIT 30
-  `,
-  );
+  const [outRows, inRows]: [CallEdgeRow[], CallEdgeRow[]] = await Promise.all([
+    executeParameterized(REPO_ID, edgeQuery('a.filePath IN $paths AND NOT b.filePath IN $paths'), {
+      paths: filePaths,
+    }),
+    executeParameterized(REPO_ID, edgeQuery('NOT a.filePath IN $paths AND b.filePath IN $paths'), {
+      paths: filePaths,
+    }),
+  ]);
 
-  return {
-    outgoing: outRows.map((r) => ({
-      fromFile: r.fromFile || r[0],
-      fromName: r.fromName || r[1],
-      toFile: r.toFile || r[2],
-      toName: r.toName || r[3],
-    })),
-    incoming: inRows.map((r) => ({
-      fromFile: r.fromFile || r[0],
-      fromName: r.fromName || r[1],
-      toFile: r.toFile || r[2],
-      toName: r.toName || r[3],
-    })),
-  };
+  return { outgoing: outRows.map(toCallEdge), incoming: inRows.map(toCallEdge) };
 }
 
 /**
@@ -231,60 +333,29 @@ export async function getInterModuleCallEdges(filePaths: string[]): Promise<{
 export async function getProcessesForFiles(filePaths: string[], limit = 5): Promise<ProcessInfo[]> {
   if (filePaths.length === 0) return [];
 
-  const fileList = filePaths.map((f) => `'${escapeCypherString(f)}'`).join(', ');
-
-  // Find processes that have steps in the given files
-  const procRows = await executeQuery(
+  // Bound list, as in getIntraModuleCallEdges, so `LIMIT` can stay in Cypher
+  // over the whole set instead of being applied per batch and re-merged.
+  const procRows: ProcessHeaderRow[] = await executeParameterized(
     REPO_ID,
     `
     MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-    WHERE s.filePath IN [${fileList}]
+    WHERE s.filePath IN $paths
     RETURN DISTINCT p.id AS id, p.heuristicLabel AS label,
            p.processType AS type, p.stepCount AS stepCount
     ORDER BY stepCount DESC, id
     LIMIT ${limit}
   `,
+    { paths: filePaths },
   );
 
-  const processes: ProcessInfo[] = [];
-  for (const row of procRows) {
-    const procId = row.id || row[0];
-    const label = row.label || row[1] || procId;
-    const type = row.type || row[2] || 'unknown';
-    const stepCount = row.stepCount || row[3] || 0;
-
-    // Get the full step trace for this process
-    const stepRows = await executeQuery(
-      REPO_ID,
-      `
-      MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${escapeCypherString(procId)}'})
-      RETURN s.name AS name, s.filePath AS filePath, labels(s)[0] AS type, r.step AS step
-      ORDER BY r.step
-    `,
-    );
-
-    processes.push({
-      id: procId,
-      label,
-      type,
-      stepCount,
-      steps: stepRows.map((s) => ({
-        step: s.step || s[3] || 0,
-        name: s.name || s[0],
-        filePath: s.filePath || s[1],
-        type: s.type || s[2],
-      })),
-    });
-  }
-
-  return processes;
+  return withSteps(procRows.map(toProcessHeader));
 }
 
 /**
  * Get all processes in the graph (for overview page).
  */
 export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
-  const procRows = await executeQuery(
+  const procRows: ProcessHeaderRow[] = await executeQuery(
     REPO_ID,
     `
     MATCH (p:Process)
@@ -295,37 +366,7 @@ export async function getAllProcesses(limit = 20): Promise<ProcessInfo[]> {
   `,
   );
 
-  const processes: ProcessInfo[] = [];
-  for (const row of procRows) {
-    const procId = row.id || row[0];
-    const label = row.label || row[1] || procId;
-    const type = row.type || row[2] || 'unknown';
-    const stepCount = row.stepCount || row[3] || 0;
-
-    const stepRows = await executeQuery(
-      REPO_ID,
-      `
-      MATCH (s)-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process {id: '${escapeCypherString(procId)}'})
-      RETURN s.name AS name, s.filePath AS filePath, labels(s)[0] AS type, r.step AS step
-      ORDER BY r.step
-    `,
-    );
-
-    processes.push({
-      id: procId,
-      label,
-      type,
-      stepCount,
-      steps: stepRows.map((s) => ({
-        step: s.step || s[3] || 0,
-        name: s.name || s[0],
-        filePath: s.filePath || s[1],
-        type: s.type || s[2],
-      })),
-    });
-  }
-
-  return processes;
+  return withSteps(procRows.map(toProcessHeader));
 }
 
 /**

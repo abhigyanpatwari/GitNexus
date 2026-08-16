@@ -1332,7 +1332,13 @@ class PyMultiSvc:
     rows: [
       {
         caller: 'runTsNested',
-        targets: ['Method:a.ts:Repo.save#1', 'Method:a.ts:UserRepo.save#1'],
+        // No `UserRepo.save`, and that is the #2912 filter doing its job rather
+        // than the receiver failing to resolve: `UserRepo implements Repo<User>`
+        // is an implementor of a DIFFERENT instantiation from this receiver's
+        // `Repo<Repo<User>>`, so no dispatch through it can reach `UserRepo`.
+        // The primary edge to the interface's own declaration is unaffected,
+        // which is what still proves the receiver typed correctly here.
+        targets: ['Method:a.ts:Repo.save#1'],
         note: 'DISCRIMINATING nested generic: TypeScript reaches the shared lookup, unlike the Java/Kotlin/Rust spelling rows above',
       },
       {

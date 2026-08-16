@@ -1,6 +1,6 @@
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { KOTLIN_EXTENSIONS } from '../../import-resolvers/jvm.js';
-import { recordKotlinFileIndexBuild } from './index-stats.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 export interface KotlinResolveContext {
   readonly fromFile: string;
@@ -88,8 +88,10 @@ function findKotlinDirectoryChild(index: KotlinFileIndex, pathLike: string): str
   if (pathLike === '') return null;
   const children = index.dirChildren.get(pathLike);
   // "First" is first in `allFilePaths` iteration order, which the index
-  // preserves by appending as it walks the set — the same file the scan
-  // used to return.
+  // preserves by appending as it walks the set. Since #2881 that can be an
+  // EARLIER file than the pre-index scan returned, never a later one: the
+  // guards that fell take members away from no bucket, so a bucket only ever
+  // gains, and a gained member lands wherever set iteration puts it.
   return children === undefined ? null : (children[0] ?? null);
 }
 
@@ -156,22 +158,89 @@ function findByProgressivePrefixStrip(index: KotlinFileIndex, pathLike: string):
  * The shared `buildSuffixIndex` (`import-resolvers/utils.ts`, used by C#, Ruby,
  * Vue and TypeScript) is deliberately NOT reused — the same call Python
  * documents at `python/import-target.ts`. Run side by side against this
- * resolver, four probes out of five diverge:
+ * resolver, three probes out of five diverge:
  *
  *  - `['deep/util/User.kt', 'util/User.kt']` for `util.User` — it conflates
  *    exact and proper-suffix matches in one map, so the deep path wins where
  *    the scan returned the exact one;
  *  - `['deep/util/User.kt', 'util/User.kts']` for `util.User` — its keys carry
  *    the extension, so a `.kt` SUFFIX beats a `.kts` EXACT;
- *  - `['data/src/…/data/Repo.kt']` for `data.getRepo` — it indexes every
- *    directory suffix with no first-occurrence rule, so it fans out where the
- *    scan returned null;
  *  - `['models/A.kts', 'models/B.kt']` for `models.getThing` — it splits the
  *    package into `:kt` and `:kts` buckets instead of returning both in set
  *    order.
  *
- * Each divergence is an edge that would move in every Kotlin repository, so
+ * A fourth probe — `['data/src/…/data/Repo.kt']` for `data.getRepo`, where the
+ * shared index fanned out and this one returned null — stopped diverging in
+ * #2881, which removed the first-occurrence rule that caused it. The remaining
+ * three are still edges that would move in every Kotlin repository, so
  * consolidating the two is a behaviour change, not a cleanup.
+ *
+ * `dirChildren` is likewise NOT the shared `import-resolvers/package-dir-index.ts`
+ * — the consolidation a maintainer will actually propose, since Java routes
+ * through exactly it (`languages/java/import-target.ts`). Measured, that swap is
+ * output-identical for 26.2% less retained memory, and costs 8114x on
+ * `import data.*` at 200 matching directories. `bench/kotlin-import-target`
+ * CANNOT see that regression — its corpus gives every module a unique package
+ * leaf — and the arm that can is `bench/import-target`'s kotlin `collide`. See
+ * `_blind_spot` in `bench/kotlin-import-target/baselines.json`.
+ *
+ * `dirChildren`'s bucket rule, and what #2881 removed
+ * ---------------------------------------------------
+ * A file is a child of its own directory and of every component-suffix of that
+ * directory, unguarded. The suffix half used to carry two guards inherited from
+ * the pre-index per-import scan rather than from anything Kotlin requires (the
+ * same generation of code put the `indexOf` half into
+ * `import-resolvers/package-dir-index.ts` and `import-resolvers/csharp.ts`,
+ * where it was removed under the same issue): `startsWith(s + '/')` skipped the
+ * bucket outright, and an `indexOf` equality demanded that the parent be the
+ * FIRST `/s/` in the path. Between them they dropped the bucket whenever the
+ * package name repeated higher up the tree, so
+ * `data/src/main/kotlin/com/example/data/Repo.kt` was not a child of `data`
+ * (leading segment, `startsWith`) and neither was `top/data/mid/data/Repo.kt`
+ * (mid-path, `indexOf`). `import data.helper` resolved to null in both. Only
+ * the fan-out tier looked affected — `data.Repo` answers from `suffixByStem`,
+ * which never had such a guard — which is why the shape looked narrow enough to
+ * preserve.
+ *
+ * Nothing downstream narrows a widened bucket back at the FILE level. The
+ * `localDefs` filter of #1759 constrains `targetDefId`/`BindingRef` ONLY: the
+ * finalize pass mints one draft PER CANDIDATE, each keeping its own
+ * `targetFile` (`gitnexus-shared/src/scope-resolution/finalize-algorithm.ts`),
+ * and the one File→File filter downstream
+ * (`scope-resolution/graph-bridge/imports-to-edges.ts`) tests `targetFile`
+ * against `null` and against the source file, never reads `linkStatus`, and
+ * emits `IMPORTS` at confidence 1.0. So every extra bucket member becomes an
+ * unconditional File→File `IMPORTS` edge: one `import data.load` on an
+ * Android-style layout measured 5 → 6 edges, the added one `unresolved`. That
+ * is a real cost, paid deliberately — a MISSING bucket is unrecoverable, and
+ * there is no version of the bucket that is right for one consumer and wrong
+ * for the other. Narrowing the File→File side, if it is ever wanted, is a
+ * downstream filter and a separate change.
+ *
+ * What moved, over the corpus: of the 235 records the published census counted,
+ * 149 are a different first child, 32 are a wider fan-out array, and 54 are
+ * null → resolved — none of which turns a bound answer into an unbound one.
+ * That taxonomy has no bucket for a fourth outcome class this change
+ * introduces, and did not count it. Tier 3
+ * (`findKotlinPackageFiles`) precedes tier 4 (`findByProgressivePrefixStrip`),
+ * so a bucket the guards used to leave empty returned null and let tier 4 run;
+ * a now-populated bucket stops tier 4 from running at all, which turns a
+ * resolved answer into an unresolved one and a `string` into an array:
+ *
+ *   ['data/src/main/kotlin/com/example/data/Repo.kt', 'common/helper.kt']
+ *   with `import data.helper`
+ *     before → 'common/helper.kt'                                  (bound)
+ *     after  → ['data/src/main/kotlin/com/example/data/Repo.kt']   (no `helper`)
+ *
+ * Over the census corpus that class is ZERO records — and the zero is the
+ * point, not a reprieve. The shape above is real and reproduces by hand in
+ * both iteration orders; running `bench/kotlin-import-target`'s own generator
+ * at 10x (4000 repositories, ~198 600 distinct records) hits it 4-12 times per
+ * seed, i.e. an expectation of about ONE over this corpus's 19 968. So the
+ * fingerprint does not gate this class: it is the same blindness the go arm had
+ * before #2881 widened its corpus — a gate cannot catch a shape its corpus
+ * cannot express. Adding a case is a deliberate fingerprint move and belongs in
+ * its own change, with the re-baseline that implies.
  */
 interface KotlinFileIndex {
   readonly exactByStem: Map<string, string>;
@@ -180,18 +249,51 @@ interface KotlinFileIndex {
   readonly dirChildren: Map<string, readonly string[]>;
 }
 
-const KOTLIN_FILE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, KotlinFileIndex>();
-
-function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex {
-  const cached = KOTLIN_FILE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-  // Cache miss: materialize a fresh index. Counted so a test can assert this
-  // happens once per run, not once per import.
-  recordKotlinFileIndexBuild();
+const getKotlinFileIndex = perFileSet((allFilePaths: ReadonlySet<string>): KotlinFileIndex => {
+  // Runs on a cache miss only. That it happens once per run and not once per
+  // import is asserted by counting traversals of the Set itself, in
+  // `test/integration/kotlin-import-index-reuse.test.ts` (#2909).
 
   const exactByStem = new Map<string, string>();
   const suffixByStem = new Map<string, string>();
-  const dirChildren: MutableDirChildren = new Map();
+  const dirChildren = new Map<string, string[]>();
+  /**
+   * BUILD-LOCAL: `dir` -> every `dirChildren` key a file in that directory
+   * contributes to. That list is a pure function of `dir`, and a package
+   * directory holds many files, so without this the walk below cuts one `slice`
+   * per component of the SAME directory once per FILE — and every slice after
+   * the first file's is a freshly allocated string that hashes to a key the map
+   * already holds and is then dropped. Interning them once per DIRECTORY
+   * instead of once per FILE is ~21% of the build at 32 000 files.
+   *
+   * It cannot move an answer. The array is filled on the first file of a
+   * directory, in the order the per-file walk produced, and every later file in
+   * that directory finds those keys already present — so the key set, the Map's
+   * key insertion order and every bucket's order are what the per-file form
+   * produced. `kotlin-index-internals.test.ts` pins the part of that a consumer
+   * can observe, and does it through the resolver's own surface rather than over
+   * the built maps: bucket CONTENTS and ORDER (from the fan-out tier, which
+   * hands out the bucket array itself), bucket IDENTITY across calls, and that
+   * the array handed out is FROZEN. Be precise about the limits, because the
+   * mutation matrix in that file's header measured them: a MIS-KEYED memo is
+   * caught, a DELETED one is not — the memo is output-identical by construction,
+   * so nothing observable can prove it ran. Likewise `Object.isFrozen` catches a
+   * missing freeze and a compacted-but-never-stored copy, but NOT a deleted
+   * `slice()`: a JS array's backing-store capacity has no reflective surface, so
+   * the compaction's only instrument is `heap_ceiling_bytes.kotlin` in
+   * `bench/import-target/baselines.json` — a CEILING, because compaction
+   * reclaims, so losing it makes the retained reading grow (+12.57% measured).
+   * Map key insertion ORDER is
+   * unasserted BY DESIGN:
+   * `dirChildren` is only ever read by `.get(key)`, so key order has no
+   * consumer and pinning it would assert an implementation detail nothing
+   * depends on. Nothing else watches it either — the correctness fingerprint
+   * sees this index only through the four tiers, so no fingerprint could catch
+   * a key-order move.
+   *
+   * Dropped with this frame, so it costs nothing retained.
+   */
+  const dirKeys = new Map<string, string[]>();
 
   for (const raw of allFilePaths) {
     const norm = raw.replace(/\\/g, '/');
@@ -210,62 +312,62 @@ function getKotlinFileIndex(allFilePaths: ReadonlySet<string>): KotlinFileIndex 
       if (!suffixByStem.has(suffix)) suffixByStem.set(suffix, raw);
     }
 
-    const lastSlash = norm.lastIndexOf('/');
+    // From `stem`, not `norm`: an extension carries no '/', so the last '/' of
+    // the two is the same character at the same index, and `stem.slice(0,
+    // lastSlash)` IS the string `norm.slice(0, norm.lastIndexOf('/'))` was. One
+    // backwards scan instead of two, over the string this loop already walked.
+    const lastSlash = stem.lastIndexOf('/');
     if (lastSlash < 0) continue; // repo-root file has no package directory
-    const dir = norm.slice(0, lastSlash);
+    const dir = stem.slice(0, lastSlash);
 
-    // The file's own directory always qualifies: the old scan's `atRoot` branch
-    // matched `norm.startsWith(dir + '/')` and found no '/' after it.
-    addChild(dirChildren, dir, raw);
-
-    // A component-suffix of the directory also qualifies — but only under the
-    // rule the scan actually implemented, which is narrower than "the parent
-    // directory is named `s`":
-    //
-    //  - `atRoot` was tested FIRST, so if the path *starts* with `s + '/'` the
-    //    scan used index 0 and the remainder still contained '/', i.e. no
-    //    match — even when a later directory is also named `s`.
-    //  - otherwise it used `indexOf`, the FIRST occurrence of `/s/`. A path
-    //    like `data/src/main/kotlin/com/example/data/Repo.kt` therefore does
-    //    NOT count as a child of `data`: the first `/data/` is not the parent,
-    //    and the scan never looked for a second one.
-    //
-    // Preserving that exactly keeps this a pure performance change. It is
-    // arguably a bug — the file IS a direct child of a `data` directory — but
-    // fixing it here would silently move edges in every Kotlin repository,
-    // which belongs in its own change with its own fixtures.
-    for (let i = 0; i < dir.length; i++) {
-      if (dir[i] !== '/') continue;
-      const suffix = dir.slice(i + 1);
-      if (norm.startsWith(`${suffix}/`)) continue;
-      if (norm.indexOf(`/${suffix}/`) === dir.length - suffix.length - 1) {
-        addChild(dirChildren, suffix, raw);
+    // The keys this file's directory contributes to, unguarded: `dir` itself,
+    // plus every component-suffix of it. A suffix `s` starts just after a '/',
+    // so `dir` ends with `/s` by construction and the file IS a direct child of
+    // a directory named `s`. The absence of a narrowing guard is deliberate —
+    // see the `dirChildren` section on `KotlinFileIndex` for the two guards
+    // #2881 dropped and for what the resulting width costs downstream.
+    let keys = dirKeys.get(dir);
+    if (keys === undefined) {
+      keys = [dir];
+      for (let i = 0; i < lastSlash; i++) {
+        if (dir[i] === '/') keys.push(dir.slice(i + 1));
       }
+      dirKeys.set(dir, keys);
+    }
+    for (const key of keys) {
+      const bucket = dirChildren.get(key);
+      if (bucket === undefined) dirChildren.set(key, [raw]);
+      else bucket.push(raw);
     }
   }
 
+  // Buckets are mutable only while this function runs; the index type hands
+  // them out `readonly` and they are frozen here, before it is cached.
   // `findKotlinPackageFiles` hands a bucket straight out of the index — the
-  // same array `findKotlinDirectoryChild` reads `children[0]` from. The
-  // `readonly string[]` return type does not survive the caller: the finalize
-  // pass normalizes with `Array.isArray(t) ? t : [t]`, and `isArray`'s
-  // `arg is any[]` predicate widens the true branch, so `tsc --strict` accepts
-  // a `.sort()` or `.push()` there. A downstream sort would permanently
-  // reorder the cached bucket and flip the FIRST-child tier's answer for every
-  // later import in the run. Freezing makes the contract true at runtime, so a
-  // future mutation is a loud TypeError instead of a silent edge move.
-  for (const bucket of dirChildren.values()) Object.freeze(bucket);
+  // same array `findKotlinDirectoryChild` reads `children[0]` from — so a
+  // downstream sort would permanently reorder the cached bucket and flip the
+  // FIRST-child tier's answer for every later import in the run. The finalize
+  // pass normalizes with `Array.isArray(t) ? t : [t]` and `isArray`'s
+  // `arg is any[]` predicate widens the true branch; that one call site now
+  // carries an explicit `readonly string[]` annotation, but the annotation is
+  // one deletion away and covers only that site. Freezing makes the contract
+  // true at runtime, so a future mutation is a loud TypeError, not a silent
+  // edge move.
+  //
+  // COMPACTED as they are frozen: buckets grow by `push`, so V8's growth
+  // overshoot stays retained for the life of the index. `length === 1` never
+  // grew and is skipped — slicing it saves zero bytes and costs 31% of the
+  // build on a corpus of single-file packages. The byte accounting lives once,
+  // in `bench/import-target/baselines.json`.
+  for (const [key, bucket] of dirChildren) {
+    if (bucket.length === 1) {
+      Object.freeze(bucket);
+      continue;
+    }
+    const compacted = bucket.slice();
+    Object.freeze(compacted);
+    dirChildren.set(key, compacted);
+  }
 
-  const index: KotlinFileIndex = { exactByStem, suffixByStem, dirChildren };
-  KOTLIN_FILE_INDEX_CACHE.set(allFilePaths, index);
-  return index;
-}
-
-function addChild(dirChildren: Map<string, string[]>, dir: string, raw: string): void {
-  const bucket = dirChildren.get(dir);
-  if (bucket === undefined) dirChildren.set(dir, [raw]);
-  else bucket.push(raw);
-}
-
-/** Mutable view of the buckets, used only while building — the index exposes
- *  them as `readonly` and freezes them before it is cached. */
-type MutableDirChildren = Map<string, string[]>;
+  return { exactByStem, suffixByStem, dirChildren };
+});

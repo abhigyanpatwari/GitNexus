@@ -23,6 +23,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { runHook } from '../utils/hook-test-helpers.js';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 // ─── Path to the Cursor hook + manifest ─────────────────────────────
 
@@ -77,22 +78,14 @@ let guardGitNexusDir: string;
 
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cursor-hook-test-'));
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: tmpDir, stdio: 'pipe' });
+  initGitRepo(tmpDir, { name: 'Test', email: 'test@test.com' });
 
   guardTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cursor-hook-guard-'));
   guardGitNexusDir = path.join(guardTmpDir, '.gitnexus');
   fs.mkdirSync(guardGitNexusDir, { recursive: true });
-  spawnSync('git', ['init'], { cwd: guardTmpDir, stdio: 'pipe' });
-  spawnSync('git', ['config', 'user.email', 'test@test.com'], {
-    cwd: guardTmpDir,
-    stdio: 'pipe',
-  });
-  spawnSync('git', ['config', 'user.name', 'Test'], { cwd: guardTmpDir, stdio: 'pipe' });
+  initGitRepo(guardTmpDir, { name: 'Test', email: 'test@test.com' });
   fs.writeFileSync(path.join(guardTmpDir, 'dummy.txt'), 'hello');
-  spawnSync('git', ['add', '.'], { cwd: guardTmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'init'], { cwd: guardTmpDir, stdio: 'pipe' });
+  commitAll(guardTmpDir, 'init');
 });
 
 afterAll(() => {

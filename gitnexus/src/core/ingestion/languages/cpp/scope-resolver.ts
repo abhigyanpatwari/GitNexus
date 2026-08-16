@@ -48,6 +48,7 @@ import {
   resolveCppReceiverMember,
 } from './member-lookup.js';
 import { stripCppSpecifiers } from './interpret.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 /** A pointee worth binding: a bare identifier, not `T**`, `T[]`, `A::B` or a
  *  template spelling. Hoisted — a literal here would mint a fresh RegExp on
@@ -61,32 +62,25 @@ const CPP_SIMPLE_POINTEE_RE = /^[A-Za-z_]\w*$/;
  * a fresh ~F-entry `Set` on every call AND defeated the shared
  * `resolveCImportTarget` suffix-index memo (in `c/import-target.ts`) by handing
  * it a new set identity each time. Both inputs are stable per pass, so the
- * union is built once and reused. `WeakMap`-keyed → reclaimed with the pass.
- * (Twin of the C resolver's `augmentedFilePaths`.)
+ * union is built once and reused. Reclaimed with the pass.
+ *
+ * Two inputs, so two levels of `perFileSet` composed rather than a second
+ * primitive: the outer memo's value is the inner memo, and a function is an
+ * object, which is all `T extends object` asks for.
+ *
+ * (Twin of the C resolver's `augmentedFilePathsFor`.) The two memos stay
+ * SEPARATE deliberately. C++ delegates to `resolveCImportTarget`, whose
+ * `suffixIndex` memo is keyed on the augmented set, so a single memo shared
+ * with C would hand each language the other's index — same
+ * builder-shared/memo-separate rule as `import-resolvers/pass-cache.ts`.
  */
-const augmentedPathsByPass = new WeakMap<
-  ReadonlySet<string>,
-  WeakMap<ReadonlySet<string>, ReadonlySet<string>>
->();
-
-function augmentedFilePaths(
-  allFilePaths: ReadonlySet<string>,
-  headerPaths: ReadonlySet<string>,
-): ReadonlySet<string> {
-  let byHeaders = augmentedPathsByPass.get(allFilePaths);
-  if (byHeaders === undefined) {
-    byHeaders = new WeakMap();
-    augmentedPathsByPass.set(allFilePaths, byHeaders);
-  }
-  let augmented = byHeaders.get(headerPaths);
-  if (augmented === undefined) {
+const augmentedFilePathsFor = perFileSet((allFilePaths: ReadonlySet<string>) =>
+  perFileSet((headerPaths: ReadonlySet<string>): ReadonlySet<string> => {
     const set = new Set(allFilePaths);
     for (const h of headerPaths) set.add(h);
-    augmented = set;
-    byHeaders.set(headerPaths, augmented);
-  }
-  return augmented;
-}
+    return set;
+  }),
+);
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -128,7 +122,7 @@ export const cppScopeResolver: ScopeResolver = {
       return resolveCppImportTarget(
         targetRaw,
         fromFile,
-        augmentedFilePaths(allFilePaths, headerPaths),
+        augmentedFilePathsFor(allFilePaths)(headerPaths),
       );
     }
     return resolveCppImportTarget(targetRaw, fromFile, allFilePaths);

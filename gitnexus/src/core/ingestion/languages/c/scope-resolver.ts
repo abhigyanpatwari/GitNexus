@@ -8,6 +8,7 @@ import { cArityCompatibility, cMergeBindings, resolveCImportTarget } from './ind
 import { scanHeaderFiles } from './header-scan.js';
 import { expandCWildcardNames, isStaticName, clearStaticNames } from './static-linkage.js';
 import { applyCStaticLinkageSideChannel } from './capture-side-channel.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 /**
  * Per-pass memo of the augmented `#include`-resolution file set
@@ -19,31 +20,26 @@ import { applyCStaticLinkageSideChannel } from './capture-side-channel.js';
  * handing it a new set identity each time. Both `allFilePaths` (built once in
  * scope-resolution `run.ts`) and the header set (`loadResolutionConfig`
  * result) are stable per pass, so the union is built once and reused.
- * `WeakMap`-keyed → reclaimed with the pass (no cross-pass staleness).
+ * Reclaimed with the pass (no cross-pass staleness).
+ *
+ * Two inputs, so two levels of `perFileSet` composed rather than a second
+ * primitive: the outer memo's value is the inner memo, and a function is an
+ * object, which is all `T extends object` asks for.
+ *
+ * The MEMO stays private to this file even though the C++ resolver's twin is
+ * byte-identical. The augmented set's IDENTITY is load-bearing downstream —
+ * C++ delegates to `resolveCImportTarget`, whose `suffixIndex` memo is keyed on
+ * exactly this set — so one memo shared across the two languages would hand
+ * each the other's index. Same builder-shared/memo-separate rule as
+ * `import-resolvers/pass-cache.ts`.
  */
-const augmentedPathsByPass = new WeakMap<
-  ReadonlySet<string>,
-  WeakMap<ReadonlySet<string>, ReadonlySet<string>>
->();
-
-function augmentedFilePaths(
-  allFilePaths: ReadonlySet<string>,
-  headerPaths: ReadonlySet<string>,
-): ReadonlySet<string> {
-  let byHeaders = augmentedPathsByPass.get(allFilePaths);
-  if (byHeaders === undefined) {
-    byHeaders = new WeakMap();
-    augmentedPathsByPass.set(allFilePaths, byHeaders);
-  }
-  let augmented = byHeaders.get(headerPaths);
-  if (augmented === undefined) {
+const augmentedFilePathsFor = perFileSet((allFilePaths: ReadonlySet<string>) =>
+  perFileSet((headerPaths: ReadonlySet<string>): ReadonlySet<string> => {
     const set = new Set(allFilePaths);
     for (const h of headerPaths) set.add(h);
-    augmented = set;
-    byHeaders.set(headerPaths, augmented);
-  }
-  return augmented;
-}
+    return set;
+  }),
+);
 
 /**
  * C `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -94,7 +90,7 @@ export const cScopeResolver: ScopeResolver = {
       return resolveCImportTarget(
         targetRaw,
         fromFile,
-        augmentedFilePaths(allFilePaths, headerPaths),
+        augmentedFilePathsFor(allFilePaths)(headerPaths),
       );
     }
     return resolveCImportTarget(targetRaw, fromFile, allFilePaths);

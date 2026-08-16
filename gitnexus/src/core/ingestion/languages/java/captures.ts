@@ -55,6 +55,7 @@ import {
   captureJavaSpringNonHttpHandlerFacts,
   type JavaSpringNonHttpHandlerFact,
 } from './spring-non-http-handlers.js';
+import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -407,6 +408,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
+    ...synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];
 }
@@ -434,6 +436,7 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
     out.push({
       '@declaration.class': nodeToCapture('@declaration.class', body),
       '@declaration.name': syntheticCapture('@declaration.name', body, identity.name),
+      '@declaration.is-synthetic': syntheticCapture('@declaration.is-synthetic', body, 'true'),
     });
 
     // Inheritance: the anonymous class extends/implements its constructed
@@ -495,6 +498,11 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
       out.push({
         '@declaration.class': nodeToCapture('@declaration.class', bodyNode),
         '@declaration.name': syntheticCapture('@declaration.name', bodyNode, bodiedIdentity.name),
+        '@declaration.is-synthetic': syntheticCapture(
+          '@declaration.is-synthetic',
+          bodyNode,
+          'true',
+        ),
       });
       if (hostEnum !== undefined) {
         out.push({
@@ -641,40 +649,29 @@ function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
 }
 
 /**
- * Synthesize `@reference.inherits` captures from Java class heritage so the
- * registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
- * (mirrors C++ `emitCppInheritanceCaptures`). Without this, Java inheritance
- * edges came only from the legacy heritage-capture leg (removed in #942), which
- * is dropped for registry-primary languages in the worker pipeline (issue #1951).
+ * Synthesize `@reference.inherits` captures from Java type heritage for the
+ * authoritative registry-primary EXTENDS / IMPLEMENTS pre-pass (mirrors C++
+ * `emitCppInheritanceCaptures`).
  *
  * Scope covers `class_declaration` (`superclass` extends + `interfaces`
- * implements clauses) AND `interface_declaration` (`extends_interfaces` →
- * interface-to-interface EXTENDS), matching the legacy Java heritage query
- * (tree-sitter-queries.ts), which has a dedicated `interface_declaration
- * (extends_interfaces (type_list …))` arm. Without the interface arm the
- * registry-primary synth silently dropped every `interface IA extends IB`
- * edge while the legacy leg emitted it — the exact =0/=N parity break #1951
- * targets. Enum/record heritage stays unemitted (no legacy arm). Generic
- * bases (`extends Box<T>`, `implements IFoo<T>`) ARE emitted here: the legacy
- * heritage query was widened to capture the inner `type_identifier` of a
- * `generic_type` (tree-sitter-queries.ts), so both paths now agree on SIMPLE
- * (unqualified) generic bases — the more-correct behavior, consistent with
- * C#/Rust (#1951). Qualified bases (`a.b.Base`, `a.b.Box<T>`, `a.b.IFoo<T>`) are
- * ALSO now at parity (#1956 tri-review U2): the synth resolves them by their
- * `scoped_type_identifier` tail, and the legacy heritage query was widened
- * with matching `scoped_type_identifier` arms (plain + generic-wrapped). The
+ * implements clauses), `record_declaration` and `enum_declaration`
+ * (`interfaces` implements clauses), and `interface_declaration`
+ * (`extends_interfaces` clauses). Interface
+ * inheritance was restored for registry-primary resolution in #1951. Record
+ * graph nodes became canonical link targets in #2801 / PR #2871, so their
+ * `implements` clauses must participate for interface dispatch (#2900).
+ * Enums use the same tree-sitter `interfaces` field and participate as
+ * class-like `Enum` graph nodes (#2918).
+ *
+ * Generic bases (`extends Box<T>`, `implements IFoo<T>`) and qualified bases
+ * (`a.b.Base`, `a.b.Box<T>`, `a.b.IFoo<T>`) are normalized to their simple
+ * lookup-name tails, consistent with C#/Rust and the V1 binding contract. The
  * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
  * symbol kind (`preEmitInheritanceEdges`): a superclass resolves to a class
  * (EXTENDS), an implemented interface resolves to an interface (IMPLEMENTS).
  * An `interface IA extends IB` base resolves to an Interface too, so it is
- * emitted as IMPLEMENTS — matching the legacy `interface_declaration` arm,
- * which tagged the bases as implements (`kind: 'implements'`) and likewise
- * resolves them as interfaces. The synth therefore does not need to know the
- * declaration's own kind; it only emits inherits sites and lets the resolved
- * target decide the edge type.
- * Base names are normalized to their bare simple identifier (`Box<T>` → `Box`,
- * `java.io.Serializable` → `Serializable`) to match the V1 simple-name
- * `findClassBindingInScope` contract.
+ * emitted as IMPLEMENTS. The synth only emits inheritance sites and lets the
+ * resolved target decide the edge type.
  */
 function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
   const out: CaptureMatch[] = [];
@@ -686,6 +683,14 @@ function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
       if (superclass !== null) {
         for (const base of superclass.namedChildren) emitJavaInheritanceBase(out, base);
       }
+    }
+    if (
+      node.type === 'class_declaration' ||
+      node.type === 'record_declaration' ||
+      node.type === 'enum_declaration'
+    ) {
+      // Records and enums cannot declare a superclass; all three declarations
+      // expose implemented interfaces through the same tree-sitter field.
       const interfaces = node.childForFieldName('interfaces');
       if (interfaces !== null) {
         for (const typeList of interfaces.namedChildren) {
@@ -743,14 +748,21 @@ function javaBaseSimpleNameOf(typeNode: SyntaxNode): string | undefined {
 function javaBaseLookupNameNode(node: SyntaxNode): SyntaxNode | null {
   switch (node.type) {
     case 'type_identifier':
-      return node;
-    case 'scoped_type_identifier':
+      return node.isMissing || node.text.length === 0 ? null : node;
+    case 'scoped_type_identifier': {
       // `java.io.Serializable` → trailing `type_identifier` (`Serializable`).
-      return node.lastNamedChild;
+      const tail = node.lastNamedChild;
+      return tail === null ? null : javaBaseLookupNameNode(tail);
+    }
     case 'generic_type': {
       // `Box<String>` → recurse into the base type (`Box`).
       const first = node.firstNamedChild;
       return first === null ? null : javaBaseLookupNameNode(first);
+    }
+    case 'annotated_type': {
+      // The final named child is the base type; preceding children are annotations.
+      const type = node.lastNamedChild;
+      return type === null ? null : javaBaseLookupNameNode(type);
     }
     default:
       return null;

@@ -4,14 +4,7 @@
  * Extracted from import-resolution.ts to co-locate types with their consumers.
  */
 
-import type {
-  TsconfigPaths,
-  GoModuleConfig,
-  CSharpProjectConfig,
-  CSharpNamespaceEvidence,
-  ComposerConfig,
-} from '../language-config.js';
-import type { SwiftPackageConfig } from '../language-config.js';
+import type { ImportConfigs } from '../language-config.js';
 import type { SuffixIndex } from './utils.js';
 import type { SupportedLanguages } from 'gitnexus-shared';
 
@@ -25,17 +18,6 @@ export type ImportResult =
   | { kind: 'files'; files: string[] }
   | { kind: 'package'; files: string[]; dirSuffix: string }
   | null;
-
-/** Bundled language-specific configs loaded once per ingestion run. */
-export interface ImportConfigs {
-  tsconfigPaths: TsconfigPaths | null;
-  goModule: GoModuleConfig | null;
-  composerConfig: ComposerConfig | null;
-  swiftPackageConfig: SwiftPackageConfig | null;
-  csharpConfigs: CSharpProjectConfig[];
-  /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
-  csharpNamespaces?: CSharpNamespaceEvidence;
-}
 
 /** Pre-built lookup structures for import resolution. Build once, reuse across chunks. */
 export interface ImportResolutionContext {

@@ -45,6 +45,7 @@ import {
 import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
+import { formatSymbolLine } from './format-symbol.js';
 
 export { formatDetectChangesResult } from './detect-changes-format.js';
 
@@ -209,7 +210,7 @@ export function formatQueryResult(result: any): string {
   if (defs.length > 0) {
     lines.push(`Standalone definitions:`);
     for (const d of defs.slice(0, 8)) {
-      lines.push(`  ${d.type || 'Symbol'} ${d.name} → ${d.filePath || '?'}`);
+      lines.push(formatSymbolLine(d.type, d.name, d.filePath));
     }
     if (defs.length > 8) lines.push(`  ... and ${defs.length - 8} more`);
   }

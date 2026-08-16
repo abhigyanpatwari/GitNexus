@@ -11,49 +11,19 @@
  *   Child -> Parent: { type: 'error', message: string }
  */
 
-import type { AnalyzeOptions } from '../core/run-analyze.js';
-import { type AnalyzeResultIpc } from './analyze-worker-ipc.js';
+import type { StartMessage, WorkerMessage } from './analyze-worker-protocol.js';
 import { runWorkerAnalysis, createTerminalClaim } from './analyze-worker-core.js';
 type BoundedCheckpointBeforeExit =
   typeof import('../core/lbug/shutdown-helpers.js').boundedCheckpointBeforeExit;
 
-interface StartMessage {
-  type: 'start';
-  repoPath: string;
-  options: AnalyzeOptions;
-}
-
-export interface ProgressMessage {
-  type: 'progress';
-  phase: string;
-  percent: number;
-  message: string;
-}
-
-export interface CompleteMessage {
-  type: 'complete';
-  // JSON-safe projection (no `pipelineResult` / live KnowledgeGraph). This
-  // channel is default-JSON child_process IPC — see analyze-worker-ipc.ts.
-  result: AnalyzeResultIpc;
-}
-
-export interface ErrorMessage {
-  type: 'error';
-  message: string;
-  /**
-   * Machine-readable failure code for a parent that wants to branch instead of
-   * only surfacing the string. `index-lock-timeout` (#2658 review M2) means
-   * another analyze held the single-writer lock past the wait ceiling — a
-   * transient, retryable condition, not a broken build. Absent for a generic
-   * failure.
-   */
-  code?: 'index-lock-timeout';
-  /** True when the failure is expected to clear on retry (e.g. lock contention). */
-  retryable?: boolean;
-}
-
-/** Child → parent IPC messages. Shared with the parent-side launcher. */
-export type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
+// The message shapes live in `analyze-worker-protocol.ts` — a declarations-only
+// leaf neither this entry module nor `analyze-worker-core.ts` sits downstream
+// of, which is what breaks the entry ⇄ core import cycle. The two shapes that
+// are imported from HERE are re-exported (as types, so the re-export is erased
+// at runtime): `WorkerMessage` by `analyze-launch.ts`, `CompleteMessage` by
+// `analyze-launch-collapse.test.ts`. Everything else imports the protocol module
+// directly, so nothing else belongs in this list.
+export type { CompleteMessage, WorkerMessage } from './analyze-worker-protocol.js';
 
 function send(msg: WorkerMessage) {
   // No try/catch: if the IPC channel is gone, process.send throws

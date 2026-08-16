@@ -36,6 +36,16 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // The gitnexus-plan safe writer resolves every name through a per-platform
+  // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
+  // verifies each step against descriptors it holds open. Publication is link(2)
+  // on both. #2905 shipped the Darwin backend after the suite had silently
+  // skipped on every non-Linux runner, so this file must run on the OS matrix or
+  // the macOS half is unverified by construction — and the flag, trailing-
+  // separator and hard-link fixtures assert kernel behaviour that only a real
+  // Darwin kernel can confirm. Windows is refused by the capability gate; the
+  // suite asserts that refusal rather than skipping it.
+  'test/unit/evidence-provenance-helper.test.ts',
   // Windows drive-letter case variance in the analyzer runner-identity path
   // fields (#2668): normalizeAnalyzerRootPath is a POSIX no-op, so the
   // "identity path fields are normalizer-stable" fixpoint guard only bites on
