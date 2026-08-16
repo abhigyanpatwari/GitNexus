@@ -264,6 +264,10 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
         const operands = parseJavaConstOperands(valueNode);
         if (operands === null) continue;
         const name = nameNode.text;
+        // Java guarantees one initializer per `static final` field (duplicate
+        // declarations are compile errors), so a redeclaration cannot smuggle
+        // a stale value past a non-foldable one — no shadowing cleanup needed
+        // (unlike Python, where #2391 drops rebinding names from the map).
         if (operands.length === 1 && operands[0].kind === 'literal') {
           literals.set(name, (operands[0] as { value: string }).value);
         } else {

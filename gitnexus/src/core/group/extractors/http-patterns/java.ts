@@ -759,6 +759,12 @@ function collectSpringTypes(filePath: string, tree: Parser.Tree): SharedSpringTy
   const { prefixByTypeId, methodRoutes } = scanRouteAnnotations(tree);
   const routesByMethodId = new Map<number, Array<{ method: string; path: string }>>();
   for (const route of methodRoutes) {
+    // A constant-referencing route still carries `rawPath: ''` here — folding
+    // happens in scan() against the repo constant map, which this
+    // inheritance-view collector has no access to. Emitting it as an empty
+    // path would publish `POST /`-shaped noise into the shared type view;
+    // skip instead (ingestion keeps the same skip floor — R4 parity).
+    if (route.pathOperands) continue;
     const routes = routesByMethodId.get(route.methodNode.id) ?? [];
     routes.push({ method: route.httpMethod, path: route.rawPath });
     routesByMethodId.set(route.methodNode.id, routes);

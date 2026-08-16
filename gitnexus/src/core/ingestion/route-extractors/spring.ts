@@ -185,7 +185,11 @@ export function extractSpringRoutes(
     const node = caps['node'];
     const valueNode = caps['value'];
     const keyNode = caps['key'];
-    if (!annNode || !node || !valueNode) continue;
+    // A constant-referencing value arrives as @value_expr, not @value — the
+    // match carries exactly one of the two. Require @value only when no
+    // @value_expr is present; the operand branch below folds the expression.
+    const valueExprCapture = match.captures.find((c) => c.name === 'value_expr')?.node ?? null;
+    if (!annNode || !node || (!valueNode && !valueExprCapture)) continue;
 
     if (node.type !== 'method_declaration') continue;
 
@@ -203,8 +207,8 @@ export function extractSpringRoutes(
     // #2391-style non-literal path (constant ref or `+`-concat): emit with
     // operands for cross-file folding in the parse phase. The match carries
     // either @value (literal) or @value_expr (non-literal) — never both.
-    const valueExprNode = match.captures.find((c) => c.name === 'value_expr')?.node ?? null;
-    const routePath = unquoteSpringLiteral(valueNode.text);
+    const valueExprNode = valueExprCapture;
+    const routePath = valueNode ? unquoteSpringLiteral(valueNode.text) : null;
     if (routePath === null && !valueExprNode) continue;
     const enclosingType = findEnclosingType(node);
 
@@ -229,7 +233,7 @@ export function extractSpringRoutes(
     // scan — safe under routeCoverage:'partial'. Full class-array cross-product
     // support is tracked in #2280. (Scalar method paths under an array class
     // prefix are left unchanged: that pre-existing divergence is out of scope.)
-    const isArrayElement = valueNode.parent?.type === 'element_value_array_initializer';
+    const isArrayElement = valueNode?.parent?.type === 'element_value_array_initializer';
     if (isArrayElement && enclosingClass && classesWithArrayPrefix.has(enclosingClass.id)) {
       continue;
     }

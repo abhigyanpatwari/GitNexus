@@ -105,14 +105,6 @@ public interface LabApiPath {
     String LAB_QUERY_V1 = "/api/v1/labtest/query";
 }`;
 
-const FQN_CONTROLLER = `package com.winning.opt.other;
-
-public class FqnController {
-
-    @WinPostMapping(com.winning.opt.diagnosis.api.constants.ApiPathConstants.DIAGNOSIS_SAVE_V1)
-    public String save() { return "{}"; }
-}`;
-
 const WIN_POST_MAPPING = `package com.winning.opt.annotations;
 
 public @interface WinPostMapping {
@@ -303,5 +295,42 @@ describe('parseJavaConstOperands', () => {
     };
     walk(tree.rootNode);
     expect(parseJavaConstOperands(valueNode)).toBeNull();
+  });
+});
+
+// ── Ingestion extractor level: constant-referencing annotation values ──
+// (regression for the review finding where the route loop's `!valueNode`
+// guard dropped every @value_expr match before the operand branch ran)
+describe('extractSpringRoutes constant value', () => {
+  it('emits routePathExpr + operands for @Mapping(CONSTS.X)', async () => {
+    const { extractSpringRoutes } =
+      await import('../../src/core/ingestion/route-extractors/spring.js');
+    const tree = parser.parse(`
+package com.winning.opt.demo;
+public class DemoController {
+  @org.springframework.web.bind.annotation.PostMapping(ApiPathConstants.DIAGNOSIS_SAVE_V1)
+  public String save() { return "ok"; }
+}`);
+    const routes = extractSpringRoutes(tree, 'DemoController.java', 0);
+    assert.strictEqual(routes.length, 1);
+    assert.strictEqual(routes[0].httpMethod, 'POST');
+    assert.strictEqual(routes[0].routePathExpr, 'ApiPathConstants.DIAGNOSIS_SAVE_V1');
+    assert.ok(routes[0].routePathOperands && routes[0].routePathOperands.length > 0);
+    assert.strictEqual(routes[0].routePath, '');
+  });
+
+  it('keeps literal routes unchanged', async () => {
+    const { extractSpringRoutes } =
+      await import('../../src/core/ingestion/route-extractors/spring.js');
+    const tree = parser.parse(`
+package com.winning.opt.demo;
+public class DemoController {
+  @org.springframework.web.bind.annotation.PostMapping("/literal/path")
+  public String save() { return "ok"; }
+}`);
+    const routes = extractSpringRoutes(tree, 'DemoController.java', 0);
+    assert.strictEqual(routes.length, 1);
+    assert.strictEqual(routes[0].routePath, '/literal/path');
+    assert.strictEqual(routes[0].routePathExpr, undefined);
   });
 });
