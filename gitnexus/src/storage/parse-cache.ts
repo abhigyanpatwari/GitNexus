@@ -538,6 +538,14 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // cache would replay unchanged worker results without those routes. Version 70
 // then adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so Java
 // and Kotlin caches persist scheduled, event, messaging, and managed-job facts.
+//
+// This PR originally carried its own bump (47 -> 48) for the Java constant-route
+// capture set change (route-extractors/java-const-resolver.ts + the spring.ts
+// operand branch + the parse-worker Java constant harvest): a warm pre-feature
+// cache replays `moduleConstants=0` captures verbatim and silently drops every
+// constant-based Spring route on unchanged files. After rebasing onto current
+// main the ledger already sits at 70, whose capture set post-dates and includes
+// this harvest — v70 invalidates those caches, so no additional bump is needed.
 const SCHEMA_BUMP = 70;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
