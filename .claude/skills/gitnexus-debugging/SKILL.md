@@ -15,31 +15,35 @@ description: "Use when the user is debugging a bug, tracing an error, or asking 
 
 ## Bind the repository first
 
-A root cause traced in the wrong repository is a wrong root cause. Call
-`list_repos {}`. With one indexed repository, use the examples below as
-written. With more than one, pass `repo` explicitly on every call — an omitted
-`repo` errors, or silently resolves to a configured default — and stop and ask
-if the intended repository is ambiguous. This matters most for `cypher`, whose
-statement carries no in-band hint of which database it ran against. See
-`references/repository-identity.md`.
+A root cause traced in the wrong repository is a wrong root cause.
+
+Call `list_repos {}` before the first tool call. With one indexed repository,
+use the examples below as written. With more than one, pass `repo` on every
+call: an omitted `repo` normally errors, but under an MCP policy with a
+configured default it resolves to that default silently. If you cannot tell
+which repository is meant, stop and ask. This matters most for `cypher`, whose
+statement carries no in-band hint of which database it ran against.
+
+A stale index describes the code from before your bug, so refresh before
+trusting a trace, and state the repository and index freshness with the
+diagnosis.
 
 ## Workflow
 
 ```
-0. list_repos {}                                          → Bind repo (and worktree)
-1. query({search_query: "<error or symptom>"[, repo: "<repo>"]})  → Find related execution flows
-2. context({name: "<suspect>"[, repo: "<repo>"]})         → See callers/callees/processes
+0. list_repos {}                                          → Bind repo
+1. query({search_query: "<error or symptom>"})            → Find related execution flows
+2. context({name: "<suspect>"})                    → See callers/callees/processes
 3. READ gitnexus://repo/{name}/process/{name}                → Trace execution flow
-4. cypher({statement: "MATCH path..."[, repo: "<repo>"]}) → Custom traces if needed
+4. cypher({statement: "MATCH path..."})                 → Custom traces if needed
 ```
 
-> If "Index is stale" → run `node .gitnexus/run.cjs analyze` in the bound checkout.
-> A stale index describes the code before your bug; refresh before trusting a trace.
+> If "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
 
 ## Checklist
 
 ```
-- [ ] list_repos {} — bind repo; explicit repo when total > 1, ask if ambiguous
+- [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
 - [ ] Understand the symptom (error message, unexpected behavior)
 - [ ] query for error text or related code
 - [ ] Identify the suspect function from returned processes
@@ -58,7 +62,7 @@ statement carries no in-band hint of which database it ran against. See
 | Wrong return value   | `context` on the function → trace callees for data flow    |
 | Intermittent failure | `context` → look for external calls, async deps            |
 | Performance issue    | `context` → find symbols with many callers (hot paths)     |
-| Recent regression    | `detect_changes` to see what your changes affect — pass `worktree` if your changes are in a linked worktree |
+| Recent regression    | `detect_changes` to see what your changes affect — pass `worktree` for a linked worktree |
 | "How does A reach B?" | `trace` between the two symbols — shortest call chain in one call |
 
 ## Tools
@@ -84,11 +88,9 @@ context({name: "validatePayment", repo: "my-app"})
 Cypher text itself names no repository, so the result is unattributable without
 it:
 
-```
-cypher({repo: "my-app", statement: `
+```cypher
 MATCH path = (a)-[:CodeRelation {type: 'CALLS'}*1..2]->(b:Function {name: "validatePayment"})
 RETURN [n IN nodes(path) | n.name] AS chain
-`})
 ```
 
 **trace** — shortest call chain between two symbols ("how does A reach B?"), one call instead of chaining `context` hops:

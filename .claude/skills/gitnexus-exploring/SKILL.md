@@ -15,35 +15,36 @@ description: "Use when the user asks how code works, wants to understand archite
 
 ## Bind the repository first
 
-Step 1 discovers what is indexed; the calls after it must say which of those
-they mean. With one indexed repository, use the examples below as written. With
-more than one, pass `repo` explicitly on every call — an omitted `repo` errors,
-or silently resolves to a configured default — and stop and ask if the intended
-repository is ambiguous. See `references/repository-identity.md`.
+Step 1 discovers what is indexed; every call after it must say which of those
+it means. With one indexed repository, use the examples below as written. With
+more than one, pass `repo` on every call: an omitted `repo` normally errors,
+but under an MCP policy with a configured default it resolves to that default
+silently. If you cannot tell which repository is meant, stop and ask. Report
+the bound repository and index freshness alongside your explanation.
 
 ## Workflow
 
 ```
-1. list_repos {} or READ gitnexus://repos         → Discover indexed repos; bind one
+1. list_repos {} or READ gitnexus://repos                          → Discover indexed repos
 2. READ gitnexus://repo/{name}/context             → Codebase overview, check staleness
-3. query({search_query: "<what you want to understand>"[, repo: "<repo>"]})  → Find related execution flows
-4. context({name: "<symbol>"[, repo: "<repo>"]})   → Deep dive on specific symbol
+3. query({search_query: "<what you want to understand>"})  → Find related execution flows
+4. context({name: "<symbol>"})            → Deep dive on specific symbol
 5. READ gitnexus://repo/{name}/process/{name}      → Trace full execution flow
 ```
 
-> If step 2 says "Index is stale" → run `node .gitnexus/run.cjs analyze` in the bound checkout.
+> If step 2 says "Index is stale" → run `node .gitnexus/run.cjs analyze` in terminal.
 
 ## Checklist
 
 ```
-- [ ] list_repos {} — bind repo; explicit repo when total > 1, ask if ambiguous
+- [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
 - [ ] READ gitnexus://repo/{name}/context
 - [ ] query for the concept you want to understand
 - [ ] Review returned processes (execution flows)
 - [ ] context on key symbols for callers/callees
 - [ ] READ process resource for full execution traces
 - [ ] Read source files for implementation details
-- [ ] State the repository and index freshness alongside the explanation
+- [ ] State the repository and index freshness with the explanation
 ```
 
 ## Resources
@@ -81,7 +82,7 @@ with a single one.
 
 ```
 1. list_repos {}                             → total: 1 (my-app) — bind it
-   READ gitnexus://repo/my-app/context       → 918 symbols, 45 processes, index current
+   READ gitnexus://repo/my-app/context       → 918 symbols, 45 processes
 2. query({search_query: "payment processing"})
    → CheckoutFlow: processPayment → validateCard → chargeStripe
    → RefundFlow: initiateRefund → calculateRefund → processRefund
