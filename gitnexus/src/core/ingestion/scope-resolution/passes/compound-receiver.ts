@@ -21,7 +21,12 @@
  */
 
 import type { ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
-import type { ElementAccessRoute, ScopeResolver } from '../contract/scope-resolver.js';
+import type {
+  ElementAccessRoute,
+  ReceiverMemberResolution,
+  ReceiverChainDispatchKind,
+  ScopeResolver,
+} from '../contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import {
@@ -70,6 +75,18 @@ const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
  *  fall through to the pre-cast expression's own declared type. */
 const UNPARSEABLE_CAST_TYPE_RE =
   /^[a-zA-Z_]\w*(?:\s*\.\s*[a-zA-Z_]\w*)*(?:\s*<[^()]*>)?(?:\s*\[\s*\])*$/;
+
+/** Provider-neutral semantic state at the start or end of a structural
+ * receiver-chain fold. The owner is the logical receiver owner; providers may
+ * intentionally use a different lookup owner for a hop (for example, a
+ * caller-context-dependent ancestor dispatch) while preserving this owner for
+ * receiver-relative result types. */
+export interface ReceiverChainFoldResolution {
+  readonly owner: SymbolDefinition;
+  readonly receiverName?: string;
+  readonly receiverTypeRef?: TypeRef;
+  readonly receiverKind?: ReceiverChainDispatchKind;
+}
 
 function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } | null {
   const match = MAP_TUPLE_SENTINEL_RE.exec(text);
@@ -135,6 +152,18 @@ interface ResolveCompoundReceiverOptions {
    *  carrying it into a recursive call would re-fold it against an inner
    *  expression it does not describe. */
   readonly receiverChain?: string;
+  /** Resolve a caller-context-dependent structural-chain base that the normal
+   * identifier/type-binding lookup cannot represent. Undefined declines to the
+   * unchanged base lookup. */
+  readonly resolveReceiverChainBase?: (
+    receiverName: string,
+    inScope: ScopeId,
+    scopes: ScopeResolutionIndexes,
+  ) => ReceiverChainFoldResolution | undefined;
+  /** Observe a successfully folded chain's complete semantic result. This is
+   * used by the emitting pass to select the outer member with the same
+   * provider-owned class/instance rules as the inner hops. */
+  readonly onReceiverChainFolded?: (resolution: ReceiverChainFoldResolution) => void;
   /** Resolve a BARE identifier the way the dotted-chain head does: when a
    *  receiver typeBinding exists for the name, that binding decides the type and
    *  nothing else does. Off by default, so the text cascade keeps its existing
@@ -153,6 +182,66 @@ interface ResolveCompoundReceiverOptions {
    *  by the shared lookup's other callers — see the contract's own note on why
    *  this is opt-in rather than global. */
   readonly stripTypePreservingDecoration?: DecorationStripper;
+  /** Candidate spellings for an opaque structural-chain member. */
+  readonly memberNameCandidates?: (
+    memberName: string,
+    receiverKind?: ReceiverChainDispatchKind,
+  ) => readonly string[];
+  /** Provider result for a structural-chain hop. Non-resolved outcomes are
+   * terminal when `onReceiverChainTerminal` is present; `undefined` alone
+   * declines to the legacy class/type-binding lookup. */
+  readonly resolveChainMember?: (
+    receiverOwner: SymbolDefinition,
+    receiverName: string,
+    memberName: string,
+    memberNames: readonly string[],
+    receiverKind?: ReceiverChainDispatchKind,
+  ) =>
+    | {
+        readonly kind: 'resolved';
+        readonly method: SymbolDefinition;
+        readonly relatedOwner?: SymbolDefinition;
+        readonly resultOwner?: SymbolDefinition;
+        readonly resultTypeRef?: TypeRef;
+      }
+    | Extract<ReceiverMemberResolution, { readonly kind: 'unresolved' | 'ambiguous' }>
+    | undefined;
+  /** Full-TypeRef lookup for one structural-chain hop. `undefined` declines
+   * to the legacy class/MRO fold; a non-resolved result is terminal and must
+   * not fall through to the text cascade. */
+  readonly resolveTypedChainMember?: (
+    receiverTypeRef: TypeRef,
+    receiverName: string,
+    memberName: string,
+    receiverKind?: ReceiverChainDispatchKind,
+  ) =>
+    | {
+        readonly kind: 'resolved';
+        readonly method: SymbolDefinition;
+        readonly relatedOwner?: SymbolDefinition;
+        readonly resultOwner?: SymbolDefinition;
+        readonly resultTypeRef?: TypeRef;
+      }
+    | Extract<ReceiverMemberResolution, { readonly kind: 'unresolved' | 'ambiguous' }>
+    | undefined;
+  /** Reports a terminal provider chain decision to the caller. The compound
+   * resolver also uses this signal internally to veto its legacy text cascade. */
+  readonly onReceiverChainTerminal?: (
+    resolution: Extract<ReceiverMemberResolution, { readonly kind: 'unresolved' | 'ambiguous' }>,
+  ) => void;
+  /** Provider-owned class/instance classification for the chain base. */
+  readonly receiverChainBaseKind?: (
+    receiverName: string,
+    receiverTypeRef: TypeRef | undefined,
+    receiverOwner: SymbolDefinition,
+    scopes: ScopeResolutionIndexes,
+  ) => ReceiverChainDispatchKind | undefined;
+  /** Provider-owned class/instance classification for a method result. */
+  readonly receiverChainResultKind?: (
+    method: SymbolDefinition,
+    resultTypeRef: TypeRef | undefined,
+    relatedResult: boolean,
+  ) => ReceiverChainDispatchKind | undefined;
 }
 
 /** Is this hop the language's construction selector applied to the class
@@ -289,6 +378,8 @@ function resolveConstructionExpressionClass(
  * to report (a static class receiver, say). A step needing one declines rather
  * than guessing.
  */
+const RECEIVER_CHAIN_TERMINAL = Symbol('receiver-chain-terminal');
+
 interface FoldState {
   /**
    * Absent when the position's declared type named no class — `Promise<User>`
@@ -311,6 +402,12 @@ interface FoldState {
    */
   readonly declaredType?: string;
   readonly declaredAtScope?: ScopeId;
+  /** Full semantic type for providers whose lookup cannot be represented by
+   * `rawName` alone. Kept alongside the display spelling above because index
+   * unwrapping and typed member lookup consume different evidence. */
+  readonly typeRef?: TypeRef;
+  readonly receiverName?: string;
+  readonly receiverKind?: ReceiverChainDispatchKind;
 }
 
 /**
@@ -428,18 +525,75 @@ function classOfReturnType(
   return noteReceiverType(record, erasedTypeApplication(retType) ?? retType.rawName, def);
 }
 
+type FoldAdvance = FoldState | typeof RECEIVER_CHAIN_TERMINAL | undefined;
+
 function typeOfMemberOnClass(
   owner: SymbolDefinition,
+  receiverName: string,
   memberName: string,
   scopes: ScopeResolutionIndexes,
   index: WorkspaceResolutionIndex,
   options: ResolveCompoundReceiverOptions,
-): FoldState | undefined {
+  currentReceiverKind?: ReceiverChainDispatchKind,
+): FoldAdvance {
+  const memberNames = options.memberNameCandidates?.(memberName, currentReceiverKind) ?? [
+    memberName,
+  ];
+  if (memberNames.length === 0) return undefined;
+  const memberResolution = options.resolveChainMember?.(
+    owner,
+    receiverName,
+    memberName,
+    memberNames,
+    currentReceiverKind,
+  );
+  if (memberResolution !== undefined && memberResolution.kind !== 'resolved') {
+    if (options.onReceiverChainTerminal === undefined) return undefined;
+    options.onReceiverChainTerminal(memberResolution);
+    return RECEIVER_CHAIN_TERMINAL;
+  }
+  const resolvedMember = memberResolution?.kind === 'resolved' ? memberResolution : undefined;
+  if (resolvedMember?.method.isDeleted === true) {
+    if (options.onReceiverChainTerminal === undefined) return undefined;
+    options.onReceiverChainTerminal({
+      kind: 'unresolved',
+      reason: 'selected-callable-deleted',
+      candidateIds: [resolvedMember.method.nodeId],
+    });
+    return RECEIVER_CHAIN_TERMINAL;
+  }
+  if (resolvedMember?.relatedOwner !== undefined) {
+    const resultTypeRef = resolvedMember.resultTypeRef;
+    return {
+      def: resolvedMember.relatedOwner,
+      declaredType: resultTypeRef?.declaredSpelling ?? resultTypeRef?.rawName,
+      declaredAtScope: resultTypeRef?.declaredAtScope,
+      typeRef: resultTypeRef,
+      receiverName: memberName,
+      receiverKind: options.receiverChainResultKind?.(resolvedMember.method, resultTypeRef, true),
+    };
+  }
+  if (resolvedMember?.resultOwner !== undefined) {
+    const resultTypeRef = resolvedMember.resultTypeRef;
+    return {
+      def: resolvedMember.resultOwner,
+      declaredType: resultTypeRef?.declaredSpelling ?? resultTypeRef?.rawName,
+      declaredAtScope: resultTypeRef?.declaredAtScope,
+      typeRef: resultTypeRef,
+      receiverName: memberName,
+      receiverKind: options.receiverChainResultKind?.(resolvedMember.method, resultTypeRef, false),
+    };
+  }
+
   const classScopeByDefId = index.classScopeByDefId;
   const ownerChain = [owner.nodeId, ...scopes.methodDispatch.mroFor(owner.nodeId)];
   for (const ownerId of ownerChain) {
     const classScope = classScopeByDefId.get(ownerId);
-    const memberType = classScope?.typeBindings.get(memberName);
+    const memberTypes = memberNames
+      .map((candidateName) => classScope?.typeBindings.get(candidateName))
+      .filter((memberType): memberType is TypeRef => memberType !== undefined);
+    if (memberTypes.length > 1) return undefined;
+    const memberType = memberTypes[0];
     if (memberType !== undefined) {
       const def = classOfDeclaredType(
         memberType,
@@ -457,6 +611,12 @@ function typeOfMemberOnClass(
         def,
         declaredType: memberType.declaredSpelling ?? memberType.rawName,
         declaredAtScope: memberType.declaredAtScope,
+        typeRef: memberType,
+        receiverName: memberName,
+        receiverKind:
+          resolvedMember === undefined
+            ? undefined
+            : options.receiverChainResultKind?.(resolvedMember.method, memberType, false),
       };
     }
     // Languages whose binding-scope hook hoists a method's return-type binding
@@ -471,7 +631,11 @@ function typeOfMemberOnClass(
       while (curId !== null) {
         const curScope = scopes.scopeTree.getScope(curId);
         if (curScope === undefined) break;
-        const hoisted = curScope.typeBindings.get(memberName);
+        const hoistedTypes = memberNames
+          .map((candidateName) => curScope.typeBindings.get(candidateName))
+          .filter((memberType): memberType is TypeRef => memberType !== undefined);
+        if (hoistedTypes.length > 1) return undefined;
+        const hoisted = hoistedTypes[0];
         if (hoisted !== undefined) {
           // Same stripper the primary branch above passes. Omitting it here
           // meant a decorated declared type (`*Host`) resolved on one branch and
@@ -492,6 +656,12 @@ function typeOfMemberOnClass(
             def,
             declaredType: hoisted.declaredSpelling ?? hoisted.rawName,
             declaredAtScope: hoisted.declaredAtScope,
+            typeRef: hoisted,
+            receiverName: memberName,
+            receiverKind:
+              resolvedMember === undefined
+                ? undefined
+                : options.receiverChainResultKind?.(resolvedMember.method, hoisted, false),
           };
         }
         curId = curScope.parent;
@@ -499,6 +669,77 @@ function typeOfMemberOnClass(
     }
   }
   return undefined;
+}
+
+function typeOfMemberOnTypedReceiver(
+  receiverTypeRef: TypeRef,
+  receiverName: string,
+  memberName: string,
+  scopes: ScopeResolutionIndexes,
+  options: ResolveCompoundReceiverOptions,
+  receiverKind?: ReceiverChainDispatchKind,
+): FoldAdvance {
+  const resolution = options.resolveTypedChainMember?.(
+    receiverTypeRef,
+    receiverName,
+    memberName,
+    receiverKind,
+  );
+  if (resolution === undefined) return undefined;
+  if (resolution.kind !== 'resolved') {
+    options.onReceiverChainTerminal?.(resolution);
+    return RECEIVER_CHAIN_TERMINAL;
+  }
+
+  const resultTypeRef = resolution.resultTypeRef;
+  const declaredType = resultTypeRef?.declaredSpelling ?? resultTypeRef?.rawName;
+  const declaredAtScope = resultTypeRef?.declaredAtScope;
+  if (resolution.relatedOwner !== undefined) {
+    return {
+      def: resolution.relatedOwner,
+      // A receiver-relative result (`instancetype`, fluent/self APIs) keeps
+      // the receiver's complete semantic type. Replacing it with the method's
+      // literal return spelling would turn `id<P>` into `instancetype` and
+      // discard the protocol set needed by the next hop.
+      declaredType: receiverTypeRef.declaredSpelling ?? receiverTypeRef.rawName,
+      declaredAtScope: receiverTypeRef.declaredAtScope,
+      typeRef: receiverTypeRef,
+      receiverName: memberName,
+      receiverKind: options.receiverChainResultKind?.(resolution.method, resultTypeRef, true),
+    };
+  }
+  if (resolution.resultOwner !== undefined) {
+    return {
+      def: resolution.resultOwner,
+      declaredType,
+      declaredAtScope,
+      typeRef: resultTypeRef,
+      receiverName: memberName,
+      receiverKind: options.receiverChainResultKind?.(resolution.method, resultTypeRef, false),
+    };
+  }
+  if (resultTypeRef !== undefined) {
+    return {
+      def: findClassBindingInScope(
+        resultTypeRef.declaredAtScope,
+        resultTypeRef.rawName,
+        scopes,
+        options.stripTypePreservingDecoration,
+      ),
+      declaredType,
+      declaredAtScope,
+      typeRef: resultTypeRef,
+      receiverName: memberName,
+      receiverKind: options.receiverChainResultKind?.(resolution.method, resultTypeRef, false),
+    };
+  }
+
+  options.onReceiverChainTerminal?.({
+    kind: 'unresolved',
+    reason: 'receiver-unresolved',
+    candidateIds: [resolution.method.nodeId],
+  });
+  return RECEIVER_CHAIN_TERMINAL;
 }
 
 /**
@@ -534,12 +775,15 @@ export function foldReceiverChain(
   // `receiverChain` is dropped before resolving the base: it describes the
   // whole receiver, and handing it back to the resolver would re-enter this
   // fold on the base and never terminate.
-  const baseDef = resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
-    ...options,
-    fieldFallback: false,
-    receiverChain: undefined,
-    strictBaseBinding: true,
-  });
+  const providerBase = options.resolveReceiverChainBase?.(chain.baseReceiverName, inScope, scopes);
+  const baseDef =
+    providerBase?.owner ??
+    resolveCompoundReceiverClass(chain.baseReceiverName, inScope, scopes, index, {
+      ...options,
+      fieldFallback: false,
+      receiverChain: undefined,
+      strictBaseBinding: true,
+    });
   // The base's own declared type is carried too, so a chain whose FIRST step is
   // an unwrap (`repos[0].save()` — index applied directly to the base) has the
   // container spelling available. Without it that shape declines at step 1.
@@ -550,10 +794,15 @@ export function foldReceiverChain(
   // every fold — and the U10 census says 86% of chains are pure field/call and
   // never read it.
   const needsBaseDeclaredType =
-    baseDef === undefined || chain.steps.some((step) => step.kind === 'index');
-  const baseBinding = needsBaseDeclaredType
-    ? findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes)
-    : undefined;
+    baseDef === undefined ||
+    options.resolveTypedChainMember !== undefined ||
+    options.receiverChainBaseKind !== undefined ||
+    chain.steps.some((step) => step.kind === 'index');
+  const baseBinding =
+    providerBase?.receiverTypeRef ??
+    (needsBaseDeclaredType
+      ? findReceiverTypeBinding(inScope, chain.baseReceiverName, scopes)
+      : undefined);
 
   // A base whose declared type names no class is NOT automatically a dead end:
   // `repos: User[]` binds to the literal `User[]`, which matches no class
@@ -566,6 +815,13 @@ export function foldReceiverChain(
     def: baseDef,
     declaredType: baseBinding?.declaredSpelling ?? baseBinding?.rawName,
     declaredAtScope: baseBinding?.declaredAtScope,
+    typeRef: baseBinding,
+    receiverName: chain.baseReceiverName,
+    receiverKind:
+      providerBase?.receiverKind ??
+      (baseDef === undefined
+        ? undefined
+        : options.receiverChainBaseKind?.(chain.baseReceiverName, baseBinding, baseDef, scopes)),
   };
 
   for (const step of chain.steps) {
@@ -617,6 +873,12 @@ export function foldReceiverChain(
         def: elementClass,
         declaredType: element,
         declaredAtScope: scopeForLookup,
+        typeRef: {
+          rawName: element,
+          declaredAtScope: scopeForLookup,
+          source: 'receiver-propagated',
+        },
+        receiverName: current.receiverName,
       };
       continue;
     }
@@ -639,8 +901,36 @@ export function foldReceiverChain(
     // Position, not a guard, is what makes that unreachable: only named steps
     // get here.
     if (options.constructionSyntax?.selector === step.name) return undefined;
+    if (
+      current.typeRef !== undefined &&
+      current.receiverName !== undefined &&
+      options.resolveTypedChainMember !== undefined
+    ) {
+      const typedNext = typeOfMemberOnTypedReceiver(
+        current.typeRef,
+        current.receiverName,
+        step.name,
+        scopes,
+        options,
+        current.receiverKind,
+      );
+      if (typedNext === RECEIVER_CHAIN_TERMINAL) return undefined;
+      if (typedNext !== undefined) {
+        current = typedNext;
+        continue;
+      }
+    }
     if (current.def === undefined) return undefined;
-    const next = typeOfMemberOnClass(current.def, step.name, scopes, index, options);
+    const next = typeOfMemberOnClass(
+      current.def,
+      current.receiverName ?? current.def.qualifiedName ?? current.def.nodeId,
+      step.name,
+      scopes,
+      index,
+      options,
+      current.receiverKind,
+    );
+    if (next === RECEIVER_CHAIN_TERMINAL) return undefined;
     if (next === undefined) return undefined;
     current = next;
   }
@@ -656,6 +946,13 @@ export function foldReceiverChain(
   if (current.def !== undefined && current.declaredType !== undefined) {
     options.recordReceiverType?.(current.declaredType, current.def.nodeId);
   }
+  if (current.def === undefined) return undefined;
+  options.onReceiverChainFolded?.({
+    owner: current.def,
+    ...(current.receiverName === undefined ? {} : { receiverName: current.receiverName }),
+    ...(current.typeRef === undefined ? {} : { receiverTypeRef: current.typeRef }),
+    ...(current.receiverKind === undefined ? {} : { receiverKind: current.receiverKind }),
+  });
   return current.def;
 }
 
@@ -737,8 +1034,24 @@ export function resolveCompoundReceiverClass(
   if (depth === 0 && options.receiverChain !== undefined) {
     const decoded = decodeReceiverChain(options.receiverChain);
     if (decoded !== undefined) {
-      const folded = foldReceiverChain(decoded, inScope, scopes, index, options);
+      let terminal = false;
+      const folded = foldReceiverChain(
+        decoded,
+        inScope,
+        scopes,
+        index,
+        options.onReceiverChainTerminal === undefined
+          ? options
+          : {
+              ...options,
+              onReceiverChainTerminal: (resolution) => {
+                terminal = true;
+                options.onReceiverChainTerminal?.(resolution);
+              },
+            },
+      );
       if (folded !== undefined) return folded;
+      if (terminal) return undefined;
     }
   }
 

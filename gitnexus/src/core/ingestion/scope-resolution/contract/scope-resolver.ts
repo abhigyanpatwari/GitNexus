@@ -21,6 +21,8 @@
  *        - hoistTypeBindingsToModule — enable ONLY when method return
  *          types are stored on the enclosing Module scope; most
  *          languages attach them to the class scope and leave this off
+ *        - receiver member/type/chain hooks — opt in only when the language's
+ *          dispatch semantics cannot be represented by the generic MRO walk
  *   2. Export a thin entry point:
  *      `runYourLangScopeResolution(input) = runScopeResolution(input, yourScopeResolver)`.
  *   3. Register the provider in
@@ -47,8 +49,8 @@
  *     once per file at extract time.
  *   - `ScopeResolver` (this file) is the **emit-side** contract — how
  *     the resolution pipeline dispatches references to graph edges.
- *     8 fields total. Consumed by `runScopeResolution`, once per
- *     workspace at resolve time.
+ *     Nine required core fields plus optional language-semantic hooks.
+ *     Consumed by `runScopeResolution`, once per workspace at resolve time.
  *
  * They share three concept names (`arityCompatibility`, `mergeBindings`,
  * `resolveImportTarget`) because the emit pipeline reuses a few
@@ -78,17 +80,17 @@
  *     to a same-named local function, and only the precise per-receiver
  *     pass running first prevents the wrong edge.
  *
- *   - **I2 — `handledSites` semantics.** A site is added to
- *     `handledSites` IFF a `tryEmitEdge` call returned `true` for it.
- *     Sites a pass touched but couldn't resolve do NOT get marked —
- *     they still get a chance from the shared resolver. Exception:
- *     the free-call fallback marks the site unconditionally after
- *     attempting emission (even on dedup-collapse), because the
- *     per-(caller, target) collapse semantics require multiple call
- *     sites in the same caller body not produce multiple edges.
- *     `preEmitInheritanceEdges` also pre-marks every `inherits` site so
- *     the generic bridge cannot remap class heritage into method-owned
- *     EXTENDS edges via `resolveCallerGraphId`.
+ *   - **I2 — `handledSites` semantics.** A site is added when a precise pass
+ *     has made a terminal decision: it selected a target (including an edge
+ *     deduplicated by collapse), or it proved that fallback would be unsound
+ *     and recorded a suppression (ambiguous/unresolved provider result,
+ *     deleted callable, receiver owned-but-unbound, or provider-owned super
+ *     miss). A provisional lookup miss is NOT handled and may continue to a
+ *     less-specific tier. The free-call fallback marks after attempting
+ *     emission because per-(caller,target) collapse owns every duplicate site.
+ *     `preEmitInheritanceEdges` also pre-marks every `inherits` site so the
+ *     generic bridge cannot remap class heritage into method-owned EXTENDS
+ *     edges via `resolveCallerGraphId`.
  *
  *   - **I3 — `propagateImportedReturnTypes` mutation timing + ordering.**
  *     The pass mutates `Scope.typeBindings` (a plain `new Map(...)` from
@@ -290,6 +292,7 @@ import type {
   ScopeId,
   SupportedLanguages,
   SymbolDefinition,
+  TypeRef,
 } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -298,6 +301,7 @@ import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js'
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ConversionRankFn } from '../passes/overload-narrowing.js';
 import type { HeritageTypeArgumentSink } from '../utils/generic-instantiation.js';
+import type { ResolutionSuppressionReason } from '../resolution-outcome.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
@@ -314,8 +318,28 @@ export type LinearizeStrategy = (
 export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
 
 export type ReceiverMemberResolution =
-  | { readonly kind: 'resolved'; readonly definition: SymbolDefinition }
-  | { readonly kind: 'ambiguous'; readonly candidateIds: readonly string[] };
+  | {
+      readonly kind: 'resolved';
+      readonly definition: SymbolDefinition;
+      readonly confidence?: number;
+      readonly reason?: string;
+    }
+  | { readonly kind: 'ambiguous'; readonly candidateIds: readonly string[] }
+  | {
+      readonly kind: 'unresolved';
+      readonly reason: ResolutionSuppressionReason;
+      readonly candidateIds?: readonly string[];
+    };
+
+export type TypedReceiverMemberResolution = ReceiverMemberResolution;
+
+export interface ReceiverMemberContext {
+  readonly receiverName: string;
+  readonly receiverKind: 'class' | 'instance' | 'self' | 'super';
+  readonly receiverTypeRef?: TypeRef;
+}
+
+export type ReceiverChainDispatchKind = 'class' | 'instance';
 
 export interface ImportResolutionContext {
   readonly parsedFiles: readonly ParsedFile[];
@@ -1202,8 +1226,9 @@ export interface ScopeResolver {
    * Optional language-specific member-lattice lookup. Runs for a resolved
    * simple receiver type before the generic flattened-MRO walk. Languages
    * with lookup-set semantics that cannot be represented by one linear MRO
-   * may resolve a member, report ambiguity (which suppresses fallback), or
-   * return undefined to retain the shared behavior.
+   * may resolve a member, report ambiguity, or report a typed terminal miss;
+   * both non-resolved outcomes suppress fallback and retain their candidate
+   * evidence. Returning undefined alone preserves the shared fallback.
    */
   readonly resolveReceiverMember?: (
     ownerDef: SymbolDefinition,
@@ -1211,10 +1236,101 @@ export interface ScopeResolver {
     callsite: Callsite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
+    context?: ReceiverMemberContext,
   ) => ReceiverMemberResolution | undefined;
 
   /**
-   * Enable the receiver-bound Case 0.5 fallback for explicit `this`
+   * Opt a language into using `resolveReceiverMember` for a receiver that is
+   * itself a class-name binding. Absent/false preserves the historical generic
+   * Case-2 MRO path byte-for-byte for existing providers.
+   */
+  readonly resolveClassNameReceiversViaMemberHook?: boolean;
+
+  /**
+   * Optional typed-receiver lookup before the generic raw-name/MRO fallback.
+   * A language may use `TypeRef.declaredSpelling` to handle receiver forms
+   * that cannot be represented by `rawName` alone. Returning `undefined`
+   * preserves the existing path; every other result handles the site.
+   */
+  readonly resolveTypedReceiverMember?: (
+    typeRef: TypeRef,
+    receiverName: string,
+    memberName: string,
+    callsite: Callsite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+  ) => TypedReceiverMemberResolution | undefined;
+
+  /**
+   * Reuse `resolveTypedReceiverMember` while folding structural receiver
+   * chains. Disabled by default: the shared fold otherwise keeps its legacy
+   * raw-class/MRO semantics byte-for-byte. Providers opt in only when the full
+   * `TypeRef` carries lookup semantics that `rawName` cannot represent (for
+   * example, intersection or protocol-qualified receiver types).
+   *
+   * Chain hops receive a synthetic `Callsite` containing only the hop's
+   * provider-produced candidate names. The arity and argument types belong to
+   * the outer call and must never narrow an inner hop.
+   */
+  readonly resolveTypedReceiverChainsViaMemberHook?: boolean;
+
+  /** Recover receiver-relative return types such as fluent/self-style APIs. */
+  readonly resolveRelatedResultOwner?: (
+    method: SymbolDefinition,
+    receiverOwner: SymbolDefinition,
+    callsite: Callsite,
+    scopes: ScopeResolutionIndexes,
+  ) => SymbolDefinition | undefined;
+
+  /** Resolve a concrete declared method-result owner for structural chains.
+   * This is separate from receiver-relative results: a factory may return an
+   * unrelated class whose canonical definition is provider-specific. */
+  readonly resolveReceiverChainResultOwner?: (
+    method: SymbolDefinition,
+    receiverOwner: SymbolDefinition,
+    callsite: Callsite,
+    scopes: ScopeResolutionIndexes,
+  ) => SymbolDefinition | undefined;
+
+  /** Candidate spellings for one opaque receiver-chain member name. The
+   * optional dispatch kind is carried only when the provider can prove it. */
+  readonly receiverChainMemberCandidates?: (
+    memberName: string,
+    receiverKind?: ReceiverChainDispatchKind,
+  ) => readonly string[];
+
+  /** Classify the base of a structural receiver chain. */
+  readonly receiverChainBaseKind?: (
+    receiverName: string,
+    receiverTypeRef: TypeRef | undefined,
+    receiverOwner: SymbolDefinition,
+    scopes: ScopeResolutionIndexes,
+  ) => ReceiverChainDispatchKind | undefined;
+
+  /** Classify the value produced by a resolved receiver-chain method. */
+  readonly receiverChainResultKind?: (
+    method: SymbolDefinition,
+    resultTypeRef: TypeRef | undefined,
+    relatedResult: boolean,
+  ) => ReceiverChainDispatchKind | undefined;
+
+  /** Preserve a method's complete declared result type across a structural
+   * chain. This complements `resolveReceiverChainResultOwner`: result types
+   * such as protocol intersections may intentionally have no concrete owner. */
+  readonly receiverChainResultTypeRef?: (
+    method: SymbolDefinition,
+    scopes: ScopeResolutionIndexes,
+    index: WorkspaceResolutionIndex,
+  ) => TypeRef | undefined;
+
+  /** Normalize a lexical super owner before the shared ancestor walk. */
+  readonly resolveSuperReceiverOwner?: (
+    enclosingClass: SymbolDefinition,
+    scopes: ScopeResolutionIndexes,
+  ) => SymbolDefinition | undefined;
+
+  /**
+   * Enable the receiver-bound Case 0.5 fallback for explicit instance
    * receivers (`this->m()` / `this.m()`) that resolves against the
    * enclosing class + MRO even when no explicit `this` typeBinding is
    * present in scope.
@@ -1224,6 +1340,14 @@ export interface ScopeResolver {
    * suppression must remain unchanged.
    */
   readonly resolveThisViaEnclosingClass?: boolean;
+
+  /**
+   * Optional spelling override for the Case 0.5 instance receiver. When
+   * omitted, the shared default remains exactly `receiverText === 'this'`.
+   * Languages with another explicit self spelling provide the predicate
+   * without adding language names or tokens to the shared resolver.
+   */
+  readonly isEnclosingClassReceiver?: (receiverText: string) => boolean;
 
   /**
    * Optional post-finalize hook to inject cross-file bindings that
@@ -1444,6 +1568,18 @@ export interface ScopeResolver {
     readonly allScannedPaths: ReadonlySet<string>;
     readonly resolutionConfig: unknown;
   }) => Set<string>;
+
+  /**
+   * Decide whether a worker/cache `ParsedFile` can be reused in this
+   * resolver's context pass. The default accepts every pre-extracted file,
+   * which is required by heterogeneous context providers such as Vue.
+   *
+   * A provider that intentionally reparses foreign-language context with its
+   * own grammar can reject the cached artifact here. The shared orchestrator
+   * then performs a fresh extraction from the already-loaded source text and
+   * does not overwrite the authoritative cache entry.
+   */
+  readonly acceptPreExtractedParsedFile?: (parsed: ParsedFile) => boolean;
 
   /**
    * Optional post-resolution hook for emitting language-specific graph edges

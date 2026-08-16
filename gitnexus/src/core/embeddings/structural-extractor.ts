@@ -5,7 +5,7 @@
  * to extract method and field names for embedding text generation.
  */
 
-import { getProviderForFile } from '../ingestion/languages/index.js';
+import { getProvider, getProviderForFile } from '../ingestion/languages/index.js';
 import type { MethodExtractorContext, ExtractedMethods } from '../ingestion/method-types.js';
 import type { FieldExtractorContext, ExtractedFields } from '../ingestion/field-types.js';
 import type { LanguageProvider } from '../ingestion/language-provider.js';
@@ -31,11 +31,12 @@ const NOOP_SYMBOL_TABLE = {
 export const extractStructuralNames = async (
   content: string,
   filePath: string,
+  explicitLanguage?: SupportedLanguages,
 ): Promise<StructuralNames> => {
-  const provider = getProviderForFile(filePath);
+  const provider = explicitLanguage ? getProvider(explicitLanguage) : getProviderForFile(filePath);
   if (!provider) return { methodNames: [], fieldNames: [] };
 
-  const tree = await ensureAndParse(content, filePath);
+  const tree = await ensureAndParse(content, filePath, explicitLanguage);
   if (!tree) return { methodNames: [], fieldNames: [] };
 
   // Parse node.content (a snippet) — find declaration directly, not by range

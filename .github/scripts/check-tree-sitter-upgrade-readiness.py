@@ -60,6 +60,7 @@ GRAMMARS: dict[str, tuple[str, str, str]] = {
     "tree-sitter-java":       ("tree-sitter/tree-sitter-java",       "master", "src/parser.c"),
     "tree-sitter-javascript": ("tree-sitter/tree-sitter-javascript", "master", "src/parser.c"),
     "tree-sitter-kotlin":     ("fwcd/tree-sitter-kotlin",            "main",   "src/parser.c"),
+    "tree-sitter-objc":       ("tree-sitter-grammars/tree-sitter-objc", "master", "src/parser.c"),
     "tree-sitter-php":        ("tree-sitter/tree-sitter-php",        "master", "php/src/parser.c"),
     "tree-sitter-python":     ("tree-sitter/tree-sitter-python",     "master", "src/parser.c"),
     "tree-sitter-ruby":       ("tree-sitter/tree-sitter-ruby",       "master", "src/parser.c"),

@@ -1,0 +1,6 @@
+9c9cd37d60590e64e15f71ad0243232eabd117366370c4adf5b6943deac640ed  ./darwin-arm64/tree-sitter-objc.node
+2d91437331a2b5b62112956a54b63f8647139c2ab4f23d6bb1a9dfbfbd47c268  ./darwin-x64/tree-sitter-objc.node
+e7b2a45adbbd91658ae4c205bfca0ac3d202bb69a1240444ed4c282cb1c17a12  ./linux-arm64/tree-sitter-objc.node
+f1d08b24fa3b9ba07cbd67c663727d6976eccfe7393e1c9a58acd5109b6c6dc0  ./linux-x64/tree-sitter-objc.node
+402d1467c1a34e72c17802230aebbcf1ad38c3806c2e62cb00729146489a5208  ./win32-arm64/tree-sitter-objc.node
+6ae21536cf7eec965e7dcf21d63ef3032c8808efa3f4665692ee6f382cc9113f  ./win32-x64/tree-sitter-objc.node

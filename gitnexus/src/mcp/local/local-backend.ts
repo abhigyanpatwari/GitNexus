@@ -3860,6 +3860,30 @@ export class LocalBackend {
       ({ rows, countedTotal } = await fetchWindow(whereClause, queryParams));
     }
 
+    // Objective-C stores method names with their dispatch sign (`-save:` /
+    // `+shared`), while humans commonly ask context/impact for the unsigned
+    // selector. Preserve exact-name behavior as tier one; only a zero-result
+    // query may fall back, and the fallback is label-scoped to Method so a
+    // non-Objective-C Function/Class homonym can never be introduced here.
+    const mayBeUnsignedObjectiveCSelector =
+      rows.length === 0 &&
+      !name.startsWith('-') &&
+      !name.startsWith('+') &&
+      !name.includes('/') &&
+      (hints.kind === undefined || hints.kind === 'Method');
+    if (mayBeUnsignedObjectiveCSelector) {
+      const selectorWhere = hints.file_path
+        ? `WHERE n.name IN $selectorNames AND n.id STARTS WITH $methodPrefix AND n.language = $objectiveCLanguage AND n.filePath CONTAINS $filePath`
+        : `WHERE n.name IN $selectorNames AND n.id STARTS WITH $methodPrefix AND n.language = $objectiveCLanguage`;
+      const selectorParams = {
+        selectorNames: [`-${name}`, `+${name}`],
+        methodPrefix: 'Method:',
+        objectiveCLanguage: 'objective-c',
+        ...(hints.file_path ? { filePath: hints.file_path } : {}),
+      };
+      ({ rows, countedTotal } = await fetchWindow(selectorWhere, selectorParams));
+    }
+
     if (rows.length === 0) return { kind: 'not_found' };
 
     // Normalise row shape across object / tuple returns from LadybugDB.

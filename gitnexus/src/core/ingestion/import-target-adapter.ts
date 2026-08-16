@@ -34,7 +34,7 @@
  */
 
 import {
-  getLanguageFromFilename,
+  getLanguageCandidateFromFilename,
   type SupportedLanguages,
   type WorkspaceIndex,
 } from 'gitnexus-shared';
@@ -54,6 +54,7 @@ export interface LanguageResolverEntry {
  */
 export interface ImportTargetWorkspace {
   readonly perLanguage: ReadonlyMap<SupportedLanguages, LanguageResolverEntry>;
+  readonly sourceLanguages: ReadonlyMap<string, SupportedLanguages>;
 }
 
 /**
@@ -68,13 +69,14 @@ export interface ImportTargetWorkspace {
 export function buildImportTargetWorkspace(
   providers: ReadonlyMap<SupportedLanguages, LanguageProvider>,
   resolveCtx: ResolveCtx,
+  sourceLanguages: ReadonlyMap<string, SupportedLanguages> = new Map(),
 ): ImportTargetWorkspace {
   const perLanguage = new Map<SupportedLanguages, LanguageResolverEntry>();
   for (const [lang, provider] of providers) {
     if (provider.importResolver === undefined) continue;
     perLanguage.set(lang, { resolver: provider.importResolver, ctx: resolveCtx });
   }
-  return { perLanguage };
+  return { perLanguage, sourceLanguages };
 }
 
 /**
@@ -97,8 +99,20 @@ export function resolveImportTargetAcrossLanguages(
   const workspace = workspaceIndex as ImportTargetWorkspace | undefined;
   if (workspace === undefined || workspace.perLanguage === undefined) return null;
 
-  const lang = getLanguageFromFilename(fromFile);
-  if (lang === null) return null;
+  let lang = workspace.sourceLanguages?.get(fromFile);
+  if (lang === undefined) {
+    // Compatibility for legacy adapter callers is limited to filenames whose
+    // language is intrinsically unambiguous. `.h` / `.m` require the manifest.
+    const candidate = getLanguageCandidateFromFilename(fromFile);
+    if (
+      candidate === null ||
+      candidate.kind !== 'language' ||
+      candidate.requiresContentClassification
+    ) {
+      return null;
+    }
+    lang = candidate.language;
+  }
 
   const entry = workspace.perLanguage.get(lang);
   if (entry === undefined) return null;

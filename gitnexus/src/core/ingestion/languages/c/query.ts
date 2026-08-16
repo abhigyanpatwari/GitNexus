@@ -11,7 +11,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 // reached only when the binding is present.
 import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
-const C_SCOPE_QUERY = `
+export const C_SCOPE_QUERY_SOURCE = `
 ;; Scopes
 (translation_unit) @scope.module
 (struct_specifier) @scope.class
@@ -205,7 +205,7 @@ export function getCScopeQuery(): Parser.Query {
   if (_query === null) {
     _query = new Parser.Query(
       getLanguageGrammar(SupportedLanguages.C) as Parameters<Parser['setLanguage']>[0],
-      C_SCOPE_QUERY,
+      C_SCOPE_QUERY_SOURCE,
     );
   }
   return _query;

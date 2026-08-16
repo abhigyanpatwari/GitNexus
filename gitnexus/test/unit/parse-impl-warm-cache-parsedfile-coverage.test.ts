@@ -66,7 +66,11 @@ import {
   clearParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
-import type { ParsedFile } from 'gitnexus-shared';
+import {
+  SOURCE_LANGUAGE_CLASSIFIER_VERSION,
+  SupportedLanguages,
+  type ParsedFile,
+} from 'gitnexus-shared';
 
 // A structurally-minimal ParsedFile. `loadParsedFilesForPaths` keys on
 // `filePath`; the rest are empty so a restored shard is byte-stable and
@@ -74,12 +78,23 @@ import type { ParsedFile } from 'gitnexus-shared';
 const mkParsedFile = (filePath: string): ParsedFile =>
   ({
     filePath,
+    language: SupportedLanguages.TypeScript,
     moduleScope: '',
     scopes: [],
     parsedImports: [],
     localDefs: [],
     referenceSites: [],
   }) as unknown as ParsedFile;
+
+const typescriptChunkHash = (filePath: string, content: string): string =>
+  computeChunkHash([
+    {
+      filePath,
+      contentHash: fileContentHash(content),
+      language: SupportedLanguages.TypeScript,
+      classifierVersion: SOURCE_LANGUAGE_CLASSIFIER_VERSION,
+    },
+  ]);
 
 // ─── Layer 1: durable store mechanics (build-free) ──────────────────────────
 
@@ -314,12 +329,10 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
 
   it('run #1 (miss) populates the durable store, keyed by chunk hash', async () => {
     const f = writeFile('src/cached.ts', 'export function cached() { return 1; }\n');
-    const chunkHash = computeChunkHash([
-      {
-        filePath: f.path,
-        contentHash: fileContentHash(fs.readFileSync(path.join(repoDir, f.path), 'utf-8')),
-      },
-    ]);
+    const chunkHash = typescriptChunkHash(
+      f.path,
+      fs.readFileSync(path.join(repoDir, f.path), 'utf-8'),
+    );
     const cache = newCache();
 
     await run(cache, [f]);
@@ -343,12 +356,10 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
 
   it('a repeated cache miss replaces the durable chunk generation', async () => {
     const f = writeFile('src/repeated.ts', 'export function repeated() { return 1; }\n');
-    const chunkHash = computeChunkHash([
-      {
-        filePath: f.path,
-        contentHash: fileContentHash(fs.readFileSync(path.join(repoDir, f.path), 'utf-8')),
-      },
-    ]);
+    const chunkHash = typescriptChunkHash(
+      f.path,
+      fs.readFileSync(path.join(repoDir, f.path), 'utf-8'),
+    );
 
     await run(newCache(), [f]);
     await run(newCache(), [f]);
@@ -411,9 +422,7 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     await run(cache, [a, b], 1); // both miss → both durable subdirs populated
     await persistCaches(cache);
 
-    const aHash = computeChunkHash([
-      { filePath: a.path, contentHash: fileContentHash('export function a() { return 1; }\n') },
-    ]);
+    const aHash = typescriptChunkHash(a.path, 'export function a() { return 1; }\n');
     // run #1 populated a's durable subdir (the chunk that will HIT on run #2).
     expect(fs.existsSync(path.join(getDurableParsedFileDir(storageDir), aHash))).toBe(true);
 

@@ -199,6 +199,7 @@ describe('RELATION_SCHEMA pair coverage', () => {
     // them here would have asserted the opposite of what the comment claims.
     const nonBridge = [
       'CodeElement|CodeElement',
+      'CodeElement|Method',
       'CodeElement|Module',
       'CodeElement|Property',
       'Module|CodeElement',

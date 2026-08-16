@@ -10,7 +10,10 @@ import { describe, it, expect } from 'vitest';
 import type { ScopeId } from 'gitnexus-shared';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
-import { foldReceiverChain } from '../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js';
+import {
+  foldReceiverChain,
+  resolveCompoundReceiverClass,
+} from '../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js';
 import { decodeReceiverChain } from '../../../src/core/ingestion/utils/receiver-chain-codec.js';
 import { buildScopeModel, type ScopeModelFixture } from '../../helpers/scope-model.js';
 
@@ -172,6 +175,101 @@ describe('foldReceiverChain', () => {
       qualifiedName: 'User',
     });
     expect(foldIn(ctx, '2|svc|cgetUser', { hoistTypeBindingsToModule: false })).toBeUndefined();
+  });
+
+  it('uses a resolved method definition when no class-scope return binding exists', () => {
+    const getUser = tsFixture.parsed.localDefs.find(
+      (definition) => definition.qualifiedName?.endsWith('.getUser') === true,
+    );
+    const user = tsFixture.parsed.localDefs.find(
+      (definition) => definition.type === 'Class' && definition.qualifiedName === 'User',
+    );
+    if (getUser === undefined) throw new Error('no getUser method definition');
+    if (user === undefined) throw new Error('no User class definition');
+
+    expect(
+      foldIn(ctx, '2|svc|cgetUser', {
+        hoistTypeBindingsToModule: false,
+        resolveChainMember: () => ({ kind: 'resolved', method: getUser, resultOwner: user }),
+      }),
+    ).toMatchObject({ qualifiedName: 'User', type: 'Class' });
+  });
+
+  it('vetoes the text cascade only when a provider opts into terminal chain decisions', () => {
+    const ambiguousResolution = {
+      kind: 'ambiguous' as const,
+      candidateIds: ['def:Service.getUser#declaration', 'def:Service.getUser#implementation'],
+    };
+    const common = {
+      receiverChain: '2|svc|cgetUser',
+      hoistTypeBindingsToModule: true,
+      resolveChainMember: () => ambiguousResolution,
+    } as const;
+
+    // Providers that do not opt in retain the historical cascade.
+    expect(
+      resolveCompoundReceiverClass(
+        'svc.getUser()',
+        ctx.inScope,
+        ctx.fixture.scopes,
+        ctx.fixture.index,
+        common,
+      ),
+    ).toMatchObject({ qualifiedName: 'User' });
+
+    const terminal: unknown[] = [];
+    expect(
+      resolveCompoundReceiverClass(
+        'svc.getUser()',
+        ctx.inScope,
+        ctx.fixture.scopes,
+        ctx.fixture.index,
+        {
+          ...common,
+          onReceiverChainTerminal: (resolution) => terminal.push(resolution),
+        },
+      ),
+    ).toBeUndefined();
+    expect(terminal).toEqual([ambiguousResolution]);
+  });
+
+  it('treats a deleted inner chain method as terminal before using its result owner', () => {
+    const getUser = tsFixture.parsed.localDefs.find(
+      (definition) => definition.qualifiedName?.endsWith('.getUser') === true,
+    );
+    const user = tsFixture.parsed.localDefs.find(
+      (definition) => definition.type === 'Class' && definition.qualifiedName === 'User',
+    );
+    if (getUser === undefined) throw new Error('no getUser method definition');
+    if (user === undefined) throw new Error('no User class definition');
+    const deletedGetUser = { ...getUser, isDeleted: true };
+    const terminal: unknown[] = [];
+
+    expect(
+      resolveCompoundReceiverClass(
+        'svc.getUser()',
+        ctx.inScope,
+        ctx.fixture.scopes,
+        ctx.fixture.index,
+        {
+          receiverChain: '2|svc|cgetUser',
+          hoistTypeBindingsToModule: false,
+          resolveChainMember: () => ({
+            kind: 'resolved',
+            method: deletedGetUser,
+            resultOwner: user,
+          }),
+          onReceiverChainTerminal: (resolution) => terminal.push(resolution),
+        },
+      ),
+    ).toBeUndefined();
+    expect(terminal).toEqual([
+      {
+        kind: 'unresolved',
+        reason: 'selected-callable-deleted',
+        candidateIds: [deletedGetUser.nodeId],
+      },
+    ]);
   });
 });
 

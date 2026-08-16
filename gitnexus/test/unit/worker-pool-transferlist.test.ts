@@ -19,25 +19,36 @@
  *   - empty / mixed-shape inputs fall back to the no-transfer path
  */
 import { describe, it, expect } from 'vitest';
+import { SupportedLanguages } from 'gitnexus-shared';
 import { buildDispatchMessage } from '../../src/core/ingestion/workers/worker-pool.js';
 
 describe('worker pool — buildDispatchMessage', () => {
   it('parse-worker shape produces a POJO sub-batch + transferList of one buffer per file', () => {
     const items = [
-      { path: 'a.ts', content: 'export const A = 1;' },
-      { path: 'b.ts', content: 'export const B = 2;' },
+      {
+        path: 'a.ts',
+        content: 'export const A = 1;',
+        language: SupportedLanguages.TypeScript,
+      },
+      {
+        path: 'b.ts',
+        content: 'export const B = 2;',
+        language: SupportedLanguages.TypeScript,
+      },
     ];
     const { message, transferList } = buildDispatchMessage(items);
 
     const msg = message as {
       type: 'sub-batch';
-      files: Array<{ path: string; content: Uint8Array }>;
+      files: Array<{ path: string; content: Uint8Array; language: SupportedLanguages }>;
     };
     expect(msg.type).toBe('sub-batch');
     expect(msg.files).toHaveLength(2);
     expect(msg.files[0].path).toBe('a.ts');
+    expect(msg.files[0].language).toBe(SupportedLanguages.TypeScript);
     expect(msg.files[0].content).toBeInstanceOf(Uint8Array);
     expect(msg.files[1].path).toBe('b.ts');
+    expect(msg.files[1].language).toBe(SupportedLanguages.TypeScript);
     expect(msg.files[1].content).toBeInstanceOf(Uint8Array);
 
     // transferList carries one ArrayBuffer per file, in input order.
@@ -52,9 +63,9 @@ describe('worker pool — buildDispatchMessage', () => {
     // Mix ASCII, multi-byte UTF-8 (café = c-a-f-é where é is 2 bytes),
     // and an emoji (4 UTF-8 bytes) to cover the encoder boundaries.
     const items = [
-      { path: 'a.ts', content: 'plain ASCII' },
-      { path: 'b.ts', content: 'café au lait' },
-      { path: 'c.ts', content: 'rocket: 🚀 emoji' },
+      { path: 'a.ts', content: 'plain ASCII', language: SupportedLanguages.TypeScript },
+      { path: 'b.ts', content: 'café au lait', language: SupportedLanguages.TypeScript },
+      { path: 'c.ts', content: 'rocket: 🚀 emoji', language: SupportedLanguages.TypeScript },
     ];
     const { message } = buildDispatchMessage(items);
     const files = (message as { files: Array<{ content: Uint8Array }> }).files;
@@ -74,6 +85,7 @@ describe('worker pool — buildDispatchMessage', () => {
     const items = Array.from({ length: 8 }, (_, i) => ({
       path: `f${i}.ts`,
       content: `tiny ${i}`,
+      language: SupportedLanguages.TypeScript,
     }));
     const { message } = buildDispatchMessage(items);
     const files = (message as { files: Array<{ content: Uint8Array }> }).files;
@@ -107,7 +119,10 @@ describe('worker pool — buildDispatchMessage', () => {
     // Strict shape detection: every element must have a string content.
     // A single non-conforming element disqualifies the transfer path —
     // safer than partially transferring some and embedding others.
-    const items = [{ path: 'a.ts', content: 'ok' }, { path: 'b.ts' /* no content */ }];
+    const items = [
+      { path: 'a.ts', content: 'ok', language: SupportedLanguages.TypeScript },
+      { path: 'b.ts', language: SupportedLanguages.TypeScript /* no content */ },
+    ];
     const { message, transferList } = buildDispatchMessage(items);
     expect(message).toEqual({ type: 'sub-batch', files: items });
     expect(transferList).toBeUndefined();

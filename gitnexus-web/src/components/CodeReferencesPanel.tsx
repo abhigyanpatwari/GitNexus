@@ -14,14 +14,14 @@ import {
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
-import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
+import { SupportedLanguages, type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
 import { readFile, type ReadFileResult } from '../services/backend-client';
 import { useTranslation } from 'react-i18next';
 
-const getSyntaxLanguage = (filePath: string | undefined): string => {
+export const getSyntaxLanguage = (filePath: string | undefined, language?: string): string => {
   if (!filePath) return 'text';
-  return getSyntaxLanguageFromFilename(filePath);
+  return getSyntaxLanguageFromFilename(filePath, language as SupportedLanguages | undefined);
 };
 
 // Match the code theme used elsewhere in the app
@@ -384,7 +384,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+            <div ref={selectedViewerRef} className="min-h-0 flex-1 scrollbar-thin overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -392,7 +392,10 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 </div>
               ) : selectedFileContent ? (
                 <SyntaxHighlighter
-                  language={getSyntaxLanguage(selectedFilePath)}
+                  language={getSyntaxLanguage(
+                    selectedFilePath,
+                    selectedNode?.properties.language as string | undefined,
+                  )}
                   style={customTheme as any}
                   showLineNumbers
                   startingLineNumber={fileStartLine + 1}
@@ -457,7 +460,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {t('graph:codePanel.references', { count: aiReferences.length })}
               </span>
             </div>
-            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 scrollbar-thin space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label
@@ -466,7 +469,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                   const hasRange = typeof ref.startLine === 'number';
                   const startDisplay = hasRange ? (ref.startLine ?? 0) + 1 : undefined;
                   const endDisplay = hasRange ? (ref.endLine ?? ref.startLine ?? 0) + 1 : undefined;
-                  const language = getSyntaxLanguage(ref.filePath);
+                  const language = getSyntaxLanguage(
+                    ref.filePath,
+                    ref.nodeId
+                      ? (nodeById.get(ref.nodeId)?.properties.language as string | undefined)
+                      : undefined,
+                  );
 
                   const isGlowing = glowRefId === ref.id;
 

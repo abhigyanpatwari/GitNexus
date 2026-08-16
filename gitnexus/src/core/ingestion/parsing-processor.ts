@@ -1,7 +1,6 @@
 import type { NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SymbolTableWriter } from './model/index.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
 
 import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './call-processor.js';
 
@@ -208,7 +207,7 @@ export const mergeChunkResults = (
  * Returns `[]` for an all-unparseable chunk (the caller merges `[]` → empty).
  */
 export const dispatchChunkParse = async (
-  files: { path: string; content: string }[],
+  files: ParseWorkerInput[],
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
   /** Populated in-place with the raw results (parse-cache capture). */
@@ -220,16 +219,11 @@ export const dispatchChunkParse = async (
    */
   chunkHash?: string,
 ): Promise<ParseWorkerResult[]> => {
-  const parseableFiles: ParseWorkerInput[] = [];
-  for (const file of files) {
-    const lang = getLanguageFromFilename(file.path);
-    if (lang) parseableFiles.push({ path: file.path, content: file.content });
-  }
-  if (parseableFiles.length === 0) return [];
+  if (files.length === 0) return [];
 
   const total = files.length;
   const chunkResults = await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
-    parseableFiles,
+    files,
     (filesProcessed) => {
       onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
     },
@@ -321,7 +315,7 @@ const loggedQuarantineByPool = new WeakMap<WorkerPool, Set<string>>();
 
 export const processParsing = async (
   graph: KnowledgeGraph,
-  files: { path: string; content: string }[],
+  files: ParseWorkerInput[],
   symbolTable: SymbolTableWriter,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,

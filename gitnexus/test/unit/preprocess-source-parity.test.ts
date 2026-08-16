@@ -47,6 +47,17 @@ const FIXTURES: Partial<Record<SupportedLanguages, { filePath: string; source: s
     filePath: 'meters.dart',
     source: ['extension type Meters(int value) {', '  int get raw => value;', '}', ''].join('\n'),
   },
+  [SupportedLanguages.ObjectiveC]: {
+    filePath: 'Mode.m',
+    source: [
+      'typedef NS_ENUM(NSInteger, Mode) {',
+      '  ModeA,',
+      '};',
+      '@interface Store : NSObject',
+      '@end',
+      '',
+    ].join('\n'),
+  },
 };
 
 const languagesWithHook = Object.entries(providers)
@@ -77,7 +88,7 @@ describe('LanguageProvider.preprocessSource parity', () => {
         });
 
         it('parses the preprocessed text on the embedding path too', async () => {
-          const tree = await ensureAndParse(source, filePath);
+          const tree = await ensureAndParse(source, filePath, language as SupportedLanguages);
 
           expect(tree.rootNode.hasError).toBe(false);
         });

@@ -1512,10 +1512,110 @@ const TABLES_WITH_EXPORTED = new Set<string>([
   'CodeElement',
 ]);
 
+type FormattedNodeProperty = readonly [name: string, value: string];
+
+const formatJsonProperty = (value: unknown): string =>
+  formatCypherValue(JSON.stringify(value ?? []));
+
+/**
+ * Metadata columns shared by the direct CREATE and batch MERGE fallbacks.
+ * Keep this aligned with the per-label CSV/COPY contracts above so fallback
+ * writes do not silently lose language-specific graph facts.
+ */
+const formattedCodeNodeMetadata = (
+  label: string,
+  properties: Record<string, unknown>,
+  includeMissing: boolean,
+): FormattedNodeProperty[] => {
+  const formattedProperty = (name: string, value: string): FormattedNodeProperty[] =>
+    includeMissing || Object.prototype.hasOwnProperty.call(properties, name) ? [[name, value]] : [];
+  const stringProperties = (...names: string[]): FormattedNodeProperty[] =>
+    names.flatMap((name) => formattedProperty(name, formatCypherValue(properties[name] ?? '')));
+  const common: FormattedNodeProperty[] = [...stringProperties('language', 'sourceIdentity')];
+
+  switch (label) {
+    case 'Class':
+      return [
+        ...formattedProperty(
+          'frameworkAnnotations',
+          formatCypherStringArray(properties.frameworkAnnotations),
+        ),
+        ...common,
+        ...stringProperties('sourceRole', 'declarationKey'),
+        ...formattedProperty('annotations', formatJsonProperty(properties.annotations)),
+      ];
+    case 'Interface':
+      return [
+        ...common,
+        ...stringProperties('sourceRole', 'declarationKey'),
+        ...formattedProperty('annotations', formatJsonProperty(properties.annotations)),
+      ];
+    case 'Method':
+      return [
+        ...formattedProperty(
+          'parameterCount',
+          formatCypherValue(
+            typeof properties.parameterCount === 'number' ? properties.parameterCount : 0,
+          ),
+        ),
+        ...stringProperties('returnType'),
+        ...common,
+        ...stringProperties('selector'),
+        ...formattedProperty('isStatic', properties.isStatic ? 'true' : 'false'),
+        ...stringProperties('sourceRole', 'declarationKey', 'dispatchKey', 'categoryName'),
+        ...formattedProperty('parameterTypes', formatJsonProperty(properties.parameterTypes)),
+        ...formattedProperty('annotations', formatJsonProperty(properties.annotations)),
+      ];
+    case 'CodeElement':
+      return [
+        ...common,
+        ...stringProperties(
+          'sourceRole',
+          'categoryName',
+          'hostClassName',
+          'declarationKey',
+          'selector',
+        ),
+        ...formattedProperty('annotations', formatJsonProperty(properties.annotations)),
+      ];
+    case 'Property':
+      return [
+        ...stringProperties('declaredType'),
+        ...formattedProperty('isDetail', properties.isDetail === true ? 'true' : 'false'),
+        ...common,
+        ...stringProperties('sourceRole', 'declarationKey', 'getterSelector', 'setterSelector'),
+        ...formattedProperty('annotations', formatJsonProperty(properties.annotations)),
+      ];
+    case 'Enum':
+      return [
+        ...common,
+        ...formattedProperty('annotations', formatJsonProperty(properties.annotations)),
+        ...stringProperties('underlyingType'),
+      ];
+    case 'Variable':
+      return [
+        ...common,
+        ...formattedProperty('annotations', formatJsonProperty(properties.annotations)),
+      ];
+    default:
+      return common;
+  }
+};
+
+const formatCreateMetadata = (label: string, properties: Record<string, unknown>): string =>
+  formattedCodeNodeMetadata(label, properties, true)
+    .map(([name, value]) => `, ${name}: ${value}`)
+    .join('');
+
+const formatMergeMetadata = (label: string, properties: Record<string, unknown>): string =>
+  formattedCodeNodeMetadata(label, properties, false)
+    .map(([name, value]) => `, n.${name} = ${value}`)
+    .join('');
+
 export const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
   if (table === 'File') {
-    return `COPY ${t}(id, name, filePath, content) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, content, language, languageReason, languageClassifierVersion) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Folder') {
     return `COPY ${t}(id, name, filePath) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -1542,20 +1642,35 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, filePath, startLine, endLine, text, callees, calleeIds) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Class') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations, language, sourceIdentity, sourceRole, declarationKey, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Interface') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, language, sourceIdentity, sourceRole, declarationKey, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Function') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, language, sourceIdentity) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Method') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType, language, sourceIdentity, selector, isStatic, sourceRole, declarationKey, dispatchKey, categoryName, parameterTypes, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Property') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail, language, sourceIdentity, sourceRole, declarationKey, getterSelector, setterSelector, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'CodeElement') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, language, sourceIdentity, sourceRole, categoryName, hostClassName, declarationKey, selector, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Enum') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, language, sourceIdentity, annotations, underlyingType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Variable') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, language, sourceIdentity, annotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // Multi-language tables (Struct, Impl, Trait, Macro, etc.)
-  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, language, sourceIdentity) FROM "${filePath}" ${COPY_CSV_OPTS}`;
 };
 
 /**
@@ -1601,23 +1716,23 @@ export const insertNodeToLbug = async (
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:Class {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, frameworkAnnotations: ${formatCypherStringArray(properties.frameworkAnnotations)}})`;
+      query = `CREATE (n:Class {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}${formatCreateMetadata(label, properties)}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}${formatCreateMetadata(label, properties)}})`;
     } else if (label === 'Property') {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, declaredType: ${formatCypherValue(properties.declaredType || '')}, isDetail: ${properties.isDetail === true}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}${formatCreateMetadata(label, properties)}})`;
     } else {
       // Multi-language tables (Struct, Impl, Trait, Macro, etc.) — no isExported
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}${formatCreateMetadata(label, properties)}})`;
     }
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
@@ -1691,22 +1806,22 @@ export const batchInsertNodesToLbug = async (
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:Class {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.frameworkAnnotations = ${formatCypherStringArray(properties.frameworkAnnotations)}`;
+          query = `MERGE (n:Class {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}${formatMergeMetadata(label, properties)}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}${formatMergeMetadata(label, properties)}`;
         } else if (label === 'Property') {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.declaredType = ${formatCypherValue(properties.declaredType || '')}, n.isDetail = ${properties.isDetail === true}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}${formatMergeMetadata(label, properties)}`;
         } else {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}${formatMergeMetadata(label, properties)}`;
         }
 
         await queryAndDrain(tempConn, query);

@@ -14,7 +14,9 @@ import {
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
   PROPERTY_SCHEMA,
+  VARIABLE_SCHEMA,
   CODE_ELEMENT_SCHEMA,
+  ENUM_SCHEMA,
   COMMUNITY_SCHEMA,
   PROCESS_SCHEMA,
   BASICBLOCK_SCHEMA,
@@ -145,6 +147,41 @@ describe('LadybugDB Schema', () => {
 
     it('Function schema has isExported', () => {
       expect(FUNCTION_SCHEMA).toContain('isExported BOOLEAN');
+    });
+
+    it('persists authoritative source language and Objective-C source-site metadata', () => {
+      expect(FILE_SCHEMA).toContain('language STRING');
+      expect(FILE_SCHEMA).toContain('languageReason STRING');
+      expect(FILE_SCHEMA).toContain('languageClassifierVersion INT32');
+      for (const schema of [
+        FUNCTION_SCHEMA,
+        CLASS_SCHEMA,
+        INTERFACE_SCHEMA,
+        METHOD_SCHEMA,
+        CODE_ELEMENT_SCHEMA,
+        PROPERTY_SCHEMA,
+      ]) {
+        expect(schema).toContain('language STRING');
+        expect(schema).toContain('sourceIdentity STRING');
+      }
+      expect(CLASS_SCHEMA).toContain('sourceRole STRING');
+      expect(CLASS_SCHEMA).toContain('annotations STRING');
+      expect(INTERFACE_SCHEMA).toContain('declarationKey STRING');
+      expect(INTERFACE_SCHEMA).toContain('annotations STRING');
+      expect(METHOD_SCHEMA).toContain('selector STRING');
+      expect(METHOD_SCHEMA).toContain('dispatchKey STRING');
+      expect(METHOD_SCHEMA).toContain('parameterTypes STRING');
+      expect(METHOD_SCHEMA).toContain('annotations STRING');
+      expect(PROPERTY_SCHEMA).toContain('getterSelector STRING');
+      expect(PROPERTY_SCHEMA).toContain('setterSelector STRING');
+      expect(CODE_ELEMENT_SCHEMA).toContain('selector STRING');
+      expect(CODE_ELEMENT_SCHEMA).toContain('annotations STRING');
+      expect(CODE_ELEMENT_SCHEMA).toContain('hostClassName STRING');
+      expect(SCHEMA_QUERIES).toContain(ENUM_SCHEMA);
+      expect(ENUM_SCHEMA).toContain('annotations STRING');
+      expect(ENUM_SCHEMA).toContain('underlyingType STRING');
+      expect(SCHEMA_QUERIES).toContain(VARIABLE_SCHEMA);
+      expect(VARIABLE_SCHEMA).toContain('annotations STRING');
     });
 
     it('Property schema preserves declaredType', () => {

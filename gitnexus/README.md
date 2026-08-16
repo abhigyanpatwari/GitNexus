@@ -342,7 +342,7 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, and experimental Objective-C core
 
 ### Language Feature Matrix
 
@@ -362,8 +362,11 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 | C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Objective-C† | ✓     | —              | ✓       | ✓        | ✓                | —                     | —      | —          | —            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
+
+† Objective-C core support is **experimental**: `.m` and content-classified `.h` files support interfaces, implementations, protocols, categories/extensions, signed selectors, properties, message sends, imports, inheritance, and local blocks. Objective-C++ (`.mm`), Swift bridging, Apple SDK/framework semantics, and CFG/PDG are not yet supported. Production status remains gated on the frozen real-world corpus and the full prebuild platform matrix.
 
 ## Agent Skills
 
@@ -520,7 +523,7 @@ results until you re-run `gitnexus analyze --repair-fts` from a shell where the 
 
 ### Installation fails with native module errors
 
-Some optional language grammars (Dart, Proto, Swift, Kotlin) require native compilation. If they fail, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
+Some optional language grammars (Dart, Proto, Swift, Kotlin, Objective-C) require a matching native prebuild or local compilation. If one fails, GitNexus still works — only that language is skipped. To skip all optional grammars intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
 
 If `npm install -g gitnexus` fails on native modules:
 

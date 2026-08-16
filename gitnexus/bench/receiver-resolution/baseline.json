@@ -199,12 +199,13 @@
     }
   },
   "countArm": {
-    "callDrops": 102,
-    "totalDropsAllKinds": 148,
+    "callDrops": 104,
+    "totalDropsAllKinds": 151,
     "bySiteKind": {
-      "call": 102,
+      "call": 104,
       "read": 27,
-      "write": 19
+      "write": 19,
+      "<<unset>>": 1
     },
     "callDropsByExtension": {
       ".java": 49,
@@ -218,19 +219,20 @@
       ".kt": 4,
       ".rs": 3,
       ".rb": 2,
+      ".m": 2,
       ".js": 1,
       ".swift": 1
     },
     "callDropsByShape": {
       "chain-field": 60,
-      "chain-call": 27,
+      "chain-call": 29,
       "no-chain": 12,
       "chain-mixed": 2,
       "chain-unwrap": 1
     },
     "callDropsByOrigin": {
       "external": 44,
-      "in-program": 36,
+      "in-program": 38,
       "unknown": 22
     }
   }

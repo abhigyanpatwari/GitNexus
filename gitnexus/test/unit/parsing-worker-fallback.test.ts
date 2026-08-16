@@ -31,6 +31,7 @@ import type { WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js
 import { WorkerPoolDispatchError } from '../../src/core/ingestion/workers/worker-pool.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 describe('processParsing — worker-pool error propagation (U20)', () => {
   it('propagates a raw worker-pool throw to the caller without rescuing', async () => {
@@ -46,7 +47,13 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     await expect(
       processParsing(
         graph,
-        [{ path: 'src/a.ts', content: 'export function a() { return 1; }\n' }],
+        [
+          {
+            path: 'src/a.ts',
+            content: 'export function a() { return 1; }\n',
+            language: SupportedLanguages.TypeScript,
+          },
+        ],
         createSymbolTable(),
         workerPool,
         () => {},
@@ -75,8 +82,16 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     const rejection = processParsing(
       graph,
       [
-        { path: 'src/poison.ts', content: 'export function poison() { return 0; }\n' },
-        { path: 'src/a.ts', content: 'export function a() { return 1; }\n' },
+        {
+          path: 'src/poison.ts',
+          content: 'export function poison() { return 0; }\n',
+          language: SupportedLanguages.TypeScript,
+        },
+        {
+          path: 'src/a.ts',
+          content: 'export function a() { return 1; }\n',
+          language: SupportedLanguages.TypeScript,
+        },
       ],
       createSymbolTable(),
       workerPool,
@@ -122,8 +137,16 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
     const result = await processParsing(
       graph,
       [
-        { path: 'src/poison.ts', content: 'export function poison() { return 0; }\n' },
-        { path: 'src/a.ts', content: 'export function a() { return 1; }\n' },
+        {
+          path: 'src/poison.ts',
+          content: 'export function poison() { return 0; }\n',
+          language: SupportedLanguages.TypeScript,
+        },
+        {
+          path: 'src/a.ts',
+          content: 'export function a() { return 1; }\n',
+          language: SupportedLanguages.TypeScript,
+        },
       ],
       createSymbolTable(),
       workerPool,

@@ -109,6 +109,9 @@ export const DEFINITION_CAPTURE_KEYS = [
   'definition.annotation',
   'definition.constructor',
   'definition.template',
+  // Generic provider-owned source-site wrapper. Kept last so every
+  // established definition capture retains its existing priority.
+  'definition.code_element',
 ] as const;
 
 /** Extract the definition node from a tree-sitter query capture map. */
@@ -321,6 +324,8 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Dart
   'function_signature',
   'method_signature',
+  // Objective-C
+  'block_literal',
 ]);
 
 /**
@@ -357,6 +362,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // PHP
   'enum_declaration',
   'protocol_declaration',
+  // Objective-C
+  'class_interface',
+  'class_implementation',
   // Dart
   'mixin_declaration',
   'extension_declaration',
@@ -422,6 +430,8 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   enum_declaration: 'Enum',
   record_declaration: 'Record',
   protocol_declaration: 'Interface',
+  class_interface: 'Class',
+  class_implementation: 'Class',
   mixin_declaration: 'Mixin',
   extension_declaration: 'Class',
   class: 'Class',
@@ -562,6 +572,14 @@ export function getLabelFromCaptures(
   const hasDefaultExportHocNameSeed =
     captureMap['definition.function'] !== undefined &&
     (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
+  const providerCallableNode =
+    captureMap['definition.method'] ??
+    captureMap['definition.function'] ??
+    captureMap['definition.code_element'];
+  const providerNamedCallable =
+    captureMap['name'] === undefined && providerCallableNode !== undefined
+      ? provider.methodExtractor?.extractFunctionName?.(providerCallableNode)?.funcName
+      : null;
   // Nameless `definition.class` passes through: a class extractor may
   // synthesize the name (Java anonymous class bodies → `Worker$N`, #2550).
   // Downstream stays safe — parse-worker skips any nameless definition the
@@ -570,6 +588,7 @@ export function getLabelFromCaptures(
     !captureMap['name'] &&
     !captureMap['definition.constructor'] &&
     !captureMap['definition.class'] &&
+    !providerNamedCallable &&
     !hasDefaultExportHocNameSeed
   )
     return null;
@@ -613,6 +632,7 @@ export function getLabelFromCaptures(
   if (captureMap['definition.annotation']) return 'Annotation';
   if (captureMap['definition.constructor']) return 'Constructor';
   if (captureMap['definition.template']) return 'Template';
+  if (captureMap['definition.code_element']) return 'CodeElement';
   return 'CodeElement';
 }
 

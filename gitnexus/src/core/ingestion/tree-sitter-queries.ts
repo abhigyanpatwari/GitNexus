@@ -1323,6 +1323,70 @@ export const C_QUERIES = `
     declarator: (identifier) @name)) @definition.variable
 `;
 
+// Objective-C extends the C grammar, so its ingestion query deliberately keeps
+// the complete C capture surface and adds only Objective-C-specific nodes.
+export const OBJECTIVE_C_QUERIES = `${C_QUERIES}
+; Objective-C classes, implementations, protocols, properties, and methods
+(class_interface (identifier) @name) @definition.class
+(class_implementation (identifier) @name) @definition.class
+(protocol_declaration (identifier) @name) @definition.interface
+(property_declaration
+  (struct_declaration
+    (struct_declarator (identifier) @name))) @definition.property
+(property_declaration
+  (struct_declaration
+    (struct_declarator
+      (pointer_declarator declarator: (identifier) @name)))) @definition.property
+(method_declaration) @definition.method
+(method_definition) @definition.method
+
+; Category/class-extension source sites. The provider synthesizes the composed
+; Foo(Category) / Foo(<extension>) name from the captured identifier's parent.
+(class_interface category: (identifier) @definition.code_element)
+(class_implementation category: (identifier) @definition.code_element)
+(class_interface
+  (identifier) @definition.code_element
+  "("
+  ")")
+
+; Selector literals are source facts, not callable references. The provider
+; supplies the complete @selector(...) display name and a position-stable id.
+(selector_expression) @definition.code_element
+
+; Lightweight forward declarations.
+(class_declaration (identifier) @name) @definition.class
+(protocol_forward_declaration (identifier) @name) @definition.interface
+
+; Instance variables remain Variable nodes; provider-owned member metadata
+; links them to their logical class during Objective-C graph enrichment.
+(instance_variable
+  (struct_declaration
+    (struct_declarator (identifier) @name))) @definition.variable
+(instance_variable
+  (struct_declaration
+    (struct_declarator
+      (pointer_declarator declarator: (identifier) @name)))) @definition.variable
+
+; Block typedefs, block-valued variables, and anonymous block functions.
+(type_definition
+  declarator: (function_declarator
+    declarator: (parenthesized_declarator
+      (block_pointer_declarator declarator: (type_identifier) @name)))) @definition.typedef
+(declaration
+  declarator: (init_declarator
+    declarator: (function_declarator
+      declarator: (parenthesized_declarator
+        (block_pointer_declarator declarator: (identifier) @name)))
+    value: (block_literal))) @definition.variable
+(block_literal) @definition.function
+
+; Clang modules.
+(module_import path: (identifier) @import.source) @import
+
+; Objective-C message sends. Selector normalization is provider-owned.
+(message_expression) @call
+`;
+
 // Go queries - works with tree-sitter-go
 export const GO_QUERIES = `
 ; Functions & Methods
@@ -2455,6 +2519,7 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Python]: PYTHON_QUERIES,
   [SupportedLanguages.Java]: JAVA_QUERIES,
   [SupportedLanguages.C]: C_QUERIES,
+  [SupportedLanguages.ObjectiveC]: OBJECTIVE_C_QUERIES,
   [SupportedLanguages.Go]: GO_QUERIES,
   [SupportedLanguages.CPlusPlus]: CPP_QUERIES,
   [SupportedLanguages.CSharp]: CSHARP_QUERIES,

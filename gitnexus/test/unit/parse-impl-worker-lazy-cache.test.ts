@@ -16,6 +16,14 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { computeChunkHash, fileContentHash } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+import { SOURCE_LANGUAGE_CLASSIFIER_VERSION, SupportedLanguages } from 'gitnexus-shared';
+
+const classifiedChunkEntry = (filePath: string, content: string) => ({
+  filePath,
+  contentHash: fileContentHash(content),
+  language: SupportedLanguages.TypeScript,
+  classifierVersion: SOURCE_LANGUAGE_CLASSIFIER_VERSION,
+});
 
 const emptyWorkerResult = (filePath: string, name: string): ParseWorkerResult => ({
   nodes: [
@@ -128,7 +136,7 @@ describe('parse-impl worker pool lazy startup', () => {
     fs.mkdirSync(path.dirname(full), { recursive: true });
     fs.writeFileSync(full, content);
 
-    const chunkHash = computeChunkHash([{ filePath: rel, contentHash: fileContentHash(content) }]);
+    const chunkHash = computeChunkHash([classifiedChunkEntry(rel, content)]);
     const parseCache = {
       version: 'test',
       entries: new Map<string, ParseWorkerResult[]>([
@@ -178,7 +186,7 @@ describe('parse-impl worker pool lazy startup', () => {
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };
-    const chunkHash = computeChunkHash([{ filePath: rel, contentHash: fileContentHash(content) }]);
+    const chunkHash = computeChunkHash([classifiedChunkEntry(rel, content)]);
 
     const graph = createKnowledgeGraph();
     await runChunkedParseAndResolve(

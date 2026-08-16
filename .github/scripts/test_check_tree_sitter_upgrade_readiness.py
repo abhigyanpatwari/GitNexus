@@ -343,11 +343,11 @@ class ReportRendering(TestCase):
         cells = [c.strip() for c in self._matrix_row("tree-sitter-swift").strip().strip("|").split("|")]
         self.assertEqual(cells[6], "n/a")  # Upstream ABI column
 
-    def test_row_diff_regex_captures_all_fifteen_grammar_statuses(self):
+    def test_row_diff_regex_captures_every_registered_grammar_status(self):
         # The change-detection bot keys on this regex: group 1 = grammar name,
         # group 2 = the Status cell ONLY (not the whole tail). It must match every
         # row after the format change so status transitions keep being detected.
-        self.assertEqual(len(self.rows), 15)
+        self.assertEqual(len(self.rows), len(readiness.GRAMMARS))
         for name in readiness.VENDORED_NAMES:
             self.assertIn(name, self.rows)
         # group 2 is the Status cell — held c renders exactly "Vendored — held",
@@ -364,15 +364,12 @@ class ReportRendering(TestCase):
         # Counts are derived from _render_report()'s mock corpus (all npm peer
         # deps mocked permissive): of the 10 npm-installed grammars, 9 render
         # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
-        # not counted ready. The 3 blockers are that same pinned tree-sitter-cpp
-        # plus two held vendored grammars: ABI-held tree-sitter-c (#1242/#858) and
-        # tree-sitter-kotlin (pinned to an unreleased fwcd main commit for `fun
-        # interface` support — ABI 14 is in range, but a hold counts as a blocker
-        # until it is lifted). If a grammar is added/removed or a pin/hold changes,
-        # update _render_report()'s mock AND these expected counts together; a
-        # mismatch here means the report prose drifted, not the regex.
+        # not counted ready. Blockers are that same pinned tree-sitter-cpp plus
+        # every held vendored grammar. Derive the latter from the shared manifest
+        # so adding a pinned grammar cannot silently desynchronise report tests.
         self.assertEqual(ready.groups(), ("9", "10"))
-        self.assertEqual(blockers.group(1), "3")
+        held_vendored = sum(1 for g in readiness.VENDORED.values() if g.get("hold"))
+        self.assertEqual(blockers.group(1), str(1 + held_vendored))
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():

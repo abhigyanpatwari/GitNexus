@@ -4,7 +4,11 @@
  * used by both chunker.ts and structural-extractor.ts.
  */
 
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import {
+  getLanguageCandidateFromFilename,
+  getLanguageFromFilename,
+  type SupportedLanguages,
+} from 'gitnexus-shared';
 import {
   createParserForLanguage,
   isLanguageAvailable,
@@ -19,8 +23,17 @@ const parserCache = new Map<string, any>();
  * Ensure parser is initialized and language is loaded, then parse content.
  * Returns null if language is unavailable or parsing fails.
  */
-export const ensureAndParse = async (content: string, filePath: string): Promise<any | null> => {
-  const language = getLanguageFromFilename(filePath);
+export const ensureAndParse = async (
+  content: string,
+  filePath: string,
+  explicitLanguage?: SupportedLanguages,
+): Promise<any | null> => {
+  if (explicitLanguage === undefined) {
+    const candidate = getLanguageCandidateFromFilename(filePath);
+    if (candidate?.kind === 'unsupported' || candidate?.requiresContentClassification) return null;
+  }
+
+  const language = explicitLanguage ?? getLanguageFromFilename(filePath);
   if (!language) return null;
   if (!isLanguageAvailable(language)) return null;
 

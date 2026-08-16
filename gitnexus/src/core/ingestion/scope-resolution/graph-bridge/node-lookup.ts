@@ -26,6 +26,7 @@ import {
 } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
+import { stripSourceIdentityIdTag } from '../../utils/source-identity.js';
 
 export type GraphNodeLookup = ReadonlyMap<string, string>;
 
@@ -44,7 +45,7 @@ function parseQualifiedFromId(id: string, label: NodeLabel, filePath: string): s
   const suffix = id.slice(prefix.length);
   if (suffix.length === 0) return undefined;
   const hash = suffix.indexOf('#');
-  return hash === -1 ? suffix : suffix.slice(0, hash);
+  return stripSourceIdentityIdTag(hash === -1 ? suffix : suffix.slice(0, hash));
 }
 
 function stripCallableDisambiguatorTags(qualifiedName: string): string {
@@ -68,6 +69,15 @@ export function qualifiedKey(filePath: string, label: NodeLabel, qualifiedName: 
 /** Simple-name key (legacy fallback keyspace — no `<q>` prefix). */
 export function simpleKey(filePath: string, name: string): string {
   return `${filePath}::${name}`;
+}
+
+/** Exact source-site key, isolated from all legacy name-based keyspaces. */
+export function sourceIdentityKey(
+  filePath: string,
+  label: NodeLabel,
+  sourceIdentity: string,
+): string {
+  return `<s>:${filePath}::${label}::${sourceIdentity}`;
 }
 
 /**
@@ -131,9 +141,14 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       name?: string;
       qualifiedName?: string;
       templateArguments?: readonly string[];
+      sourceIdentity?: string;
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
+
+    if (props.sourceIdentity !== undefined && props.sourceIdentity.length > 0) {
+      lookup.set(sourceIdentityKey(props.filePath, node.label, props.sourceIdentity), node.id);
+    }
 
     // Position key (#2699) — see `positionKey`. Second write on a key marks it
     // ambiguous rather than letting source order decide.

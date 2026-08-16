@@ -75,6 +75,7 @@ import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { computeChunkHash, fileContentHash } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+import { SOURCE_LANGUAGE_CLASSIFIER_VERSION, SupportedLanguages } from 'gitnexus-shared';
 
 /**
  * Inline READY preamble + IPC decode wrapper (mirrors
@@ -224,6 +225,8 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
       filePaths.map((p) => ({
         filePath: p,
         contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
+        language: SupportedLanguages.TypeScript,
+        classifierVersion: SOURCE_LANGUAGE_CLASSIFIER_VERSION,
       })),
     );
 
@@ -308,6 +311,8 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
       filePaths.map((p) => ({
         filePath: p,
         contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
+        language: SupportedLanguages.TypeScript,
+        classifierVersion: SOURCE_LANGUAGE_CLASSIFIER_VERSION,
       })),
     );
 

@@ -81,7 +81,7 @@ const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
  * invalidate existing vectors, such as metadata/header shape changes,
  * structural container context changes, or preceding-context formatting rules.
  */
-export const EMBEDDING_TEXT_VERSION = 'v4';
+export const EMBEDDING_TEXT_VERSION = 'v5';
 
 /**
  * Compute a stable content fingerprint for an embeddable node.
@@ -131,7 +131,8 @@ const queryEmbeddableNodes = async (
                  n.filePath AS filePath, n.content AS content,
                  n.startLine AS startLine, n.endLine AS endLine,
                  n.isExported AS isExported, n.description AS description,
-                 n.parameterCount AS parameterCount, n.returnType AS returnType
+                 n.parameterCount AS parameterCount, n.returnType AS returnType,
+                 n.language AS language
         `;
       } else if (LABELS_WITH_EXPORTED.has(label)) {
         // Function, Class, Interface have isExported and description
@@ -140,7 +141,8 @@ const queryEmbeddableNodes = async (
           RETURN n.id AS id, n.name AS name, '${label}' AS label,
                  n.filePath AS filePath, n.content AS content,
                  n.startLine AS startLine, n.endLine AS endLine,
-                 n.isExported AS isExported, n.description AS description
+                 n.isExported AS isExported, n.description AS description,
+                 n.language AS language
         `;
       } else {
         // Multi-language tables (Struct, Enum, etc.) — have description but no isExported
@@ -149,7 +151,7 @@ const queryEmbeddableNodes = async (
           RETURN n.id AS id, n.name AS name, '${label}' AS label,
                  n.filePath AS filePath, n.content AS content,
                  n.startLine AS startLine, n.endLine AS endLine,
-                 n.description AS description
+                 n.description AS description, n.language AS language
         `;
       }
 
@@ -166,6 +168,7 @@ const queryEmbeddableNodes = async (
           endLine: row.endLine ?? row[6],
           isExported: hasExportedColumn ? (row.isExported ?? row[7]) : undefined,
           description: row.description ?? (hasExportedColumn ? row[8] : row[7]),
+          language: row.language ?? row[label === LABEL_METHOD ? 11 : hasExportedColumn ? 9 : 8],
           ...(label === LABEL_METHOD
             ? {
                 parameterCount: row.parameterCount ?? row[9],
@@ -198,7 +201,8 @@ const queryFallbackFileNodes = async (
     const rows = await executeQuery(`
       MATCH (n:File)
       RETURN n.id AS id, n.name AS name, 'File' AS label,
-             n.filePath AS filePath, n.content AS content
+             n.filePath AS filePath, n.content AS content,
+             n.language AS language
     `);
 
     return rows
@@ -210,6 +214,7 @@ const queryFallbackFileNodes = async (
           label: row.label ?? row[2] ?? 'File',
           filePath: row.filePath ?? row[3],
           content,
+          language: row.language ?? row[5],
           startLine: 1,
           endLine: Math.max(1, content.split('\n').length),
         };
@@ -745,7 +750,7 @@ export const runEmbeddingPipeline = async (
         // Extract structural names for class-like nodes via AST extractors
         if (!isShort && STRUCTURAL_LABELS.has(node.label)) {
           try {
-            const names = await extractStructuralNames(node.content, node.filePath);
+            const names = await extractStructuralNames(node.content, node.filePath, node.language);
             node.methodNames = names.methodNames;
             node.fieldNames = names.fieldNames;
           } catch {
@@ -769,6 +774,7 @@ export const runEmbeddingPipeline = async (
               endLine,
               chunkSize,
               overlap,
+              node.language,
             );
           } catch (chunkErr) {
             if (isDev) {

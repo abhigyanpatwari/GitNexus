@@ -43,10 +43,11 @@ function fakeProvider(importResolver: ImportResolverFn | undefined): LanguagePro
 
 function workspace(
   entries: Array<[SupportedLanguages, ImportResolverFn | undefined]>,
+  sourceLanguages: ReadonlyMap<string, SupportedLanguages> = new Map(),
 ): ImportTargetWorkspace {
   const providers = new Map<SupportedLanguages, LanguageProvider>();
   for (const [lang, resolver] of entries) providers.set(lang, fakeProvider(resolver));
-  return buildImportTargetWorkspace(providers, emptyCtx);
+  return buildImportTargetWorkspace(providers, emptyCtx, sourceLanguages);
 }
 
 // ─── buildImportTargetWorkspace ────────────────────────────────────────────
@@ -99,6 +100,27 @@ describe('resolveImportTargetAcrossLanguages', () => {
     ]);
     expect(resolveImportTargetAcrossLanguages('x', 'a.py', ws)).toBe('resolved.py');
     expect(resolveImportTargetAcrossLanguages('x', 'a.ts', ws)).toBe('resolved.ts');
+  });
+
+  it('routes ambiguous headers by persisted authoritative language', () => {
+    const cppResolver: ImportResolverFn = () => ({ kind: 'files', files: ['wrong.hpp'] });
+    const objectiveCResolver: ImportResolverFn = () => ({ kind: 'files', files: ['Service.m'] });
+    const ws = workspace(
+      [
+        [SupportedLanguages.CPlusPlus, cppResolver],
+        [SupportedLanguages.ObjectiveC, objectiveCResolver],
+      ],
+      new Map([['Service.h', SupportedLanguages.ObjectiveC]]),
+    );
+
+    expect(resolveImportTargetAcrossLanguages('Service', 'Service.h', ws)).toBe('Service.m');
+  });
+
+  it('does not guess an ambiguous header language when the manifest is absent', () => {
+    const cppResolver: ImportResolverFn = () => ({ kind: 'files', files: ['wrong.hpp'] });
+    const ws = workspace([[SupportedLanguages.CPlusPlus, cppResolver]]);
+
+    expect(resolveImportTargetAcrossLanguages('Service', 'Service.h', ws)).toBeNull();
   });
 
   it('returns null when the resolver returns null', () => {

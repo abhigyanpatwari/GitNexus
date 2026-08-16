@@ -368,6 +368,9 @@ export type ParsedImport =
        *  deferred — `use` does not execute
        *  (`LanguageProvider.importsExecuteWhereWritten`). */
       readonly runsOnlyWhenCalled?: boolean;
+      /** C-family angle-bracket/system form. Resolvers may use this to avoid
+       * quoted-header sibling precedence while still resolving local frameworks. */
+      readonly isSystem?: boolean;
     }
   /**
    * Runtime-computed target — the import path is not a static literal at
@@ -490,6 +493,8 @@ export interface ScopeLookup {
 export interface Callsite {
   /** Number of arguments at the call site, if available. */
   readonly arity?: number;
+  /** Candidate member spellings attached by syntax-sugar capture emitters. */
+  readonly candidateNames?: readonly string[];
   /** Inferred argument types at the call site, one per argument.
    *  An empty string entry means the type was not inferred. */
   readonly argumentTypes?: readonly string[];

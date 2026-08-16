@@ -707,6 +707,9 @@ function buildDefFromDeclarationMatch(
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
   const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
+  const isStatic = parseBooleanCapture(match['@declaration.is-static']);
+  const annotations = parseJsonStringArrayCapture(match['@declaration.annotations']);
+  const sourceIdentity = match['@declaration.source-identity']?.text;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -725,6 +728,9 @@ function buildDefFromDeclarationMatch(
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
+    ...(isStatic !== undefined ? { isStatic } : {}),
+    ...(annotations !== undefined ? { annotations } : {}),
+    ...(sourceIdentity !== undefined ? { sourceIdentity } : {}),
   };
 }
 
@@ -892,6 +898,10 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
       return 'Module';
     case 'macro':
       return 'Macro';
+    case 'code-element':
+    case 'code_element':
+    case 'codeelement':
+      return 'CodeElement';
     default:
       return undefined;
   }
@@ -1279,6 +1289,7 @@ function pass5CollectReferences(
         : undefined;
     const explicitReceiver = extractExplicitReceiver(match);
     const arity = extractArity(match);
+    const candidateNames = extractCandidateNames(match);
     const argumentTypes = extractArgumentTypes(match);
     const argumentTypeClasses = parseJsonParameterTypeClassesCapture(
       match['@reference.parameter-type-classes'],
@@ -1324,6 +1335,7 @@ function pass5CollectReferences(
       ...(callForm !== undefined ? { callForm } : {}),
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
       ...(arity !== undefined ? { arity } : {}),
+      ...(candidateNames !== undefined ? { candidateNames } : {}),
       ...(argumentTypes !== undefined ? { argumentTypes } : {}),
       ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
       ...(receiverChain !== undefined ? { receiverChain } : {}),
@@ -1471,6 +1483,25 @@ function extractArity(match: CaptureMatch): number | undefined {
   if (cap === undefined) return undefined;
   const n = Number.parseInt(cap.text, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function extractCandidateNames(match: CaptureMatch): readonly string[] | undefined {
+  const cap = match['@reference.candidate-names'];
+  if (cap === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(cap.text);
+    if (
+      Array.isArray(parsed) &&
+      parsed.length > 0 &&
+      parsed.length <= 16 &&
+      parsed.every((value) => typeof value === 'string' && value.length > 0)
+    ) {
+      return parsed;
+    }
+  } catch {
+    /* malformed — fall through */
+  }
+  return undefined;
 }
 
 function extractArgumentTypes(match: CaptureMatch): readonly string[] | undefined {
@@ -1796,6 +1827,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',
+  '@reference.candidate-names',
   '@reference.parameter-types',
   '@reference.parameter-type-classes',
   '@declaration.parameter-count',

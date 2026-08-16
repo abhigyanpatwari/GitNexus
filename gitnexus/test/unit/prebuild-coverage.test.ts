@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { LanguageClassifications, SupportedLanguages } from 'gitnexus-shared';
 
 /**
  * Regression guard: every tree-sitter grammar GitNexus ships must provide a
@@ -136,6 +137,36 @@ describe('vendored grammar prebuild coverage (toolchain-free on every supported 
       },
     );
   }
+});
+
+describe('Objective-C production readiness gate', () => {
+  it('keeps Objective-C experimental until prebuild and frozen-corpus prerequisites exist', () => {
+    const objectiveCGrammar = path.join(VENDOR_DIR, 'tree-sitter-objc');
+    const { covered, nonNapi } = prebuiltTuples(objectiveCGrammar);
+    const missing = TUPLES.filter((tuple) => !covered.has(tuple));
+    const corpusManifest = path.resolve(
+      GITNEXUS_ROOT,
+      '..',
+      'eval',
+      'objective_c_corpus',
+      'manifest.json',
+    );
+    const classification = LanguageClassifications[SupportedLanguages.ObjectiveC];
+
+    if (classification === 'production') {
+      expect(nonNapi, 'Objective-C production prebuilds must all use N-API').toEqual([]);
+      expect(
+        missing,
+        'Objective-C cannot be production before all six platform prebuilds are committed',
+      ).toEqual([]);
+      expect(
+        existsSync(corpusManifest),
+        'Objective-C cannot be production before the frozen corpus manifest is committed',
+      ).toBe(true);
+    } else {
+      expect(classification).toBe('experimental');
+    }
+  });
 });
 
 describe('npm-dependency grammar prebuild coverage', () => {

@@ -26,6 +26,7 @@ import type { KnowledgeGraph } from '../../src/core/graph/types.js';
 import type { MutableSemanticModel } from '../../src/core/ingestion/model/index.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 import type { ExportedTypeMap } from '../../src/core/ingestion/call-processor.js';
+import { classifySourceLanguage } from 'gitnexus-shared';
 
 const HELPER_DIR = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,9 +62,19 @@ export const parseFilesWithWorkers = async (
   const model = createSemanticModel();
   const pool = createWorkerPool(DIST_WORKER_URL, opts.poolSize ?? 1);
   try {
+    const classifiedFiles = files.flatMap((file) => {
+      const classification = classifySourceLanguage({
+        filePath: file.path,
+        content: file.content,
+        projectContext: { hasXcodeProject: false },
+      });
+      return classification.language === null
+        ? []
+        : [{ ...file, language: classification.language }];
+    });
     const data = await processParsing(
       graph,
-      files,
+      classifiedFiles,
       model.symbols,
       pool,
       undefined,

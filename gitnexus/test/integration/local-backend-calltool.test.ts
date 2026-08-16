@@ -729,6 +729,104 @@ withTestLbugDB(
   },
 );
 
+// ─── Objective-C unsigned selector lookup ───────────────────────────────
+withTestLbugDB(
+  'resolver-objective-c-selector',
+  (handle) => {
+    describe('Objective-C unsigned selector lookup', () => {
+      let backend: LocalBackend;
+
+      beforeAll(() => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) throw new Error('LocalBackend not initialized');
+        backend = ext._backend;
+      });
+
+      it('falls back from an unsigned selector to a uniquely filtered Objective-C method', async () => {
+        const result = await backend.callTool('context', {
+          name: 'registerModule',
+          file_path: 'InstanceManager.m',
+        });
+
+        expect(result).toMatchObject({
+          status: 'found',
+          symbol: {
+            uid: 'Method:src/objc/InstanceManager.m:InstanceManager.-registerModule',
+            name: '-registerModule',
+            kind: 'Method',
+          },
+        });
+      });
+
+      it('preserves ambiguity between class and instance selector spellings', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'registerModule',
+          direction: 'upstream',
+        });
+
+        expect(result).toMatchObject({ status: 'ambiguous', totalCandidates: 2 });
+        expect(
+          (result.candidates as Array<{ name: string }>).map((candidate) => candidate.name),
+        ).toEqual(expect.arrayContaining(['-registerModule', '+registerModule']));
+      });
+
+      it('keeps an exact non-Objective-C name ahead of selector fallback', async () => {
+        const result = await backend.callTool('context', { name: 'registerModuleExact' });
+
+        expect(result).toMatchObject({
+          status: 'found',
+          symbol: {
+            uid: 'Function:src/tools.ts:registerModuleExact',
+            name: 'registerModuleExact',
+            kind: 'Function',
+          },
+        });
+      });
+
+      it('does not treat signed methods from another language as Objective-C selectors', async () => {
+        const result = await backend.callTool('context', { name: 'foreignOnly' });
+
+        expect(result.error).toMatch(/not found/i);
+      });
+
+      it('does not apply selector fallback for an explicitly non-Method kind', async () => {
+        const result = await backend.callTool('context', {
+          name: 'syncOnly',
+          kind: 'Function',
+        });
+
+        expect(result.error).toMatch(/not found/i);
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (:Method {id: 'Method:src/objc/InstanceManager.m:InstanceManager.-registerModule', name: '-registerModule', filePath: 'src/objc/InstanceManager.m', language: 'objective-c', startLine: 10, endLine: 15, isExported: false, content: '- (void)registerModule {}', description: ''})`,
+      `CREATE (:Method {id: 'Method:src/objc/ClassManager.m:ClassManager.+registerModule', name: '+registerModule', filePath: 'src/objc/ClassManager.m', language: 'objective-c', startLine: 20, endLine: 25, isExported: false, content: '+ (void)registerModule {}', description: ''})`,
+      `CREATE (:Function {id: 'Function:src/tools.ts:registerModuleExact', name: 'registerModuleExact', filePath: 'src/tools.ts', startLine: 1, endLine: 3, isExported: true, content: 'function registerModuleExact() {}', description: ''})`,
+      `CREATE (:Method {id: 'Method:src/objc/ExactManager.m:ExactManager.-registerModuleExact', name: '-registerModuleExact', filePath: 'src/objc/ExactManager.m', language: 'objective-c', startLine: 26, endLine: 29, isExported: false, content: '- (void)registerModuleExact {}', description: ''})`,
+      `CREATE (:Method {id: 'Method:src/objc/SyncManager.m:SyncManager.-syncOnly', name: '-syncOnly', filePath: 'src/objc/SyncManager.m', language: 'objective-c', startLine: 30, endLine: 35, isExported: false, content: '- (void)syncOnly {}', description: ''})`,
+      `CREATE (:Method {id: 'Method:src/kotlin/Foreign.kt:Foreign.-foreignOnly', name: '-foreignOnly', filePath: 'src/kotlin/Foreign.kt', language: 'kotlin', startLine: 1, endLine: 3, isExported: false, content: 'foreign signed method', description: ''})`,
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'objc-selector-repo',
+          path: '/objc-selector/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 5, nodes: 6, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as any)._backend = backend;
+    },
+  },
+);
+
 // ─── context ref window must SPREAD across categories (#2787 review F1) ──
 // See the incoming-ref window in `_contextImpl` (#2787 F1) for why the 30-row
 // page is keyed `ORDER BY uid, relType` and not category-major.

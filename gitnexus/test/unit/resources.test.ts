@@ -266,6 +266,10 @@ describe('readResource', () => {
     expect(result).toContain('GitNexus Graph Schema');
     expect(result).toContain('CALLS');
     expect(result).toContain('IMPORTS');
+    expect(result).toContain('languageReason (STRING)');
+    expect(result).toContain('selector (STRING)');
+    expect(result).toContain('sourceRole (STRING)');
+    expect(result).toContain('parameterTypes (JSON STRING)');
   });
 
   it('routes gitnexus://repo/{name}/clusters correctly', async () => {

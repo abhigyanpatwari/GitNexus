@@ -30,6 +30,9 @@ CREATE NODE TABLE File (
   name STRING,
   filePath STRING,
   content STRING,
+  language STRING,
+  languageReason STRING,
+  languageClassifierVersion INT32,
   PRIMARY KEY (id)
 )`;
 
@@ -51,6 +54,8 @@ CREATE NODE TABLE Function (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  language STRING,
+  sourceIdentity STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -65,6 +70,11 @@ CREATE NODE TABLE Class (
   content STRING,
   description STRING,
   frameworkAnnotations STRING[],
+  language STRING,
+  sourceIdentity STRING,
+  sourceRole STRING,
+  declarationKey STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -78,6 +88,11 @@ CREATE NODE TABLE Interface (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  language STRING,
+  sourceIdentity STRING,
+  sourceRole STRING,
+  declarationKey STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -93,6 +108,16 @@ CREATE NODE TABLE Method (
   description STRING,
   parameterCount INT32,
   returnType STRING,
+  language STRING,
+  sourceIdentity STRING,
+  selector STRING,
+  isStatic BOOLEAN,
+  sourceRole STRING,
+  declarationKey STRING,
+  dispatchKey STRING,
+  categoryName STRING,
+  parameterTypes STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -106,6 +131,14 @@ CREATE NODE TABLE CodeElement (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  language STRING,
+  sourceIdentity STRING,
+  sourceRole STRING,
+  categoryName STRING,
+  hostClassName STRING,
+  declarationKey STRING,
+  selector STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -158,11 +191,27 @@ CREATE NODE TABLE \`${name}\` (
   endLine INT64,
   content STRING,
   description STRING,
+  language STRING,
+  sourceIdentity STRING,
   PRIMARY KEY (id)
 )`;
 
 export const STRUCT_SCHEMA = CODE_ELEMENT_BASE('Struct');
-export const ENUM_SCHEMA = CODE_ELEMENT_BASE('Enum');
+export const ENUM_SCHEMA = `
+CREATE NODE TABLE \`Enum\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  sourceIdentity STRING,
+  annotations STRING,
+  underlyingType STRING,
+  PRIMARY KEY (id)
+)`;
 export const MACRO_SCHEMA = CODE_ELEMENT_BASE('Macro');
 export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE('Typedef');
 export const UNION_SCHEMA = CODE_ELEMENT_BASE('Union');
@@ -172,7 +221,20 @@ export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
 export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
 export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
-export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
+export const VARIABLE_SCHEMA = `
+CREATE NODE TABLE \`Variable\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  sourceIdentity STRING,
+  annotations STRING,
+  PRIMARY KEY (id)
+)`;
 export const PROPERTY_SCHEMA = `
 CREATE NODE TABLE \`Property\` (
   id STRING,
@@ -202,6 +264,13 @@ CREATE NODE TABLE \`Property\` (
    * Property table only; every other consumer sees them normally.
    */
   isDetail BOOLEAN,
+  language STRING,
+  sourceIdentity STRING,
+  sourceRole STRING,
+  declarationKey STRING,
+  getterSelector STRING,
+  setterSelector STRING,
+  annotations STRING,
   PRIMARY KEY (id)
 )`;
 export const RECORD_SCHEMA = CODE_ELEMENT_BASE('Record');
@@ -510,6 +579,7 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM \`Module\` TO \`Namespace\`,
   FROM \`Namespace\` TO Function,
   FROM CodeElement TO CodeElement,
+  FROM CodeElement TO Method,
   FROM CodeElement TO \`Module\`,
   FROM CodeElement TO \`Property\`,
   FROM Section TO Section,

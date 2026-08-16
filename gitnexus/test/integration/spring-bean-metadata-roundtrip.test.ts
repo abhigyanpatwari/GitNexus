@@ -33,7 +33,7 @@ withTestLbugDB('spring-bean-metadata-roundtrip', (handle) => {
     const classCsvPath = path.join(csvDir, 'class.csv');
     const classCsv = await fs.readFile(classCsvPath, 'utf8');
     expect(classCsv.split('\n')[0]).toBe(
-      'id,name,filePath,startLine,endLine,isExported,content,description,frameworkAnnotations',
+      'id,name,filePath,startLine,endLine,isExported,content,description,frameworkAnnotations,language,sourceIdentity,sourceRole,declarationKey,annotations',
     );
     expect(classCsv).toContain('org.springframework.stereotype.Service');
     expect(classCsv).toContain(FRAMEWORK_MARKER);
@@ -104,6 +104,63 @@ withTestLbugDB('spring-bean-metadata-roundtrip', (handle) => {
       },
     ]);
   });
+
+  itLbugReopen(
+    'preserves existing non-Objective-C metadata during sparse batch upserts',
+    async () => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const sparseId = 'Class:src/SparseService.java:SparseService';
+      expect(
+        await adapter.insertNodeToLbug('Class', {
+          id: sparseId,
+          name: 'SparseService',
+          filePath: 'src/SparseService.java',
+          language: 'java',
+          sourceIdentity: 'java:v1:SparseService',
+          sourceRole: 'implementation',
+          declarationKey: 'com.acme.SparseService',
+          annotations: ['java:service'],
+        }),
+      ).toBe(true);
+
+      await adapter.closeLbug();
+      let upsertResult: { inserted: number; failed: number };
+      try {
+        upsertResult = await adapter.batchInsertNodesToLbug(
+          [
+            {
+              label: 'Class',
+              properties: {
+                id: sparseId,
+                name: 'SparseServiceRenamed',
+                filePath: 'src/SparseService.java',
+                frameworkAnnotations: ['org.springframework.stereotype.Service'],
+              },
+            },
+          ],
+          handle.dbPath,
+        );
+      } finally {
+        await adapter.initLbug(handle.dbPath);
+      }
+
+      expect(upsertResult).toEqual({ inserted: 1, failed: 0 });
+      expect(
+        await adapter.executeQuery(
+          `MATCH (c:Class {id: '${sparseId}'}) RETURN c.name AS name, c.language AS language, c.sourceIdentity AS sourceIdentity, c.sourceRole AS sourceRole, c.declarationKey AS declarationKey, c.annotations AS annotations`,
+        ),
+      ).toEqual([
+        {
+          name: 'SparseServiceRenamed',
+          language: 'java',
+          sourceIdentity: 'java:v1:SparseService',
+          sourceRole: 'implementation',
+          declarationKey: 'com.acme.SparseService',
+          annotations: JSON.stringify(['java:service']),
+        },
+      ]);
+    },
+  );
 
   it('rejects framework annotation items that COPY cannot encode losslessly', async () => {
     const graph = buildTestGraph([
