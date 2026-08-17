@@ -326,7 +326,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  */
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
   [SupportedLanguages.Kotlin, '`org.junit.Assert` -> `src/main/kotlin/vendor/Assert.kt`'],
-  [SupportedLanguages.Go, '`github.com/vendor/dep/internal/models` -> `internal/models/user.go`'],
   [SupportedLanguages.Ruby, '`rails/generators` -> `lib/generators.rb`'],
   [SupportedLanguages.PHP, '`Vendor\\Ghost\\Missing` -> `lib/Legacy/Missing.php`'],
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
