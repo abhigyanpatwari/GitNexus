@@ -25,6 +25,7 @@
  */
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
 
 export interface SwiftResolveContext {
   readonly fromFile: string;
@@ -39,12 +40,7 @@ interface SwiftModuleIndex {
   readonly byModule: Map<string, string[]>;
 }
 
-const SWIFT_MODULE_INDEX_CACHE = new WeakMap<ReadonlySet<string>, SwiftModuleIndex>();
-
-function getSwiftModuleIndex(allFilePaths: ReadonlySet<string>): SwiftModuleIndex {
-  const cached = SWIFT_MODULE_INDEX_CACHE.get(allFilePaths);
-  if (cached !== undefined) return cached;
-
+const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): SwiftModuleIndex => {
   const byModule = new Map<string, string[]>();
   for (const raw of allFilePaths) {
     const norm = raw.replace(/\\/g, '/');
@@ -66,10 +62,8 @@ function getSwiftModuleIndex(allFilePaths: ReadonlySet<string>): SwiftModuleInde
     }
   }
 
-  const index: SwiftModuleIndex = { byModule };
-  SWIFT_MODULE_INDEX_CACHE.set(allFilePaths, index);
-  return index;
-}
+  return { byModule };
+});
 
 export function resolveSwiftImportTarget(
   parsedImport: ParsedImport,

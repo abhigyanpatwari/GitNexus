@@ -9,7 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { type GeneratedSkillInfo } from './skill-gen.js';
+import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { logger } from '../core/logger.js';
 
@@ -157,7 +157,10 @@ export function generateGitNexusContent(
       ? generatedSkills
           .map(
             (s) =>
-              `| Work in the ${s.label} area (${s.symbolCount} symbols) | \`.claude/skills/${s.name}/SKILL.md\` |`,
+              // The per-cluster count is as volatile as the header parenthetical,
+              // so --no-stats drops it too (#2907) — otherwise the flag that
+              // promises "omit volatile symbol counts" left a churning one behind.
+              `| Work in the ${s.label} area${noStats ? '' : ` (${s.symbolCount} symbols)`} | \`.claude/skills/${s.name}/SKILL.md\` |`,
           )
           .join('\n')
       : '';
@@ -195,12 +198,23 @@ ${tableBody}`
     `No \`${runnerPath}\` yet? Bootstrap with \`npx\`, \`bunx\`, or \`pnpm dlx\` — ` +
     'e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).';
 
+  // This block is injected into every user's repo and its total size is capped
+  // by test (ai-context.test.ts, #856) — a new bullet or clause has to be paid
+  // for by trimming an existing one.
+  //
+  // The detect_changes bullet carries the degraded-result rule (#2915): a run
+  // that sets `partial` (a graph query failed) or `truncated` (the changed-symbol
+  // listing was capped) is not the pre-commit gate passing, and `partial` pairs
+  // routinely with changed_count:0 — the exact shape that printed "No changes
+  // detected." and exited 0 on a broken analysis. Same reasoning as the
+  // `risk: UNKNOWN` bullet below: the tool could not answer, so its zero is not
+  // an all-clear.
   return `${GITNEXUS_START_MARKER}
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}. Use GitNexus graph tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}.
 
-> Index stale? Run \`${runner} analyze\` from the project root — it auto-selects an available runner. ${bootstrapNote}
+> Index stale? Run \`${runner} analyze --index-only\` from the project root — it auto-selects an available runner. ${bootstrapNote}
 
 ## Always Do
 
@@ -209,8 +223,9 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
   }
-- **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
+- **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - When exploring unfamiliar code, use \`query({search_query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`context({name: "symbolName"})\`.
 - For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
@@ -222,7 +237,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 ## Never Do
 
 - NEVER edit a function, class, or method before MCP/CLI impact analysis.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
 - NEVER rename symbols with find-and-replace — use \`rename\` which understands the call graph.
 - NEVER commit before MCP/CLI graph change analysis.
 
@@ -267,10 +282,32 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * Replace the block's volatile counts — the header parenthetical and the
+ * per-cluster symbol counts in the skills table — with fixed placeholders, so
+ * two renderings that differ only in those numbers compare equal.
+ *
+ * Placeholders rather than deletions: `--no-stats` REMOVES the parenthetical,
+ * which must still be written through. Deleting instead of substituting would
+ * make a with-counts block and a without-counts block compare equal, and the
+ * flag would silently stop taking effect on an already-injected file.
+ */
+function stripVolatileCounts(section: string): string {
+  return section
+    .replace(/ \(\d+ symbols, \d+ relationships, \d+ execution flows\)/g, ' (<counts>)')
+    .replace(/ \(\d+ symbols\)/g, ' (<count>)');
+}
+
+/**
  * Create or update GitNexus section in a file
  * - If file doesn't exist: create with GitNexus content
  * - If file exists without GitNexus section: append
- * - If file exists with GitNexus section: replace that section
+ * - If file exists with GitNexus section: replace that section, UNLESS the only
+ *   delta is the volatile counts (#2907). AGENTS.md and CLAUDE.md are the agent
+ *   guides teams commit, and the counts move with any code change, so a
+ *   count-only rewrite dirties a tracked file on every reindex for no reader
+ *   benefit. Live counts stay available from `gitnexus status` and
+ *   `gitnexus://repo/{name}/context`; the committed block keeps whichever
+ *   numbers it was last materially updated with.
  */
 async function upsertGitNexusSection(
   filePath: string,
@@ -282,7 +319,10 @@ async function upsertGitNexusSection(
   const exists = await fileExists(filePath);
 
   if (!exists) {
-    await fs.writeFile(filePath, content, 'utf-8');
+    // Same `.trim() + '\n'` shape the update paths write. Creating without the
+    // trailing newline made the NEXT analyze dirty a freshly committed file
+    // even at unchanged counts, purely to append it (#2907).
+    await fs.writeFile(filePath, content.trim() + '\n', 'utf-8');
     return 'created';
   }
 
@@ -343,6 +383,11 @@ async function upsertGitNexusSection(
 
       if (statsPattern.test(existingSection)) {
         const updatedSection = existingSection.replace(statsPattern, statsLine);
+        // Count-only delta — leave the committed lean block alone (#2907). A
+        // project rename, or --no-stats dropping the parenthetical, still writes.
+        if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {
+          return 'preserved';
+        }
         const before = existingContent.substring(0, startIdx);
         const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
         await fs.writeFile(filePath, (before + updatedSection + after).trim() + '\n', 'utf-8');
@@ -354,7 +399,11 @@ async function upsertGitNexusSection(
       return 'preserved';
     }
 
-    // No keep marker — replace existing section with full verbose content
+    // No keep marker — replace existing section with full verbose content,
+    // unless the counts are the only thing that moved (#2907).
+    if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
+      return 'preserved';
+    }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
     const newContent = before + content + after;

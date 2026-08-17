@@ -41,7 +41,7 @@
   },
   "csharp-assignment-chain/Program.cs": {
     "captureGroups": 32,
-    "digest": "7698bdabe97661a2a2539a13cf9d886cd7efb2f4924b17a15597ce63cec5126a"
+    "digest": "6b8eddb5525ef0358276dc18fba264ee0443a8adf5036a3300891507b99c36ab"
   },
   "csharp-async-binding/Order.cs": {
     "captureGroups": 9,
@@ -49,11 +49,11 @@
   },
   "csharp-async-binding/OrderService.cs": {
     "captureGroups": 14,
-    "digest": "712fb5f3a791581ab56c37df58d8245a17a674a6d2f7bd25b2bc8d1632f751c3"
+    "digest": "492b2ceffaeae03b6a9d673f961dc5386bf08496ef4a8ae70dae68a604801c2f"
   },
   "csharp-async-binding/Program.cs": {
     "captureGroups": 37,
-    "digest": "73735c3910ed4db423302d9575cec86156d420e9961c592c34e0436301cac7ce"
+    "digest": "fc6bb5b9887e5193c90c687248d890873f5eb40f6a8e5b597729311dd3cc9f0a"
   },
   "csharp-async-binding/User.cs": {
     "captureGroups": 9,
@@ -61,11 +61,11 @@
   },
   "csharp-async-binding/UserService.cs": {
     "captureGroups": 14,
-    "digest": "a4e6b093fa23a86313bc468f8b6a89a96d5c90b1d16f166417745bd36dfbd10f"
+    "digest": "e68423fbb601a61a100d01ef070e0d37f817be4a4c6555500b56fa2ed290adce"
   },
   "csharp-call-result-binding/App.cs": {
     "captureGroups": 27,
-    "digest": "3d8c7dc0b7f5bd60c74d6a595bd4b49bdb13b62522fb7f0c1434495e10e1171b"
+    "digest": "7439cd5fada77ae186fb76594404a8650e21b4892ff268dfbcad6c3ec741c478"
   },
   "csharp-calls/Services/UserService.cs": {
     "captureGroups": 11,
@@ -93,7 +93,7 @@
   },
   "csharp-chain-call/Services/UserService.cs": {
     "captureGroups": 11,
-    "digest": "9833795eeb79a08ef9c8afb66a58b789ab314e48c1ae3193fe87fec279c55374"
+    "digest": "36a822100dccd931041f95be155b426d87f8e3d1dd1e2268f152b6f8fbffc6d5"
   },
   "csharp-child-extends-parent/src/App.cs": {
     "captureGroups": 13,
@@ -125,11 +125,11 @@
   },
   "csharp-deep-field-chain/Service.cs": {
     "captureGroups": 14,
-    "digest": "30a18501a48916294ef08b2694d297bd46c72ad1d16bb654968c4293b9c1cd14"
+    "digest": "daeb42918323c3f79de9b72ffc72d2c61bb085a65ffb1f67ca3a0d9a78ec06e8"
   },
   "csharp-dictionary-keys-values/App.cs": {
     "captureGroups": 21,
-    "digest": "ee8eb9c569b71d7050f292bc7fbf89b68cdbb60b4bcd557f2523c86831891543"
+    "digest": "1f6dfccf8eef881d22795dc6aa80bd267f0ee6f12538c7cabf5cac71db6a7f57"
   },
   "csharp-dictionary-keys-values/Repo.cs": {
     "captureGroups": 7,
@@ -153,7 +153,7 @@
   },
   "csharp-field-types/Service.cs": {
     "captureGroups": 11,
-    "digest": "c38e3db8241460f2c3c295536c760a2452c0f1bc0ee084f7c76e63979ad84b51"
+    "digest": "4cb300e33d2dcc08f869b6752c4655a34b67aebeb4baa44f37411117486d5f1d"
   },
   "csharp-foreach/Models/Repo.cs": {
     "captureGroups": 8,
@@ -165,7 +165,7 @@
   },
   "csharp-foreach/Program.cs": {
     "captureGroups": 20,
-    "digest": "810f0f65e956343cf6817918dc5b28ce7bc1f1f755f89e008a6e8b05864ff469"
+    "digest": "0f71f4a62926fb335d32b456d5778812519c0eb2bf85528e2e9073db1b976749"
   },
   "csharp-frozen-binding-collision/App/Program.cs": {
     "captureGroups": 18,
@@ -177,7 +177,7 @@
   },
   "csharp-generic-parent-resolution/src/Models/BaseModel.cs": {
     "captureGroups": 8,
-    "digest": "af08cdad747c53a0be8e32344d7af5bae07e215ce5be51685b6dd233c9e1cb6d"
+    "digest": "6e31bdbc26fc967d0855ebb8f7867989492d65a6a9e329d9ab9547775896ffb0"
   },
   "csharp-generic-parent-resolution/src/Models/Repo.cs": {
     "captureGroups": 8,
@@ -189,11 +189,11 @@
   },
   "csharp-generic-type-refs/Program.cs": {
     "captureGroups": 25,
-    "digest": "11958e1426be1f2f06d82c93fd1f813607b7665072e95356a8584aa21c0c2119"
+    "digest": "28246dd1c88ecfe07fcee84ba314dbd9e39ccd0c30f20b8fb4633ec71e48e375"
   },
   "csharp-grandparent-resolution/Models/A.cs": {
     "captureGroups": 10,
-    "digest": "3cd545b2cbec5fee82e9e3d09f2d2ff7ff940e3bf4b597d7c9080fcd8b526675"
+    "digest": "159a52b959e021b1a34cc0dfbf1ba1a0748a0f29c84634948e2e85afc75db003"
   },
   "csharp-grandparent-resolution/Models/B.cs": {
     "captureGroups": 6,
@@ -221,7 +221,7 @@
   },
   "csharp-inline-constructor-receiver/src/Svc.cs": {
     "captureGroups": 19,
-    "digest": "c2ec7f452c244d7fda931e32c16e46cc7c59e15f404a4413d18f522ed6c492bb"
+    "digest": "cfbc783ca38a1149913b71f5dead7fd7a7048ca313cfaa7806c68ac9f1867e1f"
   },
   "csharp-interface-default-method/App.cs": {
     "captureGroups": 12,
@@ -321,7 +321,7 @@
   },
   "csharp-method-chain-binding/App.cs": {
     "captureGroups": 60,
-    "digest": "2b4761e1dfe2d48ac25cfda7ccce95175607926b47db43726f38ad2a16acc6f1"
+    "digest": "4cdccde81efbe41cac6bc82e33b365ccd79481a440e65012f78cb543421c9873"
   },
   "csharp-method-enrichment/Animal.cs": {
     "captureGroups": 18,
@@ -393,7 +393,7 @@
   },
   "csharp-null-check-narrowing/Services/App.cs": {
     "captureGroups": 36,
-    "digest": "5d840c524610b6a84a2f09981c15327e9f7ea5c2c4b11b09e959d880ac6b9bc9"
+    "digest": "6c7fa1daf5d12a60403a63d5d29c1b42b99370d12f4be53c8e56bb31e5b09d8a"
   },
   "csharp-null-conditional/App.cs": {
     "captureGroups": 17,
@@ -425,7 +425,7 @@
   },
   "csharp-overload-interface/App/Caller.cs": {
     "captureGroups": 15,
-    "digest": "f1ea2e564c46dab5fb93fb19e81ab3411f458b172820b5dc0bdc57f49ffa88e0"
+    "digest": "5769b1eda360cd588192335e47035683dae751b9f67e0528cccc066b1e4ed887"
   },
   "csharp-overload-interface/App/Logger.cs": {
     "captureGroups": 14,
@@ -445,7 +445,7 @@
   },
   "csharp-overload-param-types/Models/UserService.cs": {
     "captureGroups": 30,
-    "digest": "178e1a7dd5b07ba3361e1eb28ce73ca6a6075fa8ecb8f2ca40e8e87a410de552"
+    "digest": "ba08bc90619c578582465cb9f640fd0bf0640a5a6a84fdfed0be987802086bb3"
   },
   "csharp-parent-resolution/src/Models/BaseModel.cs": {
     "captureGroups": 8,
@@ -465,7 +465,7 @@
   },
   "csharp-pattern-matching/Services/AnimalService.cs": {
     "captureGroups": 13,
-    "digest": "2623dcd94520473dc3dd830cfc21675349b6981185b779db3f5a47200b2f44a3"
+    "digest": "6f308b4411f9ad397e2789d7f85eaaaed78f7879dd16f4d7b8d8e7639335d302"
   },
   "csharp-primary-ctor-heritage/src/BaseEntity.cs": {
     "captureGroups": 6,
@@ -477,7 +477,7 @@
   },
   "csharp-primary-ctor-heritage/src/Repo.cs": {
     "captureGroups": 7,
-    "digest": "33d96df54df2f50a1f6a443d203625f3dd6c61e70ed10a71ba920597c6810035"
+    "digest": "d18339e871d79e3d51c27f3c83768e5dd46102d51279da04e283b0d3546c3fbe"
   },
   "csharp-primary-ctor-heritage/src/Service.cs": {
     "captureGroups": 6,
@@ -529,7 +529,7 @@
   },
   "csharp-qualified-constructor/Models/Box.cs": {
     "captureGroups": 8,
-    "digest": "be25e3fb2b928fda0b47cf2bccda6857fe76be0173fe540d34170d44b84ec35d"
+    "digest": "f49b819de0b6f192bf2e5f555903dbbfb82f938f69fd65134d19677e1daf725c"
   },
   "csharp-qualified-constructor/Models/Widget.cs": {
     "captureGroups": 11,
@@ -581,7 +581,7 @@
   },
   "csharp-return-type/Models/User.cs": {
     "captureGroups": 23,
-    "digest": "6681e6830c71c25908e50273e4babb41611bc229395d1dbab70ac9f219b68ca8"
+    "digest": "8ca5e28d14a29fb1f29ca6f19300b26fd99d20bc99bd9f537787a41cd9fe6196"
   },
   "csharp-return-type/Services/App.cs": {
     "captureGroups": 16,
@@ -621,7 +621,7 @@
   },
   "csharp-spurious-edges-no-csproj/Services/OrderService.cs": {
     "captureGroups": 15,
-    "digest": "2574c61dc312d531301a6d08c828ac743b1198e32946980c0f44bc115ec9bcdc"
+    "digest": "77a89bc40ea022b9e795adcc1bf5e8a1bc67d8d1c5061c2fe990ec3d72248de0"
   },
   "csharp-spurious-edges/Legacy/Tasks.cs": {
     "captureGroups": 8,
@@ -633,7 +633,7 @@
   },
   "csharp-spurious-edges/Services/OrderService.cs": {
     "captureGroups": 15,
-    "digest": "2574c61dc312d531301a6d08c828ac743b1198e32946980c0f44bc115ec9bcdc"
+    "digest": "77a89bc40ea022b9e795adcc1bf5e8a1bc67d8d1c5061c2fe990ec3d72248de0"
   },
   "csharp-struct-overloads/src/Calc.cs": {
     "captureGroups": 19,
@@ -689,7 +689,7 @@
   },
   "csharp-var-foreach/Program.cs": {
     "captureGroups": 32,
-    "digest": "a9c7bf1f2425cece1ecb698abc0c6fa5e7a3bb24e3cc7d2dba50ef7d0651badc"
+    "digest": "58052d12af8b6e4f34924d59bd965773ce6083cb557adebe28eb1d3edcd41b7a"
   },
   "csharp-variadic-resolution/Services/App.cs": {
     "captureGroups": 10,
@@ -705,7 +705,7 @@
   },
   "csharp-write-access/Service.cs": {
     "captureGroups": 11,
-    "digest": "aa6d8a61ac39db413df10a6bc8b9bad3305327dcdce09e01cf01eff31f945537"
+    "digest": "f97be4b109be6bdaa583e2e7b3268b2fb90ac1ce3cfaf0291a7873f09103a2f9"
   },
   "synthetic:dao-20": {
     "captureGroups": 263,

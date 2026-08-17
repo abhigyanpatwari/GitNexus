@@ -43,3 +43,10 @@ export const SPRING_AOP_FEATURE: AnalysisFeatureDescriptor = {
   version: 1,
   appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
 };
+
+/** Durable completeness contract for scheduled, event, messaging, and job entry points (#2417). */
+export const SPRING_NON_HTTP_HANDLERS_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'spring.non-http-handlers',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
+};

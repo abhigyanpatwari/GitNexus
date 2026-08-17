@@ -66,6 +66,16 @@ npx gitnexus analyze
 
 No `--embeddings` flag needed — a retained checkpoint forces embedding generation for the pending nodes regardless of flags, and clears once they succeed. `--drop-embeddings` abandons the pending nodes instead of retrying them; `--force` also discards the checkpoint (with a warning) and rebuilds without resuming it.
 
+**Collapsed graph write (analyze exits NON-ZERO and says INCOMPLETE):** A run can finish writing metadata while only a fraction of the relationships it produced are readable back from the index — edges collapsing to a small share of what was built, or a `CodeRelation` table that never materialized (which reads as a persisted count of zero). Because the metadata IS written and the DB does hold rows, nothing looks broken: queries answer with missing edges rather than an error, which is a confident empty answer rather than a failure. `npx gitnexus status` reports `incompleteReasons: ["graph-write-collapsed"]`, the analyze summary prints `Repository indexed INCOMPLETELY` with the expected and persisted counts, and the CLI exits non-zero so automation is not told an unusable index is fine.
+
+Recovery is a full rebuild:
+
+```bash
+npx gitnexus analyze --force
+```
+
+If it recurs, the cause is almost always environmental rather than a code defect: check free disk space on the volume holding `.gitnexus/`, make sure no second `analyze` is running against the same repo (both use `.gitnexus/csv` for staging), then run `npx gitnexus doctor`. The check compares in-memory relationship totals (including streamed rows) against what the DB hands back, and is deliberately skipped on incremental runs, where the two counts are not comparable.
+
 **Large repos:** Analyze may skip or limit embedding work when node counts are very high; watch CLI output.
 
 ---
