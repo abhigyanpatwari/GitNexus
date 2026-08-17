@@ -1,42 +1,28 @@
-import path from "path";
-import {
-  SupportedLanguages,
-  type ParsedFile,
-  type SymbolDefinition,
-  type Callsite,
-} from "gitnexus-shared";
-import type {
-  GraphNode,
-  GraphRelationship,
-  RelationshipType,
-} from "gitnexus-shared";
-import type { KnowledgeGraph } from "../../../graph/types.js";
-import type { ScopeResolver } from "../../scope-resolution/contract/scope-resolver.js";
-import { generateId } from "../../../../lib/utils.js";
-import { perFileSet } from "../../import-resolvers/per-file-set.js";
-import { objectiveCProvider } from "../objective-c.js";
+import path from 'path';
+import { SupportedLanguages, type SymbolDefinition, type Callsite } from 'gitnexus-shared';
+import type { GraphNode, RelationshipType } from 'gitnexus-shared';
+import type { KnowledgeGraph } from '../../../graph/types.js';
+import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { generateId } from '../../../../lib/utils.js';
+import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { objectiveCProvider } from '../objective-c.js';
 import {
   applyObjectiveCCaptureSideChannel,
-  objcCategoryQualifiedName,
   objcClassQualifiedName,
-  objcMethodQualifiedName,
   objcProtocolQualifiedName,
   objectiveCFactsFromParsedFiles,
   type ObjCContainerFact,
   type ObjCFileFacts,
   type ObjCMessageFact,
   type ObjCMethodFact,
-} from "./facts.js";
+} from './facts.js';
 
 interface ObjCWorkspaceFacts {
   readonly containersByQualifiedName: ReadonlyMap<string, ObjCContainerFact>;
   readonly classByName: ReadonlyMap<string, ObjCContainerFact>;
   readonly protocolsByName: ReadonlyMap<string, ObjCContainerFact>;
   readonly categoriesByHost: ReadonlyMap<string, readonly ObjCContainerFact[]>;
-  readonly methodsByDispatchOwner: ReadonlyMap<
-    string,
-    readonly ObjCMethodFact[]
-  >;
+  readonly methodsByDispatchOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
   readonly methodsByExactOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
   readonly classProtocols: ReadonlyMap<string, ReadonlySet<string>>;
   readonly superclassByClass: ReadonlyMap<string, string>;
@@ -45,7 +31,7 @@ interface ObjCWorkspaceFacts {
 export const objectiveCScopeResolver: ScopeResolver = {
   language: SupportedLanguages.ObjectiveC,
   languageProvider: objectiveCProvider,
-  importEdgeReason: "objective-c-scope: import",
+  importEdgeReason: 'objective-c-scope: import',
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths) =>
     resolveObjectiveCImportTarget(targetRaw, fromFile, allFilePaths),
@@ -53,18 +39,15 @@ export const objectiveCScopeResolver: ScopeResolver = {
   mergeBindings: (existing, incoming) => [...existing, ...incoming],
 
   arityCompatibility: (callsite: Callsite, def: SymbolDefinition) => {
-    if (callsite.arity === undefined || def.parameterCount === undefined)
-      return "unknown";
-    return callsite.arity === def.parameterCount
-      ? "compatible"
-      : "incompatible";
+    if (callsite.arity === undefined || def.parameterCount === undefined) return 'unknown';
+    return callsite.arity === def.parameterCount ? 'compatible' : 'incompatible';
   },
 
   buildMro: () => new Map(),
 
   applyCaptureSideChannel: applyObjectiveCCaptureSideChannel,
   populateOwners: () => {},
-  isSuperReceiver: (receiverText) => receiverText.trim() === "super",
+  isSuperReceiver: (receiverText) => receiverText.trim() === 'super',
 
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: false,
@@ -115,15 +98,11 @@ function addRelationship(
   });
 }
 
-function labelForContainer(
-  container: ObjCContainerFact,
-): "Class" | "Protocol" | "Category" {
+function labelForContainer(container: ObjCContainerFact): 'Class' | 'Protocol' | 'Category' {
   return container.label;
 }
 
-function buildObjectiveCWorkspaceFacts(
-  facts: readonly ObjCFileFacts[],
-): ObjCWorkspaceFacts {
+function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWorkspaceFacts {
   const containersByQualifiedName = new Map<string, ObjCContainerFact>();
   const classByName = new Map<string, ObjCContainerFact>();
   const protocolsByName = new Map<string, ObjCContainerFact>();
@@ -140,7 +119,7 @@ function buildObjectiveCWorkspaceFacts(
         container.qualifiedName,
         mergeContainerFacts(existing, container),
       );
-      if (container.kind === "class") {
+      if (container.kind === 'class') {
         classByName.set(container.name, container);
         if (container.superclass !== undefined)
           superclassByClass.set(container.name, container.superclass);
@@ -152,7 +131,7 @@ function buildObjectiveCWorkspaceFacts(
           }
           for (const protocol of container.protocols) protocols.add(protocol);
         }
-      } else if (container.kind === "protocol") {
+      } else if (container.kind === 'protocol') {
         protocolsByName.set(container.name, container);
       } else if (container.hostClass !== undefined) {
         let categories = categoriesByHost.get(container.hostClass);
@@ -176,11 +155,7 @@ function buildObjectiveCWorkspaceFacts(
       appendMap(methodsByExactOwner, method.ownerQualifiedName, method);
       appendMap(methodsByDispatchOwner, method.ownerQualifiedName, method);
       if (method.hostClass !== undefined) {
-        appendMap(
-          methodsByDispatchOwner,
-          objcClassQualifiedName(method.hostClass),
-          method,
-        );
+        appendMap(methodsByDispatchOwner, objcClassQualifiedName(method.hostClass), method);
       }
     }
   }
@@ -202,16 +177,13 @@ function mergeContainerFacts(
   incoming: ObjCContainerFact,
 ): ObjCContainerFact {
   if (existing === undefined) return incoming;
-  const protocols = Array.from(
-    new Set([...existing.protocols, ...incoming.protocols]),
-  ).sort();
+  const protocols = Array.from(new Set([...existing.protocols, ...incoming.protocols])).sort();
   return {
     ...existing,
     declarationRole:
-      existing.declarationRole === "implementation" ||
-      incoming.declarationRole === "implementation"
-        ? "implementation"
-        : "interface",
+      existing.declarationRole === 'implementation' || incoming.declarationRole === 'implementation'
+        ? 'implementation'
+        : 'interface',
     startLine: Math.min(existing.startLine, incoming.startLine),
     endLine: Math.max(existing.endLine, incoming.endLine),
     ...(existing.superclass !== undefined || incoming.superclass !== undefined
@@ -233,67 +205,55 @@ function emitObjectiveCHeritageEdges(
   workspace: ObjCWorkspaceFacts,
 ): void {
   for (const container of facts.containers) {
-    const sourceId = graphNodeId(
-      labelForContainer(container),
-      container.qualifiedName,
-    );
-    if (container.kind === "class" && container.superclass !== undefined) {
+    const sourceId = graphNodeId(labelForContainer(container), container.qualifiedName);
+    if (container.kind === 'class' && container.superclass !== undefined) {
       const superclass = workspace.classByName.get(container.superclass);
       if (superclass !== undefined) {
         addRelationship(
           graph,
-          "EXTENDS",
+          'EXTENDS',
           sourceId,
-          graphNodeId("Class", superclass.qualifiedName),
-          "objc: superclass",
+          graphNodeId('Class', superclass.qualifiedName),
+          'objc: superclass',
         );
       }
     }
 
     const protocolSourceId =
       container.hostClass !== undefined
-        ? graphNodeId("Class", objcClassQualifiedName(container.hostClass))
+        ? graphNodeId('Class', objcClassQualifiedName(container.hostClass))
         : sourceId;
     for (const protocolName of container.protocols) {
       const protocol = workspace.protocolsByName.get(protocolName);
       if (protocol === undefined) continue;
       addRelationship(
         graph,
-        "IMPLEMENTS",
+        'IMPLEMENTS',
         protocolSourceId,
-        graphNodeId("Protocol", protocol.qualifiedName),
-        "objc: protocol conformance",
+        graphNodeId('Protocol', protocol.qualifiedName),
+        'objc: protocol conformance',
       );
     }
   }
 }
 
-function emitObjectiveCCategoryEdges(
-  graph: KnowledgeGraph,
-  facts: ObjCFileFacts,
-): void {
+function emitObjectiveCCategoryEdges(graph: KnowledgeGraph, facts: ObjCFileFacts): void {
   for (const container of facts.containers) {
     if (container.hostClass === undefined) continue;
     addRelationship(
       graph,
-      "MEMBER_OF",
-      graphNodeId("Category", container.qualifiedName),
-      graphNodeId("Class", objcClassQualifiedName(container.hostClass)),
-      "objc: category host class",
+      'MEMBER_OF',
+      graphNodeId('Category', container.qualifiedName),
+      graphNodeId('Class', objcClassQualifiedName(container.hostClass)),
+      'objc: category host class',
     );
   }
 }
 
-function emitObjectiveCImplementationEvidence(
-  graph: KnowledgeGraph,
-  facts: ObjCFileFacts,
-): void {
+function emitObjectiveCImplementationEvidence(graph: KnowledgeGraph, facts: ObjCFileFacts): void {
   for (const container of facts.containers) {
-    if (container.declarationRole !== "implementation") continue;
-    const targetId = graphNodeId(
-      labelForContainer(container),
-      container.qualifiedName,
-    );
+    if (container.declarationRole !== 'implementation') continue;
+    const targetId = graphNodeId(labelForContainer(container), container.qualifiedName);
     emitImplementationEvidence(
       graph,
       facts.filePath,
@@ -303,7 +263,7 @@ function emitObjectiveCImplementationEvidence(
       container.startLine,
       container.endLine,
       {
-        objectiveCKind: "implementation-evidence",
+        objectiveCKind: 'implementation-evidence',
         implementationKind: container.kind,
         targetQualifiedName: container.qualifiedName,
       },
@@ -311,7 +271,7 @@ function emitObjectiveCImplementationEvidence(
   }
 
   for (const method of facts.methods) {
-    if (method.declarationRole !== "implementation") continue;
+    if (method.declarationRole !== 'implementation') continue;
     emitImplementationEvidence(
       graph,
       facts.filePath,
@@ -321,8 +281,8 @@ function emitObjectiveCImplementationEvidence(
       method.startLine,
       method.endLine,
       {
-        objectiveCKind: "implementation-evidence",
-        implementationKind: "method",
+        objectiveCKind: 'implementation-evidence',
+        implementationKind: 'method',
         targetQualifiedName: method.qualifiedName,
         selector: method.selector,
         methodKind: method.methodKind,
@@ -342,10 +302,10 @@ function emitImplementationEvidence(
   endLine: number,
   extras: Record<string, unknown>,
 ): void {
-  const nodeId = graphNodeId("CodeElement", qualifiedName);
+  const nodeId = graphNodeId('CodeElement', qualifiedName);
   graph.addNode({
     id: nodeId,
-    label: "CodeElement",
+    label: 'CodeElement',
     properties: {
       name,
       qualifiedName,
@@ -359,20 +319,13 @@ function emitImplementationEvidence(
   });
   addRelationship(
     graph,
-    "DEFINES",
-    graphNodeId("File", filePath),
+    'DEFINES',
+    graphNodeId('File', filePath),
     nodeId,
-    "objc: implementation evidence",
+    'objc: implementation evidence',
     1,
   );
-  addRelationship(
-    graph,
-    "DECLARES",
-    nodeId,
-    targetId,
-    "objc: implementation of merged symbol",
-    1,
-  );
+  addRelationship(graph, 'DECLARES', nodeId, targetId, 'objc: implementation of merged symbol', 1);
 }
 
 function emitObjectiveCMessageEdges(
@@ -382,37 +335,31 @@ function emitObjectiveCMessageEdges(
 ): void {
   for (const message of facts.messages) {
     const targets = resolveMessageTargets(message, workspace);
-    if (targets.kind === "none") continue;
-    if (targets.kind === "protocol") {
-      emitProtocolMessageEvidence(
-        graph,
-        facts,
-        message,
-        targets.protocolName,
-        targets.candidates,
-      );
+    if (targets.kind === 'none') continue;
+    if (targets.kind === 'protocol') {
+      emitProtocolMessageEvidence(graph, facts, message, targets.protocolName, targets.candidates);
     }
     for (const target of targets.methods) {
       if (graph.getNode(target.nodeId) === undefined) continue;
       addRelationship(
         graph,
-        "CALLS",
+        'CALLS',
         message.sourceMethodId,
         target.nodeId,
-        targets.kind === "protocol"
-          ? "objc-message: protocol receiver"
+        targets.kind === 'protocol'
+          ? 'objc-message: protocol receiver'
           : `objc-message: ${message.receiverKind} receiver`,
-        targets.kind === "protocol" ? 0.8 : 0.9,
+        targets.kind === 'protocol' ? 0.8 : 0.9,
       );
     }
   }
 }
 
 type MessageTargets =
-  | { readonly kind: "none"; readonly methods: readonly ObjCMethodFact[] }
-  | { readonly kind: "direct"; readonly methods: readonly ObjCMethodFact[] }
+  | { readonly kind: 'none'; readonly methods: readonly ObjCMethodFact[] }
+  | { readonly kind: 'direct'; readonly methods: readonly ObjCMethodFact[] }
   | {
-      readonly kind: "protocol";
+      readonly kind: 'protocol';
       readonly protocolName: string;
       readonly methods: readonly ObjCMethodFact[];
       readonly candidates: readonly ObjCMethodFact[];
@@ -422,55 +369,41 @@ function resolveMessageTargets(
   message: ObjCMessageFact,
   workspace: ObjCWorkspaceFacts,
 ): MessageTargets {
-  if (
-    message.receiverKind === "dynamic" ||
-    message.receiverKind === "unknown"
-  ) {
-    return { kind: "none", methods: [] };
+  if (message.receiverKind === 'dynamic' || message.receiverKind === 'unknown') {
+    return { kind: 'none', methods: [] };
   }
 
-  if (message.receiverKind === "class") {
+  if (message.receiverKind === 'class') {
     const className = message.receiverType?.name ?? message.receiverText;
     return {
-      kind: "direct",
-      methods: findDispatchMethods(workspace, className, "+", message.selector),
+      kind: 'direct',
+      methods: findDispatchMethods(workspace, className, '+', message.selector),
     };
   }
 
-  if (message.receiverKind === "self") {
-    const owner = workspace.containersByQualifiedName.get(
-      message.sourceOwnerQualifiedName,
-    );
-    const className =
-      owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
+  if (message.receiverKind === 'self') {
+    const owner = workspace.containersByQualifiedName.get(message.sourceOwnerQualifiedName);
+    const className = owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
     const methods =
-      owner?.kind === "protocol"
+      owner?.kind === 'protocol'
         ? findExactOwnerMethods(
             workspace,
             owner.qualifiedName,
             message.sourceMethodKind,
             message.selector,
           )
-        : findDispatchMethods(
-            workspace,
-            className,
-            message.sourceMethodKind,
-            message.selector,
-          );
-    return { kind: "direct", methods };
+        : findDispatchMethods(workspace, className, message.sourceMethodKind, message.selector);
+    return { kind: 'direct', methods };
   }
 
-  if (message.receiverKind === "super") {
-    const owner = workspace.containersByQualifiedName.get(
-      message.sourceOwnerQualifiedName,
-    );
-    const className =
-      owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
+  if (message.receiverKind === 'super') {
+    const owner = workspace.containersByQualifiedName.get(message.sourceOwnerQualifiedName);
+    const className = owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
     const superclass = workspace.superclassByClass.get(className);
     return superclass === undefined
-      ? { kind: "none", methods: [] }
+      ? { kind: 'none', methods: [] }
       : {
-          kind: "direct",
+          kind: 'direct',
           methods: findDispatchMethods(
             workspace,
             superclass,
@@ -481,46 +414,36 @@ function resolveMessageTargets(
   }
 
   const receiverType = message.receiverType;
-  if (receiverType?.kind === "class" && receiverType.name !== undefined) {
+  if (receiverType?.kind === 'class' && receiverType.name !== undefined) {
     return {
-      kind: "direct",
-      methods: findDispatchMethods(
-        workspace,
-        receiverType.name,
-        "-",
-        message.selector,
-      ),
+      kind: 'direct',
+      methods: findDispatchMethods(workspace, receiverType.name, '-', message.selector),
     };
   }
 
-  if (receiverType?.kind === "protocol" && receiverType.name !== undefined) {
+  if (receiverType?.kind === 'protocol' && receiverType.name !== undefined) {
     const protocolQn = objcProtocolQualifiedName(receiverType.name);
-    const methods = findExactOwnerMethods(
-      workspace,
-      protocolQn,
-      "-",
-      message.selector,
-    );
+    const methods = findExactOwnerMethods(workspace, protocolQn, '-', message.selector);
     const candidates = findProtocolImplementationCandidates(
       workspace,
       receiverType.name,
       message.selector,
     );
     return {
-      kind: "protocol",
+      kind: 'protocol',
       protocolName: receiverType.name,
       methods,
       candidates,
     };
   }
 
-  return { kind: "none", methods: [] };
+  return { kind: 'none', methods: [] };
 }
 
 function findDispatchMethods(
   workspace: ObjCWorkspaceFacts,
   className: string,
-  methodKind: "-" | "+",
+  methodKind: '-' | '+',
   selector: string,
 ): readonly ObjCMethodFact[] {
   const seen = new Set<string>();
@@ -528,11 +451,8 @@ function findDispatchMethods(
   while (currentClass !== undefined && !seen.has(currentClass)) {
     seen.add(currentClass);
     const ownerQn = objcClassQualifiedName(currentClass);
-    const methods = (
-      workspace.methodsByDispatchOwner.get(ownerQn) ?? []
-    ).filter(
-      (method) =>
-        method.methodKind === methodKind && method.selector === selector,
+    const methods = (workspace.methodsByDispatchOwner.get(ownerQn) ?? []).filter(
+      (method) => method.methodKind === methodKind && method.selector === selector,
     );
     if (methods.length > 0) return methods;
     currentClass = workspace.superclassByClass.get(currentClass);
@@ -543,12 +463,11 @@ function findDispatchMethods(
 function findExactOwnerMethods(
   workspace: ObjCWorkspaceFacts,
   ownerQualifiedName: string,
-  methodKind: "-" | "+",
+  methodKind: '-' | '+',
   selector: string,
 ): readonly ObjCMethodFact[] {
   return (workspace.methodsByExactOwner.get(ownerQualifiedName) ?? []).filter(
-    (method) =>
-      method.methodKind === methodKind && method.selector === selector,
+    (method) => method.methodKind === methodKind && method.selector === selector,
   );
 }
 
@@ -560,7 +479,7 @@ function findProtocolImplementationCandidates(
   const out: ObjCMethodFact[] = [];
   for (const [className, protocols] of workspace.classProtocols) {
     if (!protocols.has(protocolName)) continue;
-    out.push(...findDispatchMethods(workspace, className, "-", selector));
+    out.push(...findDispatchMethods(workspace, className, '-', selector));
   }
   return out;
 }
@@ -574,10 +493,10 @@ function emitProtocolMessageEvidence(
 ): void {
   if (candidates.length === 0) return;
   const qualifiedName = `objc:protocol-candidates:${facts.filePath}:${message.startLine}:${message.startCol}:${message.selector}`;
-  const nodeId = graphNodeId("CodeElement", qualifiedName);
+  const nodeId = graphNodeId('CodeElement', qualifiedName);
   const node: GraphNode = {
     id: nodeId,
-    label: "CodeElement",
+    label: 'CodeElement',
     properties: {
       name: `[${message.receiverText} ${message.selector}] candidates`,
       qualifiedName,
@@ -586,30 +505,28 @@ function emitProtocolMessageEvidence(
       endLine: message.startLine,
       language: SupportedLanguages.ObjectiveC,
       isExported: false,
-      objectiveCKind: "protocol-candidate-implementations",
+      objectiveCKind: 'protocol-candidate-implementations',
       protocolName,
       selector: message.selector,
       sourceMethod: message.sourceMethodQualifiedName,
-      candidateImplementations: candidates
-        .map((candidate) => candidate.qualifiedName)
-        .sort(),
+      candidateImplementations: candidates.map((candidate) => candidate.qualifiedName).sort(),
     },
   };
   graph.addNode(node);
   addRelationship(
     graph,
-    "DEFINES",
-    graphNodeId("File", facts.filePath),
+    'DEFINES',
+    graphNodeId('File', facts.filePath),
     nodeId,
-    "objc: protocol receiver candidate evidence",
+    'objc: protocol receiver candidate evidence',
     1,
   );
   addRelationship(
     graph,
-    "USES",
+    'USES',
     message.sourceMethodId,
     nodeId,
-    "objc-message: protocol receiver candidates",
+    'objc-message: protocol receiver candidates',
     0.7,
   );
 }
@@ -623,9 +540,7 @@ function resolveObjectiveCImportTarget(
   const target = targetRaw.trim();
   if (target.length === 0) return null;
   const looksLikeFileImport =
-    target.startsWith(".") ||
-    target.includes("/") ||
-    path.posix.extname(target).length > 0;
+    target.startsWith('.') || target.includes('/') || path.posix.extname(target).length > 0;
   if (!looksLikeFileImport) return null;
   return findImportCandidate(target, fromFile, importIndex);
 }
@@ -648,9 +563,7 @@ function findImportCandidate(
   importIndex: ObjectiveCImportIndex,
 ): string | null {
   const normalizedTarget = normalizeRepoPath(targetRaw);
-  const fromDir = normalizeRepoPath(
-    path.posix.dirname(normalizeRepoPath(fromFile)),
-  );
+  const fromDir = normalizeRepoPath(path.posix.dirname(normalizeRepoPath(fromFile)));
   const spelledCandidates = new Set<string>([
     normalizeRepoPath(path.posix.join(fromDir, normalizedTarget)),
     normalizedTarget,
@@ -669,12 +582,11 @@ function findImportCandidate(
   const suffixes = [...spelledCandidates].map((candidate) => `/${candidate}`);
   for (const filePath of importIndex.filePaths) {
     const normalizedFilePath = normalizeRepoPath(filePath);
-    if (suffixes.some((suffix) => normalizedFilePath.endsWith(suffix)))
-      return filePath;
+    if (suffixes.some((suffix) => normalizedFilePath.endsWith(suffix))) return filePath;
   }
   return null;
 }
 
 function normalizeRepoPath(value: string): string {
-  return value.replaceAll("\\", "/").replace(/^\.\//, "");
+  return value.replaceAll('\\', '/').replace(/^\.\//, '');
 }

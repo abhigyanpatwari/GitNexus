@@ -74,7 +74,14 @@ describe('COMPATIBLE_ABI gate', () => {
 
 describe('GRAMMARS registry', () => {
   it('covers all six grammars, including the vendored Objective-C grammar', () => {
-    expect(Object.keys(mod.GRAMMARS).sort()).toEqual(['c', 'dart', 'kotlin', 'objc', 'proto', 'swift']);
+    expect(Object.keys(mod.GRAMMARS).sort()).toEqual([
+      'c',
+      'dart',
+      'kotlin',
+      'objc',
+      'proto',
+      'swift',
+    ]);
     expect(mod.GRAMMARS.swift.npm).toBe('tree-sitter-swift');
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
   });

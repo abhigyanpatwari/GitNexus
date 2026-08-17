@@ -1,44 +1,35 @@
-import type {
-  Capture,
-  CaptureMatch,
-  NodeLabel,
-  ParsedFile,
-} from "gitnexus-shared";
-import { SupportedLanguages } from "gitnexus-shared";
-import type Parser from "tree-sitter";
-import { generateId } from "../../../../lib/utils.js";
+import type { Capture, CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
+import { SupportedLanguages } from 'gitnexus-shared';
+import type Parser from 'tree-sitter';
+import { generateId } from '../../../../lib/utils.js';
 import type {
   ProviderSemanticGraph,
   ProviderSemanticNode,
   ProviderSemanticRelationship,
   ProviderSemanticSymbol,
-} from "../../language-provider.js";
-import {
-  nodeToCapture,
-  walkNamedTree,
-  type SyntaxNode,
-} from "../../utils/ast-helpers.js";
+} from '../../language-provider.js';
+import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = "0.1.0";
-export const OBJECTIVE_C_GRAMMAR_PACKAGE = "tree-sitter-objc";
-export const OBJECTIVE_C_GRAMMAR_VERSION = "3.0.2";
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.0';
+export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
+export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 
-export type ObjCMethodKind = "-" | "+";
-export type ObjCContainerKind = "class" | "protocol" | "category" | "extension";
+export type ObjCMethodKind = '-' | '+';
+export type ObjCContainerKind = 'class' | 'protocol' | 'category' | 'extension';
 
 export interface ObjCTypeInfo {
-  readonly kind: "class" | "protocol" | "dynamic" | "class-object" | "unknown";
+  readonly kind: 'class' | 'protocol' | 'dynamic' | 'class-object' | 'unknown';
   readonly name?: string;
   readonly raw: string;
 }
 
 export interface ObjCContainerFact {
   readonly kind: ObjCContainerKind;
-  readonly declarationRole: "interface" | "implementation";
+  readonly declarationRole: 'interface' | 'implementation';
   readonly name: string;
   readonly qualifiedName: string;
   readonly nodeId: string;
-  readonly label: "Class" | "Protocol" | "Category";
+  readonly label: 'Class' | 'Protocol' | 'Category';
   readonly filePath: string;
   readonly startLine: number;
   readonly endLine: number;
@@ -61,21 +52,21 @@ export interface ObjCMethodFact {
   readonly filePath: string;
   readonly startLine: number;
   readonly endLine: number;
-  readonly declarationRole: "declaration" | "implementation";
+  readonly declarationRole: 'declaration' | 'implementation';
   readonly returnType?: string;
   readonly parameterTypes: readonly string[];
   readonly parameterNames: readonly string[];
 }
 
 export interface ObjCMemberFact {
-  readonly kind: "property" | "ivar";
+  readonly kind: 'property' | 'ivar';
   readonly name: string;
   readonly qualifiedName: string;
   readonly nodeId: string;
   readonly ownerQualifiedName: string;
   readonly ownerName: string;
   readonly ownerKind: ObjCContainerKind;
-  readonly ownerLabel: "Class" | "Protocol" | "Category";
+  readonly ownerLabel: 'Class' | 'Protocol' | 'Category';
   readonly hostClass?: string;
   readonly declaredType?: string;
   readonly filePath: string;
@@ -95,7 +86,7 @@ export interface ObjCFunctionFact {
 }
 
 export interface ObjCImportFact {
-  readonly kind: "import" | "include" | "module";
+  readonly kind: 'import' | 'include' | 'module';
   readonly raw: string;
   readonly targetRaw: string;
   readonly filePath: string;
@@ -107,14 +98,14 @@ export interface ObjCMessageFact {
   readonly selector: string;
   readonly receiverText: string;
   readonly receiverKind:
-    | "self"
-    | "super"
-    | "class"
-    | "local"
-    | "property"
-    | "ivar"
-    | "dynamic"
-    | "unknown";
+    | 'self'
+    | 'super'
+    | 'class'
+    | 'local'
+    | 'property'
+    | 'ivar'
+    | 'dynamic'
+    | 'unknown';
   readonly receiverType?: ObjCTypeInfo;
   readonly sourceMethodQualifiedName: string;
   readonly sourceMethodId: string;
@@ -151,7 +142,7 @@ export interface ObjCFileFacts {
 }
 
 export interface ObjCCaptureSideChannel {
-  readonly kind: "objective-c";
+  readonly kind: 'objective-c';
   readonly facts: ObjCFileFacts;
 }
 
@@ -161,9 +152,7 @@ export function setObjectiveCFileFacts(facts: ObjCFileFacts): void {
   factsByFile.set(facts.filePath, facts);
 }
 
-export function getObjectiveCFileFacts(
-  filePath: string,
-): ObjCFileFacts | undefined {
+export function getObjectiveCFileFacts(filePath: string): ObjCFileFacts | undefined {
   return factsByFile.get(filePath);
 }
 
@@ -171,7 +160,7 @@ export function collectObjectiveCCaptureSideChannel(
   filePath: string,
 ): ObjCCaptureSideChannel | undefined {
   const facts = factsByFile.get(filePath);
-  return facts === undefined ? undefined : { kind: "objective-c", facts };
+  return facts === undefined ? undefined : { kind: 'objective-c', facts };
 }
 
 export function applyObjectiveCCaptureSideChannel(parsed: ParsedFile): void {
@@ -187,9 +176,7 @@ export function objectiveCFactsFromParsedFiles(
   const seen = new Set<string>();
   for (const parsed of parsedFiles) {
     const payload = parsed.captureSideChannel;
-    const fromPayload = isObjectiveCSideChannel(payload)
-      ? payload.facts
-      : undefined;
+    const fromPayload = isObjectiveCSideChannel(payload) ? payload.facts : undefined;
     const fact = fromPayload ?? factsByFile.get(parsed.filePath);
     if (fact === undefined || seen.has(fact.filePath)) continue;
     seen.add(fact.filePath);
@@ -198,53 +185,32 @@ export function objectiveCFactsFromParsedFiles(
   return facts;
 }
 
-function isObjectiveCSideChannel(
-  value: unknown,
-): value is ObjCCaptureSideChannel {
-  if (value === null || typeof value !== "object") return false;
+function isObjectiveCSideChannel(value: unknown): value is ObjCCaptureSideChannel {
+  if (value === null || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return (
-    record.kind === "objective-c" &&
-    record.facts !== null &&
-    typeof record.facts === "object"
-  );
+  return record.kind === 'objective-c' && record.facts !== null && typeof record.facts === 'object';
 }
 
-export const objcClassQualifiedName = (name: string): string =>
-  `objc:class:${name}`;
-export const objcProtocolQualifiedName = (name: string): string =>
-  `objc:protocol:${name}`;
-export const objcCategoryQualifiedName = (
-  hostClass: string,
-  categoryName: string,
-): string => `objc:category:${hostClass}:${categoryName}`;
+export const objcClassQualifiedName = (name: string): string => `objc:class:${name}`;
+export const objcProtocolQualifiedName = (name: string): string => `objc:protocol:${name}`;
+export const objcCategoryQualifiedName = (hostClass: string, categoryName: string): string =>
+  `objc:category:${hostClass}:${categoryName}`;
 export const objcMethodQualifiedName = (
   ownerQualifiedName: string,
   methodKind: ObjCMethodKind,
   selector: string,
 ): string => `objc:method:${ownerQualifiedName}:${methodKind}:${selector}`;
-export const objcPropertyQualifiedName = (
-  ownerQualifiedName: string,
-  name: string,
-): string => `objc:property:${ownerQualifiedName}:${name}`;
-export const objcIvarQualifiedName = (
-  ownerQualifiedName: string,
-  name: string,
-): string => `objc:ivar:${ownerQualifiedName}:${name}`;
-export const objcFunctionQualifiedName = (name: string): string =>
-  `objc:function:${name}`;
+export const objcPropertyQualifiedName = (ownerQualifiedName: string, name: string): string =>
+  `objc:property:${ownerQualifiedName}:${name}`;
+export const objcIvarQualifiedName = (ownerQualifiedName: string, name: string): string =>
+  `objc:ivar:${ownerQualifiedName}:${name}`;
+export const objcFunctionQualifiedName = (name: string): string => `objc:function:${name}`;
 
 const graphNodeId = (label: NodeLabel, qualifiedName: string): string =>
   generateId(label, qualifiedName);
 
-function ownerLabel(
-  kind: ObjCContainerKind,
-): "Class" | "Protocol" | "Category" {
-  return kind === "class"
-    ? "Class"
-    : kind === "protocol"
-      ? "Protocol"
-      : "Category";
+function ownerLabel(kind: ObjCContainerKind): 'Class' | 'Protocol' | 'Category' {
+  return kind === 'class' ? 'Class' : kind === 'protocol' ? 'Protocol' : 'Category';
 }
 
 const range = (node: SyntaxNode) => ({
@@ -270,24 +236,15 @@ function directChildren(node: SyntaxNode): SyntaxNode[] {
   return out;
 }
 
-function firstDirectIdentifier(node: SyntaxNode): SyntaxNode | null {
-  return (
-    directNamedChildren(node).find((child) => child.type === "identifier") ??
-    null
-  );
-}
-
 function directIdentifiers(node: SyntaxNode): SyntaxNode[] {
-  return directNamedChildren(node).filter(
-    (child) => child.type === "identifier",
-  );
+  return directNamedChildren(node).filter((child) => child.type === 'identifier');
 }
 
 function stripQuotes(raw: string): string {
   const trimmed = raw.trim();
   if (
     (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("<") && trimmed.endsWith(">"))
+    (trimmed.startsWith('<') && trimmed.endsWith('>'))
   ) {
     return trimmed.slice(1, -1);
   }
@@ -296,51 +253,41 @@ function stripQuotes(raw: string): string {
 
 function cleanType(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
-  let text = raw
-    .replace(/^\(/, "")
-    .replace(/\)$/, "")
-    .replace(
-      /\b(?:nullable|nonnull|__nullable|__nonnull|_Nullable|_Nonnull|const)\b/g,
-      " ",
-    )
-    .replace(/\s+/g, " ")
+  const text = raw
+    .replace(/^\(/, '')
+    .replace(/\)$/, '')
+    .replace(/\b(?:nullable|nonnull|__nullable|__nonnull|_Nullable|_Nonnull|const)\b/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
   if (text.length === 0) return undefined;
   return text;
 }
 
-export function parseObjCType(
-  raw: string | undefined,
-): ObjCTypeInfo | undefined {
+export function parseObjCType(raw: string | undefined): ObjCTypeInfo | undefined {
   const text = cleanType(raw);
   if (text === undefined) return undefined;
-  if (text === "id" || text === "instancetype")
-    return { kind: "dynamic", raw: text };
-  if (text === "Class") return { kind: "class-object", raw: text };
+  if (text === 'id' || text === 'instancetype') return { kind: 'dynamic', raw: text };
+  if (text === 'Class') return { kind: 'class-object', raw: text };
 
   const protocolMatch = text.match(/^id\s*<\s*([A-Za-z_][A-Za-z0-9_]*)\s*>/);
   if (protocolMatch !== null) {
-    return { kind: "protocol", name: protocolMatch[1], raw: text };
+    return { kind: 'protocol', name: protocolMatch[1], raw: text };
   }
 
-  const classMatch = text.match(
-    /([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\*?$/,
-  );
+  const classMatch = text.match(/([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]+>)?\s*\*?$/);
   if (classMatch !== null) {
-    return { kind: "class", name: classMatch[1], raw: text };
+    return { kind: 'class', name: classMatch[1], raw: text };
   }
-  return { kind: "unknown", raw: text };
+  return { kind: 'unknown', raw: text };
 }
 
 function methodKind(node: SyntaxNode): ObjCMethodKind {
   const first = node.child(0)?.text;
-  return first === "+" ? "+" : "-";
+  return first === '+' ? '+' : '-';
 }
 
 function methodTypeText(node: SyntaxNode): string | undefined {
-  const typeNode = directNamedChildren(node).find(
-    (child) => child.type === "method_type",
-  );
+  const typeNode = directNamedChildren(node).find((child) => child.type === 'method_type');
   return cleanType(typeNode?.text);
 }
 
@@ -349,15 +296,15 @@ function methodSelector(node: SyntaxNode): string {
   const pieces: string[] = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
-    if (child.type !== "identifier") continue;
+    if (child.type !== 'identifier') continue;
     const next = children[i + 1];
-    if (next?.type === "method_parameter") {
+    if (next?.type === 'method_parameter') {
       pieces.push(`${child.text}:`);
       continue;
     }
     if (pieces.length === 0) pieces.push(child.text);
   }
-  return pieces.join("");
+  return pieces.join('');
 }
 
 function messageSelector(node: SyntaxNode): string {
@@ -365,13 +312,12 @@ function messageSelector(node: SyntaxNode): string {
   const pieces: string[] = [];
   for (let i = 2; i < children.length; i++) {
     const child = children[i];
-    if (child.type !== "identifier" && child.type !== "field_identifier")
-      continue;
+    if (child.type !== 'identifier' && child.type !== 'field_identifier') continue;
     const next = children[i + 1];
-    if (next?.text === ":") pieces.push(`${child.text}:`);
-    else if (pieces.length === 0 && next?.text === "]") pieces.push(child.text);
+    if (next?.text === ':') pieces.push(`${child.text}:`);
+    else if (pieces.length === 0 && next?.text === ']') pieces.push(child.text);
   }
-  return pieces.join("");
+  return pieces.join('');
 }
 
 function methodParameterInfo(node: SyntaxNode): {
@@ -383,10 +329,10 @@ function methodParameterInfo(node: SyntaxNode): {
   const parameterNames: string[] = [];
   const typeBindings = new Map<string, ObjCTypeInfo>();
   for (const child of directNamedChildren(node)) {
-    if (child.type !== "method_parameter") continue;
+    if (child.type !== 'method_parameter') continue;
     const named = directNamedChildren(child);
-    const typeNode = named.find((n) => n.type === "method_type");
-    const nameNode = [...named].reverse().find((n) => n.type === "identifier");
+    const typeNode = named.find((n) => n.type === 'method_type');
+    const nameNode = [...named].reverse().find((n) => n.type === 'identifier');
     const typeText = cleanType(typeNode?.text);
     if (typeText !== undefined) parameterTypes.push(typeText);
     if (nameNode !== undefined) {
@@ -398,27 +344,21 @@ function methodParameterInfo(node: SyntaxNode): {
   return { parameterTypes, parameterNames, typeBindings };
 }
 
-function propertyInfo(
-  node: SyntaxNode,
-): { name: string; type?: string } | null {
-  const structDecl = directNamedChildren(node).find(
-    (child) => child.type === "struct_declaration",
-  );
+function propertyInfo(node: SyntaxNode): { name: string; type?: string } | null {
+  const structDecl = directNamedChildren(node).find((child) => child.type === 'struct_declaration');
   if (structDecl === undefined) return null;
   return declarationNameAndType(structDecl);
 }
 
-function declarationNameAndType(
-  node: SyntaxNode,
-): { name: string; type?: string } | null {
+function declarationNameAndType(node: SyntaxNode): { name: string; type?: string } | null {
   const name = declaratorName(node);
   if (name === undefined) return null;
   return { name, type: cleanType(firstTypeNode(node)?.text) };
 }
 
 function declaratorName(node: SyntaxNode): string | undefined {
-  if (node.type === "identifier") return node.text;
-  if (node.type === "init_declarator") {
+  if (node.type === 'identifier') return node.text;
+  if (node.type === 'init_declarator') {
     for (const child of directNamedChildren(node)) {
       const name = declaratorName(child);
       if (name !== undefined) return name;
@@ -426,11 +366,11 @@ function declaratorName(node: SyntaxNode): string | undefined {
     return undefined;
   }
   if (
-    node.type === "pointer_declarator" ||
-    node.type === "array_declarator" ||
-    node.type === "function_declarator" ||
-    node.type === "parenthesized_declarator" ||
-    node.type === "struct_declarator"
+    node.type === 'pointer_declarator' ||
+    node.type === 'array_declarator' ||
+    node.type === 'function_declarator' ||
+    node.type === 'parenthesized_declarator' ||
+    node.type === 'struct_declarator'
   ) {
     for (const child of directNamedChildren(node)) {
       const name = declaratorName(child);
@@ -441,13 +381,13 @@ function declaratorName(node: SyntaxNode): string | undefined {
 
   for (const child of directNamedChildren(node)) {
     if (
-      child.type === "init_declarator" ||
-      child.type === "pointer_declarator" ||
-      child.type === "array_declarator" ||
-      child.type === "function_declarator" ||
-      child.type === "parenthesized_declarator" ||
-      child.type === "struct_declarator" ||
-      child.type === "struct_declaration"
+      child.type === 'init_declarator' ||
+      child.type === 'pointer_declarator' ||
+      child.type === 'array_declarator' ||
+      child.type === 'function_declarator' ||
+      child.type === 'parenthesized_declarator' ||
+      child.type === 'struct_declarator' ||
+      child.type === 'struct_declaration'
     ) {
       const name = declaratorName(child);
       if (name !== undefined) return name;
@@ -458,9 +398,9 @@ function declaratorName(node: SyntaxNode): string | undefined {
 
 function firstTypeNode(node: SyntaxNode): SyntaxNode | undefined {
   if (
-    node.type === "type_identifier" ||
-    node.type === "primitive_type" ||
-    node.type === "typedefed_specifier"
+    node.type === 'type_identifier' ||
+    node.type === 'primitive_type' ||
+    node.type === 'typedefed_specifier'
   ) {
     return node;
   }
@@ -478,16 +418,12 @@ function functionInfo(node: SyntaxNode): {
 } | null {
   let declarator: SyntaxNode | undefined;
   walkNamedTree(node, (child) => {
-    if (declarator === undefined && child.type === "function_declarator")
-      declarator = child;
+    if (declarator === undefined && child.type === 'function_declarator') declarator = child;
   });
   if (declarator === undefined) return null;
   // `int (*callback)(int)` is a function pointer declaration, not a callable
   // definition. A pointer return (`int *func(void)`) remains a C function.
-  if (
-    declarator.childForFieldName("declarator")?.type ===
-    "parenthesized_declarator"
-  ) {
+  if (declarator.childForFieldName('declarator')?.type === 'parenthesized_declarator') {
     return null;
   }
   const name = declaratorName(declarator);
@@ -495,19 +431,19 @@ function functionInfo(node: SyntaxNode): {
   const returnType = cleanType(
     directNamedChildren(node).find(
       (child) =>
-        child.type === "type_identifier" ||
-        child.type === "primitive_type" ||
-        child.type === "typedefed_specifier",
+        child.type === 'type_identifier' ||
+        child.type === 'primitive_type' ||
+        child.type === 'typedefed_specifier',
     )?.text,
   );
   const parameterTypes: string[] = [];
   walkNamedTree(declarator, (child) => {
-    if (child.type !== "parameter_declaration") return;
+    if (child.type !== 'parameter_declaration') return;
     const typeNode = directNamedChildren(child).find(
       (n) =>
-        n.type === "type_identifier" ||
-        n.type === "primitive_type" ||
-        n.type === "typedefed_specifier",
+        n.type === 'type_identifier' ||
+        n.type === 'primitive_type' ||
+        n.type === 'typedefed_specifier',
     );
     const typeText = cleanType(typeNode?.text);
     if (typeText !== undefined) parameterTypes.push(typeText);
@@ -518,14 +454,12 @@ function functionInfo(node: SyntaxNode): {
 function directProtocolNames(node: SyntaxNode): string[] {
   const out: string[] = [];
   for (const child of directNamedChildren(node)) {
-    if (child.type === "protocol_reference_list") {
+    if (child.type === 'protocol_reference_list') {
       out.push(...directIdentifiers(child).map((id) => id.text));
-    } else if (child.type === "parameterized_arguments") {
+    } else if (child.type === 'parameterized_arguments') {
       for (const named of directNamedChildren(child)) {
-        if (named.type !== "type_name") continue;
-        const id = directNamedChildren(named).find(
-          (n) => n.type === "type_identifier",
-        );
+        if (named.type !== 'type_name') continue;
+        const id = directNamedChildren(named).find((n) => n.type === 'type_identifier');
         if (id !== undefined) out.push(id.text);
       }
     }
@@ -533,14 +467,11 @@ function directProtocolNames(node: SyntaxNode): string[] {
   return Array.from(new Set(out));
 }
 
-function parseContainer(
-  node: SyntaxNode,
-  filePath: string,
-): ObjCContainerFact | null {
+function parseContainer(node: SyntaxNode, filePath: string): ObjCContainerFact | null {
   if (
-    node.type !== "class_interface" &&
-    node.type !== "class_implementation" &&
-    node.type !== "protocol_declaration"
+    node.type !== 'class_interface' &&
+    node.type !== 'class_implementation' &&
+    node.type !== 'protocol_declaration'
   ) {
     return null;
   }
@@ -548,42 +479,38 @@ function parseContainer(
   const first = ids[0];
   if (first === undefined) return null;
   const { startLine, endLine } = range(node);
-  if (node.type === "protocol_declaration") {
+  if (node.type === 'protocol_declaration') {
     const qualifiedName = objcProtocolQualifiedName(first.text);
     return {
-      kind: "protocol",
-      declarationRole: "interface",
+      kind: 'protocol',
+      declarationRole: 'interface',
       name: first.text,
       qualifiedName,
-      nodeId: graphNodeId("Protocol", qualifiedName),
-      label: "Protocol",
+      nodeId: graphNodeId('Protocol', qualifiedName),
+      label: 'Protocol',
       filePath,
       startLine,
       endLine,
-      protocols: directProtocolNames(node).filter(
-        (name) => name !== first.text,
-      ),
+      protocols: directProtocolNames(node).filter((name) => name !== first.text),
     };
   }
 
   const children = directChildren(node);
-  const openParenIndex = children.findIndex((child) => child.text === "(");
+  const openParenIndex = children.findIndex((child) => child.text === '(');
   if (openParenIndex !== -1) {
     const categoryIdentifier = children
       .slice(openParenIndex + 1)
-      .find((child) => child.type === "identifier");
-    const categoryName = categoryIdentifier?.text ?? "__extension__";
-    const kind: ObjCContainerKind =
-      categoryIdentifier === undefined ? "extension" : "category";
+      .find((child) => child.type === 'identifier');
+    const categoryName = categoryIdentifier?.text ?? '__extension__';
+    const kind: ObjCContainerKind = categoryIdentifier === undefined ? 'extension' : 'category';
     const qualifiedName = objcCategoryQualifiedName(first.text, categoryName);
     return {
       kind,
-      declarationRole:
-        node.type === "class_interface" ? "interface" : "implementation",
-      name: `${first.text} (${categoryIdentifier?.text ?? ""})`,
+      declarationRole: node.type === 'class_interface' ? 'interface' : 'implementation',
+      name: `${first.text} (${categoryIdentifier?.text ?? ''})`,
       qualifiedName,
-      nodeId: graphNodeId("Category", qualifiedName),
-      label: "Category",
+      nodeId: graphNodeId('Category', qualifiedName),
+      label: 'Category',
       filePath,
       startLine,
       endLine,
@@ -593,22 +520,19 @@ function parseContainer(
     };
   }
 
-  const colonIndex = children.findIndex((child) => child.text === ":");
+  const colonIndex = children.findIndex((child) => child.text === ':');
   const superclass =
     colonIndex !== -1
-      ? children
-          .slice(colonIndex + 1)
-          .find((child) => child.type === "identifier")?.text
+      ? children.slice(colonIndex + 1).find((child) => child.type === 'identifier')?.text
       : undefined;
   const qualifiedName = objcClassQualifiedName(first.text);
   return {
-    kind: "class",
-    declarationRole:
-      node.type === "class_interface" ? "interface" : "implementation",
+    kind: 'class',
+    declarationRole: node.type === 'class_interface' ? 'interface' : 'implementation',
     name: first.text,
     qualifiedName,
-    nodeId: graphNodeId("Class", qualifiedName),
-    label: "Class",
+    nodeId: graphNodeId('Class', qualifiedName),
+    label: 'Class',
     filePath,
     startLine,
     endLine,
@@ -620,8 +544,7 @@ function parseContainer(
 function collectLocalTypes(methodNode: SyntaxNode): Map<string, ObjCTypeInfo> {
   const locals = new Map<string, ObjCTypeInfo>();
   walkNamedTree(methodNode, (node) => {
-    if (node.type !== "declaration" && node.type !== "parameter_declaration")
-      return;
+    if (node.type !== 'declaration' && node.type !== 'parameter_declaration') return;
     const info = declarationNameAndType(node);
     if (info === null) return;
     const typeInfo = parseObjCType(info.type);
@@ -632,10 +555,10 @@ function collectLocalTypes(methodNode: SyntaxNode): Map<string, ObjCTypeInfo> {
 
 function isReflectionSelector(selector: string, receiverText: string): boolean {
   return (
-    selector.startsWith("performSelector:") ||
-    selector === "methodForSelector:" ||
-    selector === "forwardInvocation:" ||
-    receiverText === "NSInvocation"
+    selector.startsWith('performSelector:') ||
+    selector === 'methodForSelector:' ||
+    selector === 'forwardInvocation:' ||
+    receiverText === 'NSInvocation'
   );
 }
 
@@ -649,9 +572,7 @@ function messageReceiver(node: SyntaxNode): SyntaxNode | null {
 }
 
 function macroName(node: SyntaxNode): string | undefined {
-  return (
-    node.childForFieldName("name")?.text ?? directIdentifiers(node)[0]?.text
-  );
+  return node.childForFieldName('name')?.text ?? directIdentifiers(node)[0]?.text;
 }
 
 function classifyReceiver(
@@ -663,84 +584,80 @@ function classifyReceiver(
   macroNames: ReadonlySet<string>,
   classNames: ReadonlySet<string>,
 ): {
-  kind: ObjCMessageFact["receiverKind"];
+  kind: ObjCMessageFact['receiverKind'];
   type?: ObjCTypeInfo;
   unresolvedReason?: string;
 } {
   const text = receiver.text;
   if (isReflectionSelector(selector, text)) {
     return {
-      kind: "dynamic",
-      unresolvedReason: "reflection selector dispatch is dynamic",
+      kind: 'dynamic',
+      unresolvedReason: 'reflection selector dispatch is dynamic',
     };
   }
   const receiverMacroName =
-    receiver.type === "call_expression"
-      ? receiver.childForFieldName("function")?.text
-      : receiver.type === "identifier"
+    receiver.type === 'call_expression'
+      ? receiver.childForFieldName('function')?.text
+      : receiver.type === 'identifier'
         ? text
         : undefined;
   if (receiverMacroName !== undefined && macroNames.has(receiverMacroName)) {
     return {
-      kind: "dynamic",
-      type: { kind: "dynamic", raw: text },
+      kind: 'dynamic',
+      type: { kind: 'dynamic', raw: text },
       unresolvedReason: `macro receiver ${receiverMacroName} is dynamic`,
     };
   }
-  if (receiver.type === "identifier") {
-    if (text === "self") return { kind: "self" };
-    if (text === "super") return { kind: "super" };
+  if (receiver.type === 'identifier') {
+    if (text === 'self') return { kind: 'self' };
+    if (text === 'super') return { kind: 'super' };
     const bound = methodTypes.get(text);
     if (bound !== undefined) {
-      if (bound.kind === "dynamic" || bound.kind === "class-object") {
+      if (bound.kind === 'dynamic' || bound.kind === 'class-object') {
         return {
-          kind: "dynamic",
+          kind: 'dynamic',
           type: bound,
           unresolvedReason: `${bound.raw} receiver is dynamic`,
         };
       }
-      return { kind: "local", type: bound };
+      return { kind: 'local', type: bound };
     }
     const hostOwner =
       method.hostClass !== undefined
         ? objcClassQualifiedName(method.hostClass)
         : method.ownerQualifiedName;
     const memberType = membersByOwner.get(hostOwner)?.get(text);
-    if (memberType !== undefined) return { kind: "ivar", type: memberType };
+    if (memberType !== undefined) return { kind: 'ivar', type: memberType };
     if (classNames.has(text) || isPascalCaseLike(text)) {
-      return { kind: "class", type: { kind: "class", name: text, raw: text } };
+      return { kind: 'class', type: { kind: 'class', name: text, raw: text } };
     }
-    return { kind: "unknown", unresolvedReason: "receiver type is unknown" };
+    return { kind: 'unknown', unresolvedReason: 'receiver type is unknown' };
   }
 
-  if (receiver.type === "field_expression") {
+  if (receiver.type === 'field_expression') {
     const parts = directNamedChildren(receiver);
     const base = parts[0];
     const field = parts[1];
-    if (base?.text === "self" && field !== undefined) {
+    if (base?.text === 'self' && field !== undefined) {
       const hostOwner =
         method.hostClass !== undefined
           ? objcClassQualifiedName(method.hostClass)
           : method.ownerQualifiedName;
       const memberType = membersByOwner.get(hostOwner)?.get(field.text);
-      if (memberType !== undefined)
-        return { kind: "property", type: memberType };
+      if (memberType !== undefined) return { kind: 'property', type: memberType };
       return {
-        kind: "property",
+        kind: 'property',
         unresolvedReason: `property ${field.text} has no static type`,
       };
     }
   }
   return {
-    kind: "unknown",
-    unresolvedReason: "receiver expression is not statically typed",
+    kind: 'unknown',
+    unresolvedReason: 'receiver expression is not statically typed',
   };
 }
 
-export function collectObjectiveCFacts(
-  tree: Parser.Tree,
-  filePath: string,
-): ObjCFileFacts {
+export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): ObjCFileFacts {
   const containers: ObjCContainerFact[] = [];
   const methods: ObjCMethodFact[] = [];
   const members: ObjCMemberFact[] = [];
@@ -753,15 +670,14 @@ export function collectObjectiveCFacts(
   const classNames = new Set<string>();
 
   walkNamedTree(tree.rootNode, (node) => {
-    if (node.type !== "preproc_def" && node.type !== "preproc_function_def")
-      return;
+    if (node.type !== 'preproc_def' && node.type !== 'preproc_function_def') return;
     const name = macroName(node);
     if (name !== undefined) macroNames.add(name);
   });
 
   walkNamedTree(tree.rootNode, (node) => {
     const container = parseContainer(node, filePath);
-    if (container?.kind === "class") classNames.add(container.name);
+    if (container?.kind === 'class') classNames.add(container.name);
   });
 
   const addMemberType = (
@@ -780,15 +696,13 @@ export function collectObjectiveCFacts(
   };
 
   for (const child of directNamedChildren(tree.rootNode)) {
-    if (child.type === "preproc_include") {
+    if (child.type === 'preproc_include') {
       const rawNode = directNamedChildren(child).find(
-        (n) => n.type === "string_literal" || n.type === "system_lib_string",
+        (n) => n.type === 'string_literal' || n.type === 'system_lib_string',
       );
       if (rawNode !== undefined) {
         const raw = rawNode.text;
-        const directive = child.text.trimStart().startsWith("#include")
-          ? "include"
-          : "import";
+        const directive = child.text.trimStart().startsWith('#include') ? 'include' : 'import';
         const { startLine, endLine } = range(child);
         imports.push({
           kind: directive,
@@ -801,13 +715,13 @@ export function collectObjectiveCFacts(
       }
       continue;
     }
-    if (child.type === "module_import") {
+    if (child.type === 'module_import') {
       const moduleName = directIdentifiers(child)
         .map((n) => n.text)
-        .join(".");
+        .join('.');
       const { startLine, endLine } = range(child);
       imports.push({
-        kind: "module",
+        kind: 'module',
         raw: moduleName,
         targetRaw: moduleName,
         filePath,
@@ -821,19 +735,11 @@ export function collectObjectiveCFacts(
     if (container !== null) {
       containers.push(container);
       for (const inner of directNamedChildren(child)) {
-        if (
-          inner.type === "method_declaration" ||
-          inner.type === "method_definition"
-        ) {
+        if (inner.type === 'method_declaration' || inner.type === 'method_definition') {
           const selector = methodSelector(inner);
-          const { parameterTypes, parameterNames, typeBindings } =
-            methodParameterInfo(inner);
+          const { parameterTypes, parameterNames, typeBindings } = methodParameterInfo(inner);
           const kind = methodKind(inner);
-          const qualifiedName = objcMethodQualifiedName(
-            container.qualifiedName,
-            kind,
-            selector,
-          );
+          const qualifiedName = objcMethodQualifiedName(container.qualifiedName, kind, selector);
           const { startLine, endLine } = range(inner);
           const method: ObjCMethodFact = {
             name: selector,
@@ -842,21 +748,14 @@ export function collectObjectiveCFacts(
             ownerQualifiedName: container.qualifiedName,
             ownerName: container.name,
             ownerKind: container.kind,
-            ...(container.hostClass !== undefined
-              ? { hostClass: container.hostClass }
-              : {}),
+            ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
             qualifiedName,
-            nodeId: graphNodeId("Method", qualifiedName),
+            nodeId: graphNodeId('Method', qualifiedName),
             filePath,
             startLine,
             endLine,
-            declarationRole:
-              inner.type === "method_definition"
-                ? "implementation"
-                : "declaration",
-            ...(methodTypeText(inner) !== undefined
-              ? { returnType: methodTypeText(inner) }
-              : {}),
+            declarationRole: inner.type === 'method_definition' ? 'implementation' : 'declaration',
+            ...(methodTypeText(inner) !== undefined ? { returnType: methodTypeText(inner) } : {}),
             parameterTypes,
             parameterNames,
           };
@@ -867,7 +766,7 @@ export function collectObjectiveCFacts(
             ...collectLocalTypes(inner),
           ]);
           walkNamedTree(inner, (messageNode) => {
-            if (messageNode.type !== "message_expression") return;
+            if (messageNode.type !== 'message_expression') return;
             const receiver = messageReceiver(messageNode);
             if (receiver === null) return;
             const messageSel = messageSelector(messageNode);
@@ -885,9 +784,7 @@ export function collectObjectiveCFacts(
               selector: messageSel,
               receiverText: receiver.text,
               receiverKind: classified.kind,
-              ...(classified.type !== undefined
-                ? { receiverType: classified.type }
-                : {}),
+              ...(classified.type !== undefined ? { receiverType: classified.type } : {}),
               sourceMethodQualifiedName: method.qualifiedName,
               sourceMethodId: method.nodeId,
               sourceOwnerQualifiedName: method.ownerQualifiedName,
@@ -910,26 +807,21 @@ export function collectObjectiveCFacts(
             }
             messages.push(fact);
           });
-        } else if (inner.type === "property_declaration") {
+        } else if (inner.type === 'property_declaration') {
           const prop = propertyInfo(inner);
           if (prop === null) continue;
-          const qualifiedName = objcPropertyQualifiedName(
-            container.qualifiedName,
-            prop.name,
-          );
+          const qualifiedName = objcPropertyQualifiedName(container.qualifiedName, prop.name);
           const { startLine, endLine } = range(inner);
           members.push({
-            kind: "property",
+            kind: 'property',
             name: prop.name,
             qualifiedName,
-            nodeId: graphNodeId("Property", qualifiedName),
+            nodeId: graphNodeId('Property', qualifiedName),
             ownerQualifiedName: container.qualifiedName,
             ownerName: container.name,
             ownerKind: container.kind,
             ownerLabel: ownerLabel(container.kind),
-            ...(container.hostClass !== undefined
-              ? { hostClass: container.hostClass }
-              : {}),
+            ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
             ...(prop.type !== undefined ? { declaredType: prop.type } : {}),
             filePath,
             startLine,
@@ -937,34 +829,25 @@ export function collectObjectiveCFacts(
           });
           addMemberType(container.qualifiedName, prop.name, prop.type);
           if (container.hostClass !== undefined) {
-            addMemberType(
-              objcClassQualifiedName(container.hostClass),
-              prop.name,
-              prop.type,
-            );
+            addMemberType(objcClassQualifiedName(container.hostClass), prop.name, prop.type);
           }
-        } else if (inner.type === "instance_variables") {
+        } else if (inner.type === 'instance_variables') {
           walkNamedTree(inner, (ivarNode) => {
-            if (ivarNode.type !== "instance_variable") return;
+            if (ivarNode.type !== 'instance_variable') return;
             const ivar = declarationNameAndType(ivarNode);
             if (ivar === null) return;
-            const qualifiedName = objcIvarQualifiedName(
-              container.qualifiedName,
-              ivar.name,
-            );
+            const qualifiedName = objcIvarQualifiedName(container.qualifiedName, ivar.name);
             const { startLine, endLine } = range(ivarNode);
             members.push({
-              kind: "ivar",
+              kind: 'ivar',
               name: ivar.name,
               qualifiedName,
-              nodeId: graphNodeId("Variable", qualifiedName),
+              nodeId: graphNodeId('Variable', qualifiedName),
               ownerQualifiedName: container.qualifiedName,
               ownerName: container.name,
               ownerKind: container.kind,
               ownerLabel: ownerLabel(container.kind),
-              ...(container.hostClass !== undefined
-                ? { hostClass: container.hostClass }
-                : {}),
+              ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
               ...(ivar.type !== undefined ? { declaredType: ivar.type } : {}),
               filePath,
               startLine,
@@ -972,27 +855,17 @@ export function collectObjectiveCFacts(
             });
             addMemberType(container.qualifiedName, ivar.name, ivar.type);
             if (container.hostClass !== undefined) {
-              addMemberType(
-                objcClassQualifiedName(container.hostClass),
-                ivar.name,
-                ivar.type,
-              );
+              addMemberType(objcClassQualifiedName(container.hostClass), ivar.name, ivar.type);
             }
           });
-        } else if (inner.type === "implementation_definition") {
-          const methodNode = directNamedChildren(inner).find(
-            (n) => n.type === "method_definition",
-          );
+        } else if (inner.type === 'implementation_definition') {
+          const methodNode = directNamedChildren(inner).find((n) => n.type === 'method_definition');
           if (methodNode !== undefined) {
             const selector = methodSelector(methodNode);
             const { parameterTypes, parameterNames, typeBindings } =
               methodParameterInfo(methodNode);
             const kind = methodKind(methodNode);
-            const qualifiedName = objcMethodQualifiedName(
-              container.qualifiedName,
-              kind,
-              selector,
-            );
+            const qualifiedName = objcMethodQualifiedName(container.qualifiedName, kind, selector);
             const { startLine, endLine } = range(methodNode);
             const method: ObjCMethodFact = {
               name: selector,
@@ -1001,15 +874,13 @@ export function collectObjectiveCFacts(
               ownerQualifiedName: container.qualifiedName,
               ownerName: container.name,
               ownerKind: container.kind,
-              ...(container.hostClass !== undefined
-                ? { hostClass: container.hostClass }
-                : {}),
+              ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
               qualifiedName,
-              nodeId: graphNodeId("Method", qualifiedName),
+              nodeId: graphNodeId('Method', qualifiedName),
               filePath,
               startLine,
               endLine,
-              declarationRole: "implementation",
+              declarationRole: 'implementation',
               ...(methodTypeText(methodNode) !== undefined
                 ? { returnType: methodTypeText(methodNode) }
                 : {}),
@@ -1022,7 +893,7 @@ export function collectObjectiveCFacts(
               ...collectLocalTypes(methodNode),
             ]);
             walkNamedTree(methodNode, (messageNode) => {
-              if (messageNode.type !== "message_expression") return;
+              if (messageNode.type !== 'message_expression') return;
               const receiver = messageReceiver(messageNode);
               if (receiver === null) return;
               const messageSel = messageSelector(messageNode);
@@ -1040,9 +911,7 @@ export function collectObjectiveCFacts(
                 selector: messageSel,
                 receiverText: receiver.text,
                 receiverKind: classified.kind,
-                ...(classified.type !== undefined
-                  ? { receiverType: classified.type }
-                  : {}),
+                ...(classified.type !== undefined ? { receiverType: classified.type } : {}),
                 sourceMethodQualifiedName: method.qualifiedName,
                 sourceMethodId: method.nodeId,
                 sourceOwnerQualifiedName: method.ownerQualifiedName,
@@ -1071,7 +940,7 @@ export function collectObjectiveCFacts(
       continue;
     }
 
-    if (child.type === "function_definition" || child.type === "declaration") {
+    if (child.type === 'function_definition' || child.type === 'declaration') {
       const info = functionInfo(child);
       if (info === null) continue;
       const qualifiedName = objcFunctionQualifiedName(info.name);
@@ -1079,13 +948,11 @@ export function collectObjectiveCFacts(
       functions.push({
         name: info.name,
         qualifiedName,
-        nodeId: graphNodeId("Function", qualifiedName),
+        nodeId: graphNodeId('Function', qualifiedName),
         filePath,
         startLine,
         endLine,
-        ...(info.returnType !== undefined
-          ? { returnType: info.returnType }
-          : {}),
+        ...(info.returnType !== undefined ? { returnType: info.returnType } : {}),
         parameterTypes: info.parameterTypes,
       });
     }
@@ -1135,7 +1002,7 @@ function semanticNode(
 }
 
 function relationship(
-  type: "DEFINES" | "DECLARES" | "HAS_METHOD" | "HAS_PROPERTY",
+  type: 'DEFINES' | 'DECLARES' | 'HAS_METHOD' | 'HAS_PROPERTY',
   sourceId: string,
   targetId: string,
   reason: string,
@@ -1159,27 +1026,25 @@ function implementationEvidenceNode(
   extras: Record<string, unknown>,
 ): ProviderSemanticNode {
   return semanticNode(
-    "CodeElement",
-    graphNodeId("CodeElement", qualifiedName),
+    'CodeElement',
+    graphNodeId('CodeElement', qualifiedName),
     name,
     qualifiedName,
     filePath,
     startLine,
     endLine,
     {
-      objectiveCKind: "implementation-evidence",
+      objectiveCKind: 'implementation-evidence',
       ...extras,
     },
   );
 }
 
-export function buildObjectiveCSemanticGraph(
-  facts: ObjCFileFacts,
-): ProviderSemanticGraph {
+export function buildObjectiveCSemanticGraph(facts: ObjCFileFacts): ProviderSemanticGraph {
   const nodes: ProviderSemanticNode[] = [];
   const relationships: ProviderSemanticRelationship[] = [];
   const symbols: ProviderSemanticSymbol[] = [];
-  const fileId = generateId("File", facts.filePath);
+  const fileId = generateId('File', facts.filePath);
 
   for (const container of facts.containers) {
     nodes.push(
@@ -1194,27 +1059,17 @@ export function buildObjectiveCSemanticGraph(
         {
           objectiveCKind: container.kind,
           declarationRole: container.declarationRole,
-          ...(container.superclass !== undefined
-            ? { superclass: container.superclass }
-            : {}),
-          ...(container.protocols.length > 0
-            ? { protocols: [...container.protocols] }
-            : {}),
-          ...(container.hostClass !== undefined
-            ? { hostClass: container.hostClass }
-            : {}),
-          ...(container.categoryName !== undefined
-            ? { categoryName: container.categoryName }
-            : {}),
+          ...(container.superclass !== undefined ? { superclass: container.superclass } : {}),
+          ...(container.protocols.length > 0 ? { protocols: [...container.protocols] } : {}),
+          ...(container.hostClass !== undefined ? { hostClass: container.hostClass } : {}),
+          ...(container.categoryName !== undefined ? { categoryName: container.categoryName } : {}),
         },
       ),
     );
-    relationships.push(
-      relationship("DEFINES", fileId, container.nodeId, "objc-definition"),
-    );
-    if (container.declarationRole === "implementation") {
+    relationships.push(relationship('DEFINES', fileId, container.nodeId, 'objc-definition'));
+    if (container.declarationRole === 'implementation') {
       const qualifiedName = `objc:implementation:${container.qualifiedName}:${facts.filePath}:${container.startLine}`;
-      const evidenceId = graphNodeId("CodeElement", qualifiedName);
+      const evidenceId = graphNodeId('CodeElement', qualifiedName);
       nodes.push(
         implementationEvidenceNode(
           qualifiedName,
@@ -1229,19 +1084,14 @@ export function buildObjectiveCSemanticGraph(
         ),
       );
       relationships.push(
-        relationship(
-          "DEFINES",
-          fileId,
-          evidenceId,
-          "objc: implementation evidence",
-        ),
+        relationship('DEFINES', fileId, evidenceId, 'objc: implementation evidence'),
       );
       relationships.push(
         relationship(
-          "DECLARES",
+          'DECLARES',
           evidenceId,
           container.nodeId,
-          "objc: implementation of merged symbol",
+          'objc: implementation of merged symbol',
         ),
       );
     }
@@ -1257,7 +1107,7 @@ export function buildObjectiveCSemanticGraph(
   for (const method of facts.methods) {
     nodes.push(
       semanticNode(
-        "Method",
+        'Method',
         method.nodeId,
         method.selector,
         method.qualifiedName,
@@ -1273,29 +1123,23 @@ export function buildObjectiveCSemanticGraph(
           declarationRole: method.declarationRole,
           parameterCount: method.parameterTypes.length,
           parameterTypes: [...method.parameterTypes],
-          ...(method.returnType !== undefined
-            ? { returnType: method.returnType }
-            : {}),
-          ...(method.hostClass !== undefined
-            ? { hostClass: method.hostClass }
-            : {}),
+          ...(method.returnType !== undefined ? { returnType: method.returnType } : {}),
+          ...(method.hostClass !== undefined ? { hostClass: method.hostClass } : {}),
         },
       ),
     );
     const ownerId = graphNodeId(
-      method.ownerKind === "class"
-        ? "Class"
-        : method.ownerKind === "protocol"
-          ? "Protocol"
-          : "Category",
+      method.ownerKind === 'class'
+        ? 'Class'
+        : method.ownerKind === 'protocol'
+          ? 'Protocol'
+          : 'Category',
       method.ownerQualifiedName,
     );
-    relationships.push(
-      relationship("HAS_METHOD", ownerId, method.nodeId, "objc-owner-method"),
-    );
-    if (method.declarationRole === "implementation") {
+    relationships.push(relationship('HAS_METHOD', ownerId, method.nodeId, 'objc-owner-method'));
+    if (method.declarationRole === 'implementation') {
       const qualifiedName = `objc:method-implementation:${method.qualifiedName}:${facts.filePath}:${method.startLine}`;
-      const evidenceId = graphNodeId("CodeElement", qualifiedName);
+      const evidenceId = graphNodeId('CodeElement', qualifiedName);
       nodes.push(
         implementationEvidenceNode(
           qualifiedName,
@@ -1304,7 +1148,7 @@ export function buildObjectiveCSemanticGraph(
           method.startLine,
           method.endLine,
           {
-            implementationKind: "method",
+            implementationKind: 'method',
             targetQualifiedName: method.qualifiedName,
             selector: method.selector,
             methodKind: method.methodKind,
@@ -1313,29 +1157,24 @@ export function buildObjectiveCSemanticGraph(
         ),
       );
       relationships.push(
-        relationship(
-          "DEFINES",
-          fileId,
-          evidenceId,
-          "objc: implementation evidence",
-        ),
+        relationship('DEFINES', fileId, evidenceId, 'objc: implementation evidence'),
       );
       relationships.push(
         relationship(
-          "DECLARES",
+          'DECLARES',
           evidenceId,
           method.nodeId,
-          "objc: implementation of merged symbol",
+          'objc: implementation of merged symbol',
         ),
       );
     }
     if (method.hostClass !== undefined) {
       relationships.push(
         relationship(
-          "HAS_METHOD",
-          graphNodeId("Class", objcClassQualifiedName(method.hostClass)),
+          'HAS_METHOD',
+          graphNodeId('Class', objcClassQualifiedName(method.hostClass)),
           method.nodeId,
-          "objc-category-host-method",
+          'objc-category-host-method',
         ),
       );
     }
@@ -1343,22 +1182,19 @@ export function buildObjectiveCSemanticGraph(
       filePath: facts.filePath,
       name: method.selector,
       nodeId: method.nodeId,
-      type: "Method",
+      type: 'Method',
       qualifiedName: method.qualifiedName,
       parameterCount: method.parameterTypes.length,
       requiredParameterCount: method.parameterTypes.length,
       parameterTypes: [...method.parameterTypes],
-      ...(method.returnType !== undefined
-        ? { returnType: method.returnType }
-        : {}),
+      ...(method.returnType !== undefined ? { returnType: method.returnType } : {}),
       ownerId,
-      isStatic: method.methodKind === "+",
+      isStatic: method.methodKind === '+',
     });
   }
 
   for (const member of facts.members) {
-    const label: NodeLabel =
-      member.kind === "property" ? "Property" : "Variable";
+    const label: NodeLabel = member.kind === 'property' ? 'Property' : 'Variable';
     nodes.push(
       semanticNode(
         label,
@@ -1370,15 +1206,13 @@ export function buildObjectiveCSemanticGraph(
         member.endLine,
         {
           objectiveCKind: member.kind,
-          ...(member.declaredType !== undefined
-            ? { declaredType: member.declaredType }
-            : {}),
+          ...(member.declaredType !== undefined ? { declaredType: member.declaredType } : {}),
         },
       ),
     );
     relationships.push(
       relationship(
-        member.kind === "property" ? "HAS_PROPERTY" : "HAS_PROPERTY",
+        member.kind === 'property' ? 'HAS_PROPERTY' : 'HAS_PROPERTY',
         graphNodeId(member.ownerLabel, member.ownerQualifiedName),
         member.nodeId,
         `objc-${member.kind}`,
@@ -1387,8 +1221,8 @@ export function buildObjectiveCSemanticGraph(
     if (member.hostClass !== undefined) {
       relationships.push(
         relationship(
-          "HAS_PROPERTY",
-          graphNodeId("Class", objcClassQualifiedName(member.hostClass)),
+          'HAS_PROPERTY',
+          graphNodeId('Class', objcClassQualifiedName(member.hostClass)),
           member.nodeId,
           `objc-category-host-${member.kind}`,
         ),
@@ -1400,9 +1234,7 @@ export function buildObjectiveCSemanticGraph(
       nodeId: member.nodeId,
       type: label,
       qualifiedName: member.qualifiedName,
-      ...(member.declaredType !== undefined
-        ? { declaredType: member.declaredType }
-        : {}),
+      ...(member.declaredType !== undefined ? { declaredType: member.declaredType } : {}),
       ownerId: graphNodeId(member.ownerLabel, member.ownerQualifiedName),
     });
   }
@@ -1410,7 +1242,7 @@ export function buildObjectiveCSemanticGraph(
   for (const fn of facts.functions) {
     nodes.push(
       semanticNode(
-        "Function",
+        'Function',
         fn.nodeId,
         fn.name,
         fn.qualifiedName,
@@ -1424,14 +1256,12 @@ export function buildObjectiveCSemanticGraph(
         },
       ),
     );
-    relationships.push(
-      relationship("DEFINES", fileId, fn.nodeId, "objc-c-function"),
-    );
+    relationships.push(relationship('DEFINES', fileId, fn.nodeId, 'objc-c-function'));
     symbols.push({
       filePath: facts.filePath,
       name: fn.name,
       nodeId: fn.nodeId,
-      type: "Function",
+      type: 'Function',
       qualifiedName: fn.qualifiedName,
       parameterCount: fn.parameterTypes.length,
       parameterTypes: [...fn.parameterTypes],
@@ -1441,10 +1271,10 @@ export function buildObjectiveCSemanticGraph(
 
   for (const imp of facts.imports) {
     const qualifiedName = `objc:import:${facts.filePath}:${imp.startLine}:${imp.kind}:${imp.targetRaw}`;
-    const id = graphNodeId("Import", qualifiedName);
+    const id = graphNodeId('Import', qualifiedName);
     nodes.push(
       semanticNode(
-        "Import",
+        'Import',
         id,
         imp.targetRaw,
         qualifiedName,
@@ -1452,29 +1282,29 @@ export function buildObjectiveCSemanticGraph(
         imp.startLine,
         imp.endLine,
         {
-          objectiveCKind: "import",
+          objectiveCKind: 'import',
           importKind: imp.kind,
           raw: imp.raw,
           targetRaw: imp.targetRaw,
         },
       ),
     );
-    relationships.push(relationship("DEFINES", fileId, id, "objc-import"));
+    relationships.push(relationship('DEFINES', fileId, id, 'objc-import'));
     symbols.push({
       filePath: facts.filePath,
       name: imp.targetRaw,
       nodeId: id,
-      type: "Import",
+      type: 'Import',
       qualifiedName,
     });
   }
 
   for (const unresolved of facts.unresolvedMessages) {
     const qn = `objc:unresolved:${facts.filePath}:${unresolved.startLine}:${unresolved.startCol}:${unresolved.selector}`;
-    const id = graphNodeId("CodeElement", qn);
+    const id = graphNodeId('CodeElement', qn);
     nodes.push(
       semanticNode(
-        "CodeElement",
+        'CodeElement',
         id,
         `[${unresolved.receiverText} ${unresolved.selector}]`,
         qn,
@@ -1482,23 +1312,21 @@ export function buildObjectiveCSemanticGraph(
         unresolved.startLine,
         unresolved.startLine,
         {
-          objectiveCKind: "unresolved-message",
+          objectiveCKind: 'unresolved-message',
           selector: unresolved.selector,
           receiver: unresolved.receiverText,
-          resolution: "unresolved",
+          resolution: 'unresolved',
           reason: unresolved.reason,
           sourceMethod: unresolved.sourceMethodQualifiedName,
         },
       ),
     );
-    relationships.push(
-      relationship("DEFINES", fileId, id, "objc-unresolved-message"),
-    );
+    relationships.push(relationship('DEFINES', fileId, id, 'objc-unresolved-message'));
     symbols.push({
       filePath: facts.filePath,
       name: `[${unresolved.receiverText} ${unresolved.selector}]`,
       nodeId: id,
-      type: "CodeElement",
+      type: 'CodeElement',
       qualifiedName: qn,
     });
   }
@@ -1506,12 +1334,7 @@ export function buildObjectiveCSemanticGraph(
   return { nodes, relationships, symbols };
 }
 
-function captureAt(
-  name: string,
-  text: string,
-  startLine: number,
-  endLine: number,
-): Capture {
+function captureAt(name: string, text: string, startLine: number, endLine: number): Capture {
   return {
     name,
     text,
@@ -1530,26 +1353,21 @@ export function buildObjectiveCScopeCaptures(
 ): readonly CaptureMatch[] {
   const captures: CaptureMatch[] = [
     {
-      "@scope.module": nodeToCapture("@scope.module", root),
+      '@scope.module': nodeToCapture('@scope.module', root),
     },
   ];
 
   for (const imp of facts.imports) {
-    const anchor = captureAt(
-      "@import.statement",
-      imp.raw,
-      imp.startLine,
-      imp.endLine,
-    );
+    const anchor = captureAt('@import.statement', imp.raw, imp.startLine, imp.endLine);
     captures.push({
-      "@import.statement": anchor,
-      "@import.source": {
+      '@import.statement': anchor,
+      '@import.source': {
         ...anchor,
-        name: "@import.source",
+        name: '@import.source',
         text: imp.targetRaw,
       },
-      "@import.name": { ...anchor, name: "@import.name", text: imp.targetRaw },
-      "@import.kind": { ...anchor, name: "@import.kind", text: imp.kind },
+      '@import.name': { ...anchor, name: '@import.name', text: imp.targetRaw },
+      '@import.kind': { ...anchor, name: '@import.kind', text: imp.kind },
     });
   }
 

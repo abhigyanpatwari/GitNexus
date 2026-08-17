@@ -13,11 +13,11 @@ This directory records behavior that belongs to the `mengkaka/GitNexus` fork. It
 
 | Capability | Status | Contract |
 | --- | --- | --- |
-| Objective-C Provider | Planned | [OBJECTIVE_C_PROVIDER.md](OBJECTIVE_C_PROVIDER.md) |
+| Objective-C Provider | Implemented | [OBJECTIVE_C_PROVIDER.md](OBJECTIVE_C_PROVIDER.md) |
 | External index storage | Planned | [EXTERNAL_STORAGE_AND_CONTENT_RETENTION.md](EXTERNAL_STORAGE_AND_CONTENT_RETENTION.md) |
 | Content retention profiles | Planned | [EXTERNAL_STORAGE_AND_CONTENT_RETENTION.md](EXTERNAL_STORAGE_AND_CONTENT_RETENTION.md) |
 
-`Planned` means no CLI, MCP, Web UI, or environment-variable behavior may claim support yet. Each implementation PR must update this table, its related design document, tests, and the public README environment-variable table where applicable.
+`Implemented` means the documented MVP, regression tests, metadata contract, and package/runtime wiring are present on the fork's `dev` branch. It does not expand the provider into full Objective-C runtime dispatch. `Planned` means no CLI, MCP, Web UI, or environment-variable behavior may claim support yet. Each implementation PR must update this table, its related design document, tests, and the public README environment-variable table where applicable.
 
 ## Reading order
 
