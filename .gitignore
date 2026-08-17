@@ -72,6 +72,8 @@ eval/.hypothesis/
 
 # Local docs — planning output (gitnexus-plan / gitnexus-work) stays local, not tracked
 docs/*
+!docs/fork/
+!docs/fork/**
 
 gitnexus/test/fixtures/mini-repo/*.md
 gitnexus/test/fixtures/mini-repo/.claude
