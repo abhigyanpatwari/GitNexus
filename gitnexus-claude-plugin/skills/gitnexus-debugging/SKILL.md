@@ -24,6 +24,9 @@ configured default it resolves to that default silently. If you cannot tell
 which repository is meant, stop and ask. This matters most for `cypher`, whose
 statement carries no in-band hint of which database it ran against.
 
+`list_repos` is paginated, so page with `offset: pagination.nextOffset` until
+`hasMore` is false before concluding a repository is absent.
+
 A stale index describes the code from before your bug, so refresh before
 trusting a trace, and state the repository and index freshness with the
 diagnosis.

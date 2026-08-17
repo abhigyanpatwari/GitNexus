@@ -22,6 +22,9 @@ but under an MCP policy with a configured default it resolves to that default
 silently. If you cannot tell which repository is meant, stop and ask. Report
 the bound repository and index freshness alongside your explanation.
 
+`list_repos` is paginated, so page with `offset: pagination.nextOffset` until
+`hasMore` is false before concluding a repository is absent.
+
 ## Workflow
 
 ```

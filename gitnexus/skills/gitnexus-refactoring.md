@@ -28,6 +28,9 @@ which repository is meant, stop and ask. Never run `rename` with
 reviewed — its returned `file_path` values show which checkout is about to be
 written, so read them as a confirmation of identity.
 
+`list_repos` is paginated, so page with `offset: pagination.nextOffset` until
+`hasMore` is false before concluding a repository is absent.
+
 `detect_changes` takes `worktree` when you are editing a linked worktree the
 MCP server was not launched from; otherwise `git diff` runs in the wrong
 checkout and reports nothing changed, which reads as a verified refactor.
