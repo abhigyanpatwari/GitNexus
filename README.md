@@ -1013,7 +1013,7 @@ Built by the community — not officially maintained, but worth checking out.
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=abhigyanpatwari/GitNexus&type=date&legend=top-left)](https://www.star-history.com/#abhigyanpatwari/GitNexus&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=abhigyanpatwari/GitNexus&type=date&legend=top-left)](https://star-history.dera.page/#abhigyanpatwari/GitNexus&type=date&legend=top-left)
 
 ## Acknowledgments
 
