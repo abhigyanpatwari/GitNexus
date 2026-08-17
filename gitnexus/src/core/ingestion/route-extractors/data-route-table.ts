@@ -36,17 +36,95 @@ export interface DataRouteTableRoute {
   line: number;
 }
 
-function plainString(node: SyntaxNode): string | null {
-  if (node.type === 'string') {
-    const text = node.text;
-    return text.length >= 2 ? text.slice(1, -1) : null;
+const SIMPLE_STRING_ESCAPES: Readonly<Record<string, string>> = {
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\v',
+};
+
+function decodeJavaScriptStringLiteral(raw: string): string | null {
+  if (raw.length < 2) return null;
+  const delimiter = raw[0];
+  if (
+    (delimiter !== "'" && delimiter !== '"' && delimiter !== '`') ||
+    raw[raw.length - 1] !== delimiter
+  ) {
+    return null;
   }
+
+  const body = raw.slice(1, -1);
+  let decoded = '';
+  for (let index = 0; index < body.length; index++) {
+    const char = body[index];
+    if (char !== '\\') {
+      if (delimiter !== '`' && (char === '\n' || char === '\r')) return null;
+      decoded += char;
+      continue;
+    }
+
+    const escaped = body[++index];
+    if (escaped === undefined) return null;
+    if (escaped === '\n' || escaped === '\u2028' || escaped === '\u2029') continue;
+    if (escaped === '\r') {
+      if (body[index + 1] === '\n') index++;
+      continue;
+    }
+
+    const simple = SIMPLE_STRING_ESCAPES[escaped];
+    if (simple !== undefined) {
+      decoded += simple;
+      continue;
+    }
+    if (escaped === '0') {
+      if (/\d/.test(body[index + 1] ?? '')) return null;
+      decoded += '\0';
+      continue;
+    }
+    if (/[1-9]/.test(escaped)) return null;
+    if (escaped === 'x') {
+      const hex = body.slice(index + 1, index + 3);
+      if (!/^[0-9A-Fa-f]{2}$/.test(hex)) return null;
+      decoded += String.fromCharCode(Number.parseInt(hex, 16));
+      index += 2;
+      continue;
+    }
+    if (escaped === 'u') {
+      if (body[index + 1] === '{') {
+        const close = body.indexOf('}', index + 2);
+        if (close === -1) return null;
+        const hex = body.slice(index + 2, close);
+        if (!/^[0-9A-Fa-f]{1,6}$/.test(hex)) return null;
+        const codePoint = Number.parseInt(hex, 16);
+        if (codePoint > 0x10ffff) return null;
+        decoded += String.fromCodePoint(codePoint);
+        index = close;
+        continue;
+      }
+      const hex = body.slice(index + 1, index + 5);
+      if (!/^[0-9A-Fa-f]{4}$/.test(hex)) return null;
+      decoded += String.fromCharCode(Number.parseInt(hex, 16));
+      index += 4;
+      continue;
+    }
+
+    // JavaScript treats an escaped non-special character as that character.
+    decoded += escaped;
+  }
+  return decoded;
+}
+
+function plainString(node: SyntaxNode): string | null {
+  if (node.type === 'string') return decodeJavaScriptStringLiteral(node.text);
   if (
     node.type === 'template_string' &&
-    node.namedChildren.every((child) => child.type === 'string_fragment')
+    node.namedChildren.every(
+      (child) => child.type === 'string_fragment' || child.type === 'escape_sequence',
+    )
   ) {
-    const text = node.text;
-    return text.length >= 2 ? text.slice(1, -1) : null;
+    return decodeJavaScriptStringLiteral(node.text);
   }
   return null;
 }
@@ -80,6 +158,23 @@ function handlerName(
   };
 }
 
+const EXECUTING_VALUE_NODES = new Set([
+  'assignment_expression',
+  'augmented_assignment_expression',
+  'await_expression',
+  'call_expression',
+  'new_expression',
+  'spread_element',
+  'update_expression',
+  'yield_expression',
+]);
+
+function containsExecutingExpression(node: SyntaxNode): boolean {
+  if (EXECUTING_VALUE_NODES.has(node.type)) return true;
+  if (node.type === 'unary_expression' && node.text.trimStart().startsWith('delete ')) return true;
+  return node.namedChildren.some(containsExecutingExpression);
+}
+
 function routeFromObject(node: SyntaxNode): DataRouteTableRoute | null {
   const values = new Map<string, SyntaxNode>();
   for (const child of node.namedChildren) {
@@ -92,7 +187,10 @@ function routeFromObject(node: SyntaxNode): DataRouteTableRoute | null {
     if (keyNode === null || valueNode === null) return null;
     const key = propertyName(keyNode);
     if (key === null) return null;
-    if (!ROUTE_TOKEN_HINTS.includes(key as (typeof ROUTE_TOKEN_HINTS)[number])) continue;
+    if (!ROUTE_TOKEN_HINTS.includes(key as (typeof ROUTE_TOKEN_HINTS)[number])) {
+      if (containsExecutingExpression(valueNode)) return null;
+      continue;
+    }
     if (values.has(key)) return null;
     values.set(key, valueNode);
   }

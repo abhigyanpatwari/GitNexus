@@ -65,6 +65,57 @@ describe('data route table extraction', () => {
     ).toMatchObject([{ path: '/auth/me', method: 'GET', handler: 'auth.getCurrentUser' }]);
   });
 
+  it('decodes JavaScript escapes in static route strings and quoted keys', () => {
+    expect(
+      compact(`
+        const routes = [{
+          'p\\u0061th': \`\\/users\`,
+          method: 'G\\x45T',
+          handler: escaped,
+        }];
+        ${dispatch('routes')}
+      `),
+    ).toMatchObject([{ path: '/users', method: 'GET', handler: 'escaped' }]);
+  });
+
+  it('rejects malformed or legacy-octal route string escapes', () => {
+    expect(
+      compact(`
+        const routes = [{ path: '/\\8users', method: 'GET', handler: malformed }];
+        ${dispatch('routes')}
+      `),
+    ).toEqual([]);
+  });
+
+  it('rejects executable values on extra route properties', () => {
+    expect(
+      compact(`
+        const routes = [{
+          path: '/users',
+          method: 'GET',
+          handler: listUsers,
+          metadata: buildMetadata(),
+        }];
+        ${dispatch('routes')}
+      `),
+    ).toEqual([]);
+  });
+
+  it('keeps declarative metadata on route entries', () => {
+    expect(
+      compact(`
+        const routes = [{
+          path: '/users',
+          method: 'GET',
+          handler: listUsers,
+          auth: true,
+          metadata: { audience: 'staff', flags: ['audit'] },
+        }];
+        ${dispatch('routes')}
+      `),
+    ).toMatchObject([{ path: '/users', method: 'GET', handler: 'listUsers' }]);
+  });
+
   it('allows line and block comments between static route properties', () => {
     expect(
       compact(`
