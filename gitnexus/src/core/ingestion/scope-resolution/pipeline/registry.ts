@@ -28,6 +28,7 @@ import { swiftScopeResolver } from '../../languages/swift/scope-resolver.js';
 import { dartScopeResolver } from '../../languages/dart/scope-resolver.js';
 import { vueScopeResolver } from '../../languages/vue/scope-resolver.js';
 import { zigScopeResolver } from '../../languages/zig/scope-resolver.js';
+import { objectiveCScopeResolver } from '../../languages/objective-c/scope-resolver.js';
 
 /** Map of `SupportedLanguages` → `ScopeResolver`. The scope-resolution phase
  *  iterates this map directly — every registered resolver runs. This is the
@@ -52,5 +53,7 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.Swift, swiftScopeResolver],
   [SupportedLanguages.Dart, dartScopeResolver],
   [SupportedLanguages.Vue, vueScopeResolver],
+  [SupportedLanguages.Zig, zigScopeResolver],
+  [SupportedLanguages.ObjectiveC, objectiveCScopeResolver],
   [SupportedLanguages.Zig, zigScopeResolver],
 ]);

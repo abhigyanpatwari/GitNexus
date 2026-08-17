@@ -1,0 +1,56 @@
+{
+  "name": "tree-sitter-objc",
+  "version": "3.0.2",
+  "description": "Objective-C grammar for tree-sitter",
+  "repository": "https://github.com/tree-sitter-grammars/tree-sitter-objc",
+  "license": "MIT",
+  "author": {
+    "name": "Amaan Qureshi",
+    "email": "amaanq12@gmail.com"
+  },
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "keywords": [
+    "incremental",
+    "parsing",
+    "tree-sitter",
+    "objective-c",
+    "objc"
+  ],
+  "files": [
+    "grammar.js",
+    "tree-sitter.json",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/*",
+    "queries/*",
+    "src/**",
+    "*.wasm"
+  ],
+  "dependencies": {
+    "node-addon-api": "^8.3.0",
+    "node-gyp-build": "^4.8.4",
+    "tree-sitter-c": "^0.23.4"
+  },
+  "devDependencies": {
+    "eslint": "^9.17.0",
+    "eslint-config-treesitter": "^1.0.2",
+    "prebuildify": "^6.0.1",
+    "tree-sitter-cli": "^0.24.5"
+  },
+  "peerDependencies": {
+    "tree-sitter": "^0.22.1"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "install": "node-gyp-build",
+    "lint": "eslint grammar.js",
+    "prestart": "tree-sitter build --wasm",
+    "start": "tree-sitter playground",
+    "test": "node --test bindings/node/*_test.js"
+  }
+}

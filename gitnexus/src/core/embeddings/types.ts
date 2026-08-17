@@ -8,6 +8,8 @@ export const LABEL_FUNCTION = 'Function' as const;
 export const LABEL_METHOD = 'Method' as const;
 export const LABEL_CONSTRUCTOR = 'Constructor' as const;
 export const LABEL_CLASS = 'Class' as const;
+export const LABEL_PROTOCOL = 'Protocol' as const;
+export const LABEL_CATEGORY = 'Category' as const;
 export const LABEL_INTERFACE = 'Interface' as const;
 export const LABEL_STRUCT = 'Struct' as const;
 export const LABEL_ENUM = 'Enum' as const;
@@ -53,6 +55,8 @@ export const CHUNKABLE_LABELS = [
   LABEL_METHOD,
   LABEL_CONSTRUCTOR,
   LABEL_CLASS,
+  LABEL_PROTOCOL,
+  LABEL_CATEGORY,
   LABEL_INTERFACE,
   LABEL_STRUCT,
   LABEL_ENUM,
@@ -108,6 +112,8 @@ export const isShortLabel = (label: string): boolean =>
  */
 export const STRUCTURAL_LABELS: ReadonlySet<string> = new Set([
   LABEL_CLASS,
+  LABEL_PROTOCOL,
+  LABEL_CATEGORY,
   LABEL_STRUCT,
   LABEL_INTERFACE,
 ]);
@@ -118,6 +124,8 @@ export const STRUCTURAL_LABELS: ReadonlySet<string> = new Set([
 export const LABELS_WITH_EXPORTED = new Set([
   LABEL_FUNCTION,
   LABEL_CLASS,
+  LABEL_PROTOCOL,
+  LABEL_CATEGORY,
   LABEL_INTERFACE,
   LABEL_METHOD,
   LABEL_CODE_ELEMENT,
@@ -163,6 +171,20 @@ export const CHUNKING_RULES: Readonly<Partial<Record<ChunkableLabel, ChunkingRul
     includePrefix: true,
     includeSuffix: false,
     groupFields: false,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
+  },
+  [LABEL_PROTOCOL]: {
+    mode: CHUNK_MODE_AST_DECLARATION,
+    includePrefix: true,
+    includeSuffix: false,
+    groupFields: false,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
+  },
+  [LABEL_CATEGORY]: {
+    mode: CHUNK_MODE_AST_DECLARATION,
+    includePrefix: true,
+    includeSuffix: false,
+    groupFields: true,
     structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
   },
   [LABEL_STRUCT]: {

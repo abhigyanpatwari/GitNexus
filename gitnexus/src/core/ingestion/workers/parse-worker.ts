@@ -20,7 +20,7 @@ import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { getProvider } from '../languages/index.js';
+import { getLanguageForFileContent, getProvider } from '../languages/index.js';
 import {
   getTreeSitterBufferSize,
   getTreeSitterContentByteLength,
@@ -89,6 +89,11 @@ const _require = createRequire(import.meta.url);
 let Zig: TreeSitterLanguage | null = null;
 try {
   Zig = _require('@tree-sitter-grammars/tree-sitter-zig');
+} catch {}
+
+let ObjectiveC: TreeSitterLanguage | null = null;
+try {
+  ObjectiveC = requireVendoredGrammar('tree-sitter-objc') as TreeSitterLanguage;
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
@@ -254,7 +259,7 @@ interface ParsedRelationship {
   id: string;
   sourceId: string;
   targetId: string;
-  type: 'DEFINES' | 'HAS_METHOD' | 'HAS_PROPERTY';
+  type: 'DEFINES' | 'DECLARES' | 'HAS_METHOD' | 'HAS_PROPERTY';
   confidence: number;
   reason: string;
 }
@@ -560,6 +565,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Java]: Java,
   ...(C ? { [SupportedLanguages.C]: C } : {}),
   [SupportedLanguages.CPlusPlus]: CPP,
+  ...(ObjectiveC ? { [SupportedLanguages.ObjectiveC]: ObjectiveC } : {}),
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
   [SupportedLanguages.Rust]: Rust,
@@ -1272,7 +1278,7 @@ const processBatch = (
   // Group by language to minimize setLanguage calls
   const byLanguage = new Map<SupportedLanguages, ParseWorkerInput[]>();
   for (const file of files) {
-    const lang = getLanguageFromFilename(file.path);
+    const lang = getLanguageForFileContent(file.path, file.content);
     if (!lang) continue;
     let list = byLanguage.get(lang);
     if (!list) {
@@ -1729,6 +1735,52 @@ const processFileGroup = (
       }
 
       result.parsedFiles.push(withChannels);
+    }
+
+    const semanticGraph = provider.extractSemanticGraph?.(tree, file.path, parseContent);
+    if (semanticGraph !== undefined) {
+      for (const node of semanticGraph.nodes) {
+        result.nodes.push({
+          id: node.id,
+          label: node.label,
+          properties: { ...node.properties },
+        });
+      }
+      for (const relationship of semanticGraph.relationships) {
+        if (
+          relationship.type === 'DECLARES' ||
+          relationship.type === 'DEFINES' ||
+          relationship.type === 'HAS_METHOD' ||
+          relationship.type === 'HAS_PROPERTY'
+        ) {
+          result.relationships.push({ ...relationship, type: relationship.type });
+        }
+      }
+      for (const symbol of semanticGraph.symbols) {
+        result.symbols.push({
+          filePath: symbol.filePath,
+          name: symbol.name,
+          nodeId: symbol.nodeId,
+          type: symbol.type,
+          ...(symbol.qualifiedName !== undefined ? { qualifiedName: symbol.qualifiedName } : {}),
+          ...(symbol.parameterCount !== undefined ? { parameterCount: symbol.parameterCount } : {}),
+          ...(symbol.requiredParameterCount !== undefined
+            ? { requiredParameterCount: symbol.requiredParameterCount }
+            : {}),
+          ...(symbol.parameterTypes !== undefined
+            ? { parameterTypes: [...symbol.parameterTypes] }
+            : {}),
+          ...(symbol.parameterTypeClasses !== undefined
+            ? { parameterTypeClasses: [...symbol.parameterTypeClasses] }
+            : {}),
+          ...(symbol.returnType !== undefined ? { returnType: symbol.returnType } : {}),
+          ...(symbol.declaredType !== undefined ? { declaredType: symbol.declaredType } : {}),
+          ...(symbol.ownerId !== undefined ? { ownerId: symbol.ownerId } : {}),
+          ...(symbol.visibility !== undefined ? { visibility: symbol.visibility } : {}),
+          ...(symbol.isStatic !== undefined ? { isStatic: symbol.isStatic } : {}),
+          ...(symbol.isReadonly !== undefined ? { isReadonly: symbol.isReadonly } : {}),
+        });
+      }
     }
 
     // Build per-file type environment + constructor bindings in a single AST walk.

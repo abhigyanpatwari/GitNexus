@@ -73,6 +73,11 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'int main() { return 0; }\n',
     rootType: 'translation_unit',
   },
+  [SupportedLanguages.ObjectiveC]: {
+    language: SupportedLanguages.ObjectiveC,
+    snippet: '@interface ObjcSmoke\n- (void)run;\n@end\n@implementation ObjcSmoke\n- (void)run {}\n@end\n',
+    rootType: 'translation_unit',
+  },
   [SupportedLanguages.Go]: {
     language: SupportedLanguages.Go,
     snippet: 'package main\nfunc main() {}\n',
@@ -138,6 +143,10 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
   // a binary-only vendor).
   it('includes Swift in the smoke matrix', () => {
     expect(sources.some((s) => s.key === SupportedLanguages.Swift)).toBe(true);
+  });
+
+  it('includes Objective-C in the smoke matrix', () => {
+    expect(sources.some((s) => s.key === SupportedLanguages.ObjectiveC)).toBe(true);
   });
 
   for (const { key, optional } of sources) {

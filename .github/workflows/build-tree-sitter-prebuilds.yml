@@ -86,7 +86,7 @@ on:
       - '!gitnexus/vendor/tree-sitter-*/prebuilds/**'
       # Self-test: re-run the guard if a future grammar pin is reintroduced in
       # the main package.json (optionalDependencies fallback). No-op otherwise —
-      # all five grammars are now fully vendored (kotlin included).
+      # all six grammars are now fully vendored (kotlin and objc included).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'

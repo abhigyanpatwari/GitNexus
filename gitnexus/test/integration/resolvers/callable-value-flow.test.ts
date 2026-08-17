@@ -34,6 +34,7 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.Vue]: 'matrix',
   [SupportedLanguages.Cobol]: 'matrix',
   [SupportedLanguages.Zig]: 'matrix',
+  [SupportedLanguages.ObjectiveC]: 'dedicated',
 } as const satisfies Record<SupportedLanguages, 'matrix' | 'dedicated'>;
 
 const PROVIDER_FLOW_CASES = [
