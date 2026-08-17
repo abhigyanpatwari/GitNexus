@@ -82,6 +82,8 @@ const STRICT_ORIGINS: ReadonlySet<BindingRef['origin']> = new Set<BindingRef['or
  */
 const TYPE_KINDS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Enum',
   'Struct',

@@ -283,6 +283,17 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       reachesDecoy: 'CUSTREC',
     },
   ],
+  [
+    SupportedLanguages.ObjectiveC,
+    {
+      files: ['Headers/Foundation.h', 'Headers/Widget.h', 'Sources/main.m'],
+      fromFile: 'Sources/main.m',
+      resolutionConfig: undefined,
+      external: 'Foundation',
+      decoy: 'Headers/Foundation.h',
+      reachesDecoy: 'Foundation.h',
+    },
+  ],
 ]);
 
 /**

@@ -177,6 +177,7 @@ import {
   JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 } from './ingestion/languages/java/analysis-features.js';
+import { OBJECTIVE_C_PROVIDER_FEATURE } from './ingestion/languages/objective-c/analysis-features.js';
 import {
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   findAnalysisFeatureMismatches,
@@ -231,6 +232,7 @@ const ANALYSIS_FEATURES = [
   SPRING_CONFIG_BINDINGS_FEATURE,
   JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
   JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
+  OBJECTIVE_C_PROVIDER_FEATURE,
 ] as const;
 
 interface PersistedFrameworkAnnotationRow {
