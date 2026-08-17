@@ -75,7 +75,8 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
   },
   [SupportedLanguages.ObjectiveC]: {
     language: SupportedLanguages.ObjectiveC,
-    snippet: '@interface ObjcSmoke\n- (void)run;\n@end\n@implementation ObjcSmoke\n- (void)run {}\n@end\n',
+    snippet:
+      '@interface ObjcSmoke\n- (void)run;\n@end\n@implementation ObjcSmoke\n- (void)run {}\n@end\n',
     rootType: 'translation_unit',
   },
   [SupportedLanguages.Go]: {

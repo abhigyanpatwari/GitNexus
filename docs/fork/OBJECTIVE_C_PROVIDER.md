@@ -1,11 +1,12 @@
 # Objective-C Provider
 
-Status: planned
+Status: implemented
 
-Implementation note (`objc-provider` branch): a first deterministic provider is wired in and
-covered by focused tests, but this document remains `planned` until the full acceptance matrix
-is green in CI. The local macOS arm64 grammar smoke and Linux Docker arm64/x64 binding-load
-smokes pass; the full repository suite still has unrelated host-environment failures.
+Implementation note (`dev` branch): the first deterministic provider is wired in and covered by
+focused unit/integration tests. The parser-loader ABI smoke runs in the published multi-OS test
+matrix, and the native prebuild workflow owns Objective-C together with all six vendored grammar
+targets. This status describes the implemented MVP; it does not promise full Objective-C
+runtime dispatch.
 
 ## Goal
 
@@ -88,7 +89,7 @@ The acceptance bar is:
 
 The MVP does not promise exact runtime type inference for `id` or `instancetype`, reflection, swizzling, arbitrary category replacement, dynamic selector construction, or complete impact analysis across every runtime dispatch path. Tool results must surface confidence and unresolved evidence rather than presenting guesses as certain graph facts.
 
-## Current implementation coverage on `objc-provider`
+## Current implementation coverage on `dev`
 
 Implemented in the branch:
 
@@ -99,9 +100,8 @@ Implemented in the branch:
 - Persisted query/context support for Objective-C class and method nodes, including implementation evidence via `DECLARES`.
 - Regression tests for grammar loading, `.h` classification, stable identities, conservative calls, metadata feature mismatch, persisted query/context behavior, and incremental-vs-force parity for Objective-C fixture edits.
 
-Known limits before changing this status:
+Known limits of this MVP:
 
-- Linux Docker grammar loading is verified for arm64 and x86-64 Node 22 runners; the published CI matrix still needs to exercise the new grammar before this status changes.
 - The first version does not perform full Objective-C runtime dispatch, swizzling, dynamic selector construction, macro expansion, or `id` flow inference.
 - Protocol receiver handling records the protocol method and candidate implementation evidence, but candidate implementations are not emitted as certain call edges.
 - Objective-C++ `.mm` files are parsed with the Objective-C grammar path for this MVP; deep C++ semantic extraction inside Objective-C++ bodies remains outside this provider.

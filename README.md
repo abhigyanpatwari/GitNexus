@@ -61,13 +61,12 @@ That's it. `analyze` indexes the codebase, installs agent skills, registers Clau
 
 ## ForgeMate Fork Extensions
 
-This fork keeps upstream GitNexus behavior as the default. The following fork-specific capabilities are **planned**, not yet implemented or released:
+This fork keeps upstream GitNexus behavior as the default. Objective-C semantic indexing is implemented as an MVP on the fork's `dev` branch; it is not part of upstream `main` or the published upstream package. The following other fork-specific capabilities remain **planned**:
 
-- Objective-C semantic indexing.
 - An external per-repository index directory via `GITNEXUS_STORAGE_PATH`.
 - Configurable source-content retention via `GITNEXUS_CONTENT_RETENTION`.
 
-The implementation contracts, compatibility requirements, and acceptance criteria live in [docs/fork/README.md](docs/fork/README.md). Do not rely on these planned variables until the corresponding implementation and README environment-variable entries are released.
+The implementation contracts, compatibility requirements, and acceptance criteria live in [docs/fork/README.md](docs/fork/README.md). Do not rely on the planned storage and retention variables until their corresponding implementations and README environment-variable entries are released.
 
 <details>
 <summary><strong>Install problems?</strong> npm 11 crash · slow cold install · no C++ toolchain</summary>

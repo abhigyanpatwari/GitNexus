@@ -24,9 +24,8 @@ describe('Objective-C parser-loader failure path', () => {
       },
     }));
 
-    const { getLanguageGrammar, isGrammarRuntimeSkipped, isLanguageAvailable } = await import(
-      '../../src/core/tree-sitter/parser-loader.js'
-    );
+    const { getLanguageGrammar, isGrammarRuntimeSkipped, isLanguageAvailable } =
+      await import('../../src/core/tree-sitter/parser-loader.js');
 
     expect(isLanguageAvailable(SupportedLanguages.ObjectiveC)).toBe(false);
     expect(isGrammarRuntimeSkipped(SupportedLanguages.ObjectiveC)).toBe(false);

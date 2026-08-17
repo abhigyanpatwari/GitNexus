@@ -1,22 +1,22 @@
-import { describe, expect, it } from "vitest";
-import Parser from "tree-sitter";
+import { describe, expect, it } from 'vitest';
+import Parser from 'tree-sitter';
 import {
   getLanguageFromFilename,
   getSyntaxLanguageFromFilename,
   SupportedLanguages,
-} from "gitnexus-shared";
-import { getLanguageForFileContent } from "../../src/core/ingestion/languages/index.js";
-import { classifyObjectiveCFileContent } from "../../src/core/ingestion/languages/objective-c.js";
+} from 'gitnexus-shared';
+import { getLanguageForFileContent } from '../../src/core/ingestion/languages/index.js';
+import { classifyObjectiveCFileContent } from '../../src/core/ingestion/languages/objective-c.js';
 import {
   buildObjectiveCSemanticGraph,
   collectObjectiveCFacts,
   objcCategoryQualifiedName,
   objcClassQualifiedName,
   objcMethodQualifiedName,
-} from "../../src/core/ingestion/languages/objective-c/facts.js";
-import { isLanguageAvailable } from "../../src/core/tree-sitter/parser-loader.js";
-import { requireVendoredGrammar } from "../../src/core/tree-sitter/vendored-grammars.js";
-import { objectiveCScopeResolver } from "../../src/core/ingestion/languages/objective-c/scope-resolver.js";
+} from '../../src/core/ingestion/languages/objective-c/facts.js';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
+import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.js';
 
 const FIXTURE = `#import "SYModuleCaller.h"
 #include "SYModuleSupport.h"
@@ -70,83 +70,63 @@ static int SYModuleCompute(int value) { return value + 1; }
 
 function parseFixture() {
   const parser = new Parser();
-  parser.setLanguage(requireVendoredGrammar("tree-sitter-objc"));
+  parser.setLanguage(requireVendoredGrammar('tree-sitter-objc'));
   return parser.parse(FIXTURE);
 }
 
 function parseSource(source: string) {
   const parser = new Parser();
-  parser.setLanguage(requireVendoredGrammar("tree-sitter-objc"));
+  parser.setLanguage(requireVendoredGrammar('tree-sitter-objc'));
   return parser.parse(source);
 }
 
-describe("Objective-C provider", () => {
-  it("loads the vendored grammar and maps unambiguous Objective-C extensions", () => {
+describe('Objective-C provider', () => {
+  it('loads the vendored grammar and maps unambiguous Objective-C extensions', () => {
     expect(isLanguageAvailable(SupportedLanguages.ObjectiveC)).toBe(true);
-    expect(getLanguageFromFilename("SYModuleCaller.m")).toBe(
-      SupportedLanguages.ObjectiveC,
-    );
-    expect(getLanguageFromFilename("SYModuleCaller.mm")).toBe(
-      SupportedLanguages.ObjectiveC,
-    );
-    expect(getSyntaxLanguageFromFilename("SYModuleCaller.m")).toBe(
-      "objectivec",
-    );
+    expect(getLanguageFromFilename('SYModuleCaller.m')).toBe(SupportedLanguages.ObjectiveC);
+    expect(getLanguageFromFilename('SYModuleCaller.mm')).toBe(SupportedLanguages.ObjectiveC);
+    expect(getSyntaxLanguageFromFilename('SYModuleCaller.m')).toBe('objectivec');
   });
 
-  it("classifies Objective-C headers by content without stealing plain C headers", () => {
+  it('classifies Objective-C headers by content without stealing plain C headers', () => {
     expect(
       classifyObjectiveCFileContent(
-        "SYModuleCaller.h",
-        "@interface SYModuleCaller : NSObject\n@end",
+        'SYModuleCaller.h',
+        '@interface SYModuleCaller : NSObject\n@end',
       ),
     ).toBe(true);
+    expect(getLanguageForFileContent('SYModuleCaller.h', '@protocol SYModuleRunnable\n@end')).toBe(
+      SupportedLanguages.ObjectiveC,
+    );
     expect(
-      getLanguageForFileContent(
-        "SYModuleCaller.h",
-        "@protocol SYModuleRunnable\n@end",
-      ),
-    ).toBe(SupportedLanguages.ObjectiveC);
-    expect(
-      getLanguageForFileContent(
-        "plain.h",
-        "#ifndef PLAIN_H\nint add(int a, int b);\n#endif\n",
-      ),
+      getLanguageForFileContent('plain.h', '#ifndef PLAIN_H\nint add(int a, int b);\n#endif\n'),
     ).toBe(SupportedLanguages.CPlusPlus);
     expect(
-      classifyObjectiveCFileContent(
-        "framework.h",
-        "#import <Foundation/Foundation.h>\n",
-      ),
+      classifyObjectiveCFileContent('framework.h', '#import <Foundation/Foundation.h>\n'),
     ).toBe(true);
-    expect(
-      classifyObjectiveCFileContent(
-        "plain-cpp.h",
-        "class Widget { int value; };\n",
-      ),
-    ).toBe(false);
-    expect(classifyObjectiveCFileContent("forward.h", "@class Widget;\n")).toBe(
-      true,
+    expect(classifyObjectiveCFileContent('plain-cpp.h', 'class Widget { int value; };\n')).toBe(
+      false,
     );
+    expect(classifyObjectiveCFileContent('forward.h', '@class Widget;\n')).toBe(true);
   });
 
-  it("extracts nested C function declarators without claiming function pointers", () => {
+  it('extracts nested C function declarators without claiming function pointers', () => {
     const facts = collectObjectiveCFacts(
       parseSource(`
 int add(int value);
 int *returnsPointer(int value);
 int (*callback)(int value);
 `),
-      "functions.h",
+      'functions.h',
     );
 
     expect(facts.functions.map((fn) => fn.name)).toEqual(
-      expect.arrayContaining(["add", "returnsPointer"]),
+      expect.arrayContaining(['add', 'returnsPointer']),
     );
-    expect(facts.functions.map((fn) => fn.name)).not.toContain("callback");
+    expect(facts.functions.map((fn) => fn.name)).not.toContain('callback');
   });
 
-  it("does not treat protocol-qualified parameter types as conformance", () => {
+  it('does not treat protocol-qualified parameter types as conformance', () => {
     const facts = collectObjectiveCFacts(
       parseSource(`
 @protocol P <NSObject>
@@ -156,19 +136,18 @@ int (*callback)(int value);
 - (void)run:(id<Q>)value;
 @end
 `),
-      "protocols.h",
+      'protocols.h',
     );
 
-    expect(
-      facts.containers.find((container) => container.name === "P")?.protocols,
-    ).toEqual(["NSObject"]);
-    expect(
-      facts.containers.find((container) => container.name === "Child")
-        ?.protocols,
-    ).toEqual(["P"]);
+    expect(facts.containers.find((container) => container.name === 'P')?.protocols).toEqual([
+      'NSObject',
+    ]);
+    expect(facts.containers.find((container) => container.name === 'Child')?.protocols).toEqual([
+      'P',
+    ]);
   });
 
-  it("keeps explicit class receivers and macro receivers separate", () => {
+  it('keeps explicit class receivers and macro receivers separate', () => {
     const facts = collectObjectiveCFacts(
       parseSource(`
 #define RECEIVER_MACRO(x) x
@@ -189,73 +168,63 @@ int (*callback)(int value);
 }
 @end
 `),
-      "receivers.m",
+      'receivers.m',
     );
 
     expect(
-      facts.messages.map(
-        (message) => `${message.receiverKind}:${message.receiverText}`,
-      ),
-    ).toEqual(
-      expect.arrayContaining([
-        "class:A",
-        "self:self",
-        "dynamic:RECEIVER_MACRO(self)",
-      ]),
-    );
+      facts.messages.map((message) => `${message.receiverKind}:${message.receiverText}`),
+    ).toEqual(expect.arrayContaining(['class:A', 'self:self', 'dynamic:RECEIVER_MACRO(self)']));
     expect(facts.unresolvedMessages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          receiverText: "RECEIVER_MACRO(self)",
-          reason: "macro receiver RECEIVER_MACRO is dynamic",
+          receiverText: 'RECEIVER_MACRO(self)',
+          reason: 'macro receiver RECEIVER_MACRO is dynamic',
         }),
       ]),
     );
   });
 
-  it("resolves extensionless local imports to Objective-C source/header files", () => {
+  it('resolves extensionless local imports to Objective-C source/header files', () => {
     expect(
       objectiveCScopeResolver.resolveImportTarget(
-        "./NestedHeader",
-        "src/Caller.m",
-        new Set(["src/NestedHeader.h"]),
+        './NestedHeader',
+        'src/Caller.m',
+        new Set(['src/NestedHeader.h']),
       ),
-    ).toBe("src/NestedHeader.h");
+    ).toBe('src/NestedHeader.h');
     expect(
       objectiveCScopeResolver.resolveImportTarget(
-        "./NestedImpl",
-        "src/Caller.m",
-        new Set(["src/NestedImpl.mm"]),
+        './NestedImpl',
+        'src/Caller.m',
+        new Set(['src/NestedImpl.mm']),
       ),
-    ).toBe("src/NestedImpl.mm");
+    ).toBe('src/NestedImpl.mm');
     expect(
       objectiveCScopeResolver.resolveImportTarget(
-        "Foundation",
-        "src/Caller.m",
-        new Set(["src/Foundation.h"]),
+        'Foundation',
+        'src/Caller.m',
+        new Set(['src/Foundation.h']),
       ),
     ).toBeNull();
   });
 
-  it("extracts first-version Objective-C semantic facts and unresolved evidence", () => {
-    const facts = collectObjectiveCFacts(parseFixture(), "SYModuleCaller.m");
+  it('extracts first-version Objective-C semantic facts and unresolved evidence', () => {
+    const facts = collectObjectiveCFacts(parseFixture(), 'SYModuleCaller.m');
 
     expect(facts.containers.map((c) => `${c.kind}:${c.name}`)).toEqual(
       expect.arrayContaining([
-        "protocol:SYModuleRunnable",
-        "class:SYBaseCaller",
-        "class:SYModuleCaller",
-        "extension:SYModuleCaller ()",
-        "category:SYModuleCaller (Tracing)",
+        'protocol:SYModuleRunnable',
+        'class:SYBaseCaller',
+        'class:SYModuleCaller',
+        'extension:SYModuleCaller ()',
+        'category:SYModuleCaller (Tracing)',
       ]),
     );
     expect(
-      facts.containers.find(
-        (c) => c.name === "SYModuleCaller" && c.kind === "class",
-      ),
+      facts.containers.find((c) => c.name === 'SYModuleCaller' && c.kind === 'class'),
     ).toMatchObject({
-      superclass: "SYBaseCaller",
-      protocols: ["SYModuleRunnable"],
+      superclass: 'SYBaseCaller',
+      protocols: ['SYModuleRunnable'],
     });
 
     expect(
@@ -267,87 +236,78 @@ int (*callback)(int value);
     ).toEqual(
       expect.arrayContaining([
         {
-          kind: "-",
-          selector: "runTask:completion:",
-          owner: objcClassQualifiedName("SYModuleCaller"),
+          kind: '-',
+          selector: 'runTask:completion:',
+          owner: objcClassQualifiedName('SYModuleCaller'),
         },
         {
-          kind: "+",
-          selector: "sharedCaller",
-          owner: objcClassQualifiedName("SYModuleCaller"),
+          kind: '+',
+          selector: 'sharedCaller',
+          owner: objcClassQualifiedName('SYModuleCaller'),
         },
         {
-          kind: "-",
-          selector: "traceEvent:",
-          owner: objcCategoryQualifiedName("SYModuleCaller", "Tracing"),
+          kind: '-',
+          selector: 'traceEvent:',
+          owner: objcCategoryQualifiedName('SYModuleCaller', 'Tracing'),
         },
         {
-          kind: "-",
-          selector: "runTask:completion:",
-          owner: "objc:protocol:SYModuleRunnable",
+          kind: '-',
+          selector: 'runTask:completion:',
+          owner: 'objc:protocol:SYModuleRunnable',
         },
       ]),
     );
-    expect(
-      facts.members.map((m) => `${m.kind}:${m.name}:${m.declaredType ?? ""}`),
-    ).toEqual(
-      expect.arrayContaining([
-        "property:helper:SYBaseCaller",
-        "ivar:_base:SYBaseCaller",
-      ]),
+    expect(facts.members.map((m) => `${m.kind}:${m.name}:${m.declaredType ?? ''}`)).toEqual(
+      expect.arrayContaining(['property:helper:SYBaseCaller', 'ivar:_base:SYBaseCaller']),
     );
-    expect(facts.functions.map((fn) => fn.name)).toContain("SYModuleCompute");
+    expect(facts.functions.map((fn) => fn.name)).toContain('SYModuleCompute');
     expect(facts.imports.map((imp) => `${imp.kind}:${imp.targetRaw}`)).toEqual(
       expect.arrayContaining([
-        "import:SYModuleCaller.h",
-        "include:SYModuleSupport.h",
-        "module:Foundation",
+        'import:SYModuleCaller.h',
+        'include:SYModuleSupport.h',
+        'module:Foundation',
       ]),
     );
     expect(
-      facts.messages.map(
-        (msg) => `${msg.receiverKind}:${msg.receiverText}:${msg.selector}`,
-      ),
+      facts.messages.map((msg) => `${msg.receiverKind}:${msg.receiverText}:${msg.selector}`),
     ).toEqual(
       expect.arrayContaining([
-        "self:self:traceEvent:",
-        "super:super:loadData:completion:",
-        "local:typed:loadData:completion:",
-        "dynamic:dynamic:loadData:completion:",
-        "local:runner:runTask:completion:",
+        'self:self:traceEvent:',
+        'super:super:loadData:completion:',
+        'local:typed:loadData:completion:',
+        'dynamic:dynamic:loadData:completion:',
+        'local:runner:runTask:completion:',
       ]),
     );
     expect(facts.unresolvedMessages).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          receiverText: "dynamic",
-          selector: "loadData:completion:",
-          reason: "id receiver is dynamic",
+          receiverText: 'dynamic',
+          selector: 'loadData:completion:',
+          reason: 'id receiver is dynamic',
         }),
       ]),
     );
   });
 
-  it("uses owner, selector, and method kind in stable method identities", () => {
-    const facts = collectObjectiveCFacts(parseFixture(), "SYModuleCaller.m");
+  it('uses owner, selector, and method kind in stable method identities', () => {
+    const facts = collectObjectiveCFacts(parseFixture(), 'SYModuleCaller.m');
     const graph = buildObjectiveCSemanticGraph(facts);
     const methodIds = new Set(
-      graph.nodes
-        .filter((node) => node.label === "Method")
-        .map((node) => node.id),
+      graph.nodes.filter((node) => node.label === 'Method').map((node) => node.id),
     );
 
     expect(methodIds).toContain(
-      `Method:${objcMethodQualifiedName(objcClassQualifiedName("SYModuleCaller"), "-", "runTask:completion:")}`,
+      `Method:${objcMethodQualifiedName(objcClassQualifiedName('SYModuleCaller'), '-', 'runTask:completion:')}`,
     );
     expect(methodIds).toContain(
-      `Method:${objcMethodQualifiedName(objcClassQualifiedName("SYModuleCaller"), "+", "sharedCaller")}`,
+      `Method:${objcMethodQualifiedName(objcClassQualifiedName('SYModuleCaller'), '+', 'sharedCaller')}`,
     );
     expect(methodIds).toContain(
       `Method:${objcMethodQualifiedName(
-        objcCategoryQualifiedName("SYModuleCaller", "Tracing"),
-        "-",
-        "traceEvent:",
+        objcCategoryQualifiedName('SYModuleCaller', 'Tracing'),
+        '-',
+        'traceEvent:',
       )}`,
     );
     expect(methodIds.size).toBeGreaterThan(4);
