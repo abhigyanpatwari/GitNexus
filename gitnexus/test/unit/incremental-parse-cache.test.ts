@@ -218,8 +218,8 @@ describe('PARSE_CACHE_VERSION', () => {
   // the pre-fix fan-out. This branch staged 64 above the claims live at the
   // time (61, 62, 63); all three landed and cascaded main to 67, so 68 is the
   // next free value above every claim at merge — the rule, re-applied.
-  it('pins SCHEMA_BUMP to 68 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(68);
+  it('pins SCHEMA_BUMP to 69 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(69);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.

@@ -78,9 +78,11 @@ describe('NodeLabel taxonomy coverage', () => {
     expect(CALLABLE_ONLY_LABELS.has('Delegate')).toBe(true);
   });
 
-  it('DISPATCH_LABELS includes all 10 routed kinds', () => {
+  it('DISPATCH_LABELS includes all 12 routed kinds', () => {
     const expected = [
       'Class',
+      'Protocol',
+      'Category',
       'Struct',
       'Interface',
       'Enum',

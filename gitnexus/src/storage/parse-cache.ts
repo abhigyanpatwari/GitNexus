@@ -533,7 +533,12 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
 // stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 68;
+//
+// 68 -> 69 for Objective-C semantic graph extraction plus the objective-c
+// ParsedFile side-channel carrying provider facts. A warm v68 cache would replay
+// `.m`/`.mm`/classified `.h` chunks without Class/Protocol/Category/Method
+// nodes, unresolved-message evidence, or post-resolution ObjC call facts.
+const SCHEMA_BUMP = 69;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

@@ -60,6 +60,8 @@ export const CALLER_ANCHOR_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Constructor',
   'Module',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Struct',
   'Enum',

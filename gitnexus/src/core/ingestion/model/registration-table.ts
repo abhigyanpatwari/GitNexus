@@ -19,7 +19,7 @@
  *
  * | Group         | NodeLabel values                                  | Hook         | Skip callable? |
  * |---------------|---------------------------------------------------|--------------|----------------|
- * | class-like    | Class, Struct, Interface, Enum, Record, Trait     | classLikeHook    | no             |
+ * | class-like    | Class, Protocol, Category, Struct, Interface, Enum, Record, Trait | classLikeHook    | no             |
  * | method-like   | Method, Constructor                               | methodHook   | no             |
  * | property      | Property                                          | propertyHook | YES            |
  * | impl-block    | Impl                                              | implHook     | no             |
@@ -143,6 +143,8 @@ export type LabelBehavior = 'dispatch' | 'callable-only' | 'inert';
 const LABEL_BEHAVIOR = {
   // dispatch — owner-scoped registry writes
   Class: 'dispatch',
+  Protocol: 'dispatch',
+  Category: 'dispatch',
   Struct: 'dispatch',
   Interface: 'dispatch',
   Enum: 'dispatch',
@@ -313,6 +315,8 @@ export const createRegistrationTable = (
     // `Record<ClassLikeLabel, 'dispatch'>` cross-invariant on
     // `LABEL_BEHAVIOR`.
     Class: classLikeHook,
+    Protocol: classLikeHook,
+    Category: classLikeHook,
     Struct: classLikeHook,
     Interface: classLikeHook,
     Enum: classLikeHook,

@@ -451,6 +451,19 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       minimumParsedFileReads: 0,
     },
   ],
+  [
+    SupportedLanguages.ObjectiveC,
+    {
+      files: ['Headers/Widget.h', 'Sources/main.m'],
+      fromFile: 'Sources/main.m',
+      resolutionConfig: undefined,
+      missTarget: (i) => `ghost${i}.h`,
+      hitTarget: 'Widget.h',
+      parsedImport: IGNORES_CONTEXT,
+      minimumScans: 1,
+      minimumParsedFileReads: 0,
+    },
+  ],
 ]);
 
 /**

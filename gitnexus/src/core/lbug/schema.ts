@@ -68,6 +68,30 @@ CREATE NODE TABLE Class (
   PRIMARY KEY (id)
 )`;
 
+export const PROTOCOL_SCHEMA = `
+CREATE NODE TABLE Protocol (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
+
+export const CATEGORY_SCHEMA = `
+CREATE NODE TABLE Category (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  PRIMARY KEY (id)
+)`;
+
 export const INTERFACE_SCHEMA = `
 CREATE NODE TABLE Interface (
   id STRING,
@@ -510,6 +534,9 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM \`Module\` TO \`Namespace\`,
   FROM \`Namespace\` TO Function,
   FROM CodeElement TO CodeElement,
+  FROM CodeElement TO Class,
+  FROM CodeElement TO Category,
+  FROM CodeElement TO Method,
   FROM CodeElement TO \`Module\`,
   FROM CodeElement TO \`Property\`,
   FROM Section TO Section,
@@ -641,6 +668,8 @@ export const NODE_SCHEMA_QUERIES = [
   FOLDER_SCHEMA,
   FUNCTION_SCHEMA,
   CLASS_SCHEMA,
+  PROTOCOL_SCHEMA,
+  CATEGORY_SCHEMA,
   INTERFACE_SCHEMA,
   METHOD_SCHEMA,
   CODE_ELEMENT_SCHEMA,

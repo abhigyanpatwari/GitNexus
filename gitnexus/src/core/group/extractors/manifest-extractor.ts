@@ -20,7 +20,7 @@ export interface ManifestExtractResult {
 // two would widen which nodes resolve as contract symbols and must update the
 // #2325 test, so they are intentionally kept separate for now.
 export const CUSTOM_CONTRACT_RESOLVE_QUERY = `MATCH (n)
-   WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
+   WHERE labels(n) IN ['Function','Method','Class','Protocol','Category','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
      AND n.name = $symbolName
    RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
    ORDER BY n.filePath ASC, n.id ASC
