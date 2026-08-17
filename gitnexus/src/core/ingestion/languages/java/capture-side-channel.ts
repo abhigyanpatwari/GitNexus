@@ -13,6 +13,7 @@ import type { JavaSpringConfigConsumerFact } from './spring-config-bindings.js';
 import type { JavaSpringAopFact } from './spring-aop.js';
 import type { JavaSpringConditionalFact } from './spring-conditionals.js';
 import type { JavaSpringDiClassFact } from './spring-di.js';
+import type { JavaSpringNonHttpHandlerFact } from './spring-non-http-handlers.js';
 
 export type JavaClassAnnotationFact = ClassAnnotationFact;
 
@@ -24,6 +25,7 @@ export interface JavaCaptureSideChannel {
   readonly springConfigConsumers?: readonly JavaSpringConfigConsumerFact[];
   readonly springConditionalFacts?: readonly JavaSpringConditionalFact[];
   readonly springDiFacts?: readonly JavaSpringDiClassFact[];
+  readonly springNonHttpHandlerFacts?: readonly JavaSpringNonHttpHandlerFact[];
 }
 
 const classAnnotations = createClassAnnotationFactStore();
@@ -31,6 +33,7 @@ const springAopFacts = new Map<string, readonly JavaSpringAopFact[]>();
 const springConfigConsumers = new Map<string, readonly JavaSpringConfigConsumerFact[]>();
 const springConditionalFacts = new Map<string, readonly JavaSpringConditionalFact[]>();
 const springDiFacts = new Map<string, readonly JavaSpringDiClassFact[]>();
+const springNonHttpHandlerFacts = new Map<string, readonly JavaSpringNonHttpHandlerFact[]>();
 
 /** Clear facts retained by a prior workspace pass in a long-lived process. */
 export function clearJavaClassAnnotationFacts(): void {
@@ -39,6 +42,7 @@ export function clearJavaClassAnnotationFacts(): void {
   springConfigConsumers.clear();
   springConditionalFacts.clear();
   springDiFacts.clear();
+  springNonHttpHandlerFacts.clear();
 }
 
 export function setJavaSpringAopFacts(filePath: string, facts: readonly JavaSpringAopFact[]): void {
@@ -98,6 +102,20 @@ export function getJavaSpringDiFacts(filePath: string): readonly JavaSpringDiCla
   return springDiFacts.get(filePath) ?? [];
 }
 
+export function setJavaSpringNonHttpHandlerFacts(
+  filePath: string,
+  facts: readonly JavaSpringNonHttpHandlerFact[],
+): void {
+  if (facts.length === 0) springNonHttpHandlerFacts.delete(filePath);
+  else springNonHttpHandlerFacts.set(filePath, facts);
+}
+
+export function getJavaSpringNonHttpHandlerFacts(
+  filePath: string,
+): readonly JavaSpringNonHttpHandlerFact[] {
+  return springNonHttpHandlerFacts.get(filePath) ?? [];
+}
+
 /** Snapshot worker-local Java annotation facts for ParsedFile serialization. */
 export function collectJavaCaptureSideChannel(
   filePath: string,
@@ -107,6 +125,7 @@ export function collectJavaCaptureSideChannel(
   const configConsumers = springConfigConsumers.get(filePath) ?? [];
   const conditionFacts = springConditionalFacts.get(filePath) ?? [];
   const diFacts = springDiFacts.get(filePath) ?? [];
+  const nonHttpHandlerFacts = springNonHttpHandlerFacts.get(filePath) ?? [];
   const packageFact = getJavaPackageFact(filePath);
   if (
     facts.length === 0 &&
@@ -114,6 +133,7 @@ export function collectJavaCaptureSideChannel(
     configConsumers.length === 0 &&
     conditionFacts.length === 0 &&
     diFacts.length === 0 &&
+    nonHttpHandlerFacts.length === 0 &&
     packageFact === undefined
   ) {
     return undefined;
@@ -126,6 +146,7 @@ export function collectJavaCaptureSideChannel(
     ...(configConsumers.length > 0 ? { springConfigConsumers: configConsumers } : {}),
     ...(conditionFacts.length > 0 ? { springConditionalFacts: conditionFacts } : {}),
     ...(diFacts.length > 0 ? { springDiFacts: diFacts } : {}),
+    ...(nonHttpHandlerFacts.length > 0 ? { springNonHttpHandlerFacts: nonHttpHandlerFacts } : {}),
   };
 }
 
@@ -148,6 +169,7 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
     setJavaSpringConfigConsumerFacts(parsed.filePath, []);
     setJavaSpringConditionalFacts(parsed.filePath, []);
     setJavaSpringDiFacts(parsed.filePath, []);
+    setJavaSpringNonHttpHandlerFacts(parsed.filePath, []);
     setJavaPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
@@ -167,6 +189,10 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
   setJavaSpringDiFacts(
     parsed.filePath,
     Array.isArray(data.springDiFacts) ? data.springDiFacts : [],
+  );
+  setJavaSpringNonHttpHandlerFacts(
+    parsed.filePath,
+    Array.isArray(data.springNonHttpHandlerFacts) ? data.springNonHttpHandlerFacts : [],
   );
   setJavaPackageFact(
     parsed.filePath,
