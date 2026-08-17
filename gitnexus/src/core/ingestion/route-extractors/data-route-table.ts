@@ -659,74 +659,94 @@ function hasOnlyDispatchReferences(
   return valid;
 }
 
-function hasStableHandlerBinding(
-  root: SyntaxNode,
-  handlerRoot: string,
-  routeEntry: SyntaxNode,
-): boolean {
-  let stable = true;
+type HandlerReferenceIndex = ReadonlyMap<string, readonly SyntaxNode[]>;
+
+function collectHandlerReferences(root: SyntaxNode): HandlerReferenceIndex {
+  const references = new Map<string, SyntaxNode[]>();
   const visit = (node: SyntaxNode): void => {
-    if (!stable) return;
     if (
-      (node.type === 'assignment_expression' || node.type === 'augmented_assignment_expression') &&
-      referencesEntry(node.childForFieldName('left') ?? node, handlerRoot)
+      node.type === 'identifier' ||
+      node.type === 'shorthand_property_identifier' ||
+      node.type === 'shorthand_property_identifier_pattern'
     ) {
-      stable = false;
-      return;
-    }
-    if (
-      (node.type === 'assignment_expression' || node.type === 'augmented_assignment_expression') &&
-      referencesEntry(node.childForFieldName('right') ?? node, handlerRoot)
-    ) {
-      stable = false;
-      return;
-    }
-    if (
-      (node.type === 'update_expression' ||
-        (node.type === 'unary_expression' && node.text.trimStart().startsWith('delete '))) &&
-      referencesEntry(node, handlerRoot)
-    ) {
-      stable = false;
-      return;
-    }
-    if (
-      (node.type === 'return_statement' ||
-        node.type === 'yield_expression' ||
-        node.type === 'throw_statement') &&
-      referencesEntry(node, handlerRoot)
-    ) {
-      stable = false;
-      return;
-    }
-    if (node.type === 'variable_declarator') {
-      const name = node.childForFieldName('name');
-      const value = node.childForFieldName('value');
-      if (
-        name?.type === 'identifier' &&
-        name.text !== handlerRoot &&
-        value !== null &&
-        hasUnsafeHandlerInitializerReference(value, handlerRoot, routeEntry)
-      ) {
-        stable = false;
-        return;
-      }
-    }
-    if (node.type === 'call_expression') {
-      const args = node.childForFieldName('arguments');
-      const fn = node.childForFieldName('function');
-      const owner = fn?.childForFieldName('object');
-      const callsOwnerMember =
-        (fn?.type === 'member_expression' || fn?.type === 'subscript_expression') &&
-        identifierName(owner) === handlerRoot;
-      if ((args !== null && referencesEntry(args, handlerRoot)) || callsOwnerMember) {
-        stable = false;
-        return;
-      }
+      const matches = references.get(node.text);
+      if (matches === undefined) references.set(node.text, [node]);
+      else matches.push(node);
     }
     for (const child of node.namedChildren) visit(child);
   };
   visit(root);
-  return stable;
+  return references;
+}
+
+function containsNode(container: SyntaxNode | null, node: SyntaxNode): boolean {
+  return (
+    container !== null &&
+    container.startIndex <= node.startIndex &&
+    container.endIndex >= node.endIndex
+  );
+}
+
+function isUnsafeHandlerReference(
+  reference: SyntaxNode,
+  handlerRoot: string,
+  routeEntry: SyntaxNode,
+): boolean {
+  let current: SyntaxNode = reference;
+  let parent = current.parent;
+  while (parent !== null) {
+    if (parent.type === 'variable_declarator') {
+      const name = parent.childForFieldName('name');
+      const value = parent.childForFieldName('value');
+      if (
+        name?.type === 'identifier' &&
+        name.text !== handlerRoot &&
+        containsNode(value, reference) &&
+        !isRouteHandlerDesignatorReference(reference, routeEntry)
+      ) {
+        return true;
+      }
+    }
+
+    // The remaining checks historically matched ordinary identifiers only.
+    if (reference.type === 'identifier') {
+      if (
+        parent.type === 'assignment_expression' ||
+        parent.type === 'augmented_assignment_expression' ||
+        parent.type === 'update_expression' ||
+        (parent.type === 'unary_expression' && parent.text.trimStart().startsWith('delete ')) ||
+        parent.type === 'return_statement' ||
+        parent.type === 'yield_expression' ||
+        parent.type === 'throw_statement'
+      ) {
+        return true;
+      }
+      if (parent.type === 'call_expression') {
+        const args = parent.childForFieldName('arguments');
+        const fn = parent.childForFieldName('function');
+        const owner = fn?.childForFieldName('object');
+        const callsOwnerMember =
+          (fn?.type === 'member_expression' || fn?.type === 'subscript_expression') &&
+          identifierName(owner) === handlerRoot &&
+          containsNode(owner ?? null, reference);
+        if (containsNode(args, reference) || callsOwnerMember) return true;
+      }
+    }
+
+    current = parent;
+    parent = current.parent;
+  }
+  return false;
+}
+
+function hasStableHandlerBinding(
+  references: HandlerReferenceIndex,
+  handlerRoot: string,
+  routeEntry: SyntaxNode,
+): boolean {
+  return !(references.get(handlerRoot) ?? []).some((reference) =>
+    isUnsafeHandlerReference(reference, handlerRoot, routeEntry),
+  );
 }
 
 function identifierName(node: SyntaxNode | null | undefined): string | null {
@@ -754,24 +774,6 @@ function isRouteHandlerDesignatorReference(node: SyntaxNode, routeEntry: SyntaxN
   );
 }
 
-function hasUnsafeHandlerInitializerReference(
-  node: SyntaxNode,
-  handlerRoot: string,
-  routeEntry: SyntaxNode,
-): boolean {
-  if (
-    (node.type === 'identifier' ||
-      node.type === 'shorthand_property_identifier' ||
-      node.type === 'shorthand_property_identifier_pattern') &&
-    node.text === handlerRoot
-  ) {
-    return !isRouteHandlerDesignatorReference(node, routeEntry);
-  }
-  return node.namedChildren.some((child) =>
-    hasUnsafeHandlerInitializerReference(child, handlerRoot, routeEntry),
-  );
-}
-
 /** Return static route facts shared by ingestion and group contract extraction. */
 export function scanDataRouteTables(tree: Parser.Tree): DataRouteTableRoute[] {
   const source = tree.rootNode.text;
@@ -781,6 +783,7 @@ export function scanDataRouteTables(tree: Parser.Tree): DataRouteTableRoute[] {
   const blockedIdentities = new Set<string>();
   let hasUnknownTableEntries = false;
   const bindingCounts = collectBindingCounts(tree.rootNode);
+  const handlerReferences = collectHandlerReferences(tree.rootNode);
   const visit = (node: SyntaxNode): void => {
     if (node.type === 'variable_declarator') {
       const name = node.childForFieldName('name');
@@ -821,7 +824,7 @@ export function scanDataRouteTables(tree: Parser.Tree): DataRouteTableRoute[] {
           if (
             handlerRoot === undefined ||
             (bindingCounts.get(handlerRoot) ?? 0) > 1 ||
-            !hasStableHandlerBinding(tree.rootNode, handlerRoot, entry)
+            !hasStableHandlerBinding(handlerReferences, handlerRoot, entry)
           ) {
             blockedIdentities.add(identity);
             continue;
