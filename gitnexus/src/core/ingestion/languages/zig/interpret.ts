@@ -10,11 +10,32 @@ const stripQuotes = (s: string): string => s.replace(/^["']|["']$/g, '');
  * site (renames are ordinary const aliases handled as variable bindings).
  */
 export function interpretZigImport(captures: CaptureMatch): ParsedImport | null {
-  const name = captures['@import.name']?.text;
   const source = captures['@import.source']?.text;
-  if (name === undefined || source === undefined) return null;
+  if (source === undefined) return null;
   const targetRaw = stripQuotes(source);
   if (targetRaw.length === 0) return null;
+
+  // `pub usingnamespace @import("x.zig");` — every pub decl of the target
+  // becomes a decl of this container. A wildcard, expanded by
+  // `expandZigWildcardNames` in the scope resolver.
+  if (captures['@import.wildcard'] !== undefined) {
+    return { kind: 'wildcard', targetRaw };
+  }
+
+  const name = captures['@import.name']?.text;
+  if (name === undefined) return null;
+
+  // `const Foo = @import("x.zig").Foo;` — one member, under a name of the
+  // importer's choosing (a rename when it differs: `const Alloc =
+  // @import("std").mem;`). Same fact as TS `import { Foo } from './x'` /
+  // `import { Foo as Bar }`.
+  const imported = captures['@import.imported']?.text;
+  if (imported !== undefined) {
+    return imported === name
+      ? { kind: 'named', localName: name, importedName: imported, targetRaw }
+      : { kind: 'alias', localName: name, importedName: imported, alias: name, targetRaw };
+  }
+
   return { kind: 'namespace', localName: name, importedName: name, targetRaw };
 }
 
@@ -34,6 +55,15 @@ export function normalizeZigTypeName(text: string): string {
   } while (t !== previous);
   const bang = t.lastIndexOf('!');
   if (bang !== -1) t = t.slice(bang + 1).trim();
+  // Generic instantiation `List(u8)` / `std.ArrayList(u8)` → the type
+  // constructor `List` / `std.ArrayList`: Zig spells a generic type as a
+  // call, and the container def is registered under the function's name.
+  // Builtins (`@This()`, `@TypeOf(x)`) keep their parentheses — they are
+  // not constructor names and must not turn into `@This`.
+  if (!t.startsWith('@')) {
+    const paren = t.indexOf('(');
+    if (paren > 0 && t.endsWith(')')) t = t.slice(0, paren).trim();
+  }
   return t;
 }
 
@@ -52,6 +82,14 @@ export function interpretZigTypeBinding(captures: CaptureMatch): ParsedTypeBindi
     source = isReceiver ? 'self' : 'parameter-annotation';
   } else if (captures['@type-binding.constructor'] !== undefined) {
     source = 'constructor-inferred';
+  } else if (captures['@type-binding.call-return'] !== undefined) {
+    // `var c = Counter.init();` — the call's receiver names the type when it
+    // is a container (`Counter`, `mod.Counter`, `List(u8)`); a value receiver
+    // (`std.mem`, `self.items`) simply finds no container and declines.
+    source = 'constructor-inferred';
+  } else if (captures['@type-binding.annotation'] !== undefined) {
+    // `var x: T = undefined;` / `const x: T = .init(…);` — the declared type.
+    source = 'annotation';
   }
 
   return { boundName: name, rawTypeName: normalizeZigTypeName(type), source };

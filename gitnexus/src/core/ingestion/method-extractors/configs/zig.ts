@@ -1,29 +1,23 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { MethodExtractionConfig, ParameterInfo } from '../../method-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { hasZigVisibilityKeyword } from '../../export-detection.js';
-import { ZIG_CONTAINER_TYPES } from '../../languages/zig/captures.js';
+import { hasZigPubKeyword } from '../../export-detection.js';
+import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captures.js';
 
 /**
  * Zig method extraction.
  *
- * tree-sitter-zig containers (struct/enum/union/opaque) are anonymous; the binding
- * name lives on the parent variable_declaration. Methods inside a container
- * appear as plain `function_declaration` children of the container node.
+ * tree-sitter-zig containers (struct/enum/union/opaque) are anonymous; the
+ * binding name lives on the parent variable_declaration, or on the enclosing
+ * generic type constructor (`fn List(comptime T: type) type { return struct
+ * {…}; }`) — `zigContainerName` decides. Methods inside a container appear as
+ * plain `function_declaration` children of the container node.
  *
  * The first parameter is the receiver iff it is named `self` (convention) —
  * unlike Rust, Zig has no dedicated `self_parameter` node type.
  */
 
-const extractZigOwnerName = (node: SyntaxNode): string | undefined => {
-  const parent = node.parent;
-  if (!parent || parent.type !== 'variable_declaration') return undefined;
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child?.type === 'identifier') return child.text;
-  }
-  return undefined;
-};
+const extractZigOwnerName = (node: SyntaxNode): string | undefined => zigContainerName(node);
 
 const extractZigName = (node: SyntaxNode): string | undefined => {
   const nameNode = node.childForFieldName('name');
@@ -120,7 +114,9 @@ export const zigMethodConfig: MethodExtractionConfig = {
   extractFunctionName: extractZigFunctionName,
   extractReturnType: extractZigReturnType,
   extractParameters: extractZigParameters,
-  extractVisibility: (node) => (hasZigVisibilityKeyword(node) ? 'public' : 'private'),
+  // `pub` only: `export fn` is C linkage, still private to other Zig files
+  // (isExported carries the FFI fact — see export-detection.ts).
+  extractVisibility: (node) => (hasZigPubKeyword(node) ? 'public' : 'private'),
   extractReceiverType: extractZigReceiverType,
 
   isStatic(node) {

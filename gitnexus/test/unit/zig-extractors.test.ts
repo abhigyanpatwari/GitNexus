@@ -17,8 +17,21 @@ import { createMethodExtractor } from '../../src/core/ingestion/method-extractor
 import { zigMethodConfig } from '../../src/core/ingestion/method-extractors/configs/zig.js';
 import { createVariableExtractor } from '../../src/core/ingestion/variable-extractors/generic.js';
 import { zigVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/zig.js';
-import { emitZigScopeCaptures } from '../../src/core/ingestion/languages/zig/captures.js';
-import { interpretZigTypeBinding } from '../../src/core/ingestion/languages/zig/interpret.js';
+import {
+  emitZigScopeCaptures,
+  isZigContainerOrImportBinding,
+  isZigKeywordDeclaration,
+  zigContainerName,
+} from '../../src/core/ingestion/languages/zig/captures.js';
+import {
+  interpretZigImport,
+  interpretZigTypeBinding,
+  normalizeZigTypeName,
+} from '../../src/core/ingestion/languages/zig/interpret.js';
+import { createFieldExtractor } from '../../src/core/ingestion/field-extractors/generic.js';
+import { zigFieldConfig } from '../../src/core/ingestion/field-extractors/configs/zig.js';
+import { zigProvider } from '../../src/core/ingestion/languages/zig.js';
+import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 
 const _require = createRequire(import.meta.url);
 let Zig: unknown = null;
@@ -240,25 +253,40 @@ export const table: [4]u8 = .{ 0, 0, 0, 0 };
     );
   });
 
-  it('the method and variable extractors report `export` as public (one shared predicate)', () => {
-    // The three visibility readers share `hasZigVisibilityKeyword`; a private
-    // copy in one of them made `isExported` and `visibility` disagree.
+  it('`export` is C linkage, not Zig visibility: isExported true, visibility private, `pub` public', () => {
+    // Language reference: only `pub` declarations are reachable from another
+    // file through `@import`; `export` puts the symbol in the object file for
+    // C callers and leaves it PRIVATE to Zig code. The graph keeps both facts
+    // in their own property: `isExported` (visible outside the compilation
+    // unit — the FFI surface, same reading as C external linkage) and
+    // `visibility` (the Zig-module fact). Reporting `export fn` as `public`
+    // let the resolver connect a cross-file call Zig would reject.
     const root = parse(`
 const C = struct {
     export fn cb(self: *C) void { _ = self; }
+    pub fn open(self: *C) void { _ = self; }
+    fn hidden(self: *C) void { _ = self; }
 };
 export var counter: u32 = 0;
+pub var visible: u32 = 0;
 `).rootNode;
     const methods = createMethodExtractor(zigMethodConfig).extract(
       find(root, 'struct_declaration'),
       { filePath: 'test.zig', language: SupportedLanguages.Zig },
     );
-    expect(methods!.methods.find((m) => m.name === 'cb')!.visibility).toBe('public');
-    const variable = createVariableExtractor(zigVariableConfig).extract(
-      find(root, 'variable_declaration', 'export var'),
-      { filePath: 'test.zig', language: SupportedLanguages.Zig },
+    const vis = (name: string) => methods!.methods.find((m) => m.name === name)!.visibility;
+    expect(vis('cb')).toBe('private');
+    expect(vis('open')).toBe('public');
+    expect(vis('hidden')).toBe('private');
+    expect(zigExportChecker(find(root, 'function_declaration', 'export fn cb'), 'cb')).toBe(true);
+    const variables = createVariableExtractor(zigVariableConfig);
+    const ctx = { filePath: 'test.zig', language: SupportedLanguages.Zig };
+    expect(
+      variables.extract(find(root, 'variable_declaration', 'export var'), ctx)!.visibility,
+    ).toBe('private');
+    expect(variables.extract(find(root, 'variable_declaration', 'pub var'), ctx)!.visibility).toBe(
+      'public',
     );
-    expect(variable!.visibility).toBe('public');
   });
 });
 
@@ -356,5 +384,230 @@ pub const H = opaque {
       .filter((m) => m['@declaration.field'] !== undefined)
       .map((m) => m['@declaration.name']!.text);
     expect(fields).toEqual([]);
+  });
+});
+
+describeZig('Zig declarations vs statement assignments (tree-sitter-zig 1.1.2 quirk)', () => {
+  const src = `
+var count: u32 = 0;
+fn inc() void {
+    count = 5;
+    count += 1;
+    _ = inc;
+    const local = 1;
+    var m: u32 = undefined;
+    _ = local; _ = m;
+}
+`;
+
+  it('`x = 5;`, `x += 1;` and `_ = expr;` are keyword-less variable_declarations, not bindings', () => {
+    // The grammar reuses `variable_declaration` for statement assignments; the
+    // `const` / `var` keyword child is the only thing that tells them apart.
+    // Without the gate every assignment minted a phantom local (one `_` per
+    // discard) and, on the structure side, a Const/Variable node per statement.
+    const root = parse(src).rootNode;
+    const decls: SyntaxNode[] = [];
+    const walk = (n: SyntaxNode): void => {
+      if (n.type === 'variable_declaration') decls.push(n);
+      n.children.forEach(walk);
+    };
+    walk(root);
+    const verdicts = decls.map((d) => [d.text.split('\n')[0]!.trim(), isZigKeywordDeclaration(d)]);
+    expect(verdicts).toEqual([
+      ['var count: u32 = 0;', true],
+      ['count = 5;', false],
+      ['count += 1;', false],
+      ['_ = inc;', false],
+      ['const local = 1;', true],
+      ['var m: u32 = undefined;', true],
+      ['_ = local;', false],
+      ['_ = m;', false],
+    ]);
+  });
+
+  it('the variable extractor declines an assignment and the scope walker binds only real declarations', () => {
+    const root = parse(src).rootNode;
+    const extractor = createVariableExtractor(zigVariableConfig);
+    const ctx = { filePath: 'x.zig', language: SupportedLanguages.Zig };
+    expect(extractor.extract(find(root, 'variable_declaration', 'count = 5'), ctx)).toBeNull();
+    expect(extractor.extract(find(root, 'variable_declaration', 'const local'), ctx)?.name).toBe(
+      'local',
+    );
+    const bound = emitZigScopeCaptures(src, 'x.zig')
+      .filter((m) => m['@declaration.variable'] !== undefined)
+      .map((m) => m['@declaration.name']?.text);
+    expect(bound).toEqual(['count', 'local', 'm']);
+  });
+});
+
+describeZig('Zig import forms', () => {
+  it('a member alias off @import and a usingnamespace are import bindings, not variables', () => {
+    // `const Foo = @import("x.zig").Foo;` is the single-symbol import Zig is
+    // written with; treating it as a plain Const lost the file edge and left
+    // `Foo{}` untyped. `pub usingnamespace @import(...)` has no name at all.
+    const root = parse(`
+const std = @import("std");
+const Foo = @import("foo.zig").Foo;
+const Alloc = @import("std").mem.Allocator;
+const plain = 1;
+`).rootNode;
+    expect(isZigContainerOrImportBinding(find(root, 'variable_declaration', 'const std'))).toBe(
+      true,
+    );
+    expect(isZigContainerOrImportBinding(find(root, 'variable_declaration', 'const Foo'))).toBe(
+      true,
+    );
+    expect(isZigContainerOrImportBinding(find(root, 'variable_declaration', 'const Alloc'))).toBe(
+      true,
+    );
+    expect(isZigContainerOrImportBinding(find(root, 'variable_declaration', 'const plain'))).toBe(
+      false,
+    );
+  });
+
+  it('interprets namespace, named, alias, wildcard and namespace-member forms', () => {
+    const src = `
+const counter = @import("counter.zig");
+const Counter = counter.Counter;
+const Renamed = @import("counter.zig").Counter;
+const Same = @import("counter.zig").Same;
+const Deep = @import("std").mem.Allocator;
+pub usingnamespace @import("mixin.zig");
+const notAnImport = other.Thing;
+`;
+    const imports = emitZigScopeCaptures(src, 'x.zig')
+      .filter((m) => m['@import.source'] !== undefined)
+      .map((m) => interpretZigImport(m));
+    expect(imports).toEqual([
+      {
+        kind: 'namespace',
+        localName: 'counter',
+        importedName: 'counter',
+        targetRaw: 'counter.zig',
+      },
+      // alias of a namespace member → promoted to a named import of that member
+      { kind: 'named', localName: 'Counter', importedName: 'Counter', targetRaw: 'counter.zig' },
+      {
+        kind: 'alias',
+        localName: 'Renamed',
+        importedName: 'Counter',
+        alias: 'Renamed',
+        targetRaw: 'counter.zig',
+      },
+      { kind: 'named', localName: 'Same', importedName: 'Same', targetRaw: 'counter.zig' },
+      {
+        kind: 'alias',
+        localName: 'Deep',
+        importedName: 'Allocator',
+        alias: 'Deep',
+        targetRaw: 'std',
+      },
+      { kind: 'wildcard', targetRaw: 'mixin.zig' },
+    ]);
+    // `other` is not an @import binding of this file → stays a variable.
+    const vars = emitZigScopeCaptures(src, 'x.zig')
+      .filter((m) => m['@declaration.variable'] !== undefined)
+      .map((m) => m['@declaration.name']?.text);
+    expect(vars).toEqual(['notAnImport']);
+  });
+
+  it('the provider skips the Const capture for container and @import bindings', () => {
+    const root = parse(`
+const std = @import("std");
+const Foo = @import("foo.zig").Foo;
+const S = struct {};
+const n = 1;
+`).rootNode;
+    const skip = (prefix: string) =>
+      zigProvider.shouldSkipDefinitionCapture!(
+        { 'definition.const': find(root, 'variable_declaration', prefix) },
+        'Const',
+      );
+    expect(skip('const std')).toBe(true);
+    expect(skip('const Foo')).toBe(true);
+    expect(skip('const S')).toBe(true);
+    expect(skip('const n')).toBe(false);
+  });
+});
+
+describeZig('Zig generic type constructors', () => {
+  const src = `
+pub fn Stack(comptime T: type) type {
+    return struct {
+        items: []T = &.{},
+        pub fn push(self: *@This(), v: T) void { _ = self; _ = v; }
+    };
+}
+fn notAType(comptime T: type) u32 {
+    return struct { pub fn x() u32 { return 1; } }.x();
+}
+const Plain = struct { a: u8 };
+`;
+
+  it('names the container returned by a fn returning `type` after that fn; other anonymous containers stay nameless', () => {
+    const root = parse(src).rootNode;
+    const structs: SyntaxNode[] = [];
+    const walk = (n: SyntaxNode): void => {
+      if (n.type === 'struct_declaration') structs.push(n);
+      n.children.forEach(walk);
+    };
+    walk(root);
+    expect(structs.map((n) => zigContainerName(n))).toEqual(['Stack', undefined, 'Plain']);
+  });
+
+  it('the method and field extractors own the generic container’s members under the fn name', () => {
+    const root = parse(src).rootNode;
+    const container = find(root, 'struct_declaration', 'struct {\n        items');
+    const ctx = { filePath: 'x.zig', language: SupportedLanguages.Zig };
+    const methods = createMethodExtractor(zigMethodConfig).extract(container, ctx);
+    expect(methods?.ownerName).toBe('Stack');
+    expect(methods?.methods.map((m) => m.name)).toEqual(['push']);
+    const fields = createFieldExtractor(zigFieldConfig).extract(container, {
+      ...ctx,
+      typeEnv: {
+        lookup: () => undefined,
+        constructorBindings: [],
+        fileScope: () => new Map(),
+        allScopes: () => new Map(),
+        constructorTypeMap: new Map(),
+      } as unknown as import('../../src/core/ingestion/type-env.js').TypeEnvironment,
+      symbolTable: createSemanticModel().symbols,
+    });
+    expect(fields?.ownerFqn).toBe('Stack');
+    expect(fields?.fields.map((f) => f.name)).toEqual(['items']);
+  });
+
+  it('normalizes generic instantiations to the constructor name and leaves builtins alone', () => {
+    expect(normalizeZigTypeName('List(u8)')).toBe('List');
+    expect(normalizeZigTypeName('*std.ArrayList(u8)')).toBe('std.ArrayList');
+    expect(normalizeZigTypeName('?*const Stack(u16)')).toBe('Stack');
+    expect(normalizeZigTypeName('@This()')).toBe('@This()');
+    expect(normalizeZigTypeName('*const @This()')).toBe('@This()');
+    expect(normalizeZigTypeName('[]const u8')).toBe('u8');
+  });
+});
+
+describeZig('Zig receiver typing sources', () => {
+  it('annotation and call-return bindings type receivers; a discard is never a binding', () => {
+    const src = `
+pub fn run() void {
+    var a = Counter.init();
+    var b: Counter = undefined;
+    const c: Counter = .init();
+    var d = counter.Counter.init();
+    var e = Stack(u8).init();
+    _ = e.top();
+}
+`;
+    const bindings = emitZigScopeCaptures(src, 'x.zig')
+      .filter((m) => m['@type-binding.name'] !== undefined)
+      .map((m) => interpretZigTypeBinding(m));
+    expect(bindings).toEqual([
+      { boundName: 'a', rawTypeName: 'Counter', source: 'constructor-inferred' },
+      { boundName: 'b', rawTypeName: 'Counter', source: 'annotation' },
+      { boundName: 'c', rawTypeName: 'Counter', source: 'annotation' },
+      { boundName: 'd', rawTypeName: 'counter.Counter', source: 'constructor-inferred' },
+      { boundName: 'e', rawTypeName: 'Stack', source: 'constructor-inferred' },
+    ]);
   });
 });

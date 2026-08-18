@@ -1,21 +1,15 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { FieldExtractionConfig } from '../generic.js';
-import { ZIG_CONTAINER_TYPES } from '../../languages/zig/captures.js';
+import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captures.js';
 
 /**
- * Zig containers (struct/enum/union/opaque) are anonymous in tree-sitter-zig; the
- * binding name is the first identifier child of the parent variable_declaration.
+ * Zig containers (struct/enum/union/opaque) are anonymous in tree-sitter-zig;
+ * the binding name is the first identifier child of the parent
+ * variable_declaration, or the enclosing generic type constructor's name —
+ * `zigContainerName` is the single source.
  */
-const extractZigOwnerName = (node: SyntaxNode): string | undefined => {
-  const parent = node.parent;
-  if (!parent || parent.type !== 'variable_declaration') return undefined;
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child?.type === 'identifier') return child.text;
-  }
-  return undefined;
-};
+const extractZigOwnerName = (node: SyntaxNode): string | undefined => zigContainerName(node);
 
 /**
  * Container fields appear as direct children of struct_declaration /

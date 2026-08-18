@@ -15,23 +15,95 @@ export const ZIG_CONTAINER_TYPES: ReadonlySet<string> = new Set([
   'opaque_declaration',
 ]);
 
+/** Is `node` the `@import(…)` builtin call? */
+function isZigImportBuiltin(node: SyntaxNode | null): boolean {
+  if (node?.type !== 'builtin_function') return false;
+  const builtin = node.namedChild(0);
+  return builtin?.type === 'builtin_identifier' && builtin.text === '@import';
+}
+
+/** The `@import(…)` call at the ROOT of a value expression: the value itself
+ *  (`@import("x.zig")`) or the leftmost object of a member chain
+ *  (`@import("x.zig").Foo`, `@import("std").mem.Allocator`). Null otherwise. */
+export function zigImportRootOf(value: SyntaxNode | null): SyntaxNode | null {
+  let cur = value;
+  while (cur?.type === 'field_expression') cur = cur.childForFieldName('object');
+  return isZigImportBuiltin(cur) ? cur : null;
+}
+
 /** Is this variable_declaration a container binding (`const T = struct {…}`)
- *  or an import binding (`const x = @import("…")`)? Those groups are emitted
- *  by their dedicated query rules; the plain @declaration.variable match for
- *  the same node must be dropped so the name binds exactly once. Shared with
- *  the variable extractor config so the structure-phase Variable records and
- *  the scope-side bindings agree on what counts as a plain variable. */
+ *  or an import binding (`const x = @import("…")`, `const X = @import("…").X`)?
+ *  Those groups are emitted by their dedicated query rules; the plain
+ *  @declaration.variable / @definition.const match for the same node must be
+ *  dropped so the name binds exactly once (and no Const node shadows the
+ *  Struct / import). Shared by the scope walker, the variable extractor and
+ *  the provider's `shouldSkipDefinitionCapture` so the structure-phase records
+ *  and the scope-side bindings agree on what counts as a plain variable. */
 export function isZigContainerOrImportBinding(declNode: SyntaxNode): boolean {
   for (let i = 0; i < declNode.namedChildCount; i++) {
     const child = declNode.namedChild(i);
     if (child === null) continue;
     if (ZIG_CONTAINER_TYPES.has(child.type)) return true;
-    if (child.type === 'builtin_function') {
-      const builtin = child.namedChild(0);
-      if (builtin?.type === 'builtin_identifier' && builtin.text === '@import') return true;
-    }
+    if (zigImportRootOf(child) !== null) return true;
   }
   return false;
+}
+
+/** Does this `variable_declaration` carry a `const` / `var` keyword child?
+ *  tree-sitter-zig 1.1.2 parses statement-position ASSIGNMENTS (`x = 5;`,
+ *  `x += 1;`, `_ = expr;`) as `variable_declaration` too — the only thing
+ *  that separates a real binding from a re-assignment is the keyword. Query
+ *  rules match the keyword literally; this is the JS-side twin for the
+ *  extractors and the phantom-local guard in `emitZigScopeCaptures`. */
+export function isZigKeywordDeclaration(declNode: SyntaxNode): boolean {
+  for (let i = 0; i < declNode.childCount; i++) {
+    const t = declNode.child(i)?.type;
+    if (t === 'const' || t === 'var') return true;
+  }
+  return false;
+}
+
+/** The binding name of a Zig container node, or undefined for a truly
+ *  anonymous one. Two shapes carry a name:
+ *    - `const Point = struct {…}` — the first identifier of the wrapping
+ *      `variable_declaration`;
+ *    - `pub fn List(comptime T: type) type { return struct {…}; }` — the
+ *      generic type constructor. Zig has no other spelling for a generic
+ *      type, and every reader calls the returned container `List`, so the
+ *      enclosing function's name IS the type name (`ArrayList(u8)`).
+ *  Single source for the class/field/method extractor configs. */
+export function zigContainerName(containerNode: SyntaxNode): string | undefined {
+  const parent = containerNode.parent;
+  if (parent === null || parent === undefined) return undefined;
+  if (parent.type === 'variable_declaration') {
+    for (let i = 0; i < parent.namedChildCount; i++) {
+      const child = parent.namedChild(i);
+      if (child?.type === 'identifier') return child.text;
+    }
+    return undefined;
+  }
+  return zigTypeConstructorOf(containerNode)?.childForFieldName('name')?.text;
+}
+
+/** For a container that is the direct `return` value of a function whose
+ *  return type is `type` — `fn List(comptime T: type) type { return struct
+ *  {…}; }` — the function_declaration; null for any other placement. Only the
+ *  literal `return_expression → expression_statement → block → fn` chain
+ *  counts: a container nested deeper (`return struct {…}.field`, a container
+ *  inside an `if`) is not the type the function constructs. */
+export function zigTypeConstructorOf(containerNode: SyntaxNode): SyntaxNode | null {
+  if (!ZIG_CONTAINER_TYPES.has(containerNode.type)) return null;
+  const ret = containerNode.parent;
+  if (ret?.type !== 'return_expression') return null;
+  const stmt = ret.parent;
+  if (stmt?.type !== 'expression_statement') return null;
+  const block = stmt.parent;
+  if (block?.type !== 'block') return null;
+  const fn = block.parent;
+  if (fn?.type !== 'function_declaration' || fn.childForFieldName('body')?.id !== block.id) {
+    return null;
+  }
+  return fn.childForFieldName('type')?.text === 'type' ? fn : null;
 }
 
 /** A `fn` nested in a struct/enum/union/opaque container is a method. Single
@@ -117,6 +189,36 @@ export function emitZigScopeCaptures(
   const rawMatches = getZigScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
 
+  // Pre-pass: this file's `@import` bindings (`const counter =
+  // @import("counter.zig")` → counter ↦ the string node), so a member alias
+  // `const Counter = counter.Counter;` can be promoted to a named import of
+  // `Counter` from `counter.zig` below. Aliases are collected in the same
+  // pass so their plain-variable group is dropped (a local Const binding
+  // would outrank the import binding it stands for).
+  const importSources = new Map<string, SyntaxNode>();
+  const aliasDeclIds = new Set<number>();
+  for (const m of rawMatches) {
+    const byName = new Map(m.captures.map((c) => [c.name, c.node] as const));
+    const importName = byName.get('import.name');
+    const importSource = byName.get('import.source');
+    if (
+      importName !== undefined &&
+      importSource !== undefined &&
+      byName.get('import.imported') === undefined &&
+      byName.get('import.statement')?.parent?.type === 'source_file'
+    ) {
+      importSources.set(importName.text, importSource);
+    }
+  }
+  for (const m of rawMatches) {
+    const byName = new Map(m.captures.map((c) => [c.name, c.node] as const));
+    const stmt = byName.get('alias.statement');
+    const ns = byName.get('alias.namespace');
+    if (stmt !== undefined && ns !== undefined && importSources.has(ns.text)) {
+      aliasDeclIds.add(stmt.id);
+    }
+  }
+
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
     const nodeMap: Record<string, SyntaxNode> = {};
@@ -128,10 +230,35 @@ export function emitZigScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    // Member aliases: promote to a named import when the object is one of
+    // this file's @import bindings; otherwise the group is inert (the same
+    // node is also matched by the plain-variable rule).
+    const aliasStmt = nodeMap['@alias.statement'];
+    if (aliasStmt !== undefined) {
+      if (!aliasDeclIds.has(aliasStmt.id)) continue;
+      const source = importSources.get(nodeMap['@alias.namespace']!.text)!;
+      out.push({
+        '@import.statement': nodeToCapture('@import.statement', aliasStmt),
+        '@import.name': nodeToCapture('@import.name', nodeMap['@alias.name']!),
+        '@import.imported': nodeToCapture('@import.imported', nodeMap['@alias.member']!),
+        '@import.source': nodeToCapture('@import.source', source),
+      });
+      continue;
+    }
+
     // Drop the plain-variable group for container/import bindings — their
     // dedicated rules already bind the name (as Struct/Enum/Union or import).
+    // The query already requires a `const`/`var` keyword, so statement
+    // assignments (`x = 5;`, `_ = expr;` — same node type, no keyword) never
+    // mint phantom locals; `isZigKeywordDeclaration` is the belt to that
+    // brace should the rule ever be loosened.
     const variableAnchor = nodeMap['@declaration.variable'];
-    if (variableAnchor !== undefined && isZigContainerOrImportBinding(variableAnchor)) {
+    if (
+      variableAnchor !== undefined &&
+      (isZigContainerOrImportBinding(variableAnchor) ||
+        aliasDeclIds.has(variableAnchor.id) ||
+        !isZigKeywordDeclaration(variableAnchor))
+    ) {
       continue;
     }
 
@@ -155,6 +282,25 @@ export function emitZigScopeCaptures(
       );
     }
 
+    // Mark containers returned by a generic type constructor so
+    // `zigBindingScopeFor` hoists their name to the module scope (beside the
+    // Function def of the same name) instead of the fn body it sits in.
+    for (const kind of ['@declaration.struct', '@declaration.union', '@declaration.enum']) {
+      const containerAnchor = nodeMap[kind];
+      const nameNode = nodeMap['@declaration.name'];
+      if (
+        containerAnchor !== undefined &&
+        nameNode !== undefined &&
+        zigTypeConstructorOf(containerAnchor) !== null
+      ) {
+        grouped['@declaration.type-constructor'] = syntheticCapture(
+          '@declaration.type-constructor',
+          nameNode,
+          'true',
+        );
+      }
+    }
+
     // Relabel container-nested fns Function → Method (provider labelOverride
     // parity). The anchor capture name carries the kind, so rebuild it.
     const fnAnchor = nodeMap['@declaration.function'];
@@ -165,6 +311,39 @@ export function emitZigScopeCaptures(
     }
 
     out.push(grouped);
+  }
+
+  // A generic type constructor yields two module-scope defs of one name: the
+  // Function `Stack` and the Struct `Stack` it returns. Import materialization
+  // keeps the FIRST def of a name (finalize `indexExportsByName`), and query
+  // order puts the fn (outer node) first — so `const Stack =
+  // @import("x.zig").Stack;` bound the Function and `Stack(u8){}` typed
+  // nothing. Emit the container def ahead of its constructor: the type is what
+  // an importer instantiates, and the free call `Stack(u8)` still resolves
+  // (a Struct is a valid call target — the constructor-reference path).
+  for (let i = 0; i < out.length; i++) {
+    const group = out[i]!;
+    if (group['@declaration.type-constructor'] === undefined) continue;
+    const anchor =
+      group['@declaration.struct'] ?? group['@declaration.union'] ?? group['@declaration.enum'];
+    if (anchor === undefined) continue;
+    for (let j = 0; j < i; j++) {
+      const fn = out[j]!['@declaration.function'];
+      if (fn === undefined) continue;
+      if (
+        fn.range.startLine < anchor.range.startLine ||
+        (fn.range.startLine === anchor.range.startLine &&
+          fn.range.startCol <= anchor.range.startCol)
+      ) {
+        if (
+          fn.range.endLine > anchor.range.endLine ||
+          (fn.range.endLine === anchor.range.endLine && fn.range.endCol >= anchor.range.endCol)
+        ) {
+          out.splice(j, 0, ...out.splice(i, 1));
+          break;
+        }
+      }
+    }
   }
 
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, ZIG_CALLABLE_CAPTURE_OPTIONS));

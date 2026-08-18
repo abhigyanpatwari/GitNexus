@@ -1,25 +1,20 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ClassExtractionConfig, ClassLikeNodeLabel } from '../../class-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { ZIG_CONTAINER_TYPES } from '../../languages/zig/captures.js';
+import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captures.js';
 
 /**
  * Zig containers (struct/enum/union/opaque) are anonymous in the grammar:
  *
  *   const Point = struct { ... };
+ *   pub fn List(comptime T: type) type { return struct { ... }; }
  *
  * The binding name is the first identifier child of the parent
- * variable_declaration. Walk up one level to find it.
+ * variable_declaration, or the generic type constructor's name —
+ * `zigContainerName` is the single source shared with the field/method
+ * extractors so owner ids and node ids agree by construction.
  */
-const extractZigContainerName = (node: SyntaxNode): string | undefined => {
-  const parent = node.parent;
-  if (!parent || parent.type !== 'variable_declaration') return undefined;
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child?.type === 'identifier') return child.text;
-  }
-  return undefined;
-};
+const extractZigContainerName = (node: SyntaxNode): string | undefined => zigContainerName(node);
 
 const extractZigContainerType = (node: SyntaxNode): ClassLikeNodeLabel | undefined => {
   if (node.type === 'struct_declaration') return 'Struct';

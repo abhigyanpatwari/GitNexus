@@ -173,3 +173,118 @@ describe.skipIf(!zigAvailable)('Zig export, opaque and test declarations (ffi.zi
     expect(fns.some((n) => n.startsWith('test@') || n === 'test')).toBe(false);
   });
 });
+
+/**
+ * `zig-idioms`: the shapes real Zig is written in that `zig-basic` does not
+ * exercise. Each case names the idiom and what breaks without the rule.
+ */
+describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
+  let result: PipelineResult;
+  let calls: string[];
+  let imports: string[];
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-idioms'), () => {});
+    calls = edgeSet(getRelationships(result, 'CALLS'));
+    imports = getRelationships(result, 'IMPORTS').map(
+      (e) => `${path.basename(e.sourceFilePath)} → ${e.targetFilePath}`,
+    );
+  }, 90000);
+
+  it('mints Const / Variable nodes for `pub const` / `pub var` (incl. error sets and type aliases)', () => {
+    // ZIG_QUERIES had no @definition.const / @definition.variable at all, so
+    // `zigVariableConfig` never ran and `pub const VERSION`, error sets and
+    // aliases like `const Allocator = std.mem.Allocator` were absent from
+    // the graph.
+    expect(getNodesByLabel(result, 'Const')).toEqual(
+      expect.arrayContaining(['VERSION', 'Err', 'Allocator']),
+    );
+    expect(getNodesByLabel(result, 'Variable')).toContain('global_count');
+  });
+
+  it('never mints a Const for a container or an @import binding, nor for a statement assignment', () => {
+    // `const Counter = struct {…}` is the Struct node; `const counter =
+    // @import(…)` is the import binding; `counter.global_count = 5;` and
+    // `_ = counter.VERSION;` are assignments that tree-sitter-zig 1.1.2 parses
+    // as keyword-less `variable_declaration`s.
+    const consts = getNodesByLabel(result, 'Const');
+    // (`const Counter = counter.Counter;` IS a Const node — an alias — but
+    // the struct itself is not duplicated as one: exactly one `Counter` Const,
+    // from main.zig.)
+    expect(getNodesByLabelFull(result, 'Const').filter((n) => n.name === 'Counter')).toHaveLength(
+      1,
+    );
+    expect(consts).not.toContain('counter');
+    expect(consts).not.toContain('std');
+    expect(consts).not.toContain('_');
+    expect(getNodesByLabel(result, 'Variable')).not.toContain('_');
+  });
+
+  it('types a receiver from a constructor CALL (`var a = Counter.init(); a.incr()`)', () => {
+    expect(calls).toContain('main → incr');
+  });
+
+  it('types a receiver from its ANNOTATION (`var b: Counter = undefined; b.twice()`, `const c: Counter = .init(); c.get()`)', () => {
+    // The declared type is the ONLY type source for `= undefined` and for
+    // 0.14+ decl literals (`.init`, `.empty`), which current std uses for
+    // every container constructor.
+    expect(calls).toContain('main → twice');
+    expect(calls).toContain('main → get');
+  });
+
+  it('follows an alias of a namespace member as a named import (`const Counter = counter.Counter;`)', () => {
+    // Every receiver above is typed through the alias — none resolves if the
+    // scope-side binding is a plain local shadowing the import (the graph
+    // still carries the alias as a Const node in main.zig, which is what it is).
+    expect(calls).toContain('main → get');
+    expect(calls).toContain('main → init');
+  });
+
+  it('owns a generic type constructor’s members and dispatches on its instantiations', () => {
+    // `pub fn Stack(comptime T: type) type { return struct {…}; }` — the
+    // returned container had no owner (methods hung off the File) and
+    // `Stack(u8){}` / `Stack(u8).init()` / `: Stack(u16)` typed nothing.
+    expect(getNodesByLabel(result, 'Struct')).toContain('Stack');
+    expect(getNodesByLabel(result, 'Function')).toContain('Stack');
+    expect(edgeSet(getRelationships(result, 'HAS_METHOD'))).toEqual(
+      expect.arrayContaining(['Stack → push', 'Stack → top', 'Stack → clear']),
+    );
+    expect(edgeSet(getRelationships(result, 'HAS_PROPERTY'))).toContain('Stack → items');
+    expect(calls).toEqual(expect.arrayContaining(['main → push', 'main → top', 'main → clear']));
+  });
+
+  it('imports the file behind `const X = @import("x.zig").X` and `usingnamespace @import(...)`', () => {
+    // Both forms lost the file-level IMPORTS edge: the rule needed
+    // `builtin_function` as a DIRECT child of the declaration.
+    expect(imports).toContain('main.zig → src/mixin.zig');
+    // counter.zig is imported twice from main.zig (namespace + member); the
+    // edge is deduped, so its presence proves at least one form resolved and
+    // `Stack` (member form only) dispatching proves the other.
+    expect(imports).toContain('main.zig → src/counter.zig');
+    expect(calls).toContain('main → push');
+  });
+
+  it('resolves a build.zig.zon path dep to the root its build.zig declares (src/root.zig)', () => {
+    // `zig init` ≥ 0.12 lays libraries out as src/root.zig; the resolver only
+    // knew src/<name>.zig and src/main.zig, so every such dep was unresolved.
+    expect(imports).toContain('main.zig → libs/geo/src/root.zig');
+    expect(calls).toContain('main → area');
+    expect(calls).toContain('main → shift');
+  });
+
+  it('still resolves the older src/<name>.zig convention when the dep has no build.zig', () => {
+    expect(imports).toContain('main.zig → libs/oldlib/src/oldlib.zig');
+    expect(calls).toContain('main → legacy');
+  });
+
+  it('a re-assignment (`a = Counter.init();`) is not a declaration and does not shadow the typed binding', () => {
+    // Guarded on the scope side by the literal `"const"` / `"var"` in the
+    // query and on the structure side by `isZigKeywordDeclaration`.
+    // main → incr resolves twice through the same binding (before and after
+    // the re-assignment); an untyped phantom `a` would drop the second.
+    expect(
+      getRelationships(result, 'CALLS').filter((e) => e.source === 'main' && e.target === 'incr')
+        .length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+});

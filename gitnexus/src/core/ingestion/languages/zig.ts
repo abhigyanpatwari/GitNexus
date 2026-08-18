@@ -7,17 +7,25 @@
  *     `@heritage.*` captures).
  *   - exportChecker: walks to the enclosing variable_declaration /
  *     function_declaration and looks for a `pub` or `export` keyword child.
- *   - importResolver: only resolves local `@import("./foo.zig")` paths;
- *     `@import("std")` and external packages are deliberately external.
- *   - namedBindingExtractor: omitted — `const Foo = @import("x").Foo` is a
- *     const declaration, not import-statement syntax.
+ *   - importResolver: resolves local `@import("./foo.zig")` paths and
+ *     build.zig.zon `.path` deps (root the dep's build.zig declares, then
+ *     src/root.zig, src/<name>.zig, src/main.zig); `@import("std")` and
+ *     `.url` packages are deliberately external.
+ *   - namedBindingExtractor: omitted — the scope side handles
+ *     `const Foo = @import("x").Foo` and `const Foo = ns.Foo` (ns an
+ *     @import binding) as NAMED imports instead (`zig/captures.ts`).
  *   - scope-resolution hooks (Ring 3): `emitScopeCaptures` walks the file via
- *     `zig/query.ts` (containers as Class scopes, container-nested fns
- *     relabeled @declaration.method, plain-variable groups filtered for
- *     container/import bindings); `interpretImport` maps
- *     `const x = @import("…")` to a namespace import; receiver dispatch
- *     rides the `self`-parameter convention. The emit-side wiring lives in
- *     `zig/scope-resolver.ts` (SCOPE_RESOLVERS registry).
+ *     `zig/query.ts` (containers as Class scopes — including the container a
+ *     generic type constructor `fn List(comptime T: type) type` returns,
+ *     named after the fn; container-nested fns relabeled @declaration.method;
+ *     plain-variable groups filtered for container/import bindings and for
+ *     the keyword-less `variable_declaration`s tree-sitter-zig uses for
+ *     statement assignments); `interpretImport` maps `const x = @import("…")`
+ *     to a namespace import, member forms to named/alias imports and
+ *     `usingnamespace` to a wildcard; receiver types come from `self`
+ *     parameters, `T{…}` / `mod.T{…}` / `List(u8){…}` literals, `T.init()`
+ *     call returns and `x: T` annotations (incl. decl literals). The
+ *     emit-side wiring lives in `zig/scope-resolver.ts` (SCOPE_RESOLVERS).
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -42,6 +50,7 @@ import {
   interpretZigImport,
   interpretZigTypeBinding,
   isZigContainerMethod,
+  isZigContainerOrImportBinding,
   zigArityCompatibility,
   zigBindingScopeFor,
   zigReceiverBinding,
@@ -64,6 +73,13 @@ export const zigProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(zigFieldConfig),
   methodExtractor: createMethodExtractor(zigMethodConfig),
   variableExtractor: createVariableExtractor(zigVariableConfig),
+  // A `const`/`var` whose value is a container or an `@import` is the
+  // Struct/Enum/Union node or the import binding, not a Const beside it.
+  shouldSkipDefinitionCapture: (captureMap, defaultLabel) => {
+    if (defaultLabel !== 'Const' && defaultLabel !== 'Variable') return false;
+    const decl = captureMap['definition.const'] ?? captureMap['definition.variable'];
+    return decl !== undefined && isZigContainerOrImportBinding(decl);
+  },
   labelOverride: (functionNode, defaultLabel) => {
     if (defaultLabel !== 'Function') return defaultLabel;
     if (isZigContainerMethod(functionNode)) return 'Method';

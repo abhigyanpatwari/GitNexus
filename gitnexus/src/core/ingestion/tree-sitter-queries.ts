@@ -2481,7 +2481,37 @@ export const ZIG_QUERIES = `
   (identifier) @name
   (opaque_declaration)) @definition.struct
 
-; Container fields (struct fields, enum variants, union variants).
+; Generic type constructors: \`pub fn List(comptime T: type) type { return
+; struct { … }; }\` — Zig's only spelling of a generic type. The returned
+; container is anonymous in the grammar; the definition anchor is the
+; container node and its name is the enclosing function's (\`List\`), which
+; is what every caller writes (\`List(u8)\`). Only the direct \`return
+; <container>\` of a fn whose return type is \`type\` qualifies (see
+; \`zigTypeConstructorOf\`). The Function node \`List\` coexists: \`List\` is
+; both a callable and a type.
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (struct_declaration) @definition.struct))))
+  (#eq? @_ret "type"))
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (union_declaration) @definition.union))))
+  (#eq? @_ret "type"))
+((function_declaration
+  name: (identifier) @name
+  type: (builtin_type) @_ret
+  body: (block (expression_statement (return_expression
+    (enum_declaration) @definition.enum))))
+  (#eq? @_ret "type"))
+
+; Container fields (struct fields, enum variants, union variants) — all are
+; \`container_field\` in the grammar and all become Property (C labels its
+; enumerators Const; Rust captures no variants; Zig's own vocabulary is
+; "field" for all three, so one label keeps the query honest).
 ; #not-eq? guard: tree-sitter-zig 1.1.2 recovers an EMPTY container body
 ; (\`struct {}\`, \`opaque {}\`) as a container_field whose identifier is a
 ; zero-width MISSING placeholder — a parser artefact, not a field, and
@@ -2498,10 +2528,39 @@ export const ZIG_QUERIES = `
 (test_declaration
   (string) @name) @definition.function
 
+; const / var bindings that are neither a container nor an @import (those two
+; are skipped by the provider's \`shouldSkipDefinitionCapture\` so the Struct /
+; import binding is the only node for that name). The literal keyword is
+; load-bearing: tree-sitter-zig 1.1.2 parses statement assignments (\`x = 5;\`,
+; \`x += 1;\`, \`_ = expr;\`) as \`variable_declaration\` WITHOUT a keyword
+; child, and a keyword-less rule would mint a Const per assignment and a
+; Variable named \`_\` per discard.
+(variable_declaration
+  "const" . (identifier) @name) @definition.const
+(variable_declaration
+  "var" . (identifier) @name) @definition.variable
+
 ; @import("path") — capture the string argument as @import.source.
 ; The #eq? predicate restricts the match to the @import builtin (other
 ; builtins like @sizeOf, @TypeOf, @as are not import statements).
 (variable_declaration
+  (builtin_function
+    (builtin_identifier) @builtin
+    (arguments
+      (string) @import.source))
+  (#eq? @builtin "@import")) @import
+
+; const X = @import("path").X — the same file edge, one member deep.
+(variable_declaration
+  (field_expression
+    object: (builtin_function
+      (builtin_identifier) @builtin
+      (arguments
+        (string) @import.source)))
+  (#eq? @builtin "@import")) @import
+
+; pub usingnamespace @import("path");
+(using_namespace_declaration
   (builtin_function
     (builtin_identifier) @builtin
     (arguments

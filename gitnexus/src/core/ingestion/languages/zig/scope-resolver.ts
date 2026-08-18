@@ -17,7 +17,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { loadZigBuildZon, type ZigBuildZonConfig } from '../../language-config.js';
 import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
 import { zigProvider } from '../zig.js';
-import { zigArityCompatibility, zigMergeBindings } from './index.js';
+import { expandZigWildcardNames, zigArityCompatibility, zigMergeBindings } from './index.js';
 
 export const zigScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Zig,
@@ -33,6 +33,10 @@ export const zigScopeResolver: ScopeResolver = {
       allFilePaths,
       (resolutionConfig as ZigBuildZonConfig | null | undefined) ?? null,
     ),
+
+  // `pub usingnamespace @import("x.zig");` — target decls become local decls.
+  expandsWildcardTo: (targetModuleScope, parsedFiles) =>
+    expandZigWildcardNames(targetModuleScope, parsedFiles),
 
   mergeBindings: zigMergeBindings,
   arityCompatibility: zigArityCompatibility,

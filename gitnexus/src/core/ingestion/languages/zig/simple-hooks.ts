@@ -2,6 +2,7 @@ import type {
   BindingRef,
   Callsite,
   CaptureMatch,
+  ParsedFile,
   Scope,
   ScopeId,
   ScopeTree,
@@ -15,12 +16,48 @@ import type {
 export function zigBindingScopeFor(
   decl: CaptureMatch,
   innermost: Scope,
-  _tree: ScopeTree,
+  tree: ScopeTree,
 ): ScopeId | null {
   if (decl['@type-binding.parameter'] !== undefined) {
     return innermost.id;
   }
+  // A container returned by a generic type constructor (`fn List(comptime T:
+  // type) type { return struct {…}; }`) is anchored on the container node,
+  // whose innermost enclosing scope is the FUNCTION BODY. Its name is only
+  // useful to callers (`List(u8){}`, `List(u8).init()`), so bind it in the
+  // module scope beside the Function def of the same name — `List` really is
+  // both a callable and a type. `zigTypeConstructorOf` in the walker decides
+  // WHICH containers get this rule; the marker capture carries the verdict.
+  if (decl['@declaration.type-constructor'] !== undefined) {
+    let scope: Scope | undefined = innermost;
+    while (scope !== undefined && scope.kind !== 'Module') scope = tree.getParent(scope.id);
+    return scope?.id ?? null;
+  }
   return null; // default auto-hoist for other bindings
+}
+
+/** `pub usingnamespace @import("x.zig");` — every declaration of the target
+ *  module becomes a declaration of the importer. Enumerates the target's
+ *  module-level names for the finalize wildcard expansion (Dart pattern).
+ *  Zig visibility (`pub`) is not recorded on scope-side defs, so this
+ *  over-approximates to every top-level name; the structure phase's
+ *  `isExported` is the authoritative visibility. */
+export function expandZigWildcardNames(
+  targetModuleScope: ScopeId,
+  parsedFiles: readonly ParsedFile[],
+): readonly string[] {
+  const target = parsedFiles.find((p) => p.moduleScope === targetModuleScope);
+  if (target === undefined) return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const def of target.localDefs) {
+    const qn = def.qualifiedName;
+    if (qn === undefined || qn.length === 0 || qn.includes('.')) continue; // top-level only
+    if (seen.has(qn)) continue;
+    seen.add(qn);
+    names.push(qn);
+  }
+  return names;
 }
 
 /** Zig's receiver convention is a FIRST parameter named `self`; the

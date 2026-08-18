@@ -799,6 +799,26 @@ const javaBinaryNameOfType = (node: SyntaxNode): string | undefined => {
 };
 
 /**
+ * For a container node that is the direct `return` value of a function whose
+ * declared return type is the literal `type` (`fn List(comptime T: type) type
+ * { return struct {…}; }`), the function's `name` node; undefined otherwise.
+ * Language-agnostic by shape — today only tree-sitter-zig produces it.
+ */
+function typeConstructorNameNode(container: SyntaxNode): SyntaxNode | undefined {
+  const ret = container.parent;
+  if (ret?.type !== 'return_expression') return undefined;
+  const stmt = ret.parent;
+  if (stmt?.type !== 'expression_statement') return undefined;
+  const block = stmt.parent;
+  if (block?.type !== 'block') return undefined;
+  const fn = block.parent;
+  if (fn?.type !== 'function_declaration') return undefined;
+  if (fn.childForFieldName?.('body')?.id !== block.id) return undefined;
+  if (fn.childForFieldName?.('type')?.text !== 'type') return undefined;
+  return fn.childForFieldName?.('name') ?? undefined;
+}
+
+/**
  * Authoritative Java local/anonymous type identity.
  *
  * JLS 13.1 defines the shape and immediate-host prefix. OpenJDK javac's
@@ -1069,7 +1089,15 @@ export const findEnclosingClassInfo = (
         // the owner id and the node id agree by construction.
         (current.parent?.type === 'variable_declaration'
           ? current.parent.namedChildren?.find((c: SyntaxNode) => c.type === 'identifier')
-          : undefined);
+          : undefined) ??
+        // An anonymous container RETURNED by a type-constructor function —
+        // `pub fn List(comptime T: type) type { return struct { … }; }`
+        // (Zig's only spelling of a generic type). The container's name is
+        // the function's, which is what the definition phase uses too
+        // (`@name` on the fn identifier, anchor on the container), so the
+        // owner id and the node id agree by construction. Only the literal
+        // `return <container>` of a fn returning `type` qualifies.
+        typeConstructorNameNode(current);
       if (nameNode) {
         let label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
         // Kotlin: class_declaration with an anonymous "interface" keyword child

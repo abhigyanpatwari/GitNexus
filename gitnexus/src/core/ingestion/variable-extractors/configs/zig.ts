@@ -1,14 +1,19 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig, VariableVisibility } from '../../variable-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { hasZigVisibilityKeyword } from '../../export-detection.js';
-import { isZigContainerOrImportBinding } from '../../languages/zig/captures.js';
+import { hasZigPubKeyword } from '../../export-detection.js';
+import {
+  isZigContainerOrImportBinding,
+  isZigKeywordDeclaration,
+} from '../../languages/zig/captures.js';
 
 /**
- * Zig variable extraction.
+ * Zig variable extraction — enriches the Const / Variable nodes minted by
+ * ZIG_QUERIES' `@definition.const` / `@definition.variable` rules.
  *
  * tree-sitter-zig uses a single `variable_declaration` node for both `const`
- * and `var` bindings. The keyword is exposed as an unnamed token child
+ * and `var` bindings — AND for statement assignments (`x = 5;`), which carry
+ * no keyword. The keyword is exposed as an unnamed token child
  * (`type === 'const'` or `type === 'var'`).
  *
  * Excludes variable_declarations whose value is a struct/enum/union or an
@@ -35,6 +40,9 @@ export const zigVariableConfig: VariableExtractionConfig = {
 
   extractName(node) {
     if (isZigContainerOrImportBinding(node)) return undefined;
+    // Statement assignments share the node type and have no keyword — not a
+    // declaration (belt to the query's literal `"const"` / `"var"` brace).
+    if (!isZigKeywordDeclaration(node)) return undefined;
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child?.type === 'identifier') return child.text;
@@ -55,7 +63,8 @@ export const zigVariableConfig: VariableExtractionConfig = {
   },
 
   extractVisibility(node): VariableVisibility {
-    return hasZigVisibilityKeyword(node) ? 'public' : 'private';
+    // `pub` only — `export var` is C linkage, private to other Zig files.
+    return hasZigPubKeyword(node) ? 'public' : 'private';
   },
 
   isConst(node) {
