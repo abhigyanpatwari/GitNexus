@@ -133,6 +133,20 @@ describe('resolveZigImportInternal', () => {
     );
   });
 
+  it('returns null for absolute `.path` deps, POSIX and Windows spellings alike', () => {
+    // `normalizeZigDepPath` promises null for anything outside the repo; a
+    // `/`-only check let `C:\\local_dep` through as the relative `C:/local_dep`.
+    const files = new Set<string>([
+      'src/main.zig',
+      'C:/local_dep/src/dep.zig',
+      'local_dep/src/dep.zig',
+    ]);
+    for (const abs of ['/local_dep', 'C:\\local_dep', 'c:/local_dep', 'D:\\x\\local_dep']) {
+      const zon = { pathDeps: new Map([['dep', abs]]) };
+      expect(resolveZigImportInternal('src/main.zig', 'dep', files, zon)).toBeNull();
+    }
+  });
+
   it('returns null for `.path` deps that escape the repo root (`..`)', () => {
     const files = new Set<string>(['src/main.zig']);
     const buildZon = { pathDeps: new Map([['ziggit', '../ziggit']]) };
@@ -247,6 +261,28 @@ describe('parseZigBuildZon', () => {
     const cfg = parseZigBuildZon(raw);
     expect(cfg).not.toBeNull();
     expect([...cfg!.pathDeps.entries()]).toEqual([['real', 'vendor/real']]);
+  });
+
+  it('takes the top-level `.dependencies` block, not a same-named field nested in an earlier struct', () => {
+    // Only a direct field of the file's `.{ … }` (brace depth 1) is the
+    // manifest's dependency map; a nested `.dependencies = .{` seen first
+    // used to be selected and the real map ignored.
+    const zon = `
+.{
+    .name = .pkg,
+    .metadata = .{
+        .dependencies = .{
+            .decoy = .{ .path = "decoy" },
+        },
+    },
+    .dependencies = .{
+        .real = .{ .path = "libs/real" },
+    },
+}
+`;
+    const cfg = parseZigBuildZon(zon);
+    expect(cfg?.pathDeps.get('real')).toBe('libs/real');
+    expect(cfg?.pathDeps.has('decoy')).toBe(false);
   });
 
   it('returns null when no `.dependencies` block is present', () => {

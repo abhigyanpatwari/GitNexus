@@ -201,11 +201,14 @@ export function emitZigScopeCaptures(
     const byName = new Map(m.captures.map((c) => [c.name, c.node] as const));
     const importName = byName.get('import.name');
     const importSource = byName.get('import.source');
+    const importStmt = byName.get('import.statement');
     if (
       importName !== undefined &&
       importSource !== undefined &&
       byName.get('import.imported') === undefined &&
-      byName.get('import.statement')?.parent?.type === 'source_file'
+      importStmt !== undefined &&
+      importStmt.parent?.type === 'source_file' &&
+      isZigKeywordDeclaration(importStmt)
     ) {
       importSources.set(importName.text, importSource);
     }
@@ -229,6 +232,20 @@ export function emitZigScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    // `_ = @import("x.zig");` and any other keyword-less `<ident> =
+    // @import(…)`: a statement (tree-sitter-zig reuses variable_declaration
+    // for assignments), not a declaration. It references the file without
+    // binding a name → side-effect import (file edge only). The keyword-less
+    // shape also never enters `importSources`, so it cannot promote aliases.
+    const importStmt = nodeMap['@import.statement'];
+    if (importStmt !== undefined && !isZigKeywordDeclaration(importStmt)) {
+      out.push({
+        '@import.side-effect': nodeToCapture('@import.side-effect', importStmt),
+        '@import.source': grouped['@import.source']!,
+      });
+      continue;
+    }
 
     // Member aliases: promote to a named import when the object is one of
     // this file's @import bindings; otherwise the group is inert (the same

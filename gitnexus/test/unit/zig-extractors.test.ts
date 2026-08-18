@@ -32,6 +32,7 @@ import { createFieldExtractor } from '../../src/core/ingestion/field-extractors/
 import { zigFieldConfig } from '../../src/core/ingestion/field-extractors/configs/zig.js';
 import { zigProvider } from '../../src/core/ingestion/languages/zig.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
+import { extract as extractScopes } from '../../src/core/ingestion/scope-extractor.js';
 
 const _require = createRequire(import.meta.url);
 let Zig: unknown = null;
@@ -467,26 +468,32 @@ const plain = 1;
 
   it('interprets namespace, named, alias, wildcard and namespace-member forms', () => {
     const src = `
-const counter = @import("counter.zig");
-const Counter = counter.Counter;
+const c = @import("net/counter.zig");
+const Counter = c.Counter;
 const Renamed = @import("counter.zig").Counter;
 const Same = @import("counter.zig").Same;
 const Deep = @import("std").mem.Allocator;
 pub usingnamespace @import("mixin.zig");
 const notAnImport = other.Thing;
+test {
+    _ = @import("all_tests.zig");
+    x = @import("keyword_less.zig");
+}
 `;
     const imports = emitZigScopeCaptures(src, 'x.zig')
       .filter((m) => m['@import.source'] !== undefined)
       .map((m) => interpretZigImport(m));
     expect(imports).toEqual([
-      {
-        kind: 'namespace',
-        localName: 'counter',
-        importedName: 'counter',
-        targetRaw: 'counter.zig',
-      },
+      // namespace: localName is the handle, importedName the MODULE (contract:
+      // Go `import foo "pkg/bar"` records `bar`), never the handle.
+      { kind: 'namespace', localName: 'c', importedName: 'counter', targetRaw: 'net/counter.zig' },
       // alias of a namespace member → promoted to a named import of that member
-      { kind: 'named', localName: 'Counter', importedName: 'Counter', targetRaw: 'counter.zig' },
+      {
+        kind: 'named',
+        localName: 'Counter',
+        importedName: 'Counter',
+        targetRaw: 'net/counter.zig',
+      },
       {
         kind: 'alias',
         localName: 'Renamed',
@@ -503,12 +510,32 @@ const notAnImport = other.Thing;
         targetRaw: 'std',
       },
       { kind: 'wildcard', targetRaw: 'mixin.zig' },
+      // `_ = @import(...)` and any keyword-less `<ident> = @import(...)` are
+      // statements (no `const`/`var`): a file reference, not a binding.
+      { kind: 'side-effect', targetRaw: 'all_tests.zig' },
+      { kind: 'side-effect', targetRaw: 'keyword_less.zig' },
     ]);
     // `other` is not an @import binding of this file → stays a variable.
     const vars = emitZigScopeCaptures(src, 'x.zig')
       .filter((m) => m['@declaration.variable'] !== undefined)
       .map((m) => m['@declaration.name']?.text);
     expect(vars).toEqual(['notAnImport']);
+  });
+
+  it('a function-scoped @import is not deferred: Zig imports are compile-time (importsExecuteWhereWritten: false)', () => {
+    // C `#include` and Rust `use` answer the same. Without the flag the scope
+    // extractor marks a body-level `@import` `runsOnlyWhenCalled`, hiding a
+    // real import cycle through it from `check --cycles`.
+    const src = `
+pub fn run() void {
+    const helper = @import("helper.zig");
+    helper.go();
+}
+`;
+    const result = extractScopes(emitZigScopeCaptures(src, 'x.zig'), 'x.zig', zigProvider);
+    const helper = result.parsedImports.find((i) => i.targetRaw === 'helper.zig');
+    expect(helper).toBeDefined();
+    expect(helper!.runsOnlyWhenCalled).toBeUndefined();
   });
 
   it('the provider skips the Const capture for container and @import bindings', () => {

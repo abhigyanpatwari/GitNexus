@@ -91,8 +91,10 @@ const extractZigReceiverType = (node: SyntaxNode): string | undefined => {
  * Anonymous `test {}` and decl-tests `test add {}` are not graph nodes. They
  * return `''`, not `null`: `null` falls through to `genericFuncName`, whose
  * first-identifier scan would name `test add {}` "add" — the REAL `fn add`'s
- * id — and hang the test body's calls on it. The empty name ends the walk at
- * this node and lets the caller fall back to the File.
+ * id — and hang the test body's calls on it. The empty name is falsy, so
+ * `findEnclosingFunctionId` skips this node WITHOUT attributing to it and
+ * keeps walking up; a test block can only sit at container level, so the walk
+ * reaches the file and the calls attribute to the File.
  */
 const extractZigFunctionName = (
   node: SyntaxNode,

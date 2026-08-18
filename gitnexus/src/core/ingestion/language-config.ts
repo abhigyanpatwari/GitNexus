@@ -507,8 +507,8 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
  *   },
  *
  * Limitations (intentional — bail to null on anything weirder):
- *   - Only the top-level `.dependencies = .{ ... }` block is parsed; nested
- *     or aliased blocks are ignored.
+ *   - Only the top-level `.dependencies = .{ ... }` block is parsed (brace
+ *     depth 1); a same-named field nested in another struct is ignored.
  *   - Each dep entry is matched by a single shape: `.<name> = .{ ... }`
  *     where `<name>` is a bare identifier (no `@"…"` quoted form).
  *   - Only `.path = "..."` is captured. `.url` deps are left unresolved
@@ -561,7 +561,9 @@ export async function loadZigBuildZon(repoRoot: string): Promise<ZigBuildZonConf
  * resolver so both sides agree on which deps are in-repo.
  */
 export function normalizeZigDepPath(depPath: string): string | null {
-  if (depPath.startsWith('/')) return null;
+  // POSIX (`/x`) and Windows (`C:\x`, `C:/x`) absolute paths both point
+  // outside the repository.
+  if (depPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(depPath)) return null;
   const parts: string[] = [];
   for (const part of depPath.replace(/\\/g, '/').split('/')) {
     if (part === '' || part === '.') continue;
@@ -720,8 +722,33 @@ function zonStringMask(text: string): Uint8Array {
 }
 
 /**
+ * Per-offset brace depth for comment-stripped ZON text, string-aware: the
+ * depth AT an offset is the number of unclosed `{` before it. The file's
+ * top-level `.{` puts every direct field at depth 1.
+ */
+function zonDepthMask(text: string): Uint8Array {
+  const depth = new Uint8Array(text.length);
+  let d = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    depth[i] = d;
+    if (inString) {
+      if (ch === '\\' && i + 1 < text.length) depth[++i] = d;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') d++;
+    else if (ch === '}' && d > 0) d--;
+  }
+  return depth;
+}
+
+/**
  * First match of a sticky-free global `re` in `text[from, to)` whose start
- * lies outside a string literal (per `mask`). Null when none.
+ * lies outside a string literal (per `mask`) and, when `depthAt` is given, at
+ * exactly that brace depth (per `depth`). Null when none.
  */
 function matchZonHeader(
   text: string,
@@ -729,11 +756,15 @@ function matchZonHeader(
   mask: Uint8Array,
   from: number,
   to: number,
+  depth?: Uint8Array,
+  depthAt?: number,
 ): RegExpExecArray | null {
   re.lastIndex = from;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null && m.index < to) {
-    if (mask[m.index] === 0) return m;
+    if (mask[m.index] !== 0) continue;
+    if (depth !== undefined && depthAt !== undefined && depth[m.index] !== depthAt) continue;
+    return m;
   }
   return null;
 }
@@ -742,11 +773,22 @@ function matchZonHeader(
 export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
   const text = stripZonComments(raw);
   const mask = zonStringMask(text);
+  const depth = zonDepthMask(text);
   // Locate the `.dependencies = .{ ... }` block. Use brace counting because
   // dep entries are nested anonymous structs and a naive `}` match would stop
-  // early — and only accept a header outside string literals, so a `.name`
-  // or `.description` value spelling `.dependencies = .{` cannot hijack it.
-  const depsHeader = matchZonHeader(text, /\.dependencies\s*=\s*\.\{/g, mask, 0, text.length);
+  // early — and only accept a header outside string literals AND at brace
+  // depth 1 (a direct field of the file's top-level `.{`), so neither a
+  // `.name` value spelling `.dependencies = .{` nor a `.dependencies` field
+  // nested in some earlier anonymous struct can hijack it.
+  const depsHeader = matchZonHeader(
+    text,
+    /\.dependencies\s*=\s*\.\{/g,
+    mask,
+    0,
+    text.length,
+    depth,
+    1,
+  );
   if (!depsHeader) return null;
   const start = depsHeader.index + depsHeader[0].length;
   const end = findZonBlockEnd(text, start);

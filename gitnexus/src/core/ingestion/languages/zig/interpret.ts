@@ -3,11 +3,27 @@ import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'git
 const stripQuotes = (s: string): string => s.replace(/^["']|["']$/g, '');
 
 /**
+ * The module a `@import` target names, for the `importedName` of a namespace
+ * import (the shared contract wants the MODULE there — Go's `import foo
+ * "pkg/bar"` records `bar` — not the local handle): the last path segment
+ * without its `.zig` extension. `"std"` → `std`, `"./net/socket.zig"` →
+ * `socket`, `"mylib"` (a build.zig.zon dep) → `mylib`.
+ */
+export function zigModuleNameOf(targetRaw: string): string {
+  const last = targetRaw.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? targetRaw;
+  return last.endsWith('.zig') ? last.slice(0, -'.zig'.length) : last;
+}
+
+/**
  * `const std = @import("std");` binds the imported module to a const handle
  * accessed via qualified syntax — a namespace import (closest peers: Python
- * `import numpy`, Go `import "pkg/bar"`). The local name and imported name
- * are always the same identifier; Zig has no rename syntax at the import
- * site (renames are ordinary const aliases handled as variable bindings).
+ * `import numpy`, Go `import "pkg/bar"`). `localName` is the handle the
+ * author chose, `importedName` the module (`zigModuleNameOf`).
+ *
+ * `_ = @import("x.zig");` (and any keyword-less `<ident> = @import(…)`, a
+ * statement rather than a declaration in this grammar) references the file
+ * without binding a name — the `refAllDecls` / test-aggregation idiom. That
+ * is a `side-effect` import: file edge, no binding (TS `import './x'`).
  */
 export function interpretZigImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;
@@ -20,6 +36,9 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
   // `expandZigWildcardNames` in the scope resolver.
   if (captures['@import.wildcard'] !== undefined) {
     return { kind: 'wildcard', targetRaw };
+  }
+  if (captures['@import.side-effect'] !== undefined) {
+    return { kind: 'side-effect', targetRaw };
   }
 
   const name = captures['@import.name']?.text;
@@ -36,7 +55,12 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
       : { kind: 'alias', localName: name, importedName: imported, alias: name, targetRaw };
   }
 
-  return { kind: 'namespace', localName: name, importedName: name, targetRaw };
+  return {
+    kind: 'namespace',
+    localName: name,
+    importedName: zigModuleNameOf(targetRaw),
+    targetRaw,
+  };
 }
 
 /**

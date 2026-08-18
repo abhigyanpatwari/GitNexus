@@ -89,6 +89,12 @@ export const zigProvider = defineLanguage({
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitZigScopeCaptures,
   interpretImport: interpretZigImport,
+  // `@import` is compile-time name lookup, not an executed statement: one
+  // written inside a function body is resolved exactly as one at file scope
+  // (same answer as C `#include` and Rust `use`). Without this, a
+  // function-scoped `@import` would be marked `runsOnlyWhenCalled` and a
+  // real import cycle through it would be hidden from `check --cycles`.
+  importsExecuteWhereWritten: false,
   interpretTypeBinding: interpretZigTypeBinding,
   bindingScopeFor: zigBindingScopeFor,
   receiverBinding: zigReceiverBinding,
