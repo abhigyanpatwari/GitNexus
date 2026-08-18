@@ -745,7 +745,17 @@ describe('Tree-sitter multi-language parsing', () => {
       // `node:module` with a require that reports the package missing and
       // delegates everything else. A fresh module copy is needed because the
       // loader memoizes load results.
+      //
+      // The fresh copy also re-reads `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` (parsed
+      // lazily once per module). Under `=zig` / `=all` — a supported way to
+      // run — the loader would take the opt-out branch and the absent-binding
+      // path below would never run, so the variable is cleared for this test
+      // and restored afterwards. Clearing (not skipping) keeps the branch
+      // exercised in every environment.
       const ZIG_PKG = '@tree-sitter-grammars/tree-sitter-zig';
+      const SKIP_ENV = 'GITNEXUS_SKIP_OPTIONAL_GRAMMARS';
+      const savedSkip = process.env[SKIP_ENV];
+      delete process.env[SKIP_ENV];
       vi.doMock('node:module', async (importOriginal) => {
         const actual = await importOriginal<typeof import('node:module')>();
         return {
@@ -767,7 +777,7 @@ describe('Tree-sitter multi-language parsing', () => {
       vi.resetModules();
       try {
         const fresh = await import('../../src/core/tree-sitter/parser-loader.js');
-        // Not the opt-out path: the env is untouched.
+        // Not the opt-out path: the variable was cleared above.
         expect(fresh.isGrammarRuntimeSkipped(SupportedLanguages.Zig)).toBe(false);
         expect(fresh.isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
         await expect(fresh.loadLanguage(SupportedLanguages.Zig)).rejects.toThrow(
@@ -776,6 +786,8 @@ describe('Tree-sitter multi-language parsing', () => {
         // Optional-grammar failure is non-fatal: the other grammars still load.
         expect(fresh.isLanguageAvailable(SupportedLanguages.TypeScript)).toBe(true);
       } finally {
+        if (savedSkip === undefined) delete process.env[SKIP_ENV];
+        else process.env[SKIP_ENV] = savedSkip;
         vi.doUnmock('node:module');
         vi.resetModules();
       }
