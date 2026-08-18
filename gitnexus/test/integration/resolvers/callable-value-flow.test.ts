@@ -1533,6 +1533,8 @@ pub const Global = struct {
     pub const release = deinit;
 };
 fn target(x: u32) void { _ = x; }
+fn explicitTarget(x: u32) void { _ = x; }
+fn namespaceTarget(x: u32) void { _ = x; }
 pub const Runner = struct {
     pub fn run(self: *Runner, cb: *const fn (u32) void) void { _ = self; cb(2); }
     pub fn init(cb: *const fn (u32) void) Runner { cb(3); return .{}; }
@@ -1540,9 +1542,14 @@ pub const Runner = struct {
 pub const Decoy = struct {
     pub fn init(cb: *const fn (u32) void) Decoy { cb(4); return .{}; }
 };
+pub const helpers = struct {
+    pub fn apply(cb: *const fn (u32) void) void { cb(5); }
+};
 pub fn main() void {
     var r: Runner = undefined;
     r.run(target);
+    Runner.run(&r, explicitTarget);
+    helpers.apply(namespaceTarget);
     const made: Runner = .init(target);
     _ = made;
 }
@@ -1555,10 +1562,23 @@ pub fn main() void {
       target: 'deinit',
       reason: 'callable-value-flow',
     });
-    // (ii) receiver-typed member call: `r.run(target)` joins formal `cb`
-    // (index 0 once the leading `self` is dropped), so `run` invokes `target`.
+    // (ii) both spellings of a method call reach formal `cb` (index 1, after
+    // the explicit `self`): the implicit receiver of `r.run(target)` is
+    // prepended as actual 0, the explicit `Runner.run(&r, explicitTarget)`
+    // already carries it. Dropping `self` from the formals instead lined up
+    // only the implicit form (PR #1432 review).
     expect(callsFrom(result, 'run')).toContainEqual({
       target: 'target',
+      reason: 'callable-value-flow',
+    });
+    expect(callsFrom(result, 'run')).toContainEqual({
+      target: 'explicitTarget',
+      reason: 'callable-value-flow',
+    });
+    // A namespace receiver passes nothing implicitly: `helpers.apply(cb)` must
+    // not shift its actual off formal `cb@0`.
+    expect(callsFrom(result, 'apply')).toContainEqual({
+      target: 'namespaceTarget',
       reason: 'callable-value-flow',
     });
     // (iii) decl literal `.init(target)` names no callee by simple name — the

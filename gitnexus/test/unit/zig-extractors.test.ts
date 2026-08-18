@@ -263,9 +263,14 @@ const Runner = struct {
 };
 fn target(x: u32) void { _ = x; }
 fn invoke(cb: *const fn (u32) void) void { cb(1); }
+const helpers = struct {
+    pub fn apply(cb: *const fn (u32) void) void { cb(3); }
+};
 pub fn main() void {
     var r: Runner = undefined;
     r.run(target);
+    Runner.run(&r, target);
+    helpers.apply(target);
     invoke(target);
     const reg: Runner = .init(target);
     _ = reg;
@@ -280,6 +285,7 @@ pub fn main() void {
       .filter((m) => m['@callable-flow.argument'] !== undefined)
       .map((m) => ({
         call: m['@callable-flow.argument']!.text,
+        source: m['@callable-flow.source']!.text,
         index: m['@callable-flow.parameter-index']!.text,
         directCallee: m['@callable-flow.direct-callee-name']?.text,
       }));
@@ -291,7 +297,8 @@ pub fn main() void {
     // `member:`; the shared reader must see it.
     expect(argumentFacts()).toContainEqual({
       call: 'r.run(target)',
-      index: '0',
+      source: 'target',
+      index: '1',
       directCallee: undefined,
     });
   });
@@ -299,22 +306,17 @@ pub fn main() void {
   it('a free call keeps its direct-callee-name so `invoke(target)` still joins `invoke`', () => {
     expect(argumentFacts()).toContainEqual({
       call: 'invoke(target)',
+      source: 'target',
       index: '0',
       directCallee: 'invoke',
     });
   });
 
-  it('a decl-literal call `.init(target)` (inferred-type receiver) has no direct-callee-name', () => {
-    // `.init` names no callee the solver may look up by simple name — Lightpanda
-    // has hundreds of `init`s, and each such site fanned out to all of them.
-    expect(argumentFacts()).toContainEqual({
-      call: '.init(target)',
-      index: '0',
-      directCallee: undefined,
-    });
-  });
-
-  it('formals skip the leading `self` receiver so the member-call actual at 0 joins `cb`', () => {
+  it('both method-call spellings put the callback at the same index as formal `cb@1`', () => {
+    // Formals keep the explicit `self` at 0. The implicit receiver of
+    // `r.run(target)` is prepended as actual 0; the explicit
+    // `Runner.run(&r, target)` already spells it. Slicing `self` off the
+    // formals instead lined up only the implicit form (PR #1432 review).
     const runFormals = flow()
       .filter(
         (m) =>
@@ -323,7 +325,34 @@ pub fn main() void {
       .map(
         (m) => `${m['@callable-flow.binding']!.text}@${m['@callable-flow.parameter-index']!.text}`,
       );
-    expect(runFormals).toEqual(['cb@0']);
+    expect(runFormals).toEqual(['self@0', 'cb@1']);
+    const targetIndexByCall = argumentFacts()
+      .filter((f) => f.source === 'target')
+      .map((f) => `${f.call} → ${f.index}`);
+    expect(targetIndexByCall).toContain('r.run(target) → 1');
+    expect(targetIndexByCall).toContain('Runner.run(&r, target) → 1');
+  });
+
+  it('a namespace receiver `helpers.apply(target)` passes nothing implicitly (actual stays at 0)', () => {
+    // `helpers` is a module-level container, not a fn-local value: prepending
+    // it would shift the callback off formal `cb@0`.
+    expect(argumentFacts()).toContainEqual({
+      call: 'helpers.apply(target)',
+      source: 'target',
+      index: '0',
+      directCallee: undefined,
+    });
+  });
+
+  it('a decl-literal call `.init(target)` (inferred-type receiver) has no direct-callee-name', () => {
+    // `.init` names no callee the solver may look up by simple name — Lightpanda
+    // has hundreds of `init`s, and each such site fanned out to all of them.
+    expect(argumentFacts()).toContainEqual({
+      call: '.init(target)',
+      source: 'target',
+      index: '0',
+      directCallee: undefined,
+    });
   });
 
   it('a container-level alias `pub const release = deinit;` does not turn `self.slot.release()` into an invoke through it', () => {

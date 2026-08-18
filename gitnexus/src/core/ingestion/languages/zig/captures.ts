@@ -542,52 +542,89 @@ function rewriteZigThisAlias(
  *   `extractCallArguments`.
  *
  * - Zig's receiver is an EXPLICIT first parameter named `self` (the same
- *   convention `interpretZigTypeBinding` keys receiver typing on), while a
- *   method call `x.f(cb)` passes `x` implicitly. Formals are therefore
- *   numbered without the leading `self`, so the actual at index 0 of
- *   `r.run(target)` joins `cb` and not `self` — hence
- *   `extractFunctionParameters`. The explicit-receiver spelling
- *   `Runner.run(&r, target)` is the one shape that no longer lines up.
+ *   convention `interpretZigTypeBinding` keys receiver typing on), and a
+ *   method has TWO call spellings: the implicit `r.run(target)` and the
+ *   explicit `Runner.run(&r, target)`. The shared harness joins actuals to
+ *   formals by index, and formals are numbered once per function — so the
+ *   receiver must be re-added on the CALL side, never dropped on the formal
+ *   side (slicing `self` off the formals fixed the implicit spelling and lost
+ *   the explicit one — PR #1432 review). `extractCallArguments` therefore
+ *   prepends the receiver as actual 0 when the callee is a member call on a
+ *   VALUE receiver (`r.run(target)`, `self.slot.release()`, `node.child()`),
+ *   so both spellings yield `target@1` and join formal `cb@1`. A namespace
+ *   or type receiver (`Runner.init(cb)`, `std.sort.pdq(…)`, `List(u8).init`,
+ *   `@import("x.zig").f(cb)`) passes nothing implicitly and gets no prepend.
+ *   Value-vs-type is F6's rule: the chain head is a fn-local name (param /
+ *   local / payload) that is not TitleCase. Known residual gap: a
+ *   MODULE-level value receiver (`global_runner.run(cb)`) is not fn-local and
+ *   gets no prepend, so its callback misses the formal.
  *
  * `builtin_function` (`@import`, `@sizeOf`, …) is deliberately not a call node:
  * builtins never take user callables as flow arguments.
  */
-const ZIG_CALLABLE_CAPTURE_OPTIONS = {
-  functionNodeTypes: new Set(['function_declaration']),
-  callNodeTypes: new Set(['call_expression']),
-  parameterListNodeTypes: new Set(['parameters']),
-  parameterNodeTypes: new Set(['parameter']),
-  bindingNodeTypes: new Set(['variable_declaration']),
-  assignmentNodeTypes: new Set(['assignment_expression']),
-  identifierNodeTypes: new Set(['identifier']),
-  extractAssignment: (node: SyntaxNode) => {
-    if (node.type !== 'variable_declaration') return undefined;
-    const named = node.namedChildren.filter((child): child is SyntaxNode => child !== null);
-    if (named.length < 2 || named[0]!.type !== 'identifier') return undefined;
-    const source = named[named.length - 1]!;
-    // `const x: T;` (extern) — the trailing child is the type, not a value.
-    if (source.id === node.childForFieldName('type')?.id) return undefined;
-    return { destination: named[0]!, source };
-  },
-  extractFunctionParameters: (fn: SyntaxNode) => {
-    // `parameters` is a fieldless child of `function_declaration`.
-    const list = fn.namedChildren.find((child) => child?.type === 'parameters');
-    if (list === undefined || list === null) return undefined;
-    const parameters = list.namedChildren.filter(
-      (child): child is SyntaxNode => child !== null && child.type === 'parameter',
-    );
-    return parameters[0]?.childForFieldName('name')?.text === 'self'
-      ? parameters.slice(1)
-      : parameters;
-  },
-  extractCallArguments: (call: SyntaxNode) => {
-    const callee = call.childForFieldName('function');
-    return call.namedChildren.filter(
-      (child): child is SyntaxNode =>
-        child !== null && child.id !== callee?.id && child.type !== 'comment',
-    );
-  },
-} as const;
+/** Per file: the callable-flow options close over the file's fn-local name
+ *  cache (shared with F6's `zigCallReturnTypeOf`). */
+function zigCallableCaptureOptions(fnLocalNames: Map<number, Set<string>>) {
+  return {
+    functionNodeTypes: new Set(['function_declaration']),
+    callNodeTypes: new Set(['call_expression']),
+    parameterListNodeTypes: new Set(['parameters']),
+    parameterNodeTypes: new Set(['parameter']),
+    bindingNodeTypes: new Set(['variable_declaration']),
+    assignmentNodeTypes: new Set(['assignment_expression']),
+    identifierNodeTypes: new Set(['identifier']),
+    extractAssignment: (node: SyntaxNode) => {
+      if (node.type !== 'variable_declaration') return undefined;
+      const named = node.namedChildren.filter((child): child is SyntaxNode => child !== null);
+      if (named.length < 2 || named[0]!.type !== 'identifier') return undefined;
+      const source = named[named.length - 1]!;
+      // `const x: T;` (extern) — the trailing child is the type, not a value.
+      if (source.id === node.childForFieldName('type')?.id) return undefined;
+      return { destination: named[0]!, source };
+    },
+    extractFunctionParameters: (fn: SyntaxNode) => {
+      // `parameters` is a fieldless child of `function_declaration`. The
+      // leading `self` is kept: it is formal 0, matched by the receiver that
+      // `extractCallArguments` prepends (implicit spelling) or the explicit
+      // first actual (`Runner.run(&r, target)`).
+      const list = fn.namedChildren.find((child) => child?.type === 'parameters');
+      if (list === undefined || list === null) return undefined;
+      return list.namedChildren.filter(
+        (child): child is SyntaxNode => child !== null && child.type === 'parameter',
+      );
+    },
+    extractCallArguments: (call: SyntaxNode) => {
+      const callee = call.childForFieldName('function');
+      const explicit = call.namedChildren.filter(
+        (child): child is SyntaxNode =>
+          child !== null && child.id !== callee?.id && child.type !== 'comment',
+      );
+      const receiver = zigImplicitReceiver(call, fnLocalNames);
+      return receiver === undefined ? explicit : [receiver, ...explicit];
+    },
+  } as const;
+}
+
+/** The value receiver `x.f(…)` passes implicitly as `self`, or undefined for
+ *  a free call, a decl literal (`.init(…)`), or a namespace / type receiver
+ *  (`Runner.init(…)`, `std.mem.eql(…)`, `List(u8).init(…)`, `@import(…).f(…)`).
+ *  Same value-vs-type rule as `zigCallReturnTypeOf` (F6): the chain head is a
+ *  name declared in the enclosing fn and is not TitleCase (a fn-local
+ *  TitleCase name is a type alias, F7). */
+function zigImplicitReceiver(
+  call: SyntaxNode,
+  fnLocalNames: Map<number, Set<string>>,
+): SyntaxNode | undefined {
+  const callee = call.childForFieldName('function');
+  if (callee === null || callee.type !== 'field_expression') return undefined;
+  const object = callee.childForFieldName('object');
+  if (object === null) return undefined; // `.init(…)` decl literal
+  const head = zigChainHead(object);
+  if (head === null || isZigTitleCase(head.text)) return undefined;
+  const fn = zigEnclosingFunction(call);
+  if (fn === null || !zigFunctionLocalNames(fn, fnLocalNames).has(head.text)) return undefined;
+  return object;
+}
 
 // ─── F6: value-inferred and return-type bindings ─────────────────────────────
 
@@ -1342,7 +1379,9 @@ export function emitZigScopeCaptures(
   // the enclosing scope, where a `const Self = @This();` rewrite can find it.
   out.push(...synthesizeZigAnonymousContainerDeclarations(root, _filePath));
 
-  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, ZIG_CALLABLE_CAPTURE_OPTIONS));
+  out.push(
+    ...synthesizeCallableFlowCaptures(tree.rootNode, zigCallableCaptureOptions(fnLocalNames)),
+  );
 
   return out;
 }
