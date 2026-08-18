@@ -6,7 +6,7 @@
  *     and no heritage hooks are provided (Zig queries never produce
  *     `@heritage.*` captures).
  *   - exportChecker: walks to the enclosing variable_declaration /
- *     function_declaration and looks for a `pub` keyword child.
+ *     function_declaration and looks for a `pub` or `export` keyword child.
  *   - importResolver: only resolves local `@import("./foo.zig")` paths;
  *     `@import("std")` and external packages are deliberately external.
  *   - namedBindingExtractor: omitted — `const Foo = @import("x").Foo` is a

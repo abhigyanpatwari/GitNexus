@@ -1,9 +1,10 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { FieldExtractionConfig } from '../generic.js';
+import { ZIG_CONTAINER_TYPES } from '../../languages/zig/captures.js';
 
 /**
- * Zig containers (struct/enum/union) are anonymous in tree-sitter-zig; the
+ * Zig containers (struct/enum/union/opaque) are anonymous in tree-sitter-zig; the
  * binding name is the first identifier child of the parent variable_declaration.
  */
 const extractZigOwnerName = (node: SyntaxNode): string | undefined => {
@@ -24,7 +25,7 @@ const extractZigOwnerName = (node: SyntaxNode): string | undefined => {
  */
 export const zigFieldConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Zig,
-  typeDeclarationNodes: ['struct_declaration', 'enum_declaration', 'union_declaration'],
+  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES],
   fieldNodeTypes: ['container_field'],
   bodyNodeTypes: [],
   defaultVisibility: 'public',
@@ -32,7 +33,11 @@ export const zigFieldConfig: FieldExtractionConfig = {
 
   extractName(node) {
     const name = node.childForFieldName('name');
-    return name?.text;
+    // An empty container body (`struct {}`, `opaque {}`) is recovered by
+    // tree-sitter-zig 1.1.2 as one container_field with a zero-width MISSING
+    // identifier. Not a field — declining here keeps it out of the field map.
+    if (name === null || name.text.length === 0) return undefined;
+    return name.text;
   },
 
   extractType(node) {

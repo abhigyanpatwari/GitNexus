@@ -1,6 +1,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig, VariableVisibility } from '../../variable-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { hasZigVisibilityKeyword } from '../../export-detection.js';
 import { isZigContainerOrImportBinding } from '../../languages/zig/captures.js';
 
 /**
@@ -17,14 +18,6 @@ import { isZigContainerOrImportBinding } from '../../languages/zig/captures.js';
  * which is the generic extractor's skip signal (see `generic.ts`, and Python's
  * broad `expression_statement` config for the same pattern).
  */
-
-const hasPubKeyword = (node: SyntaxNode): boolean => {
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child?.type === 'pub') return true;
-  }
-  return false;
-};
 
 const isVarKeyword = (node: SyntaxNode): boolean => {
   for (let i = 0; i < node.childCount; i++) {
@@ -62,7 +55,7 @@ export const zigVariableConfig: VariableExtractionConfig = {
   },
 
   extractVisibility(node): VariableVisibility {
-    return hasPubKeyword(node) ? 'public' : 'private';
+    return hasZigVisibilityKeyword(node) ? 'public' : 'private';
   },
 
   isConst(node) {

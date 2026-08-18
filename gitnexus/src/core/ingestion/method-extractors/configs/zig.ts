@@ -1,11 +1,13 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { MethodExtractionConfig, ParameterInfo } from '../../method-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { hasZigVisibilityKeyword } from '../../export-detection.js';
+import { ZIG_CONTAINER_TYPES } from '../../languages/zig/captures.js';
 
 /**
  * Zig method extraction.
  *
- * tree-sitter-zig containers (struct/enum/union) are anonymous; the binding
+ * tree-sitter-zig containers (struct/enum/union/opaque) are anonymous; the binding
  * name lives on the parent variable_declaration. Methods inside a container
  * appear as plain `function_declaration` children of the container node.
  *
@@ -75,14 +77,6 @@ const extractZigParameters = (node: SyntaxNode): ParameterInfo[] => {
   return params;
 };
 
-const hasPubKeyword = (node: SyntaxNode): boolean => {
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child?.type === 'pub') return true;
-  }
-  return false;
-};
-
 const extractZigReceiverType = (node: SyntaxNode): string | undefined => {
   const paramList = zigParameterList(node);
   if (!paramList) return undefined;
@@ -94,16 +88,39 @@ const extractZigReceiverType = (node: SyntaxNode): string | undefined => {
   return typeNode?.text?.trim();
 };
 
+/**
+ * Names a `test_declaration` during the enclosing-function walk (parse-worker
+ * `findEnclosingFunctionId`) with the SAME spelling ZIG_QUERIES captures as
+ * `@name` — the string node with its quotes — so calls inside `test "x" {}`
+ * attribute to the test's own Function node.
+ *
+ * Anonymous `test {}` and decl-tests `test add {}` are not graph nodes. They
+ * return `''`, not `null`: `null` falls through to `genericFuncName`, whose
+ * first-identifier scan would name `test add {}` "add" — the REAL `fn add`'s
+ * id — and hang the test body's calls on it. The empty name ends the walk at
+ * this node and lets the caller fall back to the File.
+ */
+const extractZigFunctionName = (
+  node: SyntaxNode,
+): { funcName: string | null; label: 'Function' } | null => {
+  if (node.type !== 'test_declaration') return null;
+  const nameString = node.namedChildren.find(
+    (child): child is SyntaxNode => child?.type === 'string',
+  );
+  return { funcName: nameString?.text ?? '', label: 'Function' };
+};
+
 export const zigMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Zig,
-  typeDeclarationNodes: ['struct_declaration', 'enum_declaration', 'union_declaration'],
+  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES],
   methodNodeTypes: ['function_declaration'],
   bodyNodeTypes: [],
   extractOwnerName: extractZigOwnerName,
   extractName: extractZigName,
+  extractFunctionName: extractZigFunctionName,
   extractReturnType: extractZigReturnType,
   extractParameters: extractZigParameters,
-  extractVisibility: (node) => (hasPubKeyword(node) ? 'public' : 'private'),
+  extractVisibility: (node) => (hasZigVisibilityKeyword(node) ? 'public' : 'private'),
   extractReceiverType: extractZigReceiverType,
 
   isStatic(node) {

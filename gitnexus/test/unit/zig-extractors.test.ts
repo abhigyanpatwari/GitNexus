@@ -219,3 +219,142 @@ describeZig('Zig scope captures — receiver is the FIRST parameter named self',
     ]);
   });
 });
+
+describeZig('Zig `export` (C-ABI) visibility', () => {
+  const src = `
+export fn c_add(a: i32, b: i32) i32 { return a + b; }
+fn hidden() void {}
+export const table: [4]u8 = .{ 0, 0, 0, 0 };
+`;
+
+  it('zigExportChecker treats `export fn` as exported without `pub`', () => {
+    // `export` is C-ABI linkage — the FFI entry point form — and never
+    // carries `pub`. A `pub`-only check reported every C-ABI symbol private.
+    const root = parse(src).rootNode;
+    expect(zigExportChecker(find(root, 'function_declaration', 'export fn c_add'), 'c_add')).toBe(
+      true,
+    );
+    expect(zigExportChecker(find(root, 'function_declaration', 'fn hidden'), 'hidden')).toBe(false);
+    expect(zigExportChecker(find(root, 'variable_declaration', 'export const'), 'table')).toBe(
+      true,
+    );
+  });
+
+  it('the method and variable extractors report `export` as public (one shared predicate)', () => {
+    // The three visibility readers share `hasZigVisibilityKeyword`; a private
+    // copy in one of them made `isExported` and `visibility` disagree.
+    const root = parse(`
+const C = struct {
+    export fn cb(self: *C) void { _ = self; }
+};
+export var counter: u32 = 0;
+`).rootNode;
+    const methods = createMethodExtractor(zigMethodConfig).extract(
+      find(root, 'struct_declaration'),
+      { filePath: 'test.zig', language: SupportedLanguages.Zig },
+    );
+    expect(methods!.methods.find((m) => m.name === 'cb')!.visibility).toBe('public');
+    const variable = createVariableExtractor(zigVariableConfig).extract(
+      find(root, 'variable_declaration', 'export var'),
+      { filePath: 'test.zig', language: SupportedLanguages.Zig },
+    );
+    expect(variable!.visibility).toBe('public');
+  });
+});
+
+describeZig('Zig test declarations', () => {
+  const extractor = createMethodExtractor(zigMethodConfig);
+  const src = `
+fn add(a: i32, b: i32) i32 { return a + b; }
+test "add works" { _ = add(1, 2); }
+test { _ = add(3, 4); }
+test add { _ = add(5, 6); }
+`;
+
+  it('names a `test "…"` block by its string node, quotes included, in the enclosing-function walk', () => {
+    // Must be byte-equal to the `@name` capture in ZIG_QUERIES (the string
+    // node) so calls inside attribute to the test's own node — and the quotes
+    // are what keep `test "add"` and `fn add` from sharing Function:<file>:add.
+    const root = parse(src).rootNode;
+    const named = extractor.extractFunctionName!(
+      find(root, 'test_declaration', 'test "add works"'),
+    );
+    expect(named).toEqual({ funcName: '"add works"', label: 'Function' });
+  });
+
+  it('returns an EMPTY name — never null — for anonymous and decl-form tests', () => {
+    // `null` would fall through to `genericFuncName`, whose first-identifier
+    // scan names `test add {}` "add": the REAL `fn add`'s id, so the test
+    // body's calls would hang on the function under test. `''` stops the walk
+    // here and lets the caller fall back to the File.
+    const root = parse(src).rootNode;
+    expect(extractor.extractFunctionName!(find(root, 'test_declaration', 'test {'))).toEqual({
+      funcName: '',
+      label: 'Function',
+    });
+    expect(extractor.extractFunctionName!(find(root, 'test_declaration', 'test add'))).toEqual({
+      funcName: '',
+      label: 'Function',
+    });
+  });
+
+  it('declines (null) for anything that is not a test_declaration', () => {
+    const root = parse(src).rootNode;
+    expect(extractor.extractFunctionName!(find(root, 'function_declaration'))).toBeNull();
+  });
+
+  it('scope captures: a named test is a Function scope with a matching def; anonymous tests are scopes only', () => {
+    const matches = emitZigScopeCaptures(src, 'test.zig');
+    const fnScopes = matches.filter((m) => m['@scope.function'] !== undefined);
+    // fn add + 3 test blocks
+    expect(fnScopes).toHaveLength(4);
+    const fnDefs = matches
+      .filter((m) => m['@declaration.function'] !== undefined)
+      .map((m) => m['@declaration.name']!.text);
+    expect(fnDefs).toEqual(['add', '"add works"']);
+  });
+
+  it('a test inside a container stays a Function — the method extractor cannot describe it', () => {
+    const src2 = `
+const S = struct {
+    fn m(self: S) void { _ = self; }
+    test "S works" { _ = S{}; }
+};
+`;
+    const labels = emitZigScopeCaptures(src2, 'test.zig')
+      .filter(
+        (m) => m['@declaration.function'] !== undefined || m['@declaration.method'] !== undefined,
+      )
+      .map((m) => (m['@declaration.method'] !== undefined ? 'method' : 'function'));
+    expect(labels).toEqual(['method', 'function']);
+  });
+});
+
+describeZig('Zig opaque and empty containers', () => {
+  it('captures `const H = opaque { … }` as a Struct-labelled class scope owning its methods', () => {
+    const src = `
+pub const H = opaque {
+    pub fn close(self: *H) void { _ = self; }
+};
+`;
+    const matches = emitZigScopeCaptures(src, 'test.zig');
+    const struct = matches.find((m) => m['@declaration.struct'] !== undefined);
+    expect(struct?.['@declaration.name']?.text).toBe('H');
+    expect(matches.some((m) => m['@declaration.method'] !== undefined)).toBe(true);
+    // No stray plain-variable binding for the container wrapper.
+    expect(
+      matches.some(
+        (m) => m['@declaration.variable'] !== undefined && m['@declaration.name']?.text === 'H',
+      ),
+    ).toBe(false);
+  });
+
+  it('does not emit a nameless field for an empty container body', () => {
+    // tree-sitter-zig 1.1.2 recovers `struct {}` / `opaque {}` as a
+    // container_field whose identifier is a zero-width MISSING node.
+    const fields = emitZigScopeCaptures('const E = struct {};\nconst O = opaque {};\n', 'test.zig')
+      .filter((m) => m['@declaration.field'] !== undefined)
+      .map((m) => m['@declaration.name']!.text);
+    expect(fields).toEqual([]);
+  });
+});

@@ -713,6 +713,17 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defTypes).toContain('definition.struct');
       expect(defTypes).toContain('definition.enum');
 
+      // `opaque {}` is a Struct-labelled container; a named `test "…"` block
+      // is a Function whose @name is the string node WITH quotes (so it never
+      // collides with a same-named fn); an anonymous `test {}` is not a def.
+      const named = defs.map((d) => `${d.type}:${d.name}`);
+      expect(named).toContain('definition.struct:Handle');
+      expect(named).toContain('definition.function:"add works"');
+      expect(named.filter((n) => n.startsWith('definition.function:')).length).toBe(
+        ['add', 'private_helper', 'init', 'distance', 'main', 'c_add', 'close', '"add works"']
+          .length,
+      );
+
       // `const std = @import("std");` must yield an import.source capture —
       // without this assertion a query change that drops Zig import matching
       // would pass this test unchanged.

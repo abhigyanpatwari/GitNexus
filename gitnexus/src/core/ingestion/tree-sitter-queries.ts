@@ -2472,9 +2472,31 @@ export const ZIG_QUERIES = `
   (identifier) @name
   (union_declaration)) @definition.union
 
+; Opaque: const Handle = opaque { ... } — the FFI handle type. It is a
+; container (it may declare methods, never fields), so it is labelled Struct:
+; the owner of a HAS_METHOD edge must be class-like, and there is no closer
+; label. It is NOT a TypeAlias — an opaque type is a distinct nominal type,
+; deliberately incompatible with whatever it wraps.
+(variable_declaration
+  (identifier) @name
+  (opaque_declaration)) @definition.struct
+
 ; Container fields (struct fields, enum variants, union variants).
-(container_field
+; #not-eq? guard: tree-sitter-zig 1.1.2 recovers an EMPTY container body
+; (\`struct {}\`, \`opaque {}\`) as a container_field whose identifier is a
+; zero-width MISSING placeholder — a parser artefact, not a field, and
+; without the guard it minted a Property with an empty name.
+((container_field
   name: (identifier) @name) @definition.property
+  (#not-eq? @name ""))
+
+; Named tests: test "description" { ... }. The name is the string node WITH
+; its quotes, so \`test "add"\` next to \`fn add\` (the idiomatic layout) does
+; not collide on Function:<file>:add. Anonymous \`test {}\` and decl-tests
+; \`test add {}\` have no name of their own and are not graph nodes; their
+; bodies' calls attribute to the File.
+(test_declaration
+  (string) @name) @definition.function
 
 ; @import("path") — capture the string argument as @import.source.
 ; The #eq? predicate restricts the match to the @import builtin (other

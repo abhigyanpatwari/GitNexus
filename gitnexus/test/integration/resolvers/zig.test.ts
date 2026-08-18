@@ -7,6 +7,7 @@ import {
   edgeSet,
   FIXTURES,
   getNodesByLabel,
+  getNodesByLabelFull,
   getRelationships,
   runPipelineFromRepo,
   type PipelineResult,
@@ -102,5 +103,73 @@ describe.skipIf(!zigAvailable)('Zig scope captures — variable bindings', () =>
       .filter((m) => m['@declaration.variable'] !== undefined)
       .map((m) => m['@declaration.name']?.text);
     expect(variableNames).toEqual(['h']);
+  });
+});
+
+describe.skipIf(!zigAvailable)('Zig export, opaque and test declarations (ffi.zig)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-basic'), () => {});
+  }, 60000);
+
+  it('marks `export fn` (C-ABI, no `pub`) as exported', () => {
+    // `export` is the strongest visibility Zig has — FFI entry points are
+    // declared this way and never carry `pub`. A `pub`-only checker left
+    // every C-ABI symbol private in the graph.
+    const cAdd = getNodesByLabelFull(result, 'Function').find((n) => n.name === 'c_add');
+    expect(cAdd).toBeDefined();
+    expect(cAdd!.properties.isExported).toBe(true);
+  });
+
+  it('models `opaque {}` as a Struct that owns its methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('Handle');
+    expect(getNodesByLabel(result, 'Method')).toContain('close');
+    expect(edgeSet(getRelationships(result, 'HAS_METHOD'))).toContain('Handle → close');
+  });
+
+  it('owns container members through the binding name (HAS_METHOD / HAS_PROPERTY)', () => {
+    // tree-sitter-zig containers are anonymous; the owner walk used to climb
+    // past them and NO Zig member ever got an owner edge, so `context(Pioneer)`
+    // listed no methods and the struct's fields dangled off the File.
+    expect(edgeSet(getRelationships(result, 'HAS_METHOD'))).toEqual(
+      expect.arrayContaining(['Pioneer → tick', 'Pioneer → reset', 'Tag → isEnergy']),
+    );
+    expect(edgeSet(getRelationships(result, 'HAS_PROPERTY'))).toEqual(
+      expect.arrayContaining(['Pioneer → energy', 'State → idle', 'Tag → energy']),
+    );
+  });
+
+  it('dispatches a method call on an opaque receiver (release → close)', () => {
+    expect(edgeSet(getRelationships(result, 'CALLS'))).toContain('release → close');
+  });
+
+  it('never mints a nameless Property for an empty container body', () => {
+    // tree-sitter-zig 1.1.2 recovers `struct {}` / `opaque {}` as one
+    // container_field with a zero-width MISSING identifier.
+    expect(getNodesByLabel(result, 'Struct')).toContain('Empty');
+    expect(getNodesByLabel(result, 'Property')).not.toContain('');
+  });
+
+  it('captures named tests as Functions, quoted, so `test "release"` and `fn release` stay distinct nodes', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns).toContain('"c_add adds"');
+    expect(fns).toContain('"release"');
+    // Both must exist as separate nodes — an unquoted test name would have
+    // merged onto Function:<file>:release and fabricated a self-call.
+    expect(fns.filter((n) => n === 'release')).toHaveLength(1);
+    expect(fns.filter((n) => n === '"release"')).toHaveLength(1);
+  });
+
+  it('attributes calls inside a named test to the test node, not the file', () => {
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    expect(calls).toContain('"c_add adds" → c_add');
+    expect(calls).toContain('"release" → release');
+    expect(calls).not.toContain('release → release');
+  });
+
+  it('does not create a graph node for an anonymous `test {}`', () => {
+    const fns = getNodesByLabel(result, 'Function');
+    expect(fns.some((n) => n.startsWith('test@') || n === 'test')).toBe(false);
   });
 });

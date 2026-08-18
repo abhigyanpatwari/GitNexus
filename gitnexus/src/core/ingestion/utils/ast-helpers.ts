@@ -321,6 +321,9 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Dart
   'function_signature',
   'method_signature',
+  // Zig: `test "…" { }` bodies are callable scopes — calls inside attribute
+  // to the test, not the file. Named via methodExtractor.extractFunctionName.
+  'test_declaration',
 ]);
 
 /**
@@ -372,6 +375,7 @@ export const CLASS_CONTAINER_TYPES = new Set([
   'interface_type',
   // Zig
   'union_declaration',
+  'opaque_declaration',
 ]);
 
 /**
@@ -440,10 +444,12 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   companion_object: 'Class',
   struct_type: 'Struct',
   interface_type: 'Interface',
-  // Zig: tagged and untagged unions are class-like containers.
-  // `struct_declaration` and `enum_declaration` are already present
-  // (Dart / generic).
+  // Zig: tagged and untagged unions are class-like containers, and so is
+  // the fieldless `opaque {}` (may own methods; labelled Struct, see
+  // ZIG_QUERIES). `struct_declaration` and `enum_declaration` are already
+  // present (Dart / generic).
   union_declaration: 'Union',
+  opaque_declaration: 'Struct',
 };
 
 /**
@@ -1051,7 +1057,19 @@ export const findEnclosingClassInfo = (
             c.type === 'identifier' ||
             c.type === 'name' ||
             c.type === 'constant',
-        );
+        ) ??
+        // An ANONYMOUS container bound by the enclosing declaration —
+        // `const Point = struct { … }` (tree-sitter-zig: struct/enum/union/
+        // opaque nodes carry no name; the binding identifier is the first
+        // named child of the parent `variable_declaration`). Same shape as the
+        // Go `type_spec` branch above: the name lives one level up. Without it
+        // the walk climbed past every Zig container and no member ever got a
+        // HAS_METHOD / HAS_PROPERTY owner. The definition phase names the
+        // container node from the same binding (`@name` on the wrapper), so
+        // the owner id and the node id agree by construction.
+        (current.parent?.type === 'variable_declaration'
+          ? current.parent.namedChildren?.find((c: SyntaxNode) => c.type === 'identifier')
+          : undefined);
       if (nameNode) {
         let label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
         // Kotlin: class_declaration with an anonymous "interface" keyword child

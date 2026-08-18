@@ -28,3 +28,22 @@ pub fn main() void {
     _ = p.distance(Point{ .x = 3, .y = 4 });
     _ = add(1, 2);
 }
+
+// C-ABI export (no `pub`), an opaque FFI handle, and test blocks.
+export fn c_add(a: i32, b: i32) i32 {
+    return a + b;
+}
+
+pub const Handle = opaque {
+    pub fn close(self: *Handle) void {
+        _ = self;
+    }
+};
+
+test "add works" {
+    _ = add(1, 2);
+}
+
+test {
+    _ = c_add(1, 2);
+}

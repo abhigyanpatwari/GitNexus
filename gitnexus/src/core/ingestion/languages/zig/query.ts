@@ -13,7 +13,7 @@ const _require = createRequire(import.meta.url);
  * `parser-loader.isLanguageAvailable` before any scope extraction runs.
  *
  * Zig specifics encoded here:
- *   - Containers (struct/enum/union) are anonymous nodes bound by the
+ *   - Containers (struct/enum/union/opaque) are anonymous nodes bound by the
  *     enclosing `variable_declaration`; declarations capture the binding
  *     identifier from the wrapper.
  *   - `@import` is a builtin call, not import-statement syntax; the
@@ -28,13 +28,21 @@ const ZIG_SCOPE_QUERY = `
 (struct_declaration) @scope.class
 (enum_declaration) @scope.class
 (union_declaration) @scope.class
+(opaque_declaration) @scope.class
 (function_declaration) @scope.function
+(test_declaration) @scope.function
 (block) @scope.block
 
 ;; Declarations — functions (relabeled @declaration.method inside containers
 ;; by emitZigScopeCaptures, mirroring the provider's labelOverride)
 (function_declaration
   name: (identifier) @declaration.name) @declaration.function
+
+;; Declarations — named tests. Same naming rule as ZIG_QUERIES: the string
+;; node WITH quotes, so the def joins the graph node and never collides with
+;; a same-named fn. Anonymous / decl-form tests are scopes without a def.
+(test_declaration
+  (string) @declaration.name) @declaration.function
 
 ;; Declarations — containers. The binding name lives on the wrapper
 ;; variable_declaration, but the ANCHOR is the container node itself so its
@@ -51,10 +59,18 @@ const ZIG_SCOPE_QUERY = `
 (variable_declaration
   (identifier) @declaration.name
   (union_declaration) @declaration.union)
+;; opaque {} is a fieldless container that may own methods — Struct, as in
+;; ZIG_QUERIES (see the rationale there).
+(variable_declaration
+  (identifier) @declaration.name
+  (opaque_declaration) @declaration.struct)
 
-;; Declarations — container fields (struct fields, enum/union variants)
-(container_field
+;; Declarations — container fields (struct fields, enum/union variants).
+;; The #not-eq? guard drops the MISSING placeholder identifier tree-sitter-zig
+;; recovers for an empty container body (see ZIG_QUERIES).
+((container_field
   name: (identifier) @declaration.name) @declaration.field
+  (#not-eq? @declaration.name ""))
 
 ;; Declarations — const/var bindings (import/container groups filtered in TS).
 ;; The \`.\` anchor pins the FIRST named child: without it the pattern also

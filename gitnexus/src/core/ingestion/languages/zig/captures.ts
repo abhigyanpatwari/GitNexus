@@ -5,10 +5,14 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
+/** Zig container node types: `struct`, `enum`, `union` and the fieldless
+ *  `opaque` all bind through `const T = <container> {…}` and may own methods.
+ *  Single source for the class/field/method extractor configs. */
 export const ZIG_CONTAINER_TYPES: ReadonlySet<string> = new Set([
   'struct_declaration',
   'enum_declaration',
   'union_declaration',
+  'opaque_declaration',
 ]);
 
 /** Is this variable_declaration a container binding (`const T = struct {…}`)
@@ -30,14 +34,21 @@ export function isZigContainerOrImportBinding(declNode: SyntaxNode): boolean {
   return false;
 }
 
-/** A `fn` nested in a struct/enum/union container is a method. Single
+/** A `fn` nested in a struct/enum/union/opaque container is a method. Single
  *  predicate shared between the provider's `labelOverride` (worker
  *  structure phase) and the scope-capture relabel below, so the graph
  *  node label and the scope-side def label cannot drift apart. The loose
- *  parameter shape matches what `labelOverride` receives. */
+ *  parameter shape matches what `labelOverride` receives.
+ *
+ *  Only a `function_declaration` can be a method: a named `test "…" {}`
+ *  inside a container is also a Function definition, but the method
+ *  extractor does not know test blocks (no parameters, no `self`), so
+ *  relabelling it would mint a Method id the definition phase never
+ *  builds. Tests stay Functions wherever they sit. */
 export function isZigContainerMethod(
-  captureNode: { readonly parent?: SyntaxNode | null } | null | undefined,
+  captureNode: { readonly type?: string; readonly parent?: SyntaxNode | null } | null | undefined,
 ): boolean {
+  if (captureNode?.type !== undefined && captureNode.type !== 'function_declaration') return false;
   let ancestor = captureNode?.parent;
   while (ancestor) {
     if (ZIG_CONTAINER_TYPES.has(ancestor.type)) return true;

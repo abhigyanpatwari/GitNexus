@@ -243,14 +243,17 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
 
-/** Zig declaration node types whose `pub` keyword child marks the symbol public. */
+/** Zig declaration node types whose `pub` / `export` keyword child marks the symbol public. */
 const ZIG_DECL_TYPES = new Set(['function_declaration', 'variable_declaration']);
 
 /**
  * Zig: walk to the enclosing decl, scan its direct children for an unnamed `pub`
- * keyword token (tree-sitter-zig models `pub` as an anonymous keyword child of
- * function_declaration / variable_declaration). Container fields (struct/enum
- * variants) are public if their enclosing variable_declaration is public.
+ * or `export` keyword token (tree-sitter-zig models both as anonymous keyword
+ * children of function_declaration / variable_declaration). `pub` is Zig-module
+ * visibility; `export` is C-ABI linkage (`export fn add(...)`) — the strongest
+ * form of "exported", used for FFI entry points, and it never carries `pub`.
+ * Container fields (struct/enum variants) are public if their enclosing
+ * variable_declaration is public.
  *
  * The walk stops at the FIRST declaration it reaches: a `fn` inside
  * `pub const T = struct { … }` carries its own `pub` (or not), independent of
@@ -260,14 +263,23 @@ const ZIG_DECL_TYPES = new Set(['function_declaration', 'variable_declaration'])
 export const zigExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
   while (current) {
-    if (ZIG_DECL_TYPES.has(current.type)) {
-      for (let i = 0; i < current.childCount; i++) {
-        const child = current.child(i);
-        if (child?.type === 'pub') return true;
-      }
-      return false;
-    }
+    if (ZIG_DECL_TYPES.has(current.type)) return hasZigVisibilityKeyword(current);
     current = current.parent;
   }
   return false;
 };
+
+/**
+ * Does this Zig declaration carry a `pub` or `export` keyword child? Shared by
+ * the export checker and the method/variable extractors' `extractVisibility`,
+ * so the three cannot disagree on what "public" means (a `pub`-only copy in
+ * one of them left `export fn` private in the graph while `isExported` said
+ * otherwise).
+ */
+export function hasZigVisibilityKeyword(declNode: SyntaxNode): boolean {
+  for (let i = 0; i < declNode.childCount; i++) {
+    const child = declNode.child(i);
+    if (child?.type === 'pub' || child?.type === 'export') return true;
+  }
+  return false;
+}
