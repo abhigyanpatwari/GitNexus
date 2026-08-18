@@ -350,3 +350,89 @@ describe.skipIf(!zigAvailable)(
     });
   },
 );
+
+describe.skipIf(!zigAvailable)('Zig file-structs (zig-filestruct fixture)', () => {
+  // In Zig every file is a struct; one with top-level FIELDS is an
+  // instantiable type named after the file (`Page.zig` declares `Page`), and
+  // its top-level `fn`s are that type's methods. Lightpanda spells 73 % of its
+  // types this way, and before this modelling `page.getArena()` on a
+  // `page: *Page` parameter resolved 23 of 993 times (2.3 %) in that corpus:
+  // `impact` on `Page.getArena` reported 0 callers for 159 call sites.
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-filestruct'), () => {});
+  }, 60000);
+
+  it('declares a Struct named after the file for a file with top-level fields', () => {
+    const structs = getNodesByLabel(result, 'Struct');
+    expect(structs).toContain('Page');
+    expect(structs).toContain('Session');
+    // The name is the FILE STEM, not the `@This()` alias (`SigHandler`).
+    expect(structs).toContain('Sighandler');
+    expect(structs).not.toContain('SigHandler');
+    // A namespace file (no fields) is NOT a type, even with a `@This()` alias.
+    expect(structs).not.toContain('util');
+  });
+
+  it('owns top-level fns and fields as Methods / Properties of that Struct', () => {
+    // Member ids are owner-qualified exactly like `const T = struct {…}` members.
+    expect(result.graph.getNode('Method:src/Page.zig:Page.getArena#0')).toBeDefined();
+    expect(result.graph.getNode('Method:src/Session.zig:Session.findFrame#1')).toBeDefined();
+    expect(result.graph.getNode('Method:src/Sighandler.zig:Sighandler.arm#0')).toBeDefined();
+    expect(result.graph.getNode('Property:src/Page.zig:Page.session')).toBeDefined();
+    expect(result.graph.getNode('Function:src/Page.zig:getArena')).toBeUndefined();
+    // Namespace-file fns keep their Function ids.
+    expect(getNodesByLabel(result, 'Function')).toContain('helper');
+    expect(getNodesByLabel(result, 'Method')).not.toContain('helper');
+
+    const hasMethod = edgeSet(getRelationships(result, 'HAS_METHOD'));
+    expect(hasMethod).toContain('Page → getArena');
+    expect(hasMethod).toContain('Sighandler → arm');
+    const hasProp = edgeSet(getRelationships(result, 'HAS_PROPERTY'));
+    expect(hasProp).toContain('Page → session');
+    expect(hasProp).toContain('Session → label');
+  });
+
+  it('does not mint a Const for the file-level `@This()` self-alias of a file-struct', () => {
+    // `const Page = @This();` names the file's own type; a Const beside the
+    // Struct would shadow it for every `x: *Page`. A namespace file's alias
+    // (`const util = @This();`) stays a Const — there is no type to shadow.
+    const consts = getNodesByLabel(result, 'Const');
+    expect(consts).not.toContain('Page');
+    expect(consts).not.toContain('SigHandler');
+    expect(consts).toContain('util');
+  });
+
+  it('dispatches method calls on receivers typed by another file-struct', () => {
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    // parameter annotation `page: *Page` (Page = @import("Page.zig"))
+    expect(calls).toContain('useParam → getArena');
+    expect(calls).toContain('findFrame → getArena');
+    // `var q: Page = undefined` and the call-return rule `var p = Page.init(&s)`
+    expect(calls).toContain('main → getArena');
+    expect(calls).toContain('main → bump');
+    expect(calls).toContain('main → findFrame');
+    // the alias-spelled receiver `self: *SigHandler` inside Sighandler.zig
+    expect(calls).toContain('arm → check');
+    // `var h: Sighandler = .{}` — annotation naming the file stem
+    expect(calls).toContain('main → arm');
+    // namespace-member calls keep working beside the type
+    expect(calls).toContain('main → init');
+    expect(calls).toContain('main → helper');
+    // and `self.getArena()` inside the file-struct itself
+    expect(calls).toContain('bump → getArena');
+  });
+
+  it('keeps the file-struct type reachable through the namespace import binding', () => {
+    // `const Page = @import("Page.zig")` binds both the module (`Page.init`)
+    // and the type it declares. Two Struct defs named `Page` in different
+    // files must NOT be conflated: `Session` and `Page` each dispatch to
+    // their own methods.
+    const calls = getRelationships(result, 'CALLS');
+    const target = calls.find((e) => e.source === 'findFrame' && e.target === 'getArena');
+    expect(target?.targetFilePath).toMatch(/Page\.zig$/);
+    const nameCall = calls.filter((e) => e.target === 'name');
+    expect(nameCall.every((e) => e.targetFilePath.endsWith('Session.zig'))).toBe(true);
+  });
+});

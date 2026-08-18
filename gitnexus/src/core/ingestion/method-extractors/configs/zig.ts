@@ -17,7 +17,8 @@ import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captu
  * unlike Rust, Zig has no dedicated `self_parameter` node type.
  */
 
-const extractZigOwnerName = (node: SyntaxNode): string | undefined => zigContainerName(node);
+const extractZigOwnerName = (node: SyntaxNode, filePath?: string): string | undefined =>
+  zigContainerName(node, filePath);
 
 const extractZigName = (node: SyntaxNode): string | undefined => {
   const nameNode = node.childForFieldName('name');
@@ -108,7 +109,8 @@ const extractZigFunctionName = (
 
 export const zigMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Zig,
-  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES],
+  // `source_file`: a file-struct's top-level fns are methods of the file's Struct.
+  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES, 'source_file'],
   methodNodeTypes: ['function_declaration'],
   bodyNodeTypes: [],
   extractOwnerName: extractZigOwnerName,

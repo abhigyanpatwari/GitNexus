@@ -50,8 +50,10 @@ import {
   interpretZigImport,
   interpretZigTypeBinding,
   isZigContainerMethod,
-  isZigContainerOrImportBinding,
+  isZigFileStruct,
+  isZigTypeShadowingBinding,
   zigArityCompatibility,
+  zigFileStructName,
   zigBindingScopeFor,
   zigReceiverBinding,
 } from './zig/index.js';
@@ -78,8 +80,13 @@ export const zigProvider = defineLanguage({
   shouldSkipDefinitionCapture: (captureMap, defaultLabel) => {
     if (defaultLabel !== 'Const' && defaultLabel !== 'Variable') return false;
     const decl = captureMap['definition.const'] ?? captureMap['definition.variable'];
-    return decl !== undefined && isZigContainerOrImportBinding(decl);
+    return decl !== undefined && isZigTypeShadowingBinding(decl);
   },
+  // A file whose top level declares fields IS a struct named after the file
+  // (`Page.zig` → `Page`): its top-level fns/fields are members of that
+  // Struct. Files without fields are namespaces and own nothing.
+  resolveFileTypeOwner: (root, filePath) =>
+    isZigFileStruct(root) ? { name: zigFileStructName(filePath), label: 'Struct' } : null,
   labelOverride: (functionNode, defaultLabel) => {
     if (defaultLabel !== 'Function') return defaultLabel;
     if (isZigContainerMethod(functionNode)) return 'Method';

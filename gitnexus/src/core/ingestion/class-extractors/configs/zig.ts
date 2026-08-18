@@ -1,7 +1,11 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ClassExtractionConfig, ClassLikeNodeLabel } from '../../class-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captures.js';
+import {
+  isZigFileStruct,
+  ZIG_CONTAINER_TYPES,
+  zigContainerName,
+} from '../../languages/zig/captures.js';
 
 /**
  * Zig containers (struct/enum/union/opaque) are anonymous in the grammar:
@@ -14,9 +18,13 @@ import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captu
  * `zigContainerName` is the single source shared with the field/method
  * extractors so owner ids and node ids agree by construction.
  */
-const extractZigContainerName = (node: SyntaxNode): string | undefined => zigContainerName(node);
+const extractZigContainerName = (node: SyntaxNode, filePath?: string): string | undefined =>
+  zigContainerName(node, filePath);
 
 const extractZigContainerType = (node: SyntaxNode): ClassLikeNodeLabel | undefined => {
+  // The file itself, when it declares top-level fields (file-struct); a
+  // namespace-only file is not a type — `extract` then yields no symbol.
+  if (node.type === 'source_file') return isZigFileStruct(node) ? 'Struct' : undefined;
   if (node.type === 'struct_declaration') return 'Struct';
   if (node.type === 'enum_declaration') return 'Enum';
   if (node.type === 'union_declaration') return 'Union';
@@ -28,7 +36,7 @@ const extractZigContainerType = (node: SyntaxNode): ClassLikeNodeLabel | undefin
 
 export const zigClassConfig: ClassExtractionConfig = {
   language: SupportedLanguages.Zig,
-  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES],
+  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES, 'source_file'],
   extractName: extractZigContainerName,
   extractType: extractZigContainerType,
 };

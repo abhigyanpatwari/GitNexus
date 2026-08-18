@@ -34,7 +34,7 @@ export interface FieldExtractionConfig {
   /** Default visibility when no modifier is present */
   defaultVisibility: FieldVisibility;
   /** Extract owner type name from a type declaration node. */
-  extractOwnerName?: (node: SyntaxNode) => string | undefined;
+  extractOwnerName?: (node: SyntaxNode, filePath?: string) => string | undefined;
   /** Find body nodes inside a type declaration node. */
   findBodyNodes?: (node: SyntaxNode) => SyntaxNode[];
   /**
@@ -103,7 +103,8 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
     extract(node: SyntaxNode, context: FieldExtractorContext): ExtractedFields | null {
       if (!this.isTypeDeclaration(node)) return null;
 
-      const ownerFqn = config.extractOwnerName?.(node) ?? node.childForFieldName('name')?.text;
+      const ownerFqn =
+        config.extractOwnerName?.(node, context.filePath) ?? node.childForFieldName('name')?.text;
       if (!ownerFqn) return null;
 
       const fields: FieldInfo[] = [];

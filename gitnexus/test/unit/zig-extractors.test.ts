@@ -20,8 +20,11 @@ import { zigVariableConfig } from '../../src/core/ingestion/variable-extractors/
 import {
   emitZigScopeCaptures,
   isZigContainerOrImportBinding,
+  isZigFileStruct,
   isZigKeywordDeclaration,
+  isZigTypeShadowingBinding,
   zigContainerName,
+  zigFileStructName,
 } from '../../src/core/ingestion/languages/zig/captures.js';
 import {
   interpretZigImport,
@@ -487,6 +490,16 @@ test {
       // namespace: localName is the handle, importedName the MODULE (contract:
       // Go `import foo "pkg/bar"` records `bar`), never the handle.
       { kind: 'namespace', localName: 'c', importedName: 'counter', targetRaw: 'net/counter.zig' },
+      // …and its TYPE twin: the same binding also names the file-struct the
+      // target declares (`counter.zig` → `counter`), so `x: *c` can dispatch on
+      // it. Binds nothing when the target is only a namespace.
+      {
+        kind: 'alias',
+        localName: 'c',
+        importedName: 'counter',
+        alias: 'c',
+        targetRaw: 'net/counter.zig',
+      },
       // alias of a namespace member → promoted to a named import of that member
       {
         kind: 'named',
@@ -729,3 +742,130 @@ pub fn run() void {
     ]);
   });
 });
+
+describeZig(
+  'Zig file-structs (a file with top-level fields IS a struct named after the file)',
+  () => {
+    const FILE_STRUCT = `
+const std = @import("std");
+const Page = @This();
+const Session = @import("Session.zig");
+session: *Session,
+count: u32 = 0,
+pub fn init(session: *Session) Page { return .{ .session = session }; }
+pub fn getArena(self: *Page) u32 { return self.count; }
+`;
+    const NAMESPACE = `
+const util = @This();
+pub fn helper() u32 { return 1; }
+`;
+
+    it('detects a file-struct by its top-level fields, never by the @This() alias alone', () => {
+      expect(isZigFileStruct(parse(FILE_STRUCT).rootNode)).toBe(true);
+      expect(isZigFileStruct(parse(NAMESPACE).rootNode)).toBe(false);
+      // An empty container body is recovered with a MISSING placeholder field.
+      expect(isZigFileStruct(parse('').rootNode)).toBe(false);
+    });
+
+    it('names the type after the FILE STEM, on every platform spelling', () => {
+      expect(zigFileStructName('src/browser/Page.zig')).toBe('Page');
+      expect(zigFileStructName('src\\browser\\Sighandler.zig')).toBe('Sighandler');
+      const root = parse(FILE_STRUCT).rootNode;
+      expect(zigContainerName(root, 'src/Page.zig')).toBe('Page');
+      // A namespace file is not a container, whatever it aliases itself as.
+      expect(zigContainerName(parse(NAMESPACE).rootNode, 'src/util.zig')).toBeUndefined();
+      // No path, no name — the caller must supply it.
+      expect(zigContainerName(root)).toBeUndefined();
+    });
+
+    it('emits a Class scope + Struct def over the whole file and relabels top-level fns Method', () => {
+      const caps = emitZigScopeCaptures(FILE_STRUCT, 'src/Page.zig');
+      const structDef = caps.find((m) => m['@declaration.struct'] !== undefined);
+      expect(structDef?.['@declaration.name']?.text).toBe('Page');
+      // The Class scope and the Struct def share the file's own range.
+      const classScope = caps.find(
+        (m) =>
+          m['@scope.class'] !== undefined &&
+          m['@scope.class'].range.endLine === structDef?.['@declaration.struct']?.range.endLine,
+      );
+      expect(classScope).toBeDefined();
+      const methods = caps
+        .filter((m) => m['@declaration.method'] !== undefined)
+        .map((m) => m['@declaration.name']?.text);
+      expect(methods).toEqual(['init', 'getArena']);
+      expect(caps.some((m) => m['@declaration.function'] !== undefined)).toBe(false);
+
+      // A namespace file: no class scope, no struct, fns stay Functions.
+      const nsCaps = emitZigScopeCaptures(NAMESPACE, 'src/util.zig');
+      expect(nsCaps.some((m) => m['@scope.class'] !== undefined)).toBe(false);
+      expect(nsCaps.some((m) => m['@declaration.struct'] !== undefined)).toBe(false);
+      expect(nsCaps.some((m) => m['@declaration.function'] !== undefined)).toBe(true);
+    });
+
+    it('drops the file-level `const Page = @This();` binding of a file-struct, keeps a namespace alias', () => {
+      // A Const named `Page` beside `Struct Page` would shadow the type for
+      // every `x: *Page` (locals outrank imports in zigMergeBindings).
+      const vars = emitZigScopeCaptures(FILE_STRUCT, 'src/Page.zig')
+        .filter((m) => m['@declaration.variable'] !== undefined)
+        .map((m) => m['@declaration.name']?.text);
+      expect(vars).not.toContain('Page');
+      const nsVars = emitZigScopeCaptures(NAMESPACE, 'src/util.zig')
+        .filter((m) => m['@declaration.variable'] !== undefined)
+        .map((m) => m['@declaration.name']?.text);
+      expect(nsVars).toContain('util');
+      // Same verdict for the structure phase (variable extractor / shouldSkip).
+      const decl = find(parse(FILE_STRUCT).rootNode, 'variable_declaration', 'const Page');
+      expect(isZigTypeShadowingBinding(decl)).toBe(true);
+      const nsDecl = find(parse(NAMESPACE).rootNode, 'variable_declaration', 'const util');
+      expect(isZigTypeShadowingBinding(nsDecl)).toBe(false);
+    });
+
+    it('rewrites @This() aliases in type position to the container name (`self: *SigHandler` in Sighandler.zig, nested `Self`)', () => {
+      const src = `
+const SigHandler = @This();
+armed: bool = false,
+pub fn arm(self: *SigHandler, other: ?*const SigHandler) void { _ = self; _ = other; }
+pub const Inner = struct {
+    const Self = @This();
+    n: u32,
+    pub fn get(self: *const Self) u32 { return self.n; }
+};
+`;
+      const types = emitZigScopeCaptures(src, 'src/Sighandler.zig')
+        .filter((m) => m['@type-binding.parameter'] !== undefined)
+        .map((m) => [m['@type-binding.name']?.text, m['@type-binding.type']?.text]);
+      expect(types).toEqual([
+        ['self', '*Sighandler'],
+        ['other', '?*const Sighandler'],
+        ['self', '*const Inner'],
+      ]);
+    });
+
+    it('gives a namespace import of a .zig file a TYPE twin (named import of the file stem)', () => {
+      const src = `
+const Page = @import("Page.zig");
+const P = @import("sub/Page.zig");
+const std = @import("std");
+const lp = @import("lightpanda");
+`;
+      const imports = emitZigScopeCaptures(src, 'main.zig')
+        .filter((m) => m['@import.source'] !== undefined)
+        .map((m) => interpretZigImport(m));
+      expect(imports).toEqual([
+        { kind: 'namespace', localName: 'Page', importedName: 'Page', targetRaw: 'Page.zig' },
+        { kind: 'named', localName: 'Page', importedName: 'Page', targetRaw: 'Page.zig' },
+        { kind: 'namespace', localName: 'P', importedName: 'Page', targetRaw: 'sub/Page.zig' },
+        {
+          kind: 'alias',
+          localName: 'P',
+          importedName: 'Page',
+          alias: 'P',
+          targetRaw: 'sub/Page.zig',
+        },
+        // bare modules (`std`, build.zig modules) get no twin — no file stem to name.
+        { kind: 'namespace', localName: 'std', importedName: 'std', targetRaw: 'std' },
+        { kind: 'namespace', localName: 'lp', importedName: 'lightpanda', targetRaw: 'lightpanda' },
+      ]);
+    });
+  },
+);

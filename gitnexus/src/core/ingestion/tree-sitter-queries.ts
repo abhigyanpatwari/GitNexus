@@ -2472,6 +2472,16 @@ export const ZIG_QUERIES = `
   (identifier) @name
   (union_declaration)) @definition.union
 
+; File-struct: a file whose top level declares a container field IS a struct
+; named after the file (\`Page.zig\` declares \`Page\`; \`@typeName\` agrees).
+; The anchor is the whole file; the name comes from the class extractor
+; (\`zigContainerName(source_file, filePath)\` — the file stem), not from a
+; capture, since no node spells it. One match per top-level field — the
+; definition phase dedupes by (node, name). Namespace-only files (no fields)
+; never match and keep their Function ids.
+((source_file (container_field name: (identifier) @_field)) @definition.struct
+  (#not-eq? @_field ""))
+
 ; Opaque: const Handle = opaque { ... } — the FFI handle type. It is a
 ; container (it may declare methods, never fields), so it is labelled Struct:
 ; the owner of a HAS_METHOD edge must be class-like, and there is no closer

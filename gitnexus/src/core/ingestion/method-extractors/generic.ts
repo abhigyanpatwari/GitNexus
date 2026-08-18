@@ -90,7 +90,7 @@ export function createMethodExtractor(config: MethodExtractionConfig): MethodExt
       // Resolve owner name: config hook → field-based → type_identifier → simple_identifier → "Companion"
       let ownerName: string | undefined;
       if (config.extractOwnerName) {
-        ownerName = config.extractOwnerName(node);
+        ownerName = config.extractOwnerName(node, context.filePath);
       }
       if (!ownerName) {
         const nameField = node.childForFieldName('name');

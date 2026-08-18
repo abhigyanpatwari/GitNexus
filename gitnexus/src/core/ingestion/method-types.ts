@@ -107,7 +107,7 @@ export interface MethodExtractionConfig {
    *  When the ownerNode matches one of these types, isStatic is forced true. */
   staticOwnerTypes?: ReadonlySet<string>;
   /** Resolve the owner name from a standalone method node (e.g. Go receiver type). */
-  extractOwnerName?: (node: SyntaxNode) => string | undefined;
+  extractOwnerName?: (node: SyntaxNode, filePath?: string) => string | undefined;
   /** Extract a primary constructor from the owner node itself (e.g. C# 12 class Point(int x, int y)). */
   extractPrimaryConstructor?: (
     ownerNode: SyntaxNode,

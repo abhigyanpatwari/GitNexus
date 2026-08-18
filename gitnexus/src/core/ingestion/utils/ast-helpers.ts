@@ -574,14 +574,17 @@ export function getLabelFromCaptures(
   const hasDefaultExportHocNameSeed =
     captureMap['definition.function'] !== undefined &&
     (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
-  // Nameless `definition.class` passes through: a class extractor may
-  // synthesize the name (Java anonymous class bodies → `Worker$N`, #2550).
-  // Downstream stays safe — parse-worker skips any nameless definition the
-  // extractor could not name (its `!nameNode && !extractedClassSymbol` gate).
+  // Nameless `definition.class` / `definition.struct` pass through: a class
+  // extractor may synthesize the name (Java anonymous class bodies →
+  // `Worker$N`, #2550; a file-level type named after its file — the
+  // extractor receives the file path for exactly this). Downstream stays
+  // safe — parse-worker skips any nameless definition the extractor could
+  // not name (its `!nameNode && !extractedClassSymbol` gate).
   if (
     !captureMap['name'] &&
     !captureMap['definition.constructor'] &&
     !captureMap['definition.class'] &&
+    !captureMap['definition.struct'] &&
     !hasDefaultExportHocNameSeed
   )
     return null;
@@ -892,6 +895,17 @@ export const findEnclosingClassInfo = (
    * the node-id is built from, guaranteeing owner-id == node-id by construction.
    */
   getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
+  /**
+   * Optional: the type the whole FILE declares (`LanguageProvider.resolveFileTypeOwner`).
+   * Consulted only when the walk reaches the tree root without meeting a
+   * container, so a member declared at file level can be owned by the file's
+   * own type (Zig file-structs). The name is what the definition phase names
+   * the class-like node, so owner id == node id by construction.
+   */
+  resolveFileTypeOwner?: (
+    root: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
   let iterations = 0;
@@ -1151,6 +1165,17 @@ export const findEnclosingClassInfo = (
           classId: generateId(label, `${filePath}:${classIdName}`),
           className: nameNode.text,
           ...(qualifiedClassId !== undefined ? { qualifiedClassId } : {}),
+        };
+      }
+    }
+    if (current.parent === null && resolveFileTypeOwner !== undefined) {
+      // Tree root reached with no container on the way: ask the provider
+      // whether the file itself is the owner.
+      const fileOwner = resolveFileTypeOwner(current, filePath);
+      if (fileOwner !== null) {
+        return {
+          classId: generateId(fileOwner.label, `${filePath}:${fileOwner.name}`),
+          className: fileOwner.name,
         };
       }
     }

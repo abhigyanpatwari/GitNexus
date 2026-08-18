@@ -9,7 +9,8 @@ import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captu
  * variable_declaration, or the enclosing generic type constructor's name —
  * `zigContainerName` is the single source.
  */
-const extractZigOwnerName = (node: SyntaxNode): string | undefined => zigContainerName(node);
+const extractZigOwnerName = (node: SyntaxNode, filePath?: string): string | undefined =>
+  zigContainerName(node, filePath);
 
 /**
  * Container fields appear as direct children of struct_declaration /
@@ -19,7 +20,8 @@ const extractZigOwnerName = (node: SyntaxNode): string | undefined => zigContain
  */
 export const zigFieldConfig: FieldExtractionConfig = {
   language: SupportedLanguages.Zig,
-  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES],
+  // `source_file`: a file-struct's top-level fields belong to the file's Struct.
+  typeDeclarationNodes: [...ZIG_CONTAINER_TYPES, 'source_file'],
   fieldNodeTypes: ['container_field'],
   bodyNodeTypes: [],
   defaultVisibility: 'public',

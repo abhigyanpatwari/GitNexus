@@ -41,6 +41,8 @@ export interface ClassExtractor {
     fallback?: {
       name?: string;
       type?: NodeLabel | null;
+      /** Repo-relative path of the file being extracted, when known. */
+      filePath?: string;
     },
   ): ExtractedClassSymbol | null;
   extractQualifiedName(node: SyntaxNode, simpleName: string): string | null;
@@ -72,7 +74,9 @@ export interface ClassExtractionConfig {
    */
   qualifiedNodeId?: boolean;
   scopeNameNodeTypes?: string[];
-  extractName?: (node: SyntaxNode) => string | undefined;
+  /** `filePath` is supplied when known (definition-phase extraction) — a
+   *  language whose file IS a type names it from the path. */
+  extractName?: (node: SyntaxNode, filePath?: string) => string | undefined;
   extractType?: (node: SyntaxNode) => ClassLikeNodeLabel | undefined;
   extractScopeSegments?: (node: SyntaxNode) => string[] | null | undefined;
   extractTemplateArguments?: (node: SyntaxNode) => string[] | undefined;

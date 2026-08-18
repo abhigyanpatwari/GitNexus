@@ -157,6 +157,23 @@ interface LanguageProviderConfig {
    *  Default: undefined (no remapping). */
   readonly resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null;
 
+  /**
+   * The type a whole FILE declares, when the language makes the file itself
+   * a type (Zig: a `.zig` file with top-level fields is a struct whose name
+   * is the file stem — `Page.zig` declares `Page`, and `page.getArena()`
+   * dispatches onto the file's top-level `fn getArena(self: *Page)`).
+   *
+   * Consulted by the enclosing-owner walk when it reaches the tree root
+   * without meeting a container, and by the class/method/field extractors
+   * for the owner name. Return `null` for a file that is only a namespace.
+   * The name is the class-like node's name (`Struct:<file>:<name>`), so the
+   * owner id and the node id agree by construction.
+   * Default: undefined (a file never owns members). */
+  readonly resolveFileTypeOwner?: (
+    root: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null;
+
   // ── Enclosing function resolution ───────────────────────────────
   /** Resolve the enclosing function name + label from an AST ancestor node
    *  that is NOT a standard FUNCTION_NODE_TYPE.  For languages where the

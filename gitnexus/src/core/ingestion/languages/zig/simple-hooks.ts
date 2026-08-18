@@ -33,7 +33,51 @@ export function zigBindingScopeFor(
     while (scope !== undefined && scope.kind !== 'Module') scope = tree.getParent(scope.id);
     return scope?.id ?? null;
   }
+  // File-struct members: the file's Class scope spans the whole file (same
+  // range as the Module scope, nested under it). Their DEFS stay owned by the
+  // Class scope (that is what makes them methods/fields of the file's Struct),
+  // but their NAMES must stay visible at module level — `Page.init()` from
+  // another file is a namespace-member lookup over the module scope's
+  // bindings, and `usingnamespace` expansion reads the same. Hoist every
+  // declaration binding hosted by an equal-range Class scope to its Module
+  // parent. Type bindings (`@type-binding.*`, incl. field types) are NOT
+  // hoisted: the compound resolver reads member types from the class scope.
+  const anchor = ZIG_DECLARATION_ANCHORS.map((k) => decl[k]).find((c) => c !== undefined);
+  if (anchor !== undefined) {
+    // Reproduce the extractor's auto-hoist (a scope-creating declaration is
+    // bound in the scope OUTSIDE its own body), then step past the file's
+    // Class scope when that is where the name would land.
+    let host: Scope | undefined = innermost;
+    if (host.parent !== null && sameRange(anchor.range, host.range)) {
+      host = tree.getParent(host.id);
+    }
+    if (host !== undefined && host.kind === 'Class' && host.parent !== null) {
+      const parent = tree.getParent(host.id);
+      if (parent !== undefined && parent.kind === 'Module' && sameRange(parent.range, host.range)) {
+        return parent.id;
+      }
+    }
+  }
   return null; // default auto-hoist for other bindings
+}
+
+const ZIG_DECLARATION_ANCHORS = [
+  '@declaration.function',
+  '@declaration.method',
+  '@declaration.struct',
+  '@declaration.enum',
+  '@declaration.union',
+  '@declaration.field',
+  '@declaration.variable',
+] as const;
+
+function sameRange(a: Scope['range'], b: Scope['range']): boolean {
+  return (
+    a.startLine === b.startLine &&
+    a.startCol === b.startCol &&
+    a.endLine === b.endLine &&
+    a.endCol === b.endCol
+  );
 }
 
 /** `pub usingnamespace @import("x.zig");` — every declaration of the target

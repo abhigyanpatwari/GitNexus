@@ -3,8 +3,8 @@ import type { VariableExtractionConfig, VariableVisibility } from '../../variabl
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { hasZigPubKeyword } from '../../export-detection.js';
 import {
-  isZigContainerOrImportBinding,
   isZigKeywordDeclaration,
+  isZigTypeShadowingBinding,
 } from '../../languages/zig/captures.js';
 
 /**
@@ -39,7 +39,7 @@ export const zigVariableConfig: VariableExtractionConfig = {
   variableNodeTypes: [],
 
   extractName(node) {
-    if (isZigContainerOrImportBinding(node)) return undefined;
+    if (isZigTypeShadowingBinding(node)) return undefined;
     // Statement assignments share the node type and have no keyword — not a
     // declaration (belt to the query's literal `"const"` / `"var"` brace).
     if (!isZigKeywordDeclaration(node)) return undefined;

@@ -52,6 +52,14 @@ export function isZigInlineImportReceiver(importNode: SyntaxNode): boolean {
  *  Struct / import). Shared by the scope walker, the variable extractor and
  *  the provider's `shouldSkipDefinitionCapture` so the structure-phase records
  *  and the scope-side bindings agree on what counts as a plain variable. */
+/** A binding whose name the type system already owns: a container / import
+ *  binding, or the top-level `@This()` self-alias of a file-struct. None of
+ *  these may mint a Const beside the Struct / import they stand for. */
+export function isZigTypeShadowingBinding(declNode: SyntaxNode): boolean {
+  if (isZigContainerOrImportBinding(declNode)) return true;
+  return isZigFileThisAlias(declNode) && isZigFileStruct(declNode.parent);
+}
+
 export function isZigContainerOrImportBinding(declNode: SyntaxNode): boolean {
   for (let i = 0; i < declNode.namedChildCount; i++) {
     const child = declNode.namedChild(i);
@@ -76,6 +84,53 @@ export function isZigKeywordDeclaration(declNode: SyntaxNode): boolean {
   return false;
 }
 
+/** Is `root` a FILE-STRUCT — a `.zig` file whose top level declares at least
+ *  one container field? In Zig every file is a struct; one with fields is an
+ *  instantiable type whose name is the file stem (`Page.zig` declares `Page`,
+ *  `@typeName(Page)` is `"Page"`), and its top-level `fn`s taking `self` are
+ *  its methods. A file WITHOUT fields is only a namespace and stays a Module:
+ *  its fns keep their `Function` ids. The MISSING-identifier placeholder
+ *  tree-sitter-zig recovers for an empty body is not a field (see
+ *  `zigFieldConfig.extractName`). */
+export function isZigFileStruct(root: SyntaxNode | null | undefined): boolean {
+  if (root?.type !== 'source_file') return false;
+  for (let i = 0; i < root.namedChildCount; i++) {
+    const child = root.namedChild(i);
+    if (child?.type !== 'container_field') continue;
+    const name = child.childForFieldName('name');
+    if (name !== null && name.text.length > 0) return true;
+  }
+  return false;
+}
+
+/** The type name a file-struct declares: the file stem (`src/browser/Page.zig`
+ *  → `Page`). This is what importers write (`const Page = @import("Page.zig")`)
+ *  and what `@typeName` reports; the in-file `const Page = @This();` alias is
+ *  a second spelling of the same type (see `zigThisAliasTargets`). */
+export function zigFileStructName(filePath: string): string {
+  const base = filePath.replace(/\\/g, '/').split('/').pop() ?? filePath;
+  return base.endsWith('.zig') ? base.slice(0, -'.zig'.length) : base;
+}
+
+/** Is `declNode` a top-level `const X = @This();` — the idiomatic self-alias of
+ *  a file-struct? Such a binding names the FILE's own type, so a file-struct
+ *  must not mint a `Const` (graph node or scope binding) beside the `Struct`
+ *  it aliases — the Const would shadow the type for every `x: *Page`. */
+export function isZigFileThisAlias(declNode: SyntaxNode): boolean {
+  if (declNode.type !== 'variable_declaration' || declNode.parent?.type !== 'source_file') {
+    return false;
+  }
+  if (!isZigKeywordDeclaration(declNode)) return false;
+  const named = declNode.namedChildren.filter((c): c is SyntaxNode => c !== null);
+  if (named.length !== 2 || named[0]!.type !== 'identifier') return false;
+  const value = named[1]!;
+  return (
+    value.type === 'builtin_function' &&
+    value.namedChild(0)?.type === 'builtin_identifier' &&
+    value.namedChild(0)?.text === '@This'
+  );
+}
+
 /** The binding name of a Zig container node, or undefined for a truly
  *  anonymous one. Two shapes carry a name:
  *    - `const Point = struct {…}` — the first identifier of the wrapping
@@ -85,7 +140,12 @@ export function isZigKeywordDeclaration(declNode: SyntaxNode): boolean {
  *      type, and every reader calls the returned container `List`, so the
  *      enclosing function's name IS the type name (`ArrayList(u8)`).
  *  Single source for the class/field/method extractor configs. */
-export function zigContainerName(containerNode: SyntaxNode): string | undefined {
+export function zigContainerName(containerNode: SyntaxNode, filePath?: string): string | undefined {
+  if (containerNode.type === 'source_file') {
+    return filePath !== undefined && isZigFileStruct(containerNode)
+      ? zigFileStructName(filePath)
+      : undefined;
+  }
   const parent = containerNode.parent;
   if (parent === null || parent === undefined) return undefined;
   if (parent.type === 'variable_declaration') {
@@ -137,9 +197,79 @@ export function isZigContainerMethod(
   let ancestor = captureNode?.parent;
   while (ancestor) {
     if (ZIG_CONTAINER_TYPES.has(ancestor.type)) return true;
+    // A top-level fn of a FILE-STRUCT is a method of the file's type.
+    if (ancestor.type === 'source_file') return isZigFileStruct(ancestor);
     ancestor = ancestor.parent;
   }
   return false;
+}
+
+/** Every `const X = @This();` in the tree, keyed by the alias node id's owner:
+ *  returns a map from the DECLARING container node id to `[aliasName,
+ *  containerName]`. The file-level alias maps to the file-struct name (only
+ *  when the file is a file-struct — a namespace-only file's `const js =
+ *  @This();` stays a Const and is not a type to rewrite to). */
+function collectZigThisAliases(
+  root: SyntaxNode,
+  fileStructName: string | undefined,
+): Map<number, { readonly alias: string; readonly container: string }> {
+  const out = new Map<number, { readonly alias: string; readonly container: string }>();
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === 'variable_declaration') {
+      const named = node.namedChildren.filter((c): c is SyntaxNode => c !== null);
+      const value = named[named.length - 1];
+      if (
+        named.length === 2 &&
+        named[0]!.type === 'identifier' &&
+        value?.type === 'builtin_function' &&
+        value.namedChild(0)?.text === '@This' &&
+        isZigKeywordDeclaration(node)
+      ) {
+        const owner = node.parent;
+        if (owner?.type === 'source_file') {
+          if (fileStructName !== undefined) {
+            out.set(owner.id, { alias: named[0]!.text, container: fileStructName });
+          }
+        } else if (owner !== null && ZIG_CONTAINER_TYPES.has(owner.type)) {
+          const containerName = zigContainerName(owner);
+          if (containerName !== undefined) {
+            out.set(owner.id, { alias: named[0]!.text, container: containerName });
+          }
+        }
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null) visit(child);
+    }
+  };
+  visit(root);
+  return out;
+}
+
+/** If the nominal part of the type written at `typeNode` is a `@This()` alias
+ *  of an enclosing container, the same text with the alias replaced by the
+ *  container's name; undefined when nothing applies. Innermost container wins
+ *  (a nested `Self` shadows the file's). */
+function rewriteZigThisAlias(
+  typeNode: SyntaxNode,
+  aliases: ReadonlyMap<number, { readonly alias: string; readonly container: string }>,
+): string | undefined {
+  const text = typeNode.text;
+  const nominal = /[A-Za-z_@][\w.]*(?:\([^)]*\))?\s*$/.exec(text)?.[0]?.trim();
+  if (nominal === undefined || nominal.length === 0) return undefined;
+  const bare = nominal.replace(/\(.*\)$/, '');
+  let ancestor: SyntaxNode | null = typeNode.parent;
+  while (ancestor !== null) {
+    const entry = aliases.get(ancestor.id);
+    if (entry !== undefined && entry.alias === bare) {
+      if (entry.container === bare) return undefined;
+      const idx = text.lastIndexOf(bare);
+      return text.slice(0, idx) + entry.container + text.slice(idx + bare.length);
+    }
+    ancestor = ancestor.parent;
+  }
+  return undefined;
 }
 
 /**
@@ -251,6 +381,28 @@ export function emitZigScopeCaptures(
     }
   }
 
+  // File-struct (top-level fields): the file IS a type named after the file.
+  // Emit a Class scope over the whole file (nested under the Module scope —
+  // the equal-range Module/Class pair is the C# `namespace`-only-file shape
+  // `canParentScope` admits) and a Struct def anchored on the same node, so
+  // top-level fns/fields become its owned members (`populateClassOwnedMembers`)
+  // and `self: *Page` / `page: *Page` resolve to a class-like def. Name
+  // bindings of those members are hoisted back to the Module scope by
+  // `zigBindingScopeFor` so `Page.init()` (namespace member) keeps working.
+  const root = tree.rootNode;
+  const fileStruct = isZigFileStruct(root);
+  const fileStructName = fileStruct ? zigFileStructName(_filePath) : undefined;
+  if (fileStruct && fileStructName !== undefined) {
+    out.push({ '@scope.class': nodeToCapture('@scope.class', root) });
+    out.push({
+      '@declaration.struct': nodeToCapture('@declaration.struct', root),
+      '@declaration.name': syntheticCapture('@declaration.name', root, fileStructName),
+    });
+  }
+  // `@This()` aliases: alias name ↦ the container it names (file stem for the
+  // file-struct, binding name for `const Self = @This();` inside a container).
+  const thisAliases = collectZigThisAliases(root, fileStructName);
+
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
     const nodeMap: Record<string, SyntaxNode> = {};
@@ -343,9 +495,26 @@ export function emitZigScopeCaptures(
       variableAnchor !== undefined &&
       (isZigContainerOrImportBinding(variableAnchor) ||
         aliasDeclIds.has(variableAnchor.id) ||
-        !isZigKeywordDeclaration(variableAnchor))
+        !isZigKeywordDeclaration(variableAnchor) ||
+        // `const Page = @This();` in a file-struct names the file's own type,
+        // which the synthetic `@declaration.struct` below already binds.
+        (fileStruct && isZigFileThisAlias(variableAnchor)))
     ) {
       continue;
+    }
+
+    // `@This()` aliases in type position — `self: *Self` in a container that
+    // declares `const Self = @This();`, or `self: *SigHandler` in
+    // `Sighandler.zig` (`const SigHandler = @This();`) — name the enclosing
+    // container. Rewrite the type text to that container's name so the
+    // receiver binding resolves to the Struct (Rust does the same for `Self`,
+    // rust/captures.ts). Only the nominal part is rewritten; sigils stay.
+    const typeNode = nodeMap['@type-binding.type'];
+    if (typeNode !== undefined && thisAliases.size > 0) {
+      const rewritten = rewriteZigThisAlias(typeNode, thisAliases);
+      if (rewritten !== undefined) {
+        grouped['@type-binding.type'] = syntheticCapture('@type-binding.type', typeNode, rewritten);
+      }
     }
 
     // Zig's receiver convention is specifically the FIRST parameter named
@@ -397,6 +566,35 @@ export function emitZigScopeCaptures(
     }
 
     out.push(grouped);
+
+    // `const Page = @import("Page.zig")` binds BOTH the module (namespace:
+    // `Page.init()`) and, when the target is a file-struct, the type it
+    // declares (`page: *Page`, `var p: Page`). The type is exported from the
+    // target under its file stem, so emit a second, NAMED import of that stem
+    // beside the namespace import. For a target that is only a namespace the
+    // named import finds no such export and binds nothing.
+    const importStmt = nodeMap['@import.statement'];
+    if (
+      importStmt !== undefined &&
+      isZigKeywordDeclaration(importStmt) &&
+      nodeMap['@import.imported'] === undefined &&
+      nodeMap['@import.name'] !== undefined &&
+      nodeMap['@import.source'] !== undefined
+    ) {
+      const source = nodeMap['@import.source'].text.replace(/^["']|["']$/g, '');
+      if (source.endsWith('.zig')) {
+        out.push({
+          '@import.statement': grouped['@import.statement']!,
+          '@import.name': grouped['@import.name']!,
+          '@import.source': grouped['@import.source']!,
+          '@import.imported': syntheticCapture(
+            '@import.imported',
+            nodeMap['@import.name'],
+            zigFileStructName(source),
+          ),
+        });
+      }
+    }
   }
 
   // A generic type constructor yields two module-scope defs of one name: the
