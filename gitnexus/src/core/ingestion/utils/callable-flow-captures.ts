@@ -1137,7 +1137,13 @@ function wrappedExpression(node: SyntaxNode): SyntaxNode | null {
     node.childForFieldName('expression') ??
     node.childForFieldName('value');
   if (field !== null && field.id !== node.id && node.namedChildCount === 1) return field;
+  // `await` is a wrapper, not a callee: tree-sitter-typescript parses
+  // `await f<T>(x)` as `call_expression(function: await_expression(f), …)`,
+  // and `await_expression` carries its operand without a field name, so the
+  // field-based unwrap above misses it. Unwrapping keeps `f` a direct
+  // designator (`direct-callee-name`), as it is for the un-awaited spelling.
   if (
+    node.type.includes('await_expression') ||
     node.type.includes('parenthesized') ||
     node.type.includes('reference_expression') ||
     node.type.includes('pointer_expression') ||
