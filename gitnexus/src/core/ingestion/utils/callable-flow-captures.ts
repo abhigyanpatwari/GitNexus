@@ -120,6 +120,15 @@ export interface CallableFlowCaptureOptions {
     | readonly { readonly destination: SyntaxNode; readonly source: SyntaxNode }[]
     | undefined;
   readonly extractFunctionParameters?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
+  /**
+   * Provider-owned call-argument extraction, for grammars whose call node
+   * carries its arguments as DIRECT children with no argument-list wrapper
+   * (tree-sitter-zig's `call_expression`). Without a wrapper node the shared
+   * `arguments`/`parameterListNodeTypes` lookup finds nothing, so every
+   * `argument` fact is lost. Returning `undefined` falls back to the shared
+   * path (mirrors `extractFunctionParameters`).
+   */
+  readonly extractCallArguments?: (call: SyntaxNode) => readonly SyntaxNode[] | undefined;
   readonly extractCallCallee?: (node: SyntaxNode) => SyntaxNode | undefined;
   readonly isCallNode?: (node: SyntaxNode) => boolean;
   /**
@@ -891,6 +900,8 @@ function callArguments(
   call: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly SyntaxNode[] {
+  const providerArguments = options.extractCallArguments?.(call);
+  if (providerArguments !== undefined) return providerArguments;
   const list =
     call.childForFieldName('arguments') ??
     call.childForFieldName('argument') ??

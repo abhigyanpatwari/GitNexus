@@ -3,6 +3,7 @@ import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getZigParser, getZigScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
 export const ZIG_CONTAINER_TYPES: ReadonlySet<string> = new Set([
   'struct_declaration',
@@ -42,6 +43,51 @@ export function isZigContainerMethod(
   }
   return false;
 }
+
+/**
+ * Callable-value-flow vocabulary for tree-sitter-zig 1.1.2 (verified by AST
+ * dump). Two grammar quirks drive the callbacks:
+ *
+ * - `variable_declaration` is FIELDLESS apart from `type:` — `const f = target;`
+ *   is `(variable_declaration (identifier) (identifier))`, and a bare
+ *   re-assignment statement `f = target;` parses to the SAME node shape. The
+ *   shared `left`/`name`/`value` fallback decomposes nothing, so
+ *   `extractAssignment` pairs first-identifier → last-child positionally.
+ *   `assignment_expression` (`self.f = target`) carries real `left`/`right`
+ *   fields and is left to the shared path.
+ * - `call_expression` has NO argument-list wrapper: `invoke(second)` is
+ *   `(call_expression function: (identifier) (identifier))`. Arguments are
+ *   every named child other than the `function` field, hence
+ *   `extractCallArguments`.
+ *
+ * `builtin_function` (`@import`, `@sizeOf`, …) is deliberately not a call node:
+ * builtins never take user callables as flow arguments.
+ */
+const ZIG_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_declaration']),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['parameters']),
+  parameterNodeTypes: new Set(['parameter']),
+  bindingNodeTypes: new Set(['variable_declaration']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['identifier']),
+  extractAssignment: (node: SyntaxNode) => {
+    if (node.type !== 'variable_declaration') return undefined;
+    const named = node.namedChildren.filter((child): child is SyntaxNode => child !== null);
+    if (named.length < 2 || named[0]!.type !== 'identifier') return undefined;
+    const source = named[named.length - 1]!;
+    // `const x: T;` (extern) — the trailing child is the type, not a value.
+    if (source.id === node.childForFieldName('type')?.id) return undefined;
+    return { destination: named[0]!, source };
+  },
+  extractCallArguments: (call: SyntaxNode) => {
+    const callee = call.childForFieldName('function');
+    return call.namedChildren.filter(
+      (child): child is SyntaxNode =>
+        child !== null && child.id !== callee?.id && child.type !== 'comment',
+    );
+  },
+} as const;
 
 export function emitZigScopeCaptures(
   sourceText: string,
@@ -87,6 +133,8 @@ export function emitZigScopeCaptures(
 
     out.push(grouped);
   }
+
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, ZIG_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

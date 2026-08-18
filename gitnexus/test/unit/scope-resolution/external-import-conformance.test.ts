@@ -362,6 +362,22 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       reachesDecoy: 'CUSTREC',
     },
   ],
+  [
+    SupportedLanguages.Zig,
+    {
+      // `@import("std")` is the standard library, and Zig's resolver answers
+      // null for the stdlib names outright — it never suffix-matches a bare
+      // name against the file set, so a repo file that happens to be called
+      // `std.zig` is not a candidate. The same file IS reachable through the
+      // filesystem-relative spelling, which is what the decoy arm proves.
+      files: ['src/std.zig', 'src/util.zig', 'src/main.zig'],
+      fromFile: 'src/main.zig',
+      resolutionConfig: undefined,
+      external: 'std',
+      decoy: 'src/std.zig',
+      reachesDecoy: 'std.zig',
+    },
+  ],
 ]);
 
 /**

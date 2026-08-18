@@ -33,6 +33,7 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.Dart]: 'matrix',
   [SupportedLanguages.Vue]: 'matrix',
   [SupportedLanguages.Cobol]: 'matrix',
+  [SupportedLanguages.Zig]: 'matrix',
 } as const satisfies Record<SupportedLanguages, 'matrix' | 'dedicated'>;
 
 const PROVIDER_FLOW_CASES = [
@@ -249,6 +250,21 @@ PROGRAM-ID. TARGET.
 PROCEDURE DIVISION.
     GOBACK.
 END PROGRAM TARGET.
+`,
+  },
+  {
+    language: SupportedLanguages.Zig,
+    extension: 'zig',
+    caller: 'invoke',
+    target: 'target',
+    source: `
+fn target() void {}
+fn invoke(callback: *const fn () void) void { callback(); }
+pub fn main() void {
+    const first = target;
+    const second = first;
+    invoke(second);
+}
 `,
   },
 ] as const;
