@@ -90,14 +90,16 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
  */
 export function normalizeZigTypeName(text: string): string {
   let t = text.trim();
+  // Error union first: the payload of `E!*T` / `!?T` carries its own sigils
+  // (F6: `Allocator.Error!*Page` is the shape of every fallible constructor).
+  const bang = t.lastIndexOf('!');
+  if (bang !== -1) t = t.slice(bang + 1).trim();
   let previous: string;
   do {
     previous = t;
     t = t.replace(/^(\*|\?|\[\*?c?\]|\[[^\]]*\])\s*/, '');
     t = t.replace(/^const\s+/, '');
   } while (t !== previous);
-  const bang = t.lastIndexOf('!');
-  if (bang !== -1) t = t.slice(bang + 1).trim();
   // Generic instantiation `List(u8)` / `std.ArrayList(u8)` → the type
   // constructor `List` / `std.ArrayList`: Zig spells a generic type as a
   // call, and the container def is registered under the function's name.
@@ -129,7 +131,22 @@ export function interpretZigTypeBinding(captures: CaptureMatch): ParsedTypeBindi
     // `var c = Counter.init();` — the call's receiver names the type when it
     // is a container (`Counter`, `mod.Counter`, `List(u8)`); a value receiver
     // (`std.mem`, `self.items`) simply finds no container and declines.
+    // `const t = makeThing();` — the callee name, chained to its return
+    // binding by the shared resolver.
     source = 'constructor-inferred';
+    // `const el = node.asElement();` on a fn-LOCAL receiver (F6): the type is
+    // the METHOD's return type, spelled as the compound `node.asElement()` the
+    // shared resolver walks (receiver binding → class scope → the method's
+    // `@type-binding.return`). Kept verbatim: `normalizeZigTypeName` would
+    // read the `()` as a generic instantiation and strip it.
+    if (captures['@type-binding.member-call-return'] !== undefined) {
+      return { boundName: name, rawTypeName: type.trim(), source };
+    }
+  } else if (captures['@type-binding.return'] !== undefined) {
+    // `fn make() !*Thing` — `make ↦ Thing`, in the enclosing scope, so a
+    // call site chains through it. Error unions / pointers / optionals are
+    // stripped by `normalizeZigTypeName` (`Allocator.Error!*Page` → `Page`).
+    source = 'return-annotation';
   } else if (captures['@type-binding.annotation'] !== undefined) {
     // `var x: T = undefined;` / `const x: T = .init(…);` — the declared type.
     source = 'annotation';

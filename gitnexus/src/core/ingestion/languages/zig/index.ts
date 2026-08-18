@@ -9,9 +9,18 @@ export {
   zigContainerName,
   zigFileStructName,
   zigImportRootOf,
+  zigCallReturnTypeOf,
+  zigReturnTypeIsNominal,
   zigTypeConstructorOf,
+  zigUnwrapValue,
   ZIG_CONTAINER_TYPES,
 } from './captures.js';
+export {
+  populateZigRangeBindings,
+  zigElementSpelling,
+  zigOptionalPayloadSpelling,
+  zigPointeeSpelling,
+} from './range-binding.js';
 export { interpretZigImport, interpretZigTypeBinding, normalizeZigTypeName } from './interpret.js';
 export {
   expandZigWildcardNames,

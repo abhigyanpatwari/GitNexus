@@ -31,6 +31,11 @@ import {
   interpretZigTypeBinding,
   normalizeZigTypeName,
 } from '../../src/core/ingestion/languages/zig/interpret.js';
+import {
+  zigElementSpelling,
+  zigOptionalPayloadSpelling,
+  zigPointeeSpelling,
+} from '../../src/core/ingestion/languages/zig/range-binding.js';
 import { createFieldExtractor } from '../../src/core/ingestion/field-extractors/generic.js';
 import { zigFieldConfig } from '../../src/core/ingestion/field-extractors/configs/zig.js';
 import { zigProvider } from '../../src/core/ingestion/languages/zig.js';
@@ -1242,3 +1247,164 @@ pub fn run(self: *Holder) void {
     });
   },
 );
+
+describeZig('Zig value-inferred and return-type bindings (F6)', () => {
+  const bindingsOf = (src: string, file = 'x.zig') =>
+    emitZigScopeCaptures(src, file)
+      .filter(
+        (m) => m['@type-binding.name'] !== undefined && m['@type-binding.parameter'] === undefined,
+      )
+      .map((m) => ({
+        ...interpretZigTypeBinding(m),
+        kind: Object.keys(m).find(
+          (k) =>
+            k !== '@type-binding.name' &&
+            k !== '@type-binding.type' &&
+            k !== '@type-binding.member-call-return',
+        ),
+      }));
+  const cr = (boundName: string, rawTypeName: string) => ({
+    boundName,
+    rawTypeName,
+    source: 'constructor-inferred',
+    kind: '@type-binding.call-return',
+  });
+  const ret = (boundName: string, rawTypeName: string) => ({
+    boundName,
+    rawTypeName,
+    source: 'return-annotation',
+    kind: '@type-binding.return',
+  });
+
+  it('unwraps try / catch / orelse / parens around a constructor call — the receiver still names the type', () => {
+    // Before: the call had to be the DIRECT value child, so every one of
+    // these (2,551 `try T.f()` sites in Lightpanda) typed nothing.
+    const src = `
+fn f() !void {
+    const a = try Thing.make();
+    const b = Thing.make() catch return;
+    const c = Thing.maybe() orelse return;
+    const d = (Thing.make());
+    const e = try Thing.make() catch |err| return err;
+    var g = try mod.Thing.make();
+}
+`;
+    expect(bindingsOf(src)).toEqual([
+      cr('a', 'Thing'),
+      cr('b', 'Thing'),
+      cr('c', 'Thing'),
+      cr('d', 'Thing'),
+      cr('e', 'Thing'),
+      cr('g', 'mod.Thing'),
+    ]);
+  });
+
+  it('a wrapped struct literal (`try Thing{…}`) is a constructor binding', () => {
+    expect(bindingsOf('fn f() !void { const t = try Thing{ .a = 1 }; }')).toEqual([
+      {
+        boundName: 't',
+        rawTypeName: 'Thing',
+        source: 'constructor-inferred',
+        kind: '@type-binding.constructor',
+      },
+    ]);
+  });
+
+  it('a free call binds the callee name (chained to its return binding); a member call on a fn-LOCAL receiver binds the compound `recv.method()`', () => {
+    const src = `
+fn f(node: *Node) void {
+    const t = makeThing();
+    const el = try node.asElement();
+    const p = self.parser.next();
+    for (items) |it| { const n = it.next(); }
+}
+const R = struct { pub fn go(self: *R) void { const q = self.current(); } };
+`;
+    expect(bindingsOf(src)).toEqual([
+      cr('t', 'makeThing'),
+      // `node` is a parameter: the type is asElement's RETURN, walked by the
+      // shared compound resolver — NOT `Node` (the old rule typed el as its
+      // receiver, a confidently wrong owner for `el.m()`).
+      cr('el', 'node.asElement()'),
+      // `self` is NOT a local of `f` (no such parameter): module-level
+      // receiver semantics — the receiver text is the type (declines later).
+      cr('p', 'self.parser'),
+      // a payload capture is a local too
+      cr('n', 'it.next()'),
+      cr('q', 'self.current()'),
+    ]);
+  });
+
+  it('emits nothing for a TitleCase callee (type constructor), a decl literal, an identifier or a field chain', () => {
+    const src = `
+fn f() void {
+    const B = util.List(u8);
+    const L = List(u8);
+    const X = Foo.Bar();
+    const d = .init();
+    const y = other;
+    const z = a.b;
+    const n = 42;
+}
+`;
+    expect(bindingsOf(src)).toEqual([]);
+  });
+
+  it('binds a fn name to its NOMINAL return type; builtins, `type`, @TypeOf and comptime type parameters bind nothing', () => {
+    const src = `
+pub const Iter = struct {
+    const Self = @This();
+    pub fn next(self: *Iter) ?Thing { _ = self; return null; }
+    pub fn me(self: *Iter) *Self { return self; }
+    pub fn mine() @This() { return .{}; }
+    pub fn count(self: *Iter) usize { _ = self; return 0; }
+    pub fn is(self: *Iter, comptime T: type) ?*T { _ = self; return null; }
+    pub fn Wrap(comptime T: type) type { return struct { pub fn get(self: *@This()) T { _ = self; } }; }
+};
+pub fn makeErr() std.mem.Allocator.Error!*Thing { return .{}; }
+pub fn make0() void {}
+pub fn make1() []const u8 {}
+pub fn make2() @TypeOf(x) {}
+pub fn make3() !List(u8) {}
+`;
+    expect(bindingsOf(src)).toEqual([
+      ret('next', 'Thing'),
+      // `*Self` and `@This()` both name the enclosing container
+      ret('me', 'Iter'),
+      ret('mine', 'Iter'),
+      ret('makeErr', 'Thing'),
+      ret('make3', 'List'),
+    ]);
+  });
+
+  it('a file-struct’s `@This()` return names the file stem', () => {
+    const src = `
+count: u32 = 0,
+pub fn init() @This() { return .{}; }
+`;
+    expect(bindingsOf(src, 'src/Page.zig')).toEqual([ret('init', 'Page')]);
+  });
+
+  it('normalizes an error-union payload’s own sigils (`Allocator.Error!*Page` → `Page`)', () => {
+    expect(normalizeZigTypeName('Allocator.Error!*Page')).toBe('Page');
+    expect(normalizeZigTypeName('!?*const Page')).toBe('Page');
+    expect(normalizeZigTypeName('anyerror![]Thing')).toBe('Thing');
+  });
+
+  it('projects one layer off a written type for payloads and projections', () => {
+    expect(zigElementSpelling('[]Thing')).toBe('Thing');
+    expect(zigElementSpelling('[]const *Thing')).toBe('*Thing');
+    expect(zigElementSpelling('[4]Thing')).toBe('Thing');
+    expect(zigElementSpelling('[*:0]const u8')).toBe('u8');
+    expect(zigElementSpelling('*const []Thing')).toBe('Thing');
+    expect(zigElementSpelling('![]Thing')).toBe('Thing');
+    // not visibly iterable — declines instead of guessing
+    expect(zigElementSpelling('std.ArrayList(Thing)')).toBeUndefined();
+    expect(zigElementSpelling('Thing')).toBeUndefined();
+    expect(zigOptionalPayloadSpelling('?*Thing')).toBe('*Thing');
+    expect(zigOptionalPayloadSpelling('!?Thing')).toBe('Thing');
+    expect(zigOptionalPayloadSpelling('*Thing')).toBeUndefined();
+    expect(zigPointeeSpelling('*const Thing')).toBe('Thing');
+    expect(zigPointeeSpelling('Thing')).toBeUndefined();
+  });
+});

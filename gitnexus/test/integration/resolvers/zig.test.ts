@@ -552,4 +552,59 @@ describe.skipIf(!zigAvailable)('Zig type aliases (zig-filestruct fixture, aliase
     // resolves `main`'s discards to anything.
     expect(calls.filter((c) => c.startsWith('main → '))).toEqual([]);
   });
+
+  // F6 — locals bound WITHOUT an annotation (src/flow.zig). Before this, the
+  // call-return rule needed the `call_expression` as the DIRECT value child,
+  // so `const p = try Page.make(s)` (the shape of 2,551 Lightpanda sites),
+  // `… catch return`, `… orelse return` typed nothing; no fn had a
+  // return-type binding, so `const t = makeThing()` / `const el =
+  // node.asElement()` typed nothing; and payload captures (`for … |*p|`,
+  // `if (o) |p|`, `while (it.next()) |p|`) had no binding at all. Every
+  // edge below is a method call on such a local.
+  it('types a local through try / catch / orelse / parens around a constructor call', () => {
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    expect(calls).toContain('viaTry → bump');
+    expect(calls).toContain('viaCatch → bump');
+    expect(calls).toContain('viaOrelse → name');
+    expect(calls).toContain('viaParens → bump');
+    // `try Page{ .session = s }` — a wrapped struct literal
+    expect(calls).toContain('viaTryLiteral → bump');
+  });
+
+  it('types a local from the callee’s RETURN type: free call, member call on a local, member call on self', () => {
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    // `const p = makeLocal();` — `fn makeLocal() Page`
+    expect(calls).toContain('viaFreeCall → bump');
+    // `const s = p.getSession();` — `p: *Page`, `fn getSession(self: *Page) *Session`.
+    // The RECEIVER is a Page: had the old "receiver names the type" rule
+    // applied to a value receiver, `s` would be a Page and `s.name()` would
+    // find no method (or the wrong one).
+    expect(calls).toContain('viaMemberReturn → name');
+    // `const p = self.current();` inside `Runner`
+    expect(calls).toContain('go → bump');
+    // A TitleCase callee (`const L = List(u8)`) is a type constructor: the free
+    // call itself resolves, and NOTHING else — `List ↦ type` must not bind.
+    expect(calls.filter((c) => c.startsWith('viaTypeConstructor →'))).toEqual([
+      'viaTypeConstructor → List',
+    ]);
+  });
+
+  it('types payload captures from the subject: for |*p| / |p|, for (…, 0..) |p, i|, if (o) |p|, if (call) |s|, while (it.next()) |p|', () => {
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    expect(calls).toContain('forSlice → bump');
+    expect(calls).toContain('forSlice → getArena');
+    expect(calls).toContain('forIndexed → bump');
+    expect(calls).toContain('ifOptional → bump');
+    // `if (p.maybeSession()) |s|` — the payload of the METHOD's `?*Session`
+    expect(calls).toContain('ifCallOptional → name');
+    // `while (s.next()) |p|` — `fn next(self: *Session) ?*Page`
+    expect(calls).toContain('whileNext → bump');
+  });
+
+  it('types one-layer projections bound to a local: items[i], opt.?, ptr.*', () => {
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    expect(calls).toContain('viaIndex → bump');
+    expect(calls).toContain('viaUnwrap → bump');
+    expect(calls).toContain('viaDeref → bump');
+  });
 });

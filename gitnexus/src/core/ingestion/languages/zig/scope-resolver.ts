@@ -18,6 +18,7 @@ import { loadZigBuildConfig, type ZigBuildZonConfig } from '../../language-confi
 import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
 import { zigProvider } from '../zig.js';
 import { expandZigWildcardNames, zigArityCompatibility, zigMergeBindings } from './index.js';
+import { populateZigRangeBindings } from './range-binding.js';
 
 export const zigScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Zig,
@@ -45,6 +46,10 @@ export const zigScopeResolver: ScopeResolver = {
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+
+  // Payload captures — `for (items) |it|`, `if (opt) |v|`, `while (it.next())
+  // |x|` — typed from the subject's binding after finalize (F6).
+  populateRangeBindings: populateZigRangeBindings,
 
   // Zig has no `super`.
   isSuperReceiver: () => false,

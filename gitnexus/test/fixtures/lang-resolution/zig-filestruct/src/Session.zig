@@ -11,3 +11,9 @@ pub fn findFrame(self: *Session, page: *Page) u32 {
     // Method call on a parameter typed by ANOTHER file-struct.
     return page.getArena();
 }
+
+// F6 — an iterator-shaped method: `while (s.next()) |p| p.bump()`.
+pub fn next(self: *Session) ?*Page {
+    _ = self;
+    return null;
+}

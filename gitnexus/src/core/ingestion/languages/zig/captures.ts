@@ -288,8 +288,10 @@ function collectZigThisAliases(
 function rewriteZigThisAlias(
   typeNode: SyntaxNode,
   aliases: ReadonlyMap<number, { readonly alias: string; readonly container: string }>,
+  // The text to rewrite: the node's own, unless an earlier step (F6's value
+  // inference) already replaced the capture text.
+  text: string = typeNode.text,
 ): string | undefined {
-  const text = typeNode.text;
   const nominal = /[A-Za-z_@][\w.]*(?:\([^)]*\))?\s*$/.exec(text)?.[0]?.trim();
   if (nominal === undefined || nominal.length === 0) return undefined;
   const bare = nominal.replace(/\(.*\)$/, '');
@@ -369,6 +371,252 @@ const ZIG_CALLABLE_CAPTURE_OPTIONS = {
     );
   },
 } as const;
+
+// ─── F6: value-inferred and return-type bindings ─────────────────────────────
+
+/** Strip the value wrappers Zig puts around a call — `try f()`, `f() catch
+ *  …`, `f() orelse …`, `(f())` — down to the wrapped expression. Rust's
+ *  `.await` unwrapping, one level richer. */
+export function zigUnwrapValue(value: SyntaxNode): SyntaxNode {
+  let cur = value;
+  for (;;) {
+    if (cur.type === 'try_expression' || cur.type === 'parenthesized_expression') {
+      const inner = cur.namedChildren.find(
+        (c): c is SyntaxNode => c !== null && c.type !== 'comment',
+      );
+      if (inner === undefined) return cur;
+      cur = inner;
+    } else if (cur.type === 'catch_expression') {
+      // `<operand> catch [|err|] <handler>` — the operand is the first child.
+      const inner = cur.namedChild(0);
+      if (inner === null) return cur;
+      cur = inner;
+    } else if (cur.type === 'binary_expression') {
+      if (cur.childForFieldName('operator')?.type !== 'orelse') return cur;
+      const left = cur.childForFieldName('left');
+      if (left === null) return cur;
+      cur = left;
+    } else {
+      return cur;
+    }
+  }
+}
+
+/** Zig style: types are TitleCase, functions camelCase, namespaces
+ *  snake_case. A TitleCase callee (`List(u8)`, `std.ArrayList(T)`) is a type
+ *  constructor — its call yields a TYPE, not a value, and is a type alias
+ *  (F7), not a call-return binding. */
+function isZigTitleCase(name: string): boolean {
+  return /^[A-Z]/.test(name);
+}
+
+/** The leftmost identifier of a `field_expression` chain (`self.parser` →
+ *  `self`), the identifier itself, or null when the chain roots in anything
+ *  else (a call, an index, a builtin). */
+function zigChainHead(node: SyntaxNode): SyntaxNode | null {
+  let cur: SyntaxNode | null = node;
+  while (cur !== null && cur.type === 'field_expression') cur = cur.childForFieldName('object');
+  return cur !== null && cur.type === 'identifier' ? cur : null;
+}
+
+/** Names bound INSIDE `fn` (parameters, `const`/`var` locals, payload
+ *  captures), lazily computed once per function node. Zig forbids shadowing,
+ *  so a name declared anywhere in the function is a value local everywhere in
+ *  it, and a name NOT declared in it is a module-level (or imported) name.
+ *  That is the whole distinction `zigCallReturnTypeOf` needs: a call on a
+ *  local receiver (`node.asElement()`) yields the METHOD's return type, a
+ *  call on a module-level receiver (`Counter.init()`, `mod.Counter.init()`)
+ *  names the receiver's type. */
+function zigFunctionLocalNames(fn: SyntaxNode, cache: Map<number, Set<string>>): Set<string> {
+  const cached = cache.get(fn.id);
+  if (cached !== undefined) return cached;
+  const names = new Set<string>();
+  const visit = (node: SyntaxNode): void => {
+    if (node.type === 'parameter') {
+      const name = node.childForFieldName('name');
+      if (name !== null) names.add(name.text);
+    } else if (node.type === 'variable_declaration' && isZigKeywordDeclaration(node)) {
+      const first = node.namedChild(0);
+      if (first?.type === 'identifier') names.add(first.text);
+    } else if (node.type === 'payload') {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const c = node.namedChild(i);
+        if (c?.type === 'identifier') names.add(c.text);
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c !== null) visit(c);
+    }
+  };
+  visit(fn);
+  cache.set(fn.id, names);
+  return names;
+}
+
+/** The nearest enclosing `function_declaration` / `test_declaration`, or
+ *  null at module (container) level. */
+function zigEnclosingFunction(node: SyntaxNode): SyntaxNode | null {
+  let cur = node.parent;
+  while (cur !== null && cur !== undefined) {
+    if (cur.type === 'function_declaration' || cur.type === 'test_declaration') return cur;
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/** For `const t = <value>;`, the type source the value names, or undefined
+ *  when the value types nothing on its own:
+ *    - `Counter.init()` / `mod.Counter.init()` / `List(u8).init()` (receiver
+ *      is a module-level name) → `{ type: 'Counter' }` — the receiver names
+ *      the type (Rust `Foo::new()`); a value receiver simply finds no
+ *      container later and declines.
+ *    - `node.asElement()` / `self.parser.next()` (receiver head is a fn-local
+ *      param / local / payload) → `{ type: 'node.asElement()', memberCall:
+ *      true }` — the compound shape the shared resolver walks through the
+ *      receiver's class scope to the method's `@type-binding.return`.
+ *    - `makeThing()` (free call) → `{ type: 'makeThing' }` — chains to the
+ *      fn's return binding.
+ *    - a `struct_initializer` under a wrapper (`try Thing{…}`) → its type,
+ *      `structLiteral: true` (the direct shape has its own query rules).
+ *    - `.init()` decl literals, TitleCase callees (type constructors —
+ *      aliases, F7), identifiers, field chains, literals → undefined.
+ *  Wrappers (`try`, `catch`, `orelse`, parens) are unwrapped first. */
+export function zigCallReturnTypeOf(
+  value: SyntaxNode,
+  localNamesCache: Map<number, Set<string>>,
+):
+  | { readonly type: string; readonly memberCall?: true; readonly structLiteral?: true }
+  | undefined {
+  const inner = zigUnwrapValue(value);
+  if (inner.type === 'struct_initializer') {
+    if (inner.id === value.id) return undefined; // direct: the constructor rules own it
+    const typeNode = inner.namedChild(0);
+    if (
+      typeNode === null ||
+      !(
+        typeNode.type === 'identifier' ||
+        typeNode.type === 'field_expression' ||
+        typeNode.type === 'call_expression'
+      )
+    ) {
+      return undefined;
+    }
+    return { type: typeNode.text, structLiteral: true };
+  }
+  if (inner.type !== 'call_expression') return undefined;
+  const callee = inner.childForFieldName('function');
+  if (callee === null) return undefined;
+  if (callee.type === 'identifier') {
+    return isZigTitleCase(callee.text) ? undefined : { type: callee.text };
+  }
+  if (callee.type !== 'field_expression') return undefined;
+  const object = callee.childForFieldName('object');
+  const member = callee.childForFieldName('member');
+  if (object === null || member === null) return undefined; // `.init()` decl literal
+  if (isZigTitleCase(member.text)) return undefined;
+  const head = zigChainHead(object);
+  if (head !== null) {
+    const fn = zigEnclosingFunction(value);
+    if (fn !== null && zigFunctionLocalNames(fn, localNamesCache).has(head.text)) {
+      return { type: `${object.text}.${member.text}()`, memberCall: true };
+    }
+  }
+  return { type: object.text };
+}
+
+/** Return-type node → the nominal type node under its sigils (`!*Thing` →
+ *  `Thing`), following error-union `ok`, pointer / nullable / slice / array
+ *  wrappers. Undefined when it bottoms out in nothing nominal. */
+function zigNominalTypeNode(typeNode: SyntaxNode): SyntaxNode | undefined {
+  let cur: SyntaxNode | null | undefined = typeNode;
+  for (let guard = 0; cur !== null && cur !== undefined && guard < 16; guard++) {
+    switch (cur.type) {
+      case 'error_union_type':
+        cur = cur.childForFieldName('ok');
+        continue;
+      case 'pointer_type':
+      case 'nullable_type':
+      case 'slice_type':
+      case 'array_type':
+        // The element type is the LAST named child (arrays carry the length
+        // first, pointers/slices may carry a sentinel or `const`).
+        cur = cur.namedChildren
+          .filter((c): c is SyntaxNode => c !== null && c.type !== 'comment')
+          .pop();
+        continue;
+      default:
+        return cur;
+    }
+  }
+  return undefined;
+}
+
+/** Should `fn name() <type>` bind `name ↦ <type>`? Only when the return
+ *  type is nominal: a container name, a qualified name, a generic
+ *  instantiation, or `@This()`. Builtins (`void`, `u8`, `bool`, `anyerror`),
+ *  `type` (a generic type constructor — its container binding is the type),
+ *  and `@TypeOf(…)` bind nothing: `List ↦ type` would hijack the
+ *  `List(u8){}` constructor chain, and `f ↦ void` is noise. */
+export function zigReturnTypeIsNominal(typeNode: SyntaxNode): boolean {
+  const nominal = zigNominalTypeNode(typeNode);
+  if (nominal === undefined) return false;
+  switch (nominal.type) {
+    case 'identifier':
+      // `fn is(self: *Node, comptime T: type) ?*T` — `T` is the CALLER's
+      // choice, not a type; binding `is ↦ T` would type every `node.is(X)`
+      // as whatever class happens to be named `T`.
+      return !zigIsComptimeTypeParameter(typeNode, nominal.text);
+    case 'field_expression':
+    case 'call_expression':
+      return true;
+    case 'builtin_function':
+      return nominal.namedChild(0)?.text === '@This';
+    default:
+      return false;
+  }
+}
+
+/** Is `name` a `comptime <name>: type` parameter of the function whose
+ *  return type `returnTypeNode` is, or of any function enclosing it (the
+ *  `T` of a generic type constructor is visible to every method of the
+ *  returned container: `fn get(self) T`)? */
+function zigIsComptimeTypeParameter(returnTypeNode: SyntaxNode, name: string): boolean {
+  let fn: SyntaxNode | null | undefined = returnTypeNode.parent;
+  while (fn !== null && fn !== undefined) {
+    if (fn.type === 'function_declaration') {
+      const params = fn.namedChildren.find((c) => c?.type === 'parameters');
+      for (let i = 0; params !== undefined && params !== null && i < params.namedChildCount; i++) {
+        const p = params.namedChild(i);
+        if (p?.type !== 'parameter') continue;
+        if (
+          p.childForFieldName('name')?.text === name &&
+          p.childForFieldName('type')?.text === 'type'
+        ) {
+          return true;
+        }
+      }
+    }
+    fn = fn.parent;
+  }
+  return false;
+}
+
+/** The container a `@This()` in `typeNode`'s position names: the innermost
+ *  enclosing container's binding name, or the file-struct's name at file
+ *  level. Undefined outside any named container. */
+function zigThisTargetFor(
+  typeNode: SyntaxNode,
+  fileStructName: string | undefined,
+): string | undefined {
+  let cur = typeNode.parent;
+  while (cur !== null && cur !== undefined) {
+    if (ZIG_CONTAINER_TYPES.has(cur.type)) return zigContainerName(cur);
+    if (cur.type === 'source_file') return fileStructName;
+    cur = cur.parent;
+  }
+  return undefined;
+}
 
 export function emitZigScopeCaptures(
   sourceText: string,
@@ -455,6 +703,8 @@ export function emitZigScopeCaptures(
   // `@This()` aliases: alias name ↦ the container it names (file stem for the
   // file-struct, binding name for `const Self = @This();` inside a container).
   const thisAliases = collectZigThisAliases(root, fileStructName);
+  // F6: fn-local names per function node, for `zigCallReturnTypeOf`.
+  const fnLocalNames = new Map<number, Set<string>>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -606,6 +856,57 @@ export function emitZigScopeCaptures(
     const aliasBinding = nodeMap['@type-binding.alias'];
     if (aliasBinding !== undefined && aliasDeclIds.has(aliasBinding.id)) continue;
 
+    // F6 — value-inferred bindings: `const t = [try] <call>` (see
+    // `zigCallReturnTypeOf`). The query pins every keyword declaration; here
+    // the value decides whether it types anything, and how. The value capture
+    // is scaffolding and never leaves this function.
+    const valueNode = nodeMap['@type-binding.value'];
+    if (valueNode !== undefined && nodeMap['@type-binding.call-return'] !== undefined) {
+      delete grouped['@type-binding.value'];
+      // `const x: T;` (extern) — the trailing child is the type, not a value.
+      if (valueNode.id === nodeMap['@type-binding.call-return'].childForFieldName('type')?.id) {
+        continue;
+      }
+      const inferred = zigCallReturnTypeOf(valueNode, fnLocalNames);
+      if (inferred === undefined) continue;
+      grouped['@type-binding.type'] = syntheticCapture(
+        '@type-binding.type',
+        valueNode,
+        inferred.type,
+      );
+      nodeMap['@type-binding.type'] = valueNode;
+      if (inferred.structLiteral === true) {
+        const anchor = grouped['@type-binding.call-return']!;
+        delete grouped['@type-binding.call-return'];
+        grouped['@type-binding.constructor'] = { ...anchor, name: '@type-binding.constructor' };
+      } else if (inferred.memberCall === true) {
+        grouped['@type-binding.member-call-return'] = syntheticCapture(
+          '@type-binding.member-call-return',
+          nodeMap['@type-binding.name']!,
+          'true',
+        );
+      }
+    }
+
+    // F6 — return-type bindings: `fn make() !*Thing` binds `make ↦ Thing`.
+    // Only nominal returns bind (see `zigReturnTypeIsNominal`); a bare
+    // `@This()` return names the enclosing container by name (the alias
+    // rewrite below handles the `Self` spelling of the same thing).
+    const returnAnchor = nodeMap['@type-binding.return'];
+    if (returnAnchor !== undefined) {
+      const retType = nodeMap['@type-binding.type'];
+      if (retType === undefined || !zigReturnTypeIsNominal(retType)) continue;
+      if (retType.text.includes('@This()')) {
+        const target = zigThisTargetFor(retType, fileStructName);
+        if (target === undefined) continue;
+        grouped['@type-binding.type'] = syntheticCapture(
+          '@type-binding.type',
+          retType,
+          retType.text.replace('@This()', target),
+        );
+      }
+    }
+
     // `@This()` aliases in type position — `self: *Self` in a container that
     // declares `const Self = @This();`, or `self: *SigHandler` in
     // `Sighandler.zig` (`const SigHandler = @This();`) — name the enclosing
@@ -614,7 +915,11 @@ export function emitZigScopeCaptures(
     // rust/captures.ts). Only the nominal part is rewritten; sigils stay.
     const typeNode = nodeMap['@type-binding.type'];
     if (typeNode !== undefined && thisAliases.size > 0) {
-      const rewritten = rewriteZigThisAlias(typeNode, thisAliases);
+      const rewritten = rewriteZigThisAlias(
+        typeNode,
+        thisAliases,
+        grouped['@type-binding.type']?.text,
+      );
       if (rewritten !== undefined) {
         grouped['@type-binding.type'] = syntheticCapture('@type-binding.type', typeNode, rewritten);
       }

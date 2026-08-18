@@ -258,22 +258,32 @@ const ZIG_SCOPE_QUERY = `
   . (identifier) @type-binding.name
   type: (_) @type-binding.type) @type-binding.annotation
 
-;; Type bindings — call-return inference: var c = Counter.init(); (Rust's
-;; \`let x = Foo::new()\` twin). The receiver of the call is the type when it
-;; names a container (\`Counter\`, \`mod.Counter\`, \`List(u8)\`); when it is a
-;; value (\`std.mem\`, \`self.items\`) the lookup finds no container and
-;; declines, exactly as Rust's does. Keyword-gated: \`_ = e.top();\` is an
-;; assignment (same node type), not a binding of \`_\`.
+;; Type bindings — value inference (F6): const t = <value>; where <value> is a
+;; call (\`Counter.init()\`, \`makeThing()\`, \`node.asElement()\`), possibly
+;; wrapped in \`try\` / \`catch …\` / \`… orelse …\` / parentheses — the shape of
+;; nearly every Zig constructor call (\`const p = try Page.init(…)\`). The
+;; query only pins the declaration; \`emitZigScopeCaptures\` unwraps the
+;; wrappers and rewrites \`@type-binding.type\` to the type source (see
+;; \`zigCallReturnTypeOf\`). Keyword-gated: \`_ = e.top();\` is an assignment
+;; (same node type), not a binding of \`_\`. Rust's twin is
+;; \`let x = Foo::new()\` / \`let x = foo().await\`.
 (variable_declaration
   "const" . (identifier) @type-binding.name
-  (call_expression
-    function: (field_expression
-      object: (_) @type-binding.type)) .) @type-binding.call-return
+  (_) @type-binding.value .) @type-binding.call-return
 (variable_declaration
   "var" . (identifier) @type-binding.name
-  (call_expression
-    function: (field_expression
-      object: (_) @type-binding.type)) .) @type-binding.call-return
+  (_) @type-binding.value .) @type-binding.call-return
+
+;; Type bindings — return-type annotation (F6): \`fn make() !*Thing\` binds
+;; \`make ↦ Thing\` in the enclosing scope (Module for free fns, the container's
+;; Class scope for methods — that is where the compound resolver reads a
+;; method's return type for \`node.asElement()\`), so \`const t = makeThing()\`
+;; chains to \`Thing\`. Rust: \`(function_item … return_type:) @type-binding.return\`.
+;; \`emitZigScopeCaptures\` drops builtin / \`type\` returns (a \`List ↦ type\`
+;; binding would hijack the \`List(u8){}\` constructor chain).
+(function_declaration
+  name: (identifier) @type-binding.name
+  type: (_) @type-binding.type) @type-binding.return
 
 ;; Type bindings — aliases (F5 field-access aliases + F7 type aliases):
 ;; \`const page = self.page;\` (F5: the RHS path is kept verbatim as the
