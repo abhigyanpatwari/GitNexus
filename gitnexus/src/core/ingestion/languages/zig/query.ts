@@ -275,29 +275,10 @@ const ZIG_SCOPE_QUERY = `
     function: (field_expression
       object: (_) @type-binding.type)) .) @type-binding.call-return
 
-;; Type bindings — field-access alias: \`const page = self.page;\` /
-;; \`var s = self.session;\` (F5 companion). The RHS path is kept verbatim as
-;; the "type" (\`self.page\`): the compound resolver's member-alias branch
-;; re-resolves it as a receiver chain (head \`self\` → class → field type),
-;; so \`page.getArena()\` dispatches like \`self.page.getArena()\` does. One
-;; level only — \`std.mem.Allocator\` chains and the namespace aliases
-;; \`const Counter = counter.Counter;\` (promoted to named imports) are not
-;; value aliases; \`emitZigScopeCaptures\` drops the import-alias matches.
-;; The trailing \`.\` anchor rejects a declaration whose value has any
-;; further child (\`const x = a.b + 1\` is a binary_expression, not matched
-;; anyway; the anchor is the belt to that brace).
-(variable_declaration
-  "const" . (identifier) @type-binding.name
-  (field_expression
-    object: (identifier)
-    member: (identifier)) @type-binding.type .) @type-binding.alias
-(variable_declaration
-  "var" . (identifier) @type-binding.name
-  (field_expression
-    object: (identifier)
-    member: (identifier)) @type-binding.type .) @type-binding.alias
-
-;; Type bindings — F7, aliases of a type: \`const LocalAlias = Local;\`,
+;; Type bindings — aliases (F5 field-access aliases + F7 type aliases):
+;; \`const page = self.page;\` (F5: the RHS path is kept verbatim as the
+;; "type", the compound resolver's member-alias branch re-resolves it as a
+;; receiver chain — head \`self\` → class → field type), \`const LocalAlias = Local;\`,
 ;; \`const Proto = HtmlElement;\`, \`const T2 = Thing;\` (alias of an alias /
 ;; import), \`const B = util.List(u8);\` (an INSTANTIATED generic type
 ;; constructor). Zig has no \`type X = Y\` syntax — a type alias is a const

@@ -1223,15 +1223,16 @@ pub fn run(self: *Holder) void {
         .filter((m) => m['@type-binding.alias'] !== undefined)
         .map((m) => interpretZigTypeBinding(m));
       expect(aliases).toEqual([
+        // `std` is not an @import binding in this snippet, so the chain is an
+        // ordinary (type) alias — F7 keeps it; it resolves to nothing.
+        { boundName: 'Allocator', rawTypeName: 'std.mem.Allocator', source: 'assignment-inferred' },
         { boundName: 'page', rawTypeName: 'self.page', source: 'assignment-inferred' },
         { boundName: 's', rawTypeName: 'self.session', source: 'assignment-inferred' },
         { boundName: 'typed', rawTypeName: 'self.page', source: 'assignment-inferred' },
       ]);
       // `const Counter = counter.Counter;` is a NAMED IMPORT (counter is an
-      // @import binding), and `std.mem.Allocator` is a two-level chain — neither
-      // is a value alias.
+      // @import binding) — never a value alias.
       expect(aliases.map((a) => a!.boundName)).not.toContain('Counter');
-      expect(aliases.map((a) => a!.boundName)).not.toContain('Allocator');
       // The annotation outranks the alias for the same name.
       const parsed = extractScopes(emitZigScopeCaptures(src, 'x.zig'), 'x.zig', zigProvider);
       const fn = parsed.scopes.find((s) => s.kind === 'Function')!;
