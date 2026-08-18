@@ -120,6 +120,7 @@
     "vitest": "^4.0.18"
   },
   "overrides": {
+    "sharp": ">=0.35.0",
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
     }
