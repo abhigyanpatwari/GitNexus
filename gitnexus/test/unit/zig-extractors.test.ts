@@ -562,6 +562,14 @@ pub fn f() void {
     expect(imports).toEqual([
       { kind: 'namespace', localName: 'std', importedName: 'std', targetRaw: 'std' },
       { kind: 'namespace', localName: 'c', importedName: 'counter', targetRaw: 'counter.zig' },
+      // the namespace import's file-struct TYPE twin (see the file-struct suite)
+      {
+        kind: 'alias',
+        localName: 'c',
+        importedName: 'counter',
+        alias: 'c',
+        targetRaw: 'counter.zig',
+      },
       { kind: 'side-effect', targetRaw: 'a.zig' },
       { kind: 'side-effect', targetRaw: 'b.zig' },
       { kind: 'side-effect', targetRaw: 'ArenaPool.zig' },
