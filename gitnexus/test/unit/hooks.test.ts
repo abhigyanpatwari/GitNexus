@@ -2166,7 +2166,12 @@ describe.skipIf(SKIP_LSOF_PATH)(
               cwd: tmpDir,
             },
             undefined,
-            { env: hookEnv(binDir) },
+            {
+              // Owner classification is the subject here. Timeout-wrapper
+              // containment has dedicated coverage and can race these fake
+              // macOS process-table fixtures.
+              env: { ...hookEnv(binDir), GITNEXUS_HOOK_TIMEOUT_PATH: 'disabled' },
+            },
           );
           const output = parseHookOutput(result.stdout);
           expect(output).not.toBeNull();
@@ -2651,7 +2656,12 @@ describe.skipIf(SKIP_LSOF_PATH)(
               cwd: tmpDir,
             },
             undefined,
-            { env: hookEnv(binDir) },
+            {
+              // Owner classification is the subject here. Timeout-wrapper
+              // containment has dedicated coverage and can race these fake
+              // macOS process-table fixtures.
+              env: { ...hookEnv(binDir), GITNEXUS_HOOK_TIMEOUT_PATH: 'disabled' },
+            },
           );
           const output = parseHookOutput(result.stdout);
           expect(output).not.toBeNull();

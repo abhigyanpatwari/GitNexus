@@ -66,6 +66,10 @@ describe('--skip-git CLI flag', () => {
       ...process.env,
       HOME: gitnexusHome,
       GITNEXUS_HOME: gitnexusHome,
+      // This suite tests repository-root selection, not extension installation.
+      // Keep child CLI runs offline so an unavailable FTS download cannot consume
+      // Vitest's per-test timeout.
+      GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
     };
 
     try {
@@ -128,6 +132,7 @@ describe('--skip-git CLI flag', () => {
       ...process.env,
       HOME: gitnexusHome,
       GITNEXUS_HOME: gitnexusHome,
+      GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
     };
 
     try {
@@ -194,6 +199,7 @@ describe('--skip-git CLI flag', () => {
         ...process.env,
         HOME: gitnexusHome,
         GITNEXUS_HOME: gitnexusHome,
+        GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',
       };
     }
 
