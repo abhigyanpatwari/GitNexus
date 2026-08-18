@@ -14,11 +14,12 @@
  * Bare-name (build.zig.zon) resolution is handled when a parsed
  * ZigBuildZonConfig is supplied (see `loadZigBuildZon`). `.url`-based deps
  * unpack into a build cache outside the repo and so are returned as null;
- * `.path`-based deps are resolved through the conventional
- * `<dep_root>/src/<name>.zig` or `<dep_root>/src/main.zig` layout.
+ * `.path`-based deps are resolved through the root the dep's own build.zig
+ * declares, then the conventional `<dep_root>/src/root.zig`,
+ * `<dep_root>/src/<name>.zig`, `<dep_root>/src/main.zig` layouts.
  */
 
-import type { ZigBuildZonConfig } from '../language-config.js';
+import { normalizeZigDepPath, type ZigBuildZonConfig } from '../language-config.js';
 
 const ZIG_STDLIB_NAMES = new Set(['std', 'builtin', 'root']);
 
@@ -76,14 +77,22 @@ export function resolveZigImportInternal(
   if (buildZon) {
     const depPath = buildZon.pathDeps.get(importPath);
     if (depPath) {
-      const normalized = normalizeDepPath(depPath);
+      const normalized = normalizeZigDepPath(depPath);
       if (normalized !== null) {
-        // Conventional Zig layout: <pkg_root>/src/<name>.zig (matches the
-        // package's primary module name) or <pkg_root>/src/main.zig. A dep at
-        // `.path = "."` (the repo itself) normalizes to '' and must not grow a
-        // leading slash — `allFiles` keys are repo-relative.
+        // What the dep's own build.zig declares comes first (its
+        // `addModule` root_source_file — see `parseZigBuildModuleRoots`), then
+        // the conventional layouts: `src/root.zig` (the `zig init` library
+        // root since 0.12), `src/<name>.zig` (older name-matched convention),
+        // `src/main.zig` (executables / older inits). A dep at `.path = "."`
+        // (the repo itself) normalizes to '' and must not grow a leading slash
+        // — `allFiles` keys are repo-relative.
         const prefix = normalized === '' ? '' : `${normalized}/`;
-        const candidates = [`${prefix}src/${importPath}.zig`, `${prefix}src/main.zig`];
+        const candidates = [
+          ...(buildZon.moduleRoots?.get(importPath) ?? []),
+          `${prefix}src/root.zig`,
+          `${prefix}src/${importPath}.zig`,
+          `${prefix}src/main.zig`,
+        ];
         for (const c of candidates) {
           if (allFiles.has(c)) return c;
         }
@@ -94,25 +103,4 @@ export function resolveZigImportInternal(
   // Bare name with no resolution (no build.zig.zon, .url-based dep, or
   // unconventional layout).
   return null;
-}
-
-/**
- * Normalize a `.path` value from build.zig.zon into a repo-relative form.
- * Returns null for paths that escape the repo root (start with `..`) or
- * are absolute — those point to files we don't index in `allFilePaths`.
- * `.` / `./` normalize to the empty string (the repo root itself).
- */
-function normalizeDepPath(depPath: string): string | null {
-  if (depPath.startsWith('/')) return null;
-  const parts: string[] = [];
-  for (const part of depPath.split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') {
-      if (parts.length === 0) return null;
-      parts.pop();
-    } else {
-      parts.push(part);
-    }
-  }
-  return parts.join('/');
 }

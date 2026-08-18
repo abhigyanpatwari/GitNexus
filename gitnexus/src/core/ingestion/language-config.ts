@@ -93,12 +93,22 @@ export interface ZigBuildZonConfig {
    * Map of dependency name -> the raw `.path = "..."` value, exactly as
    * written in build.zig.zon (relative to the repo root, and possibly
    * escaping it: `../local_dep`). Consumers normalize — see
-   * `normalizeDepPath` in `import-resolvers/zig.ts`, which rejects absolute
+   * `normalizeZigDepPath` below, which rejects absolute
    * and repo-escaping values. `.url`-based deps cannot be resolved to a
    * repo-local file (they unpack into a build cache outside the repo) and so
    * are not included here.
    */
   pathDeps: Map<string, string>;
+  /**
+   * Per path-dep: repo-relative root source files the dep's own `build.zig`
+   * declares (`b.addModule("name", .{ .root_source_file = b.path("src/x.zig")
+   * })`), keyed by dep name, in file order. Entries whose module name matches
+   * the dep name come first — that is the module a consumer's
+   * `@import("<dep>")` maps to under the ecosystem convention that the zon key
+   * and the module name agree. Absent (or empty) when the dep has no readable
+   * `build.zig`; the resolver then falls back to the conventional layouts.
+   */
+  moduleRoots?: Map<string, readonly string[]>;
 }
 
 // ============================================================================
@@ -511,13 +521,92 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
  *     or string cannot declare a dep or truncate the block.
  */
 export async function loadZigBuildZon(repoRoot: string): Promise<ZigBuildZonConfig | null> {
+  let config: ZigBuildZonConfig | null;
   try {
     const zonPath = path.join(repoRoot, 'build.zig.zon');
     const raw = await fs.readFile(zonPath, 'utf-8');
-    return parseZigBuildZon(raw);
+    config = parseZigBuildZon(raw);
   } catch {
     return null;
   }
+  if (config === null) return null;
+
+  // A path dep's importable root is whatever ITS build.zig declares, not a
+  // fixed layout: read `root_source_file` per `addModule` and remember it
+  // repo-relative. Best effort — an unreadable build.zig just leaves the
+  // conventional-layout fallback in place.
+  const moduleRoots = new Map<string, readonly string[]>();
+  for (const [depName, depPath] of config.pathDeps) {
+    const rel = normalizeZigDepPath(depPath);
+    if (rel === null) continue;
+    let buildZig: string;
+    try {
+      buildZig = await fs.readFile(path.join(repoRoot, rel, 'build.zig'), 'utf-8');
+    } catch {
+      continue;
+    }
+    const roots = parseZigBuildModuleRoots(buildZig, depName).map((r) =>
+      rel === '' ? r : `${rel}/${r}`,
+    );
+    if (roots.length > 0) moduleRoots.set(depName, roots);
+  }
+  return moduleRoots.size > 0 ? { ...config, moduleRoots } : config;
+}
+
+/**
+ * Normalize a `.path` value from build.zig.zon into a repo-relative form.
+ * Returns null for paths that escape the repo root (start with `..`) or
+ * are absolute — those point to files we don't index. `.` / `./` normalize
+ * to the empty string (the repo root itself). Shared with the import
+ * resolver so both sides agree on which deps are in-repo.
+ */
+export function normalizeZigDepPath(depPath: string): string | null {
+  if (depPath.startsWith('/')) return null;
+  const parts: string[] = [];
+  for (const part of depPath.replace(/\\/g, '/').split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  return parts.join('/');
+}
+
+/**
+ * The `root_source_file` paths a `build.zig` declares, dep-relative, with the
+ * module whose `addModule("<name>", …)` name equals `preferredName` first.
+ *
+ * Reads two shapes, which between them cover `zig init` output and the
+ * common hand-written build scripts:
+ *   - `b.addModule("name", .{ .root_source_file = b.path("src/root.zig") })`
+ *   - any other `.root_source_file = b.path("…")` (exe/lib/test artifacts),
+ *     kept as unnamed fallbacks in file order.
+ * A `.zig` under `b.path` is required — `.{ .cwd_relative = … }` and
+ * `LazyPath` values computed at build time are not resolvable statically and
+ * are skipped. Duplicates collapse to the first occurrence.
+ */
+export function parseZigBuildModuleRoots(buildZig: string, preferredName: string): string[] {
+  const named: string[] = [];
+  const unnamed: string[] = [];
+  const seen = new Set<string>();
+  const add = (into: string[], p: string): void => {
+    const norm = normalizeZigDepPath(p);
+    if (norm === null || norm === '' || !norm.endsWith('.zig') || seen.has(norm)) return;
+    seen.add(norm);
+    into.push(norm);
+  };
+  const namedRe =
+    /addModule\(\s*"([^"\n]+)"\s*,\s*\.\{[^}]*?\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = namedRe.exec(buildZig)) !== null) {
+    if (m[1] === preferredName) add(named, m[2]!);
+  }
+  const anyRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/g;
+  while ((m = anyRe.exec(buildZig)) !== null) add(unnamed, m[1]!);
+  return [...named, ...unnamed];
 }
 
 /**

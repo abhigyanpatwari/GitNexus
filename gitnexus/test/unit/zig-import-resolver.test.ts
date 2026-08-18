@@ -3,8 +3,19 @@
  * imports and bare-name imports resolved through build.zig.zon.
  */
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.js';
-import { parseZigBuildZon } from '../../src/core/ingestion/language-config.js';
+import {
+  loadZigBuildZon,
+  parseZigBuildModuleRoots,
+  parseZigBuildZon,
+} from '../../src/core/ingestion/language-config.js';
+
+const FIXTURES = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../fixtures/lang-resolution',
+);
 
 describe('resolveZigImportInternal', () => {
   it('returns null for stdlib / builtin / root', () => {
@@ -65,6 +76,35 @@ describe('resolveZigImportInternal', () => {
     const buildZon = { pathDeps: new Map([['ziggit', 'vendor/ziggit']]) };
     expect(resolveZigImportInternal('src/main.zig', 'ziggit', files, buildZon)).toBe(
       'vendor/ziggit/src/ziggit.zig',
+    );
+  });
+
+  it('resolves a bare name to `<root>/src/root.zig` — the `zig init` library root since 0.12', () => {
+    // 0.12+ `zig init` writes src/root.zig for libraries (0.14 writes both
+    // root.zig and main.zig). Knowing only src/<name>.zig and src/main.zig
+    // left every such dep unresolved.
+    const files = new Set<string>(['src/main.zig', 'libs/geo/src/root.zig']);
+    const zon = { pathDeps: new Map([['geo', 'libs/geo']]) };
+    expect(resolveZigImportInternal('src/main.zig', 'geo', files, zon)).toBe(
+      'libs/geo/src/root.zig',
+    );
+  });
+
+  it('prefers the root the dep’s own build.zig declares over every conventional layout', () => {
+    // A dep can call its module root anything (`lib/geo.zig`); when its
+    // build.zig says so, that beats src/root.zig even if both exist.
+    const files = new Set<string>([
+      'src/main.zig',
+      'libs/geo/lib/geo.zig',
+      'libs/geo/src/root.zig',
+      'libs/geo/src/main.zig',
+    ]);
+    const zon = {
+      pathDeps: new Map([['geo', 'libs/geo']]),
+      moduleRoots: new Map([['geo', ['libs/geo/lib/geo.zig']]]),
+    };
+    expect(resolveZigImportInternal('src/main.zig', 'geo', files, zon)).toBe(
+      'libs/geo/lib/geo.zig',
     );
   });
 
@@ -244,5 +284,58 @@ describe('parseZigBuildZon', () => {
 }
 `;
     expect(parseZigBuildZon(raw)).toBeNull();
+  });
+});
+
+describe('parseZigBuildModuleRoots', () => {
+  it('reads `addModule("<name>", .{ .root_source_file = b.path("…") })`, preferring the named module', () => {
+    const buildZig = `
+const std = @import("std");
+pub fn build(b: *std.Build) void {
+    const lib = b.addStaticLibrary(.{ .name = "geo", .root_source_file = b.path("src/lib_entry.zig") });
+    _ = b.addModule("helpers", .{ .root_source_file = b.path("src/helpers.zig") });
+    _ = b.addModule("geo", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = b.standardTargetOptions(.{}),
+    });
+    b.installArtifact(lib);
+}
+`;
+    // The module named like the dep comes first; the others stay as ordered
+    // fallbacks (an importer's `@import("geo")` maps to the "geo" module).
+    expect(parseZigBuildModuleRoots(buildZig, 'geo')).toEqual([
+      'src/root.zig',
+      'src/lib_entry.zig',
+      'src/helpers.zig',
+    ]);
+  });
+
+  it('skips roots that are not a static `b.path("….zig")` and normalizes `./`', () => {
+    const buildZig = `
+_ = b.addModule("x", .{ .root_source_file = .{ .cwd_relative = "/abs/x.zig" } });
+_ = b.addModule("y", .{ .root_source_file = b.path("./src/y.zig") });
+_ = b.addModule("z", .{ .root_source_file = generated.getPath() });
+_ = b.addModule("w", .{ .root_source_file = b.path("../outside.zig") });
+`;
+    expect(parseZigBuildModuleRoots(buildZig, 'y')).toEqual(['src/y.zig']);
+  });
+
+  it('returns [] for a build.zig that declares no module root', () => {
+    expect(parseZigBuildModuleRoots('pub fn build(b: *std.Build) void { _ = b; }', 'x')).toEqual(
+      [],
+    );
+  });
+});
+
+describe('loadZigBuildZon (zig-idioms fixture)', () => {
+  it('reads each path dep’s build.zig for its module roots and leaves deps without one to the layout fallback', async () => {
+    const config = await loadZigBuildZon(path.join(FIXTURES, 'zig-idioms'));
+    expect(config).not.toBeNull();
+    expect([...config!.pathDeps.keys()].sort()).toEqual(['geo', 'oldlib']);
+    // geo/build.zig: addModule("geo", .{ .root_source_file = b.path("src/root.zig") })
+    expect(config!.moduleRoots?.get('geo')).toEqual(['libs/geo/src/root.zig']);
+    // oldlib has no build.zig → no entry; the resolver falls back to
+    // src/root.zig → src/oldlib.zig → src/main.zig.
+    expect(config!.moduleRoots?.has('oldlib')).toBe(false);
   });
 });
