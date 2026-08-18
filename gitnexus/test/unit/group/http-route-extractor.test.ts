@@ -219,6 +219,7 @@ export default router;
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
           return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('filePath IN $filePaths')) return [];
         if (query.includes('n.name = $name'))
           return params?.name === 'listUsers'
             ? [{ uid: 'fn-listUsers-xfile', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
@@ -227,6 +228,36 @@ export default router;
       };
       const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
       expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
+
+    it('retains unique-name fallback for a Flask handler imported from a bare module', async () => {
+      const dir = path.join(tmpDir, 'py-flask-bare-import');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from shared_handlers import list_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=list_users)
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') || query.includes('filePath IN $filePaths')) return [];
+        if (query.includes('n.name = $name') && params?.name === 'list_users') {
+          return [{ uid: 'fn-list-users', name: 'list_users', filePath: 'shared/handlers.py' }];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (contract) =>
+          contract.role === 'provider' && contract.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list-users', symbolName: 'list_users' });
     });
 
     it('leaves symbolUid empty when the repo-wide name is AMBIGUOUS (multiple matches)', async () => {
@@ -589,6 +620,49 @@ app.add_url_rule('/api/users', view_func=handle_users)
       );
       expect(provider).toMatchObject({ symbolUid: 'fn-list_users', symbolName: 'list_users' });
       expect(queriedNames).not.toContain('module:handle_users');
+    });
+
+    it('retains legacy package-prefix resolution for a Python re-export', async () => {
+      const dir = path.join(tmpDir, 'py-flask-reexport');
+      fs.mkdirSync(path.join(dir, 'app', 'handlers'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from .handlers import list_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=list_users)
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'app', 'handlers', '__init__.py'),
+        `from .users import list_users\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'app', 'handlers', 'users.py'),
+        `def list_users(): return []\n`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH') && String(params?.fileSlash) === 'app/handlers/') {
+          return [
+            {
+              uid: 'fn-list-users',
+              name: 'list_users',
+              filePath: 'app/handlers/users.py',
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (contract) =>
+          contract.role === 'provider' && contract.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list-users', symbolName: 'list_users' });
     });
 
     // ── Inline / closure provider handlers (#2276) ──────────────────────
