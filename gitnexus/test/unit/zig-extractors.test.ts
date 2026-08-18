@@ -847,6 +847,110 @@ pub fn run() void {
       { boundName: 'e', rawTypeName: 'Stack', source: 'constructor-inferred' },
     ]);
   });
+
+  // F7 — `const X = <type expr>;` was a plain `@declaration.variable` and
+  // nothing else, so `LocalAlias.mk()`, `T2.make()`, `B.init()`, `var x: B`
+  // and `B{}` all typed nothing (see the r3-flow b1..b9 repro). The alias
+  // name must carry a typeBinding to the value's type text.
+  it('binds a type alias (`const X = Local;` / `const B = util.List(u8);`) to its target type', () => {
+    const src = `
+const util = @import("util.zig");
+const Stack = @import("counter.zig").Stack;
+const Thing = util.Thing;
+const Local = struct {};
+const LocalAlias = Local;
+const T2 = Thing;
+const B = util.List(u8);
+pub const bridge = js.Bridge(Local);
+const max = 5;
+const log = std.log.scoped(.x);
+const t = util.makeThing();
+const val = lp.log;
+fn body(orig: *Local) void {
+    const R = util.List(u16);
+    var r = R.init();
+    var cur = orig;
+    const lit = .foo;
+    var und: Local = undefined;
+    _ = r;
+    _ = cur;
+    _ = lit;
+    _ = und;
+}
+`;
+    const bindings = emitZigScopeCaptures(src, 'x.zig')
+      .filter((m) => m['@type-binding.name'] !== undefined)
+      .map((m) => interpretZigTypeBinding(m));
+    // Same-file struct, alias of an alias, instantiated generic type
+    // constructor (module level and inside a fn body), a TitleCase call
+    // through a namespace member.
+    expect(bindings).toEqual(
+      expect.arrayContaining([
+        { boundName: 'LocalAlias', rawTypeName: 'Local', source: 'assignment-inferred' },
+        { boundName: 'T2', rawTypeName: 'Thing', source: 'assignment-inferred' },
+        { boundName: 'B', rawTypeName: 'util.List', source: 'assignment-inferred' },
+        { boundName: 'bridge', rawTypeName: 'js.Bridge', source: 'assignment-inferred' },
+        { boundName: 'R', rawTypeName: 'util.List', source: 'assignment-inferred' },
+        // the receiver of `R.init()` chains to `R`, then to `util.List`
+        { boundName: 'r', rawTypeName: 'R', source: 'constructor-inferred' },
+        // a `var` VALUE alias (Rust `let x = y`) chains to `orig`'s type
+        { boundName: 'cur', rawTypeName: 'orig', source: 'assignment-inferred' },
+      ]),
+    );
+    // `.foo` (enum / decl literal) is a field_expression without an object:
+    // a value, never a type name.
+    expect(bindings.find((b) => b?.boundName === 'lit')).toBeUndefined();
+    // `var und: Local = undefined;` — `undefined` is an anonymous node, so the
+    // last named child is the annotation: the alias rule must not read it as
+    // a value (the annotation rule owns the binding, exactly once).
+    expect(bindings.filter((b) => b?.boundName === 'und')).toEqual([
+      { boundName: 'und', rawTypeName: 'Local', source: 'annotation' },
+    ]);
+    // A type-constructor instantiation gets exactly ONE binding: the
+    // call-return rule (`B` ↦ `util`, the call's receiver) must not compete.
+    expect(bindings.filter((b) => b?.boundName === 'B')).toHaveLength(1);
+    expect(bindings.filter((b) => b?.boundName === 'R')).toHaveLength(1);
+    // A promoted namespace-member alias is a named import, not an alias
+    // binding; a value const / a camelCase call are not type aliases.
+    expect(bindings.find((b) => b?.boundName === 'Thing')).toBeUndefined();
+    // …nor is an @import binding of one member (`@import("counter.zig").Stack`
+    // is a field_expression too): an alias binding there would shadow the
+    // import binding for `Stack(u8){}` and `Stack(u8).init()`.
+    expect(bindings.find((b) => b?.boundName === 'Stack')).toBeUndefined();
+    expect(bindings.find((b) => b?.boundName === 'max')).toBeUndefined();
+    // A value call (camelCase callee) is the call-return rule's alone: no
+    // alias binding to `std.log.scoped` / `util.makeThing`.
+    expect(bindings.filter((b) => b?.boundName === 'log').map((b) => b?.source)).not.toContain(
+      'assignment-inferred',
+    );
+    expect(bindings.filter((b) => b?.boundName === 't').map((b) => b?.source)).not.toContain(
+      'assignment-inferred',
+    );
+    // A value member alias binds like Rust's `let x = y` (resolves nothing).
+    expect(bindings).toContainEqual({
+      boundName: 'val',
+      rawTypeName: 'lp.log',
+      source: 'assignment-inferred',
+    });
+  });
+
+  it('an annotation on the same name outranks the alias binding (`const x: T = y;`)', () => {
+    // 'assignment-inferred' (strength 1) vs 'annotation' (3): the declared
+    // type wins in the extractor's per-scope merge. Verified end to end
+    // through `extract`, which is where the strengths are compared.
+    const src = `
+const Foo = struct { pub fn f(self: *Foo) void { _ = self; } };
+const Bar = struct {};
+const y = Bar;
+pub fn run() void {
+    const x: Foo = y;
+    x.f();
+}
+`;
+    const parsed = extractScopes(emitZigScopeCaptures(src, 'x.zig'), 'x.zig', zigProvider);
+    const xs = parsed.scopes.map((s) => s.typeBindings.get('x')).filter((b) => b !== undefined);
+    expect(xs).toEqual([expect.objectContaining({ rawName: 'Foo', source: 'annotation' })]);
+  });
 });
 
 describeZig(

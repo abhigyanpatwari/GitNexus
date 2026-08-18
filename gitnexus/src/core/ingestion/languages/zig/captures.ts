@@ -191,6 +191,20 @@ export function zigTypeConstructorOf(containerNode: SyntaxNode): SyntaxNode | nu
   return fn.childForFieldName('type')?.text === 'type' ? fn : null;
 }
 
+/** F7 — is `call` an instantiation of a generic type constructor —
+ *  `List(u8)`, `util.List(u8)`, `js.Bridge(T)`, `std.AutoHashMapUnmanaged(K, V)`?
+ *  Zig spells a generic type as a CALL, and the grammar cannot separate it
+ *  from a value call; the one signal is the naming convention (types and
+ *  type constructors are TitleCase, functions camelCase), so the callee's
+ *  last identifier decides. Heuristic by nature — say so wherever it is used. */
+export function isZigTypeConstructorCall(call: SyntaxNode): boolean {
+  if (call.type !== 'call_expression') return false;
+  let callee = call.childForFieldName('function');
+  if (callee?.type === 'field_expression') callee = callee.childForFieldName('member');
+  if (callee?.type !== 'identifier') return false;
+  return /^[A-Z]/.test(callee.text);
+}
+
 /** A `fn` nested in a struct/enum/union/opaque container is a method. Single
  *  predicate shared between the provider's `labelOverride` (worker
  *  structure phase) and the scope-capture relabel below, so the graph
@@ -522,6 +536,47 @@ export function emitZigScopeCaptures(
         ...republishMarker(aliasStmt),
       });
       continue;
+    }
+
+    // F7 — type aliases (`@type-binding.alias`, see the query): keep the group
+    // only for a value that is a TYPE expression. An identifier / member chain
+    // is kept as written (a value alias such as `const log = lp.log` binds a
+    // type name that resolves to nothing, exactly like Rust's `let x = y`); a
+    // call is kept only when its callee's last identifier is TitleCase —
+    // Zig's naming convention for types, hence for type constructors
+    // (`util.List(u8)`, `js.Bridge(T)`, `GenericIterator(K, V)`). That is a
+    // heuristic and the only one here: the grammar cannot tell a type
+    // constructor call from a value call, and a value call (`const t =
+    // util.makeThing()`) is typed by the call-return rules — a second binding
+    // for the same name would race on match order. A promoted namespace-
+    // member alias (`const Counter = counter.Counter;`) is skipped: it is a
+    // named import already, and the import binding carries the type.
+    const aliasAnchor = nodeMap['@type-binding.alias'];
+    if (aliasAnchor !== undefined) {
+      // An @import binding (`const Stack = @import("counter.zig").Stack;`) is
+      // an import, and a promoted member alias a named import: both already
+      // carry the type through the import binding.
+      if (aliasDeclIds.has(aliasAnchor.id) || isZigContainerOrImportBinding(aliasAnchor)) continue;
+      const value = nodeMap['@type-binding.type'];
+      if (value === undefined) continue;
+      // `var b: Counter = undefined;` — `undefined` / `null` are anonymous
+      // nodes, so the last NAMED child the query anchored on is the `type:`
+      // annotation, not a value. The annotation rule owns that binding.
+      if (value.id === aliasAnchor.childForFieldName('type')?.id) continue;
+      if (value.type === 'call_expression' && !isZigTypeConstructorCall(value)) continue;
+      // `.foo` / `.init` (enum / decl literal) parses as a field_expression
+      // without an object — a value, never a type name.
+      if (value.type === 'field_expression' && value.childForFieldName('object') === null) continue;
+    }
+    // …and the converse: a call-return binding for `const B = util.List(u8)`
+    // would type `B` as `util` (the call's receiver) and, at equal strength,
+    // race the alias binding above on match order. A type-constructor
+    // instantiation is the alias rule's; drop the call-return group for it.
+    const callReturnAnchor = nodeMap['@type-binding.call-return'];
+    if (callReturnAnchor !== undefined) {
+      const named = callReturnAnchor.namedChildren.filter((c): c is SyntaxNode => c !== null);
+      const value = named[named.length - 1];
+      if (value?.type === 'call_expression' && isZigTypeConstructorCall(value)) continue;
     }
 
     // Drop the plain-variable group for container/import bindings — their

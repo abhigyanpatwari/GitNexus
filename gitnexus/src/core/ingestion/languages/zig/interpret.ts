@@ -141,10 +141,15 @@ export function interpretZigTypeBinding(captures: CaptureMatch): ParsedTypeBindi
     // a field has exactly one type source.
     source = 'annotation';
   } else if (captures['@type-binding.alias'] !== undefined) {
-    // `const page = self.page;` — the RHS member path IS the "type"; the
-    // compound resolver's member-alias branch re-resolves `self.page` as a
-    // receiver chain (F5). Weakest source: an annotation on the same
-    // binding (`const p: *Page = self.page;`) must win.
+    // Two alias shapes share the group: `const page = self.page;` — the RHS
+    // member path IS the "type"; the compound resolver's member-alias branch
+    // re-resolves `self.page` as a receiver chain (F5) — and
+    // `const LocalAlias = Local;` / `const B = util.List(u8);` — the alias
+    // name is bound to the value's type text (`util.List` after the comptime
+    // arguments are dropped) and chained to the target by the shared
+    // `followChainedRef` (F7). Rust's `let x = y` source: it must rank
+    // BELOW an annotation on the same name (`const x: T = y;` is typed by
+    // `T`), and the default here is 'annotation'.
     source = 'assignment-inferred';
   }
 

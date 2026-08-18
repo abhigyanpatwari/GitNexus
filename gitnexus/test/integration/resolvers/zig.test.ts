@@ -484,3 +484,72 @@ describe.skipIf(!zigAvailable)('Zig file-structs (zig-filestruct fixture)', () =
     expect(targets.every((e) => e.targetFilePath.endsWith('Session.zig'))).toBe(true);
   });
 });
+
+/**
+ * F7 — type aliases (`src/aliases.zig` + `src/generic.zig` in zig-filestruct).
+ * `const X = <type expr>;` is a Const in the graph; on the scope side the
+ * alias name must be bound to the value's type so receivers written through
+ * it dispatch. Before the fix every case below resolved nothing.
+ */
+describe.skipIf(!zigAvailable)('Zig type aliases (zig-filestruct fixture, aliases.zig)', () => {
+  let result: PipelineResult;
+  let calls: string[];
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-filestruct'), () => {});
+    calls = edgeSet(
+      getRelationships(result, 'CALLS').filter((e) => e.sourceFilePath.endsWith('aliases.zig')),
+    );
+  }, 60000);
+
+  it('keeps every alias a Const (graph ids unchanged) — the type lives on the scope side', () => {
+    const consts = getNodesByLabelFull(result, 'Const').filter((n) =>
+      n.properties.filePath.endsWith('aliases.zig'),
+    );
+    expect(consts.map((n) => n.name)).toEqual(
+      expect.arrayContaining(['LocalAlias', 'T2', 'B', 'P', 'max', 'bridge']),
+    );
+    expect(getNodesByLabel(result, 'TypeAlias')).toEqual([]);
+  });
+
+  it('dispatches through an alias of a same-file struct (`const LocalAlias = Local;`)', () => {
+    // b1: class-name receiver typed by the alias binding (Case 4)
+    expect(calls).toContain('b1 → mk');
+    // b2: `var l = LocalAlias.mk()` chains l → LocalAlias → Local
+    expect(calls).toContain('b2 → mk');
+    expect(calls).toContain('b2 → go');
+  });
+
+  it('dispatches through an alias of an alias / import (`const T2 = Thing;`)', () => {
+    expect(calls).toContain('b3 → make');
+    expect(calls).toContain('b4 → make');
+    expect(calls).toContain('b4 → run');
+  });
+
+  it('dispatches through an alias of an INSTANTIATED generic type constructor (`const B = generic.List(u8);`)', () => {
+    // `B.init()` — the alias binds `generic.List` (comptime args dropped), Case 3
+    expect(calls).toContain('b5 → init');
+    // `var b = B{}` (constructor-inferred → B → generic.List)
+    expect(calls).toContain('b6 → push');
+    // `var x: B = .{}` (annotation → B → generic.List)
+    expect(calls).toContain('b7 → push');
+    // the same alias declared INSIDE a fn body (`const R = generic.List(u16);`)
+    expect(calls).toContain('b8 → init');
+    expect(calls).toContain('b8 → push');
+  });
+
+  it('dispatches through an alias of a namespace import that is a file-struct (`const P = Page;`)', () => {
+    expect(calls).toContain('b10 → getArena');
+  });
+
+  it('a VALUE alias (`var cur = orig; cur.go()`) chains to the value’s type, as Rust’s `let x = y`', () => {
+    expect(calls).toContain('b11 → go');
+  });
+
+  it('a value const / value call is not a type alias and gains no edge', () => {
+    // `const helperResult = generic.Thing.make();` is a call, not an alias;
+    // `const max = 5;` is a literal. Neither may bind a phantom type that
+    // resolves `main`'s discards to anything.
+    expect(calls.filter((c) => c.startsWith('main → '))).toEqual([]);
+  });
+});

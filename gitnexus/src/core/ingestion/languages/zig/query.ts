@@ -297,6 +297,44 @@ const ZIG_SCOPE_QUERY = `
     object: (identifier)
     member: (identifier)) @type-binding.type .) @type-binding.alias
 
+;; Type bindings — F7, aliases of a type: \`const LocalAlias = Local;\`,
+;; \`const Proto = HtmlElement;\`, \`const T2 = Thing;\` (alias of an alias /
+;; import), \`const B = util.List(u8);\` (an INSTANTIATED generic type
+;; constructor). Zig has no \`type X = Y\` syntax — a type alias is a const
+;; whose value is a type expression, and it stays a Const in the graph. What
+;; must change is the scope side: bind the alias NAME to the value's type
+;; text (Rust's \`let x = y\` / JS's \`const B = Foo\` \`@type-binding.alias\`,
+;; source 'assignment-inferred'), so \`LocalAlias.mk()\` types through Case 4,
+;; \`B.init()\` / \`x: B\` / \`B{}\` through Case 3 once \`normalizeZigTypeName\`
+;; drops the comptime arguments (\`util.List(u8)\` → \`util.List\`), and every
+;; binding that names the alias (\`var l = LocalAlias.mk()\`, \`var x: B\`) is
+;; chained to the target by the shared \`followChainedRef\` /
+;; \`followChainPostFinalize\`. The identifier / member shapes take \`var\` too:
+;; \`var node = orig_node;\` is the same value alias as Rust's \`let x = y\`
+;; and chains to the type of \`orig_node\` (a Zig type is comptime and never
+;; \`var\`, so the type-alias reading only ever applies to \`const\`). The
+;; call shape is \`const\`-only and kept only when the callee's last
+;; identifier is TitleCase — see \`emitZigScopeCaptures\` (a value call
+;; \`const t = util.makeThing()\` belongs to the call-return rules above and
+;; must not receive a competing binding). A promoted namespace-member alias
+;; (\`const Counter = counter.Counter;\` → named import) is skipped there too:
+;; the import binding already carries the type.
+(variable_declaration
+  "const" . (identifier) @type-binding.name
+  (identifier) @type-binding.type .) @type-binding.alias
+(variable_declaration
+  "var" . (identifier) @type-binding.name
+  (identifier) @type-binding.type .) @type-binding.alias
+(variable_declaration
+  "const" . (identifier) @type-binding.name
+  (field_expression) @type-binding.type .) @type-binding.alias
+(variable_declaration
+  "var" . (identifier) @type-binding.name
+  (field_expression) @type-binding.type .) @type-binding.alias
+(variable_declaration
+  "const" . (identifier) @type-binding.name
+  (call_expression) @type-binding.type .) @type-binding.alias
+
 ;; References — free calls: foo(...)
 (call_expression
   function: (identifier) @reference.name) @reference.call.free
