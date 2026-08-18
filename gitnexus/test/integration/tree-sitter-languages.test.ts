@@ -715,23 +715,46 @@ describe('Tree-sitter multi-language parsing', () => {
     });
 
     it('reports Zig unavailable and throws "Unsupported language" when the grammar is absent', async () => {
-      // Force the absent-binding path instead of hoping the package is missing:
-      // the loader's runtime opt-out (`GITNEXUS_SKIP_OPTIONAL_GRAMMARS`) makes a
-      // userSkippable grammar report exactly as an absent binding does. A fresh
-      // module copy is needed because the loader memoizes load results.
-      const ENV = 'GITNEXUS_SKIP_OPTIONAL_GRAMMARS';
-      const previous = process.env[ENV];
-      process.env[ENV] = 'zig';
+      // Exercise the loader's real absent-binding branch (the `source.load()`
+      // catch in `loadGrammar`), not the `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`
+      // opt-out, which is a separate code path with its own test
+      // (parser-loader-skip-optional.test.ts). The Zig row loads through the
+      // module-scoped `createRequire(import.meta.url)`, so stand in for
+      // `node:module` with a require that reports the package missing and
+      // delegates everything else. A fresh module copy is needed because the
+      // loader memoizes load results.
+      const ZIG_PKG = '@tree-sitter-grammars/tree-sitter-zig';
+      vi.doMock('node:module', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('node:module')>();
+        return {
+          ...actual,
+          createRequire: (url: string | URL) => {
+            const real = actual.createRequire(url);
+            const stub = ((id: string) => {
+              if (id === ZIG_PKG) {
+                const err = new Error(`Cannot find module '${id}'`) as NodeJS.ErrnoException;
+                err.code = 'MODULE_NOT_FOUND';
+                throw err;
+              }
+              return real(id);
+            }) as unknown as NodeJS.Require;
+            return Object.assign(stub, real);
+          },
+        };
+      });
+      vi.resetModules();
       try {
-        vi.resetModules();
         const fresh = await import('../../src/core/tree-sitter/parser-loader.js');
+        // Not the opt-out path: the env is untouched.
+        expect(fresh.isGrammarRuntimeSkipped(SupportedLanguages.Zig)).toBe(false);
         expect(fresh.isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
         await expect(fresh.loadLanguage(SupportedLanguages.Zig)).rejects.toThrow(
           /Unsupported language/,
         );
+        // Optional-grammar failure is non-fatal: the other grammars still load.
+        expect(fresh.isLanguageAvailable(SupportedLanguages.TypeScript)).toBe(true);
       } finally {
-        if (previous === undefined) delete process.env[ENV];
-        else process.env[ENV] = previous;
+        vi.doUnmock('node:module');
         vi.resetModules();
       }
     });

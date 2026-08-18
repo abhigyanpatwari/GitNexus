@@ -575,6 +575,37 @@ function findZonBlockEnd(text: string, start: number): number {
 }
 
 /**
+ * `body` with every nested `{ … }` block (string-aware) replaced by spaces of
+ * equal length, so a regex over the result only sees the block's DIRECT
+ * fields and offsets still line up with the original text.
+ */
+function zonBlankNestedBlocks(body: string): string {
+  const out = body.split('');
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      if (ch === '\\') {
+        if (depth > 0 && i + 1 < body.length) out[i + 1] = ' ';
+        i++;
+      } else if (ch === '"') inString = false;
+      if (depth > 0) out[i] = ' ';
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && depth > 0) {
+      depth--;
+      out[i] = ' ';
+      continue;
+    }
+    if (depth > 0) out[i] = ' ';
+  }
+  return out.join('');
+}
+
+/**
  * Per-offset "is inside a `"…"` literal" mask for comment-stripped ZON text,
  * so header regexes can reject a match that merely LOOKS like a field
  * (`.name = ".dependencies = .{ … }"` is a string, not the dependencies
@@ -644,9 +675,19 @@ export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
     const bodyStart = m.index + m[0].length;
     const bodyEnd = findZonBlockEnd(text, bodyStart);
     if (bodyEnd < 0 || bodyEnd > end) break;
-    const body = text.slice(bodyStart, bodyEnd);
     cursor = bodyEnd + 1;
-    const pathMatch = body.match(/\.path\s*=\s*"([^"\n]+)"/);
+    // Only a `.path` that is a DIRECT field of the entry counts: a nested
+    // object inside the entry (`.foo = .{ .url = "…", .x = .{ .path = "…" } }`)
+    // must not turn a URL dep into a path dep. Blank nested blocks first and
+    // reject a match that starts inside a string literal.
+    const body = zonBlankNestedBlocks(text.slice(bodyStart, bodyEnd));
+    const pathMatch = matchZonHeader(
+      body,
+      /\.path\s*=\s*"([^"\n]+)"/g,
+      mask.subarray(bodyStart, bodyEnd),
+      0,
+      body.length,
+    );
     if (pathMatch) {
       pathDeps.set(depName, pathMatch[1]);
     }

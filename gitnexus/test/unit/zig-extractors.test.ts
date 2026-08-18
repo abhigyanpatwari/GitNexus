@@ -116,6 +116,28 @@ const Counter = struct {
     expect(make.isStatic).toBe(true);
   });
 
+  it('reads the return type from function_declaration’s `type:` field (there is no `return_type`)', () => {
+    // tree-sitter-zig 1.1.2 labels the type after `)` as the `type` field on
+    // function_declaration — the same field NAME parameter nodes use, but on
+    // a different node. There is no `return_type` field: reading that would
+    // drop every Zig return type. Pin both the grammar fact and the extractor.
+    const root = parse(`
+const Counter = struct {
+    n: u32,
+    pub fn add(self: *Counter, by: u32) void { self.n += by; }
+    pub fn make(n: u32) !*Counter { return error.Nope; }
+};
+`).rootNode;
+    const addDecl = find(root, 'function_declaration', 'pub fn add');
+    expect(addDecl.childForFieldName('return_type')).toBeNull();
+    expect(addDecl.childForFieldName('type')?.text).toBe('void');
+
+    const result = extractor.extract(find(root, 'struct_declaration'), ctx);
+    const byName = new Map(result!.methods.map((m) => [m.name, m]));
+    expect(byName.get('add')!.returnType).toBe('void');
+    expect(byName.get('make')!.returnType).toBe('!*Counter');
+  });
+
   it('only a FIRST parameter named self is the receiver', () => {
     const root = parse(`
 const S = struct {

@@ -214,6 +214,27 @@ describe('parseZigBuildZon', () => {
     expect(parseZigBuildZon(raw)).toBeNull();
   });
 
+  it('ignores a `.path` nested inside an entry — only a direct field makes a path dep', () => {
+    // A URL dep whose body carries a nested object with its own `.path` must
+    // not be reported as a path dep: the resolver would otherwise add an
+    // import edge to an unrelated `<root>/<nested path>` for `@import("only_url")`.
+    const raw = `
+.{
+    .dependencies = .{
+        .only_url = .{
+            .url = "https://x",
+            .hash = "1220y",
+            .meta = .{ .path = "vendor/unrelated" },
+        },
+        .real = .{ .path = "vendor/real", .extra = .{ .path = "vendor/nested" } },
+    },
+}
+`;
+    const cfg = parseZigBuildZon(raw);
+    expect(cfg).not.toBeNull();
+    expect([...cfg!.pathDeps.entries()]).toEqual([['real', 'vendor/real']]);
+  });
+
   it('returns null when the deps block has no `.path` entries', () => {
     const raw = `
 .{
