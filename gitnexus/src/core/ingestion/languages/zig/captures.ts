@@ -236,12 +236,15 @@ export function emitZigScopeCaptures(
     // `_ = @import("x.zig");` and any other keyword-less `<ident> =
     // @import(…)`: a statement (tree-sitter-zig reuses variable_declaration
     // for assignments), not a declaration. It references the file without
-    // binding a name → side-effect import (file edge only). The keyword-less
-    // shape also never enters `importSources`, so it cannot promote aliases.
-    const importStmt = nodeMap['@import.statement'];
-    if (importStmt !== undefined && !isZigKeywordDeclaration(importStmt)) {
+    // binding a name → side-effect import (file edge only). The query rule
+    // cannot exclude the keyword-bearing shapes, so drop those here — they
+    // are the binding rules' matches. A keyword-less shape never enters
+    // `importSources`, so it cannot promote aliases.
+    const sideEffectStmt = nodeMap['@import.side-effect'];
+    if (sideEffectStmt !== undefined) {
+      if (isZigKeywordDeclaration(sideEffectStmt)) continue;
       out.push({
-        '@import.side-effect': nodeToCapture('@import.side-effect', importStmt),
+        '@import.side-effect': grouped['@import.side-effect']!,
         '@import.source': grouped['@import.source']!,
       });
       continue;

@@ -113,9 +113,17 @@ const ZIG_SCOPE_QUERY = `
 (variable_declaration
   "var" . (identifier) @declaration.name) @declaration.variable
 
-;; Imports — const x = @import("...")
+;; Imports — const x = @import("...") / var x = @import("..."). Keyword-gated
+;; like every binding rule: a keyword-less \`x = @import("...")\` is a
+;; statement (see the side-effect rule below), not a binding.
 (variable_declaration
-  (identifier) @import.name
+  "const" . (identifier) @import.name
+  (builtin_function
+    (builtin_identifier) @_builtin
+    (arguments (string) @import.source))
+  (#eq? @_builtin "@import")) @import.statement
+(variable_declaration
+  "var" . (identifier) @import.name
   (builtin_function
     (builtin_identifier) @_builtin
     (arguments (string) @import.source))
@@ -128,7 +136,7 @@ const ZIG_SCOPE_QUERY = `
 ;; edge is what matters; a member-of-a-member resolves through the namespace
 ;; later or not at all.
 (variable_declaration
-  (identifier) @import.name
+  "const" . (identifier) @import.name
   (field_expression
     object: (builtin_function
       (builtin_identifier) @_builtin
@@ -136,7 +144,7 @@ const ZIG_SCOPE_QUERY = `
     member: (identifier) @import.imported)
   (#eq? @_builtin "@import")) @import.statement
 (variable_declaration
-  (identifier) @import.name
+  "const" . (identifier) @import.name
   (field_expression
     object: (field_expression
       object: (builtin_function
@@ -144,6 +152,21 @@ const ZIG_SCOPE_QUERY = `
         (arguments (string) @import.source)))
     member: (identifier) @import.imported)
   (#eq? @_builtin "@import")) @import.statement
+
+;; Imports — a keyword-less \`<ident> = @import("...");\` statement
+;; (\`_ = @import("all_tests.zig");\` in a test block, the refAllDecls
+;; idiom): tree-sitter-zig reuses \`variable_declaration\` for assignments, so
+;; the shape is a declaration minus the keyword. It references the file
+;; without binding a name — a side-effect import. Tree-sitter queries cannot
+;; say "no keyword child", so this rule matches the keyword-bearing shapes
+;; too; \`emitZigScopeCaptures\` keeps it only when \`isZigKeywordDeclaration\`
+;; is false (the keyword shapes are the binding rules above).
+(variable_declaration
+  . (identifier)
+  (builtin_function
+    (builtin_identifier) @_builtin
+    (arguments (string) @import.source))
+  (#eq? @_builtin "@import")) @import.side-effect
 
 ;; Aliases of a namespace member — const Counter = counter.Counter; where
 ;; \`counter\` is an @import binding of THIS file. The query cannot know which
