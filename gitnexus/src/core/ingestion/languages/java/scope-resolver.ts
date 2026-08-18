@@ -34,6 +34,7 @@ import { attachJavaSpringAopMetadata } from './spring-aop.js';
 import { attachJavaSpringConfigBindings } from './spring-config-bindings.js';
 import { attachJavaSpringConditionalMetadata } from './spring-conditionals.js';
 import { attachJavaSpringDiMetadata } from './spring-di.js';
+import { attachJavaSpringNonHttpHandlerMetadata } from './spring-non-http-handlers.js';
 import {
   applyJavaCaptureSideChannel,
   clearJavaClassAnnotationFacts,
@@ -94,6 +95,7 @@ const javaScopeResolver: ScopeResolver = {
     attachJavaSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringConditionalMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachJavaSpringNonHttpHandlerMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringConfigBindings(graph, parsedFiles, nodeLookup, indexes, ctx);
   },
 };

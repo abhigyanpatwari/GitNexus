@@ -533,7 +533,12 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
 // stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 68;
+//
+// 68 -> 69 added #2969's JS/TS data-route-table decoratorRoutes. A warm v68
+// cache would replay unchanged worker results without those routes. Version 70
+// then adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so Java
+// and Kotlin caches persist scheduled, event, messaging, and managed-job facts.
+const SCHEMA_BUMP = 70;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

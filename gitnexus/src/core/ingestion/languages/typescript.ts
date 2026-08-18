@@ -125,6 +125,12 @@ import {
   jsArityCompatibility,
 } from './javascript/index.js';
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
+import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
+
+const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
+  ...extractDispatchGuardRoutes(...args),
+  ...extractDataRouteTableRoutes(...args),
+];
 
 /**
  * TypeScript/JavaScript: arrow_function and function_expression are
@@ -458,7 +464,7 @@ export const typescriptProvider = defineLanguage({
   // A raw `node:http` server declares its routes by comparing the request path
   // to a literal; nothing else in this pipeline can see that shape. TS and JS
   // share the grammar, so they share the extractor.
-  extractDecoratorRoutes: extractDispatchGuardRoutes,
+  extractDecoratorRoutes: extractJsTsRoutes,
 });
 
 export const javascriptProvider = defineLanguage({
@@ -532,5 +538,5 @@ export const javascriptProvider = defineLanguage({
   receiverBinding: jsReceiverBinding,
   arityCompatibility: jsArityCompatibility,
   // See the TypeScript provider above.
-  extractDecoratorRoutes: extractDispatchGuardRoutes,
+  extractDecoratorRoutes: extractJsTsRoutes,
 });

@@ -218,15 +218,17 @@ describe('PARSE_CACHE_VERSION', () => {
   // the pre-fix fan-out. This branch staged 64 above the claims live at the
   // time (61, 62, 63); all three landed and cascaded main to 67, so 68 is the
   // next free value above every claim at merge — the rule, re-applied.
-  it('pins SCHEMA_BUMP to 68 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(68);
+  // Version 69 added #2969's JS/TS data-route-table decoratorRoutes. Version 70
+  // adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so it is
+  // the next free value after both cache payload changes.
+  it('pins SCHEMA_BUMP to 70 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(70);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    // Every nearby historical value is rejected: origin/main advanced through
-    // 67, and this branch previously published 64. Pinning 68 and rejecting all
-    // prior values makes an accidental conflict resolution loud.
-    for (const taken of [60, 61, 62, 63, 64, 65, 66, 67]) {
+    // Every nearby historical or in-flight value is rejected, including 69,
+    // which carried the route-table payload before this merge.
+    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
   });
