@@ -614,6 +614,10 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
       } else if (ann === 'RequestLine') {
         // Feign packs verb + path in one literal; its only named argument is `value`.
         if (keyNode && keyNode.text !== 'value') continue;
+        // A constant-valued `@RequestLine` arrives as @value_expr, not @value —
+        // `valueNode` is undefined in that shape. Skip rather than dereference
+        // (constant folding for Feign verb+path literals is out of scope here).
+        if (!valueNode) continue;
         const raw = unquoteLiteral(valueNode.text);
         const parsed = raw !== null ? parseRequestLine(raw) : null;
         if (parsed) {
