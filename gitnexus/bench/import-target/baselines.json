@@ -164,7 +164,7 @@
         "files_small": 8000,
         "files_large": 32000,
         "path_segments": 14,
-        "probe": "github.com/org/repo0/pkg/util"
+        "probe": "example.com/mod/repo0/pkg/util"
       },
       "_measured": {
         "collide_ms": 7.15,
