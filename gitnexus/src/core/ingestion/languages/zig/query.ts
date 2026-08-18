@@ -225,9 +225,18 @@ const ZIG_SCOPE_QUERY = `
   name: (identifier) @type-binding.name
   type: (_) @type-binding.type) @type-binding.parameter
 
-;; Type bindings — constructor inference: const p = T{ ... }
+;; Type bindings — constructor inference: const p = T{ ... }. Keyword-gated
+;; like every binding rule: a keyword-less \`p = T{ ... };\` is a
+;; re-assignment (same node type in tree-sitter-zig 1.1.2), and Zig's static
+;; typing means \`p\` already carries its type from its declaration
+;; (annotation, constructor or inferred value) — the assignment declares
+;; nothing, and \`_ = T{ ... };\` must not bind \`_\`.
 (variable_declaration
-  (identifier) @type-binding.name
+  "const" . (identifier) @type-binding.name
+  (struct_initializer
+    (identifier) @type-binding.type)) @type-binding.constructor
+(variable_declaration
+  "var" . (identifier) @type-binding.name
   (struct_initializer
     (identifier) @type-binding.type)) @type-binding.constructor
 
@@ -236,7 +245,11 @@ const ZIG_SCOPE_QUERY = `
 ;; receiver dispatch resolves the namespace prefix through the import
 ;; binding (emitReceiverBoundCalls Case 3).
 (variable_declaration
-  (identifier) @type-binding.name
+  "const" . (identifier) @type-binding.name
+  (struct_initializer
+    (field_expression) @type-binding.type)) @type-binding.constructor
+(variable_declaration
+  "var" . (identifier) @type-binding.name
   (struct_initializer
     (field_expression) @type-binding.type)) @type-binding.constructor
 
@@ -244,7 +257,11 @@ const ZIG_SCOPE_QUERY = `
 ;; The callee is the type constructor; \`normalizeZigTypeName\` drops the
 ;; comptime argument list so \`List(u8)\` looks up \`List\`.
 (variable_declaration
-  (identifier) @type-binding.name
+  "const" . (identifier) @type-binding.name
+  (struct_initializer
+    (call_expression) @type-binding.type)) @type-binding.constructor
+(variable_declaration
+  "var" . (identifier) @type-binding.name
   (struct_initializer
     (call_expression) @type-binding.type)) @type-binding.constructor
 

@@ -1390,6 +1390,36 @@ fn f() !void {
     ]);
   });
 
+  it('a keyword-less re-assignment `p = T{…};` / `_ = T{…};` binds no constructor type (only declarations do)', () => {
+    // tree-sitter-zig 1.1.2 parses assignments as `variable_declaration` too;
+    // the constructor rules used to match them and mint a binding for `p` (and
+    // for `_`) in the assignment's block. `p` already carries its type from its
+    // declaration, so the assignment adds nothing — the rules are keyword-gated
+    // like the import and call-return rules.
+    const src = `
+fn f() void {
+    var p = Thing{ .a = 1 };
+    const q = mod.Thing{ .a = 1 };
+    const l = List(u8){};
+    p = Thing{ .a = 2 };
+    q = mod.Thing{ .a = 2 };
+    l = List(u8){};
+    _ = Thing{ .a = 3 };
+}
+`;
+    const ctor = (boundName: string, rawTypeName: string) => ({
+      boundName,
+      rawTypeName,
+      source: 'constructor-inferred',
+      kind: '@type-binding.constructor',
+    });
+    expect(bindingsOf(src)).toEqual([
+      ctor('p', 'Thing'),
+      ctor('q', 'mod.Thing'),
+      ctor('l', 'List'),
+    ]);
+  });
+
   it('a wrapped struct literal (`try Thing{…}`) is a constructor binding', () => {
     expect(bindingsOf('fn f() !void { const t = try Thing{ .a = 1 }; }')).toEqual([
       {
