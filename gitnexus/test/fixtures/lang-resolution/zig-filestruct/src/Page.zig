@@ -21,7 +21,6 @@ pub fn bump(self: *Page) void {
     self.count += 1;
     _ = self.getArena();
 }
-<<<<<<< HEAD
 
 // Field-typed receivers (F5): `session: *Session` types the member, so a
 // call through it dispatches into Session.zig — directly (`self.session.name()`)
@@ -35,9 +34,6 @@ pub fn sessionLabel(self: *Page) []const u8 {
     return s.name();
 }
 
-||||||| parent of fb83c9d9 (fix(zig): type locals through try/catch/orelse, return types and payload captures)
-
-=======
 
 // F6 — value flow: a fallible constructor, member calls whose RETURN types
 // type the local, optionals for `if` / `while` payloads.
@@ -53,5 +49,3 @@ pub fn getSession(self: *Page) *Session {
 pub fn maybeSession(self: *Page) ?*Session {
     return self.session;
 }
-
->>>>>>> fb83c9d9 (fix(zig): type locals through try/catch/orelse, return types and payload captures)
