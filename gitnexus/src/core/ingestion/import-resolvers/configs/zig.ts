@@ -4,7 +4,7 @@
  * Local-file imports (`@import("./foo.zig")`, `@import("foo.zig")`) resolve
  * relative to the importer. Bare names (`@import("bar")`) resolve through
  * build.zig.zon `.path` deps when a parsed ZigBuildZonConfig is available
- * (see language-config.ts `loadZigBuildZon`). Everything unresolvable —
+ * (see language-config.ts `loadZigBuildConfig`). Everything unresolvable —
  * `std`, `builtin`, `root`, `.url`-based deps — returns an empty result so
  * it doesn't produce ghost import edges.
  */

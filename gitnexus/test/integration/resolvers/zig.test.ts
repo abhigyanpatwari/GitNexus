@@ -277,6 +277,22 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     expect(calls).toContain('main → legacy');
   });
 
+  it('resolves `@import("<own module>")` through the ROOT build.zig’s addModule (Lightpanda: `@import("lightpanda")`)', () => {
+    // Bare names were resolved through build.zig.zon path deps only, so the
+    // package's own root module — `b.addModule("idioms", .{ .root_source_file
+    // = b.path("src/idioms.zig") })`, re-imported into itself via addImport —
+    // had no IMPORTS edge and nothing reached through it resolved.
+    expect(imports).toContain('main.zig → src/idioms.zig');
+    expect(calls).toContain('main → boot');
+    // …and a type reached through the module namespace dispatches.
+    expect(calls).toContain('main → reset');
+  });
+
+  it('does not fabricate an edge for a generated module (`addOptions().createModule()`)', () => {
+    // `build_config` exists only at build time; there is no file to import.
+    expect(imports.some((e) => e.startsWith('main.zig → ') && /build_config/.test(e))).toBe(false);
+  });
+
   it('a re-assignment (`a = Counter.init();`) is not a declaration and does not shadow the typed binding', () => {
     // Guarded on the scope side by the literal `"const"` / `"var"` in the
     // query and on the structure side by `isZigKeywordDeclaration`.
@@ -288,3 +304,29 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     ).toBeGreaterThanOrEqual(2);
   });
 });
+
+/**
+ * `zig-rootmodule`: a repo with a root `build.zig` and NO `build.zig.zon`.
+ * Its only bare-name import is the module its own build.zig declares through
+ * a `createModule` binding that `addImport("core", core_mod)` names.
+ */
+describe.skipIf(!zigAvailable)(
+  'Zig own root module without build.zig.zon (zig-rootmodule fixture)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-rootmodule'), () => {});
+    }, 60000);
+
+    it('resolves `@import("core")` to src/core.zig and the `core.start()` call through it', () => {
+      // The resolution config was null without a build.zig.zon, so the repo's
+      // own module never resolved: no IMPORTS edge, no call through `core.`.
+      const imports = getRelationships(result, 'IMPORTS').map(
+        (e) => `${path.basename(e.sourceFilePath)} → ${e.targetFilePath}`,
+      );
+      expect(imports).toContain('main.zig → src/core.zig');
+      expect(edgeSet(getRelationships(result, 'CALLS'))).toContain('main → start');
+    });
+  },
+);

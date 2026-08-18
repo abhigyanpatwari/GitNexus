@@ -9,14 +9,18 @@
  *   const foo = @import("foo.zig");              → also relative (Zig treats unprefixed
  *                                                  paths with a `.zig` extension as
  *                                                  filesystem-relative to the importer)
+ *   const lp = @import("lightpanda");            → the repo's OWN module, declared by
+ *                                                  its root build.zig (`b.addModule`)
  *   const bar = @import("bar");                  → package dep declared in build.zig.zon
  *
- * Bare-name (build.zig.zon) resolution is handled when a parsed
- * ZigBuildZonConfig is supplied (see `loadZigBuildZon`). `.url`-based deps
- * unpack into a build cache outside the repo and so are returned as null;
- * `.path`-based deps are resolved through the root the dep's own build.zig
- * declares, then the conventional `<dep_root>/src/root.zig`,
- * `<dep_root>/src/<name>.zig`, `<dep_root>/src/main.zig` layouts.
+ * Bare-name resolution is handled when a parsed ZigBuildZonConfig is
+ * supplied (see `loadZigBuildConfig`). The root build.zig's own named modules
+ * come first (`rootModules`, name → root file — a repo with no build.zig.zon
+ * still resolves them). `.url`-based deps unpack into a build cache outside
+ * the repo and so are returned as null; `.path`-based deps are resolved
+ * through the root the dep's own build.zig declares, then the conventional
+ * `<dep_root>/src/root.zig`, `<dep_root>/src/<name>.zig`,
+ * `<dep_root>/src/main.zig` layouts.
  */
 
 import { normalizeZigDepPath, type ZigBuildZonConfig } from '../language-config.js';
@@ -73,8 +77,16 @@ export function resolveZigImportInternal(
   }
 
   // Bare name without extension or slashes (e.g. @import("bar")).
-  // Try to resolve via build.zig.zon `.path` deps.
   if (buildZon) {
+    // The repo's own modules, as its root build.zig names them
+    // (`b.addModule("lightpanda", .{ .root_source_file = b.path("src/lightpanda.zig") })`),
+    // take precedence: that declaration is exactly what an in-repo
+    // `@import("lightpanda")` means, whatever the zon says. `std` / `builtin`
+    // / `root` were rejected above and can never be reached from here.
+    const rootModule = buildZon.rootModules?.get(importPath);
+    if (rootModule !== undefined && allFiles.has(rootModule)) return rootModule;
+
+    // Then build.zig.zon `.path` deps.
     const depPath = buildZon.pathDeps.get(importPath);
     if (depPath) {
       const normalized = normalizeZigDepPath(depPath);
@@ -100,7 +112,7 @@ export function resolveZigImportInternal(
     }
   }
 
-  // Bare name with no resolution (no build.zig.zon, .url-based dep, or
+  // Bare name with no resolution (no build.zig / build.zig.zon, .url-based dep, generated module, or
   // unconventional layout).
   return null;
 }

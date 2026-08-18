@@ -14,7 +14,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
-import { loadZigBuildZon, type ZigBuildZonConfig } from '../../language-config.js';
+import { loadZigBuildConfig, type ZigBuildZonConfig } from '../../language-config.js';
 import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
 import { zigProvider } from '../zig.js';
 import { expandZigWildcardNames, zigArityCompatibility, zigMergeBindings } from './index.js';
@@ -24,7 +24,7 @@ export const zigScopeResolver: ScopeResolver = {
   languageProvider: zigProvider,
   importEdgeReason: 'zig-scope: import',
 
-  loadResolutionConfig: (repoPath: string) => loadZigBuildZon(repoPath),
+  loadResolutionConfig: (repoPath: string) => loadZigBuildConfig(repoPath),
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveZigImportInternal(

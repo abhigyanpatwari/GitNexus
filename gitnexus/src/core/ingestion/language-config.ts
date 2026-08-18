@@ -87,7 +87,7 @@ export interface SwiftPackageConfig {
   targets: Map<string, string>;
 }
 
-/** Zig package config parsed from build.zig.zon */
+/** Zig package config parsed from build.zig.zon and the root build.zig */
 export interface ZigBuildZonConfig {
   /**
    * Map of dependency name -> the raw `.path = "..."` value, exactly as
@@ -109,6 +109,17 @@ export interface ZigBuildZonConfig {
    * `build.zig`; the resolver then falls back to the conventional layouts.
    */
   moduleRoots?: Map<string, readonly string[]>;
+  /**
+   * Modules the repo's OWN root `build.zig` declares under an importable
+   * name, module name → repo-relative root source file
+   * (`b.addModule("lp", .{ .root_source_file = b.path("src/lp.zig") })`, or a
+   * `createModule` binding later named through `addImport("lp", binding)`).
+   * These are what an in-repo `@import("lp")` means — the most common shape in
+   * single-package repos, where every file imports the package's own root
+   * module by name. Independent of `build.zig.zon`: a repo with a `build.zig`
+   * and no zon still resolves them. See `parseZigRootModules`.
+   */
+  rootModules?: Map<string, string>;
 }
 
 // ============================================================================
@@ -490,7 +501,11 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
 }
 
 /**
- * Parse build.zig.zon to extract `.path = "..."` dependency mappings.
+ * Load the Zig build configuration a repo's `build.zig.zon` + root `build.zig`
+ * declare: `.path` deps (and the roots their own build.zig names) from the
+ * zon, and the repo's own named modules from the root build.zig. Either file
+ * may be missing — a repo with a `build.zig` but no `build.zig.zon` still
+ * resolves `@import("<own module>")`. Null only when neither contributes.
  *
  * `build.zig.zon` is Zig source (an anonymous-struct literal), not JSON.
  * Rather than pull in a tree-sitter parse for one file, we use a small
@@ -520,16 +535,30 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
  *     string literals — a commented-out `.path` or a `}` inside a comment
  *     or string cannot declare a dep or truncate the block.
  */
-export async function loadZigBuildZon(repoRoot: string): Promise<ZigBuildZonConfig | null> {
-  let config: ZigBuildZonConfig | null;
+export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonConfig | null> {
+  let config: ZigBuildZonConfig | null = null;
   try {
-    const zonPath = path.join(repoRoot, 'build.zig.zon');
-    const raw = await fs.readFile(zonPath, 'utf-8');
+    const raw = await fs.readFile(path.join(repoRoot, 'build.zig.zon'), 'utf-8');
     config = parseZigBuildZon(raw);
   } catch {
-    return null;
+    // No zon (or unreadable): the root build.zig may still declare modules.
   }
-  if (config === null) return null;
+
+  // The repo's own importable modules, from its root build.zig. Independent
+  // of the zon: `@import("<own module>")` is how single-package repos refer
+  // to their root file from every other file.
+  let rootModules: Map<string, string> | undefined;
+  try {
+    const rootBuildZig = await fs.readFile(path.join(repoRoot, 'build.zig'), 'utf-8');
+    const parsed = parseZigRootModules(rootBuildZig);
+    if (parsed.size > 0) rootModules = parsed;
+  } catch {
+    // No root build.zig — nothing to declare.
+  }
+
+  if (config === null) {
+    return rootModules ? { pathDeps: new Map(), rootModules } : null;
+  }
 
   // A path dep's importable root is whatever ITS build.zig declares, not a
   // fixed layout: read `root_source_file` per `addModule` and remember it
@@ -550,7 +579,11 @@ export async function loadZigBuildZon(repoRoot: string): Promise<ZigBuildZonConf
     );
     if (roots.length > 0) moduleRoots.set(depName, roots);
   }
-  return moduleRoots.size > 0 ? { ...config, moduleRoots } : config;
+  return {
+    ...config,
+    ...(moduleRoots.size > 0 ? { moduleRoots } : {}),
+    ...(rootModules ? { rootModules } : {}),
+  };
 }
 
 /**
@@ -609,6 +642,88 @@ export function parseZigBuildModuleRoots(buildZig: string, preferredName: string
   const anyRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/g;
   while ((m = anyRe.exec(buildZig)) !== null) add(unnamed, m[1]!);
   return [...named, ...unnamed];
+}
+
+/**
+ * The importable modules a repo's ROOT `build.zig` declares, module name →
+ * repo-relative root source file. Static scan (no execution) of two shapes:
+ *
+ *   - `b.addModule("<name>", .{ .root_source_file = b.path("<p>.zig"), … })`
+ *     names the module directly;
+ *   - `const m = b.createModule(.{ .root_source_file = b.path("<p>.zig"), … })`
+ *     (or `const m = b.addModule(…)`) bound to an identifier and later named
+ *     by `x.addImport("<name>", m)` or `.imports = &.{ .{ .name = "<name>",
+ *     .module = m } }`.
+ *
+ * Deliberately NOT resolved — they are not in-repo source files: modules whose
+ * root is not a static `b.path("….zig")` (generated `opts.createModule()` from
+ * `addOptions`, `translate_c.createModule()`, `.cwd_relative` / computed
+ * LazyPaths), `addImport("<name>", dep.module("…"))` (a `.url` / path dep,
+ * handled through the zon), and aliases whose module operand is anything but a
+ * bare identifier bound above (`config.lp_module`). Comments are stripped and
+ * string literals skipped; the first declaration of a name wins.
+ */
+export function parseZigRootModules(buildZig: string): Map<string, string> {
+  const text = stripZonComments(buildZig);
+  const mask = zonStringMask(text);
+  const modules = new Map<string, string>();
+  // identifier → repo-relative root, for `const m = b.createModule(…)` /
+  // `const m = b.addModule(…)` bindings later named via addImport.
+  const bindings = new Map<string, string>();
+  const rootRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/;
+  const bindingRe = /(?:const|var)\s+([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*$/;
+  const callRe = /\b(addModule|createModule)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = callRe.exec(text)) !== null) {
+    if (mask[m.index] !== 0) continue;
+    const argsStart = m.index + m[0].length;
+    const argsEnd = findZigParenEnd(text, argsStart);
+    if (argsEnd < 0) break;
+    const args = text.slice(argsStart, argsEnd);
+    const rootMatch = rootRe.exec(args);
+    const root = rootMatch ? normalizeZigDepPath(rootMatch[1]!) : null;
+    if (root === null || root === '' || !root.endsWith('.zig')) continue;
+    if (m[1] === 'addModule') {
+      const nameMatch = /^\s*"([^"\n]+)"\s*,/.exec(args);
+      if (nameMatch && !modules.has(nameMatch[1]!)) modules.set(nameMatch[1]!, root);
+    }
+    const binding = bindingRe.exec(text.slice(0, m.index));
+    if (binding && !bindings.has(binding[1]!)) bindings.set(binding[1]!, root);
+  }
+  if (bindings.size === 0) return modules;
+  const aliasRes = [
+    /\.addImport\(\s*"([^"\n]+)"\s*,\s*([A-Za-z_]\w*)\s*\)/g,
+    /\.name\s*=\s*"([^"\n]+)"\s*,\s*\.module\s*=\s*([A-Za-z_]\w*)\s*[,}]/g,
+  ];
+  for (const re of aliasRes) {
+    while ((m = re.exec(text)) !== null) {
+      if (mask[m.index] !== 0) continue;
+      const root = bindings.get(m[2]!);
+      if (root !== undefined && !modules.has(m[1]!)) modules.set(m[1]!, root);
+    }
+  }
+  return modules;
+}
+
+/**
+ * Index of the `)` matching the `(` that precedes `start`, skipping parens
+ * inside `"…"` literals. -1 when unbalanced. Call on comment-stripped text.
+ */
+function findZigParenEnd(text: string, start: number): number {
+  let depth = 1;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return i;
+  }
+  return -1;
 }
 
 /**
@@ -869,6 +984,6 @@ export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs
     swiftPackageConfig: await loadSwiftPackageConfig(repoRoot),
     csharpConfigs: csharpScan.configs,
     csharpNamespaces: csharpScanToEvidence(csharpScan),
-    zigBuildZon: await loadZigBuildZon(repoRoot),
+    zigBuildZon: await loadZigBuildConfig(repoRoot),
   };
 }

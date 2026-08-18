@@ -8,6 +8,11 @@ const Stack = @import("counter.zig").Stack;
 // oldlib has no build.zig and relies on the src/<name>.zig convention.
 const geo = @import("geo");
 const oldlib = @import("oldlib");
+// The package's OWN root module, named by build.zig's addModule("idioms", …)
+// (Lightpanda: `const lp = @import("lightpanda");` in 378 of 567 files).
+const idioms = @import("idioms");
+// Generated at build time (addOptions().createModule()) — no in-repo file.
+const build_config = @import("build_config");
 // Removed from the language in 0.15, still everywhere in 0.11–0.14 code.
 pub usingnamespace @import("mixin.zig");
 
@@ -35,6 +40,11 @@ pub fn main() void {
     var p = geo.Point{};
     p.shift(1);
     oldlib.legacy();
+    // own root module
+    idioms.boot();
+    var arena = idioms.Arena{};
+    arena.reset();
+    _ = build_config.version;
     // statement assignments share the variable_declaration node type with
     // declarations in tree-sitter-zig 1.1.2 — none of these is a binding.
     counter.global_count = 5;

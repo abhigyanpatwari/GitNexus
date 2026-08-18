@@ -7,7 +7,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.js';
 import {
-  loadZigBuildZon,
+  loadZigBuildConfig,
+  parseZigRootModules,
   parseZigBuildModuleRoots,
   parseZigBuildZon,
 } from '../../src/core/ingestion/language-config.js';
@@ -157,6 +158,59 @@ describe('resolveZigImportInternal', () => {
     const files = new Set<string>(['src/main.zig', 'vendor/ziggit/lib/something.zig']);
     const buildZon = { pathDeps: new Map([['ziggit', 'vendor/ziggit']]) };
     expect(resolveZigImportInternal('src/main.zig', 'ziggit', files, buildZon)).toBeNull();
+  });
+
+  it('resolves the repo’s OWN module (root build.zig `addModule`) with no build.zig.zon at all', () => {
+    // Lightpanda: `const lp = @import("lightpanda");` in 378 of 567 files,
+    // declared only by the root build.zig — bare names were resolved through
+    // zon path deps alone, so the package's own root module had ZERO IMPORTS
+    // edges and every `lp.X` downstream stayed unresolved.
+    const files = new Set<string>(['src/main.zig', 'src/lightpanda.zig', 'src/browser/page.zig']);
+    const config = {
+      pathDeps: new Map<string, string>(),
+      rootModules: new Map([['lightpanda', 'src/lightpanda.zig']]),
+    };
+    expect(resolveZigImportInternal('src/browser/page.zig', 'lightpanda', files, config)).toBe(
+      'src/lightpanda.zig',
+    );
+    // From the root file itself (the circular self-import build.zig allows).
+    expect(resolveZigImportInternal('src/lightpanda.zig', 'lightpanda', files, config)).toBe(
+      'src/lightpanda.zig',
+    );
+    // A generated module (`addOptions().createModule()`) is not declared and
+    // must not resolve to anything.
+    expect(resolveZigImportInternal('src/main.zig', 'build_config', files, config)).toBeNull();
+    // A declared root that is not among the indexed files resolves nothing.
+    const stale = {
+      pathDeps: new Map<string, string>(),
+      rootModules: new Map([['gone', 'src/gone.zig']]),
+    };
+    expect(resolveZigImportInternal('src/main.zig', 'gone', files, stale)).toBeNull();
+  });
+
+  it('never resolves std / builtin / root through a same-named root module', () => {
+    const files = new Set<string>(['src/main.zig', 'src/std.zig']);
+    const config = {
+      pathDeps: new Map<string, string>(),
+      rootModules: new Map([['std', 'src/std.zig']]),
+    };
+    expect(resolveZigImportInternal('src/main.zig', 'std', files, config)).toBeNull();
+  });
+
+  it('consults root modules BEFORE build.zig.zon path deps', () => {
+    // A `.path = "."` self-dep and an `addModule` for the same name must agree
+    // on the addModule root — the build.zig declaration is the source of truth
+    // for what the name means, the zon layout heuristics are a fallback.
+    const files = new Set<string>(['src/main.zig', 'src/root.zig', 'lib/pkg.zig']);
+    const config = {
+      pathDeps: new Map([['pkg', '.']]),
+      rootModules: new Map([['pkg', 'lib/pkg.zig']]),
+    };
+    expect(resolveZigImportInternal('src/main.zig', 'pkg', files, config)).toBe('lib/pkg.zig');
+    // Without the root module, the zon fallback still applies.
+    expect(
+      resolveZigImportInternal('src/main.zig', 'pkg', files, { pathDeps: config.pathDeps }),
+    ).toBe('src/root.zig');
   });
 
   it('returns null for an unknown bare name not in build.zig.zon', () => {
@@ -363,9 +417,108 @@ _ = b.addModule("w", .{ .root_source_file = b.path("../outside.zig") });
   });
 });
 
-describe('loadZigBuildZon (zig-idioms fixture)', () => {
+describe('parseZigRootModules', () => {
+  it('maps the root build.zig’s named modules to their root files (Lightpanda-shaped build.zig)', () => {
+    // Excerpt of Lightpanda's build.zig: `addModule` names the package's own
+    // module, `addImport` re-aliases it (circular self-import), the options
+    // module is generated (`addOptions().createModule()`) and `v8` comes from
+    // a `.url` dep (`dep.module("v8")`) — neither of those is an in-repo file.
+    const buildZig = `
+const std = @import("std");
+const Build = std.Build;
+
+pub fn build(b: *Build) !void {
+    var opts = b.addOptions();
+    opts.addOption([]const u8, "version", version_string);
+
+    const lightpanda_module = b.addModule("lightpanda", .{
+        .root_source_file = b.path("src/lightpanda.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    lightpanda_module.addImport("lightpanda", lightpanda_module); // allow circular "lightpanda" import
+    lightpanda_module.addImport("build_config", opts.createModule());
+
+    // A createModule binding named only through addImport.
+    const testing_mod = b.createModule(.{
+        .root_source_file = b.path("./src/testing.zig"),
+        .imports = &.{
+            .{ .name = "lightpanda", .module = lightpanda_module },
+        },
+    });
+    lightpanda_module.addImport("testing", testing_mod);
+    // \`.imports\` naming form, bare identifier.
+    _ = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .imports = &.{ .{ .name = "lp_alias", .module = lightpanda_module } },
+    });
+    // Struct-field operand — not statically recoverable, skipped.
+    _ = b.createModule(.{
+        .root_source_file = b.path("src/other.zig"),
+        .imports = &.{ .{ .name = "lightpanda_cfg", .module = config.lightpanda_module } },
+    });
+    // The addModule("v8", …) below lives in a string and a comment: neither counts.
+    const note = "b.addModule(\\"decoy\\", .{ .root_source_file = b.path(\\"src/decoy.zig\\") })";
+    // _ = b.addModule("commented", .{ .root_source_file = b.path("src/commented.zig") });
+    _ = note;
+}
+
+fn linkV8(b: *Build, mod: *Build.Module) void {
+    const dep = b.dependency("v8", .{});
+    mod.addImport("v8", dep.module("v8"));
+    const translate_c = b.addTranslateC(.{ .root_source_file = b.path("include/curl.h") });
+    mod.addImport("curl", translate_c.createModule());
+    mod.addImport("computed", b.createModule(.{ .root_source_file = generated.getPath() }));
+}
+`;
+    expect(parseZigRootModules(buildZig)).toEqual(
+      new Map([
+        ['lightpanda', 'src/lightpanda.zig'],
+        ['testing', 'src/testing.zig'],
+        ['lp_alias', 'src/lightpanda.zig'],
+      ]),
+    );
+  });
+
+  it('keeps the first declaration of a name and ignores non-.zig / escaping roots', () => {
+    const buildZig = `
+_ = b.addModule("x", .{ .root_source_file = b.path("src/x.zig") });
+_ = b.addModule("x", .{ .root_source_file = b.path("src/other.zig") });
+_ = b.addModule("h", .{ .root_source_file = b.path("include/h.h") });
+_ = b.addModule("out", .{ .root_source_file = b.path("../outside.zig") });
+_ = b.addModule("abs", .{ .root_source_file = .{ .cwd_relative = "/abs/x.zig" } });
+`;
+    expect(parseZigRootModules(buildZig)).toEqual(new Map([['x', 'src/x.zig']]));
+  });
+
+  it('returns an empty map for a build.zig that names no module', () => {
+    expect(parseZigRootModules('pub fn build(b: *std.Build) void { _ = b; }').size).toBe(0);
+  });
+});
+
+describe('loadZigBuildConfig (zig-rootmodule fixture: build.zig, no build.zig.zon)', () => {
+  it('still yields a config carrying the root build.zig’s modules', async () => {
+    // Before: no build.zig.zon → null → every bare-name import in the repo
+    // unresolved, including the repo's own module.
+    const config = await loadZigBuildConfig(path.join(FIXTURES, 'zig-rootmodule'));
+    expect(config).not.toBeNull();
+    expect(config!.pathDeps.size).toBe(0);
+    expect(config!.rootModules).toEqual(new Map([['core', 'src/core.zig']]));
+  });
+});
+
+describe('loadZigBuildConfig (zig-idioms fixture)', () => {
+  it('reads the root build.zig’s own named modules alongside the zon path deps', async () => {
+    const config = await loadZigBuildConfig(path.join(FIXTURES, 'zig-idioms'));
+    // addModule("idioms", …src/idioms.zig) + the self-addImport; the
+    // build_config (addOptions) module and geo (dependency module) are not
+    // in-repo files.
+    expect(config!.rootModules).toEqual(new Map([['idioms', 'src/idioms.zig']]));
+  });
+
   it('reads each path dep’s build.zig for its module roots and leaves deps without one to the layout fallback', async () => {
-    const config = await loadZigBuildZon(path.join(FIXTURES, 'zig-idioms'));
+    const config = await loadZigBuildConfig(path.join(FIXTURES, 'zig-idioms'));
     expect(config).not.toBeNull();
     expect([...config!.pathDeps.keys()].sort()).toEqual(['geo', 'oldlib']);
     // geo/build.zig: addModule("geo", .{ .root_source_file = b.path("src/root.zig") })
