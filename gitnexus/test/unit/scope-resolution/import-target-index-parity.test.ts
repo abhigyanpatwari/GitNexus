@@ -99,16 +99,17 @@ function legacyResolveGoImportTarget(
   modulePath: string | undefined,
 ): string | readonly string[] | null {
   if (!targetRaw) return null;
-  if (
-    modulePath !== undefined &&
-    (targetRaw === modulePath || targetRaw.startsWith(`${modulePath}/`))
-  ) {
+  if (modulePath !== undefined) {
+    const ownedByModule = targetRaw === modulePath || targetRaw.startsWith(`${modulePath}/`);
+    if (!ownedByModule) return null;
+
     const relativePkg = targetRaw === modulePath ? '' : targetRaw.slice(modulePath.length + 1);
     const files =
       relativePkg === ''
         ? legacyFindRootPackageFiles(allFilePaths)
         : legacyFindAllFilesInPkgDir(allFilePaths, relativePkg);
     if (files.length > 0) return files;
+    return null;
   }
   const parts = targetRaw.split('/').filter(Boolean);
   for (let i = 0; i < parts.length - 1; i++) {
@@ -717,7 +718,7 @@ describe('import-target index hoist — output parity with the pre-change scans'
     for (let repo = 0; repo < 40; repo++) {
       const go = corpus(repo, '.go', 6 + (repo % 25));
       for (const t of GO_TARGETS) {
-        if (resolveGoImportTarget(t, 'main.go', go, { modulePath: 'example.com/mod' }) !== null) {
+        if (resolveGoImportTarget(t, 'main.go', go) !== null) {
           hits.go++;
         }
       }
@@ -782,7 +783,7 @@ describe('import-target index hoist — built once per file set, not once per im
   it('go builds one index for many imports (#2877)', () => {
     const files = countingCorpus(1, '.go');
     for (let i = 0; i < 200; i++) {
-      resolveGoImportTarget(`github.com/org/repo${i}/pkg`, 'main.go', files, {
+      resolveGoImportTarget(`example.com/mod/repo${i}/pkg`, 'main.go', files, {
         modulePath: 'example.com/mod',
       });
     }

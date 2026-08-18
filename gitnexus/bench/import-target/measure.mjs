@@ -2016,8 +2016,8 @@ const HEAP_PROBE_TARGET = {
   // budgeted ones above: a spelling `uniqueTarget` already mints for that language, and
   // one that MISSES, so the reading is the index and the cascade runs to the
   // end. Chosen from the miss family that reaches furthest into each cascade:
-  //   - `go` takes the GOPATH fallback, one `filesDirectlyInPkgDir` per path
-  //     segment, which is the leg that forces `PackageDirIndex`;
+  //   - `go` names a missing package inside GO_MODULE, which reaches the
+  //     package-directory lookup and forces `PackageDirIndex`;
   //   - `dart` is an external package, so BOTH candidate paths miss and both
   //     walk the basename bucket to completion;
   //   - `kotlin` misses in `suffixByStem`, the map its four-tier cascade builds;
@@ -2028,7 +2028,7 @@ const HEAP_PROBE_TARGET = {
   //     `javascript` and `c` arms they are excluded as duplicates OF, so the
   //     bound compares like with like. `vue`'s is bare rather than `@/…`
   //     because the alias branch rewrites to `src/` and would resolve.
-  go: 'github.com/org/repo0/pkg/util',
+  go: 'example.com/mod/repo0/pkg/util',
   dart: 'package:ext0/src/thing.dart',
   kotlin: 'com.ghost0.deep.Missing',
   cobol: 'VENDOR0',
