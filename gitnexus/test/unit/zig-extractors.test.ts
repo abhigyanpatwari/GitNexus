@@ -947,6 +947,36 @@ pub const Inner = struct {
       ]);
     });
 
+    it('flags file-level `pub` import bindings as republishing their name (reexportsName)', () => {
+      // `pub const Arena = @import("Arena.zig");` / `pub const X = @import("x.zig").X;`
+      // at file scope publish the name from THIS module (Python `__init__.py`
+      // shape); a private or fn-local binding does not.
+      const src = `
+pub const Arena = @import("Arena.zig");
+pub const Foo = @import("foo.zig").Foo;
+const hidden = @import("hidden.zig");
+const ns = @import("ns.zig");
+pub const Bar = ns.Bar;
+fn f() void {
+    const Local = @import("local.zig").Local;
+    _ = Local;
+}
+`;
+      const imports = emitZigScopeCaptures(src, 'lp.zig')
+        .filter((m) => m['@import.source'] !== undefined)
+        .map((m) => interpretZigImport(m))
+        .filter((i) => i !== null && (i.kind === 'named' || i.kind === 'alias'))
+        .map((i) => [i!.localName, (i as { reexportsName?: boolean }).reexportsName === true]);
+      expect(imports).toEqual([
+        ['Arena', true], // the file-struct TYPE twin of a pub namespace import
+        ['Foo', true],
+        ['hidden', false], // no `pub`
+        ['ns', false],
+        ['Bar', true], // pub alias of a namespace member
+        ['Local', false], // fn-local: binds locally, publishes nothing
+      ]);
+    });
+
     it('gives a namespace import of a .zig file a TYPE twin (named import of the file stem)', () => {
       const src = `
 const Page = @import("Page.zig");

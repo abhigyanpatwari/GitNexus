@@ -57,9 +57,21 @@ export function interpretZigImport(captures: CaptureMatch): ParsedImport | null 
   // `import { Foo as Bar }`.
   const imported = captures['@import.imported']?.text;
   if (imported !== undefined) {
+    // `pub const X = …` at file scope republishes the name (Python
+    // `__init__.py` shape): a third file reads it as `thisModule.X`. The
+    // marker is set by `emitZigScopeCaptures` where the syntax node is
+    // still available (`isZigPublishingImport`).
+    const republish = captures['@import.reexports'] !== undefined ? { reexportsName: true } : {};
     return imported === name
-      ? { kind: 'named', localName: name, importedName: imported, targetRaw }
-      : { kind: 'alias', localName: name, importedName: imported, alias: name, targetRaw };
+      ? { kind: 'named', localName: name, importedName: imported, targetRaw, ...republish }
+      : {
+          kind: 'alias',
+          localName: name,
+          importedName: imported,
+          alias: name,
+          targetRaw,
+          ...republish,
+        };
   }
 
   return {

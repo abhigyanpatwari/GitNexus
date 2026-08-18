@@ -24,3 +24,10 @@ pub fn main() void {
 fn useParam(page: *Page) void {
     _ = page.getArena();
 }
+
+const lp = @import("lp.zig");
+// The type behind a re-exported name, taken through the hub.
+const PageViaHub = lp.Page;
+fn viaHubAlias(page: *PageViaHub) void {
+    _ = page.getArena();
+}

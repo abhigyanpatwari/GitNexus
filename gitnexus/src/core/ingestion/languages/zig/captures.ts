@@ -4,6 +4,7 @@ import { getZigParser, getZigScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { hasZigPubKeyword } from '../../export-detection.js';
 
 /** Zig container node types: `struct`, `enum`, `union` and the fieldless
  *  `opaque` all bind through `const T = <container> {…}` and may own methods.
@@ -131,6 +132,17 @@ export function isZigFileThisAlias(declNode: SyntaxNode): boolean {
   );
 }
 
+/** Does this module-level import binding REPUBLISH the name? `pub const Arena
+ *  = @import("Arena.zig");` at file scope makes `Arena` part of this file's
+ *  public surface: a third file reaches it as `lp.Arena` (Lightpanda's
+ *  `lightpanda.zig` is one long list of these). Same fact as a Python
+ *  `__init__.py` `from .impl import X` — the shared contract's
+ *  `reexportsName` flag. Only `pub` at container level publishes; a `const`
+ *  inside a fn body binds locally. */
+export function isZigPublishingImport(declNode: SyntaxNode): boolean {
+  return declNode.parent?.type === 'source_file' && hasZigPubKeyword(declNode);
+}
+
 /** The binding name of a Zig container node, or undefined for a truly
  *  anonymous one. Two shapes carry a name:
  *    - `const Point = struct {…}` — the first identifier of the wrapping
@@ -202,6 +214,14 @@ export function isZigContainerMethod(
     ancestor = ancestor.parent;
   }
   return false;
+}
+
+/** `{ '@import.reexports': 'true' }` when `stmt` is a publishing import
+ *  (see `isZigPublishingImport`), else nothing — spread into an import group. */
+function republishMarker(stmt: SyntaxNode): Record<string, Capture> {
+  return isZigPublishingImport(stmt)
+    ? { '@import.reexports': syntheticCapture('@import.reexports', stmt, 'true') }
+    : {};
 }
 
 /** Every `const X = @This();` in the tree, keyed by the alias node id's owner:
@@ -499,6 +519,7 @@ export function emitZigScopeCaptures(
         '@import.name': nodeToCapture('@import.name', nodeMap['@alias.name']!),
         '@import.imported': nodeToCapture('@import.imported', nodeMap['@alias.member']!),
         '@import.source': nodeToCapture('@import.source', source),
+        ...republishMarker(aliasStmt),
       });
       continue;
     }
@@ -592,6 +613,14 @@ export function emitZigScopeCaptures(
       grouped['@declaration.method'] = { ...fnCapture, name: '@declaration.method' };
     }
 
+    // `pub const X = @import("x.zig").X;` at file scope republishes `X`.
+    if (
+      nodeMap['@import.statement'] !== undefined &&
+      nodeMap['@import.imported'] !== undefined &&
+      isZigPublishingImport(nodeMap['@import.statement'])
+    ) {
+      Object.assign(grouped, republishMarker(nodeMap['@import.statement']));
+    }
     out.push(grouped);
 
     // F5 — field types. `session: *Session,` declares the TYPE of the member
@@ -658,6 +687,9 @@ export function emitZigScopeCaptures(
             nodeMap['@import.name'],
             zigFileStructName(source),
           ),
+          // `pub const Arena = @import("Arena.zig");` republishes the TYPE too:
+          // `lp.Arena` in a third file is the Struct `Arena.zig` declares.
+          ...republishMarker(importStmt),
         });
       }
     }

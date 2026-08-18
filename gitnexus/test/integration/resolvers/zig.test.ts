@@ -449,6 +449,14 @@ describe.skipIf(!zigAvailable)('Zig file-structs (zig-filestruct fixture)', () =
     expect(calls).toContain('bump → getArena');
   });
 
+  it('republishes a `pub const X = @import("X.zig")` so a third file reaches the type through the hub', () => {
+    // Lightpanda's `lightpanda.zig` is one long list of `pub const X =
+    // @import("...")`; `const lp = @import("lightpanda"); const Arena =
+    // lp.Arena;` is how most files name their types. The re-export must
+    // publish the TYPE (the file-struct), not just the module.
+    expect(edgeSet(getRelationships(result, 'CALLS'))).toContain('viaHubAlias → getArena');
+  });
+
   it('keeps the file-struct type reachable through the namespace import binding', () => {
     // `const Page = @import("Page.zig")` binds both the module (`Page.init`)
     // and the type it declares. Two Struct defs named `Page` in different
