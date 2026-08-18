@@ -437,6 +437,11 @@ program
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .option(
+    '--worktree <path>',
+    'Absolute path to a linked git worktree. Pass this when "repo" resolves to the main ' +
+      'checkout (it never matches a worktree path) but your changes live in that worktree.',
+  )
   .option('-l, --limit <n>', 'Max changed symbols to return')
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 

@@ -234,6 +234,17 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--repo <name>');
   });
 
+  it('detect-changes help exposes the --worktree escape hatch for linked worktrees', () => {
+    // Mirrors the MCP tool's "worktree" param (#1654/#1691) — without this
+    // flag, CLI callers running from inside a linked worktree had no way to
+    // pin the git-diff cwd when `--repo .` failed to resolve or auto-detection
+    // couldn't fire (e.g. behind a wrapper that changes cwd).
+    const result = runHelp('detect-changes');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--worktree <path>');
+  });
+
   it('query-family commands expose the --branch scope flag (#2106)', () => {
     for (const cmd of ['query', 'context', 'impact', 'cypher', 'detect-changes']) {
       const result = runHelp(cmd);

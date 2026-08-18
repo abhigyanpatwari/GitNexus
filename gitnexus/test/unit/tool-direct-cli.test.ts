@@ -223,6 +223,32 @@ describe('direct CLI tool commands', () => {
     expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Risk level: low'));
   });
 
+  it('passes --worktree through to the detect_changes tool call', async () => {
+    callToolMock.mockResolvedValue({
+      summary: {
+        changed_files: 1,
+        changed_count: 2,
+        affected_count: 1,
+        risk_level: 'low',
+      },
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({
+      scope: 'unstaged',
+      repo: 'gitnexus',
+      worktree: '/repo/wt-feature',
+    });
+
+    expect(callToolMock).toHaveBeenCalledWith('detect_changes', {
+      scope: 'unstaged',
+      base_ref: undefined,
+      repo: 'gitnexus',
+      branch: undefined,
+      worktree: '/repo/wt-feature',
+    });
+  });
+
   it('prints "No changes detected." when changed_count is 0', async () => {
     callToolMock.mockResolvedValue({
       summary: { changed_files: 0, changed_count: 0, affected_count: 0, risk_level: 'low' },

@@ -1879,11 +1879,31 @@ export class LocalBackend {
 
       const resolvePathMatch = (): RepoHandle | undefined => {
         const canonicalTarget = canonicalizePath(repoParam);
-        return [...this.repos.values()].find((handle) => {
+        const exact = [...this.repos.values()].find((handle) => {
           const stored = canonicalizePath(handle.repoPath);
           return process.platform === 'win32'
             ? stored.toLowerCase() === canonicalTarget.toLowerCase()
             : stored === canonicalTarget;
+        });
+        if (exact) return exact;
+
+        // `repoParam` may be a LINKED WORKTREE rather than the registered main
+        // checkout. `gitnexus analyze` only ever registers a repo's canonical
+        // root (#1259), so a worktree path — or the common `--repo .` fallback
+        // run from inside one — never equals a registered `handle.repoPath`
+        // and used to fall straight through to "Repository not found", even
+        // though the worktree shares that exact repo's index. Resolve
+        // `repoParam`'s own canonical root (a no-op for a normal clone; the
+        // main checkout for a worktree) and match THAT against the already-
+        // canonical registered paths.
+        const paramCanonicalRoot = getCanonicalRepoRoot(repoParam);
+        if (!paramCanonicalRoot) return undefined;
+        const realParamRoot = tryRealpath(paramCanonicalRoot);
+        return [...this.repos.values()].find((handle) => {
+          const stored = canonicalizePath(handle.repoPath);
+          return process.platform === 'win32'
+            ? stored.toLowerCase() === realParamRoot.toLowerCase()
+            : stored === realParamRoot;
         });
       };
 

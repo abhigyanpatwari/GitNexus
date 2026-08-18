@@ -346,6 +346,7 @@ export async function detectChangesCommand(options?: {
   baseRef?: string;
   repo?: string;
   branch?: string;
+  worktree?: string;
   limit?: string;
 }): Promise<void> {
   const limit = parseLimit(options?.limit);
@@ -355,6 +356,7 @@ export async function detectChangesCommand(options?: {
     base_ref: options?.baseRef,
     repo: options?.repo,
     branch: options?.branch,
+    worktree: options?.worktree,
   });
   if (limit !== undefined) {
     if (Array.isArray(result.changed_symbols))
