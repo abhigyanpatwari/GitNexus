@@ -56,9 +56,13 @@ const ZIG_SCOPE_QUERY = `
 (container_field
   name: (identifier) @declaration.name) @declaration.field
 
-;; Declarations — const/var bindings (import/container groups filtered in TS)
+;; Declarations — const/var bindings (import/container groups filtered in TS).
+;; The \`.\` anchor pins the FIRST named child: without it the pattern also
+;; matched the initializer of \`const first = target;\`, minting a phantom
+;; local named \`target\` that shadowed the real callee for every later
+;; reference in the block.
 (variable_declaration
-  (identifier) @declaration.name) @declaration.variable
+  . (identifier) @declaration.name) @declaration.variable
 
 ;; Imports — const x = @import("...")
 (variable_declaration

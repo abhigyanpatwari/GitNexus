@@ -72,3 +72,28 @@ describe('Zig basic resolution', () => {
     expect(edgeSet(calls)).toContain('main → tick');
   });
 });
+
+describe('Zig scope captures — variable bindings', () => {
+  it('binds only the declared name, never the initializer identifier', async () => {
+    // `(variable_declaration (identifier) @declaration.name)` without a
+    // first-child anchor ALSO matches the RHS identifier of `const h = helper;`
+    // and mints a phantom local named `helper` in the enclosing block. That
+    // phantom shadows the real function for every later reference in the
+    // block, so `helper()` below silently lost its CALLS edge — and the
+    // callable-value-flow seed for `h` had nothing to resolve against.
+    const { emitZigScopeCaptures } =
+      await import('../../../src/core/ingestion/languages/zig/captures.js');
+    const source = [
+      'fn helper() void {}',
+      'pub fn main() void {',
+      '    const h = helper;',
+      '    helper();',
+      '}',
+      '',
+    ].join('\n');
+    const variableNames = emitZigScopeCaptures(source, 'main.zig')
+      .filter((m) => m['@declaration.variable'] !== undefined)
+      .map((m) => m['@declaration.name']?.text);
+    expect(variableNames).toEqual(['h']);
+  });
+});
