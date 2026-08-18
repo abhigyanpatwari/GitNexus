@@ -44,10 +44,16 @@
  * `WeakMap` key per call — lives one layer above everything in this file, which
  * calls the resolver functions directly. Inserting that copy into
  * `<lang>/scope-resolver.ts` leaves every arm here green. The adapter is guarded
- * by `test/integration/{go,csharp,dart,ruby,kotlin,python}-import-index-reuse.test.ts`.
+ * by the per-language reuse tests and the shared import-target reuse contract.
  */
 import { describe, expect, it } from 'vitest';
-import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
+import type {
+  ParsedFile,
+  ParsedImport,
+  ScopeId,
+  SymbolDefinition,
+  WorkspaceIndex,
+} from 'gitnexus-shared';
 
 import { resolveGoImportTarget } from '../../../src/core/ingestion/languages/go/import-target.js';
 import { resolveDartImportTarget } from '../../../src/core/ingestion/languages/dart/import-target.js';
@@ -57,12 +63,16 @@ import {
   type CsharpResolveContext,
 } from '../../../src/core/ingestion/languages/csharp/import-target.js';
 import { resolveKotlinImportTarget } from '../../../src/core/ingestion/languages/kotlin/import-target.js';
+import {
+  clearKotlinPackageFacts,
+  setKotlinPackageFact,
+} from '../../../src/core/ingestion/languages/kotlin/package-facts.js';
 import { resolveRubyImportInternal } from '../../../src/core/ingestion/import-resolvers/ruby.js';
 import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
 import { isHeritageMarker } from '../../../src/core/ingestion/utils/heritage-marker.js';
 import { csharpSuffixFallbackAllowed } from '../../../src/core/ingestion/csharp-namespace-gate.js';
 import { DART_HERITAGE_PREFIX } from '../../../src/core/ingestion/languages/dart/interpret.js';
-import { CountingSet } from '../../helpers/counting-file-set.js';
+import { CountingSet, countedParsedFilesWith } from '../../helpers/counting-file-set.js';
 
 // ─── pre-change implementations, minus the rule #2881 removed ────────────────
 
@@ -772,8 +782,8 @@ describe('import-target index hoist — output parity with the pre-change scans'
  * the `new Set(allFilePaths)` hazard they are sometimes cited for: production
  * reaches the resolvers through `<lang>ScopeResolver.resolveImportTarget`, and
  * a defensive copy inserted in that adapter leaves every arm below green. The
- * adapter-level guards are
- * `test/integration/{go,csharp,dart,ruby,kotlin,python}-import-index-reuse.test.ts`.
+ * adapter-level guards are the per-language reuse tests and
+ * `test/unit/scope-resolution/import-target-index-reuse.contract.test.ts`.
  */
 function countingCorpus(seed: number, extension: string): CountingSet {
   return new CountingSet(corpus(seed, extension, 200));
@@ -816,19 +826,79 @@ describe('import-target index hoist — built once per file set, not once per im
     expect(files.scans).toBe(2);
   });
 
-  it('kotlin builds one index for many imports (#2872)', () => {
-    // Kotlin's own guard (`test/integration/kotlin-import-index-reuse.test.ts`)
-    // counts the same traversals one layer up, at the adapter. This arm covers
-    // the resolver function directly, so a rescan reintroduced inside
-    // `resolveKotlinImportTarget` fails here even if the adapter is untouched.
-    const files = countingCorpus(7, '.kt');
-    for (let i = 0; i < 200; i++) {
-      resolveKotlinImportTarget(
-        { kind: 'named', localName: 'X', importedName: 'X', targetRaw: `ghost${i}.deep.Missing` },
-        { fromFile: 'App.kt', allFilePaths: files } as unknown as WorkspaceIndex,
-      );
+  it('kotlin builds one declared-package index for many imports (#2872, #2960)', () => {
+    const paths = ['flat/TargetSource.kt', 'app/App.kt'];
+    const files = new CountingSet(paths);
+    const counted = countedParsedFilesWith(paths, (filePath): ParsedFile => {
+      const moduleScope = `module:${filePath}` as ScopeId;
+      const name = filePath === 'flat/TargetSource.kt' ? 'Target' : 'App';
+      const def: SymbolDefinition = {
+        nodeId: `Class:${filePath}:${name}`,
+        filePath,
+        type: 'Class',
+        qualifiedName: name,
+      };
+      return {
+        filePath,
+        moduleScope,
+        scopes: [
+          {
+            id: moduleScope,
+            parent: null,
+            kind: 'Module',
+            range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+            filePath,
+            bindings: new Map([[name, [{ def, origin: 'local' }]]]),
+            ownedDefs: [def],
+          },
+        ],
+        parsedImports: [],
+        localDefs: [def],
+        referenceSites: [],
+      };
+    });
+
+    clearKotlinPackageFacts();
+    setKotlinPackageFact('flat/TargetSource.kt', {
+      status: 'known',
+      packageName: 'com.example',
+    });
+    setKotlinPackageFact('app/App.kt', { status: 'known', packageName: 'app' });
+
+    try {
+      const workspace = {
+        fromFile: 'app/App.kt',
+        allFilePaths: files,
+        parsedFiles: counted.parsedFiles,
+      } as unknown as WorkspaceIndex;
+      for (let i = 0; i < 200; i++) {
+        resolveKotlinImportTarget(
+          {
+            kind: 'named',
+            localName: 'X',
+            importedName: 'X',
+            targetRaw: `ghost${i}.deep.Missing`,
+          },
+          workspace,
+        );
+      }
+
+      expect(
+        resolveKotlinImportTarget(
+          {
+            kind: 'named',
+            localName: 'Target',
+            importedName: 'Target',
+            targetRaw: 'com.example.Target',
+          },
+          workspace,
+        ),
+      ).toBe('flat/TargetSource.kt');
+      expect(files.scans).toBe(0);
+      expect(counted.reads()).toBe(paths.length);
+    } finally {
+      clearKotlinPackageFacts();
     }
-    expect(files.scans).toBe(1);
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {
