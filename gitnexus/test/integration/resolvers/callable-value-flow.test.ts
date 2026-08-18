@@ -1510,4 +1510,66 @@ invoke(assigned);
       ),
     ).toBe(true);
   }, 90_000);
+
+  it('does not read a Zig member call `x.f(arg)` as a direct call named `f` (Zig PR review, F2)', async () => {
+    // tree-sitter-zig spells `field_expression` as `object:`/`member:`. Read as
+    // a direct call, `self.slot.release()` next to the container alias
+    // `pub const release = deinit;` minted a `deinit → deinit` self-loop, and
+    // every `.init(...)` fanned its arguments out to all same-named callables
+    // (4,761 cap warnings on Lightpanda). A receiver-typed member call must
+    // still carry its actual into the formal AFTER the implicit `self`.
+    const result = await runSource(
+      'zig',
+      `
+pub const Slot = struct {
+    n: u32 = 0,
+    pub fn release(self: *Slot) void { self.n = 0; }
+};
+pub const Global = struct {
+    slot: *Slot,
+    pub fn deinit(self: Global) void {
+        self.slot.release();
+    }
+    pub const release = deinit;
+};
+fn target(x: u32) void { _ = x; }
+pub const Runner = struct {
+    pub fn run(self: *Runner, cb: *const fn (u32) void) void { _ = self; cb(2); }
+    pub fn init(cb: *const fn (u32) void) Runner { cb(3); return .{}; }
+};
+pub const Decoy = struct {
+    pub fn init(cb: *const fn (u32) void) Decoy { cb(4); return .{}; }
+};
+pub fn main() void {
+    var r: Runner = undefined;
+    r.run(target);
+    const made: Runner = .init(target);
+    _ = made;
+}
+`,
+    );
+
+    // (i) no self-loop through the alias: `self.slot.release()` is a call on
+    // Slot, not an invoke through Global's `release` name-cell.
+    expect(callsFrom(result, 'deinit')).not.toContainEqual({
+      target: 'deinit',
+      reason: 'callable-value-flow',
+    });
+    // (ii) receiver-typed member call: `r.run(target)` joins formal `cb`
+    // (index 0 once the leading `self` is dropped), so `run` invokes `target`.
+    expect(callsFrom(result, 'run')).toContainEqual({
+      target: 'target',
+      reason: 'callable-value-flow',
+    });
+    // (iii) decl literal `.init(target)` names no callee by simple name — the
+    // unrelated `Decoy.init` must not gain a flow edge to `target`.
+    expect(
+      getRelationships(result, 'CALLS').filter(
+        (edge) =>
+          edge.rel.sourceId.includes('Decoy.init') &&
+          edge.target === 'target' &&
+          edge.rel.reason === 'callable-value-flow',
+      ),
+    ).toEqual([]);
+  }, 60_000);
 });

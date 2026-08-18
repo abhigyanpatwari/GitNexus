@@ -237,6 +237,101 @@ describeZig('Zig scope captures — receiver is the FIRST parameter named self',
   });
 });
 
+describeZig('Zig callable-flow captures — member calls, receiver formals, decl literals', () => {
+  const src = `
+const Slot = struct {
+    n: u32 = 0,
+    pub fn release(self: *Slot) void { self.n = 0; }
+};
+const Global = struct {
+    slot: *Slot,
+    pub fn deinit(self: Global) void { self.slot.release(); }
+    pub const release = deinit;
+};
+const Runner = struct {
+    pub fn run(self: *Runner, cb: *const fn (u32) void) void { _ = self; cb(2); }
+};
+fn target(x: u32) void { _ = x; }
+fn invoke(cb: *const fn (u32) void) void { cb(1); }
+pub fn main() void {
+    var r: Runner = undefined;
+    r.run(target);
+    invoke(target);
+    const reg: Runner = .init(target);
+    _ = reg;
+}
+`;
+  const flow = () =>
+    emitZigScopeCaptures(src, 'test.zig').filter((m) =>
+      Object.keys(m).some((k) => k.startsWith('@callable-flow.')),
+    );
+  const argumentFacts = () =>
+    flow()
+      .filter((m) => m['@callable-flow.argument'] !== undefined)
+      .map((m) => ({
+        call: m['@callable-flow.argument']!.text,
+        index: m['@callable-flow.parameter-index']!.text,
+        directCallee: m['@callable-flow.direct-callee-name']?.text,
+      }));
+
+  it('a member call `r.run(target)` is NOT a direct call named `run` (no direct-callee-name)', () => {
+    // With the name attached, the solver seeded the argument into EVERY
+    // callable named `run` in the repo (thousands of cap warnings on Lightpanda,
+    // `deinit → deinit` self-loops). tree-sitter-zig spells the member field
+    // `member:`; the shared reader must see it.
+    expect(argumentFacts()).toContainEqual({
+      call: 'r.run(target)',
+      index: '0',
+      directCallee: undefined,
+    });
+  });
+
+  it('a free call keeps its direct-callee-name so `invoke(target)` still joins `invoke`', () => {
+    expect(argumentFacts()).toContainEqual({
+      call: 'invoke(target)',
+      index: '0',
+      directCallee: 'invoke',
+    });
+  });
+
+  it('a decl-literal call `.init(target)` (inferred-type receiver) has no direct-callee-name', () => {
+    // `.init` names no callee the solver may look up by simple name — Lightpanda
+    // has hundreds of `init`s, and each such site fanned out to all of them.
+    expect(argumentFacts()).toContainEqual({
+      call: '.init(target)',
+      index: '0',
+      directCallee: undefined,
+    });
+  });
+
+  it('formals skip the leading `self` receiver so the member-call actual at 0 joins `cb`', () => {
+    const runFormals = flow()
+      .filter(
+        (m) => m['@callable-flow.formal'] !== undefined && m['@callable-flow.owner']!.text === 'run',
+      )
+      .map((m) => `${m['@callable-flow.binding']!.text}@${m['@callable-flow.parameter-index']!.text}`);
+    expect(runFormals).toEqual(['cb@0']);
+  });
+
+  it('a container-level alias `pub const release = deinit;` does not turn `self.slot.release()` into an invoke through it', () => {
+    // The alias is a plain-name binding, not a store into Slot's `release`
+    // member; gating on it produced the `Global.deinit → Global.deinit` self-loop.
+    const invokes = flow()
+      .filter((m) => m['@callable-flow.invoke'] !== undefined)
+      .map((m) => m['@callable-flow.invoke']!.text);
+    expect(invokes).not.toContain('self.slot.release()');
+    // The alias itself is still a seed (`Global.release` really is `deinit`).
+    expect(
+      flow().some(
+        (m) =>
+          m['@callable-flow.seed'] !== undefined &&
+          m['@callable-flow.destination']!.text === 'release' &&
+          m['@callable-flow.target']!.text === 'deinit',
+      ),
+    ).toBe(true);
+  });
+});
+
 describeZig('Zig `export` (C-ABI) visibility', () => {
   const src = `
 export fn c_add(a: i32, b: i32) i32 { return a + b; }

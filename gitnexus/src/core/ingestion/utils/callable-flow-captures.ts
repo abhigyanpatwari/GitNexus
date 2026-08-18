@@ -182,6 +182,14 @@ interface FunctionInfo {
 
 interface ValueBindingIndex {
   readonly assignmentRegionIdsByName: ReadonlyMap<string, ReadonlySet<number>>;
+  /**
+   * Regions holding a store whose destination is a MEMBER path (`o->run =
+   * handler`, `self.f = target`), keyed by the member name. Only these gate a
+   * member call as a field-stored-callable invoke: a plain-name binding
+   * (`const release = deinit;` next to `self.slot.release()`) is not a store
+   * into anybody's member cell.
+   */
+  readonly memberStoreRegionIdsByName: ReadonlyMap<string, ReadonlySet<number>>;
   readonly formalByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
   readonly signatureByNameAndRegion: ReadonlyMap<
     string,
@@ -322,6 +330,7 @@ function buildValueBindingIndex(
   options: CallableFlowCaptureOptions,
 ): ValueBindingIndex {
   const assignmentRegionIdsByName = new Map<string, Set<number>>();
+  const memberStoreRegionIdsByName = new Map<string, Set<number>>();
   const formalByOwner = new Map<number | undefined, Set<string>>();
   const signatureByNameAndRegion = new Map<string, Map<number, CallableCaptureSignature>>();
   const add = (
@@ -347,19 +356,27 @@ function buildValueBindingIndex(
     // it (#2522 review, M3 ops-vtable pattern).
     const terminal = terminalIdentifier(assignment.destination, options);
     if (terminal !== undefined) destinationNames.add(terminal.text);
-    for (const name of destinationNames) {
-      const region = nearestLexicalRegion(assignment.container, options);
-      let regionIds = assignmentRegionIdsByName.get(name);
+    // A destination whose binding identifier and terminal identifier are two
+    // different nodes spans a member path (`o->run`, `self.slot.f`); a bare
+    // name or a declarator (`void (*fp)(int)`) resolves both to the same leaf.
+    const memberStoreName =
+      terminal !== undefined && terminal.id !== destination?.node.id ? terminal.text : undefined;
+    const region = nearestLexicalRegion(assignment.container, options);
+    const functionOwner =
+      options.functionScopedValueBindings === true
+        ? nearestFunctionOwner(assignment.container, options)
+        : undefined;
+    const record = (index: Map<string, Set<number>>, name: string): void => {
+      let regionIds = index.get(name);
       if (regionIds === undefined) {
         regionIds = new Set();
-        assignmentRegionIdsByName.set(name, regionIds);
+        index.set(name, regionIds);
       }
       regionIds.add(region.id);
-      if (options.functionScopedValueBindings === true) {
-        const functionOwner = nearestFunctionOwner(assignment.container, options);
-        if (functionOwner !== undefined) regionIds.add(functionOwner.id);
-      }
-    }
+      if (functionOwner !== undefined) regionIds.add(functionOwner.id);
+    };
+    for (const name of destinationNames) record(assignmentRegionIdsByName, name);
+    if (memberStoreName !== undefined) record(memberStoreRegionIdsByName, memberStoreName);
   }
   for (const fn of functions) {
     for (const parameter of fn.parameters) {
@@ -395,7 +412,12 @@ function buildValueBindingIndex(
       if (functionOwner !== undefined) byRegion.set(functionOwner.id, signature);
     }
   }
-  return { assignmentRegionIdsByName, formalByOwner, signatureByNameAndRegion };
+  return {
+    assignmentRegionIdsByName,
+    memberStoreRegionIdsByName,
+    formalByOwner,
+    signatureByNameAndRegion,
+  };
 }
 
 /** True when a pointer/parenthesized declarator sits between the declaration
@@ -476,6 +498,34 @@ function isVisibleValueBinding(
   // live in OTHER functions (the init/register callback pattern), so
   // assignment regions alone under-approximate visibility and the cross-
   // function call emitted no invoke fact at all (#2522 review, H1).
+  return visibleCallableSignature(input, name, bindings, options) !== undefined;
+}
+
+/**
+ * Member-call gate: the member's name-cell was written by a visible MEMBER
+ * store, or is a declared callable-typed binding (C struct field
+ * `void (*cb)(int);`, whose stores may live in other functions). Plain-name
+ * bindings and formals are deliberately NOT consulted — `x.f()` reads the
+ * member `f` of `x`, not a same-named local, and gating on the local minted an
+ * invoke through the wrong cell (a Zig `pub const release = deinit;` alias
+ * turned `self.slot.release()` into a `deinit → deinit` self-loop).
+ */
+function isVisibleMemberStore(
+  input: SyntaxNode,
+  name: string,
+  bindings: ValueBindingIndex,
+  options: CallableFlowCaptureOptions,
+): boolean {
+  const regionIds = bindings.memberStoreRegionIdsByName.get(name);
+  if (regionIds !== undefined) {
+    const providerOwner = options.lexicalFunctionOwner?.(input);
+    if (providerOwner !== undefined && regionIds.has(providerOwner.id)) return true;
+    let node: SyntaxNode | null = input;
+    while (node !== null) {
+      if (regionIds.has(node.id)) return true;
+      node = node.parent;
+    }
+  }
   return visibleCallableSignature(input, name, bindings, options) !== undefined;
 }
 
@@ -709,10 +759,16 @@ function emitCallFacts(
   const callee = operandSyntax(calleeNode, options);
   const calleeIsValueBinding =
     callee !== undefined && isVisibleValueBinding(call, callee.name, valueBindings, options);
+  // A direct callee NAME exists only when the call spells its callee as a
+  // designator (`f(x)`, `ns.f(x)`). A receiver-less member (Zig's decl
+  // literal `.init(x)`, whose receiver is an inferred type) or a computed
+  // callee names nothing the solver may seed by simple name — doing so
+  // fanned each argument out to every same-named callable in the repo.
   const directCalleeName =
     member === undefined &&
     callee !== undefined &&
     callee.indirection === 0 &&
+    callee.directDesignator &&
     !calleeIsValueBinding
       ? callee.name
       : undefined;
@@ -825,7 +881,7 @@ function emitCallFacts(
     // name-keyed field collapse matches the solver's store/load model.
     // ponytail: same-region joins only — cross-function vtable installs need
     // a field-sensitive cell model.
-    if (isVisibleValueBinding(call, member.member.name, valueBindings, options)) {
+    if (isVisibleMemberStore(call, member.member.name, valueBindings, options)) {
       emitInvoke(callSite, member.member, 'indirect', args.length, out, options, member.receiver);
     }
     return;
@@ -958,10 +1014,18 @@ function memberParts(
     node.childForFieldName('object') ??
     node.childForFieldName('argument') ??
     node.childForFieldName('receiver');
+  // `member` is the field name tree-sitter grammars use when the receiver
+  // field is `object` (Zig `field_expression`). It is only read once a
+  // receiver field matched: the other grammars that expose a `member` field
+  // (C/C++ `offsetof_expression`, JS `class_body`) carry no receiver field and
+  // stay unaffected. Without it every `x.f(arg)` in such a grammar collapsed
+  // to a DIRECT call named `f` and the flow solver fanned the argument out to
+  // every same-named callable.
   const memberNode =
     node.childForFieldName('property') ??
     node.childForFieldName('field') ??
-    node.childForFieldName('method');
+    node.childForFieldName('method') ??
+    node.childForFieldName('member');
   if (receiverNode === null || memberNode === null) return undefined;
   const receiver = operandSyntax(receiverNode, options);
   const member = operandSyntax(memberNode, options);

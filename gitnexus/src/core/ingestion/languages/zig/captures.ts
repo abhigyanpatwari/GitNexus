@@ -288,6 +288,14 @@ function rewriteZigThisAlias(
  *   every named child other than the `function` field, hence
  *   `extractCallArguments`.
  *
+ * - Zig's receiver is an EXPLICIT first parameter named `self` (the same
+ *   convention `interpretZigTypeBinding` keys receiver typing on), while a
+ *   method call `x.f(cb)` passes `x` implicitly. Formals are therefore
+ *   numbered without the leading `self`, so the actual at index 0 of
+ *   `r.run(target)` joins `cb` and not `self` — hence
+ *   `extractFunctionParameters`. The explicit-receiver spelling
+ *   `Runner.run(&r, target)` is the one shape that no longer lines up.
+ *
  * `builtin_function` (`@import`, `@sizeOf`, …) is deliberately not a call node:
  * builtins never take user callables as flow arguments.
  */
@@ -307,6 +315,17 @@ const ZIG_CALLABLE_CAPTURE_OPTIONS = {
     // `const x: T;` (extern) — the trailing child is the type, not a value.
     if (source.id === node.childForFieldName('type')?.id) return undefined;
     return { destination: named[0]!, source };
+  },
+  extractFunctionParameters: (fn: SyntaxNode) => {
+    // `parameters` is a fieldless child of `function_declaration`.
+    const list = fn.namedChildren.find((child) => child?.type === 'parameters');
+    if (list === undefined || list === null) return undefined;
+    const parameters = list.namedChildren.filter(
+      (child): child is SyntaxNode => child !== null && child.type === 'parameter',
+    );
+    return parameters[0]?.childForFieldName('name')?.text === 'self'
+      ? parameters.slice(1)
+      : parameters;
   },
   extractCallArguments: (call: SyntaxNode) => {
     const callee = call.childForFieldName('function');
