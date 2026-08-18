@@ -67,8 +67,11 @@ export function resolveZigImportInternal(
       const normalized = normalizeDepPath(depPath);
       if (normalized !== null) {
         // Conventional Zig layout: <pkg_root>/src/<name>.zig (matches the
-        // package's primary module name) or <pkg_root>/src/main.zig.
-        const candidates = [`${normalized}/src/${importPath}.zig`, `${normalized}/src/main.zig`];
+        // package's primary module name) or <pkg_root>/src/main.zig. A dep at
+        // `.path = "."` (the repo itself) normalizes to '' and must not grow a
+        // leading slash — `allFiles` keys are repo-relative.
+        const prefix = normalized === '' ? '' : `${normalized}/`;
+        const candidates = [`${prefix}src/${importPath}.zig`, `${prefix}src/main.zig`];
         for (const c of candidates) {
           if (allFiles.has(c)) return c;
         }
@@ -85,6 +88,7 @@ export function resolveZigImportInternal(
  * Normalize a `.path` value from build.zig.zon into a repo-relative form.
  * Returns null for paths that escape the repo root (start with `..`) or
  * are absolute — those point to files we don't index in `allFilePaths`.
+ * `.` / `./` normalize to the empty string (the repo root itself).
  */
 function normalizeDepPath(depPath: string): string | null {
   if (depPath.startsWith('/')) return null;

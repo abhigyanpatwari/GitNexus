@@ -1,6 +1,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig, VariableVisibility } from '../../variable-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { isZigContainerOrImportBinding } from '../../languages/zig/captures.js';
 
 /**
  * Zig variable extraction.
@@ -11,9 +12,10 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
  *
  * Excludes variable_declarations whose value is a struct/enum/union or an
  * `@import(...)` builtin — those are handled by the class extractor / import
- * pipeline. The exclusion is by-effect rather than by-config: when one of
- * those values is present, the surrounding pipeline labels the node as
- * Struct/Enum/Import-edge and the variable record is redundant.
+ * pipeline, and a Variable record beside the Struct/Enum/Union node (or the
+ * import edge) would be a duplicate. `extractName` returns undefined for them,
+ * which is the generic extractor's skip signal (see `generic.ts`, and Python's
+ * broad `expression_statement` config for the same pattern).
  */
 
 const hasPubKeyword = (node: SyntaxNode): boolean => {
@@ -39,6 +41,7 @@ export const zigVariableConfig: VariableExtractionConfig = {
   variableNodeTypes: [],
 
   extractName(node) {
+    if (isZigContainerOrImportBinding(node)) return undefined;
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (child?.type === 'identifier') return child.text;

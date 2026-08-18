@@ -182,10 +182,13 @@ const SOURCES: Record<string, GrammarSource> = {
   // (verified by load-time smoke test). The peer-dep mismatch is suppressed
   // via the `overrides` block in package.json. Listed as `optional: true`
   // because the package is in `optionalDependencies` — users on platforms
-  // without a prebuild may not have it.
+  // without a prebuild may not have it — and `userSkippable` because it is
+  // a genuinely-optional grammar: `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` must be
+  // able to disable it at analyze time like swift/dart/kotlin.
   [SupportedLanguages.Zig]: {
     load: () => _require('@tree-sitter-grammars/tree-sitter-zig'),
     optional: true,
+    userSkippable: true,
     unavailableNote:
       'Zig parsing disabled: `@tree-sitter-grammars/tree-sitter-zig` is an ' +
       'optionalDependency and is not installed (or its native binding failed ' +

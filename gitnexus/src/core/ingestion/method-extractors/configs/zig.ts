@@ -28,6 +28,18 @@ const extractZigName = (node: SyntaxNode): string | undefined => {
   return nameNode?.text;
 };
 
+/**
+ * The `parameters` node of a function_declaration. tree-sitter-zig 1.1.2
+ * attaches it as a plain named child — NOT under a `parameters:` field (only
+ * `name`, `type` and `body` are fields) — so `childForFieldName('parameters')`
+ * is always null. Reading it that way silently produced empty parameter lists,
+ * no receiver, and `isStatic: true` for every method.
+ */
+const zigParameterList = (node: SyntaxNode): SyntaxNode | null =>
+  node.childForFieldName('parameters') ??
+  node.namedChildren.find((child): child is SyntaxNode => child?.type === 'parameters') ??
+  null;
+
 const extractZigReturnType = (node: SyntaxNode): string | undefined => {
   // tree-sitter-zig labels the return type as the `type` field on
   // function_declaration (the same field name used for parameter types).
@@ -35,15 +47,24 @@ const extractZigReturnType = (node: SyntaxNode): string | undefined => {
   return typeNode?.text?.trim();
 };
 
+/**
+ * Regular parameters only. A leading `self` parameter is the receiver — it is
+ * reported through `extractReceiverType`, not the parameter list (same split
+ * as Rust's `self_parameter` skip in `configs/rust.ts`).
+ */
 const extractZigParameters = (node: SyntaxNode): ParameterInfo[] => {
-  const paramList = node.childForFieldName('parameters');
+  const paramList = zigParameterList(node);
   if (!paramList) return [];
   const params: ParameterInfo[] = [];
+  let seenParameter = false;
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);
     if (!param || param.type !== 'parameter') continue;
     const nameNode = param.childForFieldName('name');
     const typeNode = param.childForFieldName('type');
+    const isReceiver = !seenParameter && nameNode?.text === 'self';
+    seenParameter = true;
+    if (isReceiver) continue;
     params.push({
       name: nameNode?.text ?? '?',
       type: typeNode?.text?.trim() ?? null,
@@ -64,7 +85,7 @@ const hasPubKeyword = (node: SyntaxNode): boolean => {
 };
 
 const extractZigReceiverType = (node: SyntaxNode): string | undefined => {
-  const paramList = node.childForFieldName('parameters');
+  const paramList = zigParameterList(node);
   if (!paramList) return undefined;
   const first = paramList.namedChild(0);
   if (!first || first.type !== 'parameter') return undefined;
@@ -88,7 +109,7 @@ export const zigMethodConfig: MethodExtractionConfig = {
 
   isStatic(node) {
     // A Zig "method" is effectively static if its first parameter is not `self`.
-    const paramList = node.childForFieldName('parameters');
+    const paramList = zigParameterList(node);
     if (!paramList) return true;
     const first = paramList.namedChild(0);
     if (!first || first.type !== 'parameter') return true;

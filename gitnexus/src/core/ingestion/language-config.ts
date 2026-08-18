@@ -501,8 +501,10 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
  *     because their unpacked location lives outside the repo
  *     (.zig-cache/p/<hash>/ or ~/.cache/zig/p/<hash>/) and is therefore
  *     not in our `allFilePaths` set.
- *   - Comments (`//`) inside the dep block are not stripped; if a `.path`
- *     is commented out it will still match. Acceptable for an indexer.
+ *   - `//` line comments are stripped before scanning (string-aware, so a
+ *     `//` inside `.url = "https://…"` survives), and brace matching skips
+ *     string literals — a commented-out `.path` or a `}` inside a comment
+ *     or string cannot declare a dep or truncate the block.
  */
 export async function loadZigBuildZon(repoRoot: string): Promise<ZigBuildZonConfig | null> {
   try {
@@ -514,36 +516,84 @@ export async function loadZigBuildZon(repoRoot: string): Promise<ZigBuildZonConf
   }
 }
 
-/** Pure parser split out for testability. Returns null when no path-deps found. */
-export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
-  // Locate the `.dependencies = .{ ... }` block. Use brace counting because
-  // dep entries are nested anonymous structs and a naive `}` match would stop early.
-  const depsHeader = raw.match(/\.dependencies\s*=\s*\.\{/);
-  if (!depsHeader) return null;
-  const start = depsHeader.index! + depsHeader[0].length;
-  let depth = 1;
-  let end = -1;
-  for (let i = start; i < raw.length; i++) {
+/**
+ * Blank out `//` line comments (and `\\` multiline-string-literal lines) in
+ * ZON source, string-aware: a `//` inside a `"…"` literal (`.url =
+ * "https://…"`) is content, not a comment. Comment bytes are replaced with
+ * spaces so every surviving character keeps its offset.
+ */
+function stripZonComments(raw: string): string {
+  const out = raw.split('');
+  let inString = false;
+  for (let i = 0; i < raw.length; i++) {
     const ch = raw[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        end = i;
-        break;
-      }
+    if (inString) {
+      if (ch === '\\')
+        i++; // skip the escaped char
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    const isLineComment = ch === '/' && raw[i + 1] === '/';
+    const isMultilineLiteral =
+      ch === '\\' &&
+      raw[i + 1] === '\\' &&
+      /^[ \t]*$/.test(raw.slice(raw.lastIndexOf('\n', i) + 1, i));
+    if (isLineComment || isMultilineLiteral) {
+      while (i < raw.length && raw[i] !== '\n') out[i++] = ' ';
     }
   }
+  return out.join('');
+}
+
+/**
+ * Index of the `}` matching the `{` that precedes `start`, skipping braces
+ * inside `"…"` literals. -1 when unbalanced. Call on comment-stripped text.
+ */
+function findZonBlockEnd(text: string, start: number): number {
+  let depth = 1;
+  let inString = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Pure parser split out for testability. Returns null when no path-deps found. */
+export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
+  const text = stripZonComments(raw);
+  // Locate the `.dependencies = .{ ... }` block. Use brace counting because
+  // dep entries are nested anonymous structs and a naive `}` match would stop early.
+  const depsHeader = text.match(/\.dependencies\s*=\s*\.\{/);
+  if (!depsHeader) return null;
+  const start = depsHeader.index! + depsHeader[0].length;
+  const end = findZonBlockEnd(text, start);
   if (end < 0) return null;
-  const block = raw.slice(start, end);
+  const block = text.slice(start, end);
 
   const pathDeps = new Map<string, string>();
-  // Match each `.<name> = .{ ... }` entry; capture the entry body.
-  const entryRe = /\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\.\{([\s\S]*?)\}\s*,?/g;
+  // Walk each `.<name> = .{ ... }` entry; the body ends at the matching brace
+  // (string-aware), not at the first `}` in the text.
+  const entryHeaderRe = /\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\.\{/g;
   let m: RegExpExecArray | null;
-  while ((m = entryRe.exec(block)) !== null) {
+  while ((m = entryHeaderRe.exec(block)) !== null) {
     const depName = m[1];
-    const body = m[2];
+    const bodyStart = m.index + m[0].length;
+    const bodyEnd = findZonBlockEnd(block, bodyStart);
+    if (bodyEnd < 0) break;
+    const body = block.slice(bodyStart, bodyEnd);
+    entryHeaderRe.lastIndex = bodyEnd + 1;
     const pathMatch = body.match(/\.path\s*=\s*"([^"\n]+)"/);
     if (pathMatch) {
       pathDeps.set(depName, pathMatch[1]);

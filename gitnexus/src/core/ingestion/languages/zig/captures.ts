@@ -14,8 +14,10 @@ export const ZIG_CONTAINER_TYPES: ReadonlySet<string> = new Set([
 /** Is this variable_declaration a container binding (`const T = struct {…}`)
  *  or an import binding (`const x = @import("…")`)? Those groups are emitted
  *  by their dedicated query rules; the plain @declaration.variable match for
- *  the same node must be dropped so the name binds exactly once. */
-function isContainerOrImportBinding(declNode: SyntaxNode): boolean {
+ *  the same node must be dropped so the name binds exactly once. Shared with
+ *  the variable extractor config so the structure-phase Variable records and
+ *  the scope-side bindings agree on what counts as a plain variable. */
+export function isZigContainerOrImportBinding(declNode: SyntaxNode): boolean {
   for (let i = 0; i < declNode.namedChildCount; i++) {
     const child = declNode.namedChild(i);
     if (child === null) continue;
@@ -118,7 +120,7 @@ export function emitZigScopeCaptures(
     // Drop the plain-variable group for container/import bindings — their
     // dedicated rules already bind the name (as Struct/Enum/Union or import).
     const variableAnchor = nodeMap['@declaration.variable'];
-    if (variableAnchor !== undefined && isContainerOrImportBinding(variableAnchor)) {
+    if (variableAnchor !== undefined && isZigContainerOrImportBinding(variableAnchor)) {
       continue;
     }
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import {
@@ -700,11 +700,25 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defTypes).toContain('definition.enum');
     });
 
-    it('gracefully handles missing tree-sitter-zig', async () => {
+    it('reports Zig unavailable and throws "Unsupported language" when the grammar is absent', async () => {
+      // Force the absent-binding path instead of hoping the package is missing:
+      // the loader's runtime opt-out (`GITNEXUS_SKIP_OPTIONAL_GRAMMARS`) makes a
+      // userSkippable grammar report exactly as an absent binding does. A fresh
+      // module copy is needed because the loader memoizes load results.
+      const ENV = 'GITNEXUS_SKIP_OPTIONAL_GRAMMARS';
+      const previous = process.env[ENV];
+      process.env[ENV] = 'zig';
       try {
-        await loadLanguage(SupportedLanguages.Zig);
-      } catch (e: any) {
-        expect(e.message).toContain('Unsupported language');
+        vi.resetModules();
+        const fresh = await import('../../src/core/tree-sitter/parser-loader.js');
+        expect(fresh.isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
+        await expect(fresh.loadLanguage(SupportedLanguages.Zig)).rejects.toThrow(
+          /Unsupported language/,
+        );
+      } finally {
+        if (previous === undefined) delete process.env[ENV];
+        else process.env[ENV] = previous;
+        vi.resetModules();
       }
     });
   });

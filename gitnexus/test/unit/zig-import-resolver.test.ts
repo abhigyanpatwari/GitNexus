@@ -52,6 +52,23 @@ describe('resolveZigImportInternal', () => {
     );
   });
 
+  it('resolves a `.path = "."` dep against the repo root without a leading slash', () => {
+    // `normalizeDepPath('.')` is '' — the candidates used to become
+    // `/src/<name>.zig`, which can never match a repo-relative file key.
+    const files = new Set<string>(['src/main.zig', 'src/mylib.zig', 'examples/demo.zig']);
+    for (const dot of ['.', './']) {
+      const buildZon = { pathDeps: new Map([['mylib', dot]]) };
+      expect(resolveZigImportInternal('examples/demo.zig', 'mylib', files, buildZon)).toBe(
+        'src/mylib.zig',
+      );
+    }
+    // …and the `src/main.zig` fallback for a root dep too.
+    const buildZon = { pathDeps: new Map([['root_pkg', '.']]) };
+    expect(resolveZigImportInternal('examples/demo.zig', 'root_pkg', files, buildZon)).toBe(
+      'src/main.zig',
+    );
+  });
+
   it('returns null for `.path` deps that escape the repo root (`..`)', () => {
     const files = new Set<string>(['src/main.zig']);
     const buildZon = { pathDeps: new Map([['ziggit', '../ziggit']]) };
@@ -98,6 +115,54 @@ describe('parseZigBuildZon', () => {
     expect(cfg!.pathDeps.get('vendor_dep')).toBe('vendor/foo');
     // .url-based deps are intentionally absent
     expect(cfg!.pathDeps.has('ziggit_pkg')).toBe(false);
+  });
+
+  it('ignores commented-out entries and `.path` lines', () => {
+    // A `// .path = "vendor/foo"` inside an entry used to be captured as a real
+    // dep because the regex ran over raw source. `//` inside a `.url` string
+    // must survive the strip — it is not a comment.
+    const raw = `
+.{
+    .dependencies = .{
+        // .disabled = .{ .path = "vendor/disabled" },
+        .remote = .{
+            .url = "https://github.com/x/y/archive/abc.tar.gz",
+            // .path = "vendor/remote-override",
+            .hash = "1220abc",
+        },
+        .live = .{ .path = "vendor/live" }, // trailing note: .path = "nope"
+    },
+}
+`;
+    const cfg = parseZigBuildZon(raw);
+    expect(cfg).not.toBeNull();
+    expect([...cfg!.pathDeps.entries()]).toEqual([['live', 'vendor/live']]);
+  });
+
+  it('is not derailed by braces inside comments or string literals', () => {
+    // Every `{`/`}` used to count toward the block depth, so a `// }` comment or
+    // a `}` inside a string closed the `.dependencies` block early and dropped
+    // every dep after it.
+    const raw = `
+.{
+    .dependencies = .{
+        .first = .{
+            .url = "https://example.com/weird}name{.tar.gz",
+            .hash = "1220x", // } stray brace in a comment
+        },
+        // } another one
+        .second = .{ .path = "vendor/second" },
+        .third = .{ .path = "vendor/third" },
+    },
+    .paths = .{ "" },
+}
+`;
+    const cfg = parseZigBuildZon(raw);
+    expect(cfg).not.toBeNull();
+    expect([...cfg!.pathDeps.entries()]).toEqual([
+      ['second', 'vendor/second'],
+      ['third', 'vendor/third'],
+    ]);
   });
 
   it('returns null when no `.dependencies` block is present', () => {

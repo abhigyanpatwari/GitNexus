@@ -251,6 +251,11 @@ const ZIG_DECL_TYPES = new Set(['function_declaration', 'variable_declaration'])
  * keyword token (tree-sitter-zig models `pub` as an anonymous keyword child of
  * function_declaration / variable_declaration). Container fields (struct/enum
  * variants) are public if their enclosing variable_declaration is public.
+ *
+ * The walk stops at the FIRST declaration it reaches: a `fn` inside
+ * `pub const T = struct { … }` carries its own `pub` (or not), independent of
+ * the container's. Continuing up to the wrapper marked every private method of
+ * a public container as exported.
  */
 export const zigExportChecker: ExportChecker = (node, _name) => {
   let current: SyntaxNode | null = node;
@@ -259,13 +264,6 @@ export const zigExportChecker: ExportChecker = (node, _name) => {
       for (let i = 0; i < current.childCount; i++) {
         const child = current.child(i);
         if (child?.type === 'pub') return true;
-      }
-      // For nested function_declaration (a method inside a struct), keep walking
-      // up to the outer variable_declaration — it's the binding that carries
-      // module-level visibility.
-      if (current.type === 'function_declaration') {
-        current = current.parent;
-        continue;
       }
       return false;
     }
