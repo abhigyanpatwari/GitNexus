@@ -31,6 +31,19 @@ export function zigImportRootOf(value: SyntaxNode | null): SyntaxNode | null {
   return isZigImportBuiltin(cur) ? cur : null;
 }
 
+/** Is this `@import(…)` builtin the receiver of a member call —
+ *  `@import("dump.zig").root(...)` — i.e. the `object` of a `field_expression`
+ *  that is the `function` of a `call_expression`? A deeper chain
+ *  (`@import("x.zig").Foo.init()`) is not: its receiver is `….Foo`, and the
+ *  builtin is only the module the chain starts from. */
+export function isZigInlineImportReceiver(importNode: SyntaxNode): boolean {
+  const field = importNode.parent;
+  if (field?.type !== 'field_expression') return false;
+  if (field.childForFieldName('object')?.id !== importNode.id) return false;
+  const call = field.parent;
+  return call?.type === 'call_expression' && call.childForFieldName('function')?.id === field.id;
+}
+
 /** Is this variable_declaration a container binding (`const T = struct {…}`)
  *  or an import binding (`const x = @import("…")`, `const X = @import("…").X`)?
  *  Those groups are emitted by their dedicated query rules; the plain
@@ -197,11 +210,27 @@ export function emitZigScopeCaptures(
   // would outrank the import binding it stands for).
   const importSources = new Map<string, SyntaxNode>();
   const aliasDeclIds = new Set<number>();
+  // The `@import(…)` string nodes a BINDING rule (or the keyword-less
+  // side-effect rule) matched, by node id, plus their texts. The catch-all
+  // `@import.inline` rule matches those same builtins again; the id set
+  // keeps a bound import from being doubled, the text set keeps a second
+  // spelling of an already-imported file from adding a redundant edge.
+  const claimedImportSourceIds = new Set<number>();
+  const importedSourceTexts = new Set<string>();
   for (const m of rawMatches) {
     const byName = new Map(m.captures.map((c) => [c.name, c.node] as const));
     const importName = byName.get('import.name');
     const importSource = byName.get('import.source');
     const importStmt = byName.get('import.statement');
+    if (
+      importSource !== undefined &&
+      (importStmt !== undefined ||
+        byName.get('import.side-effect') !== undefined ||
+        byName.get('import.wildcard') !== undefined)
+    ) {
+      claimedImportSourceIds.add(importSource.id);
+      importedSourceTexts.add(importSource.text);
+    }
     if (
       importName !== undefined &&
       importSource !== undefined &&
@@ -246,6 +275,43 @@ export function emitZigScopeCaptures(
       out.push({
         '@import.side-effect': grouped['@import.side-effect']!,
         '@import.source': grouped['@import.source']!,
+      });
+      continue;
+    }
+
+    // `@import("…")` in expression position — a tuple element, a call
+    // argument, a comparison operand, a member-call receiver, a chain deeper
+    // than the binding rules follow. Skip the builtins a binding rule (or the
+    // keyword-less side-effect rule) already owns; the rest are file
+    // dependencies without a name. The receiver of a member call
+    // (`try @import("dump.zig").root(...)`) is more: it is a namespace used
+    // in place. Bind it as a namespace import whose local name IS the
+    // builtin's own text — `@reference.receiver` on that call carries the
+    // same text, so the shared Case-1 namespace-receiver lookup resolves
+    // `root` in dump.zig exactly as it would for `const dump =
+    // @import("dump.zig"); dump.root(...)`. Anything else is a side-effect
+    // import (file edge only), emitted once per distinct source per file.
+    const inlineImport = nodeMap['@import.inline'];
+    if (inlineImport !== undefined) {
+      const source = nodeMap['@import.source']!;
+      if (claimedImportSourceIds.has(source.id)) continue;
+      const sourceCapture = grouped['@import.source']!;
+      if (isZigInlineImportReceiver(inlineImport)) {
+        const key = `receiver:${source.text}`;
+        if (importedSourceTexts.has(key)) continue;
+        importedSourceTexts.add(key);
+        out.push({
+          '@import.statement': nodeToCapture('@import.statement', inlineImport),
+          '@import.name': nodeToCapture('@import.name', inlineImport),
+          '@import.source': sourceCapture,
+        });
+        continue;
+      }
+      if (importedSourceTexts.has(source.text)) continue;
+      importedSourceTexts.add(source.text);
+      out.push({
+        '@import.side-effect': nodeToCapture('@import.side-effect', inlineImport),
+        '@import.source': sourceCapture,
       });
       continue;
     }

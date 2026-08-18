@@ -264,6 +264,26 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     expect(calls).toContain('main → push');
   });
 
+  it('imports every file behind an `@import` in EXPRESSION position (the `Interfaces = .{ @import(…), … }` table)', () => {
+    // Both query sets only matched `@import` as the value of a const/var or
+    // under `usingnamespace`, so a registration table of inline imports
+    // (Lightpanda's bridge.zig: ~290 modules) produced NO file edges — the
+    // modules looked unreferenced. Neither element binds a name; each is
+    // still a dependency of main.zig.
+    expect(imports).toContain('main.zig → src/webapi/AbortController.zig');
+    expect(imports).toContain('main.zig → src/webapi/AbortSignal.zig');
+    // and it mints no Const for the tuple elements — only for the table
+    expect(getNodesByLabel(result, 'Const')).toContain('Interfaces');
+  });
+
+  it('resolves a member call whose receiver is an inline import (`@import("dump.zig").root(…)`)', () => {
+    // The receiver text is the builtin itself, not a `const` handle; the
+    // inline import is bound as a namespace import under that very text so
+    // the shared namespace-receiver lookup lands in dump.zig.
+    expect(imports).toContain('main.zig → src/dump.zig');
+    expect(calls).toContain('main → root');
+  });
+
   it('resolves a build.zig.zon path dep to the root its build.zig declares (src/root.zig)', () => {
     // `zig init` ≥ 0.12 lays libraries out as src/root.zig; the resolver only
     // knew src/<name>.zig and src/main.zig, so every such dep was unresolved.

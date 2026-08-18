@@ -23,7 +23,14 @@ export function zigModuleNameOf(targetRaw: string): string {
  * `_ = @import("x.zig");` (and any keyword-less `<ident> = @import(…)`, a
  * statement rather than a declaration in this grammar) references the file
  * without binding a name — the `refAllDecls` / test-aggregation idiom. That
- * is a `side-effect` import: file edge, no binding (TS `import './x'`).
+ * is a `side-effect` import: file edge, no binding (TS `import './x'`). So is
+ * an `@import` in any expression position (a tuple element, a call argument,
+ * a comparison operand — `emitZigScopeCaptures`'s `@import.inline` rule).
+ *
+ * The receiver of a member call, `@import("dump.zig").root(...)`, arrives as
+ * a namespace import whose `@import.name` is the builtin's own text: the
+ * shared namespace-receiver lookup keys on the receiver text, and that is
+ * how the call resolves into `dump.zig` without a `const` handle.
  */
 export function interpretZigImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;

@@ -15,6 +15,13 @@ const idioms = @import("idioms");
 const build_config = @import("build_config");
 // Removed from the language in 0.15, still everywhere in 0.11–0.14 code.
 pub usingnamespace @import("mixin.zig");
+// @import in EXPRESSION position — the JS-API registration table idiom
+// (Lightpanda's bridge.zig lists ~290 modules this way). No name is bound;
+// each element is still a file dependency.
+pub const Interfaces = .{
+    @import("webapi/AbortController.zig"),
+    @import("webapi/AbortSignal.zig"),
+};
 
 pub fn main() void {
     // call-return inference: the receiver of the constructor call names the type
@@ -45,6 +52,9 @@ pub fn main() void {
     var arena = idioms.Arena{};
     arena.reset();
     _ = build_config.version;
+    // inline import as a member-call receiver: no `const dump = @import(...)`
+    // handle, the module is used in place.
+    @import("dump.zig").root(2);
     // statement assignments share the variable_declaration node type with
     // declarations in tree-sitter-zig 1.1.2 — none of these is a binding.
     counter.global_count = 5;

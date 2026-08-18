@@ -522,6 +522,97 @@ test {
     expect(vars).toEqual(['notAnImport']);
   });
 
+  it('emits a side-effect import for every @import in EXPRESSION position, once per source, never doubling a bound one', () => {
+    // Both query sets only saw `@import` as the value of a const/var (or
+    // under `usingnamespace`). Lightpanda's `Interfaces = .{ @import(…), … }`
+    // table (288 modules), `CounterEnum("size", @import("ArenaPool.zig").BucketSize)`
+    // (call argument), `event.is(@import("x.zig"))` and
+    // `JsApi == @import("x.zig").JsApi` (comparison) all produced NO file
+    // edge: 487 of 3,471 in-repo import pairs missing. Each is a dependency
+    // without a name — a side-effect import — and the same file spelled
+    // twice, or spelled inline AND bound to a const, gets one edge, not two.
+    const src = `
+const std = @import("std");
+const c = @import("counter.zig");
+pub const Interfaces = .{ @import("a.zig"), @import("b.zig"), @import("a.zig") };
+const size = CounterEnum("size", @import("ArenaPool.zig").BucketSize);
+pub fn f() void {
+    if (event.is(@import("event/MouseEvent.zig"))) {}
+    if (JsApi == @import("cdata/Text.zig").JsApi) {}
+    _ = @import("counter.zig").Extra;
+    _ = std.mem;
+}
+`;
+    const imports = emitZigScopeCaptures(src, 'x.zig')
+      .filter((m) => m['@import.source'] !== undefined)
+      .map((m) => interpretZigImport(m));
+    expect(imports).toEqual([
+      { kind: 'namespace', localName: 'std', importedName: 'std', targetRaw: 'std' },
+      { kind: 'namespace', localName: 'c', importedName: 'counter', targetRaw: 'counter.zig' },
+      { kind: 'side-effect', targetRaw: 'a.zig' },
+      { kind: 'side-effect', targetRaw: 'b.zig' },
+      { kind: 'side-effect', targetRaw: 'ArenaPool.zig' },
+      { kind: 'side-effect', targetRaw: 'event/MouseEvent.zig' },
+      { kind: 'side-effect', targetRaw: 'cdata/Text.zig' },
+      // `@import("counter.zig").Extra` in a discard: counter.zig is already
+      // bound above (`const c = …`) — no second edge, and no phantom binding.
+    ]);
+    // The tuple binds `Interfaces` as an ordinary Const (its value is a
+    // struct literal, not an import); the discard binds nothing.
+    const vars = emitZigScopeCaptures(src, 'x.zig')
+      .filter((m) => m['@declaration.variable'] !== undefined)
+      .map((m) => m['@declaration.name']?.text);
+    expect(vars).toEqual(['Interfaces', 'size']);
+  });
+
+  it('binds an inline import used as a member-call receiver under its own text, so `@import("dump.zig").root()` resolves', () => {
+    // `try @import("dump.zig").root(…)` (80 sites in Lightpanda, 0 resolved):
+    // the receiver is the builtin, not a const handle. Emitting a namespace
+    // import whose local name IS the receiver text lets the shared
+    // namespace-receiver lookup (`namespaceTargets.get(receiverText)`) find
+    // dump.zig. One binding per distinct source; a deeper chain
+    // (`@import("x.zig").Foo.init()`) is not a module receiver and stays a
+    // plain side-effect import.
+    const src = `
+pub fn f() !void {
+    try @import("dump.zig").root(1);
+    @import("dump.zig").other();
+    _ = @import("../id.zig").uuidv4(&buf);
+    _ = @import("x.zig").Foo.init();
+}
+`;
+    const groups = emitZigScopeCaptures(src, 'x.zig');
+    const imports = groups
+      .filter((m) => m['@import.source'] !== undefined)
+      .map((m) => interpretZigImport(m));
+    expect(imports).toEqual([
+      {
+        kind: 'namespace',
+        localName: '@import("dump.zig")',
+        importedName: 'dump',
+        targetRaw: 'dump.zig',
+      },
+      {
+        kind: 'namespace',
+        localName: '@import("../id.zig")',
+        importedName: 'id',
+        targetRaw: '../id.zig',
+      },
+      { kind: 'side-effect', targetRaw: 'x.zig' },
+    ]);
+    // The receiver capture on the call carries exactly the binding's text —
+    // that identity is what makes the lookup succeed.
+    const receivers = groups
+      .filter((m) => m['@reference.call.member'] !== undefined)
+      .map((m) => m['@reference.receiver']?.text);
+    expect(receivers).toEqual([
+      '@import("dump.zig")',
+      '@import("dump.zig")',
+      '@import("../id.zig")',
+      '@import("x.zig").Foo',
+    ]);
+  });
+
   it('a function-scoped @import is not deferred: Zig imports are compile-time (importsExecuteWhereWritten: false)', () => {
     // C `#include` and Rust `use` answer the same. Without the flag the scope
     // extractor marks a body-level `@import` `runsOnlyWhenCalled`, hiding a

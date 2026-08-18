@@ -197,6 +197,24 @@ const ZIG_SCOPE_QUERY = `
     (arguments (string) @import.source))
   (#eq? @_builtin "@import")) @import.wildcard
 
+;; Imports — \`@import("...")\` in ANY other position: a tuple element
+;; (\`pub const Interfaces = .{ @import("a.zig"), @import("b.zig") }\`, the
+;; JS-API registration table), a call argument (\`event.is(@import("x.zig"))\`),
+;; a comparison operand (\`T == @import("x.zig").T\`), the receiver of a
+;; member call (\`try @import("dump.zig").root(...)\`), a 3-deep member chain…
+;; Every one of them is a file dependency; only the const/var/usingnamespace
+;; shapes above bind a name. This rule matches EVERY \`@import\` builtin, the
+;; bound shapes included — \`emitZigScopeCaptures\` drops the matches whose
+;; string node a binding rule (or the keyword-less side-effect rule) already
+;; claimed, so a bound import is never doubled, and emits the rest as
+;; side-effect imports (file edge, no binding) — except the member-call
+;; receiver, which becomes a namespace import keyed by its own source text so
+;; the call resolves into the imported module (see the emitter).
+((builtin_function
+  (builtin_identifier) @_builtin
+  (arguments (string) @import.source))
+  (#eq? @_builtin "@import")) @import.inline
+
 ;; Type bindings — parameter annotations (incl. self: *T receivers)
 (parameter
   name: (identifier) @type-binding.name

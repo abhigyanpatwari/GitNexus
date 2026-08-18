@@ -2540,31 +2540,22 @@ export const ZIG_QUERIES = `
 (variable_declaration
   "var" . (identifier) @name) @definition.variable
 
-; @import("path") — capture the string argument as @import.source.
-; The #eq? predicate restricts the match to the @import builtin (other
-; builtins like @sizeOf, @TypeOf, @as are not import statements).
-(variable_declaration
-  (builtin_function
-    (builtin_identifier) @builtin
-    (arguments
-      (string) @import.source))
-  (#eq? @builtin "@import")) @import
-
-; const X = @import("path").X — the same file edge, one member deep.
-(variable_declaration
-  (field_expression
-    object: (builtin_function
-      (builtin_identifier) @builtin
-      (arguments
-        (string) @import.source)))
-  (#eq? @builtin "@import")) @import
-
-; pub usingnamespace @import("path");
-(using_namespace_declaration
-  (builtin_function
-    (builtin_identifier) @builtin
-    (arguments
-      (string) @import.source))
+; @import("path") — capture the string argument as @import.source, in
+; EVERY position: the value of a const/var (\`const std = @import("std")\`),
+; a member chain (\`const X = @import("x.zig").X\`), \`pub usingnamespace
+; @import("path")\`, a tuple element (\`pub const Interfaces = .{
+; @import("a.zig"), @import("b.zig") }\`), a call argument, a comparison
+; operand, the receiver of a member call (\`try @import("dump.zig").root(...)\`).
+; Zig has no import statement — the builtin IS the import, wherever it sits,
+; and every occurrence is a file dependency. The #eq? predicate keeps the
+; other builtins (@sizeOf, @TypeOf, @as, …) out. One rule, one match per
+; builtin: the structure phase only skips import matches (IMPORTS edges come
+; from the scope phase — \`emitZigScopeCaptures\`, whose \`@import.inline\`
+; rule is this rule's twin, decides which occurrences bind a name).
+((builtin_function
+  (builtin_identifier) @builtin
+  (arguments
+    (string) @import.source))
   (#eq? @builtin "@import")) @import
 
 ; Free calls: foo(...)
