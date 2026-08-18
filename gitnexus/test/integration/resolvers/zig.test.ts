@@ -11,8 +11,15 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 
-describe('Zig basic resolution', () => {
+// `@tree-sitter-grammars/tree-sitter-zig` is an optionalDependency: on a
+// platform without a prebuild the grammar is absent and the pipeline skips
+// `.zig` files by contract, so these suites skip too (Swift/Dart pattern).
+const zigAvailable = isLanguageAvailable(SupportedLanguages.Zig);
+
+describe.skipIf(!zigAvailable)('Zig basic resolution', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
@@ -73,7 +80,7 @@ describe('Zig basic resolution', () => {
   });
 });
 
-describe('Zig scope captures — variable bindings', () => {
+describe.skipIf(!zigAvailable)('Zig scope captures — variable bindings', () => {
   it('binds only the declared name, never the initializer identifier', async () => {
     // `(variable_declaration (identifier) @declaration.name)` without a
     // first-child anchor ALSO matches the RHS identifier of `const h = helper;`

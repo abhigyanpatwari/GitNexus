@@ -90,9 +90,13 @@ export interface SwiftPackageConfig {
 /** Zig package config parsed from build.zig.zon */
 export interface ZigBuildZonConfig {
   /**
-   * Map of dependency name -> repo-relative path for `.path = "..."` entries.
-   * `.url`-based deps cannot be resolved to a repo-local file (they unpack
-   * into a build cache outside the repo) and so are not included here.
+   * Map of dependency name -> the raw `.path = "..."` value, exactly as
+   * written in build.zig.zon (relative to the repo root, and possibly
+   * escaping it: `../local_dep`). Consumers normalize — see
+   * `normalizeDepPath` in `import-resolvers/zig.ts`, which rejects absolute
+   * and repo-escaping values. `.url`-based deps cannot be resolved to a
+   * repo-local file (they unpack into a build cache outside the repo) and so
+   * are not included here.
    */
   pathDeps: Map<string, string>;
 }

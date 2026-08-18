@@ -210,12 +210,16 @@ export function isClassLike(t: string): boolean {
  * `resolveInheritanceBaseInScope` and `resolveQualifiedInheritanceBase` are
  * (2); receiver typing is (1).
  *
- * NOT YET INCLUDED, deliberately: `Typedef` and `Union`. They belong here
- * conceptually — the `union_item` note on `MEMBER_OWNER_NODE_TYPES` records
- * the same gap, that a union owns fields captured as `Property` yet is not a
- * recognized owner — but neither is wired as a member container today, so
- * adding them would widen a predicate nothing exercises. They join when their
- * containers do, with fixtures.
+ * `Union` IS included, via `isClassLike`: Zig wires `union(enum)` as a member
+ * container (methods dispatched on a union receiver — see the `main → isEnergy`
+ * case in `test/integration/resolvers/zig.test.ts`), so it is a shape as well
+ * as an inheritance-capable owner. C/C++ unions still do not emit `Union`
+ * defs on the scope side, so nothing changes for them.
+ *
+ * NOT YET INCLUDED, deliberately: `Typedef`. It belongs here conceptually but
+ * is not wired as a member container today, so adding it would widen a
+ * predicate nothing exercises. It joins when its container does, with
+ * fixtures.
  */
 export function isShapeLike(t: string): boolean {
   return isClassLike(t) || t === 'TypeAlias';

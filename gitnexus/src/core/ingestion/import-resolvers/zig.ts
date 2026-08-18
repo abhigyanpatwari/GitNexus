@@ -37,7 +37,9 @@ export function resolveZigImportInternal(
   // Stdlib / compiler builtin / root — not resolvable from source files alone.
   if (ZIG_STDLIB_NAMES.has(importPath)) return null;
 
-  // Strip any explicit `.zig` extension for path arithmetic; we re-add it below.
+  // Normalize path separators for the path arithmetic below. The `.zig`
+  // extension is kept as written: the first candidate is the path as spelled
+  // and only the fallback appends `.zig` for extension-less spellings.
   const trimmed = importPath.replace(/\\/g, '/');
 
   // Path-bearing import: resolve relative to the current file's directory.
@@ -48,6 +50,10 @@ export function resolveZigImportInternal(
     for (const part of parts) {
       if (part === '' || part === '.') continue;
       if (part === '..') {
+        // Above the repository root: the import names a file outside the
+        // repo, so it must not alias a same-named root file (`../bar.zig`
+        // from `main.zig` is NOT `bar.zig`).
+        if (currentDir.length === 0) return null;
         currentDir.pop();
       } else {
         currentDir.push(part);

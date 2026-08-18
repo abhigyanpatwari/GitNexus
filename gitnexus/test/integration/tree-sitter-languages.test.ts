@@ -681,24 +681,25 @@ describe('Tree-sitter multi-language parsing', () => {
   });
 
   describe('Zig', () => {
-    it('parses functions, structs, enums, and imports if tree-sitter-zig is available', async () => {
-      try {
+    // Gate on the loader's own availability probe, not on a catch-all: when
+    // the optional grammar IS installed, a load failure (ABI mismatch, bad
+    // export) must fail this test, not silently skip its assertions.
+    it.skipIf(!isLanguageAvailable(SupportedLanguages.Zig))(
+      'parses functions, structs, enums, and imports',
+      async () => {
         await loadLanguage(SupportedLanguages.Zig);
-      } catch {
-        // @tree-sitter-grammars/tree-sitter-zig not installed — skip
-        return;
-      }
 
-      const content = readFixture('simple.zig');
-      const provider = getProvider(SupportedLanguages.Zig);
-      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
-      const defs = extractDefinitions(matches);
+        const content = readFixture('simple.zig');
+        const provider = getProvider(SupportedLanguages.Zig);
+        const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+        const defs = extractDefinitions(matches);
 
-      const defTypes = defs.map((d) => d.type);
-      expect(defTypes).toContain('definition.function');
-      expect(defTypes).toContain('definition.struct');
-      expect(defTypes).toContain('definition.enum');
-    });
+        const defTypes = defs.map((d) => d.type);
+        expect(defTypes).toContain('definition.function');
+        expect(defTypes).toContain('definition.struct');
+        expect(defTypes).toContain('definition.enum');
+      },
+    );
 
     it('reports Zig unavailable and throws "Unsupported language" when the grammar is absent', async () => {
       // Force the absent-binding path instead of hoping the package is missing:
@@ -934,7 +935,8 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.CSharp, 'simple.cs'],
         [SupportedLanguages.Rust, 'simple.rs'],
         [SupportedLanguages.PHP, 'simple.php'],
-        // Dart, Swift, and Zig are excluded — they are optionalDependencies that may not be installed
+        // Dart and Swift (vendored optional grammars) and Zig (npm optionalDependency)
+        // are excluded — none of the three is guaranteed to be installed
       ];
 
       for (const [lang, fixture, filePath] of langFixtures) {

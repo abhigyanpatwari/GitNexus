@@ -50,29 +50,15 @@ export const zigVariableConfig: VariableExtractionConfig = {
   },
 
   extractType(node) {
-    // type annotation appears as a `builtin_type` / `identifier` after the `:`.
-    // tree-sitter-zig models the annotation as an unnamed-token-prefixed child;
-    // the simplest portable accessor is childForFieldName('type'), which the
-    // grammar exposes for parameters and function returns. Variable
-    // declarations don't expose a `type` field in 1.1.2 — fall back to
-    // scanning for the first builtin_type child after the binding identifier.
-    const typeNode = node.childForFieldName('type');
-    if (typeNode) return typeNode.text?.trim();
-    let seenIdent = false;
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const child = node.namedChild(i);
-      if (!child) continue;
-      if (!seenIdent) {
-        if (child.type === 'identifier') seenIdent = true;
-        continue;
-      }
-      if (child.type === 'builtin_type' || child.type === 'identifier') {
-        return child.text?.trim();
-      }
-      // Non-type expression (initializer) reached — no type annotation.
-      return undefined;
-    }
-    return undefined;
+    // tree-sitter-zig 1.1.2 exposes the annotation as the `type:` field of
+    // variable_declaration (its only field; verified by AST dump: `const p:
+    // *Foo = …` → `pointer_type [type]`, `extern var f: T;` → `identifier
+    // [type]`). Reading the field covers every annotation shape (builtin,
+    // identifier, pointer/optional/slice/array/fn types) and, just as
+    // importantly, never mistakes an initializer for a type: `const f =
+    // target;` has no `type:` field, so it is untyped — the old positional
+    // fallback returned `target` as its type.
+    return node.childForFieldName('type')?.text?.trim();
   },
 
   extractVisibility(node): VariableVisibility {

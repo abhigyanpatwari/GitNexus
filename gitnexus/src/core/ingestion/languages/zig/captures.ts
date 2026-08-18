@@ -1,5 +1,5 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getZigParser, getZigScopeQuery } from './query.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -122,6 +122,26 @@ export function emitZigScopeCaptures(
     const variableAnchor = nodeMap['@declaration.variable'];
     if (variableAnchor !== undefined && isZigContainerOrImportBinding(variableAnchor)) {
       continue;
+    }
+
+    // Zig's receiver convention is specifically the FIRST parameter named
+    // `self`. Tag first-position parameters so `interpretZigTypeBinding` can
+    // require the position and not just the name — a later `self` parameter
+    // (legal Zig) is an ordinary parameter, not a receiver. The synthetic
+    // capture sits on the name node (smaller than the `parameter` anchor), so
+    // it never displaces the anchor.
+    const paramAnchor = nodeMap['@type-binding.parameter'];
+    const paramName = nodeMap['@type-binding.name'];
+    if (
+      paramAnchor !== undefined &&
+      paramName !== undefined &&
+      paramAnchor.previousNamedSibling === null
+    ) {
+      grouped['@type-binding.first-parameter'] = syntheticCapture(
+        '@type-binding.first-parameter',
+        paramName,
+        'true',
+      );
     }
 
     // Relabel container-nested fns Function → Method (provider labelOverride

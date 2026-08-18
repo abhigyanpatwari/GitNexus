@@ -17,6 +17,8 @@ import { createMethodExtractor } from '../../src/core/ingestion/method-extractor
 import { zigMethodConfig } from '../../src/core/ingestion/method-extractors/configs/zig.js';
 import { createVariableExtractor } from '../../src/core/ingestion/variable-extractors/generic.js';
 import { zigVariableConfig } from '../../src/core/ingestion/variable-extractors/configs/zig.js';
+import { emitZigScopeCaptures } from '../../src/core/ingestion/languages/zig/captures.js';
+import { interpretZigTypeBinding } from '../../src/core/ingestion/languages/zig/interpret.js';
 
 const _require = createRequire(import.meta.url);
 let Zig: unknown = null;
@@ -149,5 +151,49 @@ var count = @as(u32, 0);
       if (info) names.push(info.name);
     }
     expect(names).toEqual(['limit', 'count']);
+  });
+
+  it('reads the type from the `type:` field and never from the initializer', () => {
+    // The old positional fallback returned `target` as the type of
+    // `const f = target;` and gave up on compound annotations (`*Foo`).
+    const root = parse(`
+const f = target;
+const p: *Foo = undefined;
+const q: ?[]const u8 = null;
+const n: u32 = 1;
+extern var g: T;
+`).rootNode;
+    const types: Array<string | null> = [];
+    for (let i = 0; i < root.namedChildCount; i++) {
+      const info = extractor.extract(root.namedChild(i)!, ctx);
+      types.push(info?.type ?? null);
+    }
+    expect(types).toEqual([null, '*Foo', '?[]const u8', 'u32', 'T']);
+  });
+});
+
+describeZig('Zig scope captures — receiver is the FIRST parameter named self', () => {
+  function parameterBindings(src: string) {
+    return emitZigScopeCaptures(src, 'test.zig')
+      .filter((m) => m['@type-binding.parameter'] !== undefined)
+      .map((m) => interpretZigTypeBinding(m))
+      .filter((b): b is NonNullable<typeof b> => b !== null)
+      .map((b) => `${b.boundName}:${b.source}`);
+  }
+
+  it('marks a leading self as the receiver and later parameters as annotations', () => {
+    expect(parameterBindings('const S = struct { fn m(self: *S, other: u32) void {} };')).toEqual([
+      'self:self',
+      'other:parameter-annotation',
+    ]);
+  });
+
+  it('a later parameter named self is an ordinary parameter, not a receiver', () => {
+    // Legal Zig; `zigReceiverBinding` picks the `self`-sourced binding, so
+    // sourcing this one as `self` would turn a static fn into an instance method.
+    expect(parameterBindings('const S = struct { fn f(other: u32, self: S) void {} };')).toEqual([
+      'other:parameter-annotation',
+      'self:parameter-annotation',
+    ]);
   });
 });

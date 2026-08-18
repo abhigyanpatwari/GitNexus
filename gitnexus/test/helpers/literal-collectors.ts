@@ -88,6 +88,7 @@ const DIR_LANG: Record<string, SupportedLanguages> = {
   swift: SupportedLanguages.Swift,
   dart: SupportedLanguages.Dart,
   vue: SupportedLanguages.Vue,
+  zig: SupportedLanguages.Zig,
 };
 
 /** Basename (no .ts) → language set, for extractor files that name a language. */

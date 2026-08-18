@@ -31,6 +31,16 @@ describe('resolveZigImportInternal', () => {
     );
   });
 
+  it('rejects parent traversal above the repository root instead of aliasing a root file', () => {
+    // `currentDir.pop()` on an empty stack used to swallow the `..`, so
+    // `../bar.zig` from `main.zig` resolved to the unrelated repo-root `bar.zig`.
+    const files = new Set<string>(['main.zig', 'bar.zig', 'src/a.zig', 'x.zig']);
+    expect(resolveZigImportInternal('main.zig', '../bar.zig', files)).toBeNull();
+    expect(resolveZigImportInternal('src/a.zig', '../../x.zig', files)).toBeNull();
+    // One level up from src/ is still inside the repo.
+    expect(resolveZigImportInternal('src/a.zig', '../bar.zig', files)).toBe('bar.zig');
+  });
+
   it('returns null for a bare name when no build.zig.zon is supplied', () => {
     const files = new Set<string>(['src/main.zig', 'vendor/ziggit/src/ziggit.zig']);
     expect(resolveZigImportInternal('src/main.zig', 'ziggit', files)).toBeNull();
