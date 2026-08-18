@@ -323,6 +323,31 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
         .length,
     ).toBeGreaterThanOrEqual(2);
   });
+
+  it('types a receiver by the FIELD it is read from (`self.counter.incr()`, `self.ptr.incr()`) — F5', () => {
+    // A container's field types were never bound on its Class scope, so the
+    // compound resolver (`typeOfMemberOnClass`) found nothing for `counter`
+    // and `self.<field>.<method>()` — Lightpanda's dominant cross-object call
+    // shape — resolved 9 of 2803 times (0.3 %). Plain, pointer and optional-
+    // pointer field types all reduce to the nominal `Counter`.
+    const viaField = getRelationships(result, 'CALLS').filter(
+      (e) => e.source === 'viaField' && e.target === 'incr',
+    );
+    // `self.counter.incr()` and `self.ptr.incr()` — two sites, one callee, and
+    // the callee lives in counter.zig, not in holder.zig.
+    expect(viaField.length).toBeGreaterThanOrEqual(2);
+    expect(viaField.every((e) => e.targetFilePath.endsWith('counter.zig'))).toBe(true);
+    // (`if (self.opt) |c| c.incr()` — the payload capture — is F6 territory
+    // and is deliberately not asserted here.)
+  });
+
+  it('types a local ALIAS of a field (`const c = self.counter; c.get()`, `var p = self.ptr; p.twice()`) — F5', () => {
+    // `const c = self.counter;` binds nothing on the scope side without the
+    // alias rule; the alias keeps the RHS path (`self.counter`) as its type
+    // and the compound resolver re-resolves it as a receiver chain.
+    expect(calls).toContain('viaAlias → get');
+    expect(calls).toContain('viaAlias → twice');
+  });
 });
 
 /**
@@ -434,5 +459,20 @@ describe.skipIf(!zigAvailable)('Zig file-structs (zig-filestruct fixture)', () =
     expect(target?.targetFilePath).toMatch(/Page\.zig$/);
     const nameCall = calls.filter((e) => e.target === 'name');
     expect(nameCall.every((e) => e.targetFilePath.endsWith('Session.zig'))).toBe(true);
+  });
+
+  it('dispatches through a file-struct FIELD typed by an imported file-struct (`self.session.name()`) — F5', () => {
+    // `session: *Session` sits at the top level of Page.zig, whose Class
+    // scope spans the file: the field's type binding must land there (not be
+    // hoisted to the Module scope like the member NAMES are), and `Session`
+    // must resolve through the import binding's type twin. Before F5 the
+    // scope had no typeBindings at all and neither call resolved.
+    const calls = edgeSet(getRelationships(result, 'CALLS'));
+    expect(calls).toContain('sessionName → name');
+    // `const s = self.session; s.name()` — alias of the field
+    expect(calls).toContain('sessionLabel → name');
+    const targets = getRelationships(result, 'CALLS').filter((e) => e.target === 'name');
+    expect(targets.length).toBeGreaterThanOrEqual(2);
+    expect(targets.every((e) => e.targetFilePath.endsWith('Session.zig'))).toBe(true);
   });
 });

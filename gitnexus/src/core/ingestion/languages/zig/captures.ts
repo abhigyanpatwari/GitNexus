@@ -522,6 +522,14 @@ export function emitZigScopeCaptures(
       continue;
     }
 
+    // F5 — `const page = self.page;` value aliases (`@type-binding.alias`)
+    // share the query shape with `const Counter = counter.Counter;`, which is
+    // a NAMED IMPORT of `Counter` (promoted above) — a type binding beside it
+    // would make `Counter` look like an instance of the class it names. Drop
+    // the alias binding for those declarations.
+    const aliasBinding = nodeMap['@type-binding.alias'];
+    if (aliasBinding !== undefined && aliasDeclIds.has(aliasBinding.id)) continue;
+
     // `@This()` aliases in type position — `self: *Self` in a container that
     // declares `const Self = @This();`, or `self: *SigHandler` in
     // `Sighandler.zig` (`const SigHandler = @This();`) — name the enclosing
@@ -585,6 +593,45 @@ export function emitZigScopeCaptures(
     }
 
     out.push(grouped);
+
+    // F5 — field types. `session: *Session,` declares the TYPE of the member
+    // `session`; the compound resolver reads member types from the owning
+    // container's Class scope (`typeOfMemberOnClass` →
+    // `classScope.typeBindings.get('session')`), so without a binding there
+    // `self.session.name()` / `self.counter.incr()` never resolve (Lightpanda:
+    // 9 of 2803 such calls, 0.3 %). Synthesize a `@type-binding.field` group
+    // per typed field (Go does the same in go/captures.ts; Rust/C++ capture it
+    // in the query). Enum variants carry no type and get no binding. The
+    // group's anchor is the type node — inside the container, never equal to
+    // its range — so the extractor hosts it in the container's Class scope
+    // (the file's Class scope for a file-struct); `zigBindingScopeFor` hoists
+    // only declaration NAMES, never `@type-binding.*`. `?*Self` /
+    // `?*Page` (a `@This()` alias) is rewritten to the container name exactly
+    // like a parameter type; `normalizeZigTypeName` reduces `?*Session`,
+    // `[]const Counter` to the nominal name and the extractor keeps the
+    // written spelling as `declaredSpelling`.
+    const fieldAnchor = nodeMap['@declaration.field'];
+    const fieldType = nodeMap['@declaration.field-type'];
+    const fieldName = nodeMap['@declaration.name'];
+    if (
+      fieldAnchor !== undefined &&
+      fieldType !== undefined &&
+      fieldName !== undefined &&
+      // An inline anonymous container (`opts: struct { a: u32 },`) names no
+      // type; its own Class scope already owns its members.
+      !ZIG_CONTAINER_TYPES.has(fieldType.type)
+    ) {
+      const rewritten =
+        thisAliases.size > 0 ? rewriteZigThisAlias(fieldType, thisAliases) : undefined;
+      out.push({
+        '@type-binding.field': nodeToCapture('@type-binding.field', fieldType),
+        '@type-binding.name': nodeToCapture('@type-binding.name', fieldName),
+        '@type-binding.type':
+          rewritten === undefined
+            ? nodeToCapture('@type-binding.type', fieldType)
+            : syntheticCapture('@type-binding.type', fieldType, rewritten),
+      });
+    }
 
     // `const Page = @import("Page.zig")` binds BOTH the module (namespace:
     // `Page.init()`) and, when the target is a file-struct, the type it

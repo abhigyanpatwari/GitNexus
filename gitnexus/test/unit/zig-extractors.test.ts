@@ -307,9 +307,12 @@ pub fn main() void {
   it('formals skip the leading `self` receiver so the member-call actual at 0 joins `cb`', () => {
     const runFormals = flow()
       .filter(
-        (m) => m['@callable-flow.formal'] !== undefined && m['@callable-flow.owner']!.text === 'run',
+        (m) =>
+          m['@callable-flow.formal'] !== undefined && m['@callable-flow.owner']!.text === 'run',
       )
-      .map((m) => `${m['@callable-flow.binding']!.text}@${m['@callable-flow.parameter-index']!.text}`);
+      .map(
+        (m) => `${m['@callable-flow.binding']!.text}@${m['@callable-flow.parameter-index']!.text}`,
+      );
     expect(runFormals).toEqual(['cb@0']);
   });
 
@@ -969,6 +972,138 @@ const lp = @import("lightpanda");
         { kind: 'namespace', localName: 'std', importedName: 'std', targetRaw: 'std' },
         { kind: 'namespace', localName: 'lp', importedName: 'lightpanda', targetRaw: 'lightpanda' },
       ]);
+    });
+  },
+);
+
+describeZig(
+  'Zig field types (F5: `self.field.m()` resolves through the field’s declared type)',
+  () => {
+    // Lightpanda's dominant cross-object call shape is `self.<field>.<method>()`
+    // (2803 sites) — and it resolved 9 times, because a container's field types
+    // were never bound on its Class scope: `typeOfMemberOnClass` reads
+    // `classScope.typeBindings.get(field)` and found nothing.
+    const SRC = `
+const Page = @This();
+const Session = @import("Session.zig");
+session: *Session,
+parent: ?*Page,
+count: u32 = 0,
+pub const Holder = struct {
+    const Self = @This();
+    counter: Counter,
+    ptr: *Counter,
+    opt: ?*Counter,
+    list: []const Counter,
+    gen: std.ArrayList(u8),
+    next: ?*Self,
+    inline_: struct { a: u32 },
+    pub fn viaField(self: *Holder) void { self.counter.incr(); }
+};
+pub const Kind = enum { a, b };
+pub const Payload = union(enum) { x: u32, y: Counter };
+`;
+
+    it('emits one @type-binding.field per TYPED field — the nominal type, sigils stripped, aliases rewritten', () => {
+      const fields = emitZigScopeCaptures(SRC, 'src/Page.zig')
+        .filter((m) => m['@type-binding.field'] !== undefined)
+        .map((m) => {
+          const parsed = interpretZigTypeBinding(m)!;
+          return [
+            parsed.boundName,
+            m['@type-binding.type']!.text,
+            parsed.rawTypeName,
+            parsed.source,
+          ];
+        });
+      expect(fields).toEqual([
+        // file-struct fields; `?*Page` is the file's own @This() alias, kept as
+        // the file stem (Page.zig → Page) exactly like a parameter type
+        ['session', '*Session', 'Session', 'annotation'],
+        ['parent', '?*Page', 'Page', 'annotation'],
+        ['count', 'u32', 'u32', 'annotation'],
+        // nested container: plain / pointer / optional pointer / slice /
+        // generic instantiation / nested `Self` alias
+        ['counter', 'Counter', 'Counter', 'annotation'],
+        ['ptr', '*Counter', 'Counter', 'annotation'],
+        ['opt', '?*Counter', 'Counter', 'annotation'],
+        ['list', '[]const Counter', 'Counter', 'annotation'],
+        ['gen', 'std.ArrayList(u8)', 'std.ArrayList', 'annotation'],
+        ['next', '?*Holder', 'Holder', 'annotation'],
+        // the anonymous inline struct's OWN field, not `inline_` itself
+        ['a', 'u32', 'u32', 'annotation'],
+        // union variants carry a type; enum variants (`a`, `b`) do not
+        ['x', 'u32', 'u32', 'annotation'],
+        ['y', 'Counter', 'Counter', 'annotation'],
+      ]);
+    });
+
+    it('hosts the binding on the CONTAINER’s Class scope — the file’s Class scope for a file-struct — never hoisted to Module', () => {
+      // `zigBindingScopeFor` hoists member NAMES of a file-struct to the Module
+      // scope so `Page.init()` keeps working; the compound resolver reads member
+      // TYPES from the Class scope, so those must stay put.
+      const parsed = extractScopes(
+        emitZigScopeCaptures(SRC, 'src/Page.zig'),
+        'src/Page.zig',
+        zigProvider,
+      );
+      const byKind = (kind: string) => parsed.scopes.filter((s) => s.kind === kind);
+      const moduleScope = byKind('Module')[0]!;
+      expect(moduleScope.typeBindings.size).toBe(0);
+      const fileClass = byKind('Class').find(
+        (s) =>
+          s.range.startLine === moduleScope.range.startLine &&
+          s.range.endLine === moduleScope.range.endLine,
+      )!;
+      expect(fileClass).toBeDefined();
+      expect(fileClass.typeBindings.get('session')?.rawName).toBe('Session');
+      // The written spelling survives beside the reduced name (`TypeRef.declaredSpelling`).
+      expect(fileClass.typeBindings.get('session')?.declaredSpelling).toBe('*Session');
+      expect(fileClass.typeBindings.get('parent')?.rawName).toBe('Page');
+      const holder = byKind('Class').find((s) => s.typeBindings.has('counter'))!;
+      expect(holder).toBeDefined();
+      expect(holder.id).not.toBe(fileClass.id);
+      expect(holder.typeBindings.get('opt')).toMatchObject({
+        rawName: 'Counter',
+        declaredSpelling: '?*Counter',
+      });
+      expect(holder.typeBindings.get('next')?.rawName).toBe('Holder');
+      // The receiver `self` stays on the function scope, not on the class.
+      expect(holder.typeBindings.has('self')).toBe(false);
+      expect(byKind('Function')[0]!.typeBindings.get('self')?.rawName).toBe('Holder');
+    });
+
+    it('binds a local alias of a field to the RHS path (`const page = self.page;`), never an import alias', () => {
+      const src = `
+const counter = @import("counter.zig");
+const Counter = counter.Counter;
+const Allocator = std.mem.Allocator;
+pub fn run(self: *Holder) void {
+    const page = self.page;
+    var s = self.session;
+    const typed: *Page = self.page;
+    _ = page; _ = s; _ = typed;
+}
+`;
+      const aliases = emitZigScopeCaptures(src, 'x.zig')
+        .filter((m) => m['@type-binding.alias'] !== undefined)
+        .map((m) => interpretZigTypeBinding(m));
+      expect(aliases).toEqual([
+        { boundName: 'page', rawTypeName: 'self.page', source: 'assignment-inferred' },
+        { boundName: 's', rawTypeName: 'self.session', source: 'assignment-inferred' },
+        { boundName: 'typed', rawTypeName: 'self.page', source: 'assignment-inferred' },
+      ]);
+      // `const Counter = counter.Counter;` is a NAMED IMPORT (counter is an
+      // @import binding), and `std.mem.Allocator` is a two-level chain — neither
+      // is a value alias.
+      expect(aliases.map((a) => a!.boundName)).not.toContain('Counter');
+      expect(aliases.map((a) => a!.boundName)).not.toContain('Allocator');
+      // The annotation outranks the alias for the same name.
+      const parsed = extractScopes(emitZigScopeCaptures(src, 'x.zig'), 'x.zig', zigProvider);
+      const fn = parsed.scopes.find((s) => s.kind === 'Function')!;
+      const block = parsed.scopes.find((s) => s.kind === 'Block')!;
+      const typed = block.typeBindings.get('typed') ?? fn.typeBindings.get('typed');
+      expect(typed).toMatchObject({ rawName: 'Page', source: 'annotation' });
     });
   },
 );

@@ -21,3 +21,15 @@ pub fn bump(self: *Page) void {
     self.count += 1;
     _ = self.getArena();
 }
+
+// Field-typed receivers (F5): `session: *Session` types the member, so a
+// call through it dispatches into Session.zig — directly (`self.session.name()`)
+// or through a local alias of the field (`const s = self.session; s.name()`).
+pub fn sessionName(self: *Page) []const u8 {
+    return self.session.name();
+}
+
+pub fn sessionLabel(self: *Page) []const u8 {
+    const s = self.session;
+    return s.name();
+}

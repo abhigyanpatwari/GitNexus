@@ -121,6 +121,19 @@ export function interpretZigTypeBinding(captures: CaptureMatch): ParsedTypeBindi
   } else if (captures['@type-binding.annotation'] !== undefined) {
     // `var x: T = undefined;` / `const x: T = .init(…);` — the declared type.
     source = 'annotation';
+  } else if (captures['@type-binding.field'] !== undefined) {
+    // `session: *Session,` — a container field's declared type, hosted in
+    // the container's Class scope so `self.session.name()` walks it
+    // (synthesized by `emitZigScopeCaptures`, F5). A declaration, hence
+    // 'annotation': it must outrank nothing and be outranked by nothing —
+    // a field has exactly one type source.
+    source = 'annotation';
+  } else if (captures['@type-binding.alias'] !== undefined) {
+    // `const page = self.page;` — the RHS member path IS the "type"; the
+    // compound resolver's member-alias branch re-resolves `self.page` as a
+    // receiver chain (F5). Weakest source: an annotation on the same
+    // binding (`const p: *Page = self.page;`) must win.
+    source = 'assignment-inferred';
   }
 
   return { boundName: name, rawTypeName: normalizeZigTypeName(type), source };

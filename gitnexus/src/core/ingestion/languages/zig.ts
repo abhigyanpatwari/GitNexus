@@ -24,7 +24,9 @@
  *     to a namespace import, member forms to named/alias imports and
  *     `usingnamespace` to a wildcard; receiver types come from `self`
  *     parameters, `T{…}` / `mod.T{…}` / `List(u8){…}` literals, `T.init()`
- *     call returns and `x: T` annotations (incl. decl literals). The
+ *     call returns, `x: T` annotations (incl. decl literals), container
+ *     FIELD types on the container's class scope (`self.session.name()`)
+ *     and one-level field aliases (`const s = self.session; s.name()`). The
  *     emit-side wiring lives in `zig/scope-resolver.ts` (SCOPE_RESOLVERS).
  */
 

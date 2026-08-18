@@ -94,9 +94,14 @@ const ZIG_SCOPE_QUERY = `
 
 ;; Declarations — container fields (struct fields, enum/union variants).
 ;; The #not-eq? guard drops the MISSING placeholder identifier tree-sitter-zig
-;; recovers for an empty container body (see ZIG_QUERIES).
+;; recovers for an empty container body (see ZIG_QUERIES). The optional
+;; \`type:\` (absent on enum variants) is captured as @declaration.field-type:
+;; \`emitZigScopeCaptures\` turns it into a @type-binding.field on the
+;; container's Class scope so \`self.session.name()\` can walk the field's
+;; type (Rust/Go parity — see the F5 block in captures.ts).
 ((container_field
-  name: (identifier) @declaration.name) @declaration.field
+  name: (identifier) @declaration.name
+  type: (_)? @declaration.field-type) @declaration.field
   (#not-eq? @declaration.name ""))
 
 ;; Declarations — const/var bindings (import/container groups filtered in TS).
@@ -269,6 +274,28 @@ const ZIG_SCOPE_QUERY = `
   (call_expression
     function: (field_expression
       object: (_) @type-binding.type)) .) @type-binding.call-return
+
+;; Type bindings — field-access alias: \`const page = self.page;\` /
+;; \`var s = self.session;\` (F5 companion). The RHS path is kept verbatim as
+;; the "type" (\`self.page\`): the compound resolver's member-alias branch
+;; re-resolves it as a receiver chain (head \`self\` → class → field type),
+;; so \`page.getArena()\` dispatches like \`self.page.getArena()\` does. One
+;; level only — \`std.mem.Allocator\` chains and the namespace aliases
+;; \`const Counter = counter.Counter;\` (promoted to named imports) are not
+;; value aliases; \`emitZigScopeCaptures\` drops the import-alias matches.
+;; The trailing \`.\` anchor rejects a declaration whose value has any
+;; further child (\`const x = a.b + 1\` is a binary_expression, not matched
+;; anyway; the anchor is the belt to that brace).
+(variable_declaration
+  "const" . (identifier) @type-binding.name
+  (field_expression
+    object: (identifier)
+    member: (identifier)) @type-binding.type .) @type-binding.alias
+(variable_declaration
+  "var" . (identifier) @type-binding.name
+  (field_expression
+    object: (identifier)
+    member: (identifier)) @type-binding.type .) @type-binding.alias
 
 ;; References — free calls: foo(...)
 (call_expression
