@@ -130,11 +130,9 @@ describe('PHP import resolution — index reuse across use-statements (#2901)', 
       'app/Services/Service00000.php',
     );
 
-    // Suffix fallback: no PSR-4 prefix matches `Legacy`, so `suffixResolve`
-    // answers from the longest matching proper path suffix.
-    expect(resolveImportTarget('Legacy\\Helper', FROM_FILE, files, COMPOSER)).toBe(
-      'lib/Legacy/Helper.php',
-    );
+    // Composer's non-empty PSR-4 map is authoritative: an unmatched namespace
+    // belongs outside the repository and cannot fall through to a local suffix.
+    expect(resolveImportTarget('Legacy\\Helper', FROM_FILE, files, COMPOSER)).toBeNull();
 
     // A root-level file is NOT reachable as a proper suffix — the pre-#2901
     // behaviour the parity view preserves, and the single most likely thing a

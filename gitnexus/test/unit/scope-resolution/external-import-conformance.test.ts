@@ -244,12 +244,12 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
   [
     SupportedLanguages.PHP,
     {
-      files: ['app/Models/User.php', 'lib/Legacy/Missing.php', 'app/Main.php'],
+      files: ['app/Ghost/Missing.php', 'app/Models/User.php', 'app/Main.php'],
       fromFile: 'app/Main.php',
       resolutionConfig: PHP_COMPOSER,
       external: 'Vendor\\Ghost\\Missing',
-      decoy: 'lib/Legacy/Missing.php',
-      reachesDecoy: 'App\\Models\\User',
+      decoy: 'app/Ghost/Missing.php',
+      reachesDecoy: 'App\\Ghost\\Missing',
       parsedImport: PHP_FUNCTION_IMPORT,
     },
   ],
@@ -327,7 +327,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
   [SupportedLanguages.Kotlin, '`org.junit.Assert` -> `src/main/kotlin/vendor/Assert.kt`'],
   [SupportedLanguages.Ruby, '`rails/generators` -> `lib/generators.rb`'],
-  [SupportedLanguages.PHP, '`Vendor\\Ghost\\Missing` -> `lib/Legacy/Missing.php`'],
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
   [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
   [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],

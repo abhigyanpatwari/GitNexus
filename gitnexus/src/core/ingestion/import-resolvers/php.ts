@@ -49,9 +49,18 @@ export function resolvePhpImportInternal(
 
   if (composerConfig) {
     const sorted = getSortedPsr4(composerConfig);
+    let matchedNamespace = false;
+    let hasCatchAllNamespace = false;
+    const ownershipPath = normalized.replace(/^\/+/, '');
+
     for (const [nsPrefix, dirPrefix] of sorted) {
-      const nsPrefixSlash = nsPrefix.replace(/\\/g, '/');
-      if (normalized.startsWith(nsPrefixSlash + '/') || normalized === nsPrefixSlash) {
+      const nsPrefixSlash = nsPrefix.replace(/\\/g, '/').replace(/\/+$/, '');
+      if (nsPrefixSlash === '') {
+        hasCatchAllNamespace = true;
+        continue;
+      }
+      if (ownershipPath.startsWith(nsPrefixSlash + '/') || ownershipPath === nsPrefixSlash) {
+        matchedNamespace = true;
         const remainder = normalized.slice(nsPrefixSlash.length).replace(/^\//, '');
 
         // 1. Try class-style PSR-4: full path → file (e.g. App\Models\User → app/Models/User.php)
@@ -102,6 +111,19 @@ export function resolvePhpImportInternal(
           }
         }
       }
+    }
+
+    // A non-empty PSR-4 map is authoritative for first-party namespaces.
+    // Preserve the suffix fallback when Composer provides no usable evidence
+    // or declares an empty-prefix catch-all; otherwise an unmatched namespace
+    // belongs to a dependency and must not bind to a coincidental local file.
+    if (
+      sorted.length > 0 &&
+      !composerConfig.hasUnmodeledAutoload &&
+      !hasCatchAllNamespace &&
+      !matchedNamespace
+    ) {
+      return null;
     }
   }
 

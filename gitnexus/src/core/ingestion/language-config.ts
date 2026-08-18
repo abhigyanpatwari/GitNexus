@@ -30,6 +30,8 @@ export interface GoModuleConfig {
 export interface ComposerConfig {
   /** Map of namespace prefix -> directory (e.g., "App\\" -> "app/") */
   psr4: Map<string, string>;
+  /** True when Composer also declares an autoload mechanism this resolver does not model. */
+  hasUnmodeledAutoload?: boolean;
   /** PSR-4 entries sorted by namespace length descending (longest match wins).
    *  Cached once at config load time to avoid re-sorting on every import. */
   psr4Sorted?: readonly [string, string][];
@@ -165,18 +167,27 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
     const psr4Raw = composer.autoload?.['psr-4'] ?? {};
     const psr4Dev = composer['autoload-dev']?.['psr-4'] ?? {};
     const merged = { ...psr4Raw, ...psr4Dev };
+    const hasUnmodeledAutoload = [composer.autoload, composer['autoload-dev']].some(
+      (section) =>
+        section !== null &&
+        typeof section === 'object' &&
+        ['psr-0', 'classmap', 'files'].some((key) => key in section),
+    );
 
     const psr4 = new Map<string, string>();
-    for (const [ns, dir] of Object.entries(merged)) {
-      const nsNorm = (ns as string).replace(/\\+$/, '');
-      const dirNorm = (dir as string).replace(/\\/g, '/').replace(/\/+$/, '');
-      psr4.set(nsNorm, dirNorm);
+    for (const [ns, dirs] of Object.entries(merged)) {
+      const dir = Array.isArray(dirs) ? dirs.find((entry) => typeof entry === 'string') : dirs;
+      if (typeof dir === 'string') {
+        const nsNorm = ns.replace(/\\+$/, '');
+        const dirNorm = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+        psr4.set(nsNorm, dirNorm);
+      }
     }
 
     if (isDev) {
       logger.info(`📦 Loaded ${psr4.size} PSR-4 mappings from composer.json`);
     }
-    return { psr4 };
+    return { psr4, hasUnmodeledAutoload };
   } catch {
     return null;
   }

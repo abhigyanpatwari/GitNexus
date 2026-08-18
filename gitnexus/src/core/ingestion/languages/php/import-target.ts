@@ -318,23 +318,32 @@ export function loadPhpComposerConfig(repoPath: string): ComposerConfig | null {
 
     const composer = parsed as Record<string, unknown>;
     const autoload = composer['autoload'] as Record<string, unknown> | undefined;
-    if (autoload === undefined) return null;
+    const autoloadDev = composer['autoload-dev'] as Record<string, unknown> | undefined;
+    if (autoload === undefined && autoloadDev === undefined) return null;
 
-    const psr4Raw = (autoload['psr-4'] ?? {}) as Record<string, string | string[]>;
     const psr4 = new Map<string, string>();
+    const hasUnmodeledAutoload = [autoload, autoloadDev].some(
+      (section) =>
+        section !== null &&
+        typeof section === 'object' &&
+        ['psr-0', 'classmap', 'files'].some((key) => key in section),
+    );
 
-    for (const [ns, dirs] of Object.entries(psr4Raw)) {
-      // namespace prefix ends with `\` — keep as-is; resolver strips it
-      const normalizedNs = ns.replace(/\\$/, '');
-      const dir = Array.isArray(dirs) ? dirs[0] : dirs;
-      if (typeof dir === 'string') {
-        // Normalize directory path (strip trailing slash)
-        const normalizedDir = dir.replace(/\/+$/, '');
-        psr4.set(normalizedNs, normalizedDir);
+    for (const section of [autoload, autoloadDev]) {
+      const raw = section?.['psr-4'];
+      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+
+      for (const [ns, dirs] of Object.entries(raw)) {
+        const normalizedNs = ns.replace(/\\+$/, '');
+        const dir = Array.isArray(dirs) ? dirs.find((entry) => typeof entry === 'string') : dirs;
+        if (typeof dir === 'string') {
+          const normalizedDir = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+          psr4.set(normalizedNs, normalizedDir);
+        }
       }
     }
 
-    return { psr4 };
+    return { psr4, hasUnmodeledAutoload };
   } catch {
     return null;
   }

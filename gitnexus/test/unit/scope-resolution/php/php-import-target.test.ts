@@ -1,8 +1,17 @@
 import type { ParsedFile, ParsedImport, SymbolDefinition } from 'gitnexus-shared';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import type { ComposerConfig } from '../../../../src/core/ingestion/language-config.js';
-import { resolvePhpImportTargetInternal } from '../../../../src/core/ingestion/languages/php/import-target.js';
+import {
+  loadComposerConfig,
+  type ComposerConfig,
+} from '../../../../src/core/ingestion/language-config.js';
+import {
+  loadPhpComposerConfig,
+  resolvePhpImportTargetInternal,
+} from '../../../../src/core/ingestion/languages/php/import-target.js';
 
 const composerConfig: ComposerConfig = { psr4: new Map([['App', 'app']]) };
 
@@ -32,6 +41,122 @@ const functionImport: ParsedImport = {
 };
 
 describe('resolvePhpImportTargetInternal declaration selection', () => {
+  it('rejects namespaces outside an authoritative PSR-4 map', () => {
+    const files = new Set(['app/Models/User.php', 'lib/Legacy/Missing.php']);
+
+    expect(
+      resolvePhpImportTargetInternal(
+        'Vendor\\Ghost\\Missing',
+        'app/Main.php',
+        files,
+        composerConfig,
+      ),
+    ).toBeNull();
+    expect(
+      resolvePhpImportTargetInternal('App\\Models\\User', 'app/Main.php', files, composerConfig),
+    ).toBe('app/Models/User.php');
+  });
+
+  it('rejects external function and constant imports before declaration fallback', () => {
+    const decoy = 'lib/Legacy/Missing.php';
+    const parsedFiles = [
+      parsedFile(decoy, [
+        definition(decoy, 'Function', 'missing'),
+        definition(decoy, 'Variable', 'MISSING'),
+      ]),
+    ];
+    const files = new Set([decoy]);
+
+    for (const [name, importedSymbolKind] of [
+      ['missing', 'function'],
+      ['MISSING', 'const'],
+    ] as const) {
+      const parsedImport: ParsedImport = {
+        kind: 'named',
+        localName: name,
+        importedName: name,
+        targetRaw: `Vendor\\Ghost\\${name}`,
+        importedSymbolKind,
+      };
+
+      expect(
+        resolvePhpImportTargetInternal(
+          parsedImport.targetRaw,
+          'app/Main.php',
+          files,
+          composerConfig,
+          { parsedFiles, parsedImport },
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it('preserves suffix fallback without authoritative namespace evidence', () => {
+    const files = new Set(['lib/Legacy/Missing.php']);
+    const importPath = 'Vendor\\Ghost\\Missing';
+
+    expect(resolvePhpImportTargetInternal(importPath, 'app/Main.php', files)).toBe(
+      'lib/Legacy/Missing.php',
+    );
+    expect(
+      resolvePhpImportTargetInternal(importPath, 'app/Main.php', files, { psr4: new Map() }),
+    ).toBe('lib/Legacy/Missing.php');
+    expect(
+      resolvePhpImportTargetInternal(importPath, 'app/Main.php', files, {
+        psr4: new Map([['', 'src']]),
+      }),
+    ).toBe('lib/Legacy/Missing.php');
+    expect(
+      resolvePhpImportTargetInternal(importPath, 'app/Main.php', files, {
+        psr4: new Map([['App', 'app']]),
+        hasUnmodeledAutoload: true,
+      }),
+    ).toBe('lib/Legacy/Missing.php');
+  });
+
+  it('loads production and development PSR-4 mappings', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'gitnexus-php-composer-'));
+    try {
+      writeFileSync(
+        join(repo, 'composer.json'),
+        JSON.stringify({
+          autoload: { 'psr-4': { 'App\\': 'app\\' }, classmap: ['legacy/'] },
+          'autoload-dev': { 'psr-4': { 'Tests\\': ['tests/', 'fallback-tests/'] } },
+        }),
+      );
+
+      const config = loadPhpComposerConfig(repo);
+      expect([...(config?.psr4.entries() ?? [])]).toEqual([
+        ['App', 'app'],
+        ['Tests', 'tests'],
+      ]);
+      expect(config?.hasUnmodeledAutoload).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps both Composer config loaders conservative for unmodeled autoload entries', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'gitnexus-php-composer-shared-'));
+    try {
+      writeFileSync(
+        join(repo, 'composer.json'),
+        JSON.stringify({
+          autoload: {
+            'psr-4': { 'App\\': ['app/', 'fallback-app/'] },
+            files: ['src/helpers.php'],
+          },
+        }),
+      );
+
+      const config = await loadComposerConfig(repo);
+      expect([...(config?.psr4.entries() ?? [])]).toEqual([['App', 'app']]);
+      expect(config?.hasUnmodeledAutoload).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('finds a unique function declaration when the symbol name is not a filename', () => {
     const user = '/repo/app/Models/User.php';
     const factory = '/repo/app/Models/UserFactory.php';
