@@ -410,6 +410,24 @@ _ = b.addModule("w", .{ .root_source_file = b.path("../outside.zig") });
     expect(parseZigBuildModuleRoots(buildZig, 'y')).toEqual(['src/y.zig']);
   });
 
+  it('still names the module when a nested field precedes `.root_source_file`', () => {
+    // `.imports = &.{ .{ … } }` closes an inner `}` before the root field; a
+    // `[^}]*` regex ended there and demoted "dep" to an unnamed fallback,
+    // so `@import("dep")` resolved to whichever root came first in the file.
+    const buildZig = `
+pub fn build(b: *std.Build) void {
+    const exe = b.addExecutable(.{ .name = "tool", .root_source_file = b.path("src/main.zig") });
+    _ = b.addModule("dep", .{
+        .imports = &.{ .{ .name = "util", .module = util } },
+        .root_source_file = b.path("lib/root.zig"),
+    });
+    // _ = b.addModule("dep", .{ .root_source_file = b.path("lib/commented_out.zig") });
+    b.installArtifact(exe);
+}
+`;
+    expect(parseZigBuildModuleRoots(buildZig, 'dep')).toEqual(['lib/root.zig', 'src/main.zig']);
+  });
+
   it('returns [] for a build.zig that declares no module root', () => {
     expect(parseZigBuildModuleRoots('pub fn build(b: *std.Build) void { _ = b; }', 'x')).toEqual(
       [],

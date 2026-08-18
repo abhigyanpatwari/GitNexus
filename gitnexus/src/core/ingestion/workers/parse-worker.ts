@@ -1032,8 +1032,12 @@ const findEnclosingFunctionId = (
               ? undefined
               : standaloneMethodInfo.parameters.length;
           } else {
+            // Same owner lookup as the definition-phase Method id builder: a Zig
+            // file-struct's top-level fn is owned by the file root, and its
+            // id carries the `#<arity>` suffix only if that owner is found.
             const classNode =
-              findEnclosingClassNode(current) ?? findClassNodeByQualifiedName(current);
+              findEnclosingClassNodeOrFileOwner(current, provider, filePath) ??
+              findClassNodeByQualifiedName(current);
             if (classNode && encLang) {
               const methodMap = getMethodInfo(classNode, provider, {
                 filePath,
@@ -2186,7 +2190,8 @@ const processFileGroup = (
         nodeLabel === 'Struct' ||
         nodeLabel === 'Interface' ||
         nodeLabel === 'Enum' ||
-        nodeLabel === 'Record';
+        nodeLabel === 'Record' ||
+        nodeLabel === 'Union';
       if (
         isClassLikeLabel &&
         provider.classExtractor?.shouldSkipClassCapture?.({

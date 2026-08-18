@@ -62,13 +62,34 @@ export function isZigTypeShadowingBinding(declNode: SyntaxNode): boolean {
 }
 
 export function isZigContainerOrImportBinding(declNode: SyntaxNode): boolean {
+  const typeNode = declNode.childForFieldName('type');
   for (let i = 0; i < declNode.namedChildCount; i++) {
     const child = declNode.namedChild(i);
     if (child === null) continue;
     if (ZIG_CONTAINER_TYPES.has(child.type)) return true;
+    // Only the VALUE binds an import: `var x: @import("foo.zig").T =
+    // undefined;` types a plain variable by an imported type, it imports
+    // nothing under `x` (see `isZigTypePositionImport`).
+    if (child.id === typeNode?.id) continue;
     if (zigImportRootOf(child) !== null) return true;
   }
   return false;
+}
+
+/** Does the `@import(…)` a binding rule matched sit in the TYPE annotation of
+ *  its declaration (`var x: @import("foo.zig").T = undefined;`) rather than
+ *  in its value? `variable_declaration` is fieldless except for `type:`, so
+ *  the query cannot tell the two positions apart; such a match must not bind
+ *  `x` as an import — `x` is a variable, and the `@import` is only a file
+ *  dependency (the `@import.inline` rule records it as a side-effect import
+ *  once this match releases the source node). */
+export function isZigTypePositionImport(stmt: SyntaxNode, source: SyntaxNode): boolean {
+  const typeNode = stmt.childForFieldName('type');
+  return (
+    typeNode !== null &&
+    typeNode.startIndex <= source.startIndex &&
+    source.endIndex <= typeNode.endIndex
+  );
 }
 
 /** Does this `variable_declaration` carry a `const` / `var` keyword child?
@@ -916,6 +937,16 @@ export function emitZigScopeCaptures(
     const importName = byName.get('import.name');
     const importSource = byName.get('import.source');
     const importStmt = byName.get('import.statement');
+    // A binding-rule match whose `@import` is the declaration's TYPE
+    // annotation binds nothing: leave the source unclaimed so the
+    // `@import.inline` rule keeps the file edge.
+    if (
+      importSource !== undefined &&
+      importStmt !== undefined &&
+      isZigTypePositionImport(importStmt, importSource)
+    ) {
+      continue;
+    }
     if (
       importSource !== undefined &&
       (importStmt !== undefined ||
@@ -1092,6 +1123,16 @@ export function emitZigScopeCaptures(
       if (value?.type === 'call_expression' && isZigTypeConstructorCall(value)) continue;
     }
 
+    // `var x: @import("foo.zig").T = undefined;` — the binding rules match
+    // the type-position `@import` too; that group binds nothing (the
+    // variable group for `x` and the inline file edge cover it).
+    if (
+      nodeMap['@import.statement'] !== undefined &&
+      nodeMap['@import.source'] !== undefined &&
+      isZigTypePositionImport(nodeMap['@import.statement'], nodeMap['@import.source'])
+    ) {
+      continue;
+    }
     // Drop the plain-variable group for container/import bindings — their
     // dedicated rules already bind the name (as Struct/Enum/Union or import).
     // The query already requires a `const`/`var` keyword, so statement

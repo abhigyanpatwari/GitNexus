@@ -633,14 +633,28 @@ export function parseZigBuildModuleRoots(buildZig: string, preferredName: string
     seen.add(norm);
     into.push(norm);
   };
-  const namedRe =
-    /addModule\(\s*"([^"\n]+)"\s*,\s*\.\{[^}]*?\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/g;
+  const rootRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/;
+  // The named module: scan the whole `addModule(…)` argument list, balanced
+  // on parentheses, so a nested field before `.root_source_file` (`.imports =
+  // &.{ .{ … } }`) does not end the match early — a `[^}]*` regex stopped at
+  // that inner `}` and silently demoted the module to an unnamed fallback.
+  const text = stripZonComments(buildZig);
+  const mask = zonStringMask(text);
+  const callRe = /\baddModule\s*\(/g;
   let m: RegExpExecArray | null;
-  while ((m = namedRe.exec(buildZig)) !== null) {
-    if (m[1] === preferredName) add(named, m[2]!);
+  while ((m = callRe.exec(text)) !== null) {
+    if (mask[m.index] !== 0) continue;
+    const argsStart = m.index + m[0].length;
+    const argsEnd = findZigParenEnd(text, argsStart);
+    if (argsEnd < 0) break;
+    const args = text.slice(argsStart, argsEnd);
+    const nameMatch = /^\s*"([^"\n]+)"\s*,/.exec(args);
+    if (nameMatch?.[1] !== preferredName) continue;
+    const rootMatch = rootRe.exec(args);
+    if (rootMatch) add(named, rootMatch[1]!);
   }
-  const anyRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/g;
-  while ((m = anyRe.exec(buildZig)) !== null) add(unnamed, m[1]!);
+  const anyRe = new RegExp(rootRe.source, 'g');
+  while ((m = anyRe.exec(text)) !== null) add(unnamed, m[1]!);
   return [...named, ...unnamed];
 }
 

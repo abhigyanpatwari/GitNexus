@@ -202,6 +202,27 @@ var count = @as(u32, 0);
     expect(names).toEqual(['limit', 'count']);
   });
 
+  it('an `@import` in TYPE position (`var x: @import("m.zig").T = undefined;`) still declares the variable', () => {
+    // The import-binding guard used to scan every named child, so the type
+    // annotation's `@import` made `x` look like an import binding and no
+    // Variable was emitted; a typed import binding (value position) stays out.
+    const root = parse(`
+var x: @import("m.zig").T = undefined;
+const y: type = @import("m.zig");
+const z = @import("m.zig").T;
+`).rootNode;
+    const names: string[] = [];
+    const importBindings: boolean[] = [];
+    for (let i = 0; i < root.namedChildCount; i++) {
+      const decl = root.namedChild(i)!;
+      importBindings.push(isZigContainerOrImportBinding(decl));
+      const info = extractor.extract(decl, ctx);
+      if (info) names.push(info.name);
+    }
+    expect(importBindings).toEqual([false, true, true]);
+    expect(names).toEqual(['x']);
+  });
+
   it('reads the type from the `type:` field and never from the initializer', () => {
     // The old positional fallback returned `target` as the type of
     // `const f = target;` and gave up on compound annotations (`*Foo`).
@@ -218,6 +239,33 @@ extern var g: T;
       types.push(info?.type ?? null);
     }
     expect(types).toEqual([null, '*Foo', '?[]const u8', 'u32', 'T']);
+  });
+});
+
+describeZig('Zig scope captures — `@import` in TYPE position is not an import binding', () => {
+  it('`var x: @import("m.zig").T = undefined;` binds a variable `x`, keeps the file edge, imports no name', () => {
+    // Every import rule matches a `variable_declaration` with an `@import`
+    // child; the grammar's only field is `type:`, so a type annotation
+    // spelled through `@import` matched too and bound `x` as a NAMED import of
+    // `T` — a variable typed by an imported type became an alias of the type.
+    const matches = emitZigScopeCaptures(
+      'var x: @import("m.zig").T = undefined;\nconst z = @import("n.zig").T;\n',
+      'test.zig',
+    );
+    const importNames = matches
+      .filter((m) => m['@import.name'] !== undefined)
+      .map((m) => `${m['@import.name']!.text}<-${m['@import.imported']?.text ?? '*'}`);
+    expect(importNames).toEqual(['z<-T']);
+    const variables = matches
+      .filter((m) => m['@declaration.variable'] !== undefined)
+      .map((m) => m['@declaration.name']!.text);
+    expect(variables).toEqual(['x']);
+    // The type-position `@import` still counts as a file dependency (a
+    // side-effect import); the value-position one is claimed by its binding.
+    const sideEffects = matches
+      .filter((m) => m['@import.side-effect'] !== undefined)
+      .map((m) => m['@import.source']!.text);
+    expect(sideEffects).toEqual(['"m.zig"']);
   });
 });
 
