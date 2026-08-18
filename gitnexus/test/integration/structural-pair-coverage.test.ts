@@ -36,6 +36,8 @@ import { FIXTURES, runPipelineFromRepo } from './resolvers/helpers.js';
 import { RELATION_SCHEMA } from '../../src/core/lbug/schema.js';
 import { parseRelationSchemaPairs, relPairKeyFor } from '../../src/core/lbug/rel-pair-routing.js';
 import { DIST_WORKER_URL, distWorkerExists } from '../helpers/worker-parse.js';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
 
 vi.setConfig({ testTimeout: 180_000 });
 
@@ -156,6 +158,29 @@ const NON_BRIDGE_CORPUS = [
   },
 ] as const satisfies readonly CorpusEntry[];
 
+/**
+ * Same contract, for fixtures whose grammar is an npm optionalDependency and
+ * may be absent on the runner. Gated per language rather than per case so a
+ * missing grammar SKIPS (the pipeline drops the files by contract, and an
+ * empty emit would otherwise fail every sentinel for a reason that has
+ * nothing to do with the schema).
+ */
+const OPTIONAL_GRAMMAR_CORPUS = [
+  {
+    // Zig `union(enum)` is a member container: `union_declaration` sits in
+    // MEMBER_OWNER_NODE_TYPES, so the definition phase emits HAS_PROPERTY /
+    // HAS_METHOD FROM a `Union` node. Shipped once with `Union` off the
+    // generated grid — every resolver test passed on the in-memory graph while
+    // a real `analyze` of THIS fixture aborted at `assertDeclaredPair`
+    // (`Union|Property`). `Union` is now in `LINKABLE_LABELS`; take it out and
+    // both sentinels vanish from the DDL and this fails.
+    fixture: 'zig-basic',
+    language: SupportedLanguages.Zig,
+    emitter: 'zig union HAS_PROPERTY / HAS_METHOD',
+    sentinels: ['Union|Property', 'Union|Method'],
+  },
+] as const satisfies readonly (CorpusEntry & { readonly language: SupportedLanguages })[];
+
 /*
  * NOTE — why this suite runs its own pipelines instead of reusing the resolver
  * suites' graphs (measured, not assumed):
@@ -216,6 +241,18 @@ describeIfWorkerBuilt('RELATION_SCHEMA covers the non-bridge emitters', () => {
     async ({ fixture, sentinels }) => {
       const emitted = await pairsEmittedBy(fixture);
       // Sorted so a failure is stable and names the pair to declare.
+      expect({
+        undeclaredPairs: [...emitted].filter((pair) => !DECLARED.has(pair)).sort(),
+        missingSentinelPairs: sentinels.filter((pair) => !emitted.has(pair)),
+      }).toEqual({ undeclaredPairs: [], missingSentinelPairs: [] });
+    },
+  );
+
+  it.concurrent.each(OPTIONAL_GRAMMAR_CORPUS)(
+    '$fixture emits only declared FROM/TO pairs, and still reaches $emitter',
+    async ({ fixture, language, sentinels }, ctx) => {
+      if (!isLanguageAvailable(language)) ctx.skip();
+      const emitted = await pairsEmittedBy(fixture);
       expect({
         undeclaredPairs: [...emitted].filter((pair) => !DECLARED.has(pair)).sort(),
         missingSentinelPairs: sentinels.filter((pair) => !emitted.has(pair)),
