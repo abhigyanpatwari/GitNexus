@@ -10,6 +10,10 @@ import {
   type PatternSpec,
 } from '../tree-sitter-scanner.js';
 import type { HttpDetection, HttpLanguagePlugin } from './types.js';
+import {
+  DATA_ROUTE_TABLE_SOURCE,
+  scanDataRouteTables,
+} from '../../../ingestion/route-extractors/data-route-table.js';
 
 /**
  * Node.js / TypeScript HTTP plugin family. Handles:
@@ -541,6 +545,26 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       name: null,
       line: optionsNode.startPosition.row + 1,
       confidence: 0.7,
+    });
+  }
+
+  for (const route of scanDataRouteTables(tree)) {
+    const imported =
+      route.handlerLocalName === undefined ? undefined : importMap.get(route.handlerLocalName);
+    out.push({
+      role: 'provider',
+      framework: DATA_ROUTE_TABLE_SOURCE,
+      method: route.method,
+      path: route.path,
+      // A source-only scan can prove a bare local/imported binding. Member
+      // ownership needs the semantic model, so leave it unattributed here;
+      // the graph-backed path consumes the exact handlerSymbolId later.
+      name: imported?.name ?? (route.handlerLocalName === undefined ? null : route.handlerName),
+      ...(imported === undefined ? {} : { handlerImport: imported }),
+      strictHandlerResolution: true,
+      ...(route.handlerLocalName === undefined ? { unresolvedHandler: true } : {}),
+      line: route.line,
+      confidence: 0.8,
     });
   }
 
