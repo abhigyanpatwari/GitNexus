@@ -518,7 +518,16 @@ export function zigCallReturnTypeOf(
   const head = zigChainHead(object);
   if (head !== null) {
     const fn = zigEnclosingFunction(value);
-    if (fn !== null && zigFunctionLocalNames(fn, localNamesCache).has(head.text)) {
+    // A fn-local name is a VALUE receiver — unless it is TitleCase: `const R
+    // = generic.List(u8); var l = R.init();` binds a type alias inside the fn
+    // (F7), and `R.init()` names the type `R` exactly like `Counter.init()`
+    // does at module level. Zig's naming convention (types TitleCase, values
+    // snake_case) is the same signal `isZigTypeConstructorCall` relies on.
+    if (
+      fn !== null &&
+      zigFunctionLocalNames(fn, localNamesCache).has(head.text) &&
+      !isZigTitleCase(head.text)
+    ) {
       return { type: `${object.text}.${member.text}()`, memberCall: true };
     }
   }

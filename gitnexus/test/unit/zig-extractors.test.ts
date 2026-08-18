@@ -1249,10 +1249,16 @@ pub fn run(self: *Holder) void {
 );
 
 describeZig('Zig value-inferred and return-type bindings (F6)', () => {
+  // Only the value-inferred / return kinds this suite owns: parameter, field
+  // (F5) and alias (F7) bindings for the same names are asserted elsewhere.
   const bindingsOf = (src: string, file = 'x.zig') =>
     emitZigScopeCaptures(src, file)
       .filter(
-        (m) => m['@type-binding.name'] !== undefined && m['@type-binding.parameter'] === undefined,
+        (m) =>
+          m['@type-binding.name'] !== undefined &&
+          m['@type-binding.parameter'] === undefined &&
+          m['@type-binding.field'] === undefined &&
+          m['@type-binding.alias'] === undefined,
       )
       .map((m) => ({
         ...interpretZigTypeBinding(m),
