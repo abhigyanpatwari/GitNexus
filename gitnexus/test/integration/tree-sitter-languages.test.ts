@@ -712,6 +712,17 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(defTypes).toContain('definition.function');
       expect(defTypes).toContain('definition.struct');
       expect(defTypes).toContain('definition.enum');
+
+      // `const std = @import("std");` must yield an import.source capture —
+      // without this assertion a query change that drops Zig import matching
+      // would pass this test unchanged.
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+        }
+      }
+      expect(imports).toEqual(['"std"']);
     });
 
     it('reports Zig unavailable and throws "Unsupported language" when the grammar is absent', async () => {
