@@ -143,16 +143,24 @@ export function isZigPublishingImport(declNode: SyntaxNode): boolean {
   return declNode.parent?.type === 'source_file' && hasZigPubKeyword(declNode);
 }
 
-/** The binding name of a Zig container node, or undefined for a truly
- *  anonymous one. Two shapes carry a name:
+/** The BINDING name of a Zig container node — the spelling code uses to
+ *  refer to it — or undefined for a truly anonymous one. Three shapes carry
+ *  one:
+ *    - a file-struct: the file stem (`Page.zig` → `Page`);
  *    - `const Point = struct {…}` — the first identifier of the wrapping
  *      `variable_declaration`;
  *    - `pub fn List(comptime T: type) type { return struct {…}; }` — the
  *      generic type constructor. Zig has no other spelling for a generic
  *      type, and every reader calls the returned container `List`, so the
  *      enclosing function's name IS the type name (`ArrayList(u8)`).
- *  Single source for the class/field/method extractor configs. */
-export function zigContainerName(containerNode: SyntaxNode, filePath?: string): string | undefined {
+ *  This is what scope-side NAME BINDINGS use (`R.get()`, `self: *R`, a
+ *  `const Self = @This();` rewrite). The graph IDENTITY of a container is
+ *  `zigContainerName`, which equals the binding name except for the
+ *  function-local and anonymous shapes (F8). */
+export function zigContainerBindingName(
+  containerNode: SyntaxNode,
+  filePath?: string,
+): string | undefined {
   if (containerNode.type === 'source_file') {
     return filePath !== undefined && isZigFileStruct(containerNode)
       ? zigFileStructName(filePath)
@@ -168,6 +176,210 @@ export function zigContainerName(containerNode: SyntaxNode, filePath?: string): 
     return undefined;
   }
   return zigTypeConstructorOf(containerNode)?.childForFieldName('name')?.text;
+}
+
+/** The graph IDENTITY of a Zig container node — the name its class-like
+ *  node, its members' owner segment (`Method:<file>:<name>.<fn>`) and the
+ *  scope-side def all carry. Single source for the class/field/method
+ *  extractor configs, the provider's `resolveContainerTypeOwner` hook (the
+ *  structure phase's owner walk) and `emitZigScopeCaptures`, so the two
+ *  phases agree by construction.
+ *
+ *    - file-struct / `const T = struct {…}` at file or container level /
+ *      generic type constructor: the binding name (`zigContainerBindingName`).
+ *    - FUNCTION-LOCAL named container (F8) — `const R = struct {…}` inside a
+ *      `fn` or `test` body: `<enclosing callable>$<name>`, e.g. `string$R`,
+ *      `Reflect.string$R`. Zig code declares such helper containers per
+ *      builder function (Lightpanda's `reflection.zig` has ~20 `const R =
+ *      struct { fn get… fn set… }`), and by binding name alone they all
+ *      collapsed onto ONE `Struct:<file>:R` with one `R.get`. Java's local
+ *      classes are keyed the same way (`Outer$1Local`); the `$` is what tells
+ *      the shared `populateClassOwnedMembers` the name is already complete.
+ *      Two same-named locals in sibling blocks of ONE callable still share
+ *      an identity (Zig code does not do that; javac's ordinal would).
+ *    - ANONYMOUS container (F8) — `struct { fn lessThan(…) … }.lessThan`
+ *      passed to `std.sort.pdq`, `const cmp = struct {…}.lt;`, a field or
+ *      parameter typed `struct { min: u32 }`: `<host>$<ordinal>` where the
+ *      host is the enclosing callable (`build$1`), else the enclosing
+ *      container (`Outer$1`), else the file stem (`util$1`), and the ordinal
+ *      counts the anonymous containers of that host in source order —
+ *      javac's `Outer$1` rule (`synthesizeJavaTypeIdentity`). Without an
+ *      identity their fns were OWNERLESS Methods (`Method:<file>:lessThan`),
+ *      and same-named ones in one file collided on a single node.
+ *  Deterministic in the tree alone, so any two walks over one source agree. */
+export function zigContainerName(containerNode: SyntaxNode, filePath?: string): string | undefined {
+  const binding = zigContainerBindingName(containerNode, filePath);
+  if (containerNode.type === 'source_file') return binding;
+  if (!ZIG_CONTAINER_TYPES.has(containerNode.type)) return undefined;
+  const host = zigIdentityHost(containerNode);
+  if (binding !== undefined) {
+    if (containerNode.parent?.type !== 'variable_declaration' || host === null) return binding;
+    if (!isZigCallableNode(host)) return binding; // file / container level: unchanged
+    return `${zigCallableQualifiedName(host, filePath)}$${binding}`;
+  }
+  const ordinal = zigAnonymousContainerOrdinal(containerNode);
+  const prefix = host === null ? undefined : zigAnonymousHostPrefix(host, filePath);
+  return `${prefix ?? ''}$${ordinal}`;
+}
+
+/** The label the graph gives a container node (`opaque {}` is a fieldless
+ *  container that may own methods — Struct, see ZIG_QUERIES). */
+export function zigContainerLabel(
+  containerNode: SyntaxNode,
+): 'Struct' | 'Enum' | 'Union' | undefined {
+  switch (containerNode.type) {
+    case 'struct_declaration':
+    case 'opaque_declaration':
+      return 'Struct';
+    case 'enum_declaration':
+      return 'Enum';
+    case 'union_declaration':
+      return 'Union';
+    default:
+      return undefined;
+  }
+}
+
+/** Which ZIG_QUERIES rule mints a container's graph node (F8):
+ *    - 'wrapper': `const T = struct {…}` at file or container level — the
+ *      `variable_declaration … @definition.struct` rule (name from `@name`);
+ *    - 'constructor': the container a generic type constructor returns —
+ *      the `fn … type { return struct {…}; }` rule;
+ *    - 'container': everything the bare `(struct_declaration)
+ *      @definition.struct` rule owns — FUNCTION-LOCAL named containers (their
+ *      identity `string$R` is not a capture, so the class extractor names
+ *      them via `zigContainerName`) and ANONYMOUS containers.
+ *  The provider's `shouldSkipClassCapture` drops the other rules' matches for
+ *  the same node so each container is minted exactly once. */
+export function zigContainerAnchor(
+  containerNode: SyntaxNode,
+): 'wrapper' | 'constructor' | 'container' | 'file' {
+  if (containerNode.type === 'source_file') return 'file';
+  if (zigTypeConstructorOf(containerNode) !== null) return 'constructor';
+  if (
+    containerNode.parent?.type === 'variable_declaration' &&
+    zigContainerBindingName(containerNode) !== undefined
+  ) {
+    const host = zigIdentityHost(containerNode);
+    return host !== null && isZigCallableNode(host) ? 'container' : 'wrapper';
+  }
+  return 'container';
+}
+
+/** Is this `@definition.<container>` match of ZIG_QUERIES REDUNDANT — i.e.
+ *  minted by another rule for the same container (F8)? `definitionNode` is
+ *  the match anchor (the wrapper `variable_declaration`, or the container
+ *  node for the type-constructor and bare-container rules), `nameNode` its
+ *  `@name` capture (the type-constructor rule captures the fn's name, the
+ *  bare rule captures none). Wired through the provider's
+ *  `shouldSkipDefinitionCapture`, which the definition phase consults for
+ *  EVERY label — `shouldSkipClassCapture` would not see `Union`. */
+export function isZigRedundantContainerCapture(
+  definitionNode: SyntaxNode,
+  nameNode: SyntaxNode | undefined,
+): boolean {
+  let container: SyntaxNode | undefined;
+  if (ZIG_CONTAINER_TYPES.has(definitionNode.type)) {
+    container = definitionNode;
+  } else if (definitionNode.type === 'variable_declaration') {
+    for (let i = 0; i < definitionNode.namedChildCount; i++) {
+      const child = definitionNode.namedChild(i);
+      if (child !== null && ZIG_CONTAINER_TYPES.has(child.type)) {
+        container = child;
+        break;
+      }
+    }
+  }
+  if (container === undefined) return false;
+  const anchor = zigContainerAnchor(container);
+  if (definitionNode.type === 'variable_declaration') return anchor !== 'wrapper';
+  return nameNode !== undefined ? anchor !== 'constructor' : anchor !== 'container';
+}
+
+/** A callable body in Zig: a `fn` or a `test` block. */
+function isZigCallableNode(node: SyntaxNode): boolean {
+  return node.type === 'function_declaration' || node.type === 'test_declaration';
+}
+
+/** The nearest ancestor that hosts identities — a callable, a container or
+ *  the file — starting from `node`'s parent. */
+function zigIdentityHost(node: SyntaxNode): SyntaxNode | null {
+  let cur = node.parent;
+  while (cur !== null && cur !== undefined) {
+    if (isZigCallableNode(cur) || ZIG_CONTAINER_TYPES.has(cur.type) || cur.type === 'source_file') {
+      return cur;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/** A callable's qualified name as the structure phase spells it: its owner
+ *  container's identity, a dot, its own name (`Reflect.string`, `Page.init`,
+ *  `helper` in a namespace file). A `test` block is keyed by its LINE
+ *  (`test@L<line>`, 1-based; a test is a top-level declaration, so the line
+ *  identifies it), not by its string: the class extractor's
+ *  `buildQualifiedName` normalizes a graph node's `qualifiedName`
+ *  (whitespace stripped, `::` → `.`), so an identity carrying `"Function:
+ *  requested termination …"` would key the node under one spelling and the
+ *  scope def under another, and `State{}` in that test would resolve to
+ *  nothing. No `:` either (`row:col` would do), so an id keeps a single
+ *  `label:file:name` colon structure for anything that splits on it. */
+export function zigCallableQualifiedName(fnNode: SyntaxNode, filePath?: string): string {
+  const own =
+    fnNode.type === 'test_declaration'
+      ? `test@L${fnNode.startPosition.row + 1}`
+      : (fnNode.childForFieldName('name')?.text ?? `fn@L${fnNode.startPosition.row + 1}`);
+  const host = zigIdentityHost(fnNode);
+  if (host === null) return own;
+  const hostName = ZIG_CONTAINER_TYPES.has(host.type)
+    ? zigContainerName(host, filePath)
+    : host.type === 'source_file'
+      ? zigContainerBindingName(host, filePath) // file-struct stem; nothing for a namespace file
+      : zigCallableQualifiedName(host, filePath);
+  return hostName === undefined ? own : `${hostName}.${own}`;
+}
+
+/** The `<host>` part of an anonymous container's identity. */
+function zigAnonymousHostPrefix(host: SyntaxNode, filePath?: string): string | undefined {
+  if (isZigCallableNode(host)) return zigCallableQualifiedName(host, filePath);
+  if (ZIG_CONTAINER_TYPES.has(host.type)) return zigContainerName(host, filePath);
+  // File level: the file stem — a Zig file is itself a struct, so this is
+  // javac's `Outer$1` with the file as `Outer` (`Page$1`, `util$1`).
+  return filePath === undefined ? undefined : zigFileStructName(filePath);
+}
+
+/** 1-based ordinal of an anonymous container among the anonymous containers
+ *  sharing its identity host, in source order. Computed once per tree and
+ *  memoized on the tree object (a node without `.tree` recomputes from its
+ *  root); position-derived, so two parses of one source agree. */
+const zigAnonymousOrdinalMemo = new WeakMap<object, Map<number, number>>();
+function zigAnonymousContainerOrdinal(containerNode: SyntaxNode): number {
+  const tree = (containerNode as { tree?: object }).tree;
+  let table = tree === undefined ? undefined : zigAnonymousOrdinalMemo.get(tree);
+  if (table === undefined) {
+    let root: SyntaxNode = containerNode;
+    while (root.parent !== null && root.parent !== undefined) root = root.parent;
+    const built = new Map<number, number>();
+    const perHost = new Map<number, number>();
+    const visit = (node: SyntaxNode): void => {
+      if (ZIG_CONTAINER_TYPES.has(node.type) && zigContainerBindingName(node) === undefined) {
+        const host = zigIdentityHost(node);
+        const key = host === null ? -1 : host.id;
+        const next = (perHost.get(key) ?? 0) + 1;
+        perHost.set(key, next);
+        built.set(node.id, next);
+      }
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child !== null) visit(child);
+      }
+    };
+    visit(root);
+    if (tree !== undefined) zigAnonymousOrdinalMemo.set(tree, built);
+    table = built;
+  }
+  return table.get(containerNode.id) ?? 0;
 }
 
 /** For a container that is the direct `return` value of a function whose
@@ -242,10 +454,15 @@ function republishMarker(stmt: SyntaxNode): Record<string, Capture> {
  *  returns a map from the DECLARING container node id to `[aliasName,
  *  containerName]`. The file-level alias maps to the file-struct name (only
  *  when the file is a file-struct — a namespace-only file's `const js =
- *  @This();` stays a Const and is not a type to rewrite to). */
+ *  @This();` stays a Const and is not a type to rewrite to). The container
+ *  side is the name the SCOPE BINDS: the binding name (`R` for a function-
+ *  local `const R = struct {…}`, whose identity `string$R` is not a binding),
+ *  or the synthetic identity of an anonymous container, which is bound under
+ *  that very name (F8). */
 function collectZigThisAliases(
   root: SyntaxNode,
   fileStructName: string | undefined,
+  filePath: string,
 ): Map<number, { readonly alias: string; readonly container: string }> {
   const out = new Map<number, { readonly alias: string; readonly container: string }>();
   const visit = (node: SyntaxNode): void => {
@@ -265,7 +482,7 @@ function collectZigThisAliases(
             out.set(owner.id, { alias: named[0]!.text, container: fileStructName });
           }
         } else if (owner !== null && ZIG_CONTAINER_TYPES.has(owner.type)) {
-          const containerName = zigContainerName(owner);
+          const containerName = zigContainerBindingName(owner) ?? zigContainerName(owner, filePath);
           if (containerName !== undefined) {
             out.set(owner.id, { alias: named[0]!.text, container: containerName });
           }
@@ -711,7 +928,7 @@ export function emitZigScopeCaptures(
   }
   // `@This()` aliases: alias name ↦ the container it names (file stem for the
   // file-struct, binding name for `const Self = @This();` inside a container).
-  const thisAliases = collectZigThisAliases(root, fileStructName);
+  const thisAliases = collectZigThisAliases(root, fileStructName, _filePath);
   // F6: fn-local names per function node, for `zigCallReturnTypeOf`.
   const fnLocalNames = new Map<number, Set<string>>();
 
@@ -971,6 +1188,23 @@ export function emitZigScopeCaptures(
           'true',
         );
       }
+      // F8 — FUNCTION-LOCAL named container (`const R = struct {…}` inside a
+      // fn body): the def's qualified name is its identity (`string$R`,
+      // matching the graph node the structure phase mints via
+      // `zigContainerName`), while the scope still binds the spelling code
+      // uses (`R.get()`, `self: *R`) — the Java local-class split
+      // (`@declaration.binding-name`, java/captures.ts).
+      if (
+        containerAnchor !== undefined &&
+        nameNode !== undefined &&
+        zigContainerAnchor(containerAnchor) === 'container'
+      ) {
+        const identity = zigContainerName(containerAnchor, _filePath);
+        if (identity !== undefined && identity !== nameNode.text) {
+          grouped['@declaration.binding-name'] = grouped['@declaration.name']!;
+          grouped['@declaration.name'] = syntheticCapture('@declaration.name', nameNode, identity);
+        }
+      }
     }
 
     // Relabel container-nested fns Function → Method (provider labelOverride
@@ -1097,7 +1331,49 @@ export function emitZigScopeCaptures(
     }
   }
 
+  // F8 — ANONYMOUS containers (`std.sort.pdq(…, struct { fn lessThan … }
+  // .lessThan)`, `const cmp = struct { fn lt … }.lt;`, `clamp: ?struct { min:
+  // u32 }`): no query rule binds them, so their Class scope owned no def and
+  // their fns were ownerless, colliding Methods. Synthesize the def the
+  // structure phase mints (`zigContainerName` → `build$1`), anchored on the
+  // container node so it shares the `@scope.class` range: the def joins that
+  // scope's ownedDefs (`populateClassOwnedMembers` then qualifies its members
+  // `build$1.lessThan` and stamps their ownerId) and the name auto-hoists to
+  // the enclosing scope, where a `const Self = @This();` rewrite can find it.
+  out.push(...synthesizeZigAnonymousContainerDeclarations(root, _filePath));
+
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, ZIG_CALLABLE_CAPTURE_OPTIONS));
 
+  return out;
+}
+
+/** One `@declaration.<kind>` group per anonymous container in the tree —
+ *  see the call site in `emitZigScopeCaptures` (F8). Named after
+ *  `synthesizeJavaAnonymousClassDeclarations`, which does the same for
+ *  `new Runnable() {…}` bodies. */
+function synthesizeZigAnonymousContainerDeclarations(
+  root: SyntaxNode,
+  filePath: string,
+): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  const visit = (node: SyntaxNode): void => {
+    if (ZIG_CONTAINER_TYPES.has(node.type) && zigContainerBindingName(node) === undefined) {
+      const identity = zigContainerName(node, filePath);
+      const label = zigContainerLabel(node);
+      if (identity !== undefined && label !== undefined) {
+        const tag = `@declaration.${label.toLowerCase()}`;
+        out.push({
+          [tag]: nodeToCapture(tag, node),
+          '@declaration.name': syntheticCapture('@declaration.name', node, identity),
+          '@declaration.is-synthetic': syntheticCapture('@declaration.is-synthetic', node, 'true'),
+        });
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null) visit(child);
+    }
+  };
+  visit(root);
   return out;
 }

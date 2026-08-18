@@ -53,11 +53,15 @@ import {
   interpretZigTypeBinding,
   isZigContainerMethod,
   isZigFileStruct,
+  isZigRedundantContainerCapture,
   isZigTypeShadowingBinding,
   zigArityCompatibility,
+  zigContainerLabel,
+  zigContainerName,
   zigFileStructName,
   zigBindingScopeFor,
   zigReceiverBinding,
+  ZIG_CONTAINER_TYPES,
 } from './zig/index.js';
 
 export const zigProvider = defineLanguage({
@@ -79,16 +83,40 @@ export const zigProvider = defineLanguage({
   variableExtractor: createVariableExtractor(zigVariableConfig),
   // A `const`/`var` whose value is a container or an `@import` is the
   // Struct/Enum/Union node or the import binding, not a Const beside it.
+  // Up to three ZIG_QUERIES rules match one container (wrapper, type
+  // constructor, bare container — F8); `zigContainerAnchor` names the one
+  // that mints it and the others are dropped here.
   shouldSkipDefinitionCapture: (captureMap, defaultLabel) => {
-    if (defaultLabel !== 'Const' && defaultLabel !== 'Variable') return false;
-    const decl = captureMap['definition.const'] ?? captureMap['definition.variable'];
-    return decl !== undefined && isZigTypeShadowingBinding(decl);
+    if (defaultLabel === 'Const' || defaultLabel === 'Variable') {
+      const decl = captureMap['definition.const'] ?? captureMap['definition.variable'];
+      return decl !== undefined && isZigTypeShadowingBinding(decl);
+    }
+    if (defaultLabel === 'Struct' || defaultLabel === 'Enum' || defaultLabel === 'Union') {
+      const decl =
+        captureMap['definition.struct'] ??
+        captureMap['definition.enum'] ??
+        captureMap['definition.union'];
+      return decl !== undefined && isZigRedundantContainerCapture(decl, captureMap['name']);
+    }
+    return false;
   },
   // A file whose top level declares fields IS a struct named after the file
   // (`Page.zig` → `Page`): its top-level fns/fields are members of that
   // Struct. Files without fields are namespaces and own nothing.
   resolveFileTypeOwner: (root, filePath) =>
     isZigFileStruct(root) ? { name: zigFileStructName(filePath), label: 'Struct' } : null,
+  // Every container's identity comes from `zigContainerName` — the binding
+  // name for `const T = struct {…}` at file/container level, the fn name for
+  // a generic type constructor, and (F8) `string$R` / `build$1` for
+  // function-local and anonymous containers, which no name child spells. The
+  // class extractor names the node from the same function, so a member's
+  // owner id (`Method:<file>:string$R.get`) and the node id agree.
+  resolveContainerTypeOwner: (container, filePath) => {
+    if (!ZIG_CONTAINER_TYPES.has(container.type)) return null;
+    const name = zigContainerName(container, filePath);
+    const label = zigContainerLabel(container);
+    return name !== undefined && label !== undefined ? { name, label } : null;
+  },
   labelOverride: (functionNode, defaultLabel) => {
     if (defaultLabel !== 'Function') return defaultLabel;
     if (isZigContainerMethod(functionNode)) return 'Method';

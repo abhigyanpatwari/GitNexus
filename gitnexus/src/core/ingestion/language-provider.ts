@@ -174,6 +174,26 @@ interface LanguageProviderConfig {
     filePath: string,
   ) => { readonly name: string; readonly label: NodeLabel } | null;
 
+  /**
+   * The type a CONTAINER node declares, when the language names it from its
+   * context rather than from a name child of the node — a binding wrapper,
+   * an enclosing callable, an ordinal among anonymous siblings (Zig:
+   * `const T = struct {…}` is `T`; a function-local `const R = struct {…}`
+   * inside `fn string` is `string$R`; `struct { fn lessThan … }.lessThan`
+   * passed to a sort is `<fn>$1`).
+   *
+   * Consulted by the enclosing-owner walk for every `CLASS_CONTAINER_TYPES`
+   * node it meets (after `resolveEnclosingOwner` remapping), BEFORE the
+   * generic name-child derivation; return `null` to fall back to it. The name
+   * must be the one the class-like node is minted under
+   * (`<label>:<file>:<name>`), so a member's owner id and the node id agree
+   * by construction.
+   * Default: undefined (containers are named by the generic derivation). */
+  readonly resolveContainerTypeOwner?: (
+    container: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null;
+
   // ── Enclosing function resolution ───────────────────────────────
   /** Resolve the enclosing function name + label from an AST ancestor node
    *  that is NOT a standard FUNCTION_NODE_TYPE.  For languages where the

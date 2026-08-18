@@ -22,7 +22,11 @@ import {
   isZigContainerOrImportBinding,
   isZigFileStruct,
   isZigKeywordDeclaration,
+  isZigRedundantContainerCapture,
   isZigTypeShadowingBinding,
+  zigCallableQualifiedName,
+  zigContainerAnchor,
+  zigContainerBindingName,
   zigContainerName,
   zigFileStructName,
 } from '../../src/core/ingestion/languages/zig/captures.js';
@@ -41,6 +45,7 @@ import { zigFieldConfig } from '../../src/core/ingestion/field-extractors/config
 import { zigProvider } from '../../src/core/ingestion/languages/zig.js';
 import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
 import { extract as extractScopes } from '../../src/core/ingestion/scope-extractor.js';
+import { populateClassOwnedMembers } from '../../src/core/ingestion/scope-resolution/scope/walkers.js';
 
 const _require = createRequire(import.meta.url);
 let Zig: unknown = null;
@@ -786,7 +791,7 @@ fn notAType(comptime T: type) u32 {
 const Plain = struct { a: u8 };
 `;
 
-  it('names the container returned by a fn returning `type` after that fn; other anonymous containers stay nameless', () => {
+  it('names the container returned by a fn returning `type` after that fn; an anonymous container is keyed by its host (F8)', () => {
     const root = parse(src).rootNode;
     const structs: SyntaxNode[] = [];
     const walk = (n: SyntaxNode): void => {
@@ -794,7 +799,10 @@ const Plain = struct { a: u8 };
       n.children.forEach(walk);
     };
     walk(root);
-    expect(structs.map((n) => zigContainerName(n))).toEqual(['Stack', undefined, 'Plain']);
+    // `struct { … }.x()` inside `notAType` has no binding name; its identity
+    // is `<enclosing fn>$<ordinal>` so its fn `x` is a Method WITH an owner.
+    expect(structs.map((n) => zigContainerBindingName(n))).toEqual(['Stack', undefined, 'Plain']);
+    expect(structs.map((n) => zigContainerName(n))).toEqual(['Stack', 'notAType$1', 'Plain']);
   });
 
   it('the method and field extractors own the generic container’s members under the fn name', () => {
@@ -1412,5 +1420,188 @@ pub fn init() @This() { return .{}; }
     expect(zigOptionalPayloadSpelling('*Thing')).toBeUndefined();
     expect(zigPointeeSpelling('*const Thing')).toBe('Thing');
     expect(zigPointeeSpelling('Thing')).toBeUndefined();
+  });
+});
+
+describeZig('Zig function-local and anonymous containers (F8)', () => {
+  // Lightpanda shapes: reflection.zig's per-builder `const R = struct {…}`,
+  // ImportMap.zig's `std.sort.pdq(…, struct { fn lessThan … }.lessThan)`
+  // (three in one file), build.zig's `const byte_size = struct { fn it … }.it;`,
+  // and a test-local `const State = struct {…}`.
+  const src = `
+const Page = @This();
+count: u32 = 0,
+pub fn Reflect(comptime T: type) type {
+    return struct {
+        pub fn string() void {
+            const R = struct {
+                fn get(self: *const T) u8 { _ = self; return 1; }
+            };
+            _ = R.get;
+        }
+        pub fn url() void {
+            const R = struct {
+                fn get(self: *const T) u8 { _ = self; return 2; }
+            };
+            _ = R.get;
+        }
+    };
+}
+pub fn sortBoth(self: *Page) void {
+    _ = self;
+    sort(struct { fn lessThan(a: u32, b: u32) bool { return a < b; } }.lessThan);
+    sort(struct { fn lessThan(a: u32, b: u32) bool { return a > b; } }.lessThan);
+}
+const byte_size = struct { fn it(n: u32) u32 { return n; } }.it;
+test "Page: local state" {
+    const State = struct { fn kill(self: *@This()) void { _ = self; } };
+    var s = State{};
+    s.kill();
+}
+`;
+  const containers = (): SyntaxNode[] => {
+    const out: SyntaxNode[] = [];
+    const walk = (n: SyntaxNode): void => {
+      if (n.type === 'struct_declaration') out.push(n);
+      n.children.forEach(walk);
+    };
+    walk(parse(src).rootNode);
+    return out;
+  };
+  const findFn = (n: SyntaxNode, name: string): SyntaxNode | undefined =>
+    n.type === 'function_declaration' && n.childForFieldName('name')?.text === name
+      ? n
+      : n.children.map((c) => findFn(c, name)).find((x) => x !== undefined);
+
+  it('keys a function-local container by its enclosing callable and an anonymous one by host + ordinal', () => {
+    // Before F8 the two `R` collapsed onto one `Struct:<file>:R` (one `R.get`
+    // for ~20 builders in reflection.zig) and the anonymous comparators had
+    // no identity at all — their `lessThan`s were ownerless, colliding Methods.
+    expect(containers().map((n) => zigContainerName(n, 'src/Page.zig'))).toEqual([
+      'Reflect',
+      'Reflect.string$R',
+      'Reflect.url$R',
+      'Page.sortBoth$1',
+      'Page.sortBoth$2',
+      'Page$1',
+      // A test block is keyed by its line: its string is not stable under
+      // the class extractor's qualified-name normalization (whitespace).
+      'Page.test@L26$State',
+    ]);
+    // The BINDING name is what code writes — the scope binds `R`, not `string$R`.
+    expect(containers().map((n) => zigContainerBindingName(n))).toEqual([
+      'Reflect',
+      'R',
+      'R',
+      undefined,
+      undefined,
+      undefined,
+      'State',
+    ]);
+    // Which ZIG_QUERIES rule mints each: only file/container-level bindings
+    // stay on the `const T = struct` wrapper rule.
+    expect(containers().map((n) => zigContainerAnchor(n))).toEqual([
+      'constructor',
+      'container',
+      'container',
+      'container',
+      'container',
+      'container',
+      'container',
+    ]);
+    const root = parse(src).rootNode;
+    expect(zigCallableQualifiedName(findFn(root, 'get')!, 'src/Page.zig')).toBe(
+      'Reflect.string$R.get',
+    );
+    expect(zigCallableQualifiedName(findFn(root, 'sortBoth')!, 'src/Page.zig')).toBe(
+      'Page.sortBoth',
+    );
+    // A namespace file (no fields) prefixes nothing for the file itself.
+    const nsRoot = parse('fn build() void { const R = struct {}; _ = R; }').rootNode;
+    expect(
+      zigContainerName(
+        findFn(nsRoot, 'build')!.descendantsOfType('struct_declaration')[0]!,
+        'build.zig',
+      ),
+    ).toBe('build$R');
+  });
+
+  it('the redundancy predicate keeps exactly one structure-phase rule per container', () => {
+    const [ctor, localR, , anon] = containers();
+    // Type constructor: its own rule (anchored on the container, fn `@name`)
+    // is kept; the bare rule's match (no name) is redundant.
+    const ctorFn = findFn(parse(src).rootNode, 'Reflect')!;
+    expect(isZigRedundantContainerCapture(ctor!, ctorFn.childForFieldName('name')!)).toBe(false);
+    expect(isZigRedundantContainerCapture(ctor!, undefined)).toBe(true);
+    // Function-local `const R = struct`: the wrapper rule is redundant, the
+    // bare rule owns it (it is the one that names it `string$R`).
+    const wrapper = localR!.parent!;
+    expect(isZigRedundantContainerCapture(wrapper, wrapper.namedChild(0)!)).toBe(true);
+    expect(isZigRedundantContainerCapture(localR!, undefined)).toBe(false);
+    // Anonymous: only the bare rule matches, and it is kept.
+    expect(isZigRedundantContainerCapture(anon!, undefined)).toBe(false);
+    // File-level `const Plain = struct {}` stays on the wrapper rule.
+    const plainWrapper = parse('const Plain = struct { a: u8 };').rootNode.namedChild(0)!;
+    const plain = plainWrapper.namedChild(1)!;
+    expect(isZigRedundantContainerCapture(plainWrapper, plainWrapper.namedChild(0)!)).toBe(false);
+    expect(isZigRedundantContainerCapture(plain, undefined)).toBe(true);
+  });
+
+  it('scope captures: a local container def is qualified but binds its own name; anonymous ones get distinct synthetic defs', () => {
+    const caps = emitZigScopeCaptures(src, 'src/Page.zig');
+    const structDefs = caps
+      .filter((m) => m['@declaration.struct'] !== undefined)
+      .map((m) => [
+        m['@declaration.name']?.text,
+        m['@declaration.binding-name']?.text,
+        m['@declaration.is-synthetic']?.text,
+      ]);
+    expect(structDefs).toContainEqual(['Reflect.string$R', 'R', undefined]);
+    expect(structDefs).toContainEqual(['Reflect.url$R', 'R', undefined]);
+    expect(structDefs).toContainEqual(['Page.test@L26$State', 'State', undefined]);
+    // Two same-shaped `struct { fn lessThan }` comparators → two identities.
+    expect(structDefs).toContainEqual(['Page.sortBoth$1', undefined, 'true']);
+    expect(structDefs).toContainEqual(['Page.sortBoth$2', undefined, 'true']);
+    expect(structDefs).toContainEqual(['Page$1', undefined, 'true']);
+    // No def is left under the bare binding name.
+    expect(structDefs.map((d) => d[0])).not.toContain('R');
+
+    // Through the scope extractor: the members are owned by DISTINCT class
+    // defs and their qualified names carry the identity — the graph node id
+    // the structure phase mints (`Method:<file>:Reflect.string$R.get`).
+    const parsed = extractScopes(caps, 'src/Page.zig', zigProvider);
+    populateClassOwnedMembers(parsed);
+    const gets = parsed.localDefs.filter(
+      (d) => d.type === 'Method' && d.qualifiedName?.endsWith('.get'),
+    );
+    expect(gets.map((d) => d.qualifiedName).sort()).toEqual([
+      'Reflect.string$R.get',
+      'Reflect.url$R.get',
+    ]);
+    expect(new Set(gets.map((d) => d.ownerId)).size).toBe(2);
+    const lts = parsed.localDefs.filter(
+      (d) => d.type === 'Method' && d.qualifiedName?.endsWith('.lessThan'),
+    );
+    expect(lts.map((d) => d.qualifiedName).sort()).toEqual([
+      'Page.sortBoth$1.lessThan',
+      'Page.sortBoth$2.lessThan',
+    ]);
+    expect(lts.every((d) => d.ownerId !== undefined)).toBe(true);
+  });
+
+  it('a `@This()` alias inside a local container rewrites to the BINDING name (`R`), which is what the scope binds', () => {
+    const localAliasSrc = `
+pub fn string() void {
+    const R = struct {
+        const Self = @This();
+        fn get(self: *const Self) u8 { _ = self; return 1; }
+    };
+    _ = R;
+}
+`;
+    const selfParam = emitZigScopeCaptures(localAliasSrc, 'src/r.zig').find(
+      (m) => m['@type-binding.parameter'] !== undefined && m['@type-binding.name']?.text === 'self',
+    );
+    expect(selfParam?.['@type-binding.type']?.text).toBe('*const R');
   });
 });

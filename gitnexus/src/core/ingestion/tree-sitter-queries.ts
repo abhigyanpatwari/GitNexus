@@ -2518,6 +2518,21 @@ export const ZIG_QUERIES = `
     (enum_declaration) @definition.enum))))
   (#eq? @_ret "type"))
 
+; Function-local and anonymous containers (F8): \`fn string() { const R =
+; struct { fn get … }; }\` (Lightpanda's reflection.zig declares one \`R\` per
+; builder fn), \`std.sort.pdq(T, items, {}, struct { fn lessThan … }.lessThan)\`,
+; \`const cmp = struct { fn lt … }.lt;\`, a field typed \`?struct { min: u32 }\`.
+; No name child spells their identity, so these rules match EVERY container
+; and the class extractor names the node from \`zigContainerName\` (\`string$R\`,
+; \`build$1\`) — the same function the owner walk uses for their fns, which
+; were ownerless, colliding Methods before. The bound shapes above match too;
+; the provider's \`shouldSkipDefinitionCapture\` keeps exactly one rule per
+; container (\`zigContainerAnchor\`).
+(struct_declaration) @definition.struct
+(enum_declaration) @definition.enum
+(union_declaration) @definition.union
+(opaque_declaration) @definition.struct
+
 ; Container fields (struct fields, enum variants, union variants) — all are
 ; \`container_field\` in the grammar and all become Property (C labels its
 ; enumerators Const; Rust captures no variants; Zig's own vocabulary is

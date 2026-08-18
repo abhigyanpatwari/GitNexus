@@ -4,6 +4,7 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import {
   isZigFileStruct,
   ZIG_CONTAINER_TYPES,
+  zigContainerLabel,
   zigContainerName,
 } from '../../languages/zig/captures.js';
 
@@ -12,11 +13,16 @@ import {
  *
  *   const Point = struct { ... };
  *   pub fn List(comptime T: type) type { return struct { ... }; }
+ *   fn build() void { const R = struct { ... }; sort(struct { fn lt … }.lt); }
  *
- * The binding name is the first identifier child of the parent
- * variable_declaration, or the generic type constructor's name —
- * `zigContainerName` is the single source shared with the field/method
- * extractors so owner ids and node ids agree by construction.
+ * The identity is the binding name (first identifier of the parent
+ * variable_declaration), the generic type constructor's name, or — for a
+ * FUNCTION-LOCAL or ANONYMOUS container — a synthesized `host$Name` /
+ * `host$N` (F8). `zigContainerName` is the single source shared with the
+ * field/method extractors and the owner walk, so owner ids and node ids
+ * agree by construction. Which of the (up to three) ZIG_QUERIES rules that
+ * match one container gets to mint it is decided by the provider's
+ * `shouldSkipDefinitionCapture` (`isZigRedundantContainerCapture`).
  */
 const extractZigContainerName = (node: SyntaxNode, filePath?: string): string | undefined =>
   zigContainerName(node, filePath);
@@ -25,13 +31,7 @@ const extractZigContainerType = (node: SyntaxNode): ClassLikeNodeLabel | undefin
   // The file itself, when it declares top-level fields (file-struct); a
   // namespace-only file is not a type — `extract` then yields no symbol.
   if (node.type === 'source_file') return isZigFileStruct(node) ? 'Struct' : undefined;
-  if (node.type === 'struct_declaration') return 'Struct';
-  if (node.type === 'enum_declaration') return 'Enum';
-  if (node.type === 'union_declaration') return 'Union';
-  // `opaque {}` is a fieldless container that may own methods — Struct is the
-  // closest class-like label (rationale in ZIG_QUERIES).
-  if (node.type === 'opaque_declaration') return 'Struct';
-  return undefined;
+  return zigContainerLabel(node);
 };
 
 export const zigClassConfig: ClassExtractionConfig = {

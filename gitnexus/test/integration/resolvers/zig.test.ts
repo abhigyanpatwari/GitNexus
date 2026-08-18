@@ -608,3 +608,134 @@ describe.skipIf(!zigAvailable)('Zig type aliases (zig-filestruct fixture, aliase
     expect(calls).toContain('viaDeref → bump');
   });
 });
+
+describe.skipIf(!zigAvailable)('Zig function-local and anonymous containers (F8)', () => {
+  // reflect.zig mirrors Lightpanda's reflection.zig: a generic type
+  // constructor whose builder fns each declare `const R = struct { fn get…
+  // fn set… }`. Sorter.zig hosts the anonymous shapes: two `std.sort.pdq(…,
+  // struct { fn lessThan … }.lessThan)` comparators in one fn (ImportMap.zig
+  // has three), `const byteSize = struct { fn it … }.it;` (build.zig), a
+  // field typed `?struct { min, max }`, and a test-local `const State`.
+  // Before this modelling every `R` was one `Struct:…:R` with one `R.get`,
+  // and every comparator's `lessThan` was an OWNERLESS `Method:<file>:lessThan`
+  // — the corpus gate counted 14 ownerless Methods and 55 fns without a node.
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-filestruct'), () => {});
+  }, 60000);
+
+  const idsIn = (label: string, file: string): string[] => {
+    const ids: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === label && String(n.properties.filePath).endsWith(file)) ids.push(n.id);
+    });
+    return ids.sort();
+  };
+
+  it('keys a function-local `const R = struct` by its enclosing callable, so two builders own two `R.get`s', () => {
+    expect(idsIn('Struct', 'reflect.zig')).toEqual([
+      'Struct:src/reflect.zig:Accessor',
+      'Struct:src/reflect.zig:Reflect',
+      'Struct:src/reflect.zig:Reflect.string$R',
+      'Struct:src/reflect.zig:Reflect.url$R',
+    ]);
+    // Both `get`s exist, under distinct owner-qualified ids…
+    expect(result.graph.getNode('Method:src/reflect.zig:Reflect.string$R.get#0')).toBeDefined();
+    expect(result.graph.getNode('Method:src/reflect.zig:Reflect.url$R.get#0')).toBeDefined();
+    // …and nothing is left under the bare binding name.
+    expect(result.graph.getNode('Struct:src/reflect.zig:R')).toBeUndefined();
+    expect(result.graph.getNode('Method:src/reflect.zig:R.get#0')).toBeUndefined();
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD').map(
+      (e) => `${e.rel.sourceId} → ${e.rel.targetId}`,
+    );
+    expect(hasMethod).toContain(
+      'Struct:src/reflect.zig:Reflect.string$R → Method:src/reflect.zig:Reflect.string$R.get#0',
+    );
+    expect(hasMethod).toContain(
+      'Struct:src/reflect.zig:Reflect.url$R → Method:src/reflect.zig:Reflect.url$R.get#0',
+    );
+  });
+
+  it('gives anonymous containers a host + ordinal identity, so no Method is ownerless and same-named fns never collide', () => {
+    expect(idsIn('Struct', 'Sorter.zig')).toEqual([
+      'Struct:src/Sorter.zig:Sorter',
+      'Struct:src/Sorter.zig:Sorter$1', // `bounds: ?struct { min, max }`
+      'Struct:src/Sorter.zig:Sorter$2', // `const byteSize = struct { fn it }.it`
+      'Struct:src/Sorter.zig:Sorter.sortBoth$1', // first comparator
+      'Struct:src/Sorter.zig:Sorter.sortBoth$2', // second comparator
+      'Struct:src/Sorter.zig:Sorter.test@L41$State', // test-local `const State`
+    ]);
+    // Two `lessThan`s in one file → two nodes, each owned by its own Struct.
+    expect(
+      result.graph.getNode('Method:src/Sorter.zig:Sorter.sortBoth$1.lessThan#3'),
+    ).toBeDefined();
+    expect(
+      result.graph.getNode('Method:src/Sorter.zig:Sorter.sortBoth$2.lessThan#3'),
+    ).toBeDefined();
+    expect(result.graph.getNode('Method:src/Sorter.zig:Sorter$2.it#1')).toBeDefined();
+    const hasMethod = getRelationships(result, 'HAS_METHOD').map(
+      (e) => `${e.rel.sourceId} → ${e.rel.targetId}`,
+    );
+    expect(hasMethod).toContain(
+      'Struct:src/Sorter.zig:Sorter.sortBoth$1 → Method:src/Sorter.zig:Sorter.sortBoth$1.lessThan#3',
+    );
+    expect(hasMethod).toContain(
+      'Struct:src/Sorter.zig:Sorter.sortBoth$2 → Method:src/Sorter.zig:Sorter.sortBoth$2.lessThan#3',
+    );
+    expect(hasMethod).toContain(
+      'Struct:src/Sorter.zig:Sorter$2 → Method:src/Sorter.zig:Sorter$2.it#1',
+    );
+    // The anonymous field type owns its fields (they were `Sorter.min` before).
+    const hasProp = getRelationships(result, 'HAS_PROPERTY').map(
+      (e) => `${e.rel.sourceId} → ${e.rel.targetId}`,
+    );
+    expect(hasProp).toContain(
+      'Struct:src/Sorter.zig:Sorter$1 → Property:src/Sorter.zig:Sorter$1.min',
+    );
+    // No ownerless Method anywhere in the fixture: every Method id is `<owner>.<name>#N`.
+    const ownerless: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Method' && /^Method:[^:]+:[^.]+#\d+$/.test(n.id)) ownerless.push(n.id);
+    });
+    expect(ownerless).toEqual([]);
+  });
+
+  it('attributes calls inside such containers to the right node, on both ends', () => {
+    const calls = getRelationships(result, 'CALLS').map(
+      (e) => `${e.rel.sourceId} → ${e.rel.targetId}`,
+    );
+    // From inside each `R.get` — the caller is THAT builder's `R.get`.
+    expect(calls).toContain(
+      'Method:src/reflect.zig:Reflect.string$R.get#0 → Function:src/reflect.zig:readAttr',
+    );
+    expect(calls).toContain(
+      'Method:src/reflect.zig:Reflect.url$R.get#0 → Function:src/reflect.zig:normalize',
+    );
+    // A `const Self = @This();` inside a local container still names THAT
+    // container: `check(self: *const Self)` dispatches `self.get()` to `url$R.get`.
+    expect(calls).toContain(
+      'Method:src/reflect.zig:Reflect.url$R.check#0 → Method:src/reflect.zig:Reflect.url$R.get#0',
+    );
+    // From inside each anonymous comparator (and the test-local State).
+    expect(calls).toContain(
+      'Method:src/Sorter.zig:Sorter.sortBoth$1.lessThan#3 → Method:src/Sorter.zig:Sorter.before#2',
+    );
+    expect(calls).toContain(
+      'Method:src/Sorter.zig:Sorter.sortBoth$2.lessThan#3 → Method:src/Sorter.zig:Sorter.before#2',
+    );
+    expect(calls).toContain(
+      'Method:src/Sorter.zig:Sorter.test@L41$State.kill#0 → Method:src/Sorter.zig:Sorter.before#2',
+    );
+    // INTO a test-local container: `State{}` and `state.kill()` from the test
+    // resolve to the qualified Struct / Method (the qualified key must survive
+    // the class extractor's whitespace normalization — a test-string host would not).
+    expect(calls).toContain(
+      'Function:src/Sorter.zig:Sorter."Sorter: local state" → Struct:src/Sorter.zig:Sorter.test@L41$State',
+    );
+    expect(calls).toContain(
+      'Function:src/Sorter.zig:Sorter."Sorter: local state" → Method:src/Sorter.zig:Sorter.test@L41$State.kill#0',
+    );
+  });
+});

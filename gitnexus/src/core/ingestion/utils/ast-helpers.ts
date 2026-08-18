@@ -906,6 +906,18 @@ export const findEnclosingClassInfo = (
     root: SyntaxNode,
     filePath: string,
   ) => { readonly name: string; readonly label: NodeLabel } | null,
+  /**
+   * Optional: the type a CONTAINER node declares
+   * (`LanguageProvider.resolveContainerTypeOwner`). Consulted for every
+   * `CLASS_CONTAINER_TYPES` node the walk meets, before the generic name-child
+   * derivation, for languages whose containers are named from context (a
+   * binding wrapper, an enclosing callable, an anonymous ordinal). Null falls
+   * through to the generic derivation.
+   */
+  resolveContainerTypeOwner?: (
+    container: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
   let iterations = 0;
@@ -1000,6 +1012,19 @@ export const findEnclosingClassInfo = (
           // Provider remapped to a different node — re-evaluate from there.
           current = resolved;
           continue;
+        }
+      }
+
+      // A container the PROVIDER names from context (binding wrapper,
+      // enclosing callable, anonymous ordinal — Zig). The name is what the
+      // class-like node is minted under, so owner id == node id.
+      if (resolveContainerTypeOwner !== undefined) {
+        const containerOwner = resolveContainerTypeOwner(current, filePath);
+        if (containerOwner !== null) {
+          return {
+            classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),
+            className: containerOwner.name,
+          };
         }
       }
 
