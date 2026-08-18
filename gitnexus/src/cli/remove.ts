@@ -89,7 +89,7 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   // any of those would be a runtime disaster. Bail before touching
   // disk, with an actionable hint for recovering a broken registry.
   try {
-    assertSafeStoragePath(entry);
+    await assertSafeStoragePath(entry);
   } catch (err) {
     if (err instanceof UnsafeStoragePathError) {
       cliError(t('common.error', { message: err.message }));

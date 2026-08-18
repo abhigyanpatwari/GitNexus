@@ -1712,9 +1712,8 @@ describe('resolveRegistryEntry backward-compat with non-canonical stored paths (
 // Guard rail against destroying more than the `.gitnexus/` subfolder.
 // `~/.gitnexus/registry.json` is user-writable plain text, so a
 // corrupted or hand-edited entry could put storagePath anywhere.
-// These tests use synthetic `RegistryEntry` fixtures (no disk I/O)
-// because the guard is a pure string check — it must not depend on
-// the paths existing.
+// Repository-local paths remain pure string checks. External slots require
+// metadata ownership proof before they may be recursively deleted.
 
 describe('assertSafeStoragePath (#1003)', () => {
   const prefix = process.platform === 'win32' ? 'D:\\' : '/tmp/';
@@ -1726,61 +1725,61 @@ describe('assertSafeStoragePath (#1003)', () => {
     lastCommit: 'deadbee',
   };
 
-  it('accepts the canonical <repo>/.gitnexus storage path', () => {
+  it('accepts the canonical <repo>/.gitnexus storage path', async () => {
     const entry: RegistryEntry = {
       ...base,
       storagePath: path.join(repoPath, '.gitnexus'),
     };
-    expect(() => assertSafeStoragePath(entry)).not.toThrow();
+    await expect(assertSafeStoragePath(entry)).resolves.toBeUndefined();
   });
 
-  it('rejects when storagePath equals the repo path itself (would delete the code)', () => {
+  it('rejects when storagePath equals the repo path itself (would delete the code)', async () => {
     const entry: RegistryEntry = {
       ...base,
       storagePath: repoPath, // catastrophic: rm the working tree
     };
-    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+    await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
   });
 
-  it('rejects when storagePath is a parent of the repo path', () => {
+  it('rejects when storagePath is a parent of the repo path', async () => {
     const entry: RegistryEntry = {
       ...base,
       storagePath: path.dirname(repoPath), // also catastrophic
     };
-    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+    await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
   });
 
-  it('rejects when storagePath is empty (path.resolve falls back to cwd)', () => {
+  it('rejects when storagePath is empty (path.resolve falls back to cwd)', async () => {
     const entry: RegistryEntry = {
       ...base,
       storagePath: '', // path.resolve('') === process.cwd() — would rm cwd
     };
-    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+    await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
   });
 
-  it('rejects when storagePath points somewhere totally unrelated', () => {
+  it('rejects when storagePath points somewhere totally unrelated', async () => {
     const entry: RegistryEntry = {
       ...base,
       storagePath: `${prefix}some${path.sep}other${path.sep}place`,
     };
-    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+    await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
   });
 
-  it('rejects when storagePath is a sibling .gitnexus (right basename, wrong parent)', () => {
+  it('rejects when storagePath is a sibling .gitnexus (right basename, wrong parent)', async () => {
     const entry: RegistryEntry = {
       ...base,
       storagePath: path.join(`${prefix}different${path.sep}repo`, '.gitnexus'),
     };
-    expect(() => assertSafeStoragePath(entry)).toThrow(UnsafeStoragePathError);
+    await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
   });
 
-  it('UnsafeStoragePathError carries the original entry + expected + actual paths', () => {
+  it('UnsafeStoragePathError carries the original entry + expected + actual paths', async () => {
     const entry: RegistryEntry = {
       ...base,
       storagePath: `${prefix}evil${path.sep}path`,
     };
     try {
-      assertSafeStoragePath(entry);
+      await assertSafeStoragePath(entry);
     } catch (e) {
       expect(e).toBeInstanceOf(UnsafeStoragePathError);
       const err = e as UnsafeStoragePathError;
@@ -1795,14 +1794,56 @@ describe('assertSafeStoragePath (#1003)', () => {
     }
   });
 
-  it('Windows: storagePath match is case-insensitive to match register/unregister semantics', () => {
+  it('Windows: storagePath match is case-insensitive to match register/unregister semantics', async () => {
     if (process.platform !== 'win32') return;
     const entry: RegistryEntry = {
       ...base,
       storagePath: path.join(repoPath.toUpperCase(), '.GITNEXUS'),
     };
     // Should accept because Windows paths are case-insensitive.
-    expect(() => assertSafeStoragePath(entry)).not.toThrow();
+    await expect(assertSafeStoragePath(entry)).resolves.toBeUndefined();
+  });
+
+  it('accepts an external slot only when its metadata binds it to the registry entry', async () => {
+    const repo = await createTempDir('gitnexus-external-repo-');
+    const storage = await createTempDir('gitnexus-external-storage-');
+    const entry: RegistryEntry = {
+      ...base,
+      path: repo.dbPath,
+      storagePath: storage.dbPath,
+    };
+    try {
+      await saveMeta(storage.dbPath, {
+        repoPath: repo.dbPath,
+        storagePath: storage.dbPath,
+        lastCommit: 'deadbee',
+        indexedAt: new Date(0).toISOString(),
+      });
+      await expect(assertSafeStoragePath(entry)).resolves.toBeUndefined();
+    } finally {
+      await Promise.all([repo.cleanup(), storage.cleanup()]);
+    }
+  });
+
+  it('rejects an external slot whose metadata belongs to another checkout', async () => {
+    const repo = await createTempDir('gitnexus-external-repo-');
+    const storage = await createTempDir('gitnexus-external-storage-');
+    const entry: RegistryEntry = {
+      ...base,
+      path: repo.dbPath,
+      storagePath: storage.dbPath,
+    };
+    try {
+      await saveMeta(storage.dbPath, {
+        repoPath: path.join(repo.dbPath, 'other'),
+        storagePath: storage.dbPath,
+        lastCommit: 'deadbee',
+        indexedAt: new Date(0).toISOString(),
+      });
+      await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
+    } finally {
+      await Promise.all([repo.cleanup(), storage.cleanup()]);
+    }
   });
 });
 

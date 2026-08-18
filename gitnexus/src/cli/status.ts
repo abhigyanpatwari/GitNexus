@@ -5,7 +5,16 @@
  */
 
 import path from 'path';
-import { findRepo, getStoragePaths, loadMeta, hasKuzuIndex } from '../storage/repo-manager.js';
+import {
+  findRepo,
+  getStoragePaths,
+  loadMeta,
+  hasKuzuIndex,
+  readRegistry,
+  resolveRegistryEntry,
+  RegistryNotFoundError,
+  RegistryAmbiguousTargetError,
+} from '../storage/repo-manager.js';
 import {
   getCurrentCommit,
   getCurrentBranch,
@@ -22,9 +31,91 @@ import { t } from './i18n/index.js';
 
 export interface StatusOptions {
   json?: boolean;
+  /** Resolve a registered index without requiring its original checkout to remain on disk. */
+  repo?: string;
 }
 
 export const statusCommand = async (options: StatusOptions = {}) => {
+  if (options.repo) {
+    let entry;
+    try {
+      entry = resolveRegistryEntry(await readRegistry(), options.repo);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      if (options.json) {
+        console.log(
+          JSON.stringify({ schemaVersion: 1, repository: options.repo, error: 'not-indexed' }),
+        );
+      } else if (
+        err instanceof RegistryNotFoundError ||
+        err instanceof RegistryAmbiguousTargetError
+      ) {
+        console.log(error);
+      } else {
+        throw err;
+      }
+      return;
+    }
+
+    const meta = await loadMeta(entry.storagePath);
+    if (!meta) {
+      if (options.json) {
+        console.log(
+          JSON.stringify({
+            schemaVersion: 1,
+            repository: entry.path,
+            storagePath: entry.storagePath,
+            error: 'not-indexed',
+          }),
+        );
+      } else {
+        console.log(`No readable index metadata at ${entry.storagePath}`);
+      }
+      return;
+    }
+
+    const currentRunnerIdentity = resolveAnalyzerRunnerIdentity(import.meta.url);
+    const runnerIdentityIsCurrent = analyzerRunnerIdentitiesEqual(
+      meta.runnerIdentity,
+      currentRunnerIdentity,
+    );
+    const incompleteReasons = getIndexIncompleteReasons(meta);
+    const sourceAvailable = isGitRepo(entry.path);
+    const payload = {
+      schemaVersion: 1,
+      repository: entry.path,
+      storagePath: entry.storagePath,
+      sourceAvailable,
+      index: {
+        indexedAt: meta.indexedAt,
+        commit: meta.lastCommit,
+        runnerIdentity: meta.runnerIdentity ?? null,
+        runnerIdentityStatus: runnerIdentityIsCurrent ? 'current' : 'stale-or-unknown',
+        incompleteReasons,
+        contentRetention: meta.contentRetention ?? 'full',
+      },
+      current: sourceAvailable ? { commit: getCurrentCommit(entry.path) } : null,
+      // Without a checkout GitNexus can prove the index is readable, but cannot
+      // certify that it is current relative to source. Keep that distinction in
+      // the machine-readable status instead of reporting a false all-clear.
+      status: sourceAvailable ? 'registered' : 'source-unavailable',
+    };
+    if (options.json) {
+      console.log(JSON.stringify(payload));
+    } else {
+      console.log(`Repository: ${entry.path}`);
+      console.log(`Index storage: ${entry.storagePath}`);
+      console.log(`Indexed: ${new Date(meta.indexedAt).toLocaleString()}`);
+      console.log(`Indexed commit: ${meta.lastCommit?.slice(0, 7)}`);
+      console.log(
+        sourceAvailable
+          ? 'Status: registered index (use status without --repo for working-tree freshness)'
+          : 'Status: source checkout unavailable; graph index remains queryable through the registry',
+      );
+    }
+    return;
+  }
+
   const cwd = process.cwd();
 
   if (!isGitRepo(cwd)) {

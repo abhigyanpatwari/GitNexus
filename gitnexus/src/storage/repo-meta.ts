@@ -29,6 +29,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { resolveStoragePath } from './storage-resolver.js';
 
 /** The `.gitnexus` directory name, relative to a repo root. */
 export const GITNEXUS_DIR = '.gitnexus';
@@ -36,6 +37,10 @@ export const INDEX_METADATA_FILE = 'gitnexus.json';
 // Dual-written mirror of INDEX_METADATA_FILE, kept for backward compatibility
 // with consumers that only know the pre-rename filename (see MIGRATION.md).
 export const LEGACY_METADATA_FILE = 'meta.json';
+
+export type ContentRetention = 'full' | 'symbol' | 'none';
+export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
+export const CONTENT_RETENTION_SCHEMA_VERSION = 1;
 
 /**
  * Versioned receipt for the analyzer process that produced an index.
@@ -83,8 +88,14 @@ export interface AnalyzerRunnerIdentity {
 
 export interface RepoMeta {
   repoPath: string;
+  /** Complete index directory selected for this successful analysis. */
+  storagePath?: string;
   lastCommit: string;
   indexedAt: string;
+  /** Missing on legacy metadata means the upstream-compatible `full` profile. */
+  contentRetention?: ContentRetention;
+  contentRetentionSchemaVersion?: number;
+  ftsProfile?: FtsProfile;
   /**
    * Analyzer/runtime receipt for the successful run represented by this
    * metadata. Optional so indexes written by older GitNexus releases remain
@@ -506,7 +517,7 @@ export interface RepoMeta {
  * Used for local metadata and caches that are not committed.
  */
 export const getStoragePath = (repoPath: string): string => {
-  return path.join(path.resolve(repoPath), GITNEXUS_DIR);
+  return resolveStoragePath(repoPath);
 };
 
 /**

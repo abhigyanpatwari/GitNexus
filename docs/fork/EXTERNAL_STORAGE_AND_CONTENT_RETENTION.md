@@ -1,6 +1,6 @@
 # External Storage and Content Retention
 
-Status: planned
+Status: implemented
 
 ## Goal
 
@@ -12,6 +12,15 @@ GITNEXUS_CONTENT_RETENTION=full|symbol|none
 ```
 
 `GITNEXUS_STORAGE_PATH` lets an orchestrator choose the exact directory for one repository index. `GITNEXUS_CONTENT_RETENTION` controls source-derived text written into LadybugDB. Neither option creates a shared graph database or makes GitNexus responsible for an external system's version lifecycle.
+
+## Implemented scope
+
+- The storage resolver is used for index files, metadata, parse caches, locks, branch placement, registry lookup, CLI status, MCP, HTTP, and cleanup operations.
+- `full`, `symbol`, and `none` retention are persisted in metadata, select compatible FTS columns, and force a full rebuild when the recorded profile or FTS profile is incompatible.
+- MCP and CLI content requests expose retention capability; the HTTP file-preview and grep endpoints return an explicit unavailable response when the profile or missing checkout cannot provide source. The Web UI renders that unavailable state.
+- Regression coverage includes storage resolution, metadata compatibility, rebuild behavior, retention profiles, CLI/MCP/API/WebUI behavior, and Objective-C symbol snippets.
+
+The implementation deliberately does not add ForgeMate lifecycle orchestration, external storage services, source-content authorization, project identity, or a shared graph database.
 
 ## Storage path contract
 
@@ -46,11 +55,11 @@ An external caller may write to a staging slot and atomically promote it to its 
 
 ### Profiles
 
-| Value | File `content` | Symbol/section snippets | Graph and identities | Intended effect |
-| --- | --- | --- | --- | --- |
-| `full` | Retained | Retained | Complete | Current upstream-compatible behavior. |
-| `symbol` | Omitted | Retained | Complete | Preserve symbol-level evidence without full eligible file text. |
-| `none` | Omitted | Omitted | Complete | Preserve structural graph only. |
+| Value    | File `content` | Symbol/section snippets | Graph and identities | Intended effect                                                 |
+| -------- | -------------- | ----------------------- | -------------------- | --------------------------------------------------------------- |
+| `full`   | Retained       | Retained                | Complete             | Current upstream-compatible behavior.                           |
+| `symbol` | Omitted        | Retained                | Complete             | Preserve symbol-level evidence without full eligible file text. |
+| `none`   | Omitted        | Omitted                 | Complete             | Preserve structural graph only.                                 |
 
 Missing or empty `GITNEXUS_CONTENT_RETENTION` means `full`. An explicitly invalid value fails clearly; it must not silently select another profile.
 
@@ -58,13 +67,13 @@ Missing or empty `GITNEXUS_CONTENT_RETENTION` means `full`. An explicitly invali
 
 ### Query behavior
 
-| Capability | `full` | `symbol` | `none` |
-| --- | --- | --- | --- |
-| Symbol name/selector search | Available | Available | Available |
-| `context`, `impact`, `trace`, structural Cypher | Available | Available | Available |
-| Arbitrary file-body keyword retrieval | Available | Only if retained in a symbol snippet | Unavailable |
-| Content-bearing query/context response | File and symbol content where supported | Symbol snippets only | Clear capability absence |
-| Filesystem preview, grep, rename, detect-changes | Requires source worktree | Requires source worktree | Requires source worktree |
+| Capability                                       | `full`                                  | `symbol`                             | `none`                   |
+| ------------------------------------------------ | --------------------------------------- | ------------------------------------ | ------------------------ |
+| Symbol name/selector search                      | Available                               | Available                            | Available                |
+| `context`, `impact`, `trace`, structural Cypher  | Available                               | Available                            | Available                |
+| Arbitrary file-body keyword retrieval            | Available                               | Only if retained in a symbol snippet | Unavailable              |
+| Content-bearing query/context response           | File and symbol content where supported | Symbol snippets only                 | Clear capability absence |
+| Filesystem preview, grep, rename, detect-changes | Requires source worktree                | Requires source worktree             | Requires source worktree |
 
 The `symbol` and `none` profiles do not change provider parsing, node IDs, line ranges, relationships, or call-graph correctness. They reduce text-retrieval evidence. `symbol` is not equivalent to `full` for natural-language searches that rely on arbitrary comments or method bodies; `none` intentionally removes source text as evidence.
 
@@ -97,7 +106,7 @@ Indexes written before these fields existed are interpreted as `full` for read c
 
 The existing Web UI's file preview and grep operations read the repository filesystem. They must not assume that database `File.content` is valid raw code. With an external index and deleted checkout, the UI must report full-file preview and filesystem grep as unavailable, while continuing to show graph data, symbol snippets permitted by the retention profile, file paths, line ranges, source revision, and resolution confidence. A future raw-code browser needs a separate, explicit byte-faithful retention design.
 
-## Required regression coverage
+## Regression coverage
 
 - No option: storage, metadata, CLI, MCP, and query results remain compatible with `<repo>/.gitnexus/` and `full` content.
 - External storage: all artifacts reside in the selected directory; none appears in the source worktree; a deleted worktree does not prevent graph-only `status` and MCP queries through the registry.

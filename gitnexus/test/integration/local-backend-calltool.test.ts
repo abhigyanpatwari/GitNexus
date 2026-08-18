@@ -5,9 +5,10 @@
  * instance, verifying cypher, context, impact, and query tools work
  * end-to-end against seeded graph data with FTS indexes.
  */
+import fs from 'fs/promises';
 import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
+import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import {
   LOCAL_BACKEND_SEED_DATA,
@@ -206,6 +207,59 @@ withTestLbugDB(
         // leaked some other node's community onto it. It must have none.
         expect(validate.module).toBeUndefined();
         expect(validate.content).toBe('function validate() {}');
+      });
+
+      it('reports content capability for the default full profile', async () => {
+        const query = await backend.callTool('query', { query: 'login', include_content: true });
+        const context = await backend.callTool('context', { name: 'login', include_content: true });
+
+        expect(query.contentAvailability).toEqual({
+          requested: true,
+          profile: 'full',
+          available: true,
+          scope: 'full',
+        });
+        expect(context.contentAvailability).toEqual(query.contentAvailability);
+        expect(context.symbol.content).toBe('function login() {}');
+      });
+
+      it('does not disclose lingering source text when metadata says retention is none', async () => {
+        const storagePath = handle.tmpHandle.dbPath;
+        await saveMeta(storagePath, {
+          repoPath: '/test/repo',
+          storagePath,
+          lastCommit: 'abc123',
+          indexedAt: new Date().toISOString(),
+          contentRetention: 'none',
+          contentRetentionSchemaVersion: 1,
+          ftsProfile: 'name-only',
+        });
+        try {
+          const query = await backend.callTool('query', { query: 'login', include_content: true });
+          const context = await backend.callTool('context', {
+            name: 'login',
+            include_content: true,
+          });
+          const login = (query.process_symbols ?? []).find(
+            (symbol: any) => symbol.id === 'func:login',
+          );
+
+          expect(query.contentAvailability).toEqual({
+            requested: true,
+            profile: 'none',
+            available: false,
+            scope: 'none',
+            reason: 'Source-derived content is not retained by this index.',
+          });
+          expect(login?.content).toBeUndefined();
+          expect(context.contentAvailability).toEqual(query.contentAvailability);
+          expect(context.symbol.content).toBeUndefined();
+        } finally {
+          await Promise.all([
+            fs.rm(`${storagePath}/gitnexus.json`, { force: true }),
+            fs.rm(`${storagePath}/meta.json`, { force: true }),
+          ]);
+        }
       });
 
       // PR #222 port: a symbol in MULTIPLE processes is what fully exercises the

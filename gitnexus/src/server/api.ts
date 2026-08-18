@@ -21,6 +21,7 @@ import {
   listRegisteredRepos,
   getStoragePath,
   registryPathEquals,
+  assertSafeStoragePath,
   type RegistryEntry,
 } from '../storage/repo-manager.js';
 import {
@@ -38,6 +39,7 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
+import { contentRetentionFromMeta } from '../core/content-retention.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
@@ -559,6 +561,41 @@ export const resolveRegisteredRepoEntry = (
   );
 };
 
+export interface SourceAvailability {
+  available: boolean;
+  reason?: 'content-retention' | 'checkout-missing';
+}
+
+/** Full-file endpoints require a live checkout; normalized index text is not source-viewer data. */
+export const getSourceAvailability = async (
+  entry: Pick<RegistryEntry, 'path' | 'storagePath'>,
+): Promise<SourceAvailability> => {
+  const meta = await loadMeta(entry.storagePath);
+  if (contentRetentionFromMeta(meta) !== 'full') {
+    return { available: false, reason: 'content-retention' };
+  }
+  try {
+    return (await fs.stat(entry.path)).isDirectory()
+      ? { available: true }
+      : { available: false, reason: 'checkout-missing' };
+  } catch {
+    return { available: false, reason: 'checkout-missing' };
+  }
+};
+
+const sendSourceUnavailable = (
+  res: { status: (code: number) => { json: (body: any) => void } },
+  availability: SourceAvailability,
+): void => {
+  const reason =
+    availability.reason === 'content-retention' ? 'content retention' : 'source checkout';
+  res.status(410).json({
+    error: `Full source is unavailable because the ${reason} is unavailable.`,
+    code: 'source-unavailable',
+    reason: availability.reason,
+  });
+};
+
 /**
  * Handle a GET /api/file request body. Extracted from createServer's route
  * registration so it can be unit-tested without spinning up an HTTP server
@@ -578,6 +615,7 @@ export const handleFileRequest = async (
     json: (body: any) => void;
   },
   repoPath: string,
+  availability: SourceAvailability = { available: true },
 ): Promise<void> => {
   try {
     // Type-confusion guard — req.query.path is `string | string[] | ParsedQs`.
@@ -590,6 +628,11 @@ export const handleFileRequest = async (
       return;
     }
     const filePath = assertString(rawFilePath, 'path');
+
+    if (!availability.available) {
+      sendSourceUnavailable(res, availability);
+      return;
+    }
 
     // Path-injection containment — inline at the sink with the canonical
     // path.relative idiom that CodeQL's js/path-injection sanitizer
@@ -993,9 +1036,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      try {
+        await assertSafeStoragePath(entry);
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || 'Unsafe index storage path' });
+        return;
+      }
 
       // Acquire repo lock — prevents deleting while analyze/embed is in flight
-      const lockKey = getStoragePath(entry.path);
+      const lockKey = entry.storagePath;
       const lockErr = acquireRepoLock(lockKey);
       if (lockErr) {
         res.status(409).json({ error: lockErr });
@@ -1009,7 +1058,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {}
 
         // 1. Delete the .gitnexus index/storage directory
-        const storagePath = getStoragePath(entry.path);
+        const storagePath = entry.storagePath;
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
@@ -1319,7 +1368,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       res.status(404).json({ error: 'Repository not found' });
       return;
     }
-    await handleFileRequest(req, res, entry.path);
+    await handleFileRequest(req, res, entry.path, await getSourceAvailability(entry));
   });
 
   // Grep — regex search across file contents in the indexed repo
@@ -1332,6 +1381,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       const entry = await resolveRepo(requestedRepo(req));
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
+        return;
+      }
+      const sourceAvailability = await getSourceAvailability(entry);
+      if (!sourceAvailability.available) {
+        sendSourceUnavailable(res, sourceAvailability);
         return;
       }
       // Type-confusion guard (CodeQL js/type-confusion-through-parameter-tampering):

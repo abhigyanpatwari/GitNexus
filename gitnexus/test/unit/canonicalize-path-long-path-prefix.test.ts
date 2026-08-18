@@ -152,16 +152,16 @@ describe('assertSafeStoragePath vs the `\\\\?\\` prefix (#2667)', () => {
     lastCommit: 'deadbee',
   };
 
-  it('accepts an entry whose path and storagePath share the prefix', () => {
-    expect(() =>
+  it('accepts an entry whose path and storagePath share the prefix', async () => {
+    await expect(
       assertSafeStoragePath({ ...base, storagePath: '\\\\?\\D:\\Projects\\repo\\.gitnexus' }),
-    ).not.toThrow();
+    ).resolves.toBeUndefined();
   });
 
-  it('rejects a mixed-form entry instead of deleting through it', () => {
-    expect(() =>
+  it('rejects a mixed-form entry instead of deleting through it', async () => {
+    await expect(
       assertSafeStoragePath({ ...base, storagePath: 'D:\\Projects\\repo\\.gitnexus' }),
-    ).toThrow();
+    ).rejects.toThrow();
   });
 });
 

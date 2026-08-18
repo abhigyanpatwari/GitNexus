@@ -40,6 +40,12 @@ import {
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from './repo-meta.js';
+import {
+  defaultStoragePath,
+  ensureStoragePathWritable,
+  InvalidStoragePathError,
+  validateConfiguredStoragePath,
+} from './storage-resolver.js';
 
 // Re-export the #2106 branch primitives (extracted to branch-index.ts, R10) so
 // existing `repo-manager` import sites and tests keep working unchanged.
@@ -52,6 +58,9 @@ export type { BranchSummary };
 // cycle that made the extraction necessary. `LEGACY_METADATA_FILE` and
 // `tryReadMetaFile` stay module-private here, exactly as before.
 export { getStoragePath, INDEX_METADATA_FILE, isMissingFilesystemError, loadMeta };
+export { ensureStoragePathWritable, InvalidStoragePathError };
+export { CONTENT_RETENTION_SCHEMA_VERSION } from './repo-meta.js';
+export type { ContentRetention, FtsProfile } from './repo-meta.js';
 export type { AnalyzerRunnerIdentity, RepoMeta };
 
 /**
@@ -622,7 +631,16 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
   try {
     const raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
     const data = JSON.parse(raw);
-    return Array.isArray(data) ? sanitizeEntries(data) : [];
+    if (!Array.isArray(data)) return [];
+    // `storagePath` was not present in pre-external-storage registry files.
+    // Normalize only that legacy absence at the read boundary; malformed values
+    // remain visible to the existing destructive-operation safety checks.
+    const entries = data.map((entry) =>
+      entry && typeof entry.path === 'string' && entry.storagePath === undefined
+        ? { ...entry, storagePath: defaultStoragePath(entry.path) }
+        : entry,
+    ) as RegistryEntry[];
+    return sanitizeEntries(entries);
   } catch {
     return [];
   }
@@ -1245,9 +1263,10 @@ export class UnsafeStoragePathError extends Error {
 /**
  * Guard rail for destructive CLI paths (`remove` #664,
  * `clean --all` #258, future MCP `remove` tool): verify that a
- * registry entry's `storagePath` is the canonical `<repo>/.gitnexus`
- * subfolder of its `path`. If not, throw {@link UnsafeStoragePathError}
- * so the caller exits without touching disk.
+ * registry entry's `storagePath` names the registered index. Repository-local
+ * indexes are validated by their canonical `<repo>/.gitnexus` path; external
+ * slots must additionally prove their ownership through matching persisted
+ * metadata before a recursive deletion is allowed.
  *
  * Why this exists (#1003 review — @magyargergo):
  *   - `~/.gitnexus/registry.json` is a plain-text user-writable file.
@@ -1264,21 +1283,41 @@ export class UnsafeStoragePathError extends Error {
  *     the registry field. But `clean --all` DOES iterate the registry
  *     and trust each entry's stored storagePath (same shape as
  *     `remove`), so this helper must be wired into that loop too.
- *   - `server/api.ts` recomputes storagePath from `getStoragePath(entry.path)`
- *     and so is likewise safe-by-construction.
+ *   - An external slot is intentionally not constrained under a checkout. Its
+ *     own metadata must bind both the source checkout path and the resolved
+ *     storage path before it may be removed.
  *
- * Pure string check — does NOT require the paths to exist on disk.
- * Windows: case-insensitive; POSIX: case-sensitive. Matches the
- * comparison shape used elsewhere in this module.
+ * The local-path branch stays a pure string check for legacy entries. The
+ * external branch reads metadata so a hand-edited registry cannot redirect a
+ * destructive command to an arbitrary directory.
  */
-export const assertSafeStoragePath = (entry: RegistryEntry): void => {
-  const expected = path.join(path.resolve(entry.path), '.gitnexus');
-  const actual = path.resolve(entry.storagePath);
-  const matches =
-    process.platform === 'win32'
-      ? expected.toLowerCase() === actual.toLowerCase()
-      : expected === actual;
-  if (!matches) {
+export const assertSafeStoragePath = async (entry: RegistryEntry): Promise<void> => {
+  const expected = defaultStoragePath(entry.path);
+  let actual: string;
+  try {
+    actual = validateConfiguredStoragePath(entry.storagePath);
+  } catch {
+    throw new UnsafeStoragePathError(entry, expected, path.resolve(entry.storagePath));
+  }
+
+  if (registryPathEquals(expected, actual)) return;
+
+  const root = path.parse(actual).root;
+  if (
+    registryPathEquals(actual, root) ||
+    registryPathEquals(actual, path.resolve(entry.path)) ||
+    registryPathEquals(path.dirname(actual), actual)
+  ) {
+    throw new UnsafeStoragePathError(entry, expected, actual);
+  }
+
+  const meta = await loadMeta(actual);
+  if (
+    !meta ||
+    !meta.storagePath ||
+    !registryPathEquals(canonicalizePath(meta.repoPath), canonicalizePath(entry.path)) ||
+    !registryPathEquals(meta.storagePath, actual)
+  ) {
     throw new UnsafeStoragePathError(entry, expected, actual);
   }
 };

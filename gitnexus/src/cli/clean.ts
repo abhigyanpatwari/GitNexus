@@ -146,7 +146,7 @@ export const cleanCommand = async (options?: {
       // through the rest of the registry (preserves the existing
       // per-repo error-tolerance semantics of `clean --all`).
       try {
-        assertSafeStoragePath(entry);
+        await assertSafeStoragePath(entry);
       } catch (err) {
         if (err instanceof UnsafeStoragePathError) {
           logger.error(`Refusing to clean ${entry.name}: ${err.message}`);

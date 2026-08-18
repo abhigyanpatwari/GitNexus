@@ -249,7 +249,8 @@ program
 
 program
   .command('status')
-  .description('Show index status for current repo')
+  .description('Show index status for the current repo or a registered index')
+  .option('-r, --repo <name>', 'Registered repository alias or path (works after checkout removal)')
   .option('--json', 'Emit machine-readable index and analyzer provenance')
   .addHelpText('after', () => t('help.identityCache.environment'))
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
@@ -362,7 +363,10 @@ program
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
@@ -373,7 +377,10 @@ program
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('-l, --limit <n>', 'Max callers/callees/processes to return')
-  .option('--content', 'Include full symbol source code')
+  .option(
+    '--content',
+    'Include retained symbol source text (reports availability when disabled by retention)',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
 program

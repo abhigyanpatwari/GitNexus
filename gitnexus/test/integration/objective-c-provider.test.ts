@@ -436,4 +436,69 @@ describe('Objective-C provider persisted index behavior', () => {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   }, 180000);
+
+  it('preserves Objective-C symbols and method snippets with symbol retention', async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-objc-provider-symbol-'));
+    const priorRetention = process.env.GITNEXUS_CONTENT_RETENTION;
+    try {
+      writeObjectiveCRepo(repoRoot);
+      git(repoRoot, 'git init');
+      gitCommitAll(repoRoot, 'Objective-C symbol retention fixture');
+      process.env.GITNEXUS_CONTENT_RETENTION = 'symbol';
+
+      await analyzeObjectiveCRepo(repoRoot, { force: true });
+      const surface = await readPersistedObjectiveCSurface(repoRoot);
+      expect(surface).toMatchObject({
+        classContext: {
+          status: 'found',
+          symbol: { uid: 'Class:objc:class:SYModuleCaller' },
+          incoming: {
+            declares: expect.arrayContaining([
+              expect.objectContaining({ filePath: 'SYModuleCaller.m' }),
+            ]),
+          },
+        },
+        runTaskContext: {
+          status: 'found',
+          outgoing: {
+            calls: expect.arrayContaining([
+              expect.objectContaining({
+                uid: 'Method:objc:method:objc:class:SYBaseCaller:-:loadData:completion:',
+              }),
+            ]),
+          },
+        },
+        protocolAndCategoryResult: expect.objectContaining({
+          markdown: expect.stringContaining('Protocol:objc:protocol:SYModuleRunnable'),
+        }),
+        categoryHostResult: expect.objectContaining({
+          markdown: expect.stringContaining('Category:objc:category:SYModuleCaller:Tracing'),
+        }),
+      });
+
+      const backend = new LocalBackend();
+      try {
+        const [methodContext, fileContext] = await Promise.all([
+          backend.callTool('context', {
+            uid: 'Method:objc:method:objc:class:SYModuleCaller:-:runTask:completion:',
+            repo: repoRoot,
+            include_content: true,
+          }),
+          backend.callTool('context', {
+            uid: 'File:SYModuleCaller.m',
+            repo: repoRoot,
+            include_content: true,
+          }),
+        ]);
+        expect(methodContext.symbol.content).toContain('runTask');
+        expect(fileContext.symbol.content).toBeUndefined();
+      } finally {
+        await backend.disconnect();
+      }
+    } finally {
+      if (priorRetention === undefined) delete process.env.GITNEXUS_CONTENT_RETENTION;
+      else process.env.GITNEXUS_CONTENT_RETENTION = priorRetention;
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  }, 180000);
 });
