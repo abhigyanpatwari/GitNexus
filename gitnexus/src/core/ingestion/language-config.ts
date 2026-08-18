@@ -574,30 +574,78 @@ function findZonBlockEnd(text: string, start: number): number {
   return -1;
 }
 
+/**
+ * Per-offset "is inside a `"…"` literal" mask for comment-stripped ZON text,
+ * so header regexes can reject a match that merely LOOKS like a field
+ * (`.name = ".dependencies = .{ … }"` is a string, not the dependencies
+ * block). Escaped quotes (`\"`) do not end the literal.
+ */
+function zonStringMask(text: string): Uint8Array {
+  const mask = new Uint8Array(text.length);
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      mask[i] = 1;
+      if (ch === '\\' && i + 1 < text.length) mask[++i] = 1;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      mask[i] = 1;
+    }
+  }
+  return mask;
+}
+
+/**
+ * First match of a sticky-free global `re` in `text[from, to)` whose start
+ * lies outside a string literal (per `mask`). Null when none.
+ */
+function matchZonHeader(
+  text: string,
+  re: RegExp,
+  mask: Uint8Array,
+  from: number,
+  to: number,
+): RegExpExecArray | null {
+  re.lastIndex = from;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null && m.index < to) {
+    if (mask[m.index] === 0) return m;
+  }
+  return null;
+}
+
 /** Pure parser split out for testability. Returns null when no path-deps found. */
 export function parseZigBuildZon(raw: string): ZigBuildZonConfig | null {
   const text = stripZonComments(raw);
+  const mask = zonStringMask(text);
   // Locate the `.dependencies = .{ ... }` block. Use brace counting because
-  // dep entries are nested anonymous structs and a naive `}` match would stop early.
-  const depsHeader = text.match(/\.dependencies\s*=\s*\.\{/);
+  // dep entries are nested anonymous structs and a naive `}` match would stop
+  // early — and only accept a header outside string literals, so a `.name`
+  // or `.description` value spelling `.dependencies = .{` cannot hijack it.
+  const depsHeader = matchZonHeader(text, /\.dependencies\s*=\s*\.\{/g, mask, 0, text.length);
   if (!depsHeader) return null;
-  const start = depsHeader.index! + depsHeader[0].length;
+  const start = depsHeader.index + depsHeader[0].length;
   const end = findZonBlockEnd(text, start);
   if (end < 0) return null;
-  const block = text.slice(start, end);
 
   const pathDeps = new Map<string, string>();
-  // Walk each `.<name> = .{ ... }` entry; the body ends at the matching brace
-  // (string-aware), not at the first `}` in the text.
+  // Walk each `.<name> = .{ ... }` entry inside [start, end); the body ends
+  // at the matching brace (string-aware), not at the first `}` in the text,
+  // and an entry header inside a string (`.url = "…/.x = .{"`) is not an entry.
   const entryHeaderRe = /\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\.\{/g;
+  let cursor = start;
   let m: RegExpExecArray | null;
-  while ((m = entryHeaderRe.exec(block)) !== null) {
+  while ((m = matchZonHeader(text, entryHeaderRe, mask, cursor, end)) !== null) {
     const depName = m[1];
     const bodyStart = m.index + m[0].length;
-    const bodyEnd = findZonBlockEnd(block, bodyStart);
-    if (bodyEnd < 0) break;
-    const body = block.slice(bodyStart, bodyEnd);
-    entryHeaderRe.lastIndex = bodyEnd + 1;
+    const bodyEnd = findZonBlockEnd(text, bodyStart);
+    if (bodyEnd < 0 || bodyEnd > end) break;
+    const body = text.slice(bodyStart, bodyEnd);
+    cursor = bodyEnd + 1;
     const pathMatch = body.match(/\.path\s*=\s*"([^"\n]+)"/);
     if (pathMatch) {
       pathDeps.set(depName, pathMatch[1]);

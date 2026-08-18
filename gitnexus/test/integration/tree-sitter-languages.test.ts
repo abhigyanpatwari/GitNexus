@@ -5,10 +5,12 @@ import {
   loadParser,
   loadLanguage,
   isLanguageAvailable,
+  isGrammarRuntimeSkipped,
 } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';
+import { createRequire } from 'module';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
 
@@ -681,25 +683,36 @@ describe('Tree-sitter multi-language parsing', () => {
   });
 
   describe('Zig', () => {
-    // Gate on the loader's own availability probe, not on a catch-all: when
-    // the optional grammar IS installed, a load failure (ABI mismatch, bad
-    // export) must fail this test, not silently skip its assertions.
-    it.skipIf(!isLanguageAvailable(SupportedLanguages.Zig))(
-      'parses functions, structs, enums, and imports',
-      async () => {
-        await loadLanguage(SupportedLanguages.Zig);
+    // Gate on whether the optional PACKAGE is installed, not on the loader's
+    // `isLanguageAvailable` (which is false for absent AND for
+    // installed-but-broken bindings — the loader swallows every load error
+    // for optional grammars). With the package present, a load failure (ABI
+    // mismatch, bad export) must fail this test, not silently skip it. A
+    // deliberate `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out in the environment
+    // is the one non-failure reason an installed grammar reports unavailable.
+    const zigPackageInstalled = (() => {
+      if (isGrammarRuntimeSkipped(SupportedLanguages.Zig)) return false;
+      try {
+        createRequire(import.meta.url).resolve('@tree-sitter-grammars/tree-sitter-zig');
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    it.skipIf(!zigPackageInstalled)('parses functions, structs, enums, and imports', async () => {
+      expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(true);
+      await loadLanguage(SupportedLanguages.Zig);
 
-        const content = readFixture('simple.zig');
-        const provider = getProvider(SupportedLanguages.Zig);
-        const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
-        const defs = extractDefinitions(matches);
+      const content = readFixture('simple.zig');
+      const provider = getProvider(SupportedLanguages.Zig);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
 
-        const defTypes = defs.map((d) => d.type);
-        expect(defTypes).toContain('definition.function');
-        expect(defTypes).toContain('definition.struct');
-        expect(defTypes).toContain('definition.enum');
-      },
-    );
+      const defTypes = defs.map((d) => d.type);
+      expect(defTypes).toContain('definition.function');
+      expect(defTypes).toContain('definition.struct');
+      expect(defTypes).toContain('definition.enum');
+    });
 
     it('reports Zig unavailable and throws "Unsupported language" when the grammar is absent', async () => {
       // Force the absent-binding path instead of hoping the package is missing:

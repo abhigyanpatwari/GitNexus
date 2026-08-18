@@ -23,8 +23,12 @@ export function zigBindingScopeFor(
   return null; // default auto-hoist for other bindings
 }
 
-/** Zig's receiver convention is a first parameter named `self`; the
- *  `self`-sourced typeBinding on the function scope carries its type. */
+/** Zig's receiver convention is a FIRST parameter named `self`; the
+ *  `self`-sourced typeBinding on the function scope carries its type.
+ *  Position is enforced upstream, not here: `interpretZigTypeBinding` only
+ *  sources a binding as `self` when `emitZigScopeCaptures` tagged it
+ *  `@type-binding.first-parameter`, so a later parameter named `self`
+ *  arrives as `parameter-annotation` and is never returned by this hook. */
 export function zigReceiverBinding(functionScope: Scope): TypeRef | null {
   if (functionScope.kind !== 'Function') return null;
   for (const binding of functionScope.typeBindings.values()) {

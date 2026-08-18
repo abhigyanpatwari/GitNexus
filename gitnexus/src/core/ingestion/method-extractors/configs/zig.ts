@@ -31,14 +31,13 @@ const extractZigName = (node: SyntaxNode): string | undefined => {
 /**
  * The `parameters` node of a function_declaration. tree-sitter-zig 1.1.2
  * attaches it as a plain named child — NOT under a `parameters:` field (only
- * `name`, `type` and `body` are fields) — so `childForFieldName('parameters')`
- * is always null. Reading it that way silently produced empty parameter lists,
- * no receiver, and `isStatic: true` for every method.
+ * `name`, `type` and `body` are fields), so a field lookup is always null
+ * (and the grammar-literal gate flags it as a dead field). Reading it that
+ * way silently produced empty parameter lists, no receiver, and
+ * `isStatic: true` for every method.
  */
 const zigParameterList = (node: SyntaxNode): SyntaxNode | null =>
-  node.childForFieldName('parameters') ??
-  node.namedChildren.find((child): child is SyntaxNode => child?.type === 'parameters') ??
-  null;
+  node.namedChildren.find((child): child is SyntaxNode => child?.type === 'parameters') ?? null;
 
 const extractZigReturnType = (node: SyntaxNode): string | undefined => {
   // tree-sitter-zig labels the return type as the `type` field on

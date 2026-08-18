@@ -41,6 +41,20 @@ describe('resolveZigImportInternal', () => {
     expect(resolveZigImportInternal('src/a.zig', '../bar.zig', files)).toBe('bar.zig');
   });
 
+  it('rejects absolute import paths instead of reading them as importer-relative', () => {
+    // The path walker skipped every empty component, so the leading `/` of
+    // `/foo.zig` vanished and it resolved to `src/foo.zig` — an in-repo edge
+    // for an import Zig itself rejects as outside the module path.
+    const files = new Set<string>(['src/main.zig', 'src/foo.zig', 'foo.zig', 'main.zig']);
+    expect(resolveZigImportInternal('src/main.zig', '/foo.zig', files)).toBeNull();
+    expect(resolveZigImportInternal('main.zig', '/foo.zig', files)).toBeNull();
+    expect(resolveZigImportInternal('src/main.zig', '/src/foo.zig', files)).toBeNull();
+    // Backslash-spelled absolute paths normalize to the same rejection.
+    expect(resolveZigImportInternal('src/main.zig', '\\foo.zig', files)).toBeNull();
+    // The relative spelling next to it still resolves.
+    expect(resolveZigImportInternal('src/main.zig', 'foo.zig', files)).toBe('src/foo.zig');
+  });
+
   it('returns null for a bare name when no build.zig.zon is supplied', () => {
     const files = new Set<string>(['src/main.zig', 'vendor/ziggit/src/ziggit.zig']);
     expect(resolveZigImportInternal('src/main.zig', 'ziggit', files)).toBeNull();
@@ -173,6 +187,26 @@ describe('parseZigBuildZon', () => {
       ['second', 'vendor/second'],
       ['third', 'vendor/third'],
     ]);
+  });
+
+  it('does not take a `.dependencies = .{` spelled inside a string literal as the block header', () => {
+    // The header search was a raw regex over the whole text: a `.name` (or
+    // `.description`) value that spells `.dependencies = .{ … }` matched
+    // first, the parser started at that embedded brace, and returned the
+    // fake `.path` dep instead of the real top-level block.
+    const raw = `
+.{
+    .name = ".dependencies = .{ .fake = .{ .path = \\"vendor/fake\\" } }",
+    .version = "0.0.0",
+    .dependencies = .{
+        .real = .{ .path = "vendor/real" },
+    },
+    .paths = .{ "" },
+}
+`;
+    const cfg = parseZigBuildZon(raw);
+    expect(cfg).not.toBeNull();
+    expect([...cfg!.pathDeps.entries()]).toEqual([['real', 'vendor/real']]);
   });
 
   it('returns null when no `.dependencies` block is present', () => {

@@ -42,6 +42,12 @@ export function resolveZigImportInternal(
   // and only the fallback appends `.zig` for extension-less spellings.
   const trimmed = importPath.replace(/\\/g, '/');
 
+  // Absolute paths point outside the repository (Zig itself rejects
+  // `@import("/abs.zig")` as an import outside the module path). Splitting
+  // would drop the empty leading component and read `/foo.zig` as an
+  // importer-relative `foo.zig`, fabricating an in-repo edge.
+  if (trimmed.startsWith('/')) return null;
+
   // Path-bearing import: resolve relative to the current file's directory.
   // Zig allows both "./foo.zig" and "foo.zig" — both are filesystem-relative.
   if (trimmed.endsWith('.zig') || trimmed.includes('/')) {

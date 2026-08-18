@@ -212,9 +212,12 @@ export function isClassLike(t: string): boolean {
  *
  * `Union` IS included, via `isClassLike`: Zig wires `union(enum)` as a member
  * container (methods dispatched on a union receiver — see the `main → isEnergy`
- * case in `test/integration/resolvers/zig.test.ts`), so it is a shape as well
- * as an inheritance-capable owner. C/C++ unions still do not emit `Union`
- * defs on the scope side, so nothing changes for them.
+ * case in `test/integration/resolvers/zig.test.ts`), so it is a shape. It
+ * lives in `isClassLike` because that is the label set the ownership walkers
+ * consult, NOT because unions inherit: Zig has no inheritance and its scope
+ * resolver supplies no heritage hooks, so a `Union` never has supertypes and
+ * its MRO is just itself. C/C++ unions still do not emit `Union` defs on the
+ * scope side, so nothing changes for them.
  *
  * NOT YET INCLUDED, deliberately: `Typedef`. It belongs here conceptually but
  * is not wired as a member container today, so adding it would widen a
