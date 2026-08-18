@@ -534,13 +534,10 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 //
-// 68 -> 70 for Spring non-HTTP handler side-channel facts (#2417 / #2891).
-// Java and Kotlin ParsedFiles now persist scheduled, event, messaging, and
-// managed-job handler syntax. A warm cache without these facts would stamp the
-// analysis feature as complete while promoting zero handlers. This PR's former
-// value 59 is now part of main's ledger, main currently holds 68, and open PR
-// #2972 publishes 69; 70 is the next free value above every known claim.
-// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 68 -> 69 added #2969's JS/TS data-route-table decoratorRoutes. A warm v68
+// cache would replay unchanged worker results without those routes. Version 70
+// then adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so Java
+// and Kotlin caches persist scheduled, event, messaging, and managed-job facts.
 const SCHEMA_BUMP = 70;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
