@@ -121,6 +121,7 @@
   },
   "overrides": {
     "adm-zip": ">=0.6.0",
+    "sharp": ">=0.35.0",
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
     }
