@@ -36,7 +36,7 @@
  * paired positive case is a regression wearing the fix's clothes.
  */
 import { describe, expect, it } from 'vitest';
-import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { SCOPE_RESOLVERS } from '../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import type { ComposerConfig } from '../../../src/core/ingestion/language-config.js';
@@ -44,6 +44,10 @@ import {
   clearJavaPackageFacts,
   setJavaPackageFact,
 } from '../../../src/core/ingestion/languages/java/package-facts.js';
+import {
+  clearKotlinPackageFacts,
+  setKotlinPackageFact,
+} from '../../../src/core/ingestion/languages/kotlin/package-facts.js';
 
 /** The `composer.json` PSR-4 map `loadPhpComposerConfig` would have produced. */
 const PHP_COMPOSER: ComposerConfig = { psr4: new Map([['App', 'app']]) };
@@ -93,6 +97,38 @@ interface ConformanceCase {
    * the wrong reason.
    */
   readonly declare?: () => void;
+  readonly parsedFile?: (filePath: string) => ParsedFile;
+}
+
+function kotlinParsedFile(filePath: string): ParsedFile {
+  const name = filePath.slice(filePath.lastIndexOf('/') + 1, filePath.lastIndexOf('.'));
+  const moduleScope = `module:${filePath}` as ScopeId;
+  const def: SymbolDefinition = {
+    nodeId: `Class:${filePath}:${name}`,
+    filePath,
+    type: 'Class',
+    qualifiedName: name,
+  };
+  return {
+    filePath,
+    moduleScope,
+    scopes: [
+      {
+        id: moduleScope,
+        parent: null,
+        kind: 'Module',
+        range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+        filePath,
+        bindings: new Map([[name, [{ def, origin: 'local' }]]]),
+        ownedDefs: [def],
+        imports: [],
+        typeBindings: new Map(),
+      },
+    ],
+    parsedImports: [],
+    localDefs: [def],
+    referenceSites: [],
+  };
 }
 
 const PHP_FUNCTION_IMPORT = (targetRaw: string): ParsedImport => ({
@@ -203,6 +239,18 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
       files: ['src/main/kotlin/vendor/Assert.kt', 'src/main/kotlin/com/example/App.kt'],
       fromFile: 'src/main/kotlin/com/example/App.kt',
       resolutionConfig: undefined,
+      declare: () => {
+        clearKotlinPackageFacts();
+        setKotlinPackageFact('src/main/kotlin/vendor/Assert.kt', {
+          status: 'known',
+          packageName: 'vendor',
+        });
+        setKotlinPackageFact('src/main/kotlin/com/example/App.kt', {
+          status: 'known',
+          packageName: 'com.example',
+        });
+      },
+      parsedFile: kotlinParsedFile,
       external: 'org.junit.Assert',
       decoy: 'src/main/kotlin/vendor/Assert.kt',
       reachesDecoy: 'vendor.Assert',
@@ -325,7 +373,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  * TypeScript one, then deleting its line here.
  */
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
-  [SupportedLanguages.Kotlin, '`org.junit.Assert` -> `src/main/kotlin/vendor/Assert.kt`'],
   [SupportedLanguages.Ruby, '`rails/generators` -> `lib/generators.rb`'],
   [SupportedLanguages.PHP, '`Vendor\\Ghost\\Missing` -> `lib/Legacy/Missing.php`'],
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
@@ -373,7 +420,9 @@ function resolveWith(
   const parsedFiles =
     testCase.declare === undefined
       ? []
-      : testCase.files.map((filePath) => ({ filePath }) as unknown as ParsedFile);
+      : testCase.files.map(
+          testCase.parsedFile ?? ((filePath) => ({ filePath }) as unknown as ParsedFile),
+        );
   return resolver.resolveImportTarget(
     targetRaw,
     testCase.fromFile,
