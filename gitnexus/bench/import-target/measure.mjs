@@ -355,7 +355,7 @@
  * measures 197.0 µs -> 9976.2 µs per import (50.6x) with every test still
  * green, and nothing here could see it.
  *
- * `resolveOne` now makes the production call. Five of the eighteen arms can
+ * `resolveOne` now makes the production call. Four of the seventeen arms can
  * observe it — PHP, Java, Kotlin and Python declare a fifth parameter — and
  * that is ASSERTED rather than asserted-in-a-comment: the
  * inventory arm at the foot of the file reads
@@ -399,10 +399,9 @@
  *     per parsed file, O(files) with no depth term, and the count gate in
  *     import-target-index-reuse.contract.test.ts is what holds it to one build
  *     per pass;
- *   - PHP runs twice over the same resolver: `php` without composer.json for
- *     the suffix cascade, and `php_composer` with an authoritative PSR-4 map.
- *     The latter keeps configured hits and unmatched dependency misses in the
- *     same workload, so the Composer gate cannot become an unmeasured fast path;
+ *   - PHP runs with the Composer PSR-4 configuration every production project
+ *     supplies. Configured hits and unmatched dependency misses share one
+ *     workload, so the Composer gate cannot become an unmeasured fast path;
  *   - the `const` tail of PHP's leg (`candidateFiles.length === 1`) is a
  *     different ANSWER, not a different cost: `function` runs the identical
  *     candidate gather and `localDefs` filter and diverges only in the last two
@@ -418,7 +417,7 @@
  * are already resident. Do not read the two modes as "~46 → ~42": only report
  * mode got faster.
  *
- * MEASURING ALL EIGHTEEN HEAP ARMS instead of eight costs 1.37 s, and that is
+ * MEASURING ALL SEVENTEEN HEAP ARMS instead of eight costs 1.37 s, and that is
  * a measured number rather than the "seconds are free here" the paragraph below
  * would have let it be. Timed per language with the phase instrumented, twice:
  * the heap phase goes 2.06 s -> 3.43 s (1.377 s and 1.370 s added over the two
@@ -515,8 +514,8 @@ const DEEP_PAD = 16;
  * with like. In practice that is still 15 for go, csharp, dart, kotlin, java,
  * cobol, swift, rust, python, c and cpp — every language the flakiness above
  * was ever about — and 7-8 for php, csharp_csproj, ruby, javascript, typescript
- * php_composer and vue, whose cheapest cell is 20-28 ms. Replayed against two independent
- * runs' sample sets it saved 12.8 s and 12.4 s of a 46 s run with all 90 cells
+ * and vue, whose cheapest cell is 20-28 ms. Replayed against two independent
+ * runs' sample sets it saved 12.8 s and 12.4 s of a 46 s run with all 85 cells
  * passing all five gates at 0.4-0.7 of budget, and min-of-7 reads slightly
  * HIGHER than min-of-15, so the gates get marginally more sensitive rather than
  * less. The chosen N is reported per language as `reps`.
@@ -550,7 +549,7 @@ const HEAP_PAD = 8;
  *  floor derived from `heap_reading_bytes`, and the linear-growth ratio arm.
  *  All arms are measured through `retainedPassBytes`, one real import through
  *  the real resolver; this list decides which GATE a reading gets, not whether
- *  it is taken. Configured duplicate arms stay here when their read pattern
+ *  it is taken. The configured C# arm stays here because its read pattern
  *  reaches retained structures that the unconfigured arm cannot observe.
  *
  *  The remaining three are `HEAP_BOUNDED`, DERIVED from this list rather than
@@ -566,7 +565,6 @@ const HEAP_BUDGETED = [
   'csharp_csproj',
   'ruby',
   'php',
-  'php_composer',
   'java',
   'python',
   'c',
@@ -597,7 +595,7 @@ const HEAP_BUDGETED = [
 
 /**
  * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
- * — because their registered hook DECLARES it. Five of eighteen arms, and the
+ * — because their registered hook DECLARES it. Four of seventeen arms, and the
  * inventory arm at the foot of this file reconciles that claim against
  * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
  *
@@ -722,7 +720,6 @@ const EXTENSION = {
   ruby: '.rb',
   kotlin: '.kt',
   php: '.php',
-  php_composer: '.php',
   java: '.java',
   cobol: '.cbl',
   swift: '.swift',
@@ -756,7 +753,6 @@ const PASCAL_CASE_FILES = new Set([
   'csharp',
   'kotlin',
   'php',
-  'php_composer',
   'java',
   'cobol',
   // Swift types and Vue SFCs are PascalCase by universal convention.
@@ -830,9 +826,6 @@ function uniqueDir(lang, d, i) {
       : `mod${d}/src/main/kotlin/com/example/pkg${d}`;
   }
   if (lang === 'php') return d % 7 === 0 ? `src/App/Ns${d}/Sub/Ns${d}` : `src/App/Ns${d}`;
-  if (lang === 'php_composer') {
-    return d % 7 === 0 ? `src/App/Ns${d}/Sub/Ns${d}` : `src/App/Ns${d}`;
-  }
   if (lang === 'java') {
     return d % 7 === 0
       ? `mod${d}/src/main/java/com/example/pkg${d}/inner/pkg${d}`
@@ -923,8 +916,7 @@ function collideDir(lang, d, i) {
         `mod${d}/src/main/kotlin/com/example/models/inner/com/example/models`
       : `mod${d}/src/main/kotlin/com/example/models`;
   }
-  if (lang === 'php') return `svc${d}/src/Models`;
-  if (lang === 'php_composer') return `src/App/Svc${d}/Models`;
+  if (lang === 'php') return `src/App/Svc${d}/Models`;
   if (lang === 'java') {
     return d % 7 === 0
       ? `svc${d}/src/main/java/com/example/model/inner/model`
@@ -993,7 +985,6 @@ function buildFiles(lang, fileCount, pad, shape) {
       layout === 'ruby' ||
       layout === 'cobol' ||
       layout === 'php' ||
-      layout === 'php_composer' ||
       // The three added later that also bucket or key on the BASENAME:
       // JS/TS `buildSuffixIndex` (one entry per path suffix, so the last
       // component is the shortest key), Vue through the same index, Python's
@@ -1156,14 +1147,13 @@ function kotlinBenchmarkPackage(filePath) {
  * that can see it.
  */
 function buildParsedFiles(lang, files) {
-  const semanticLang = lang === 'php_composer' ? 'php' : lang;
   const parsedFiles = [];
   for (const filePath of files) {
-    if (semanticLang === 'java') {
+    if (lang === 'java') {
       parsedFiles.push(javaProbeFile(filePath, javaBenchmarkPackage(filePath)));
       continue;
     }
-    if (semanticLang === 'kotlin') {
+    if (lang === 'kotlin') {
       const slash = filePath.lastIndexOf('/');
       const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
       parsedFiles.push(kotlinProbeFile(filePath, kotlinBenchmarkPackage(filePath), stem));
@@ -1173,7 +1163,7 @@ function buildParsedFiles(lang, files) {
     const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
     const parent = slash < 0 ? '' : filePath.slice(0, slash);
     const owner = parent.slice(parent.lastIndexOf('/') + 1);
-    const qualifiedName = semanticLang === 'php' ? `App\\${owner}\\${stem}` : `${owner}.${stem}`;
+    const qualifiedName = lang === 'php' ? `App\\${owner}\\${stem}` : `${owner}.${stem}`;
     parsedFiles.push(
       probeFile(filePath, [
         ['Class', qualifiedName],
@@ -1254,23 +1244,6 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
         : `com.ghost${(r >>> 4) % 97}.deep.Missing`;
   }
   if (lang === 'php') {
-    // Backslash-separated, the way a `use` statement is actually written; the
-    // resolver normalizes them. No composer.json is threaded (the adapter's
-    // `resolutionConfig` is left undefined), so every one of these lands on
-    // `suffixResolve` — the leg that ran one `findIndex` over every file per
-    // path part per extension, ~50 of them, and measured 96.40 ms per import at
-    // 20k files before #2901.
-    return local
-      ? `App\\Ns${d}\\File${j}`
-      : (r >>> 3) % 2 === 0
-        ? [
-            'Psr\\Log\\LoggerInterface',
-            'Symfony\\Component\\Console\\Command',
-            'Doctrine\\ORM\\EntityManager',
-          ][(r >>> 4) % 3]
-        : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
-  }
-  if (lang === 'php_composer') {
     if (local) {
       const namespace = d % 7 === 0 ? `Ns${d}\\Sub\\Ns${d}` : `Ns${d}`;
       const leadingSeparator = (r >>> 3) % 4 === 0 ? '\\' : '';
@@ -1472,23 +1445,6 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
         : `com.ghost${(r >>> 4) % 97}.deep.Missing`;
   }
   if (lang === 'php') {
-    // `Models\Mod{n}` is carried by every service, so the segment-suffix key it
-    // resolves through holds one entry no matter how many files exist: PHP
-    // answers from keyed maps and is collision-IMMUNE, which is what this arm
-    // asserts. The local spelling still always resolves, as it does on the
-    // unique layout — PHP's cascade strips leading segments, so even the
-    // nested-same-name slice is reachable by a shorter suffix.
-    return local
-      ? `App\\Models\\Mod${Math.floor(j / dirs)}`
-      : (r >>> 3) % 2 === 0
-        ? [
-            'Psr\\Log\\LoggerInterface',
-            'Symfony\\Component\\Console\\Command',
-            'Doctrine\\ORM\\EntityManager',
-          ][(r >>> 4) % 3]
-        : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
-  }
-  if (lang === 'php_composer') {
     if (local) {
       const leadingSeparator = (r >>> 3) % 4 === 0 ? '\\' : '';
       return `${leadingSeparator}App\\Svc${j % dirs}\\Models\\Mod${Math.floor(j / dirs)}`;
@@ -1696,13 +1652,12 @@ function newPass(lang, files, pad = 0) {
   if (lang === 'javascript' || lang === 'typescript') {
     return { allFilePaths: new Set(files), config: tsBaseUrlConfig(tsBaseUrlFor(pad)) };
   }
-  const contextLanguage = lang === 'php_composer' ? 'php' : lang;
-  if (CONTEXT_LANGS.includes(contextLanguage)) {
+  if (CONTEXT_LANGS.includes(lang)) {
     const parsedFiles = buildParsedFiles(lang, files);
     restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
-      config: lang === 'php_composer' ? phpComposerConfigFor(pad) : undefined,
+      config: lang === 'php' ? phpComposerConfigFor(pad) : undefined,
       parsedFiles,
     };
   }
@@ -1776,7 +1731,7 @@ function resolveOne(lang, from, target, pass) {
   // the leg derives the name it matches on from `targetRaw` itself, so
   // computing a real one would be a split per import charged to the timed loop
   // for a field nothing reads.
-  if (lang === 'php' || lang === 'php_composer') {
+  if (lang === 'php') {
     return resolvePhpImportTargetInternal(
       target,
       from,
@@ -2075,7 +2030,6 @@ const HEAP_PROBE_TARGET = {
   csharp_csproj: 'App.Missing0',
   ruby: 'gem0/missing/thing',
   php: 'Vendor0\\Ghost\\Missing',
-  php_composer: 'Vendor0\\Ghost\\Missing',
   java: 'com.google.common.vendor0.Missing',
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
@@ -2249,10 +2203,11 @@ const CONTEXT_PROBE = {
 function measureContext(lang) {
   const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
+  const config = lang === 'php' ? phpComposerConfigFor(0) : undefined;
   const answer = (files) => {
     restoreBenchmarkSideChannels(lang, files ?? []);
     return renderResolved(
-      resolveOne(lang, from, target, { allFilePaths, config: undefined, parsedFiles: files }),
+      resolveOne(lang, from, target, { allFilePaths, config, parsedFiles: files }),
     );
   };
   return {
@@ -2301,9 +2256,9 @@ if (CHECK && GC === null) {
  * uses ten files away, and the same "one row per language" table
  * `bench/cfg/measure.mjs` keeps.
  *
- * The mapping is many-to-one on purpose: C# and PHP each have a configured and
- * unconfigured arm over one registered resolver. The paired corpora isolate
- * the configuration-dependent branches that the default arms cannot reach.
+ * The mapping is many-to-one only for C#: the configured arm reaches the
+ * csproj branch that the default arm cannot observe. PHP's sole arm carries
+ * its production Composer configuration directly.
  */
 const LANG_REGISTRY = {
   go: SupportedLanguages.Go,
@@ -2313,7 +2268,6 @@ const LANG_REGISTRY = {
   ruby: SupportedLanguages.Ruby,
   kotlin: SupportedLanguages.Kotlin,
   php: SupportedLanguages.PHP,
-  php_composer: SupportedLanguages.PHP,
   java: SupportedLanguages.Java,
   cobol: SupportedLanguages.Cobol,
   swift: SupportedLanguages.Swift,
@@ -2493,7 +2447,7 @@ const SCALE_SHAPE = {
     'one of them alone moves nothing in the others.',
 };
 /** The same, for the heap arm — the four inputs that decide what it measures.
- *  Asserted for all eighteen arms, budgeted tier and bounded tier alike, and it is
+ *  Asserted for all seventeen arms, budgeted tier and bounded tier alike, and it is
  *  the bounded tier that needs it most: a bound is a single comparison, so a
  *  probe swapped for one that reaches less is a bound over a smaller workload
  *  and there is no floor beside it to notice.
