@@ -24,9 +24,9 @@
  * those two need that no other language does.
  *
  * Kotlin also has `bench/kotlin-import-target/`, and this does not replace it:
- * that bench fingerprints both file-set iteration orders and probes the
- * four-tier cascade shape by shape, which this corpus does not. What Kotlin
- * gains here is a second corpus and the arms below that its own bench predates.
+ * that bench probes declared-package correctness cases shape by shape. What
+ * Kotlin gains here is a second corpus plus shared timing, context and heap
+ * arms.
  *
  * Each of the first nine resolvers answered its lookups with a full
  * `allFilePaths` scan per import before its fix, so import resolution cost
@@ -129,10 +129,10 @@
  *   - `depth_ratio` `t_deep/t_small` at a FIXED file count with ~6x the path
  *     components. `scaling_ratio` divides the file count out, so it is
  *     scale-invariant and structurally cannot see a cost that grows with path
- *     DEPTH instead — and `buildSuffixIndex` (C#, Ruby, PHP, Java) and Kotlin's
- *     `suffixByStem` each emit one entry per component. Go, Dart and COBOL,
- *     whose indexes are depth-free (COBOL's are keyed on the basename and
- *     nothing else), sit at ~0.9-1.0; the others sit legitimately above 1.0,
+ *     DEPTH instead — and `buildSuffixIndex` (C#, Ruby, PHP, Java) emits one
+ *     entry per component. Go, Dart, Kotlin and COBOL have depth-free indexes
+ *     (COBOL's are keyed on the basename and nothing else), so they sit near
+ *     1.0; the suffix-indexed resolvers sit legitimately above 1.0,
  *     which is why the budget is per language. Python is the extreme and the
  *     reason the spread is worth a per-language number at all: its index is
  *     depth-free, but `hasRepoCandidate` and `resolveAbsoluteFromFiles` rebuild
@@ -355,13 +355,13 @@
  * measures 197.0 µs -> 9976.2 µs per import (50.6x) with every test still
  * green, and nothing here could see it.
  *
- * `resolveOne` now makes the production call. Only TWO of the seventeen arms
- * can observe it — PHP and Python are the only registered hooks that declare a
- * fifth parameter — and that is ASSERTED rather than asserted-in-a-comment: the
+ * `resolveOne` now makes the production call. Four of the seventeen arms can
+ * observe it — PHP, Java, Kotlin and Python declare a fifth parameter — and
+ * that is ASSERTED rather than asserted-in-a-comment: the
  * inventory arm at the foot of the file reads
  * `SCOPE_RESOLVERS.get(language).resolveImportTarget.length` and reconciles it
  * against `CONTEXT_LANGS` in both directions, so a language that grows a
- * context leg cannot ship with the leg unmeasured. The other fourteen are handed
+ * context leg cannot ship with the leg unmeasured. The other thirteen are handed
  * nothing and build no `ParsedFile[]` at all, so their numbers are unmoved.
  *
  * `newPass` mints the `ParsedFile[]` FIRST and derives the path set from it
@@ -386,8 +386,8 @@
  * equal what baselines.json records. Dropping the fifth argument, dropping
  * `importedSymbolKind`, or reverting Python to `namespace` collapses the two
  * onto one value and fails. PHP and Python still agree with their fallback on
- * the main corpus; Java deliberately has no context-free fallback, so its
- * fingerprints move to the declared-package answers recorded here.
+ * the main corpus; Java and Kotlin deliberately have no context-free fallback,
+ * so their fingerprints pin the declared-package answers recorded here.
  *
  * WHAT IS STILL NOT MEASURED, narrowed rather than deleted:
  *
@@ -424,9 +424,9 @@
  * a measured number rather than the "seconds are free here" the paragraph below
  * would have let it be. Timed per language with the phase instrumented, twice:
  * the heap phase goes 2.06 s -> 3.43 s (1.377 s and 1.370 s added over the two
- * runs). The nine are kotlin 0.57 s — it retains the largest index of the nine
- * and builds all three of its maps eagerly — then vue 0.18, typescript 0.17,
- * cpp 0.09, swift 0.08, dart 0.08, go 0.07, cobol 0.07, rust 0.06. End to end
+ * runs). Those figures predate #2960: Kotlin now retains a compact
+ * declared-package/module-binding index rather than three path-suffix maps.
+ * End to end
  * that is report mode 33.76 s -> 34.93 s (min of three runs each, +1.17 s,
  * consistent with the phase measurement inside run-to-run noise). `--check` was
  * 41.60 s before and reads 41.48-43.56 s after, i.e. the whole-run difference
@@ -460,7 +460,7 @@ import { resolveGoImportTarget } from '../../src/core/ingestion/languages/go/imp
 import { resolveDartImportTarget } from '../../src/core/ingestion/languages/dart/import-target.ts';
 import { resolveRubyImportTarget } from '../../src/core/ingestion/languages/ruby/import-target.ts';
 import { resolveCsharpImportTarget } from '../../src/core/ingestion/languages/csharp/import-target.ts';
-import { resolveKotlinImportTarget } from '../../src/core/ingestion/languages/kotlin/import-target.ts';
+import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.ts';
 import { resolvePhpImportTargetInternal } from '../../src/core/ingestion/languages/php/import-target.ts';
 import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.ts';
 import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/scope-resolver.ts';
@@ -578,20 +578,8 @@ const HEAP_BUDGETED = [
   // per-pass structure and each grows LINEARLY with the file count (ratio
   // 0.996-1.004 against a 1.25 budget over 8000 -> 32000 files), so each can
   // carry the full ceiling + floor + ratio set rather than a bound alone.
-  // kotlin's 40.82 MiB is larger than ruby's and java's, both of which were
-  // budgeted from the start, and it had no stated exclusion reason at all.
-  //
-  // Its ceiling is also the one TIGHT ceiling in this file — 1.0747x its
-  // reading where every other is 1.5x — because it is the only one gating a
-  // size REDUCTION being preserved rather than a footprint not growing.
-  // #2881 compacts `dirChildren`'s buckets, and deleting that `slice()` is
-  // invisible to every other instrument in the repository: output-identical,
-  // so no fingerprint moves; capacity has no reflective surface, so no unit
-  // assertion moves; and both heap scales grow together, so `heap_ratio_budget`
-  // divides it out. It shows up here and nowhere else, at +12.57%. See
-  // `_heap_compaction_gate` in baselines.json for the measurement, the
-  // arithmetic behind the 5.4 MB, and how to tell a lost compaction from a
-  // runner's heapUsed accounting moving under the whole file.
+  // Kotlin now retains its declared-package/module-binding index. Its measured
+  // 32000-file reading and standard 1.5x ceiling are recorded in baselines.json.
   'kotlin',
   'dart',
   'go',
@@ -613,17 +601,17 @@ const HEAP_BUDGETED = [
 
 /**
  * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
- * — because their registered hook DECLARES it. Three of seventeen, and the
+ * — because their registered hook DECLARES it. Four of seventeen, and the
  * inventory arm at the foot of this file reconciles that claim against
  * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
  *
  * These are also the only arms for which `newPass` builds a `ParsedFile[]` at
- * all. Building one for the other fourteen would cost their timed loop an
+ * all. Building one for the other thirteen would cost their timed loop an
  * O(files) allocation per pass that no resolver of theirs can even observe —
  * their hooks declare three or four parameters — so their numbers stay exactly
  * where they were.
  */
-const CONTEXT_LANGS = ['php', 'java', 'python'];
+const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -965,11 +953,10 @@ function collideDir(lang, d, i) {
  * a handful of buckets.
  *
  * `pad` prepends that many extra directory components to every path. Every
- * language's in-repo target resolves through a path SUFFIX (Go's module leg
- * against the package dir, C#'s progressive strip, Dart's `lib/<rel>`, Ruby's
- * suffix match, Kotlin's `suffixByStem`), so the padding changes path depth
- * without changing what resolves — which is what makes the `deep` arm a clean
- * depth measurement rather than a different corpus.
+ * path-based resolver keeps the same answer under that padding. Kotlin's
+ * package facts are also unchanged by it. The padding therefore changes path
+ * depth without changing what resolves, making `deep` a clean depth
+ * measurement rather than a different corpus.
  *
  * Split out from `buildRepo` so the heap arm can build 32k paths without also
  * minting 256k import tuples it would never resolve.
@@ -1097,6 +1084,35 @@ const javaProbeFile = (filePath, packageName) => ({
   },
 });
 
+const kotlinProbeFile = (filePath, packageName, exportName) => {
+  const base = probeFile(filePath, [['Class', `${packageName}.${exportName}`]]);
+  const def = base.localDefs[0];
+  const moduleScope = `module:${filePath}`;
+  return {
+    ...base,
+    moduleScope,
+    scopes: [
+      {
+        id: moduleScope,
+        parent: null,
+        kind: 'Module',
+        range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+        filePath,
+        bindings: new Map([[exportName, [{ def, origin: 'local' }]]]),
+        ownedDefs: [def],
+        imports: [],
+        typeBindings: new Map(),
+      },
+    ],
+    captureSideChannel: {
+      kind: 'kotlin',
+      companionScopes: [],
+      packageFact: { status: 'known', packageName },
+      classAnnotations: [],
+    },
+  };
+};
+
 function javaBenchmarkPackage(filePath) {
   const uniquePackage = /\/com\/example\/(pkg\d+)(?:\/|$)/.exec(`/${filePath}`)?.[1];
   if (uniquePackage !== undefined) return `com.example.${uniquePackage}`;
@@ -1104,6 +1120,13 @@ function javaBenchmarkPackage(filePath) {
   return /\/svc\d+\/.*\/com\/example\/model(?:\/|$)/.test(`/${filePath}`)
     ? 'com.example.model'
     : '';
+}
+
+function kotlinBenchmarkPackage(filePath) {
+  const rootedPath = '/' + filePath;
+  const uniquePackage = /\/com\/example\/(pkg\d+)(?:\/|$)/.exec(rootedPath)?.[1];
+  if (uniquePackage !== undefined) return `com.example.${uniquePackage}`;
+  return /\/com\/example\/models(?:\/|$)/.test(rootedPath) ? 'com.example.models' : '';
 }
 
 /**
@@ -1131,6 +1154,12 @@ function buildParsedFiles(lang, files) {
   for (const filePath of files) {
     if (lang === 'java') {
       parsedFiles.push(javaProbeFile(filePath, javaBenchmarkPackage(filePath)));
+      continue;
+    }
+    if (lang === 'kotlin') {
+      const slash = filePath.lastIndexOf('/');
+      const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
+      parsedFiles.push(kotlinProbeFile(filePath, kotlinBenchmarkPackage(filePath), stem));
       continue;
     }
     const slash = filePath.lastIndexOf('/');
@@ -1409,15 +1438,8 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
           `package:ext${(r >>> 4) % 97}/other/mod${(r >>> 4) % 8}.dart`;
   }
   if (lang === 'kotlin') {
-    // Same wildcard share as the unique arm. This used to send the `d % 7`
-    // nested slice to `com.example.vendor${d}`, a package that exists nowhere,
-    // to mirror the unique arm's nested slice — which missed, because
-    // `dirChildren` required the parent to be the FIRST occurrence of its own
-    // name and `…/com/example/pkg${d}/inner/pkg${d}` therefore did not belong to
-    // `pkg${d}`. #2881 removed that rule, so the unique arm's nested wildcards
-    // resolve and the mirror has to as well, or this arm stops resolving as
-    // many imports as `small` — which is the invariant that makes the two
-    // timings comparable, and it is asserted below.
+    // Same wildcard share and declared-package workload as the unique arm.
+    // Directory collisions must not affect semantic package resolution.
     return local
       ? (r >>> 3) % 3 === 0
         ? `com.example.models.*`
@@ -1666,9 +1688,11 @@ const contextFor = (pass, parsedImport) =>
     : { parsedFiles: pass.parsedFiles, parsedImport, filesSkipped: 0 };
 
 function restoreBenchmarkSideChannels(lang, parsedFiles) {
-  if (lang !== 'java') return;
-  javaScopeResolver.loadResolutionConfig?.('');
-  for (const parsed of parsedFiles) javaScopeResolver.applyCaptureSideChannel?.(parsed);
+  const resolver =
+    lang === 'java' ? javaScopeResolver : lang === 'kotlin' ? kotlinScopeResolver : undefined;
+  if (resolver === undefined) return;
+  resolver.loadResolutionConfig?.('');
+  for (const parsed of parsedFiles) resolver.applyCaptureSideChannel?.(parsed);
 }
 
 /** The timed loop. One `newPass` per pass, so every pass pays exactly one index
@@ -1689,9 +1713,18 @@ function resolveOne(lang, from, target, pass) {
   if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths);
   if (lang === 'ruby') return resolveRubyImportTarget(target, from, allFilePaths);
   if (lang === 'kotlin') {
-    return resolveKotlinImportTarget(
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target },
-      { fromFile: from, allFilePaths },
+    const parsedImport = {
+      kind: 'named',
+      localName: 'X',
+      importedName: 'X',
+      targetRaw: target,
+    };
+    return kotlinScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, parsedImport),
     );
   }
   // `pass.config` is undefined for PHP, so no composer.json: the PSR-4 mapping
@@ -2020,7 +2053,7 @@ const HEAP_PROBE_TARGET = {
   //     package-directory lookup and forces `PackageDirIndex`;
   //   - `dart` is an external package, so BOTH candidate paths miss and both
   //     walk the basename bucket to completion;
-  //   - `kotlin` misses in `suffixByStem`, the map its four-tier cascade builds;
+  //   - `kotlin` misses after building its declared-package/module-binding index;
   //   - `cobol` misses in both tier maps, `swift` in `byModule`, and `rust`
   //     probes candidate paths and builds nothing — that last is the reading
   //     the exclusion rests on;
@@ -2097,12 +2130,13 @@ function measureHeap(lang) {
  * five-argument call and the three-argument one this harness used to make.
  *
  * That difference is the whole arm. PHP and Python need it because their main
- * corpus answers agree with the fallback. Java's main fingerprint also catches
- * a dropped context, but this tiny positive probe isolates the adapter contract
- * from aggregate corpus changes. Timing cannot prove any of these; a dropped
- * context makes the arms faster, and nothing here has a lower bound on ms.
+ * corpus answers agree with the fallback. Java and Kotlin deliberately return
+ * null without declared-package context; this tiny positive probe isolates the
+ * adapter contract from aggregate corpus changes. Timing cannot prove any of
+ * these; a dropped context makes the arms faster, and nothing here has a lower
+ * bound on ms.
  *
- * Both are resolved THROUGH `resolveOne`, not through the resolvers directly,
+ * All probes are resolved THROUGH `resolveOne`, not through the resolvers directly,
  * because what is under test is this file's threading rather than the
  * resolvers' behaviour. The control differs in exactly one thing:
  * `pass.parsedFiles` is undefined, which `contextFor` turns into no fifth
@@ -2135,6 +2169,15 @@ const CONTEXT_PROBE = {
     parsedFiles: [
       javaProbeFile('app/Main.java', 'app'),
       javaProbeFile('weird/path/User.java', 'com.example.model'),
+    ],
+  },
+  /** A Kotlin export resolves from its package fact and module binding only. */
+  kotlin: {
+    from: 'app/Main.kt',
+    target: 'com.example.model.User',
+    parsedFiles: [
+      kotlinProbeFile('app/Main.kt', 'app', 'main'),
+      kotlinProbeFile('weird/path/UserSource.kt', 'com.example.model', 'User'),
     ],
   },
   /**
@@ -2311,8 +2354,9 @@ for (const lang of LANGS) {
     scaling_ratio: Number((scales.large.ms / scales.small.ms / (LARGE / SMALL)).toFixed(3)),
     // `scaling_ratio` divides the file count out, so it is scale-invariant and
     // structurally cannot see a cost that grows with path DEPTH instead — and
-    // `buildSuffixIndex` (C#, Ruby, PHP, Java, and the whole ts family) and
-    // Kotlin's `suffixByStem` all emit one entry per '/' in a path, and
+    // `buildSuffixIndex` (C#, Ruby, PHP, Java, and the whole ts family) emits
+    // one entry per '/' in a path, while Kotlin's declared-package index is
+    // depth-free, and
     // Python's ancestor walk rebuilds one prefix per component PER IMPORT.
     // Same file count, ~6x the components.
     depth_ratio: Number((scales.deep.ms / scales.small.ms).toFixed(3)),
@@ -2886,8 +2930,8 @@ expectNoOrphanKeys(
 // against a claim in a comment. `run.ts` passes the fifth argument to every
 // provider; which ones can OBSERVE it is decided by how many parameters each
 // hook declares, and that is a number the registry can be asked for. Today
-// exactly three answer 5 (php, java, python) and the other fourteen answer 3 or 4 —
-// which is why fourteen arms could ignore this whole question and their numbers
+// exactly four answer 5 (php, java, kotlin, python) and the other thirteen answer 3 or 4 —
+// which is why thirteen arms can ignore this whole question and their numbers
 // did not move when it was fixed.
 //
 // `Function.length` stops at the first defaulted or rest parameter, so a hook

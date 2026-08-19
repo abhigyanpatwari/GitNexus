@@ -616,8 +616,8 @@ jobs:
         # where the measured overshoot is at most 6.3%. The estimator was fixed
         # rather than the budget widened; distributions in _arms_note.
         # The Kotlin arm here is a second corpus, not a replacement for the
-        # kotlin-import-target bench below, which carries tie-break probes (both
-        # file-set iteration orders, the four-tier cascade) this one does not.
+        # kotlin-import-target bench below, which carries declared-package
+        # correctness probes this shared corpus does not.
         # It sits with the other resolver-index guards rather than at the end of
         # the job: parking a new gate last is not safety, it is the slot least
         # likely to execute (#2895 measured the last two guards running zero
@@ -629,15 +629,13 @@ jobs:
         run: node --expose-gc --import tsx bench/import-target/measure.mjs --check
         working-directory: gitnexus
 
-      - name: Kotlin import-resolution identity + scaling guards
+      - name: Kotlin declared-package import correctness + scaling guards
         if: ${{ !cancelled() }}
-        # Build-free: asserts resolveKotlinImportTarget resolves an unchanged
-        # file set (fingerprint, in both file-set iteration orders — every
-        # tie-break in that resolver is expressed only through iteration order)
-        # and that per-import cost stays independent of workspace size. The
-        # pre-index implementation scores 3.737 on this corpus against 0.99 for
-        # the index, so the gate separates them by a wide margin. Rationale and
-        # history: see the header of bench/kotlin-import-target/measure.mjs.
+        # Build-free: fingerprints declared-package evidence, external decoy
+        # rejection, top-level/member/wildcard imports, overload sets and root
+        # packages, then guards one package-index build per workspace against
+        # file-count and path-depth scaling. Rationale and history: see the
+        # header of bench/kotlin-import-target/measure.mjs.
         run: node --import tsx bench/kotlin-import-target/measure.mjs --check
         working-directory: gitnexus
 
