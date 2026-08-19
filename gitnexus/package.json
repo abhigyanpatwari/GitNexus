@@ -120,6 +120,7 @@
     "vitest": "^4.0.18"
   },
   "overrides": {
+    "adm-zip": ">=0.6.0",
     "@huggingface/transformers": {
       "onnxruntime-node": "$onnxruntime-node"
     }
