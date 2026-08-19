@@ -355,7 +355,7 @@
  * measures 197.0 µs -> 9976.2 µs per import (50.6x) with every test still
  * green, and nothing here could see it.
  *
- * `resolveOne` now makes the production call. Four of the seventeen arms can
+ * `resolveOne` now makes the production call. Five of the eighteen arms can
  * observe it — PHP, Java, Kotlin and Python declare a fifth parameter — and
  * that is ASSERTED rather than asserted-in-a-comment: the
  * inventory arm at the foot of the file reads
@@ -399,12 +399,10 @@
  *     per parsed file, O(files) with no depth term, and the count gate in
  *     import-target-index-reuse.contract.test.ts is what holds it to one build
  *     per pass;
- *   - PHP's leg is measured with NO composer.json — `resolutionConfig` is
- *     undefined here, as it always has been — so `namespaceDirectories` only
- *     ever returns the directory of an already-resolved file and the PSR-4
- *     mapping branch stays unreached, exactly as `csharp` cannot reach the
- *     csproj leg. Closing that is a second PHP arm on the `csharp_csproj`
- *     precedent, not a parameter;
+ *   - PHP runs twice over the same resolver: `php` without composer.json for
+ *     the suffix cascade, and `php_composer` with an authoritative PSR-4 map.
+ *     The latter keeps configured hits and unmatched dependency misses in the
+ *     same workload, so the Composer gate cannot become an unmeasured fast path;
  *   - the `const` tail of PHP's leg (`candidateFiles.length === 1`) is a
  *     different ANSWER, not a different cost: `function` runs the identical
  *     candidate gather and `localDefs` filter and diverges only in the last two
@@ -420,7 +418,7 @@
  * are already resident. Do not read the two modes as "~46 → ~42": only report
  * mode got faster.
  *
- * MEASURING ALL SEVENTEEN HEAP ARMS instead of eight costs 1.37 s, and that is
+ * MEASURING ALL EIGHTEEN HEAP ARMS instead of eight costs 1.37 s, and that is
  * a measured number rather than the "seconds are free here" the paragraph below
  * would have let it be. Timed per language with the phase instrumented, twice:
  * the heap phase goes 2.06 s -> 3.43 s (1.377 s and 1.370 s added over the two
@@ -517,8 +515,8 @@ const DEEP_PAD = 16;
  * with like. In practice that is still 15 for go, csharp, dart, kotlin, java,
  * cobol, swift, rust, python, c and cpp — every language the flakiness above
  * was ever about — and 7-8 for php, csharp_csproj, ruby, javascript, typescript
- * and vue, whose cheapest cell is 20-28 ms. Replayed against two independent
- * runs' sample sets it saved 12.8 s and 12.4 s of a 46 s run with all 85 cells
+ * php_composer and vue, whose cheapest cell is 20-28 ms. Replayed against two independent
+ * runs' sample sets it saved 12.8 s and 12.4 s of a 46 s run with all 90 cells
  * passing all five gates at 0.4-0.7 of budget, and min-of-7 reads slightly
  * HIGHER than min-of-15, so the gates get marginally more sensitive rather than
  * less. The chosen N is reported per language as `reps`.
@@ -550,13 +548,10 @@ const HEAP_LARGE = 32000;
 const HEAP_PAD = 8;
 /** The languages whose retained per-pass index carries a BUDGET — a ceiling, a
  *  floor derived from `heap_reading_bytes`, and the linear-growth ratio arm.
- *  All eight are measured the same way as the other nine (`retainedPassBytes`,
- *  one real import through the real resolver); what this list decides is which
- *  GATE a reading gets, not whether it is taken. The first five reach the shared
- *  `WorkspaceFileIndex` and retained NOTHING at BASE; `csharp_csproj` is the
- *  same corpus through the same index under the csproj context, and it is here
- *  rather than excluded as a duplicate because after #2903 its READ PATTERN,
- *  not its corpus, decides the number.
+ *  All arms are measured through `retainedPassBytes`, one real import through
+ *  the real resolver; this list decides which GATE a reading gets, not whether
+ *  it is taken. Configured duplicate arms stay here when their read pattern
+ *  reaches retained structures that the unconfigured arm cannot observe.
  *
  *  The remaining three are `HEAP_BOUNDED`, DERIVED from this list rather than
  *  written beside it, and they carry an upper bound and NO floor. That asymmetry
@@ -565,12 +560,13 @@ const HEAP_PAD = 8;
  *  would gate the noise. rust reads 16 B at both scales; swift's ratio is 0.888
  *  and cobol's 1.082, both outside the linearity every budgeted arm shows, so a
  *  floor and a ratio arm would be measuring the measurement. See the MEMORY
- *  section of the header for what re-measuring all seventeen found. */
+ *  section of the header for what re-measuring the full inventory found. */
 const HEAP_BUDGETED = [
   'csharp',
   'csharp_csproj',
   'ruby',
   'php',
+  'php_composer',
   'java',
   'python',
   'c',
@@ -601,7 +597,7 @@ const HEAP_BUDGETED = [
 
 /**
  * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
- * — because their registered hook DECLARES it. Four of seventeen, and the
+ * — because their registered hook DECLARES it. Five of eighteen arms, and the
  * inventory arm at the foot of this file reconciles that claim against
  * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
  *
@@ -714,6 +710,9 @@ const joinBase = (baseUrl, rest) => (baseUrl === '' ? rest : `${baseUrl}/${rest}
  */
 const tsBaseUrlFor = (pad) =>
   pad === 0 ? '' : Array.from({ length: pad }, (_, n) => `d${n}`).join('/');
+const phpComposerConfigFor = (pad) => ({
+  psr4: new Map([['App', joinBase(tsBaseUrlFor(pad), 'src/App')]]),
+});
 /** Keyed by LAYOUT name, so there is no `csharp_csproj` row: `buildFiles`
  *  aliases that arm to `csharp` before this table is read. */
 const EXTENSION = {
@@ -723,6 +722,7 @@ const EXTENSION = {
   ruby: '.rb',
   kotlin: '.kt',
   php: '.php',
+  php_composer: '.php',
   java: '.java',
   cobol: '.cbl',
   swift: '.swift',
@@ -756,6 +756,7 @@ const PASCAL_CASE_FILES = new Set([
   'csharp',
   'kotlin',
   'php',
+  'php_composer',
   'java',
   'cobol',
   // Swift types and Vue SFCs are PascalCase by universal convention.
@@ -829,6 +830,9 @@ function uniqueDir(lang, d, i) {
       : `mod${d}/src/main/kotlin/com/example/pkg${d}`;
   }
   if (lang === 'php') return d % 7 === 0 ? `src/App/Ns${d}/Sub/Ns${d}` : `src/App/Ns${d}`;
+  if (lang === 'php_composer') {
+    return d % 7 === 0 ? `src/App/Ns${d}/Sub/Ns${d}` : `src/App/Ns${d}`;
+  }
   if (lang === 'java') {
     return d % 7 === 0
       ? `mod${d}/src/main/java/com/example/pkg${d}/inner/pkg${d}`
@@ -920,6 +924,7 @@ function collideDir(lang, d, i) {
       : `mod${d}/src/main/kotlin/com/example/models`;
   }
   if (lang === 'php') return `svc${d}/src/Models`;
+  if (lang === 'php_composer') return `src/App/Svc${d}/Models`;
   if (lang === 'java') {
     return d % 7 === 0
       ? `svc${d}/src/main/java/com/example/model/inner/model`
@@ -988,6 +993,7 @@ function buildFiles(lang, fileCount, pad, shape) {
       layout === 'ruby' ||
       layout === 'cobol' ||
       layout === 'php' ||
+      layout === 'php_composer' ||
       // The three added later that also bucket or key on the BASENAME:
       // JS/TS `buildSuffixIndex` (one entry per path suffix, so the last
       // component is the shortest key), Vue through the same index, Python's
@@ -1150,13 +1156,14 @@ function kotlinBenchmarkPackage(filePath) {
  * that can see it.
  */
 function buildParsedFiles(lang, files) {
+  const semanticLang = lang === 'php_composer' ? 'php' : lang;
   const parsedFiles = [];
   for (const filePath of files) {
-    if (lang === 'java') {
+    if (semanticLang === 'java') {
       parsedFiles.push(javaProbeFile(filePath, javaBenchmarkPackage(filePath)));
       continue;
     }
-    if (lang === 'kotlin') {
+    if (semanticLang === 'kotlin') {
       const slash = filePath.lastIndexOf('/');
       const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
       parsedFiles.push(kotlinProbeFile(filePath, kotlinBenchmarkPackage(filePath), stem));
@@ -1166,7 +1173,7 @@ function buildParsedFiles(lang, files) {
     const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
     const parent = slash < 0 ? '' : filePath.slice(0, slash);
     const owner = parent.slice(parent.lastIndexOf('/') + 1);
-    const qualifiedName = lang === 'php' ? `App\\${owner}\\${stem}` : `${owner}.${stem}`;
+    const qualifiedName = semanticLang === 'php' ? `App\\${owner}\\${stem}` : `${owner}.${stem}`;
     parsedFiles.push(
       probeFile(filePath, [
         ['Class', qualifiedName],
@@ -1262,6 +1269,20 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
             'Doctrine\\ORM\\EntityManager',
           ][(r >>> 4) % 3]
         : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
+  }
+  if (lang === 'php_composer') {
+    if (local) {
+      const namespace = d % 7 === 0 ? `Ns${d}\\Sub\\Ns${d}` : `Ns${d}`;
+      const leadingSeparator = (r >>> 3) % 4 === 0 ? '\\' : '';
+      return `${leadingSeparator}App\\${namespace}\\File${j}`;
+    }
+    return (r >>> 3) % 2 === 0
+      ? [
+          'Psr\\Log\\LoggerInterface',
+          'Symfony\\Component\\Console\\Command',
+          'Doctrine\\ORM\\EntityManager',
+        ][(r >>> 4) % 3]
+      : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
   }
   if (lang === 'java') {
     // Java has NO in-repo-namespace gate (#2910 is filed for it), so a JDK
@@ -1467,6 +1488,19 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
           ][(r >>> 4) % 3]
         : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
   }
+  if (lang === 'php_composer') {
+    if (local) {
+      const leadingSeparator = (r >>> 3) % 4 === 0 ? '\\' : '';
+      return `${leadingSeparator}App\\Svc${j % dirs}\\Models\\Mod${Math.floor(j / dirs)}`;
+    }
+    return (r >>> 3) % 2 === 0
+      ? [
+          'Psr\\Log\\LoggerInterface',
+          'Symfony\\Component\\Console\\Command',
+          'Doctrine\\ORM\\EntityManager',
+        ][(r >>> 4) % 3]
+      : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
+  }
   if (lang === 'java') {
     // Every file declares the same package despite living under different
     // service paths. Exact and wildcard imports therefore exercise one growing
@@ -1662,12 +1696,13 @@ function newPass(lang, files, pad = 0) {
   if (lang === 'javascript' || lang === 'typescript') {
     return { allFilePaths: new Set(files), config: tsBaseUrlConfig(tsBaseUrlFor(pad)) };
   }
-  if (CONTEXT_LANGS.includes(lang)) {
+  const contextLanguage = lang === 'php_composer' ? 'php' : lang;
+  if (CONTEXT_LANGS.includes(contextLanguage)) {
     const parsedFiles = buildParsedFiles(lang, files);
     restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
-      config: undefined,
+      config: lang === 'php_composer' ? phpComposerConfigFor(pad) : undefined,
       parsedFiles,
     };
   }
@@ -1741,7 +1776,7 @@ function resolveOne(lang, from, target, pass) {
   // the leg derives the name it matches on from `targetRaw` itself, so
   // computing a real one would be a split per import charged to the timed loop
   // for a field nothing reads.
-  if (lang === 'php') {
+  if (lang === 'php' || lang === 'php_composer') {
     return resolvePhpImportTargetInternal(
       target,
       from,
@@ -2040,6 +2075,7 @@ const HEAP_PROBE_TARGET = {
   csharp_csproj: 'App.Missing0',
   ruby: 'gem0/missing/thing',
   php: 'Vendor0\\Ghost\\Missing',
+  php_composer: 'Vendor0\\Ghost\\Missing',
   java: 'com.google.common.vendor0.Missing',
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
@@ -2249,11 +2285,11 @@ if (CHECK && GC === null) {
 /**
  * Every arm, and the registered language each one exercises.
  *
- * This used to be a hand-written list of seventeen strings under a comment
+ * This used to be a hand-written list of language strings under a comment
  * claiming it was "every language in `SCOPE_RESOLVERS`" — a claim nothing in
  * the file could check, because the file never imported the registry. Adding a
  * resolver to `pipeline/registry.ts` is two lines, neither of which is this
- * one, so a seventeenth registered language would have shipped ungated and
+ * one, so a newly registered language would have shipped ungated and
  * printed PASS. That is not a hypothetical failure mode: JavaScript reached
  * `suffixResolve` with no index at all and measured 25 972 µs per import at
  * 8000 files (PR #2911) for exactly as long as nothing gated it.
@@ -2265,10 +2301,9 @@ if (CHECK && GC === null) {
  * uses ten files away, and the same "one row per language" table
  * `bench/cfg/measure.mjs` keeps.
  *
- * The mapping is many-to-one on purpose: `csharp` and `csharp_csproj` are two
- * arms over one registered resolver, differing only in whether `csharpConfigs`
- * is supplied, because the no-csproj arm returns before it can reach the leg
- * #2902 indexed.
+ * The mapping is many-to-one on purpose: C# and PHP each have a configured and
+ * unconfigured arm over one registered resolver. The paired corpora isolate
+ * the configuration-dependent branches that the default arms cannot reach.
  */
 const LANG_REGISTRY = {
   go: SupportedLanguages.Go,
@@ -2278,6 +2313,7 @@ const LANG_REGISTRY = {
   ruby: SupportedLanguages.Ruby,
   kotlin: SupportedLanguages.Kotlin,
   php: SupportedLanguages.PHP,
+  php_composer: SupportedLanguages.PHP,
   java: SupportedLanguages.Java,
   cobol: SupportedLanguages.Cobol,
   swift: SupportedLanguages.Swift,
@@ -2457,7 +2493,7 @@ const SCALE_SHAPE = {
     'one of them alone moves nothing in the others.',
 };
 /** The same, for the heap arm — the four inputs that decide what it measures.
- *  Asserted for all seventeen, budgeted tier and bounded tier alike, and it is
+ *  Asserted for all eighteen arms, budgeted tier and bounded tier alike, and it is
  *  the bounded tier that needs it most: a bound is a single comparison, so a
  *  probe swapped for one that reaches less is a bound over a smaller workload
  *  and there is no floor beside it to notice.

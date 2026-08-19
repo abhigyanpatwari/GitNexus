@@ -105,13 +105,54 @@ describe('resolvePhpImportTargetInternal declaration selection', () => {
       resolvePhpImportTargetInternal(importPath, 'app/Main.php', files, {
         psr4: new Map([['', 'src']]),
       }),
-    ).toBe('lib/Legacy/Missing.php');
+    ).toBeNull();
     expect(
       resolvePhpImportTargetInternal(importPath, 'app/Main.php', files, {
         psr4: new Map([['App', 'app']]),
         hasUnmodeledAutoload: true,
       }),
     ).toBe('lib/Legacy/Missing.php');
+  });
+
+  it('resolves catch-all PSR-4 class and function imports inside the configured root', () => {
+    const user = '/repo/src/Vendor/Models/User.php';
+    const helpers = '/repo/src/Vendor/Models/helpers.php';
+    const parsedFiles = [
+      parsedFile(user, [definition(user, 'Class', 'Vendor\\Models\\User')]),
+      parsedFile(helpers, [definition(helpers, 'Function', 'Vendor\\Models\\findUser')]),
+    ];
+    const config: ComposerConfig = { psr4: new Map([['', '/repo/src']]) };
+    const files = new Set(parsedFiles.map((parsed) => parsed.filePath));
+
+    expect(
+      resolvePhpImportTargetInternal('Vendor\\Models\\User', '/repo/app/Main.php', files, config),
+    ).toBe(user);
+
+    const parsedImport: ParsedImport = {
+      kind: 'named',
+      localName: 'findUser',
+      importedName: 'findUser',
+      targetRaw: 'Vendor\\Models\\findUser',
+      importedSymbolKind: 'function',
+    };
+    expect(
+      resolvePhpImportTargetInternal(parsedImport.targetRaw, '/repo/app/Main.php', files, config, {
+        parsedFiles,
+        parsedImport,
+      }),
+    ).toBe(helpers);
+  });
+
+  it('does not suffix-resolve outside an authoritative catch-all directory', () => {
+    const decoy = '/repo/legacy/Vendor/Ghost/Missing.php';
+    expect(
+      resolvePhpImportTargetInternal(
+        'Vendor\\Ghost\\Missing',
+        '/repo/app/Main.php',
+        new Set([decoy]),
+        { psr4: new Map([['', '/repo/src']]) },
+      ),
+    ).toBeNull();
   });
 
   it('loads production and development PSR-4 mappings', () => {

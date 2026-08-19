@@ -48,7 +48,7 @@ function namespaceDirectories(
 
   if (composerConfig === null) return [...directories];
 
-  const normalizedTarget = normalizePhpPath(targetRaw);
+  const normalizedTarget = normalizePhpPath(targetRaw).replace(/^\/+/, '');
   const mappings = [...composerConfig.psr4.entries()].sort((left, right) => {
     const lengthDifference = right[0].length - left[0].length;
     return lengthDifference !== 0 ? lengthDifference : left[0].localeCompare(right[0]);
@@ -56,6 +56,7 @@ function namespaceDirectories(
   for (const [namespacePrefix, directoryPrefix] of mappings) {
     const normalizedPrefix = normalizePhpPath(namespacePrefix);
     if (
+      normalizedPrefix !== '' &&
       normalizedTarget !== normalizedPrefix &&
       !normalizedTarget.startsWith(`${normalizedPrefix}/`)
     ) {

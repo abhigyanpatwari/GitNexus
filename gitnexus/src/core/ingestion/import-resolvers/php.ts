@@ -55,16 +55,20 @@ export function resolvePhpImportInternal(
 
     for (const [nsPrefix, dirPrefix] of sorted) {
       const nsPrefixSlash = nsPrefix.replace(/\\/g, '/').replace(/\/+$/, '');
-      if (nsPrefixSlash === '') {
-        hasCatchAllNamespace = true;
-        continue;
-      }
-      if (ownershipPath.startsWith(nsPrefixSlash + '/') || ownershipPath === nsPrefixSlash) {
+      const isCatchAll = nsPrefixSlash === '';
+      if (
+        isCatchAll ||
+        ownershipPath.startsWith(nsPrefixSlash + '/') ||
+        ownershipPath === nsPrefixSlash
+      ) {
+        hasCatchAllNamespace ||= isCatchAll;
         matchedNamespace = true;
-        const remainder = normalized.slice(nsPrefixSlash.length).replace(/^\//, '');
+        const remainder = ownershipPath.slice(nsPrefixSlash.length).replace(/^\//, '');
 
         // 1. Try class-style PSR-4: full path → file (e.g. App\Models\User → app/Models/User.php)
-        const filePath = dirPrefix + (remainder ? '/' + remainder : '') + '.php';
+        const mappedPath =
+          dirPrefix === '' ? remainder : dirPrefix + (remainder ? '/' + remainder : '');
+        const filePath = mappedPath + '.php';
         if (allFiles.has(filePath)) return filePath;
         if (index) {
           const result = index.getInsensitive(filePath);
@@ -74,7 +78,13 @@ export function resolvePhpImportInternal(
         // 2. Function/constant fallback: strip last segment (symbol name), scan namespace directory.
         //    e.g. App\Models\getUser → directory app/Models/, find first .php file in that dir.
         const lastSlash = remainder.lastIndexOf('/');
-        const nsDir = lastSlash >= 0 ? dirPrefix + '/' + remainder.slice(0, lastSlash) : dirPrefix;
+        const relativeNamespace = lastSlash >= 0 ? remainder.slice(0, lastSlash) : '';
+        const nsDir =
+          dirPrefix === ''
+            ? relativeNamespace
+            : relativeNamespace === ''
+              ? dirPrefix
+              : `${dirPrefix}/${relativeNamespace}`;
 
         // Prefer SuffixIndex directory lookup (O(log n + matches)) over linear scan.
         //
@@ -114,14 +124,13 @@ export function resolvePhpImportInternal(
     }
 
     // A non-empty PSR-4 map is authoritative for first-party namespaces.
-    // Preserve the suffix fallback when Composer provides no usable evidence
-    // or declares an empty-prefix catch-all; otherwise an unmatched namespace
-    // belongs to a dependency and must not bind to a coincidental local file.
+    // Preserve the suffix fallback when Composer provides no usable evidence.
+    // An empty-prefix PSR-4 entry is usable evidence: it covers every namespace,
+    // so a miss beneath its configured directory must not escape that root.
     if (
       sorted.length > 0 &&
       !composerConfig.hasUnmodeledAutoload &&
-      !hasCatchAllNamespace &&
-      !matchedNamespace
+      (!matchedNamespace || hasCatchAllNamespace)
     ) {
       return null;
     }
