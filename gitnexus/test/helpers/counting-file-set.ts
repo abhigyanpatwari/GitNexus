@@ -103,10 +103,9 @@ export class CountingSet extends Set<string> {
 /**
  * The `CountingSet` of the OTHER per-file-set key: the `parsedFiles` array the
  * orchestrator passes as `resolveImportTarget`'s fifth argument
- * (`scope-resolution/pipeline/run.ts`). PHP memoizes `filesByDirectory` on that
- * array's identity and Python reads it in `pythonFileExportsName`, and neither
- * touches the path Set while doing so — so without this the whole `context`
- * channel is unmeasured.
+ * (`scope-resolution/pipeline/run.ts`). PHP, Java, Kotlin and Python memoize or
+ * read structures keyed by that array's identity without traversing the path
+ * Set, so without this the whole `context` channel is unmeasured.
  *
  * ## Element reads, not traversal entry points
  *
@@ -133,11 +132,9 @@ export class CountingSet extends Set<string> {
  * count grow with the import count for correct code and there would be no
  * property left to assert.
  *
- * The `ParsedFile`s are minimal on purpose: `filePath` is the only field either
- * consumer reads to build its index, and empty `localDefs` keeps both languages
- * on their fallback answer, so the fixture measures the index and changes no
- * resolution result. A test that needs the declaration legs to FIRE wants
- * `php-import-target-parity.test.ts`, which carries defs.
+ * The default `ParsedFile`s are minimal on purpose. Callers whose resolver
+ * needs semantic package or binding evidence supply `makeParsedFile`; this
+ * keeps the counter reusable without weakening those positive fixtures.
  */
 export interface CountedFileList {
   /** Pass as `ImportResolutionContext.parsedFiles`. Stable identity, so it is
@@ -157,7 +154,7 @@ const ARRAY_INDEX = /^(?:0|[1-9][0-9]*)$/;
  * first's index and report zero.
  */
 export function countedParsedFiles(filePaths: readonly string[]): CountedFileList {
-  const backing: ParsedFile[] = filePaths.map((filePath) => ({
+  return countedParsedFilesWith(filePaths, (filePath) => ({
     filePath,
     moduleScope: `module:${filePath}`,
     scopes: [],
@@ -165,6 +162,14 @@ export function countedParsedFiles(filePaths: readonly string[]): CountedFileLis
     localDefs: [],
     referenceSites: [],
   }));
+}
+
+/** A counted workspace whose files carry caller-supplied semantic evidence. */
+export function countedParsedFilesWith(
+  filePaths: readonly string[],
+  makeParsedFile: (filePath: string) => ParsedFile,
+): CountedFileList {
+  const backing: ParsedFile[] = filePaths.map(makeParsedFile);
   let reads = 0;
   const counting = new Proxy(backing, {
     get(target, key, receiver): unknown {
