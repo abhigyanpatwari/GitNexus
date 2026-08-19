@@ -324,7 +324,12 @@ export function resolveJavaConstant(
   fileKey: string,
   name: string,
   repo: RepoConstants,
+  depth = 0,
 ): string | null {
+  // Cycle guard for the Java-qualified walk (self/mutual imports). The shared
+  // fold's visited-stack only guards the bare-name path below; qualified refs
+  // recurse through resolveJavaConstant directly, so bound the recursion here.
+  if (depth > 32) return null;
   // Qualified ref (`ApiPathConstants.FIELD`): the fold layer keys imports and
   // constants by their IN-FILE name, so a dotted name never hits directly.
   // Split head.tail: resolve the head through the importing file's class
@@ -340,9 +345,9 @@ export function resolveJavaConstant(
     if (imp) {
       const targetFile = resolveJavaImport(fileKey, imp.module, new Set(repo.keys()));
       if (targetFile !== null) {
-        const qualified = resolveJavaConstant(targetFile, `${head}.${tail}`, repo);
+        const qualified = resolveJavaConstant(targetFile, `${head}.${tail}`, repo, depth + 1);
         if (qualified !== null) return qualified;
-        const bare = resolveJavaConstant(targetFile, tail, repo);
+        const bare = resolveJavaConstant(targetFile, tail, repo, depth + 1);
         if (bare !== null) return bare;
       }
       return null;
@@ -356,9 +361,9 @@ export function resolveJavaConstant(
       if (targetFile !== null) {
         const field = parts.slice(cut + 1).join('.');
         const declaring = parts[cut];
-        const qualified = resolveJavaConstant(targetFile, `${declaring}.${field}`, repo);
+        const qualified = resolveJavaConstant(targetFile, `${declaring}.${field}`, repo, depth + 1);
         if (qualified !== null) return qualified;
-        return resolveJavaConstant(targetFile, field, repo);
+        return resolveJavaConstant(targetFile, field, repo, depth + 1);
       }
     }
   }

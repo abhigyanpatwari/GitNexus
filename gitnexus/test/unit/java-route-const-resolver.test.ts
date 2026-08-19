@@ -334,3 +334,38 @@ public class DemoController {
     assert.strictEqual(routes[0].routePathExpr, undefined);
   });
 });
+
+describe('qualified-ref recursion cycle guard (maintainer point 5)', () => {
+  it('self-import: qualified self-reference terminates with null, not a stack overflow', () => {
+    const repo = repoOf({
+      'src/main/java/com/example/SelfConsts.java': `package com.example;
+public class SelfConsts {
+  public static final String X = SelfConsts.X + "/x";
+}`,
+    });
+    // In-file expr records the qualified ref `SelfConsts.X`; resolving it
+    // re-enters the same file via the (self) import head — must hit the depth
+    // cap, not the V8 stack.
+    expect(
+      resolveJavaConstant('src/main/java/com/example/SelfConsts.java', 'SelfConsts.X', repo),
+    ).toBeNull();
+  });
+
+  it('mutual imports: A.X -> B.Y -> A.X terminates with null', () => {
+    const repo = repoOf({
+      'src/main/java/com/example/AConsts.java': `package com.example;
+import com.example.BConsts;
+public class AConsts {
+  public static final String X = BConsts.Y;
+}`,
+      'src/main/java/com/example/BConsts.java': `package com.example;
+import com.example.AConsts;
+public class BConsts {
+  public static final String Y = AConsts.X;
+}`,
+    });
+    expect(
+      resolveJavaConstant('src/main/java/com/example/AConsts.java', 'AConsts.X', repo),
+    ).toBeNull();
+  });
+});
