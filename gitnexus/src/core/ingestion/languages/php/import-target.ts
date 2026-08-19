@@ -55,13 +55,11 @@ function namespaceDirectories(
   });
   for (const [namespacePrefix, directoryPrefix] of mappings) {
     const normalizedPrefix = normalizePhpPath(namespacePrefix);
-    if (
-      normalizedPrefix !== '' &&
-      normalizedTarget !== normalizedPrefix &&
-      !normalizedTarget.startsWith(`${normalizedPrefix}/`)
-    ) {
-      continue;
-    }
+    const matchesNamespace =
+      normalizedPrefix === '' ||
+      normalizedTarget === normalizedPrefix ||
+      normalizedTarget.startsWith(`${normalizedPrefix}/`);
+    if (!matchesNamespace) continue;
 
     const remainder = normalizedTarget.slice(normalizedPrefix.length).replace(/^\//, '');
     const separator = remainder.lastIndexOf('/');

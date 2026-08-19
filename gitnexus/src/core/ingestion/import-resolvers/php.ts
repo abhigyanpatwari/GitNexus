@@ -123,10 +123,10 @@ export function resolvePhpImportInternal(
       }
     }
 
-    // A non-empty PSR-4 map is authoritative for first-party namespaces.
-    // Preserve the suffix fallback when Composer provides no usable evidence.
-    // An empty-prefix PSR-4 entry is usable evidence: it covers every namespace,
-    // so a miss beneath its configured directory must not escape that root.
+    // A non-empty PSR-4 map is authoritative for namespaces it does not own.
+    // Preserve the existing mapped-namespace fallback behavior; #2962 is the
+    // conservative external-namespace gate, not a rewrite of mapped lookup.
+    // A catch-all owns every namespace, so its misses remain authoritative.
     if (
       sorted.length > 0 &&
       !composerConfig.hasUnmodeledAutoload &&

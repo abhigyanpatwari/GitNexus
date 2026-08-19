@@ -57,15 +57,20 @@ describe('resolvePhpImportTargetInternal declaration selection', () => {
     ).toBe('app/Models/User.php');
   });
 
-  it('rejects external function and constant imports before declaration fallback', () => {
-    const decoy = 'lib/Legacy/Missing.php';
+  it('rejects ambiguous function and constant declaration fallbacks', () => {
+    const first = 'app/Ghost/First.php';
+    const second = 'app/Ghost/Second.php';
     const parsedFiles = [
-      parsedFile(decoy, [
-        definition(decoy, 'Function', 'missing'),
-        definition(decoy, 'Variable', 'MISSING'),
+      parsedFile(first, [
+        definition(first, 'Function', 'missing'),
+        definition(first, 'Variable', 'MISSING'),
+      ]),
+      parsedFile(second, [
+        definition(second, 'Function', 'missing'),
+        definition(second, 'Variable', 'MISSING'),
       ]),
     ];
-    const files = new Set([decoy]);
+    const files = new Set(parsedFiles.map((parsed) => parsed.filePath));
 
     for (const [name, importedSymbolKind] of [
       ['missing', 'function'],
@@ -75,7 +80,7 @@ describe('resolvePhpImportTargetInternal declaration selection', () => {
         kind: 'named',
         localName: name,
         importedName: name,
-        targetRaw: `Vendor\\Ghost\\${name}`,
+        targetRaw: `App\\Ghost\\${name}`,
         importedSymbolKind,
       };
 
