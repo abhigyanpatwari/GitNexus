@@ -5,6 +5,7 @@ import {
   getLanguageGrammar,
 } from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 
 /**
  * ABI load-smoke (#1922). For EVERY entry in `parser-loader.ts` SOURCES,
@@ -148,7 +149,10 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
       try {
         grammar = getLanguageGrammar(testCase.language, testCase.filePath);
       } catch (err) {
-        if (optional) {
+        // GITNEXUS_REQUIRE_<LANG>=1 revokes the optional exemption: a job that
+        // sets it runs on a platform the grammar publishes a prebuild for, so a
+        // load failure there is a real regression, not an absent binding.
+        if (optional && !isOptionalGrammarRequired(key)) {
           // Optional/vendored grammar absent on this platform — the loader
           // reported it cleanly (the only acceptable failure mode). Never a
           // hard crash; the throw above proves a clean JS-level error.

@@ -12,13 +12,18 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
+import { describeGrammarPresence, optionalGrammarGate } from '../../helpers/optional-grammar.js';
 
 // `@tree-sitter-grammars/tree-sitter-zig` is an optionalDependency: on a
 // platform without a prebuild the grammar is absent and the pipeline skips
 // `.zig` files by contract, so these suites skip too (Swift/Dart pattern).
-const zigAvailable = isLanguageAvailable(SupportedLanguages.Zig);
+// Under GITNEXUS_REQUIRE_ZIG=1 the skip is not acceptable — the presence
+// assertion below fails the job instead of letting Zig vanish from a green run.
+const zig = optionalGrammarGate(SupportedLanguages.Zig);
+const zigAvailable = zig.available;
+
+describeGrammarPresence(zig);
 
 describe.skipIf(!zigAvailable)('Zig basic resolution', () => {
   let result: PipelineResult;

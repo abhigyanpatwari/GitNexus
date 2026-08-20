@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import Parser from 'tree-sitter';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { zigExportChecker } from '../../src/core/ingestion/export-detection.js';
 import { createMethodExtractor } from '../../src/core/ingestion/method-extractors/generic.js';
@@ -56,6 +57,24 @@ try {
 }
 
 const describeZig = Zig ? describe : describe.skip;
+
+// GITNEXUS_REQUIRE_ZIG=1 (set by the required CI jobs whose runners all have a
+// prebuild) turns a missing grammar into a failure: a skipped file reports
+// success, so without this the whole structure-phase suite could disappear from
+// a green run. Inert wherever the grammar is genuinely optional.
+describe.skipIf(!isOptionalGrammarRequired(SupportedLanguages.Zig))(
+  'Zig extractors grammar presence (GITNEXUS_REQUIRE_ZIG=1)',
+  () => {
+    it('the optional grammar resolves, so the suite below is not green-by-skip', () => {
+      expect(
+        Zig,
+        'GITNEXUS_REQUIRE_ZIG=1 declares the Zig grammar mandatory on this runner, but ' +
+          "require('@tree-sitter-grammars/tree-sitter-zig') failed — every case below would " +
+          'have skipped and the job would still be green.',
+      ).not.toBeNull();
+    });
+  },
+);
 
 const parser = new Parser();
 const parse = (code: string) => {
