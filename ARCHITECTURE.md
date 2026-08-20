@@ -174,7 +174,7 @@ converging on the routes phase's `(method, url)` registry:
 | Filesystem convention | path → URL, no parsing | Next.js `app/`, Expo, PHP |
 | Single-file framework route | `isRouteFile` + worker extraction | Laravel `routes/*.php` |
 | Cross-file framework route | `discoverRootRouteFiles` + `extractRoutes` | Django `urlpatterns` |
-| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS, **JS/TS dispatch guards and static data route tables** |
+| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS (`@Controller` + `@Get`/`@Post`/…), **JS/TS dispatch guards and static data route tables** |
 
 The last row is the one whose name undersells it. A route is DECLARED by a
 decorator, but it can also be **inferred** from a raw `node:http` server's own

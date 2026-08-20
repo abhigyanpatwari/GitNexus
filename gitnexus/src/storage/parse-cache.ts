@@ -538,7 +538,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // cache would replay unchanged worker results without those routes. Version 70
 // then adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so Java
 // and Kotlin caches persist scheduled, event, messaging, and managed-job facts.
-const SCHEMA_BUMP = 70;
+//
+// 70 -> 71 adds #3009's NestJS decorator routes to the JS/TS decoratorRoutes
+// channel. Same reasoning as 69: a warm v70 cache replays unchanged worker
+// results, which for every already-indexed NestJS repo means replaying the
+// empty route set this change exists to fix — the fix would appear to do
+// nothing until something else invalidated the cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING (origin/main was 70
+// at the time of writing).
+const SCHEMA_BUMP = 71;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
