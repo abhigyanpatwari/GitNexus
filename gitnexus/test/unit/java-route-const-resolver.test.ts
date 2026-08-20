@@ -458,20 +458,34 @@ describe('F3: multi-segment FQN annotation values and constant initializers', ()
   };
 
   it('parses com.example.ApiPaths.USERS as ONE ref (nested field_access chain flattened)', () => {
-    const ops = parseJavaConstOperands(constValueOf(`package p;
+    const ops = parseJavaConstOperands(
+      constValueOf(`package p;
 public class W {
   public static final String X = com.example.ApiPaths.USERS;
-}`));
+}`),
+    );
     expect(ops).toEqual([{ kind: 'ref', name: 'com.example.ApiPaths.USERS' }]);
   });
 
   it('still rejects call/object-side chains: f().X, this.X, arr[0].X', () => {
-    expect(parseJavaConstOperands(constValueOf(`package p;
-public class W { public static final String A = f().X; static Object f(){return null;} }`))).toBeNull();
-    expect(parseJavaConstOperands(constValueOf(`package p;
-public class W { public static final String B = this.Y; String Y = "y"; }`))).toBeNull();
-    expect(parseJavaConstOperands(constValueOf(`package p;
-public class W { public static final String C = arr[0].Z; }`))).toBeNull();
+    expect(
+      parseJavaConstOperands(
+        constValueOf(`package p;
+public class W { public static final String A = f().X; static Object f(){return null;} }`),
+      ),
+    ).toBeNull();
+    expect(
+      parseJavaConstOperands(
+        constValueOf(`package p;
+public class W { public static final String B = this.Y; String Y = "y"; }`),
+      ),
+    ).toBeNull();
+    expect(
+      parseJavaConstOperands(
+        constValueOf(`package p;
+public class W { public static final String C = arr[0].Z; }`),
+      ),
+    ).toBeNull();
   });
 
   it('resolves an FQN-qualified annotation constant end-to-end (query → operands → fold)', () => {
@@ -491,11 +505,7 @@ public class Ctl {
     // tree-sitter-java parse shape); the resolver must follow it via the
     // longest-prefix import fallback.
     expect(
-      resolveJavaConstant(
-        'src/main/java/com/example/Ctl.java',
-        'com.example.ApiPaths.USERS',
-        repo,
-      ),
+      resolveJavaConstant('src/main/java/com/example/Ctl.java', 'com.example.ApiPaths.USERS', repo),
     ).toBe('/api/v1/users');
   });
 });

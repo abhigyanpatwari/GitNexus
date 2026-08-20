@@ -164,8 +164,8 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
     // @RequestMapping("/users") prefix join happens in the downstream routes
     // phase — at this seam we assert the method-level folded paths.)
     const paths = routes.map((r) => r.path).sort();
-    expect(paths).toContain('/api/v1/users');   // qualified ref via import
-    expect(paths).toContain('/api/v1/orders');  // FQN multi-segment chain
+    expect(paths).toContain('/api/v1/users'); // qualified ref via import
+    expect(paths).toContain('/api/v1/orders'); // FQN multi-segment chain
     // The concat route folds to the same literal as the FQN route.
     expect(paths.filter((p) => p === '/api/v1/orders').length).toBeGreaterThanOrEqual(2);
     // Skip floor: no phantom empty/raw-expr paths.
@@ -198,8 +198,12 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
     const warm = await loadParseCache(storageDir);
     const run2 = await runPipeline(warm, files);
 
-    const cold = foldedRoutesOf(run1).map((r) => `${r.method} ${r.path}`).sort();
-    const hot = foldedRoutesOf(run2).map((r) => `${r.method} ${r.path}`).sort();
+    const cold = foldedRoutesOf(run1)
+      .map((r) => `${r.method} ${r.path}`)
+      .sort();
+    const hot = foldedRoutesOf(run2)
+      .map((r) => `${r.method} ${r.path}`)
+      .sort();
     expect(hot).toEqual(cold);
     expect(hot.length).toBeGreaterThan(0);
   }, 120_000);
