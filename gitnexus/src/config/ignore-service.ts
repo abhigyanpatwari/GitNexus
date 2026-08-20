@@ -54,13 +54,19 @@ const DEFAULT_IGNORE_LIST = new Set([
   'obj',
   'target', // Java/Rust
   '.next',
+  // `.next` is Next.js's build CACHE; `_next` is the EMITTED output, and the two
+  // are different directories. A Capacitor/Cordova shell copies the emitted
+  // bundle to `<platform>/app/src/main/assets/public/_next/static/…`, where none
+  // of the path segments hit this list — so a mobile-wrapped Next.js app had 40%
+  // of its indexed files come from minified chunks, and every Route node it
+  // produced pointed at a webpack bundle rather than source (#3007).
+  '_next',
   '.nuxt',
   '.output',
   '.vercel',
   '.netlify',
   '.serverless',
   '_build',
-  'public/build',
   '.parcel-cache',
   '.turbo',
   '.svelte-kit',
@@ -105,6 +111,31 @@ const DEFAULT_IGNORE_LIST = new Set([
   'snapshots', // Jest snapshots
   '__snapshots__',
 ]);
+
+/**
+ * Multi-segment paths to ignore, matched against the whole POSIX path.
+ *
+ * These CANNOT live in {@link DEFAULT_IGNORE_LIST}: that set is tested one path
+ * SEGMENT at a time (`parts.some(p => DEFAULT_IGNORE_LIST.has(p))`) and is also
+ * exposed through `isHardcodedIgnoredDirectory(name)`, which receives a bare
+ * directory name. A slash-containing member can never equal a single segment,
+ * so `'public/build'` sat in that set matching nothing at all until #3007. A
+ * guard test pins the invariant that the name set stays slash-free.
+ */
+const DEFAULT_IGNORED_PATH_FRAGMENTS: readonly string[] = [
+  'public/build', // Remix / Laravel Mix compiled asset output
+];
+
+/** True when `normalizedPath` contains any ignored multi-segment fragment. */
+function hasIgnoredPathFragment(normalizedPath: string): boolean {
+  return DEFAULT_IGNORED_PATH_FRAGMENTS.some(
+    (fragment) =>
+      normalizedPath === fragment ||
+      normalizedPath.startsWith(`${fragment}/`) ||
+      normalizedPath.includes(`/${fragment}/`) ||
+      normalizedPath.endsWith(`/${fragment}`),
+  );
+}
 
 const IGNORED_EXTENSIONS = new Set([
   // Images
@@ -304,6 +335,11 @@ export const shouldIgnorePath = (filePath: string): boolean => {
     if (DEFAULT_IGNORE_LIST.has(part)) {
       return true;
     }
+  }
+
+  // Multi-segment entries cannot be matched by the per-segment loop above.
+  if (hasIgnoredPathFragment(normalizedPath)) {
+    return true;
   }
 
   // Check exact filename matches
