@@ -296,6 +296,7 @@ async function loadContractRegistryResilient(
         ? (base.repoSnapshots as Record<string, { indexedAt: string; lastCommit: string }>)
         : {},
     missingRepos: Array.isArray(base.missingRepos) ? (base.missingRepos as string[]) : [],
+    unreadableRepos: Array.isArray(base.unreadableRepos) ? (base.unreadableRepos as string[]) : [],
     contracts,
     crossLinks,
   };
@@ -359,6 +360,7 @@ export class GroupService {
       crossLinks: result.crossLinks.length,
       unmatched: result.unmatched.length,
       missingRepos: result.missingRepos,
+      unreadableRepos: result.unreadableRepos,
     };
   }
 
@@ -612,6 +614,7 @@ export class GroupService {
       group: name,
       lastSync: registry?.generatedAt || null,
       missingRepos: registry?.missingRepos || [],
+      unreadableRepos: registry?.unreadableRepos || [],
       repos: repoStatuses,
     };
   }

@@ -124,6 +124,7 @@ export function registerGroupCommands(program: Command): void {
             }
           >;
           missingRepos?: string[];
+          unreadableRepos?: string[];
         };
 
         console.log('  Repo index / contracts staleness:');
@@ -137,6 +138,10 @@ export function registerGroupCommands(program: Command): void {
             : 'OK        ';
           const ctr = row.contractsStale ? ' CONTRACTS_STALE' : '';
           console.log(`  ${repoPath.padEnd(25)} ${idx}${ctr}`);
+        }
+        const unreadable = st.unreadableRepos || [];
+        if (unreadable.length > 0) {
+          console.log(`\n  Last sync unreadable repos: ${unreadable.join(', ')}`);
         }
         if ((st.missingRepos || []).length > 0) {
           console.log(`\n  Last sync missing repos: ${st.missingRepos!.join(', ')}`);
@@ -175,6 +180,22 @@ export function registerGroupCommands(program: Command): void {
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
+        // Repos we could not read are the most likely explanation for a small
+        // or empty contract count, so they are reported before the counts —
+        // otherwise a run that read nothing looks exactly like a clean run.
+        if (result.unreadableRepos.length > 0) {
+          console.log(
+            `\n  ⚠️ Could not read the index for: ${result.unreadableRepos.join(', ')}` +
+              `\n     Their contracts are omitted. Re-run with GITNEXUS_LOG_LEVEL=warn to see why,` +
+              `\n     or check \`gitnexus doctor\` in the affected repo.`,
+          );
+        }
+        if (result.missingRepos.length > 0) {
+          console.log(
+            `\n  ⚠️ Not found in the registry: ${result.missingRepos.join(', ')}` +
+              `\n     Index them with \`gitnexus analyze\`, or remove them from group.yaml.`,
+          );
+        }
         console.log(`\nMatching cascade:`);
         const exactLinks = result.crossLinks.filter((l) => l.matchType === 'exact');
         console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);

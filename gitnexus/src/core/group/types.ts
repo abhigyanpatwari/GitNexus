@@ -100,7 +100,14 @@ export interface ContractRegistry {
   version: number;
   generatedAt: string;
   repoSnapshots: Record<string, RepoSnapshot>;
+  /** Configured repos with no entry in the registry. */
   missingRepos: string[];
+  /**
+   * Configured repos that ARE registered but whose index could not be opened
+   * (version skew, lock, corruption). Optional so a registry written before
+   * this field existed still parses — absent means "not recorded", not "none".
+   */
+  unreadableRepos?: string[];
   contracts: StoredContract[];
   crossLinks: CrossLink[];
 }
