@@ -137,6 +137,71 @@ return Dog
 });
 
 // ---------------------------------------------------------------------------
+// middleclass heritage: duplicate class names must follow imports or decline
+// ---------------------------------------------------------------------------
+
+describe('Lua scope: middleclass heritage name collisions', () => {
+  it('resolves an imported duplicate parent to the imported file', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-heritage-collision-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'lib/a.lua': `local class = require("lib.class")
+local Animal = class("Animal")
+return Animal
+`,
+        'lib/b.lua': `local class = require("lib.class")
+local Animal = class("Animal")
+return Animal
+`,
+        'dog.lua': `local class = require("lib.class")
+local Animal = require("lib.a")
+local Dog = class("Dog", Animal)
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const dogExtendsAnimal = getRelationships(result, 'EXTENDS').find(
+        (edge) => edge.source === 'Dog' && edge.target === 'Animal',
+      );
+      expect(dogExtendsAnimal).toBeDefined();
+      expect(dogExtendsAnimal?.targetFilePath).toContain(path.join('lib', 'a.lua'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not guess when duplicate parents are not disambiguated by imports', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-heritage-ambiguous-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'lib/a.lua': `local class = require("lib.class")
+local Animal = class("Animal")
+return Animal
+`,
+        'lib/b.lua': `local class = require("lib.class")
+local Animal = class("Animal")
+return Animal
+`,
+        'dog.lua': `local class = require("lib.class")
+local Dog = class("Dog", Animal)
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'EXTENDS').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'Animal',
+        ),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
 // heritage lifecycle: re-capture with no middleclass must not retain stale
 // EXTENDS / HAS_METHOD facts from a prior pass (reanalysis regression)
 // ---------------------------------------------------------------------------

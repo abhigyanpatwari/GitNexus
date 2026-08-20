@@ -43,7 +43,7 @@ export const vendoredGrammarDir = (packageName: string): string =>
 /**
  * Load a vendored tree-sitter grammar by its absolute path under `vendor/`.
  *
- * GitNexus vendors five grammars (c/dart/proto/swift/kotlin) inside its own
+ * GitNexus vendors six grammars (c/dart/proto/swift/kotlin/lua) inside its own
  * package under `vendor/`, each shipping committed per-platform prebuilds. They
  * are deliberately NOT npm dependencies and must NEVER be copied into
  * `node_modules`: an undeclared package under `node_modules` is "extraneous" to

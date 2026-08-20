@@ -15,7 +15,7 @@ import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
  *
  *   - Required grammars MUST load and parse — an ABI-incompatible native
  *     binding (the #1242-class failure) fails here loudly.
- *   - Optional / vendored grammars (swift/dart/kotlin) must either load OR
+ *   - Optional / vendored grammars (swift/dart/kotlin/lua) must either load OR
  *     cleanly report unavailable — never hard-crash the process.
  *
  * Swift is prebuilt-only (no introspectable parser.c) so the static Python
