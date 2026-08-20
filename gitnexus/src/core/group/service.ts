@@ -350,7 +350,6 @@ export class GroupService {
     const result = await syncGroup(config, {
       groupDir,
       exactOnly: Boolean(params.exactOnly),
-      skipEmbeddings: Boolean(params.skipEmbeddings),
       allowStale: Boolean(params.allowStale),
       verbose: Boolean(params.verbose),
     });

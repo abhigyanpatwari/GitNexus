@@ -1,5 +1,5 @@
 export type ContractType = 'http' | 'grpc' | 'thrift' | 'topic' | 'lib' | 'custom' | 'include';
-export type MatchType = 'exact' | 'manifest' | 'wildcard' | 'bm25' | 'embedding';
+export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
 export interface GroupConfig {
@@ -27,14 +27,11 @@ export interface DetectConfig {
   thrift: boolean;
   topics: boolean;
   shared_libs: boolean;
-  embedding_fallback: boolean;
   includes: boolean;
   workspace_deps: boolean;
 }
 
 export interface MatchingConfig {
-  bm25_threshold: number;
-  embedding_threshold: number;
   max_candidates_per_step: number;
   /**
    * HTTP paths to exclude from cross-link matching. Contracts at these paths

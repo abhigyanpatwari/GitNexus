@@ -30,14 +30,11 @@ const DEFAULT_DETECT = {
   thrift: true,
   topics: true,
   shared_libs: true,
-  embedding_fallback: true,
   includes: false,
   workspace_deps: false,
 };
 
 const DEFAULT_MATCHING = {
-  bm25_threshold: 0.7,
-  embedding_threshold: 0.65,
   max_candidates_per_step: 3,
   exclude_links_paths: [] as string[],
   exclude_links_param_only_paths: false,

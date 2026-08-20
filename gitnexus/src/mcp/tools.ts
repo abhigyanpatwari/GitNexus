@@ -859,10 +859,6 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Group name' },
-        skipEmbeddings: {
-          type: 'boolean',
-          description: 'Exact + BM25 only (Demo PR: same as default exact path)',
-        },
         exactOnly: { type: 'boolean', description: 'Exact match only in cascade' },
       },
       required: ['name'],

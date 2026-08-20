@@ -155,7 +155,6 @@ const OPTION_DESCRIPTION_KEYS = {
   'embeddings install|--cuda': 'help.option.embeddings.install.cuda',
   'embeddings install|--force': 'help.option.embeddings.install.force',
   'group create|--force': 'help.option.group.create.force',
-  'group sync|--skip-embeddings': 'help.option.group.sync.skipEmbeddings',
   'group sync|--exact-only': 'help.option.group.sync.exactOnly',
   'group sync|--allow-stale': 'help.option.group.sync.allowStale',
   'group sync|--verbose': 'help.option.group.sync.verbose',

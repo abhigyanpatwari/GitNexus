@@ -149,7 +149,6 @@ export function registerGroupCommands(program: Command): void {
   group
     .command('sync <name>')
     .description('Sync Contract Registry — extract contracts and build cross-links')
-    .option('--skip-embeddings', 'Exact + BM25 only (no embedding fallback)')
     .option('--exact-only', 'Exact match only')
     .option('--allow-stale', 'Skip stale index warnings')
     .option('--verbose', 'Show each cross-link detail')
@@ -168,7 +167,6 @@ export function registerGroupCommands(program: Command): void {
         groupDir,
         allowStale: Boolean(opts.allowStale),
         verbose: Boolean(opts.verbose),
-        skipEmbeddings: Boolean(opts.skipEmbeddings),
         exactOnly: Boolean(opts.exactOnly),
       });
 

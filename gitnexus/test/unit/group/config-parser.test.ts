@@ -59,9 +59,34 @@ repos:
     expect(config.links).toEqual([]);
     expect(config.packages).toEqual({});
     expect(config.detect.http).toBe(true);
-    expect(config.matching.bm25_threshold).toBe(0.7);
+    expect(config.matching.max_candidates_per_step).toBe(3);
     expect(config.matching.exclude_links_paths).toEqual([]);
     expect(config.matching.exclude_links_param_only_paths).toBe(false);
+  });
+
+  it('still parses a legacy config carrying the removed matching knobs', () => {
+    // `bm25_threshold`, `embedding_threshold` and `detect.embedding_fallback`
+    // were written into every generated group.yaml but read by no matcher, so
+    // they are gone from the schema and the template. Every group.yaml already
+    // on disk still has them, and must keep loading without complaint.
+    const legacy = `
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  http: true
+  embedding_fallback: true
+matching:
+  bm25_threshold: 0.7
+  embedding_threshold: 0.65
+  max_candidates_per_step: 3
+`;
+    const config = parseGroupConfig(legacy);
+    expect(config.name).toBe('test');
+    expect(config.repos).toEqual({ app: 'my-app' });
+    expect(config.detect.http).toBe(true);
+    expect(config.matching.max_candidates_per_step).toBe(3);
   });
 
   it('defaults thrift detection to true', () => {
