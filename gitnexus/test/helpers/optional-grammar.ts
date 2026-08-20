@@ -19,15 +19,24 @@ import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js
  * platform its grammar publishes a prebuild for; otherwise the gate would fail
  * a job it cannot satisfy.
  */
-export const OPTIONAL_GRAMMAR_ENV: Partial<Record<SupportedLanguages, string>> = {
+export const OPTIONAL_GRAMMAR_ENV: Readonly<Partial<Record<string, string>>> = {
   // @tree-sitter-grammars/tree-sitter-zig@1.1.2 publishes prebuilds for
   // {darwin,linux,win32}-{x64,arm64} — every OS in the CI matrix.
   [SupportedLanguages.Zig]: 'GITNEXUS_REQUIRE_ZIG',
-};
+} satisfies Partial<Record<SupportedLanguages, string>>;
 
-/** True when CI declared `language`'s optional grammar mandatory on this runner. */
-export const isOptionalGrammarRequired = (language: SupportedLanguages): boolean => {
-  const envVar = OPTIONAL_GRAMMAR_ENV[language];
+/**
+ * True when CI declared this grammar mandatory on the current runner.
+ *
+ * Keyed by GRAMMAR key, not by `SupportedLanguages`: the registry the ABI
+ * load-smoke walks (`listGrammarSources()`) yields one row per `SOURCES` entry,
+ * which includes variants such as `typescript:tsx` that are not enum members.
+ * Widening the parameter is what keeps that call honest — narrowing the key
+ * with a cast would claim every grammar row is a language, which is false.
+ * `satisfies` above still pins every key WE write to a real language.
+ */
+export const isOptionalGrammarRequired = (grammarKey: string): boolean => {
+  const envVar = OPTIONAL_GRAMMAR_ENV[grammarKey];
   return envVar !== undefined && process.env[envVar] === '1';
 };
 

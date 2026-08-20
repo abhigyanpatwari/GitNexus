@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { listGrammarSources } from '../../src/core/tree-sitter/parser-loader.js';
 import { OPTIONAL_GRAMMAR_ENV, isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 
 /**
@@ -43,6 +44,25 @@ describe('optional grammar required-gate', () => {
   it('does not require the grammar when the variable is unset', () => {
     delete process.env[envVar];
     expect(isOptionalGrammarRequired(SupportedLanguages.Zig)).toBe(false);
+  });
+
+  // The ABI load-smoke passes a GRAMMAR key, not a SupportedLanguages value:
+  // listGrammarSources() has one row per SOURCES entry, including variants like
+  // `typescript:tsx`. A registry key no row ever yields would leave the gate
+  // permanently inert — it would look configured and require nothing.
+  it('registers only keys the grammar registry actually yields', () => {
+    const sources = listGrammarSources();
+    for (const key of Object.keys(OPTIONAL_GRAMMAR_ENV)) {
+      const source = sources.find((s) => s.key === key);
+      expect(source, `${key} is not a grammar key listGrammarSources() yields`).toBeDefined();
+      // Requiring a grammar that is already mandatory would be a no-op gate.
+      expect(source?.optional, `${key} is not an optional grammar`).toBe(true);
+    }
+  });
+
+  it('is inert for a grammar-key variant nobody registered', () => {
+    process.env[envVar] = '1';
+    expect(isOptionalGrammarRequired('typescript:tsx')).toBe(false);
   });
 
   // Languages with no entry must never be gated — an unregistered language

@@ -248,7 +248,10 @@ describeIfWorkerBuilt('RELATION_SCHEMA covers the non-bridge emitters', () => {
     },
   );
 
-  it.concurrent.each(OPTIONAL_GRAMMAR_CORPUS)(
+  // `.for`, not `.each`: only `for` passes the test context as a second
+  // argument (`each`'s callback is `(...args: T[])`), and the context is what
+  // carries the dynamic `skip()` this per-language gate needs.
+  it.concurrent.for(OPTIONAL_GRAMMAR_CORPUS)(
     '$fixture emits only declared FROM/TO pairs, and still reaches $emitter',
     async ({ fixture, language, sentinels }, ctx) => {
       if (!isLanguageAvailable(language)) ctx.skip();

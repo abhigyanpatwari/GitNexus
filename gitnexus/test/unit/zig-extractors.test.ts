@@ -78,7 +78,7 @@ describe.skipIf(!isOptionalGrammarRequired(SupportedLanguages.Zig))(
 
 const parser = new Parser();
 const parse = (code: string) => {
-  parser.setLanguage(Zig as Parser.Language);
+  parser.setLanguage(Zig as Parameters<Parser['setLanguage']>[0]);
   return parser.parse(code);
 };
 
@@ -1178,8 +1178,11 @@ fn f() void {
       const imports = emitZigScopeCaptures(src, 'lp.zig')
         .filter((m) => m['@import.source'] !== undefined)
         .map((m) => interpretZigImport(m))
-        .filter((i) => i !== null && (i.kind === 'named' || i.kind === 'alias'))
-        .map((i) => [i!.localName, (i as { reexportsName?: boolean }).reexportsName === true]);
+        .filter(
+          (i): i is Extract<NonNullable<typeof i>, { kind: 'named' | 'alias' }> =>
+            i !== null && (i.kind === 'named' || i.kind === 'alias'),
+        )
+        .map((i) => [i.localName, (i as { reexportsName?: boolean }).reexportsName === true]);
       expect(imports).toEqual([
         ['Arena', true], // the file-struct TYPE twin of a pub namespace import
         ['Foo', true],
