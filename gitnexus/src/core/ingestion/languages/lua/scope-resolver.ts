@@ -79,7 +79,7 @@ const luaScopeResolver: ScopeResolver = {
 
   // middleclass `class("Name", Parent)` — emits EXTENDS. middleclass has no
   // syntactic class body, so lexical heritage cannot produce these; the hook
-  // re-parses for the class() call's parent arg.
+  // consumes the capture side-channel's class() facts.
   emitHeritageEdges: emitLuaHeritageEdges,
 
   // Lua has globals (`function foo()` is global) — let unresolved free calls

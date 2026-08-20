@@ -9,7 +9,7 @@
  * was live) and emits:
  *   - EXTENDS from the child Class node to the parent Class node, and
  *   - HAS_METHOD from a class's Class node to its file-top-level Method nodes.
- * Both resolve via `nodeLookup` / `graphIdByName`. NO file re-read or re-parse
+ * Both resolve via `nodeLookup` and finalized scope bindings. NO file re-read or re-parse
  * (#1983 no-main-thread-re-parse contract).
  *
  * Mirrors `emitRubyMixinEdges` (the only other `emitHeritageEdges` impl), but
@@ -18,7 +18,10 @@
  * decomposition, and the parent is a bare identifier in the source.
  */
 import { type ParsedFile, type NodeLabel } from 'gitnexus-shared';
-import { isClassLike } from '../../scope-resolution/scope/walkers.js';
+import {
+  isClassLike,
+  resolveInheritanceBaseInScope,
+} from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import {
   positionKey,
@@ -27,17 +30,14 @@ import {
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import type { LuaCaptureSideChannel } from './capture-side-channel.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 
 export function emitLuaHeritageEdges(
   graph: KnowledgeGraph,
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
+  scopes?: ScopeResolutionIndexes,
 ): void {
-  // name → graphId (global, for parent resolution). First-wins; same-named
-  // classes in different files are rare in middleclass codebases, and a
-  // collision here only risks a wrong parent — acceptable for a 0.85-confidence
-  // heuristic edge (better an imperfect EXTENDS than none).
-  const graphIdByName = new Map<string, string>();
   // (filePath, name) → graphId (per-file, for child resolution).
   const graphIdByFileAndName = new Map<string, string>();
   for (const parsed of parsedFiles) {
@@ -48,7 +48,6 @@ export function emitLuaHeritageEdges(
       const qn = def.qualifiedName ?? '';
       if (qn.length > 0) {
         graphIdByFileAndName.set(`${parsed.filePath}::${qn}`, gid);
-        if (!graphIdByName.has(qn)) graphIdByName.set(qn, gid);
       }
     }
   }
@@ -61,10 +60,12 @@ export function emitLuaHeritageEdges(
 
     // ── EXTENDS: class("Name", Parent) ──────────────────────────────────────
     for (const { child, parent } of channel.extendsPairs) {
-      const childGid =
-        graphIdByFileAndName.get(`${parsed.filePath}::${child}`) ?? graphIdByName.get(child);
-      const parentGid = graphIdByName.get(parent);
-      if (childGid === undefined || parentGid === undefined) continue;
+      const childGid = graphIdByFileAndName.get(`${parsed.filePath}::${child}`);
+      if (childGid === undefined || scopes === undefined) continue;
+      const parentDef = resolveInheritanceBaseInScope(parsed.moduleScope, parent, scopes);
+      if (parentDef === undefined) continue;
+      const parentGid = resolveDefGraphId(parentDef.filePath, parentDef, nodeLookup);
+      if (parentGid === undefined) continue;
       const edgeKey = `${childGid}->${parentGid}`;
       if (emittedExtends.has(edgeKey)) continue;
       emittedExtends.add(edgeKey);
@@ -80,8 +81,7 @@ export function emitLuaHeritageEdges(
 
     // ── HAS_METHOD: function ClassName:method() / function ClassName.method() ─
     for (const { owner, method, defRow } of channel.methodOwners) {
-      const classGid =
-        graphIdByFileAndName.get(`${parsed.filePath}::${owner}`) ?? graphIdByName.get(owner);
+      const classGid = graphIdByFileAndName.get(`${parsed.filePath}::${owner}`);
       if (classGid === undefined) continue;
       // Resolve the Method graph node by position (0-based row + simple name).
       const methodGid = nodeLookup.get(
