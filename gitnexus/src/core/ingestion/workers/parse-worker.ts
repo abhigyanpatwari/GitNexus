@@ -1421,12 +1421,10 @@ export function extractORMQueries(
 
 import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
 import {
-  extractPythonModuleConstants,
   parseConstOperands,
   type ModuleConstants,
   type Operand,
 } from '../route-extractors/python-const-resolver.js';
-import { extractJavaModuleConstants } from '../route-extractors/java-const-resolver.js';
 
 /**
  * Report a non-fatal worker issue to the pool over IPC so a caught error is not
@@ -2964,34 +2962,17 @@ const processFileGroup = (
         (result.routerModuleAliases ??= []),
         (result.routerConstructorPrefixes ??= []),
       );
-      // #2391: harvest module-level string constants + from-imports so parse-impl
-      // can resolve non-literal decorator route paths cross-file. Only emit for
-      // files that carry something resolvable (a constant definition or an import
-      // binding) to keep the aggregate bounded on large repos.
-      const constants = extractPythonModuleConstants(tree);
-      if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
-        (result.moduleConstants ??= []).push({ filePath: file.path, constants });
-      }
     }
 
-    // Java parity of the #2391 constant harvest: static-final String fields +
-    // class/static imports, folded cross-file by parse-impl for non-literal
-    // Spring mapping paths (`@WinPostMapping(ApiPathConstants.SAVE_V1)`).
-    // Cost-gated on file content — a file with no `static final String` and no
-    // constants-bearing import is not parsed for constants.
-    if (language === SupportedLanguages.Java) {
-      if (
-        /static\s+final\s+String\s/.test(parseContent) ||
-        /import\s+(static\s+)?[\w.]*Constants/.test(parseContent)
-      ) {
-        const javaConstants = extractJavaModuleConstants(tree);
-        if (
-          javaConstants.literals.size > 0 ||
-          javaConstants.exprs.size > 0 ||
-          javaConstants.imports.size > 0
-        ) {
-          (result.moduleConstants ??= []).push({ filePath: file.path, constants: javaConstants });
-        }
+    // #2391/#2980: harvest module-level string constants + import bindings via
+    // the provider hook so parse-impl can resolve non-literal decorator route
+    // paths cross-file. Cost-gated by the provider's syntax-driven heuristic;
+    // only files that carry something resolvable (a constant definition or an
+    // import binding) are emitted, keeping the aggregate bounded on large repos.
+    if (provider.extractModuleConstants && provider.moduleConstantHeuristic?.(parseContent)) {
+      const constants = provider.extractModuleConstants(tree);
+      if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
+        (result.moduleConstants ??= []).push({ filePath: file.path, constants });
       }
     }
 

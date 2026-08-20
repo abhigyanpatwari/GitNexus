@@ -369,3 +369,133 @@ public class BConsts {
     ).toBeNull();
   });
 });
+
+// ─── Review round 2 regressions (#2980) ───────────────────────────────────
+
+describe('F4: class nested in an interface is NOT implicitly final', () => {
+  const SRC = `package p;
+public interface Api {
+  String BASE = "/api";
+  class Holder {
+    String mutable = "/mutable";
+    static final String OK = "/ok";
+  }
+  interface Inner {
+    String IMPLICIT = "/implicit";
+    class Deep {
+      String alsoMutable = "/also";
+    }
+  }
+}`;
+
+  it('harvests the interface own fields and explicit static final nested fields', () => {
+    const mc = extractJavaModuleConstants(parse(SRC));
+    expect(mc.literals.get('BASE')).toBe('/api');
+    expect(mc.literals.get('OK')).toBe('/ok');
+    expect(mc.literals.get('Holder.OK')).toBe('/ok');
+  });
+
+  it('does NOT harvest mutable fields of a class nested in an interface', () => {
+    const mc = extractJavaModuleConstants(parse(SRC));
+    expect(mc.literals.has('mutable')).toBe(false);
+    expect(mc.literals.has('alsoMutable')).toBe(false);
+    expect(mc.literals.has('Holder.mutable')).toBe(false);
+    expect(mc.exprs.has('mutable')).toBe(false);
+  });
+
+  it('still harvests a class directly nested in an interface (own implicit semantics recomputed at each boundary)', () => {
+    const mc = extractJavaModuleConstants(parse(SRC));
+    expect(mc.literals.get('IMPLICIT')).toBe('/implicit');
+    expect(mc.literals.get('Inner.IMPLICIT')).toBe('/implicit');
+  });
+});
+
+describe('F5: same-name shadowing across nested types drops the stale entry', () => {
+  const SRC = `package p;
+public class Outer {
+  public static final String PATH = "/v1";
+  static class Inner {
+    // shadows Outer.PATH with a non-foldable initializer
+    public static final String PATH = compute();
+    static String compute() { return "/v2"; }
+  }
+}`;
+
+  it('a non-foldable shadow must drop the outer literal, not keep it (skip floor)', () => {
+    const mc = extractJavaModuleConstants(parse(SRC));
+    expect(mc.literals.has('PATH')).toBe(false);
+    expect(mc.exprs.has('PATH')).toBe(false);
+  });
+
+  it('qualified aliases survive per class (Outer.PATH resolvable, Inner.PATH not)', () => {
+    const mc = extractJavaModuleConstants(parse(SRC));
+    expect(mc.literals.get('Outer.PATH')).toBe('/v1');
+    expect(mc.literals.has('Inner.PATH')).toBe(false);
+  });
+
+  it('a foldable shadow REPLACES the outer value (last binding wins in source order)', () => {
+    const src = `package p;
+public class Outer {
+  public static final String PATH = "/v1";
+  static class Inner {
+    public static final String PATH = "/v2";
+  }
+}`;
+    const mc = extractJavaModuleConstants(parse(src));
+    expect(mc.literals.get('PATH')).toBe('/v2');
+    expect(mc.literals.get('Outer.PATH')).toBe('/v1');
+    expect(mc.literals.get('Inner.PATH')).toBe('/v2');
+  });
+});
+
+describe('F3: multi-segment FQN annotation values and constant initializers', () => {
+  const constValueOf = (src: string): Parser.SyntaxNode => {
+    const cls = parse(src).rootNode.descendantsOfType('class_declaration')[0]!;
+    const body = cls.childForFieldName('body')!;
+    const field = body.children.find((c) => c.type === 'field_declaration')!;
+    const decl = field.children.find((c) => c.type === 'variable_declarator')!;
+    return decl.childForFieldName('value')!;
+  };
+
+  it('parses com.example.ApiPaths.USERS as ONE ref (nested field_access chain flattened)', () => {
+    const ops = parseJavaConstOperands(constValueOf(`package p;
+public class W {
+  public static final String X = com.example.ApiPaths.USERS;
+}`));
+    expect(ops).toEqual([{ kind: 'ref', name: 'com.example.ApiPaths.USERS' }]);
+  });
+
+  it('still rejects call/object-side chains: f().X, this.X, arr[0].X', () => {
+    expect(parseJavaConstOperands(constValueOf(`package p;
+public class W { public static final String A = f().X; static Object f(){return null;} }`))).toBeNull();
+    expect(parseJavaConstOperands(constValueOf(`package p;
+public class W { public static final String B = this.Y; String Y = "y"; }`))).toBeNull();
+    expect(parseJavaConstOperands(constValueOf(`package p;
+public class W { public static final String C = arr[0].Z; }`))).toBeNull();
+  });
+
+  it('resolves an FQN-qualified annotation constant end-to-end (query → operands → fold)', () => {
+    const repo = repoOf({
+      'src/main/java/com/example/ApiPaths.java': `package com.example;
+public class ApiPaths {
+  public static final String USERS = "/api/v1/users";
+}`,
+      'src/main/java/com/example/Ctl.java': `package com.example;
+import org.springframework.web.bind.annotation.PostMapping;
+public class Ctl {
+  @PostMapping(com.example.ApiPaths.USERS)
+  public void list() {}
+}`,
+    });
+    // The whole FQN arrives as one ref operand (verified against the real
+    // tree-sitter-java parse shape); the resolver must follow it via the
+    // longest-prefix import fallback.
+    expect(
+      resolveJavaConstant(
+        'src/main/java/com/example/Ctl.java',
+        'com.example.ApiPaths.USERS',
+        repo,
+      ),
+    ).toBe('/api/v1/users');
+  });
+});

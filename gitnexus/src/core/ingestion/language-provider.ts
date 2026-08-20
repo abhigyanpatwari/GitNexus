@@ -39,6 +39,11 @@ import type { CfgVisitor } from './cfg/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
+import type {
+  ModuleConstants,
+  Operand,
+  RepoConstants,
+} from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 
@@ -335,6 +340,52 @@ interface LanguageProviderConfig {
     tree: Parser.Tree,
     filePath: string,
   ) => SharedSpringType[];
+
+  /**
+   * Harvest this file's module-level string constants (#2391 core, #2980 Java
+   * parity) into the language-agnostic {@link ModuleConstants} shape, so the
+   * parse phase can resolve non-literal decorator route paths cross-file.
+   *
+   * The worker calls this when BOTH hold:
+   *  - the file is cheap to harvest (provider-declared `moduleConstantHeuristic`
+   *    matched — syntax-driven, e.g. a `static final String` field or a
+   *    constants-bearing import; NEVER a class-name pattern like `*Constants`,
+   *    which silently drops route constants living in classes named e.g.
+   *    `ApiPaths`/`Routes`), and
+   *  - the extraction yields something resolvable (a literal, an expression, or
+   *    an import binding), keeping the aggregate bounded on large repos.
+   *
+   * Default: undefined (no constant harvest; non-literal route paths of this
+   * language floor to skip).
+   */
+  readonly extractModuleConstants?: (tree: Parser.Tree) => ModuleConstants;
+
+  /**
+   * Cheap content heuristic deciding whether the worker should run
+   * {@link extractModuleConstants} on a file. Guards the harvest cost on huge
+   * repos: files that cannot contribute (no constant-bearing syntax) are not
+   * walked. Must be syntax-driven (field/import shape), not identifier
+   * pattern-matching on class names.
+   */
+  readonly moduleConstantHeuristic?: (content: string) => boolean;
+
+  /**
+   * Fold one file's non-literal route-path operand list
+   * (`routePathExpr`/`routePathOperands` of an `ExtractedDecoratorRoute`)
+   * against the repo-wide, file-path-keyed constant map, or null when it cannot
+   * be fully folded (skip floor — never a phantom path). Languages whose
+   * qualified refs resolve through class imports (`Outer.CONST`,
+   * `com.example.ApiPaths.USERS`) need this hook because the shared fold has no
+   * notion of qualified names; Python's bare-name refs use the shared default.
+   *
+   * Default: undefined (the parse phase falls back to the shared
+   * language-agnostic operand fold).
+   */
+  readonly foldRoutePathOperands?: (
+    filePath: string,
+    operands: readonly Operand[],
+    repo: RepoConstants,
+  ) => string | null;
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.

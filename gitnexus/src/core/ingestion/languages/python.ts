@@ -44,6 +44,7 @@ import {
 } from './python/index.js';
 import { extractDjangoRoutes } from '../route-extractors/django.js';
 import { discoverDjangoRootUrls } from '../route-extractors/django-root-discovery.js';
+import { extractPythonModuleConstants } from '../route-extractors/python-const-resolver.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -158,4 +159,13 @@ export const pythonProvider = defineLanguage({
   receiverBinding: pythonReceiverBinding,
   arityCompatibility: pythonArityCompatibility,
   resolveImportTarget: resolvePythonImportTarget,
+
+  // ── #2391 constant harvest, provider-hook form (#2980): module-level string
+  // constants + from-imports for non-literal decorator route paths. Bare-name
+  // refs fold through the shared resolver (no foldRoutePathOperands needed).
+  extractModuleConstants: extractPythonModuleConstants,
+  moduleConstantHeuristic: (content) =>
+    // Module-level assignment (`X = "/path"`, possibly typed/annotated) or a
+    // from-import that can bind a constant name at a decorator site.
+    /^[^\S\n]*(?:[A-Za-z_]\w*\s*=\s*['"]|from\s+[\w.]+\s+import\s)/m.test(content),
 });

@@ -134,6 +134,24 @@ function stringLiteralValue(node: Parser.SyntaxNode): string | null {
 }
 
 /**
+ * Flatten a qualified-name expression (`ApiPaths`, `com.example.ApiPaths`) to
+ * its dotted text, or null when any segment is not a plain identifier (calls,
+ * `this`, array access, generics — not a static constant shape).
+ */
+function flattenQualifiedIdentifier(node: Parser.SyntaxNode): string | null {
+  if (node.type === 'identifier') return node.text;
+  if (node.type === 'field_access') {
+    const object = node.childForFieldName('object');
+    const field = node.childForFieldName('field');
+    if (object && field) {
+      const head = flattenQualifiedIdentifier(object);
+      return head === null ? null : `${head}.${field.text}`;
+    }
+  }
+  return null;
+}
+
+/**
  * Parse a Java constant initializer into an operand list, or null when it is
  * not a foldable string expression. Handles a bare string literal, a bare
  * identifier (`X = Y`), qualified/static-import-free references
@@ -155,12 +173,17 @@ export function parseJavaConstOperands(
   if (node.type === 'identifier') {
     return [{ kind: 'ref', name: node.text }];
   }
-  // `CONSTS.FIELD` — field_access in tree-sitter-java for expressions.
+  // `CONSTS.FIELD` — field_access in tree-sitter-java for expressions. The
+  // object side may itself be a chain (`com.example.ApiPaths` parses as
+  // nested field_access), so flatten recursively: every segment must be a
+  // plain identifier/keyword to qualify (a call `f().X`, `this.X`, or an
+  // array access object side is not a constant shape → null, skip floor).
   if (node.type === 'field_access') {
     const object = node.childForFieldName('object');
     const field = node.childForFieldName('field');
-    if (object && field && object.type === 'identifier') {
-      return [{ kind: 'ref', name: `${object.text}.${field.text}` }];
+    if (object && field) {
+      const objectName = flattenQualifiedIdentifier(object);
+      if (objectName !== null) return [{ kind: 'ref', name: `${objectName}.${field.text}` }];
     }
     return null;
   }
@@ -261,25 +284,45 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
         const nameNode = decl.childForFieldName('name');
         const valueNode = decl.childForFieldName('value');
         if (!nameNode) continue;
-        const operands = parseJavaConstOperands(valueNode);
-        if (operands === null) continue;
         const name = nameNode.text;
-        // Java guarantees one initializer per `static final` field (duplicate
-        // declarations are compile errors), so a redeclaration cannot smuggle
-        // a stale value past a non-foldable one — no shadowing cleanup needed
-        // (unlike Python, where #2391 drops rebinding names from the map).
-        if (operands.length === 1 && operands[0].kind === 'literal') {
-          literals.set(name, (operands[0] as { value: string }).value);
+        const operands = parseJavaConstOperands(valueNode);
+        // Same-name shadowing across nested types (legal Java, unlike
+        // same-class redeclaration): a later binding must REPLACE the earlier
+        // flattened simple-name entry — including dropping it to unresolvable
+        // when the new initializer is not foldable (`X = compute()`) — rather
+        // than leave the stale outer literal resolvable. Skip floor, mirroring
+        // Python #2391's rebind-drop. Qualified `Class.FIELD` aliases are
+        // per-type-keyed but same-named nested types can still collide, so
+        // they get the same replace/drop treatment.
+        const qname = declaringClass ? `${declaringClass}.${name}` : null;
+        if (operands === null) {
+          literals.delete(name);
+          exprs.delete(name);
+          if (qname) {
+            literals.delete(qname);
+            exprs.delete(qname);
+          }
+          continue;
+        }
+        const literalValue =
+          operands.length === 1 && operands[0].kind === 'literal'
+            ? (operands[0] as { value: string }).value
+            : null;
+        if (literalValue !== null) {
+          literals.set(name, literalValue);
+          exprs.delete(name);
         } else {
           exprs.set(name, operands);
+          literals.delete(name);
         }
         // Qualified alias: `CONSTS.X` refs (folded refs carry the class name).
-        if (declaringClass) {
-          const qname = `${declaringClass}.${name}`;
-          if (operands.length === 1 && operands[0].kind === 'literal') {
-            literals.set(qname, (operands[0] as { value: string }).value);
+        if (qname) {
+          if (literalValue !== null) {
+            literals.set(qname, literalValue);
+            exprs.delete(qname);
           } else {
             exprs.set(qname, operands);
+            literals.delete(qname);
           }
         }
       }
@@ -296,9 +339,15 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
         const body = child.children.find(
           (c) => c.type === 'class_body' || c.type === 'interface_body',
         );
-        if (body && className)
-          collectFieldConstants(body, isInterface || insideInterface, className);
-        if (body) walkTypes(body, isInterface || insideInterface);
+        // Recompute implicit interface semantics at each type boundary: a
+        // class nested in an interface is a normal class whose fields need
+        // explicit `static final` (JLS 9.5 — only the interface's own fields
+        // are implicitly public static final). Propagating the outer
+        // `insideInterface` flag in would harvest mutable nested fields as
+        // constants and let a same-name nested field shadow a real interface
+        // constant with a stale value.
+        if (body && className) collectFieldConstants(body, isInterface, className);
+        if (body) walkTypes(body, isInterface);
       } else if (child.type === 'enum_declaration' || child.type === 'record_declaration') {
         walkTypes(child, insideInterface);
       } else {

@@ -15,6 +15,10 @@ import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
 import { extractSpringRoutes, extractSpringTypes } from '../route-extractors/spring.js';
+import {
+  extractJavaModuleConstants,
+  foldJavaOperands,
+} from '../route-extractors/java-const-resolver.js';
 import { javaExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { javaImportConfig } from '../import-resolvers/configs/jvm.js';
@@ -216,4 +220,19 @@ export const javaProvider = defineLanguage({
   // ── Route extraction ──
   extractDecoratorRoutes: extractSpringRoutes,
   extractRouteInheritanceTypes: extractSpringTypes,
+
+  // ── #2980: constant harvest + qualified-ref fold for non-literal mapping
+  // paths (`@WinPostMapping(ApiPaths.SAVE_V1)`) — kept behind provider hooks so
+  // the shared ingestion layers stay language-agnostic. The heuristic is
+  // SYNTAX-driven (field/import shape), never a class-name pattern: constant
+  // classes are routinely named `ApiPaths`/`Routes`/`Paths`, which a
+  // `*Constants`-style gate would silently drop (review round-2 High finding).
+  extractModuleConstants: extractJavaModuleConstants,
+  moduleConstantHeuristic: (content) =>
+    /\bstatic\s+final\s+String\s/.test(content) ||
+    // `import com.winning.opt.common.ApiPaths;` — ANY class import can bind a
+    // constant ref (`ApiPaths.X` at an annotation site), so gate on the
+    // general import shape, not on the imported name.
+    /\bimport\s+(?:static\s+)?[\w.]+\s*;/.test(content),
+  foldRoutePathOperands: foldJavaOperands,
 });

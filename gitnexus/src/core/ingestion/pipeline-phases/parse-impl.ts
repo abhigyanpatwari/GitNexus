@@ -60,7 +60,7 @@ import {
   createParserForLanguage,
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
-import { getProvider, providers } from '../languages/index.js';
+import { getProvider, getProviderForFile, providers } from '../languages/index.js';
 import { SCOPE_RESOLVERS } from '../scope-resolution/pipeline/registry.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import type Parser from 'tree-sitter';
@@ -92,7 +92,6 @@ import {
   resolveOperands,
   type ModuleConstants,
 } from '../route-extractors/python-const-resolver.js';
-import { foldJavaOperands } from '../route-extractors/java-const-resolver.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -1304,10 +1303,14 @@ export async function runChunkedParseAndResolve(
         resolvedRoutes.push(dr);
         continue;
       }
-      const isJavaRoute = dr.filePath.endsWith('.java');
+      // Provider-driven fold (#2980): languages with qualified-ref semantics
+      // (Java `ApiPaths.X` / `com.example.ApiPaths.X`) fold through their
+      // provider hook; everything else uses the shared language-agnostic
+      // operand fold. No language names in the shared layer.
+      const fold = getProviderForFile(dr.filePath)?.foldRoutePathOperands;
       const value = dr.routePathOperands
-        ? isJavaRoute
-          ? foldJavaOperands(dr.filePath, dr.routePathOperands, repoConstants)
+        ? fold
+          ? fold(dr.filePath, dr.routePathOperands, repoConstants)
           : resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
         : null;
       if (value === null) {
