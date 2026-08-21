@@ -44,8 +44,10 @@ export const vendoredGrammarDir = (packageName: string): string =>
  * Load a vendored tree-sitter grammar by its absolute path under `vendor/`.
  *
  * GitNexus vendors six grammars (c/dart/proto/swift/kotlin/lua) inside its own
- * package under `vendor/`, each shipping committed per-platform prebuilds. They
- * are deliberately NOT npm dependencies and must NEVER be copied into
+ * package under `vendor/`. Grammars load a matching committed prebuild when
+ * available; Lua is source-built by the grammar workflow/postinstall because
+ * it does not currently ship committed prebuilds. They are deliberately NOT
+ * npm dependencies and must NEVER be copied into
  * `node_modules`: an undeclared package under `node_modules` is "extraneous" to
  * every subsequent `npm`/`npx` arborist reify, which prunes or relocates it.
  * That is the root cause of #2111 / #1728 — on Windows the relocation throws

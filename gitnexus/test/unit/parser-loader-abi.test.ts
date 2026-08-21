@@ -177,4 +177,15 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
       expect(tree.rootNode.type).toBe(testCase.rootType);
     });
   }
+
+  it('repeatedly creates and parses Lua parsers without stale scanner state', () => {
+    const grammar = getLanguageGrammar(SupportedLanguages.Lua);
+    for (let i = 0; i < 16; i += 1) {
+      const parser = new Parser();
+      parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
+      const snippet = i % 2 === 0 ? 'local x = "lua"\n' : '-- comment\nlocal x = [[lua]]\n';
+      const tree = parser.parse(snippet);
+      expect(tree.rootNode.type).toBe('chunk');
+    }
+  });
 });

@@ -232,7 +232,7 @@ const loadCache = new Map<string, LoadResult>();
 const logged = new Set<string>();
 
 /**
- * Runtime opt-out for genuinely-optional grammars (Swift/Dart/Kotlin).
+ * Runtime opt-out for genuinely-optional grammars (Swift/Dart/Kotlin/Lua).
  *
  * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` has historically been an *install-time*
  * env only — the postinstall build scripts read it to skip building the
@@ -246,7 +246,7 @@ const logged = new Set<string>();
  * Accepts `1` / `true` / `all` / `*` (every skippable grammar), or a
  * comma-separated list of language ids and/or package names
  * (e.g. `swift,tree-sitter-dart`). Only grammars flagged `userSkippable` (the
- * genuinely-optional swift/dart/kotlin) can be skipped — required dependencies
+ * genuinely-optional swift/dart/kotlin/lua) can be skipped — required dependencies
  * routed through the optional machinery for ABI safety (C) carry no
  * `userSkippable` and are never skippable here.
  */

@@ -50,7 +50,7 @@ struct ScannerState
 
 void *tree_sitter_lua_external_scanner_create()
 {
-  return malloc(sizeof(struct ScannerState));
+  return calloc(1, sizeof(struct ScannerState));
 }
 
 void tree_sitter_lua_external_scanner_destroy(void *payload)
@@ -278,12 +278,12 @@ bool tree_sitter_lua_external_scanner_scan(void *payload, TSLexer *lexer, const 
 
     if (valid_symbols[STRING_START])
     {
-      // try to match a short single-quoted string's start (")
+      // try to match a short single-quoted string's start (')
       if (consume_if(lexer, SQ_STRING_DELIMITER))
       {
         state->started = SHORT_SQ_STRING;
       }
-      // try to match a short double-quoted string's start (')
+      // try to match a short double-quoted string's start (")
       else if (consume_if(lexer, DQ_STRING_DELIMITER))
       {
         state->started = SHORT_DQ_STRING;

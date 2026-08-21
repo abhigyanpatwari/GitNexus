@@ -66,7 +66,9 @@ const LUA_SCOPE_QUERY = `
 ;;      receiver-linkable: collectNamespaceTargets registers X -> target file,
 ;;      and the member call resolves via Case 1 (namespace).
 ;;   2. bare require("a.b.c") (side-effect, no binding) — emits wildcard;
-;;      the IMPORTS edge still materializes but no receiver is bound.
+;;      the IMPORTS edge still materializes but no receiver is bound. The
+;;      statement-level patterns below only accept direct chunk/block children,
+;;      so a bound require is not matched a second time through its nested call.
 (local_variable_declaration
   (variable_list (variable name: (identifier) @import.localName))
   (expression_list
@@ -75,10 +77,17 @@ const LUA_SCOPE_QUERY = `
       arguments: (argument_list (expression_list (string) @import.source)))
       (#eq? @_req "require"))) @import.statement
 
-(call
-  function: (variable name: (identifier) @_req)
-  arguments: (argument_list (expression_list (string) @import.source))
-  (#eq? @_req "require")) @import.statement
+(chunk
+  (call
+    function: (variable name: (identifier) @_req)
+    arguments: (argument_list (expression_list (string) @import.source))
+    (#eq? @_req "require")) @import.statement)
+
+(block
+  (call
+    function: (variable name: (identifier) @_req)
+    arguments: (argument_list (expression_list (string) @import.source))
+    (#eq? @_req "require")) @import.statement)
 
 ;; ── References — free calls: foo() ───────────────────────────────────────────
 ;;   Also matches the require call — harmless: require has no def, so it stays an

@@ -63,10 +63,10 @@ run()
 
   it('emits IMPORTS edge from main.lua to lib/util.lua', () => {
     const imports = getRelationships(result, 'IMPORTS');
-    const imp = imports.find(
+    const utilImports = imports.filter(
       (e) => e.sourceFilePath?.includes('main.lua') && e.targetFilePath?.includes('util.lua'),
     );
-    expect(imp).toBeDefined();
+    expect(utilImports).toHaveLength(1);
   });
 
   it('resolves run -> util.answer() as CALLS edge to util.lua', () => {
@@ -81,6 +81,25 @@ run()
     expect(getNodesByLabel(result, 'Method')).toContain('answer');
     expect(getNodesByLabel(result, 'Function')).toContain('run');
   });
+});
+
+describe('Lua scope: bare require import', () => {
+  it('emits one IMPORTS edge for an unbound side-effect require', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-bare-import-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'lib/util.lua': 'return {}\n',
+        'main.lua': 'require("lib.util")\n',
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const imports = getRelationships(result, 'IMPORTS').filter(
+        (e) => e.sourceFilePath?.includes('main.lua') && e.targetFilePath?.includes('util.lua'),
+      );
+      expect(imports).toHaveLength(1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // ---------------------------------------------------------------------------
