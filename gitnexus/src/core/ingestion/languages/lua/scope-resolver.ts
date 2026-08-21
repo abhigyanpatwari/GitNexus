@@ -57,8 +57,10 @@ const luaScopeResolver: ScopeResolver = {
       _cachedIndex = buildSuffixIndex(list, list);
       _cachedSet = allFilePaths;
     }
-    const list = [...allFilePaths];
-    return suffixResolve(parts, list, list, _cachedIndex ?? undefined);
+    // Once the suffix index exists, suffixResolve only consults the index;
+    // passing a spread copy here would still traverse the entire workspace on
+    // every require() despite the cache (#2909 contract).
+    return suffixResolve(parts, [], [], _cachedIndex ?? undefined);
   },
 
   // Lua: default local-first-then-imports merge (no language-specific precedence).
