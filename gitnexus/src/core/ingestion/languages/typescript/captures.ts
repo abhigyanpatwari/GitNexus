@@ -6,7 +6,7 @@
  * synthesized streams on top:
  *
  *   1. **Import decomposition** — each `import_statement` / re-export is
- *      re-emitted with `@import.kind/source/name/alias/typeOnly` markers so
+ *      re-emitted with `@import.kind/source/name/alias/type-only` markers so
  *      `interpretTsImport` can recover the `ParsedImport` shape without
  *      re-parsing raw text (see `import-decomposer.ts`). Unit 2 adds this;
  *      until then, raw `@import.statement` matches flow through as-is.
@@ -729,8 +729,12 @@ export function emitTsScopeCaptures(
  * matching arms (member_expression for extends, nested_type_identifier plain +
  * generic-wrapped for implements).
  *
- * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
- * by the synth. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
+ * `interface_declaration` and `abstract_class_declaration` heritage IS emitted
+ * (#2842 review; both were silently skipped before, so `interface B extends A`
+ * and `abstract class X implements I` produced no edge and every dispatch walk
+ * dead-ended on a bodiless declaration). They reach their bases by different
+ * shapes: an abstract class carries the same `class_heritage` child a concrete
+ * one does, while an interface's bases hang off `extends_type_clause` directly. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
  * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
  * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
  * are emitted with the same `inherits` kind here. The base lookup name is
@@ -746,7 +750,26 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
       if (child !== null) stack.push(child);
     }
 
-    if (node.type !== 'class_declaration') continue;
+    // `interface B extends A, C` hangs its bases off an `extends_type_clause`
+    // DIRECTLY on the interface — there is no `class_heritage` wrapper, so the
+    // class path below cannot reach them (#2842 review). The clause's `type`
+    // field is `multiple: true`, so `childForFieldName('type')` would silently
+    // return only `A` and drop `C`; iterate the named children instead.
+    if (node.type === 'interface_declaration') {
+      for (const child of node.namedChildren) {
+        if (child === null || child.type !== 'extends_type_clause') continue;
+        for (const base of child.namedChildren) {
+          emitTsInheritanceBase(base, out);
+        }
+      }
+      continue;
+    }
+
+    // `abstract class X implements I` carries an identical `class_heritage`
+    // child, so the existing body handles it once the node type is admitted.
+    // Omitting it severed the only link between an interface and the concrete
+    // classes below an abstract base — a whole subtree, not a leaf.
+    if (node.type !== 'class_declaration' && node.type !== 'abstract_class_declaration') continue;
 
     // Find the `class_heritage` child (holds extends / implements clauses).
     let heritage: SyntaxNode | null = null;

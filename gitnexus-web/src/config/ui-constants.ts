@@ -9,6 +9,21 @@ export const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
 export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
 /**
+ * sessionStorage key for the deploy access token sent as
+ * `Authorization: Bearer <token>` on every `/api/*` request.
+ *
+ * sessionStorage, not localStorage: `core/llm/settings-service.ts` already
+ * migrated provider API keys off localStorage and deletes the legacy copy. A
+ * deploy token is the same class of secret, so it gets the same one-session
+ * lifetime.
+ *
+ * Never a cookie: the browser attaches cookies to cross-site requests and
+ * forwards them blind, and the public edge strips `Origin` before proxying, so
+ * no CSRF backstop is left to catch it. A header is not sent automatically.
+ */
+export const AUTH_TOKEN_STORAGE_KEY = 'gitnexus-auth-token';
+
+/**
  * Default node-count above which the WebUI connects in chat-only mode (skips
  * the full graph download). Grounded in sigma.js/graphology prior art: ~10K
  * nodes render smoothly, complex-styled rendering struggles past ~5K, and the

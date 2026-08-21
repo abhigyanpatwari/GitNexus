@@ -70,7 +70,7 @@ import { type NodeTableName } from './schema.js';
  * complete CALLS graph, and stays in the in-memory graph (it is small and is
  * persisted by the normal whole-graph emit).
  */
-const PDG_EDGE_TYPES: ReadonlySet<RelationshipType> = new Set<RelationshipType>([
+export const PDG_EDGE_TYPES: ReadonlySet<RelationshipType> = new Set<RelationshipType>([
   'CFG',
   'REACHING_DEF',
   'CDG',

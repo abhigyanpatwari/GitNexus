@@ -9,15 +9,23 @@ import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
+  SPRING_NON_HTTP_HANDLERS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
-import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
+import {
+  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
+} from '../../src/core/ingestion/languages/java/analysis-features.js';
 
 const FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
+  SPRING_NON_HTTP_HANDLERS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
+  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
 ] as const;
 
 describe('analysis feature versions', () => {
@@ -27,16 +35,20 @@ describe('analysis feature versions', () => {
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
+      'java.heritage-captures': 1,
+      'java.record-component-accessors': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
       'spring.config-bindings': 1,
+      'spring.non-http-handlers': 1,
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
       'graph.class-framework-annotations': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
+      'spring.non-http-handlers': 1,
     });
     expect(
       resolveAnalysisFeatureVersions(FEATURES, [

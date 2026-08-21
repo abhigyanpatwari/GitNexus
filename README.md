@@ -1,4 +1,4 @@
-# GitNexus
+# GitNexus  (Akon Labs)
 
 **⚠️ Important Notice:** GitNexus has NO official cryptocurrency, token, or coin. Any token/coin using the GitNexus name on Pump.fun or any other platform is **not affiliated with, endorsed by, or created by** this project or its maintainers. Do not purchase any cryptocurrency claiming association with GitNexus.
 
@@ -79,6 +79,28 @@ That's it. `analyze` indexes the codebase, installs agent skills, registers Clau
 > **About `tree-sitter-kotlin`:** like Dart/Proto/Swift, Kotlin is a **vendored** grammar (under `gitnexus/vendor/tree-sitter-kotlin`). Upstream ships **source only** (no prebuilt binaries), so GitNexus cross-builds the platform prebuilds itself (via the `build-tree-sitter-prebuilds` GitHub Actions workflow) and vendors them — the same uniform pipeline used for Dart, Proto, and Swift. `node-gyp-build` selects the right `.node` at require time, so **no C/C++ toolchain is needed**. If no prebuild matches your platform-arch, only Kotlin (`.kt`/`.kts`) parsing is unavailable; the rest of `gitnexus` is unaffected.
 
 </details>
+
+### Deploy to Render
+
+Deploy GitNexus in one click:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/abhigyanpatwari/GitNexus)
+
+The Blueprint creates two services. `gitnexus-server` runs `gitnexus serve` as a private service: no public URL, reachable only over Render's private network, with a persistent disk for indexes and cloned repos. `gitnexus-web` is the public one. It serves the UI and reverse-proxies `/api/*` to the server, so the browser talks to a single origin.
+
+At the Blueprint's defaults this runs about **$35/month**: $25 for the server's `standard` instance, $7 for the web service's `starter` instance, and $2.50 for the 10 GB disk. See [Render's pricing](https://render.com/pricing) for other plans.
+
+The deploy generates an access token, and the UI asks for it on first use:
+
+1. Open the `gitnexus-web` service in your [Render dashboard](https://dashboard.render.com/).
+2. Copy `GITNEXUS_SERVE_AUTH_TOKEN` from its **Environment** tab.
+3. Load the site and paste the token into the prompt (or the settings panel).
+
+Every `/api/*` request carries that token as a header, and the proxy answers `401` without it. The browser keeps it in `sessionStorage`, so a new tab asks again. To rotate it, edit the environment variable and redeploy.
+
+The proxy strips `Origin` before forwarding, so the server's CSRF guard does nothing for proxied traffic; it passes `Origin`-less requests through by design. The token is the only control on this deploy, not a second layer behind the guard. Anyone holding it can read every indexed repo. See [SECURITY.md](SECURITY.md#hosted-deploys-on-render).
+
+Indexing is memory-bound. If `gitnexus-server` runs out of memory on a large repo, raise its `plan`, which sets available RAM: `standard` is 2 GB, `pro` is 4 GB. Raise `sizeGB` only if the disk fills with clones and indexes.
 
 ## Two Ways to Use GitNexus
 

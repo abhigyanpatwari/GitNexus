@@ -104,6 +104,7 @@ import {
   splitRelPairKey,
 } from './rel-pair-routing.js';
 import { DEFAULT_EMIT_CHUNK_ROWS, SyncCsvWriter } from './sync-csv-writer.js';
+import { PDG_EDGE_TYPES } from './pdg-emit-sink.js';
 
 /**
  * Relationship types that MUST stay in the in-memory graph because a phase
@@ -167,6 +168,22 @@ export interface GraphEmitManifest {
   readonly relsByPair: Map<string, { csvPath: string; rows: number }>;
   /** Total streamed rows, for the buffer-pool size hint (#2631 path). */
   readonly totalRows: number;
+  /**
+   * Streamed rows EXCLUDING `PDG_EDGE_TYPES`, for the graph-write-collapse
+   * check — which counts persisted STRUCTURAL rows and so needs a structural
+   * expectation to compare against.
+   *
+   * Not derivable from `relsByPair`: a pair key is `From|To` NODE LABELS, and
+   * a PDG edge shares `Function|Function` with `CALLS`. Only the write path
+   * sees `relationship.type`, so the split has to be counted here.
+   *
+   * This existed as a bug first. `totalRows` is a buffer-pool size hint and
+   * counts every row; the collapse check reused it as the expectation while
+   * measuring structural rows on the other side. On a `--pdg` run that compared
+   * ~200k against ~65k and declared a healthy index INCOMPLETE — then the
+   * collapse stamp forced a rebuild on the next run, which did it again.
+   */
+  readonly structuralRows: number;
 }
 
 /**
@@ -448,6 +465,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
     this.streamedIds.add(key);
 
     writer.addRow(buildRelRow(relationship));
+    if (!PDG_EDGE_TYPES.has(relationship.type)) this.structuralRows++;
     this.srcIx.push(srcIx);
     this.tgtIx.push(tgtIx);
     this.relTypes.push(relationship.type);
@@ -459,6 +477,9 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
    *  a final-flush failure, or a writer-open failure (EMFILE) — is surfaced
    *  loudly here so a disk-full / out-of-fds run never hands a truncated CSV to
    *  the bulk COPY. */
+  /** Streamed rows that are not PDG — see `GraphEmitManifest.structuralRows`. */
+  private structuralRows = 0;
+
   finalize(): GraphEmitManifest {
     if (this.finalized) throw new Error('GraphEmitSink.finalize() called twice');
     this.finalized = true;
@@ -486,7 +507,7 @@ export class GraphEmitSink implements KnowledgeGraph, GraphEmitControl {
       );
     }
 
-    return { relsByPair, totalRows };
+    return { relsByPair, totalRows, structuralRows: this.structuralRows };
   }
 
   /** Best-effort fd release for the error path — when the pipeline throws

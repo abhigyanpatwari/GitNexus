@@ -13,7 +13,11 @@
  * worker — only the lightweight `analyze-worker-ipc` projection helper.
  */
 import type { AnalyzeOptions } from '../core/run-analyze.js';
-import type { WorkerMessage } from './analyze-worker.js';
+// The IPC message protocol lives in a declarations-only leaf, NOT in the
+// `analyze-worker.ts` entry module: importing it from the entry made this
+// module depend on the very module that depends on it (#cycle). Erased at
+// runtime either way; this way the graph is acyclic too.
+import type { WorkerMessage } from './analyze-worker-protocol.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
 // Value import (instanceof): index-lock is a lightweight storage primitive

@@ -2,11 +2,11 @@ import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
-import type { ImportConfigs } from './import-resolvers/types.js';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
 
+import { mapConcurrent } from '../../lib/utils.js';
 import { logger } from '../logger.js';
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES
@@ -276,33 +276,32 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
         csNames.push(entry.name);
       }
     }
-    for (let i = 0; i < csprojNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
-      const batch = csprojNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map((name) => readCsprojConfig(path.join(dir, name), name, repoRoot, dir)),
-      );
-      for (const r of settled) {
-        const config = r.status === 'fulfilled' ? r.value : null;
-        if (config) {
-          configs.push(config);
-          rootNamespaces.add(config.rootNamespace);
-        }
+    // `mapConcurrent` runs the same bounded waves and degrades per item
+    // (a rejection becomes `undefined`), so entry order is still preserved.
+    const csprojResults = await mapConcurrent(
+      csprojNames,
+      (name) => readCsprojConfig(path.join(dir, name), name, repoRoot, dir),
+      { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
+    );
+    for (const config of csprojResults) {
+      if (config) {
+        configs.push(config);
+        rootNamespaces.add(config.rootNamespace);
       }
     }
-    for (let i = 0; i < csNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
-      const batch = csNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map((name) =>
-          collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
-        ),
-      );
-      // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
-      // leaves its namespaces uncollected → mark truncated to fail the #1881
-      // gate OPEN rather than wrongly suppress an import. The scan streams each
-      // file, so file size no longer trips truncation.
-      for (const r of settled) {
-        if (r.status !== 'fulfilled' || r.value === 'truncated') truncated = true;
-      }
+    const csResults = await mapConcurrent(
+      csNames,
+      (name) => collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
+      { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
+    );
+    // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
+    // leaves its namespaces uncollected → mark truncated to fail the #1881
+    // gate OPEN rather than wrongly suppress an import. The scan streams each
+    // file, so file size no longer trips truncation. A rejected read arrives
+    // here as `undefined`, which is `!== 'ok'` just like the old
+    // `r.status !== 'fulfilled'` arm.
+    for (const r of csResults) {
+      if (r !== 'ok') truncated = true;
     }
   }
 
@@ -469,6 +468,27 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
 // ============================================================================
 // BUNDLED CONFIG LOADER
 // ============================================================================
+
+/**
+ * Bundled language-specific configs loaded once per ingestion run — the
+ * result of {@link loadImportConfigs}, and every field's type is declared
+ * above in this module.
+ *
+ * It lives here rather than in `import-resolvers/types.ts` (its consumer, via
+ * `ResolveCtx`) so the dependency runs one way: the import-resolver types
+ * import this bundle, and this module imports nothing from them. Homing the
+ * producer's result type with the producer also keeps `import-resolvers/
+ * types.ts` free of per-language names.
+ */
+export interface ImportConfigs {
+  tsconfigPaths: TsconfigPaths | null;
+  goModule: GoModuleConfig | null;
+  composerConfig: ComposerConfig | null;
+  swiftPackageConfig: SwiftPackageConfig | null;
+  csharpConfigs: CSharpProjectConfig[];
+  /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
+  csharpNamespaces?: CSharpNamespaceEvidence;
+}
 
 /** Load all language-specific configs once for an ingestion run. */
 export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {

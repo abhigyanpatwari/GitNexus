@@ -98,7 +98,7 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `markdown`                | `markdown.ts`                          | `structure`                                                        | Section nodes, cross-link edges from .md/.mdx                                                                                                                                               |
 | `cobol`                   | `cobol.ts`                             | `structure`                                                        | COBOL program/paragraph/section nodes (regex, no tree-sitter)                                                                                                                               |
 | `parse`                   | `parse.ts` + `parse-impl.ts`           | `structure`, `markdown`, `cobol`                                   | Symbol nodes, IMPORTS/CALLS/EXTENDS edges, extracted routes/tools/ORM queries                                                                                                               |
-| `routes`                  | `routes.ts`                            | `parse`                                                            | Route nodes + HANDLES_ROUTE edges (Next.js, Expo, PHP, decorators)                                                                                                                          |
+| `routes`                  | `routes.ts`                            | `parse`                                                            | Route nodes + HANDLES_ROUTE edges (Next.js, Expo, PHP, decorators, and JS/TS static route sources — see below)                                                                              |
 | `tools`                   | `tools.ts`                             | `parse`                                                            | Tool nodes + HANDLES_TOOL edges                                                                                                                                                             |
 | `orm`                     | `orm.ts`                               | `parse`                                                            | QUERIES edges (Prisma, Supabase)                                                                                                                                                            |
 | `crossFile`               | `cross-file.ts` + `cross-file-impl.ts` | `parse`, `routes`, `tools`, `orm`                                  | Cross-file type propagation in topological import order                                                                                                                                     |
@@ -164,6 +164,57 @@ export const myPhase: PipelinePhase<MyPhaseOutput> = {
 };
 ```
 
+### Where routes come from
+
+`route-extractors/` holds four independent ways a route can be discovered, all
+converging on the routes phase's `(method, url)` registry:
+
+| Source | Shape | Examples |
+| --- | --- | --- |
+| Filesystem convention | path → URL, no parsing | Next.js `app/`, Expo, PHP |
+| Single-file framework route | `isRouteFile` + worker extraction | Laravel `routes/*.php` |
+| Cross-file framework route | `discoverRootRouteFiles` + `extractRoutes` | Django `urlpatterns` |
+| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS, **JS/TS dispatch guards and static data route tables** |
+
+The last row is the one whose name undersells it. A route is DECLARED by a
+decorator, but it can also be **inferred** from a raw `node:http` server's own
+dispatch — `if (req.method === 'GET' && pathname === '/api/x')` is a route with
+a path, a verb and a handler, and nothing else in the pipeline could see it.
+`route-extractors/dispatch-guard.ts` reads that shape; the transport, dedup and
+handler resolution are shared with decorator routes, and
+`ExtractedDecoratorRoute.source` carries the provenance difference through to
+the `HANDLES_ROUTE` edge.
+
+JS/TS data route tables share that transport when a route-named array contains
+direct object literals with static `path`, `method`, and `handler` fields and a
+same-scope `for...of` dispatcher positively compares the path and method before
+directly invoking the handler. Dynamic values, computed keys, spreads,
+inline/called handlers, unknown verbs, and ambiguous handler bindings are
+suppressed. Bare import aliases and single-level member handlers are attributed
+only through declared import and owner provenance; an unproven receiver never
+falls back to a global name guess.
+
+That extractor is deliberately **precision-weighted**: `route_map` presents its
+output as fact, so a `startsWith` namespace test, a bare `pathname === '/'`
+without a verb, and any regex it cannot translate exactly are all dropped rather
+than guessed at. A missing route is a coverage limit; an invented one is a lie.
+
+Two rules there need more than one comparison to decide, and are worth knowing
+about before changing either:
+
+- **Same-file constant folding.** `` pathname === `${basePath}/rules` `` is
+  common enough that refusing it loses whole route modules — and loses them
+  invisibly, since a module with unfoldable paths and a module with no routes
+  produce the same empty answer. Folding is same-file, string literals only, one
+  alias hop, and refuses on ambiguity (a name declared twice with different
+  values is dropped, never guessed).
+- **Whole-repo reconciliation** (`reconcileDispatchGuardRoutes`, applied in the
+  routes phase). A split route table — one module listing every path it
+  recognises so the dispatcher can 404 early, handlers in others — otherwise
+  lists every route twice, once verb-less with the table as its "handler". It
+  applies to dispatch-guard routes only: a framework route with no verb is
+  method-agnostic *by declaration*, which is a fact, not a weaker observation.
+
 ---
 
 ## Semantic model
@@ -214,6 +265,9 @@ Language-agnostic scope-resolution resolver. This is the resolution path for eve
     │  emitReferencesViaLookup ── uses handledSites + deferred-site skip set
     │  emitPropertyDispatchCalls ── registration USES + conservative CALLS
     │  emitCallableValueFlow   ── assigned/passed callable invocation CALLS
+    │  emitImportedValueReferences ── cross-file value reads via finalized imports
+    │  emitUniqueNamePropertyAccesses ── LAST-RESORT property reads by name,
+    │       narrowed same-file → direct-import, refusing to choose otherwise
     │  emitImportEdges
     ▼
  KnowledgeGraph  (IMPORTS / CALLS / ACCESSES / INHERITS / USES)
@@ -231,6 +285,12 @@ The emit stage defers only invocation sites proven to reference a flow cell. Ord
 The solver is flow-insensitive but bounded: dependency-indexed work items rerun only when a cell they read changes; target/address sets cap at 32; a hostile fact graph has a finite work budget; overflow or budget exhaustion emits no partial `CALLS` and produces a structured warning. Lexical shadowing is function/block aware, invocation/constructor results are not reinterpreted as callable designators, and overload selection uses provider-supplied signature metadata. C/C++ additionally associate visible prototypes with unique definitions so actual-to-formal flow crosses translation units; the provider-owned `hasFileLocalCallableLinkage` hook prevents `static` declarations or definitions from leaking across files. C++ member-function pointers preserve parameter/cv shape, keep non-virtual targets exact, and expand virtual targets through `MethodDispatchIndex`/MRO.
 
 Property-key dispatch remains a separate conservative fallback. Its per-key fan-out cap is 32; capped keys synthesize no partial calls and are reported at warning level with language, skipped-key count, dropped key names (bounded), and cap; the count also travels in `RunScopeResolutionStats.propertyDispatchSkippedKeys`.
+
+Interface-dispatch fan-out walks the subtype closure of the receiver's interface and is **generic-instantiation aware** (#2912): a call through `IValidator<string>` must not reach an implementor of `IValidator<int>`, which shares its declaration and therefore its subtype list. Each heritage clause's arguments reach resolution by one of three routes — read off the `@reference.inherits` anchor's own spelling where that anchor spans the whole base (most languages, no query change), through the `@reference.type-arguments` sub-tag where the anchor is the bare name and moving it would renumber inheritance edge ids (Rust `impl T<A> for S`, Dart `extends`), or on a heritage MARKER payload for clauses that never become reference sites (Dart `implements`/`with`). Whichever pass emits the edge records the pair through one sink: `preEmitInheritanceEdges` for heritage clauses, `ScopeResolver.emitHeritageEdges` for the rest.
+
+The walk then carries a substitution: a subtype's own type parameters bind to the receiver's arguments, so `class Wrapper<T> : IValidator<T>` stays reachable from every instantiation while `class IntValidator : IValidator<int>` is pruned from the `string` one. Receiver arguments come from the declared type (Case 4), a class-level field's declared type (Case 6), or — for a compound receiver such as `this._repo` — the spelling the compound fold typed that position from, reported back through `recordReceiverType` and accepted only when it names the class the fold returned.
+
+The filter prunes only on positive evidence: an unknown instantiation on either side, an argument list whose arity does not line up, a name that may be a type variable the language's captures never recorded, or an unresolved spelling whose simple name matches all keep the target. A type parameter of the declaration ENCLOSING either side is recognised as such and never compared — `void Run<T>(IValidator<T> v)` writes a receiver with no known instantiation, so it keeps the unfiltered fan-out. That recognition is what generic METHODS now carry `@declaration.type-parameters` for in C#, Java and Kotlin (TypeScript already did): without it an unbounded `T` grounds to nothing and a bounded one grounds to its BOUND, and both compare unequal to an implementor's concrete argument. Languages that capture neither type arguments nor type parameters therefore emit exactly the pre-#2912 fan-out. The fan-out cap (32, `GITNEXUS_MAX_INTERFACE_DISPATCH_FANOUT`) and its skipped-target reporting are unchanged and apply after filtering. Note the fan-out itself still fires only for a receiver whose folded type is an `Interface` symbol, so a Rust `Trait` or a Dart abstract `Class` receiver emits no secondary targets to filter in the first place.
 
 Standalone (regex-based) providers such as COBOL participate via `ScopeResolver.scopeResolutionEdgeMode: 'callable-flow-only'`: `runScopeResolution` runs for them, but every ordinary emission path — heritage, interface implementations, receiver-bound, free-call fallback, reference/import edges, post-resolution hooks — is gated off, so their legacy phase (e.g. `cobolPhase`) remains the sole owner of structural edges and the callable solver's `CALLS` are purely additive. A callable-flow-only provider whose files emitted no callable facts exits early, before finalize, keeping the opt-in proportional to source scanning.
 

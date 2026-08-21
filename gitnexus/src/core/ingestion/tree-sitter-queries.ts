@@ -24,6 +24,43 @@ export const TYPESCRIPT_QUERIES = `
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
 
+; Type aliases (A4). TypeScript was the only language whose aliases minted no
+; node: Rust (type_item), Kotlin (type_alias), Swift (typealias_declaration)
+; and Dart all emit @definition.type. The alias was declared for scope
+; resolution but never became a graph symbol, so a context() lookup on an
+; exported API-contract type answered "Symbol not found".
+(type_alias_declaration
+  name: (type_identifier) @name) @definition.type
+
+; Members of a declared SHAPE — interface bodies and object-type aliases both
+; spell them as property_signature, so one pattern covers both. A TS frontend
+; models its API contracts this way, and without these there is no graph path
+; from a contract field to the code that reads it.
+; ANCHORED to declared shapes. Unanchored, property_signature matches every
+; object_type in the grammar — an inline parameter type, an inline return
+; type, a nested object type — and the enclosing-container walk then hangs the
+; node off the nearest class/interface/alias. class Svc { retries = 1;
+; run(opts: { retries: number }) {} } minted Property:a.ts:Svc.retries twice,
+; and graph.addNode is first-write-wins, so two distinct symbols merged into
+; one and every context()/impact()/rename() answer about that field described
+; the merge. It also emitted the outright false Svc HAS_PROPERTY retries for a
+; field belonging to an anonymous parameter type.
+;
+; The sibling JS object-literal rule in this same PR is anchored for exactly
+; this reason; this is the TypeScript half of the same fix.
+;
+; (A (B)) matches DIRECT children, so a nested object type
+; (type Config = { host: string; db: { host: string } }) is excluded here as
+; well — its members are not direct children of the alias's own object_type.
+(interface_body
+  (property_signature
+    name: (property_identifier) @name) @definition.property)
+
+(type_alias_declaration
+  value: (object_type
+    (property_signature
+      name: (property_identifier) @name) @definition.property))
+
 (function_declaration
   name: (identifier) @name) @definition.function
 
@@ -367,6 +404,76 @@ export const TYPESCRIPT_QUERIES = `
 (public_field_definition
   name: (property_identifier) @name) @definition.property
 
+; Object-literal keys of a NAMED object, and the same shape behind an
+; identity-preserving wrapper. Both rules existed only in JAVASCRIPT_QUERIES, so
+; a .ts file writing the single most common config idiom in the language —
+; const CONFIG = { retries: 3 } — minted no node for any key: context() answered
+; "Symbol not found" and a precise read through the holding variable had nothing
+; to resolve to.
+;
+; TypeScript sets fieldFallbackOnMethodLookup:false, so these do NOT gain
+; name-based inference; they gain the PRECISE path, which is the one TypeScript
+; is supposed to use. A read through an untyped receiver stays unresolved, and
+; is now reported as such rather than answering an empty set.
+;
+; Scoped exactly as the JavaScript rules are: bound to a variable, and for the
+; wrapper only the three functions that return the argument they were given.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; Keys of an ANONYMOUS object literal in RETURN position (R3-4). The dominant
+; shape in idiomatic JS: 437 sites in one backend directory of the reporting
+; repo, including the ~25-field payload of its whole signal pipeline, none of
+; which could be named because the literal binds to nothing.
+;
+; The enclosing function is the owner -- the literal is that function's return
+; shape, a contract its callers consume -- so the key qualifies as
+; <function>.<key> and two functions returning the same key stay distinct.
+;
+; DEFINITIONS, unlike the record-construction writes of R2-1b, and the
+; difference is deliberate: there a definition already existed elsewhere and a
+; construction site was a USE of it, while here nothing else names the field at
+; all. To keep that from regressing R2-1b's case, narrowing ranks declared
+; anchors ABOVE return shapes, so a name that already resolves keeps resolving
+; to what it resolved to before.
+(return_statement
+  (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; SHORTHAND keys of the same literal. "return { symbol, interval, score }" is
+; the commonest spelling of all -- the reporting repo's own alert payload is
+; mostly shorthand -- and (pair) does not match it: tree-sitter models it as
+; shorthand_property_identifier, where the key IS the value. Found by dumping
+; the golden fixture and noticing that a literal returning
+; { level, message, timestamp: Date.now() } had indexed only timestamp.
+(return_statement
+  (object
+    (shorthand_property_identifier) @name @definition.property))
+
+; Shorthand keys of a named object literal -- same gap, same reason as the
+; return-position rule above.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (shorthand_property_identifier) @name @definition.property))
+
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_ts.identity.obj
+      property: (property_identifier) @_ts.identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @name) @definition.property)))
+  (#eq? @_ts.identity.obj "Object")
+  (#match? @_ts.identity.fn "^(freeze|seal|preventExtensions)$"))
+
 ; Private class fields: #address: Address
 (public_field_definition
   name: (private_property_identifier) @name) @definition.property
@@ -455,11 +562,18 @@ export const TYPESCRIPT_QUERIES = `
 
 ; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
 ; fetch() — global function
+; The URL alternation is OPTIONAL (#2897). Requiring a literal made the rule
+; blind to fetch(url) with a variable argument -- measured on this repo, 44 of
+; 47 fetch calls pass one, so 94% of outward calls produced no site at all. The
+; R3-6 sink set needs only WHERE the program reaches outward, not the URL; route
+; linking still needs the URL and already skips an entry without one
+; (normalizeFetchURL returns nothing and processNextjsFetchRoutes continues), so
+; widening here adds sink sites without inventing a single FETCHES edge.
 (call_expression
   function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
   arguments: (arguments
     [(string (string_fragment) @route.url)
-     (template_string) @route.template_url])) @route.fetch
+     (template_string) @route.template_url]?)) @route.fetch
 
 ; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
 (call_expression
@@ -848,6 +962,84 @@ export const JAVASCRIPT_QUERIES = `
 (field_definition
   property: (property_identifier) @name) @definition.property
 
+; Object-literal keys of a NAMED object (A1/A5). Idiomatic JS models config as
+; an object literal, not a class, so without these the fields of an options bag
+; have no node and "who reads/writes this setting?" answers a confident zero.
+;
+; Deliberately scoped to a literal BOUND TO A VARIABLE. An unbound literal is
+; usually an inline call argument or a JSX prop bag, whose keys are call-site
+; data rather than a named surface other code references — minting a node per
+; key there would add volume without adding an answerable question.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; Keys of an ANONYMOUS object literal in RETURN position (R3-4). The dominant
+; shape in idiomatic JS: 437 sites in one backend directory of the reporting
+; repo, including the ~25-field payload of its whole signal pipeline, none of
+; which could be named because the literal binds to nothing.
+;
+; The enclosing function is the owner -- the literal is that function's return
+; shape, a contract its callers consume -- so the key qualifies as
+; <function>.<key> and two functions returning the same key stay distinct.
+;
+; DEFINITIONS, unlike the record-construction writes of R2-1b, and the
+; difference is deliberate: there a definition already existed elsewhere and a
+; construction site was a USE of it, while here nothing else names the field at
+; all. To keep that from regressing R2-1b's case, narrowing ranks declared
+; anchors ABOVE return shapes, so a name that already resolves keeps resolving
+; to what it resolved to before.
+(return_statement
+  (object
+    (pair
+      key: (property_identifier) @name) @definition.property))
+
+; SHORTHAND keys of the same literal. "return { symbol, interval, score }" is
+; the commonest spelling of all -- the reporting repo's own alert payload is
+; mostly shorthand -- and (pair) does not match it: tree-sitter models it as
+; shorthand_property_identifier, where the key IS the value. Found by dumping
+; the golden fixture and noticing that a literal returning
+; { level, message, timestamp: Date.now() } had indexed only timestamp.
+(return_statement
+  (object
+    (shorthand_property_identifier) @name @definition.property))
+
+; Shorthand keys of a named object literal -- same gap, same reason as the
+; return-position rule above.
+(variable_declarator
+  name: (identifier)
+  value: (object
+    (shorthand_property_identifier) @name @definition.property))
+
+; Same named shape, behind an IDENTITY-PRESERVING wrapper (R2-1a):
+;
+;   export const INERT_EXIT_CONTRACT = Object.freeze({ exitModel: 'bracket', ... });
+;
+; Freezing a config object is the idiomatic way to publish an immutable
+; contract, so the fields most worth querying are exactly the ones a bare
+; "value: (object)" pattern cannot see — one call expression sits between the
+; declarator and the literal.
+;
+; The allowlist is deliberately three functions rather than "any call". Only
+; these RETURN THE ARGUMENT THEY WERE GIVEN, which is what makes the literal's
+; keys members of the bound name. For an arbitrary "const x = compute({a: 1})"
+; the literal is an argument and x is compute's return value, so attributing
+; "a" to x would be a fabrication.
+(variable_declarator
+  name: (identifier)
+  value: (call_expression
+    function: (member_expression
+      object: (identifier) @_identity.obj
+      property: (property_identifier) @_identity.fn)
+    arguments: (arguments
+      (object
+        (pair
+          key: (property_identifier) @name) @definition.property)))
+  (#eq? @_identity.obj "Object")
+  (#match? @_identity.fn "^(freeze|seal|preventExtensions)$"))
+
 ; Closure-valued class fields (#2693) — see the TypeScript block for why these
 ; are Method rather than Property.
 (field_definition
@@ -873,11 +1065,18 @@ export const JAVASCRIPT_QUERIES = `
   right: (_)) @assignment
 
 ; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
+; The URL alternation is OPTIONAL (#2897). Requiring a literal made the rule
+; blind to fetch(url) with a variable argument -- measured on this repo, 44 of
+; 47 fetch calls pass one, so 94% of outward calls produced no site at all. The
+; R3-6 sink set needs only WHERE the program reaches outward, not the URL; route
+; linking still needs the URL and already skips an entry without one
+; (normalizeFetchURL returns nothing and processNextjsFetchRoutes continues), so
+; widening here adds sink sites without inventing a single FETCHES edge.
 (call_expression
   function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
   arguments: (arguments
     [(string (string_fragment) @route.url)
-     (template_string) @route.template_url])) @route.fetch
+     (template_string) @route.template_url]?)) @route.fetch
 
 ; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
 (call_expression
@@ -1006,6 +1205,17 @@ export const JAVA_QUERIES = `
 (record_declaration name: (identifier) @name) @definition.record
 (annotation_type_declaration name: (identifier) @name) @definition.annotation
 
+; Canonical record-component accessors are implicit public zero-argument methods.
+(record_declaration
+  parameters: (formal_parameters
+    (formal_parameter
+      name: (identifier) @name) @definition.method))
+(record_declaration
+  parameters: (formal_parameters
+    (spread_parameter
+      (variable_declarator
+        name: (identifier) @name)) @definition.method))
+
 ; Anonymous class bodies: new Runnable() { ... } — no @name capture; the
 ; class extractor synthesizes the javac-style Worker$N name (#2550)
 (object_creation_expression (class_body)) @definition.class
@@ -1121,8 +1331,15 @@ export const GO_QUERIES = `
 (method_elem name: (field_identifier) @name) @definition.method
 
 ; Types
-(type_declaration (type_spec name: (type_identifier) @name type: (struct_type))) @definition.struct
-(type_declaration (type_spec name: (type_identifier) @name type: (interface_type))) @definition.interface
+;
+; Anchored on the type_spec, NOT the enclosing type_declaration (#2837) — a
+; grouped type ( A struct{}; B struct{} ) block otherwise gave every match the
+; same capture node, and goClassConfig.extractName resolved all of them to the
+; FIRST spec's name, collapsing the block to one node. Must stay in lockstep
+; with @scope.class / @declaration.struct in languages/go/query.ts, which
+; carries the full rationale. (No backticks here: this is a template literal.)
+(type_declaration (type_spec name: (type_identifier) @name type: (struct_type)) @definition.struct)
+(type_declaration (type_spec name: (type_identifier) @name type: (interface_type)) @definition.interface)
 
 ; Imports
 (import_declaration (import_spec path: (interpreted_string_literal) @import.source)) @import

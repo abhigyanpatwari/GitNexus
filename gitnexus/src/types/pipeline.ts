@@ -2,6 +2,7 @@ import type { KnowledgeGraph } from '../core/graph/types.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
+import type { UndecidedSatisfaction } from '../core/ingestion/scope-resolution/contract/scope-resolver.js';
 import type { PdgEmitManifest } from '../core/lbug/pdg-emit-sink.js';
 import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
@@ -20,6 +21,16 @@ export interface PipelineResult {
    * produced; graph edge semantics are unchanged.
    */
   resolutionOutcomes: readonly ResolutionOutcome[];
+  /**
+   * Interfaces whose structural-satisfaction check could not be completed
+   * (#2873). Empty for languages with no structural detection.
+   *
+   * ABSENT means scope resolution never ran, which is not the same claim as an
+   * empty array — that one says the analyzer looked and decided everything.
+   * The writer needs the difference: it carries a prior record forward across a
+   * run that could not measure, and CLEARS it on a run that measured clean.
+   */
+  undecidedSatisfaction?: readonly UndecidedSatisfaction[];
   /**
    * True if a worker pool was actually constructed for this run. The worker
    * pool is the sole parse path (sequential parsing was removed). False means
@@ -45,4 +56,18 @@ export interface PipelineResult {
    * additional COPY jobs, not map entries).
    */
   graphEmitManifest?: GraphEmitManifest;
+  /**
+   * Property-inference facts from scope resolution (R3-1). Present so a caller
+   * — a test, the CLI, or a future MCP surface — can tell WHY a field has no
+   * ACCESSES rows: genuinely unread, ambiguous between candidates, or anchored
+   * only in a language the per-language inference may not cross. Those are
+   * three different situations with three different remedies, and without this
+   * they produce byte-identical empty results.
+   */
+  propertyInference?: {
+    readonly ambiguous: number;
+    readonly ambiguousNames: readonly string[];
+    readonly crossLanguage: number;
+    readonly crossLanguageNames: readonly { readonly name: string; readonly languages: string[] }[];
+  };
 }

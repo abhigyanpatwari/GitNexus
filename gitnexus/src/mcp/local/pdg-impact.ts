@@ -20,6 +20,11 @@ import {
   CALLEE_ID_SEP,
 } from '../../core/ingestion/cfg/callee-cell-format.js';
 import { toDisplayLine } from './line-display.js';
+// The INTERNAL 0-based-graph → 1-based-CFG join converter. Distinct from
+// `toDisplayLine` above, which is the response-boundary display converter and
+// passes `undefined` through; the joins below need the arithmetic, so every call
+// site here has already established the operand is a number.
+import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 
@@ -1568,11 +1573,12 @@ export async function pdgLayerStatus(deps: {
  * resolved `{ filePath, startLine, endLine }` preserves the disambiguation.
  *
  * The window is byte-identical to `resolveBlockAnchor`'s symbol branch: BOTH
- * span bounds are shifted `+1` (1-based BasicBlock `startLine` vs the 0-based
- * symbol span — the lower `+1` excludes a neighbor's block on the line above,
- * the upper `+1` keeps a guard/def/use on the final line). A symbol with no
- * usable span degrades to the same file-level id-prefix filter. This is the
- * resolved-symbol counterpart, NOT a second window convention.
+ * span bounds go through `toOneBasedLine` (1-based BasicBlock `startLine` vs the
+ * 0-based symbol span — shifting the lower bound excludes a neighbor's block on
+ * the line above, shifting the upper bound keeps a guard/def/use on the final
+ * line). A symbol with no usable span degrades to the same file-level id-prefix
+ * filter. This is the resolved-symbol counterpart, NOT a second window
+ * convention.
  */
 function blockAnchorForResolvedSymbol(sym: {
   filePath: string;
@@ -1588,7 +1594,11 @@ function blockAnchorForResolvedSymbol(sym: {
     return {
       anchorClause:
         'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
-      queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+      queryParams: {
+        idPrefix,
+        symStart: toOneBasedLine(sym.startLine),
+        symEnd: toOneBasedLine(sym.endLine),
+      },
     };
   }
   return { anchorClause: 'a.id STARTS WITH $idPrefix', queryParams: { idPrefix } };
@@ -1612,9 +1622,10 @@ const seedBlockQuery = (anchorClause: string, probeLimit: number): string =>
  * captures every intra-procedural block, so the reachable-minus-seed set is
  * empty (all intra reach is within the seed); a statement seed leaves the
  * other dependent statements reachable. `BasicBlock.startLine` is 1-based and
- * matches the source line, so no `+1` offset applies here (unlike the symbol
- * span, where the 0-based symbol bounds are shifted). Bounded to the symbol's
- * own span when known, so a line shared with a sibling symbol can't leak.
+ * matches the source line, so the caller's `line` needs no conversion here
+ * (unlike the symbol span bounds, which are 0-based and go through
+ * `toOneBasedLine`). Bounded to the symbol's own span when known, so a line
+ * shared with a sibling symbol can't leak.
  */
 function blockAnchorForStatement(
   sym: { filePath: string; startLine?: number; endLine?: number },
@@ -1629,7 +1640,12 @@ function blockAnchorForStatement(
     return {
       anchorClause:
         'a.id STARTS WITH $idPrefix AND a.startLine = $line AND a.startLine >= $symStart AND a.startLine <= $symEnd',
-      queryParams: { idPrefix, line, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+      queryParams: {
+        idPrefix,
+        line,
+        symStart: toOneBasedLine(sym.startLine),
+        symEnd: toOneBasedLine(sym.endLine),
+      },
     };
   }
   return {
@@ -2338,12 +2354,12 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // starts on the SAME source line as the seeded statement satisfies the
   // (forgiving) symbol-span window but belongs to a different function, so its
   // intra slice would leak in. The block id encodes the 1-based function start
-  // line, and a block of THIS symbol has fnLine === sym.startLine + 1 (block
-  // lines 1-based, symbol startLine 0-based). Drop foreign-fn seed blocks —
+  // line, and a block of THIS symbol has fnLine === the symbol's 0-based
+  // startLine lifted into that 1-based space. Drop foreign-fn seed blocks —
   // defensively: only when it leaves ≥1 seed, so a kind whose fnLine convention
   // differs never loses a real seed (it keeps the prior, slightly-loose set).
   if (statementMode && typeof sym.startLine === 'number') {
-    const ownerFnLine = sym.startLine + 1;
+    const ownerFnLine = toOneBasedLine(sym.startLine);
     const owned = seedBlocks.filter((id) => fnLineOf(id) === ownerFnLine);
     if (owned.length > 0) seedBlocks = owned;
   }
@@ -2520,12 +2536,14 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // by line. Failure surfaces (no `.catch` swallow) rather than masquerading
   // as "no affected statements".
   // Scope tag (FU-A): the criterion's OWN function is (sym.filePath, fnLine),
-  // where fnLine follows the BasicBlock 1-based convention sym.startLine + 1
-  // (the same window used to anchor the seed above). A symbol without a numeric
-  // startLine has no owning-fn line to match, so `ownerFnLine` is NaN and every
-  // statement tags as 'inter' (no false intra claim).
+  // where fnLine follows the BasicBlock 1-based convention (the same window used
+  // to anchor the seed above). A symbol without a numeric startLine has no
+  // owning-fn line to match, so `ownerFnLine` is NaN and every statement tags as
+  // 'inter' (no false intra claim) — the guard stays here because
+  // `toOneBasedLine` is arithmetic-only and does not handle an absent line.
   const criterionFile = sym.filePath;
-  const ownerFnLine = typeof sym.startLine === 'number' ? sym.startLine + 1 : Number.NaN;
+  const ownerFnLine =
+    typeof sym.startLine === 'number' ? toOneBasedLine(sym.startLine) : Number.NaN;
   // ── FU-B-2 chain-walk blocks: statement-granular interior recovery ─────────
   // The SINGLE principled mechanism that expands a coalesced straight-line
   // BasicBlock to its interior dependent statements via the self REACHING_DEF

@@ -119,10 +119,13 @@ describe('generateAIContextFiles', () => {
       for (const f of ['CLAUDE.md', 'AGENTS.md']) {
         const content = await fs.readFile(path.join(subDir, f), 'utf-8');
         // Primary command is the fixed project-local runner, not machine-resolved.
-        expect(content).toContain('`node .gitnexus/run.cjs analyze`');
+        expect(content).toContain('`node .gitnexus/run.cjs analyze --index-only`');
         expect(content).not.toContain('run `gitnexus analyze`'); // no machine-resolved leak
         // Bootstrap path (for a not-yet-analyzed checkout) + npm-11 escape hatch.
-        expect(content).toContain('npx gitnexus analyze');
+        // Every install-free runner is named, so a machine without npm (bun-only)
+        // still finds a bootstrap command it can actually run.
+        expect(content).toContain('`npx`, `bunx`, or `pnpm dlx`');
+        expect(content).toContain('bunx gitnexus@latest analyze');
         expect(content).toContain('1939');
       }
     } finally {
@@ -238,7 +241,8 @@ describe('generateAIContextFiles', () => {
   it('degrades gracefully when the runner copy fails (#1945)', async () => {
     // A read-only/full-disk storage dir must not abort generation. The copy is
     // best-effort + logged; the generated docs still carry the inline bootstrap
-    // (`npx gitnexus analyze`) so a reader hitting the absent runner has a path.
+    // (`bunx gitnexus@latest analyze`) so a reader hitting the absent runner has
+    // a path.
     const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-copyfail-'));
     const subStorage = path.join(subDir, '.gitnexus');
     await fs.mkdir(subStorage, { recursive: true });
@@ -248,7 +252,7 @@ describe('generateAIContextFiles', () => {
       // Must not throw despite the copy failure.
       await generateAIContextFiles(subDir, subStorage, 'CopyFail', stats);
       const content = await fs.readFile(path.join(subDir, 'CLAUDE.md'), 'utf-8');
-      expect(content).toContain('npx gitnexus analyze'); // bootstrap survives
+      expect(content).toContain('bunx gitnexus@latest analyze'); // bootstrap survives
       // The runner was not written, so the file is absent.
       await expect(fs.access(path.join(subStorage, 'run.cjs'))).rejects.toThrow();
     } finally {
@@ -268,7 +272,7 @@ describe('generateAIContextFiles', () => {
 
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
-    expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze`');
+    expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze --index-only`');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
@@ -304,10 +308,21 @@ describe('generateAIContextFiles', () => {
     // legitimate future additions but will fail loudly if the trim is
     // reverted or someone pads the block back out toward the original size.
     //
-    // Raised 2700 → 2900 for #243: the regression-compare example (one
-    // load-bearing per-repo `base_ref` line on the detect_changes bullet) is a
-    // legitimate addition, not a revert of the trim — the block stays roughly
-    // half the original size.
+    // Raised 2700 → 2900 for #243, then 2900 → 2950 for the bunx bootstrap note,
+    // then 0.55 → 0.65 for the #2899 `risk: UNKNOWN` Always-Do bullet + Never-Do
+    // clause (previously hand-added inside the committed docs instead of this
+    // template, so a real `gitnexus analyze` silently deleted them on every
+    // regeneration — moving them into the template is the fix, and they are
+    // unconditional text load-bearing enough to warrant the budget) — each time
+    // with the same argument, that the added line is load-bearing and the block
+    // is still meaningfully smaller than the original. That is a ratchet with no
+    // ratchet: an absolute cap can only ever fail on the PR that adds the
+    // character, and the fix is always to nudge the number. Assert the invariant
+    // the justifications actually appeal to — the RATIO to the pre-trim size —
+    // so a legitimate clause fits without ceremony while a genuine re-pad fails.
+    // (The structural guard is the sibling test asserting the six #856 section
+    // headers stay deleted; this one bounds bulk.)
+    const PRE_TRIM_BLOCK_CHARS = 5465;
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -316,7 +331,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(2900);
+    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.65);
   });
 
   it('handles empty stats', async () => {
@@ -352,7 +367,7 @@ Some project docs here.
 <!-- gitnexus:keep -->
 # GitNexus — Code Knowledge Graph
 
-Indexed as **TestProject** (50 symbols, 100 relationships, 5 execution flows). MCP tools.
+Indexed as **OldName** (50 symbols, 100 relationships, 5 execution flows). MCP tools.
 
 | Tool | Use for |
 |------|---------|
@@ -363,7 +378,9 @@ Resources: gitnexus://repo/TestProject/context
 `;
     await fs.writeFile(claudeMdPath, customContent, 'utf-8');
 
-    // Run analyze with new stats — should only update the stats line
+    // Run analyze with new stats — should only update the stats line. The seed
+    // carries a stale project NAME because a counts-only delta is now preserved
+    // rather than written (#2907); the rename is what makes this a real update.
     const stats = { nodes: 999, edges: 1234, processes: 42 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
@@ -952,7 +969,7 @@ Project-specific agent guidance.
 <!-- gitnexus:keep -->
 # GitNexus context for AGENTS
 
-Indexed as **AgentsTest** (10 symbols, 20 relationships, 1 execution flows).
+Indexed as **AgentsOldName** (10 symbols, 20 relationships, 1 execution flows).
 
 Use 'query' for finding flows, 'context' for symbol details.
 <!-- gitnexus:end -->
@@ -1017,7 +1034,7 @@ Indexed as **Idem** (1 symbols, 2 relationships, 3 execution flows). Custom.
         '\r\n' +
         '<!-- gitnexus:start -->\r\n' +
         '<!-- gitnexus:keep -->\r\n' +
-        'Indexed as **CRLFTest** (5 symbols, 6 relationships, 7 execution flows). Custom CRLF.\r\n' +
+        'Indexed as **CRLFOldName** (5 symbols, 6 relationships, 7 execution flows). Custom CRLF.\r\n' +
         '<!-- gitnexus:end -->\r\n';
       await fs.writeFile(claudePath, crlfContent, 'utf-8');
 
@@ -1347,6 +1364,136 @@ Indexed as **P**. Custom.
       }
     } finally {
       await fs.rm(subDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// AGENTS.md and CLAUDE.md are the agent guides teams commit, so a rewrite whose
+// only delta is the volatile counts dirties a tracked file on every reindex
+// (#2907). These assert the write is skipped for a count-only delta and still
+// happens for every material one.
+describe('count-only reindex does not churn the committed block (#2907)', () => {
+  let dir: string;
+  let storage: string;
+
+  beforeAll(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-2907-'));
+    storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+  });
+
+  afterAll(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  const read = (file: string): Promise<string> => fs.readFile(path.join(dir, file), 'utf-8');
+
+  it('creates the file with a trailing newline so the next analyze has nothing to append', async () => {
+    await generateAIContextFiles(dir, storage, 'P', { nodes: 10, edges: 20, processes: 3 });
+    expect(await read('CLAUDE.md')).toMatch(/<!-- gitnexus:end -->\n$/);
+    expect(await read('AGENTS.md')).toMatch(/<!-- gitnexus:end -->\n$/);
+  });
+
+  it('leaves both files byte-identical when only the counts moved', async () => {
+    const before = { claude: await read('CLAUDE.md'), agents: await read('AGENTS.md') };
+
+    const result = await generateAIContextFiles(dir, storage, 'P', {
+      nodes: 999999,
+      edges: 888888,
+      processes: 777,
+    });
+
+    expect(await read('CLAUDE.md')).toBe(before.claude);
+    expect(await read('AGENTS.md')).toBe(before.agents);
+    expect(result.files).toContain('CLAUDE.md (preserved)');
+    expect(result.files).toContain('AGENTS.md (preserved)');
+    // The counts the block was created with are the ones still on disk.
+    expect(before.claude).toContain('(10 symbols, 20 relationships, 3 execution flows)');
+  });
+
+  it('still rewrites when something other than the counts changed', async () => {
+    const result = await generateAIContextFiles(dir, storage, 'RenamedProject', {
+      nodes: 10,
+      edges: 20,
+      processes: 3,
+    });
+
+    expect(result.files).toContain('CLAUDE.md (updated)');
+    expect(await read('CLAUDE.md')).toContain('**RenamedProject**');
+  });
+
+  it('still applies --no-stats to an already-injected block', async () => {
+    const result = await generateAIContextFiles(
+      dir,
+      storage,
+      'RenamedProject',
+      { nodes: 10, edges: 20, processes: 3 },
+      undefined,
+      { noStats: true },
+    );
+
+    expect(result.files).toContain('CLAUDE.md (updated)');
+    const content = await read('CLAUDE.md');
+    expect(content).toContain('indexed by GitNexus as **RenamedProject**.');
+    expect(content).not.toContain('(10 symbols, 20 relationships, 3 execution flows)');
+  });
+});
+
+describe('--no-stats drops the per-cluster symbol counts too (#2907)', () => {
+  const stats = { nodes: 10, edges: 20, processes: 3 };
+  const skills = [{ label: 'ingestion', name: 'p-ingestion', symbolCount: 120 }];
+
+  it('omits the count under --no-stats and keeps it otherwise', () => {
+    const lean = generateGitNexusContent('P', stats, { generatedSkills: skills, noStats: true });
+    const full = generateGitNexusContent('P', stats, { generatedSkills: skills });
+
+    expect(lean).toContain(
+      '| Work in the ingestion area | `.claude/skills/p-ingestion/SKILL.md` |',
+    );
+    expect(lean).not.toContain('(120 symbols)');
+    expect(full).toContain(
+      '| Work in the ingestion area (120 symbols) | `.claude/skills/p-ingestion/SKILL.md` |',
+    );
+  });
+});
+
+describe('keep-marker blocks follow the same count-only rule (#2907)', () => {
+  const seed = (name: string, counts: string): string => `# Guide
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+Indexed as **${name}**${counts}. Lean block.
+<!-- gitnexus:end -->
+`;
+
+  it('preserves on a count-only delta and updates on a rename', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-2907-keep-'));
+    const storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    try {
+      const original = seed('P', ' (10 symbols, 20 relationships, 3 execution flows)');
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), original, 'utf-8');
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), original, 'utf-8');
+
+      const preserved = await generateAIContextFiles(dir, storage, 'P', {
+        nodes: 55,
+        edges: 66,
+        processes: 7,
+      });
+      expect(preserved.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(original);
+
+      const renamed = await generateAIContextFiles(dir, storage, 'Q', {
+        nodes: 55,
+        edges: 66,
+        processes: 7,
+      });
+      expect(renamed.files).toContain('CLAUDE.md (updated)');
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toContain(
+        'Indexed as **Q** (55 symbols, 66 relationships, 7 execution flows). Lean block.',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
     }
   });
 });

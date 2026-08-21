@@ -120,8 +120,117 @@ describe('PARSE_CACHE_VERSION', () => {
   // against origin/main immediately before merge, not at review time.
   // Moved 42 -> 43 for #2813's `@reference.embedded-pointer` capture, which is
   // parse-time emission and so cannot be served from a v42 warm cache.
-  it('pins SCHEMA_BUMP to 43 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(43);
+  // Moved 43 -> 44 for #2842's TypeScript heritage capture (interface and
+  // abstract-class `@reference.inherits`), which is parse-time emission and so
+  // cannot be served from a v43 warm cache.
+  // Moved 44 -> 45 for #2837 (Go struct/interface captures re-anchored from
+  // `type_declaration` to `type_spec`). This branch first took 44 and COLLIDED
+  // with #2842 above, which merged first — the ninth entry in the ledger and the
+  // third EXACT clash. Note what this pin could and could not do: it cannot
+  // detect the tie (both branches asserted `toBe(44)`, which passes when main is
+  // already 44); only the merge-time diff against origin/main surfaced it. What
+  // the pin DOES do is fail loudly the moment the constant and this expectation
+  // drift apart, which is what forces the re-check to happen at all.
+  // Moved 45 -> 46 for the JavaScript bare-identifier read captures, the
+  // object-literal `@definition.property` rule and the TypeScript shape-member
+  // captures (A1/A2/A4/A5) — all parse-time, so a v45 warm cache serves entries
+  // carrying neither the new reference sites nor the new Property nodes.
+  //
+  // This branch first took 45 and COLLIDED with #2837 above, which merged
+  // first: the TENTH ledger entry and the FOURTH exact clash, and the second in
+  // a row. Same lesson as the note above — the pin cannot detect the tie, since
+  // both sides asserted `toBe(45)` and that passes while main is already 45.
+  // Only the merge-time diff against origin/main surfaces it.
+  //
+  // Moved 46 -> 47 for method-level Spring `@RequestMapping` routes (#2857):
+  // cached ParseWorkerResults otherwise replay the pre-fix empty route set.
+  // That PR read this branch's claim on 46 and took 47 rather than colliding —
+  // the FIFTH clash, and the first the ledger's convention actually prevented.
+  // It only moved the collision up one step, though: this branch's own 47 and
+  // everything above it had to be renumbered +1 at merge time. Capture sets
+  // unchanged; only the numbers moved.
+  //
+  // Moved 51 -> 52 for dispatch-guard routes (R3-7): the JS/TS providers now
+  // implement `extractDecoratorRoutes`, and decorator routes are worker output
+  // carried in the cache. A v50 warm cache replays a worker result whose
+  // `decoratorRoutes` predates the extractor, so `route_map` keeps answering
+  // empty — the exact symptom the change fixes, disguised as "it does not work".
+  // Moved 52 -> 53 for the same-file constant folding that followed, because a
+  // build stamped 50 (now 52) had already been used to analyze without it.
+  //
+  //
+  // Moved 47 -> 48 for #2833's three parse-time changes: C++
+  // `field_declaration` captures for `template_type` and qualified generic
+  // member types (those members had NO type binding before), a Python interpret
+  // change that reduces `Repo[User]` to `Repo` in `TypeRef.rawName`, and the new
+  // `SymbolDefinition.typeParameters` field read from a
+  // `@declaration.type-parameters` capture in six languages. All three are
+  // serialized into the cached ParsedFile, so an older warm cache replays
+  // pre-fix bindings and the fix is a silent no-op on incremental analyze while
+  // every cold-run test still passes.
+  //
+  // 48, not 46, because this branch collided TWICE: it staged 46 and then 47,
+  // both free when written, and by merge time #2856 claimed 46 and #2857 took 47
+  // and merged first. This assertion is exactly what CANNOT detect that — the
+  // branch asserted `toBe(47)` and so did #2857, and both passed. What this pin
+  // does do is fail loudly the moment the constant and this expectation drift
+  // apart, which is what forces the merge-time diff against origin/main to
+  // happen at all.
+  // Moved 53 -> 54 for W2-8: type parameters are captured on generic functions
+  // and aliases, not just class-likes, so the shadowing guard has data to read.
+  // Moved 54 -> 55 for W2-9: the dispatch-guard verb walk tracks boolean polarity,
+  // so a ternary can no longer report the verb it excludes. Routes are emitted at
+  // parse time, so a warm cache would replay the inverted verb indefinitely.
+  // Moved 55 -> 56 for R3-8 part 1: the verb walk returns every method a guard
+  // serves, so a multi-method guard emits several routes where it emitted one.
+  // Moved 56 -> 57 for R3-8 part 2: `.match()` dispatch, bound-match test sites,
+  // named regex consts, and capturing segment wildcards in `regexToRoutePath`.
+  // Moved 57 -> 58 for #2897: fetch sites are captured without a literal URL.
+  // Moved 58 -> 59 for the #2899 review follow-up: the dispatch-guard walk keys
+  // match bindings on (enclosing function, name) instead of the bare identifier,
+  // and a ternary conjunction INTERSECTS its operands instead of taking the first
+  // non-empty set. Both strictly remove routes, so a warm cache would keep
+  // serving a fabricated verbed route that evicts the true one.
+  // Moved 59 -> 60 for #2864's `ParsedImport.reexportsName` and the
+  // `@import.publishes` capture gating it — a serialized ParsedFile field AND a
+  // capture change, the first being the easy-to-miss half. 60 was staged while
+  // main was 53, chosen above every in-flight MAXIMUM rather than at main + 1;
+  // #2899 then cascaded main to 59, and 60 survived only because of that choice.
+  // Moved 60 -> 62 for the cycle-checker fix's two optional `ParsedImport`
+  // fields, `typeOnly` and `runsOnlyWhenCalled`. Neither is a capture, but
+  // `parsedfile-store.ts` serializes the whole ParsedFile generically, so both
+  // are part of the cached shape — the same half of #2864 that was easy to miss.
+  // A warm cache would replay untagged imports, the strict `=== true` reads
+  // would take the untagged path, and `check --cycles` would keep reporting the
+  // erased and deferred imports the branch exists to stop reporting: a silent
+  // no-op on incremental analyze while every cold-run test passes.
+  // Main subsequently advanced through 63. Values above it must remain distinct
+  // from both published branch heads and every active in-flight claim.
+  // Moved 63 -> 64 for Java enum and annotated heritage captures (#2918),
+  // then 64 -> 66 for the synthetic-declaration sidecar, both now on main.
+  // Moved 66 -> 67 for #2917's implicit Java record-component accessor
+  // definitions and scope declarations. This branch staged 65 before #2918's 66
+  // landed; 67 is the next free value above every in-flight claim (main 66,
+  // #2939's 64), re-checked against the claims rather than against main alone.
+  // Moved 67 -> 68 for #2912's `ReferenceSite.typeArguments` — heritage generic
+  // arguments derived at extraction time, so a warm cache replays `inherits`
+  // sites without them and instantiation-aware dispatch degrades silently to
+  // the pre-fix fan-out. This branch staged 64 above the claims live at the
+  // time (61, 62, 63); all three landed and cascaded main to 67, so 68 is the
+  // next free value above every claim at merge — the rule, re-applied.
+  // Version 69 added #2969's JS/TS data-route-table decoratorRoutes. Version 70
+  // adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so it is
+  // the next free value after both cache payload changes.
+  it('pins SCHEMA_BUMP to 70 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(70);
+    // The PREVIOUS version must fail the reuse gate, not merely differ from the
+    // current one — a hardcoded number outside the conflict hunk rebases cleanly
+    // while being wrong, which is exactly how the 37/38 exact clashes landed.
+    // Every nearby historical or in-flight value is rejected, including 69,
+    // which carried the route-table payload before this merge.
+    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]) {
+      expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
+    }
   });
 
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {

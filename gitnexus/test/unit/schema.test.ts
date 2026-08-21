@@ -245,6 +245,8 @@ describe('LadybugDB Schema', () => {
         'Property|Struct',
         'Method|Variable',
         'Method|Const',
+        // #2801 moves this pair from structural DDL into the generated bridge.
+        'Record|Property',
       ];
 
       for (const pair of memberPairs) {

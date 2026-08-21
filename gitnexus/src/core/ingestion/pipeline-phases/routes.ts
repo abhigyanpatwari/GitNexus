@@ -29,6 +29,8 @@ import {
   compiledMatcherMatchesRoute,
 } from '../route-extractors/middleware.js';
 import { processNextjsFetchRoutes } from '../call-processor.js';
+import { reconcileDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
+import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import {
   normalizeExtractedRoutePath,
   normalizeRouteMethod,
@@ -73,6 +75,29 @@ export interface TemplateFetchCall {
   filePath: string;
   fetchURL: string;
   lineNumber: number;
+}
+
+function handlerSymbolContent(
+  content: string,
+  handlerNode: { properties: Record<string, unknown> } | undefined,
+): string | undefined {
+  if (handlerNode === undefined) return undefined;
+  const startLine = handlerNode.properties.startLine;
+  const endLine = handlerNode.properties.endLine;
+  if (
+    typeof startLine !== 'number' ||
+    typeof endLine !== 'number' ||
+    !Number.isInteger(startLine) ||
+    !Number.isInteger(endLine) ||
+    startLine < 0 ||
+    endLine < startLine
+  ) {
+    return undefined;
+  }
+  return content
+    .split(/\r?\n/)
+    .slice(startLine, endLine + 1)
+    .join('\n');
 }
 
 const TEMPLATE_URL_PATTERNS: readonly RegExp[] = [
@@ -248,35 +273,63 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         namedRouteRegistry.set(route.routeName, routeUrl);
       }
     }
-    for (const dr of allDecoratorRoutes) {
+    // A dispatch-guard route observed WITHOUT a verb is dropped when the same
+    // URL is claimed WITH one anywhere in the repo — the split route-table
+    // idiom, which no single file can reconcile. Framework routes are untouched;
+    // their verb-less form is a declaration, not a weaker observation.
+    for (const dr of reconcileDispatchGuardRoutes(allDecoratorRoutes)) {
       const url = normalizeExtractedRoutePath(dr.routePath, dr.prefix ?? null);
+      const method = normalizeRouteMethod(dr.httpMethod);
+      const routeKey = routeNodeKey(method, url);
+      // A data-table entry is only a provider route once its static handler has
+      // been proven. Other route sources retain their historical fallback.
+      if (dr.source === DATA_ROUTE_TABLE_SOURCE && !routeHandlerSymbols.has(routeKey)) continue;
       addRoute(url, {
         filePath: dr.filePath,
-        source: `decorator-${dr.decoratorName}`,
-        method: normalizeRouteMethod(dr.httpMethod),
+        // A route extracted from a file's own AST is usually a decorator; a
+        // dispatch guard is the same transport with different provenance, and
+        // says so (`ExtractedDecoratorRoute.source`).
+        source: dr.source ?? `decorator-${dr.decoratorName}`,
+        method,
       });
     }
 
     let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
-      const handlerPaths = [...routeRegistry.values()].map((e) => e.filePath);
+      const handlerPathFor = (routeKey: string, entry: RouteEntry): string => {
+        if (entry.source !== DATA_ROUTE_TABLE_SOURCE) return entry.filePath;
+        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
+        const resolvedPath = handlerSymbolId
+          ? ctx.graph.getNode(handlerSymbolId)?.properties.filePath
+          : undefined;
+        return typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
+      };
+      const handlerPaths = [...routeRegistry].map(([key, entry]) => handlerPathFor(key, entry));
       handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
 
       for (const [routeKey, entry] of routeRegistry) {
-        const { filePath: handlerPath, source: routeSource, method: routeMethod, url } = entry;
+        const { source: routeSource, method: routeMethod, url } = entry;
+        const handlerPath = handlerPathFor(routeKey, entry);
         const content = handlerContents.get(handlerPath);
+        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
+        const analysisContent =
+          entry.source === DATA_ROUTE_TABLE_SOURCE && content
+            ? handlerSymbolContent(
+                content,
+                handlerSymbolId ? ctx.graph.getNode(handlerSymbolId) : undefined,
+              )
+            : content;
 
-        const { responseKeys, errorKeys } = content
+        const { responseKeys, errorKeys } = analysisContent
           ? handlerPath.endsWith('.php')
-            ? extractPHPResponseShapes(content)
-            : extractResponseShapes(content)
+            ? extractPHPResponseShapes(analysisContent)
+            : extractResponseShapes(analysisContent)
           : { responseKeys: undefined, errorKeys: undefined };
 
-        const mwResult = content ? extractMiddlewareChain(content) : undefined;
+        const mwResult = analysisContent ? extractMiddlewareChain(analysisContent) : undefined;
         const middleware = mwResult?.chain;
 
         const routeNodeId = generateId('Route', routeKey);
-        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
         ctx.graph.addNode({
           id: routeNodeId,
           label: 'Route',

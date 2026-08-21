@@ -65,6 +65,14 @@ export const en = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
+  'tool.detectChanges.partial':
+    'PARTIAL RESULT: a graph query failed, so changed symbols may be missing. Do not read this as a clean pre-commit check.',
+  'tool.detectChanges.truncated':
+    'LISTING CAPPED: the changed-symbol list was capped, so it does not name every changed symbol. The counts and risk level still cover all of them.',
+  // The reassurance above is only true on its own. When the run also degraded,
+  // `changed_count` was summed from the batches that SUCCEEDED, so it is a floor.
+  'tool.detectChanges.truncatedDegraded':
+    'LISTING CAPPED: the changed-symbol list was capped. The run also degraded, so the counts are a lower bound, not a total.',
   'tool.detectChanges.changesSummary': 'Changes: {{files}} files, {{symbols}} symbols',
   'tool.detectChanges.affectedProcesses': 'Affected processes: {{count}}',
   'tool.detectChanges.riskLevel': 'Risk level: {{risk}}',
@@ -230,16 +238,15 @@ export const en = {
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
-    'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
-  'help.option.wiki.model': 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)',
+    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: minimax)',
+  'help.option.wiki.model': 'LLM model or deployment name (default: MiniMax-M3)',
   'help.option.wiki.baseUrl':
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key or Azure api-key (saved to ~/.gitnexus/config.json)',
   'help.option.wiki.apiVersion':
     'Azure api-version query param, e.g. 2024-10-21 (legacy Azure API only)',
-  'help.option.wiki.reasoningModel':
-    'Mark deployment as reasoning model (o1/o3/o4-mini) — strips temperature, uses max_completion_tokens',
-  'help.option.wiki.noReasoningModel': 'Disable reasoning model mode (overrides saved config)',
+  'help.option.wiki.reasoningModel': 'Enable reasoning mode; MiniMax-M3 uses adaptive thinking',
+  'help.option.wiki.noReasoningModel': 'Disable reasoning mode; MiniMax-M3 disables thinking',
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',

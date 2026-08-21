@@ -106,6 +106,67 @@ withTestLbugDB(
 
         // 4 relationships (2 CALLS, 2 CONTAINS)
         expect(stats.edges).toBe(4);
+
+        // STRUCTURAL count must be a real number, not `undefined`.
+        //
+        // This assertion exists because the failure mode is silent: the query is
+        // wrapped in a try/catch that yields `undefined` on error, and
+        // `undefined` makes the graph-write-collapse check decline to compare.
+        // A typo in the Cypher would therefore not throw, not fail any test, and
+        // simply switch the collapse guard off — the exact shape of
+        // confidently-doing-nothing this whole area exists to prevent.
+        //
+        // The seeded graph has no PDG layers, so structural == total here; the
+        // point is that the count was TAKEN.
+        expect(stats.structuralEdges).toBe(4);
+
+        // ...and that it was taken WITHOUT an error, which is the fact the
+        // collapse guard reads to tell "measured" from "could not measure".
+        expect(stats.structuralEdgesError).toBeUndefined();
+      });
+
+      it('getLbugStats: the structural count EXCLUDES PDG rows that `edges` counts', async () => {
+        // The assertion above cannot see the `WHERE NOT r.type IN [...]` filter
+        // at all — its own comment says "structural == total here" — so a broken
+        // or dropped predicate would pass it unchanged while silently switching
+        // the graph-write-collapse guard from a structural comparison back to
+        // the total one that let PDG volume mask structural loss.
+        //
+        // Seeds a real PDG-typed row (same CREATE pattern as the
+        // deleteAllInterprocTaintPaths test below) and asserts the two counts
+        // DIVERGE by exactly it. Removed again at the end: the count-based
+        // assertions in this file share one singleton DB and run in declaration
+        // order.
+        const { getLbugStats, executeQuery: coreExecuteQuery } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        const before = await getLbugStats();
+        expect(before.edges).toBe(before.structuralEdges);
+
+        const fns = (await coreExecuteQuery('MATCH (n:Function) RETURN n.id AS id')) as {
+          id: string;
+        }[];
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'CFG', confidence: 1.0, reason: 'seq', step: 0}]->(b)`,
+        );
+
+        try {
+          const after = await getLbugStats();
+          // The total sees the new row...
+          expect(after.edges).toBe((before.edges ?? 0) + 1);
+          // ...and the structural count does NOT.
+          expect(after.structuralEdges).toBe(before.structuralEdges);
+          expect(after.structuralEdgesError).toBeUndefined();
+        } finally {
+          await coreExecuteQuery(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CFG' DELETE r`);
+        }
+
+        // Restored, so the later count-based assertions still see the seeded graph.
+        const restored = await getLbugStats();
+        expect(restored.edges).toBe(before.edges);
+        expect(restored.structuralEdges).toBe(before.structuralEdges);
       });
 
       it('deleteAllInterprocTaintPaths: removes TAINT_PATH edges and is benign when none exist (#2084 review P2-5)', async () => {

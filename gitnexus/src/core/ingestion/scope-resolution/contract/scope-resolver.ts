@@ -114,13 +114,23 @@
  *          languages that set `resolveThisViaEnclosingClass === true`;
  *          it intercepts every bare-`this` call/read/write site ahead of
  *          Case 4 and does NOT emit the interface-dispatch fan-out that
- *          Cases 0 and 4 both perform (Case 0 gained it in #2829), so
- *          enabling the toggle for a language changes that language's
- *          `this` dispatch semantics (see the toggle's doc below)
+ *          Cases 0, 3b and 4 all perform (Case 0 gained it in #2829 and
+ *          Case 3b in #2832, leaving 0.5 the only INSTANCE-receiver case
+ *          that folds or walks to a receiver type without fanning out.
+ *          Read that narrowly: Case 2 also walks an MRO and its binding
+ *          admits `Interface`, but its receiver IS the type name, so the
+ *          site is static dispatch and a fan-out would be wrong; Cases 3
+ *          and 5 resolve by direct lookup rather than a fold or MRO walk,
+ *          and no language is known to reach Case 3 with an Interface —
+ *          every one that could strips the namespace qualifier first,
+ *          sending it to Case 4), so enabling the toggle
+ *          for a language changes that language's `this` dispatch
+ *          semantics (see the toggle's doc below)
  *       4. Case 1 namespace-receiver
  *       5. Case 2 class-name receiver
  *       6. Case 3 dotted typeBinding for namespace prefix
- *       7. Case 3b chain-typebinding (compound resolver)
+ *       7. Case 3b chain-typebinding (compound resolver + interface-dispatch
+ *          fan-out on an Interface fold, #2832)
  *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
@@ -287,6 +297,7 @@ import { LanguageProvider } from '../../language-provider.js';
 import { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ConversionRankFn } from '../passes/overload-narrowing.js';
+import type { HeritageTypeArgumentSink } from '../utils/generic-instantiation.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 
 /** A LinearizeStrategy receives the full ancestor map so C3-style
@@ -325,6 +336,41 @@ export type ElementAccessRoute =
 export interface StructuralImplementor {
   readonly structDefId: string;
   readonly receiverForm: 'value' | 'pointer';
+}
+
+/**
+ * One interface whose satisfaction check could not be COMPLETED for at least
+ * one candidate type — not one that was checked and came out negative.
+ *
+ * The distinction is the whole point (#2873): a detector that reports only
+ * positives makes "nobody implements this" and "we could not tell whether
+ * anybody implements this" byte-identical, and the second one silently becomes
+ * a confident zero in `impact`. Consumers must not turn these into edges; they
+ * exist so a query can say it is answering with a lower bound.
+ */
+export interface UndecidedSatisfaction {
+  readonly interfaceDefId: string;
+  readonly interfaceName: string;
+  readonly filePath: string;
+  /** How many candidate types went unjudged for this interface. */
+  readonly undecidedCandidates: number;
+  /**
+   * The candidate types themselves, by name.
+   *
+   * Both sides are recorded because a query arrives from either one. Asking
+   * `impact` about the IMPLEMENTATION — the case #2873 reports — never touches
+   * the interface node at all: the walk starts at a method whose owner has no
+   * heritage edge precisely because the check was undecided, so an
+   * interface-keyed record alone would leave that query unhedged.
+   */
+  readonly candidateNames: readonly string[];
+}
+
+/** What `detectInterfaceImplementations` answers: the positives, plus the
+ *  questions it could not answer. */
+export interface StructuralImplementationResult {
+  readonly implementations: Map<string, readonly StructuralImplementor[]>;
+  readonly undecided: readonly UndecidedSatisfaction[];
 }
 
 export interface ScopeResolver {
@@ -541,6 +587,16 @@ export interface ScopeResolver {
    * shape. Must be idempotent (the orchestrator may call it more than once
    * during re-resolution).
    *
+   * `recordTypeArguments` is the same sink `preEmitInheritanceEdges` writes to:
+   * the generic INSTANTIATION a heritage clause was written with, so
+   * interface-dispatch fan-out can refuse an implementor of an incompatible one
+   * (#2912). An implementation that emits an edge for a generic base
+   * (`impl Validator<String> for V`, `class V implements Validator<String>`)
+   * should call it with the same (source, target) graph ids it just used;
+   * anything not recorded reads as "unknown" and keeps the pre-#2912 fan-out.
+   * Ignoring it entirely is correct for a language whose heritage carries no
+   * type arguments (Ruby `include`).
+   *
    * Default: undefined (no extra heritage edges needed).
    */
   readonly emitHeritageEdges?: (
@@ -548,6 +604,7 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     nodeLookup: GraphNodeLookup,
     scopes?: ScopeResolutionIndexes,
+    recordTypeArguments?: HeritageTypeArgumentSink,
   ) => void;
 
   /**
@@ -962,6 +1019,25 @@ export interface ScopeResolver {
   readonly isStaticOnly?: (def: SymbolDefinition) => boolean;
 
   /**
+   * Optional canonicalizer for a written GENERIC TYPE ARGUMENT, so two
+   * spellings of one type compare equal during interface-dispatch
+   * instantiation matching (#2912).
+   *
+   * The case it exists for is a language with predefined ALIASES: C# `string`
+   * and `String` are the same type, so `IValidator<string>` must still fan out
+   * to `class V : IValidator<String>`. Without the hook the two spellings look
+   * like two instantiations and the implementor is pruned — a missing edge,
+   * which is the failure direction #2912 is most concerned to avoid.
+   *
+   * Called ONLY on the two sides of one argument comparison, never on a name
+   * used for lookup, so it may map to whatever canonical form the language
+   * prefers (`string` → `String`, or the reverse) as long as it is consistent.
+   * Languages whose types have one spelling each leave it undefined and the
+   * comparison stays exact.
+   */
+  readonly normalizeTypeArgument?: (name: string) => string;
+
+  /**
    * Optional predicate to gate free-call fallback emission by caller-side
    * visibility. When provided, `pickUniqueGlobalCallable` rejects candidates
    * the caller cannot legally reach — e.g., a PHP function in a different
@@ -1083,6 +1159,44 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     callsite?: Callsite,
   ) => SymbolDefinition | 'ambiguous' | undefined;
+
+  /**
+   * Every receiver spelling under which a namespace import's target is
+   * reachable, and the file each spelling names (#2826). Returning
+   * `undefined` keeps the shared default: the local binding name alone,
+   * mapped to the edge's own target file.
+   *
+   * Python needs this because one `import a.b.c` statement binds THREE
+   * spellings at once — `a`, `a.b` and `a.b.c` — each naming a DIFFERENT
+   * file (`a/__init__.py`, `a/b/__init__.py`, `a/b/c.py`), while
+   * `ImportEdge` carries only the leaf. The default keyed `a` (its
+   * `localName`) to the LEAF, so `a.helper()` resolved into `a/b/c.py`
+   * whenever that module happened to export `helper` — a wrong edge — and
+   * `a.b.mid()` resolved to nothing at all.
+   *
+   * Shared code cannot derive this. Swift's `import Foo.Bar` produces an
+   * edge shape identical to Python's (`localName: 'Foo'`,
+   * `targetExportedName: 'Foo.Bar'`), yet there the FIRST segment is the
+   * resolved target and `Foo.Bar` names a nested TYPE; keying it would hand
+   * `resolveConstructionExpressionClass` an authoritative namespace — that
+   * branch deliberately does not fall through on a miss — and break
+   * `Foo.Bar(x)` construction that resolves correctly today. And the
+   * `__init__.py` convention that turns a dotted prefix into a file is
+   * Python's alone.
+   *
+   * `moduleFileExists` reports whether a path is a module the workspace
+   * actually parsed, so a provider can propose a prefix file and have it
+   * dropped when absent (a PEP-420 namespace package has no `__init__.py`)
+   * rather than minting a key to a file that is not there.
+   */
+  readonly namespaceReceiverPaths?: (
+    edge: {
+      readonly localName: string;
+      readonly importPath: string;
+      readonly targetFile: string;
+    },
+    moduleFileExists: (filePath: string) => boolean,
+  ) => readonly (readonly [spelling: string, targetFile: string])[] | undefined;
 
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
@@ -1254,7 +1368,7 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     model: SemanticModel,
-  ) => Map<string, readonly StructuralImplementor[]>;
+  ) => StructuralImplementationResult;
 
   /**
    * Optional: mirror typeBindings from namespace-import target modules

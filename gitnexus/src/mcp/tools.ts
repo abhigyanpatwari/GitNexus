@@ -287,7 +287,7 @@ NOTE: ACCESSES edges (field read/write tracking) are included in context results
 COMPLETENESS OF incoming: alongside symbol/incoming/outgoing the result carries the same epistemic envelope impact() returns:
 - epistemic: 'exact' | 'lower-bound' — 'lower-bound' means callers exist that this view provably does not list.
 - boundaries: string[] — one plain-language sentence per reason. Prose for humans; branch on causes instead.
-- causes: { receiverTyping, dispatchBoundary, externalBoundary } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
+- causes: { receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction } — machine-readable WHY. Every field counts MISSING THINGS, never sentences:
   - causes.receiverTyping (unit: call sites) > 0 — RESOLVER GAP: the analyzer dropped that many call sites on this name because it could not type the receiver, so they are missing from incoming. Do not read an absent caller as proof none exists.
   - causes.externalBoundary (unit: call sites) > 0 — the calls left the indexed program (System.out.println, fetch(...)). NOT a defect: no in-graph node could have been reached. An epistemic:'exact' result can carry this.
   - causes.dispatchBoundary (unit: symbols) > 0 — DI / interface dispatch: implementations plus interface-level consumers behind a boundary static analysis cannot cross. Irreducible.
@@ -352,7 +352,9 @@ AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ 
 
 GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
 
-Returns: changed symbols, affected processes, and a risk summary.`,
+Returns: changed symbols, affected processes, and a risk summary.
+- partial: true — a step failed and was swallowed, so the result is incomplete and risk_level is "unknown" instead of a ranked level. Two causes, with different blast radii: the symbol query (or an unparseable diff) degrades everything — changed_symbols, both counts, and the processes derived from them — while a failed process lookup degrades only affected_processes and the risk read off it, leaving the changed-symbol counts sound. changed_count:0 with partial:true is NOT a clean pre-commit check; re-run before treating the diff as safe.
+- truncated: true — the changed_symbols LISTING was capped for this response. summary.changed_count counts every symbol the run observed: the true total normally, a LOWER BOUND when partial:true. Compare it with the array length rather than trusting the array.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -384,8 +386,24 @@ Returns: changed symbols, affected processes, and a risk summary.`,
     name: 'check',
     description: `Run read-only structural checks against the indexed graph.
 
-Currently detects directed cycles between File nodes connected by IMPORTS edges.
-Returns deterministic cycle paths and a cycle count suitable for CI automation.`,
+Currently detects directed cycles between File nodes connected by IMPORTS edges, counting only
+edges that force a module-initialization order — a deferred import (\`import()\`, or one written
+inside a function body) and a TypeScript \`import type\` are excluded, because neither can make the
+modules impossible to initialize.
+
+READ \`enumeration\` BEFORE \`cycleCount\`:
+- \`enumeration: 'complete'\` — every elementary cycle is listed; \`cycleCount\` is their number.
+- \`enumeration: 'component-representatives'\` — the full enumeration exceeded a safety limit, so
+  \`cycles\` holds ONE representative per circular component, \`truncated\` is true, and
+  \`cycleCount\` is **null**. Do not compare \`cycleCount\` numerically here: \`null > 0\` is false,
+  so a caller keying on it alone concludes "clean" on exactly the most tangled repositories. Use
+  \`status === 'cycles_found'\`.
+
+\`componentCount\` (independent circular components) is present in both modes and is the number to
+act on and to trend: cutting one import can remove thousands of elementary cycles at once, so
+\`cycleCount\` swings wildly for small changes while \`componentCount\` stays stable.
+
+A graph too large to analyze at all returns \`{ error, truncated: true }\` with no \`status\`.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -455,19 +473,22 @@ WHEN TO USE: Before making code changes — especially refactoring, renaming, or
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
 
 Output includes:
-- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN
+- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN. An upstream walk that resolved ZERO callers reports UNKNOWN, never LOW, and carries riskNote: "safe to change" is a claim about callers and there were none to reason about, so the symbol is either genuinely unused OR reached only through a reference class the index does not record (plain-object property access, a bare-identifier read of a module-scope const). Confirm with a text search before acting on it. Downstream walks are unaffected — an empty downstream result reports resolved callees, not safety.
+- riskNote: string — present only when risk is UNKNOWN; states why the verdict is withheld.
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
 - byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list.
 - epistemic: 'exact' | 'lower-bound' — whether impactedCount is the whole story. 'lower-bound' means the walk provably missed callers, so the count is a floor. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).
 - boundaries: string[] — one plain-language sentence per reason the count is short. Prose for humans; branch on causes instead.
-- causes: { receiverTyping, dispatchBoundary, externalBoundary } — the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:
+- causes: { receiverTyping, dispatchBoundary, externalBoundary, undecidedSatisfaction } — the machine-readable split of WHY, so an agent gating its own edits can tell a fixable analyzer gap from an irreducible one. Every field counts MISSING THINGS, never sentences:
   - causes.receiverTyping (unit: call sites) > 0 — the RESOLVER GAP signal: the analyzer dropped that many call sites because it could not establish the receiver's type (unresolved constructor, factory, chained expression). Those callers are absent from byDepth. Treat the result as incomplete: grep the symbol name before deleting or renaming.
   - causes.externalBoundary (unit: call sites) > 0 — those calls left the indexed program (System.out.println, fetch(...), os.environ.*). NOT a defect and NOT a reason the count is short: there is no in-graph node any edge could have reached. An epistemic:'exact' result can carry this.
   - causes.dispatchBoundary (unit: symbols) > 0 — DI / interface dispatch: that many implementations plus interface-level consumers sit on the far side of a boundary a static walk cannot cross. Irreducible; a compiler refuses here too. A symbol count, not a site count — per-site multiplicity is not retained for these edges — so compare its magnitude with receiverTyping, not its exact value.
 
-REQUIRES RE-INDEX: causes.receiverTyping and causes.externalBoundary are read from index-time metadata that only a current analyzer writes. Against an older index they read as absent/0, which is indistinguishable from "nothing was dropped" — re-run \`gitnexus analyze\` before trusting a zero there.
+  - causes.undecidedSatisfaction (unit: unjudged interface/type pairs) > 0 — the analyzer could not DECIDE whether a type satisfies an interface (a type in a required signature named a package it could not resolve), so no IMPLEMENTS edge exists and no dispatch boundary was left for the walk to notice. Distinct from every cause above, which count decided facts that could not be attributed; this one counts questions never answered. It is the only cause that shortens a result WITHOUT leaving a trace in the graph, so an unhedged zero on a symbol reached only through such an interface would otherwise read as 'nobody calls this'. Usually fixable: it most often means a dependency is missing from the analyzed tree.
+
+REQUIRES RE-INDEX: causes.receiverTyping, causes.externalBoundary and causes.undecidedSatisfaction are read from index-time metadata that only a current analyzer writes. Against an older index they read as absent/0, which is indistinguishable from "nothing was dropped" — re-run \`gitnexus analyze\` before trusting a zero there.
 
 Depth groups:
 - d=1: WILL BREAK (direct callers/importers)

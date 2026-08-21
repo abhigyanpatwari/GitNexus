@@ -36,6 +36,16 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // The gitnexus-plan safe writer resolves every name through a per-platform
+  // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
+  // verifies each step against descriptors it holds open. Publication is link(2)
+  // on both. #2905 shipped the Darwin backend after the suite had silently
+  // skipped on every non-Linux runner, so this file must run on the OS matrix or
+  // the macOS half is unverified by construction — and the flag, trailing-
+  // separator and hard-link fixtures assert kernel behaviour that only a real
+  // Darwin kernel can confirm. Windows is refused by the capability gate; the
+  // suite asserts that refusal rather than skipping it.
+  'test/unit/evidence-provenance-helper.test.ts',
   // Windows drive-letter case variance in the analyzer runner-identity path
   // fields (#2668): normalizeAnalyzerRootPath is a POSIX no-op, so the
   // "identity path fields are normalizer-stable" fixpoint guard only bites on
@@ -154,6 +164,18 @@ const LBUG_NATIVE = [
   // proven on the windows-latest native addon, not just Ubuntu. Budget: ~25s
   // on Linux → expect ~2min on the slowest Windows shard.
   'test/unit/incremental-vector-extension-ordering.test.ts',
+  // #2841: the FTS half of that same gate, plus the both-extensions-blocked
+  // case — and it needs this matrix for two reasons the VECTOR sibling above
+  // does not cover. The reported failure environment is a machine where the
+  // extension stopped LOADING, which is the #2374 class and Windows-reported
+  // (the same reason fts-extension-e2e.test.ts is registered below), so the
+  // FTS-unavailable branch has to run on a real Windows/macOS runner rather
+  // than only on Ubuntu where FTS always loads. And its both-blocked case is
+  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml sets ONLY on this
+  // job — everywhere else an unavailable VECTOR extension skips instead of
+  // failing. Budget: four real analyze runs, so expect it to sit alongside the
+  // VECTOR sibling's ~87s Windows measurement.
+  'test/unit/incremental-index-extension-dml-gate.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real
