@@ -567,6 +567,7 @@ describe('Shell quoted-pattern parser', () => {
     ['rg --regexp=UserService src/', 'UserService'],
     ['grep -eUserService src/', 'UserService'],
     ['/usr/bin/rg -- "User Service" src/', 'User Service'],
+    ['rg -- -error src/', '-error'],
   ])('extracts %j from %j', (command, expected) => {
     expect(parseRgGrepPattern(command)).toBe(expected);
   });

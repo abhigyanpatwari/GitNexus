@@ -151,6 +151,7 @@ function parseRgGrepPattern(cmd) {
   let foundCmd = false;
   let skipNext = false;
   let skipNextAsPattern = false;
+  let endOfOptions = false;
   const flagsWithValues = new Set([
     '-e',
     '-f',
@@ -181,6 +182,13 @@ function parseRgGrepPattern(cmd) {
         .pop()
         ?.replace(/\.exe$/i, '');
       if (commandName === 'rg' || commandName === 'grep') foundCmd = true;
+      continue;
+    }
+    if (endOfOptions) {
+      return token.length >= 3 ? token : null;
+    }
+    if (token === '--') {
+      endOfOptions = true;
       continue;
     }
     if (token.startsWith('-')) {
