@@ -255,12 +255,6 @@ function extractPattern(toolName, toolInput) {
   if (t === 'shell') {
     const cmd = toolInput.command || '';
     if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
-    // NOTE: parseRgGrepPattern uses split(/\s+/) and cannot handle shell
-    // quoting. `rg "User Service" src/` returns "User" (the first token
-    // after the rg/grep arg, with surrounding quotes stripped) — the
-    // multi-word pattern is intentionally not reconstructed since BM25 is
-    // already token-tolerant. Quoted single tokens (`rg "validateUser"`)
-    // work fine.
     return parseRgGrepPattern(cmd);
   }
 
