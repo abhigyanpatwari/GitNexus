@@ -1,40 +1,40 @@
 {
   "tabs": {
-    "chat": "",
-    "processes": ""
+    "chat": "Nexus AI",
+    "processes": "Процессы"
   },
   "suggestions": {
-    "architecture": "",
-    "whatDoes": "",
-    "importantFiles": "",
-    "apiHandlers": ""
+    "architecture": "Объясни архитектуру проекта",
+    "whatDoes": "Что делает этот проект?",
+    "importantFiles": "Покажи мне самые важные файлы",
+    "apiHandlers": "Найди все обработчики API"
   },
   "empty": {
-    "title": "",
-    "description": ""
+    "title": "Спроси меня о чём угодно",
+    "description": "Я могу помочь разобраться в архитектуре, найти функции или объяснить связи."
   },
   "input": {
-    "placeholder": "",
-    "initializing": "",
-    "configureProvider": ""
+    "placeholder": "Спроси о кодовой базе...",
+    "initializing": "Инициализация AI-агента...",
+    "configureProvider": "Настройте провайдера LLM, чтобы включить чат."
   },
   "actions": {
-    "closePanel": "",
-    "scrollBottom": "",
-    "clearChat": "",
-    "stopResponse": ""
+    "closePanel": "Закрыть панель",
+    "scrollBottom": "Перейти вниз",
+    "clearChat": "Очистить чат",
+    "stopResponse": "Остановить создание ответа"
   },
-  "stopped": "",
+  "stopped": "Остановлено пользователем",
   "badges": {
-    "configureAI": "",
-    "connecting": ""
+    "configureAI": "Настроить AI",
+    "connecting": "Подключение"
   },
   "chatOnly": {
-    "banner": ""
+    "banner": "Граф не загружен (большой проект). Чат работает нормально, но встроенные ссылки на узлы не будут подсвечиваться в представлении графа."
   },
   "roles": {
-    "you": "",
-    "assistant": ""
+    "you": "Вы",
+    "assistant": "Nexus AI"
   },
-  "newBadge": ""
+  "newBadge": "СОЗДАТЬ ДИАЛОГ"
 }
