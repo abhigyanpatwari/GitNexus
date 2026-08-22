@@ -26,6 +26,7 @@
   },
   "counts": {
     "files_one": "{{count}} файл",
+    "files_from_two_to_four": "{{count} файла",
     "files_other": "{{count}} файлов",
     "nodes_one": "{{count}} узел",
     "nodes_other": "{{count}} узлов",
