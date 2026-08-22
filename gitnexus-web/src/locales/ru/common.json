@@ -38,6 +38,7 @@
     "symdols_from_two_to_four": "{{count}} символа",
     "symbols_other": "{{count}} символов",
     "flows_one": "{{count}} поток",
+    "flows_from_two_to_four": "{{count}} потока",
     "flows_other": "{{count}} потоков"
   },
   "progress": {
