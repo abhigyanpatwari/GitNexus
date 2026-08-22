@@ -1,0 +1,78 @@
+{
+  "success": {
+    "title": "",
+    "description": ""
+  },
+  "loading": {
+    "largeRepoHint": ""
+  },
+  "guide": {
+    "copyAria": "",
+    "copiedAria": "",
+    "startServer": "",
+    "devDescription": "",
+    "prodDescription": "",
+    "copyCommand": "",
+    "copyCommandDescription": "",
+    "done": "",
+    "orInstallGlobally": "",
+    "globalInstall": "",
+    "startBackend": "",
+    "terminal": "",
+    "waitingForServer": "",
+    "pasteAndRun": "",
+    "pasteAndRunDescription": "",
+    "listeningForServer": "",
+    "willAutoConnect": "",
+    "autoConnects": "",
+    "autoConnectsDescription": "",
+    "requires": "",
+    "port": ""
+  },
+  "analyzeFirst": {
+    "title": "",
+    "description": "",
+    "footer": ""
+  },
+  "landing": {
+    "chooseRepository": "",
+    "description": "",
+    "indexed": "",
+    "orAnalyzeNew": "",
+    "footer": "",
+    "time": {
+      "justNow": "",
+      "minutesAgo": "",
+      "hoursAgo": "",
+      "daysAgo": ""
+    }
+  },
+  "repoAnalyzer": {
+    "inputType": "",
+    "githubUrl": "",
+    "gitlabUrl": "",
+    "azureDevOpsUrl": "",
+    "localFolder": "",
+    "starting": "",
+    "analyzeRepository": "",
+    "complete": "",
+    "loadingGraph": "",
+    "defaultRepoName": "",
+    "githubRepositoryUrl": "",
+    "githubTokenLabel": "",
+    "githubTokenPlaceholder": "",
+    "githubTokenHelp": "",
+    "gitlabRepositoryUrl": "",
+    "gitlabSupported": "",
+    "azureDevOpsRepositoryUrl": "",
+    "azureDevOpsSupported": "",
+    "localFolderPath": "",
+    "hideBackground": "",
+    "upload": {
+      "button": "",
+      "uploading": "",
+      "selected": "",
+      "empty": ""
+    }
+  }
+}

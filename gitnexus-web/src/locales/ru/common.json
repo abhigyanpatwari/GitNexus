@@ -1,0 +1,86 @@
+{
+  "app": {
+    "name": "",
+    "nexusAI": ""
+  },
+  "actions": {
+    "cancel": "",
+    "dismiss": "",
+    "tryAgain": "",
+    "hide": "",
+    "retry": "",
+    "copy": "",
+    "copied": "",
+    "close": "",
+    "run": "",
+    "clear": "",
+    "remove": "",
+    "focusInGraph": "",
+    "expand": "",
+    "collapse": ""
+  },
+  "chat": {
+    "viewNodeInCodePanel": "",
+    "openInCodePanel": "",
+    "waitForVectorIndex": ""
+  },
+  "counts": {
+    "files_one": "",
+    "files_other": "",
+    "nodes_one": "",
+    "nodes_other": "",
+    "edges_one": "",
+    "edges_other": "",
+    "symbols_one": "",
+    "symbols_other": "",
+    "flows_one": "",
+    "flows_other": ""
+  },
+  "progress": {
+    "connecting": "",
+    "connectingShort": "",
+    "validatingServer": "",
+    "validatingServerEllipsis": "",
+    "downloadingGraph": "",
+    "downloadedMb": "",
+    "downloadingWithPercent": "",
+    "downloadingMb": "",
+    "processing": "",
+    "processingGraph": "",
+    "extractingFileContents": "",
+    "loadingGraph": "",
+    "starting": "",
+    "executing": "",
+    "truncated": "",
+    "ready": "",
+    "switchingRepository": "",
+    "loadingRepository": "",
+    "validating": "",
+    "failedSwitchRepository": "",
+    "unknownError": ""
+  },
+  "analyzePhases": {
+    "queued": "",
+    "cloning": "",
+    "pulling": "",
+    "extracting": "",
+    "structure": "",
+    "parsing": "",
+    "imports": "",
+    "calls": "",
+    "heritage": "",
+    "scopeResolution": "",
+    "communities": "",
+    "processes": "",
+    "complete": "",
+    "lbug": "",
+    "fts": "",
+    "embeddings": "",
+    "done": "",
+    "retrying": ""
+  },
+  "units": {
+    "elapsedSeconds": "",
+    "elapsedMinutesSeconds": ""
+  }
+}

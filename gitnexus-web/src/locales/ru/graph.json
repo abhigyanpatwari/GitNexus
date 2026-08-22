@@ -1,0 +1,190 @@
+{
+  "statusBar": {
+    "sponsor": "",
+    "sponsorHint": ""
+  },
+  "loading": {
+    "filesProgress": ""
+  },
+  "toolCall": {
+    "status": {
+      "running": "",
+      "completed": "",
+      "error": "",
+      "stopped": ""
+    },
+    "tools": {
+      "search": "",
+      "cypher": "",
+      "grep": "",
+      "read": "",
+      "overview": "",
+      "explore": "",
+      "impact": ""
+    },
+    "query": "",
+    "input": "",
+    "result": "",
+    "searchPrefix": ""
+  },
+  "embedding": {
+    "generateTitle": "",
+    "enable": "",
+    "loadingModel": "",
+    "embeddingNodes": "",
+    "creatingIndex": "",
+    "readyTitle": "",
+    "ready": "",
+    "errorTitle": "",
+    "failedRetry": "",
+    "fallback": {
+      "title": "",
+      "subtitle": "",
+      "description": "",
+      "options": "",
+      "useCpu": "",
+      "useCpuDescriptionSmall": "",
+      "useCpuDescriptionLarge": "",
+      "estimated": "",
+      "skipIt": "",
+      "skipDescription": "",
+      "smallCodebase": "",
+      "tip": "",
+      "skipEmbeddings": "",
+      "useCpuRecommended": "",
+      "useCpuSlow": ""
+    }
+  },
+  "queryFab": {
+    "query": "",
+    "cypherQuery": "",
+    "examples": "",
+    "run": "",
+    "noProject": "",
+    "dbNotReady": "",
+    "executionFailed": "",
+    "exampleLabels": {
+      "functions": "",
+      "classes": "",
+      "interfaces": "",
+      "calls": "",
+      "imports": ""
+    },
+    "clear": "",
+    "rows": "",
+    "highlighted": "",
+    "showingRows": ""
+  },
+  "fileTree": {
+    "expandPanel": "",
+    "fileExplorer": "",
+    "filters": "",
+    "collapsePanel": "",
+    "searchFiles": "",
+    "noFilesLoaded": "",
+    "all": "",
+    "selectNodeDepth": "",
+    "explorer": "",
+    "nodeTypes": "",
+    "nodeTypesDesc": "",
+    "edgeTypes": "",
+    "edgeTypesDesc": "",
+    "focusDepth": "",
+    "focusDepthDesc": "",
+    "hops_one": "",
+    "hops_other": "",
+    "colorLegend": ""
+  },
+  "codePanel": {
+    "expand": "",
+    "dragResize": "",
+    "title": "",
+    "clearCitations": "",
+    "clearSelection": "",
+    "loadingSource": "",
+    "selectFile": "",
+    "code": "",
+    "selected": "",
+    "aiCitations": "",
+    "references_one": "",
+    "references_other": "",
+    "lines_one": "",
+    "lines_other": "",
+    "codeNotAvailable": ""
+  },
+  "canvas": {
+    "viewModes": {
+      "label": "",
+      "force": "",
+      "tree": "",
+      "circles": ""
+    },
+    "zoomIn": "",
+    "zoomOut": "",
+    "fit": "",
+    "focusSelected": "",
+    "clearSelection": "",
+    "clear": "",
+    "stopLayout": "",
+    "runLayout": "",
+    "layoutOptimizing": "",
+    "turnOffHighlights": "",
+    "turnOnHighlights": "",
+    "chatOnly": {
+      "title": "",
+      "description": "",
+      "descriptionWithCount": "",
+      "citationNote": "",
+      "loadAnyway": "",
+      "loadAnywayWarning": "",
+      "loadAnywayWarningUnknown": ""
+    }
+  },
+  "processes": {
+    "unknownStep": "",
+    "allProcessesLabel_one": "",
+    "allProcessesLabel_other": "",
+    "emptyTitle": "",
+    "emptyDescription": "",
+    "filterPlaceholder": "",
+    "detected_one": "",
+    "detected_other": "",
+    "fullMap": "",
+    "viewCombined_one": "",
+    "viewCombined_other": "",
+    "crossCommunity": "",
+    "intraCommunity": "",
+    "steps_one": "",
+    "steps_other": "",
+    "clusters_one": "",
+    "clusters_other": "",
+    "highlightTitle": "",
+    "removeHighlightTitle": "",
+    "loading": "",
+    "viewing": "",
+    "view": ""
+  },
+  "processFlow": {
+    "title": "",
+    "diagramTooLarge": "",
+    "renderError": "",
+    "tooComplex_one": "",
+    "tooComplex_other": "",
+    "unableToRender_one": "",
+    "unableToRender_other": "",
+    "zoomOutTitle": "",
+    "zoomInTitle": "",
+    "resetTitle": "",
+    "resetView": "",
+    "toggleFocus": "",
+    "copyMermaid": ""
+  },
+  "diagram": {
+    "aiGenerated": "",
+    "error": "",
+    "showSource": "",
+    "label": "",
+    "expandTitle": "",
+    "loading": ""
+  }
+}

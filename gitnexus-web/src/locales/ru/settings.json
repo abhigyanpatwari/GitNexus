@@ -1,0 +1,116 @@
+{
+  "title": "",
+  "subtitle": "",
+  "localServer": "",
+  "backendUrl": "",
+  "connected": "",
+  "notConnected": "",
+  "runServeHint": "",
+  "accessToken": {
+    "label": "",
+    "placeholder": "",
+    "hint": "",
+    "title": "",
+    "promptHint": "",
+    "connect": "",
+    "reveal": "",
+    "hide": "",
+    "sessionNote": ""
+  },
+  "provider": "",
+  "apiKey": "",
+  "learnMore": "",
+  "model": "",
+  "searchModelPlaceholder": "",
+  "selectModelPlaceholder": "",
+  "customModelHint": "",
+  "customModelExample": "",
+  "pressEnterCustom": "",
+  "baseUrl": "",
+  "optional": "",
+  "deploymentName": "",
+  "apiVersion": "",
+  "checkConnection": "",
+  "privacyLabel": "",
+  "privacyText": "",
+  "providers": {
+    "openai": {
+      "description": "",
+      "apiKeyPlaceholder": "",
+      "helperText": "",
+      "helperLinkLabel": "",
+      "modelPlaceholder": "",
+      "baseUrlPlaceholder": "",
+      "baseUrlHint": ""
+    },
+    "gemini": {
+      "description": "",
+      "apiKeyPlaceholder": "",
+      "helperText": "",
+      "helperLinkLabel": "",
+      "modelPlaceholder": ""
+    },
+    "anthropic": {
+      "description": "",
+      "apiKeyPlaceholder": "",
+      "helperText": "",
+      "helperLinkLabel": "",
+      "modelPlaceholder": ""
+    },
+    "azure": {
+      "apiKeyPlaceholder": "",
+      "deploymentNamePlaceholder": ""
+    },
+    "ollama": {
+      "quickStart": "",
+      "installFrom": "",
+      "thenRun": "",
+      "modelPlaceholder": ""
+    },
+    "openrouter": {
+      "apiKeyPlaceholder": "",
+      "helperText": "",
+      "helperLinkLabel": ""
+    },
+    "minimax": {
+      "apiKeyPlaceholder": "",
+      "helperText": "",
+      "helperLinkLabel": "",
+      "modelPlaceholder": "",
+      "helperModel": "",
+      "endpoint": "",
+      "endpoints": {
+        "global": "",
+        "china": ""
+      },
+      "thinking": "",
+      "thinkingModes": {
+        "adaptive": "",
+        "disabled": "",
+        "always_on": ""
+      },
+      "capabilities": ""
+    },
+    "glm": {
+      "apiKeyPlaceholder": ""
+    }
+  },
+  "loadingModels": "",
+  "noModelsMatch": "",
+  "moreModels": "",
+  "apiKeySession": "",
+  "startLocalServer": "",
+  "settingsSaved": "",
+  "failedToSave": "",
+  "saveSettings": "",
+  "endpoint": "",
+  "azurePortal": "",
+  "azureHint": "",
+  "defaultPort": "",
+  "pullModel": "",
+  "browseModels": "",
+  "openRouterModels": "",
+  "zaiPlatform": "",
+  "glmCodingApi": "",
+  "privacyFull": ""
+}

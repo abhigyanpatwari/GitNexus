@@ -1,0 +1,96 @@
+{
+  "tabs": {
+    "overview": "",
+    "ai": "",
+    "shortcuts": "",
+    "status": "",
+    "graph": "",
+    "search": ""
+  },
+  "shortcuts": {
+    "searchNodes": "",
+    "deselectClose": "",
+    "columns": {
+      "action": "",
+      "mac": "",
+      "windows": ""
+    }
+  },
+  "nodeTypes": {
+    "function": "",
+    "functionDesc": "",
+    "file": "",
+    "fileDesc": "",
+    "class": "",
+    "classDesc": "",
+    "method": "",
+    "methodDesc": "",
+    "interface": "",
+    "interfaceDesc": "",
+    "folder": "",
+    "folderDesc": ""
+  },
+  "status": {
+    "ready": "",
+    "readyDesc": "",
+    "nodesCount": "",
+    "nodesCountDesc": "",
+    "edgesCount": "",
+    "edgesCountDesc": "",
+    "aiIndexStatus": "",
+    "aiIndexStatusDesc": "",
+    "semanticReadyBadge": "",
+    "explained": ""
+  },
+  "tryAsking": "",
+  "footer": "",
+  "title": "",
+  "footerLong": "",
+  "docsGithub": "",
+  "overview": {
+    "gettingStarted": "",
+    "whatIsTitle": "",
+    "whatIsDescription": "",
+    "currentRepoTitle": "",
+    "loadedCounts": "",
+    "threeWaysTitle": "",
+    "wayInspect": "",
+    "waySearch": "",
+    "wayAsk": "",
+    "navigationTitle": "",
+    "navZoom": "",
+    "navPan": "",
+    "navFocus": ""
+  },
+  "graph": {
+    "nodeColorLegend": "",
+    "nodeLabel": "",
+    "sizeDescription": "",
+    "detailDescription": ""
+  },
+  "search": {
+    "title": "",
+    "searchNodes": "",
+    "searchDescription": "",
+    "filterPanel": "",
+    "filterDescription": "",
+    "syntax": "",
+    "hints": {
+      "nameFragment": "",
+      "pathPrefix": "",
+      "nodeType": ""
+    }
+  },
+  "ai": {
+    "title": "",
+    "semanticReady": "",
+    "description": "",
+    "questions": {
+      "dependencies": "",
+      "circular": "",
+      "connected": "",
+      "imports": ""
+    },
+    "openPrompt": ""
+  }
+}

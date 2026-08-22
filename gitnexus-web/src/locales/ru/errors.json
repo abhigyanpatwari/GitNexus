@@ -1,0 +1,22 @@
+{
+  "unknown": "",
+  "connectFailed": "",
+  "loadGraphFailed": "",
+  "failedToConnect": "",
+  "analysisFailed": "",
+  "startAnalysisFailed": "",
+  "invalidGithubUrl": "",
+  "invalidAzureDevOpsUrl": "",
+  "missingFolderPath": "",
+  "backend": {
+    "reconnecting": "",
+    "network": "",
+    "timeout": "",
+    "rateLimited": "",
+    "notFound": "",
+    "unauthorized": "",
+    "originBlocked": "",
+    "client": "",
+    "server": ""
+  }
+}

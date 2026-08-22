@@ -1,0 +1,40 @@
+{
+  "tabs": {
+    "chat": "",
+    "processes": ""
+  },
+  "suggestions": {
+    "architecture": "",
+    "whatDoes": "",
+    "importantFiles": "",
+    "apiHandlers": ""
+  },
+  "empty": {
+    "title": "",
+    "description": ""
+  },
+  "input": {
+    "placeholder": "",
+    "initializing": "",
+    "configureProvider": ""
+  },
+  "actions": {
+    "closePanel": "",
+    "scrollBottom": "",
+    "clearChat": "",
+    "stopResponse": ""
+  },
+  "stopped": "",
+  "badges": {
+    "configureAI": "",
+    "connecting": ""
+  },
+  "chatOnly": {
+    "banner": ""
+  },
+  "roles": {
+    "you": "",
+    "assistant": ""
+  },
+  "newBadge": ""
+}
