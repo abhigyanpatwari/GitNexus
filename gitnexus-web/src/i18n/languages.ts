@@ -1,4 +1,4 @@
-export type SupportedLanguage = 'en' | 'zh-CN' | 'ru-RU';
+export type SupportedLanguage = 'en' | 'zh-CN' | 'ru';
 
 export interface LanguageMetadata {
   code: SupportedLanguage;
@@ -12,7 +12,7 @@ export const DEFAULT_LANGUAGE: SupportedLanguage = 'en';
 export const SUPPORTED_LANGUAGES: LanguageMetadata[] = [
   { code: 'en', nativeName: 'English', englishName: 'English', dir: 'ltr' },
   { code: 'zh-CN', nativeName: '简体中文', englishName: 'Simplified Chinese', dir: 'ltr' },
-  { code: 'ru-RU', nativeName: 'Русский', englishName: 'Russian', dir: 'ltr'}
+  { code: 'ru', nativeName: 'Русский', englishName: 'Russian', dir: 'ltr'}
 ];
 
 export const SUPPORTED_LANGUAGE_CODES = SUPPORTED_LANGUAGES.map((language) => language.code);
