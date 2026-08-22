@@ -35,6 +35,7 @@
     "edges_from_two_to_four": "{{count}} ребра",
     "edges_other": "{{count}} рёбер",
     "symbols_one": "{{count}} символ",
+    "symdols_from_two_to_four": "{{count}} символа",
     "symbols_other": "{{count}} символов",
     "flows_one": "{{count}} поток",
     "flows_other": "{{count}} потоков"
