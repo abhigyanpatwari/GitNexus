@@ -32,6 +32,7 @@
     "nodes_from_two_to_four": "{{count}} узла",
     "nodes_other": "{{count}} узлов",
     "edges_one": "{{count}} ребро",
+    "edges_from_two_to_four": "{{count}} ребра",
     "edges_other": "{{count}} рёбер",
     "symbols_one": "{{count}} символ",
     "symbols_other": "{{count}} символов",
