@@ -1,4 +1,4 @@
-export type SupportedLanguage = 'en' | 'zh-CN';
+export type SupportedLanguage = 'en' | 'zh-CN' | 'ru-RU'
 
 export interface LanguageMetadata {
   code: SupportedLanguage;
