@@ -29,6 +29,7 @@
     "files_from_two_to_four": "{{count} файла",
     "files_other": "{{count}} файлов",
     "nodes_one": "{{count}} узел",
+    "nodes_from_two_to_four": "{{count}} узла",
     "nodes_other": "{{count}} узлов",
     "edges_one": "{{count}} ребро",
     "edges_other": "{{count}} рёбер",
