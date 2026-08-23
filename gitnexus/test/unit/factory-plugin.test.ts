@@ -64,6 +64,23 @@ describe('Factory plugin files', () => {
   });
 });
 
+// ─── Marketplace wiring ─────────────────────────────────────────────
+
+// Droid reads .factory-plugin/marketplace.json before .claude-plugin's, so this
+// is what makes `droid plugin install` deliver this Factory plugin instead of
+// the translated Claude one (Bash matcher, gitnexus@latest MCP).
+describe('Factory marketplace wiring', () => {
+  const marketplace = JSON.parse(
+    fs.readFileSync(path.join(REPO_ROOT, '.factory-plugin', 'marketplace.json'), 'utf-8'),
+  );
+
+  it('exposes a single gitnexus plugin sourced from ./gitnexus-factory-plugin', () => {
+    const entries = marketplace.plugins.filter((p: { name: string }) => p.name === 'gitnexus');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].source).toBe('./gitnexus-factory-plugin');
+  });
+});
+
 // ─── Drift guard: bundled guards === canonical Claude copies ─────────
 
 describe('Factory plugin bundled guards stay in lockstep with the Claude adapter', () => {

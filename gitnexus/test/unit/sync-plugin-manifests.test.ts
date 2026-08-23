@@ -10,6 +10,7 @@ const SURFACES = [
   'gitnexus-claude-plugin/.codex-plugin/plugin.json',
   '.agents/plugins/marketplace.json',
   'gitnexus-factory-plugin/.factory-plugin/plugin.json',
+  '.factory-plugin/marketplace.json',
 ] as const;
 
 const FACTORY_MCP = 'gitnexus-factory-plugin/mcp.json';
@@ -60,6 +61,10 @@ function makeRoot(packageVersion: string, manifestVersion: string): string {
     plugins: [{ name: 'gitnexus', version: manifestVersion, category: 'Developer Tools' }],
   });
   writeJson(root, SURFACES[4], { name: 'gitnexus', version: manifestVersion });
+  writeJson(root, SURFACES[5], {
+    name: 'gitnexus-marketplace',
+    plugins: [{ name: 'gitnexus', version: manifestVersion, source: './gitnexus-factory-plugin' }],
+  });
   for (const dir of [...MCP_SKILL_DIRS.map(mcpPath), FACTORY_MCP]) {
     writeJson(root, dir, {
       mcpServers: {

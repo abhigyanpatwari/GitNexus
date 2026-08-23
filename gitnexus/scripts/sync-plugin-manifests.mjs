@@ -15,6 +15,7 @@
  *   - gitnexus-claude-plugin/skills/<skill>/mcp.json      (gitnexus@<version> launch arg, x10)
  *   - gitnexus-factory-plugin/.factory-plugin/plugin.json (top-level version)
  *   - gitnexus-factory-plugin/mcp.json                    (gitnexus@<version> launch arg)
+ *   - .factory-plugin/marketplace.json                    (plugins[gitnexus])
  *
  * Modes:
  *   node scripts/sync-plugin-manifests.mjs           rewrite stale surfaces
@@ -62,6 +63,10 @@ const MANIFEST_SURFACES = [
   // released CLI.
   { file: 'gitnexus-factory-plugin/.factory-plugin/plugin.json', kind: 'plugin' },
   { file: 'gitnexus-factory-plugin/mcp.json', kind: 'mcp' },
+  // Droid reads .factory-plugin/marketplace.json before .claude-plugin's, so
+  // this entry is what makes `droid plugin install` deliver the Factory plugin
+  // (Execute matcher, pinned mcp.json) instead of the translated Claude one.
+  { file: '.factory-plugin/marketplace.json', kind: 'marketplace' },
 ];
 
 const PLUGIN_NAME = 'gitnexus';
