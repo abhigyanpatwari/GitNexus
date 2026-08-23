@@ -42,7 +42,8 @@
     "symbols_many": "{{count} символов",
     "symbols_other": "{{count}} символов",
     "flows_one": "{{count}} поток",
-    "flows_from_two_to_four": "{{count}} потока",
+    "flows_few": "{{count} потока",
+    "flows_many": "{{count} потоков",
     "flows_other": "{{count}} потоков"
   },
   "progress": {
