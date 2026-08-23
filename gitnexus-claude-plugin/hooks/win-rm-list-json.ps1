@@ -1,4 +1,3 @@
-# Byte-identical across all hook adapter dirs; drift-guarded by hooks.test.ts / factory-plugin.test.ts. Edit all copies.
 $ErrorActionPreference = 'Stop'
 $target = $env:GITNEXUS_HOOK_RM_TARGET
 if ([string]::IsNullOrWhiteSpace($target)) { Write-Output '[]'; exit 0 }

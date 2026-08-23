@@ -1,4 +1,3 @@
-// Byte-identical across all hook adapter dirs; drift-guarded by hooks.test.ts / factory-plugin.test.ts. Edit all copies.
 const fs = require('fs');
 const path = require('path');
 

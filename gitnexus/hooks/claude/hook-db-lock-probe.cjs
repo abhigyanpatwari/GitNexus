@@ -1,4 +1,3 @@
-// Byte-identical across all hook adapter dirs; drift-guarded by hooks.test.ts / factory-plugin.test.ts. Edit all copies.
 /**
  * Cross-platform best-effort probe: does another process hold dbPath open
  * with a command line that looks like a GitNexus MCP/serve server?
