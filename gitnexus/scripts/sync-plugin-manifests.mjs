@@ -13,6 +13,8 @@
  *   - gitnexus-claude-plugin/.codex-plugin/plugin.json    (top-level version)
  *   - .agents/plugins/marketplace.json                    (plugins[gitnexus])
  *   - gitnexus-claude-plugin/skills/<skill>/mcp.json      (gitnexus@<version> launch arg, x10)
+ *   - gitnexus-factory-plugin/.factory-plugin/plugin.json (top-level version)
+ *   - gitnexus-factory-plugin/mcp.json                    (gitnexus@<version> launch arg)
  *
  * Modes:
  *   node scripts/sync-plugin-manifests.mjs           rewrite stale surfaces
@@ -54,6 +56,12 @@ const MANIFEST_SURFACES = [
     file: `gitnexus-claude-plugin/skills/${name}/mcp.json`,
     kind: 'mcp',
   })),
+  // The Factory plugin's manifest is also its pin source at runtime: the
+  // PostToolUse hook reads this version to build its `npx -y gitnexus@<version>`
+  // fallback, so stamping it here keeps the hook and the MCP entry on the same
+  // released CLI.
+  { file: 'gitnexus-factory-plugin/.factory-plugin/plugin.json', kind: 'plugin' },
+  { file: 'gitnexus-factory-plugin/mcp.json', kind: 'mcp' },
 ];
 
 const PLUGIN_NAME = 'gitnexus';

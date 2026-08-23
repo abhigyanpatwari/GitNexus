@@ -1,23 +1,17 @@
 #!/usr/bin/env node
 /**
- * GitNexus Factory AI (Droid) Plugin Hook
+ * GitNexus Factory AI (Droid) plugin hook.
  *
- * PostToolUse — augments Grep/Glob/Execute searches with graph context from
- * the GitNexus index and returns it via hookSpecificOutput.additionalContext.
+ * PostToolUse — augments Grep/Glob/Execute searches with graph context and
+ * returns it via hookSpecificOutput.additionalContext.
  *
- * Reuses the same guards as the Claude/Codex adapter (bundled byte-identical,
- * kept in lockstep by test/unit/factory-plugin.test.ts):
- *   - acquireHookSlot  — per-repo cap on concurrent augment children so
- *     parallel sessions can't fan out unbounded `gitnexus augment` spawns
- *     (#1486).
- *   - LadybugDB owner probe — skips the CLI augment when a GitNexus MCP/serve
- *     process already holds the single-writer DB lock, avoiding contention
- *     (#2396); the in-session MCP tools cover augmentation instead.
+ * Reuses the Claude adapter's guards, bundled byte-identical: acquireHookSlot
+ * caps concurrent augment children per repo (#1486), and the LadybugDB owner
+ * probe skips the CLI augment when an MCP/serve process already holds the
+ * single-writer lock (#2396).
  *
- * The augment CLI child is NOT wrapped in the coreutils `timeout`
- * orphan-containment guard the full Claude adapter uses (#2163) — same scope
- * as the Cursor integration. Add it (resolveUnixGuardTimeout is exported by
- * the bundled probe) if orphaned augment children become a problem here.
+ * The augment child is not wrapped in the coreutils `timeout` orphan guard the
+ * full Claude adapter uses (#2163) — same scope as the Cursor integration.
  */
 
 const fs = require('fs');
@@ -26,22 +20,22 @@ const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.js');
 const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
 
-/**
- * Read JSON input from stdin synchronously.
- */
+// Pin the CLI instead of tracking `latest`: npm versions are immutable, so only
+// a plugin revision can change what the fallback below executes. The release
+// stamps this manifest (gitnexus/scripts/sync-plugin-manifests.mjs).
+const { version: PINNED_VERSION } = require('../.factory-plugin/plugin.json');
+
 function readInput() {
   try {
-    const data = fs.readFileSync(0, 'utf-8');
-    return JSON.parse(data);
+    return JSON.parse(fs.readFileSync(0, 'utf-8'));
   } catch {
     return {};
   }
 }
 
 /**
- * A `.gitnexus/` that holds `registry.json`/`repos` (and no per-repo index
- * metadata) is the global registry, not a repo index — never augment against
- * it. Mirrors the Claude adapter's guard.
+ * A `.gitnexus/` holding `registry.json`/`repos` (and no per-repo index
+ * metadata) is the global registry, not a repo index — never augment against it.
  */
 function isGlobalRegistryDir(candidate) {
   if (
@@ -56,10 +50,7 @@ function isGlobalRegistryDir(candidate) {
   );
 }
 
-/**
- * Walk up from startDir looking for a non-registry `.gitnexus/` folder. Returns
- * the path to `.gitnexus/` or null if not found within 5 levels.
- */
+/** Walk up from startDir for a non-registry `.gitnexus/`, at most 5 levels. */
 function findGitNexusDir(startDir) {
   let dir = startDir || process.cwd();
   for (let i = 0; i < 5; i++) {
@@ -73,9 +64,138 @@ function findGitNexusDir(startDir) {
 }
 
 /**
- * Extract a search pattern from a Factory tool payload. Factory's shell tool is
- * `Execute` (Claude's is `Bash`); Grep/Glob match Claude's.
+ * Split a command the way a POSIX shell would, so quoted and backslash-escaped
+ * patterns survive as one token. Kept identical to the Cursor adapter's
+ * tokenizer (#2938) so the two can collapse into a shared module later.
  */
+function tokenizeShellWords(command) {
+  const tokens = [];
+  let current = '';
+  let quote = null;
+  let escaped = false;
+  let hasToken = false;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (escaped) {
+      current += char;
+      escaped = false;
+      hasToken = true;
+      continue;
+    }
+
+    if (quote === "'") {
+      if (char === "'") quote = null;
+      else current += char;
+      hasToken = true;
+      continue;
+    }
+
+    if (quote === '"') {
+      if (char === '"') {
+        quote = null;
+      } else if (char === '\\') {
+        const next = command[index + 1];
+        // Inside double quotes a backslash only escapes these four; otherwise
+        // it is a literal character (so Windows paths survive intact).
+        if (next === '$' || next === '`' || next === '"' || next === '\\') {
+          escaped = true;
+        } else {
+          current += '\\';
+        }
+      } else {
+        current += char;
+      }
+      hasToken = true;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      hasToken = true;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      hasToken = true;
+    } else if (/\s/.test(char)) {
+      if (hasToken) tokens.push(current);
+      current = '';
+      hasToken = false;
+    } else {
+      current += char;
+      hasToken = true;
+    }
+  }
+
+  if (escaped) current += '\\';
+  if (hasToken) tokens.push(current);
+  return tokens;
+}
+
+/** Recover the search pattern from an `rg`/`grep` command line. */
+function parseRgGrepPattern(cmd) {
+  const tokens = tokenizeShellWords(cmd);
+  let foundCmd = false;
+  let skipNext = false;
+  let skipNextAsPattern = false;
+  let endOfOptions = false;
+  const flagsWithValues = new Set([
+    '-e',
+    '-f',
+    '-m',
+    '-A',
+    '-B',
+    '-C',
+    '-g',
+    '--glob',
+    '-t',
+    '--type',
+    '--include',
+    '--exclude',
+  ]);
+  const patternFlags = new Set(['-e', '--regexp']);
+
+  for (const token of tokens) {
+    if (skipNext) {
+      skipNext = false;
+      if (skipNextAsPattern) {
+        return token.length >= 3 ? token : null;
+      }
+      continue;
+    }
+    if (!foundCmd) {
+      // Match on the basename so absolute paths (`/usr/bin/rg`) and Windows
+      // `rg.exe` count as the command.
+      const commandName = token
+        .split(/[\\/]/)
+        .pop()
+        ?.replace(/\.exe$/i, '');
+      if (commandName === 'rg' || commandName === 'grep') foundCmd = true;
+      continue;
+    }
+    if (endOfOptions) {
+      return token.length >= 3 ? token : null;
+    }
+    if (token === '--') {
+      endOfOptions = true;
+      continue;
+    }
+    if (token.startsWith('-')) {
+      const attachedPattern = token.match(/^--regexp=(.+)$/) || token.match(/^-e(.+)$/);
+      if (attachedPattern) {
+        return attachedPattern[1].length >= 3 ? attachedPattern[1] : null;
+      }
+      if (flagsWithValues.has(token) || patternFlags.has(token)) {
+        skipNext = true;
+        skipNextAsPattern = patternFlags.has(token);
+      }
+      continue;
+    }
+    return token.length >= 3 ? token : null;
+  }
+  return null;
+}
+
+/** Factory's shell tool is `Execute` (Claude's is `Bash`); Grep/Glob match Claude's. */
 function extractPattern(toolName, toolInput) {
   if (toolName === 'Grep') {
     return toolInput.pattern || null;
@@ -90,67 +210,24 @@ function extractPattern(toolName, toolInput) {
   if (toolName === 'Execute') {
     const cmd = toolInput.command || '';
     if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
-
-    // NOTE: split(/\s+/) cannot handle shell quoting, same as the Cursor
-    // integration. `rg "User Service" src/` yields "User" (first token after
-    // rg/grep, quotes stripped) rather than the full phrase — BM25 is already
-    // token-tolerant, so the multi-word pattern is deliberately not
-    // reconstructed. Worst case is augment context for a narrower term than
-    // the agent searched. Quoted single tokens (`rg "validateUser"`) are exact.
-    const tokens = cmd.split(/\s+/);
-    let foundCmd = false;
-    let skipNext = false;
-    const flagsWithValues = new Set([
-      '-e',
-      '-f',
-      '-m',
-      '-A',
-      '-B',
-      '-C',
-      '-g',
-      '--glob',
-      '-t',
-      '--type',
-      '--include',
-      '--exclude',
-    ]);
-
-    for (const token of tokens) {
-      if (skipNext) {
-        skipNext = false;
-        continue;
-      }
-      if (!foundCmd) {
-        if (/\brg\b|\bgrep\b/.test(token)) foundCmd = true;
-        continue;
-      }
-      if (token.startsWith('-')) {
-        if (flagsWithValues.has(token)) skipNext = true;
-        continue;
-      }
-      const cleaned = token.replace(/['"]/g, '');
-      return cleaned.length >= 3 ? cleaned : null;
-    }
-    return null;
+    return parseRgGrepPattern(cmd);
   }
 
   return null;
 }
 
 /**
- * Run `gitnexus augment` for `pattern` and return its stderr (the augment CLI
- * writes results to stderr; LadybugDB's native module captures stdout at the OS
- * fd level, making it unusable in subprocess contexts). Tries a PATH-installed
- * binary first, then falls back to npx.
+ * Run `gitnexus augment` for `pattern` and return its stderr — the augment CLI
+ * writes results there because LadybugDB's native module captures stdout at the
+ * OS fd level.
  *
- * Honors GITNEXUS_HOOK_CLI_PATH first, same as the Claude adapter: it runs the
- * CLI as `node <path>`, which is the only branch that works on Windows, where
- * Node refuses to spawn the `.cmd` launcher shims below without a shell
- * (CVE-2024-27980). Falls back to a PATH binary, then npx.
+ * GITNEXUS_HOOK_CLI_PATH is tried first and run as `node <path>`, the only form
+ * that works on Windows, where Node refuses to spawn the `.cmd` shims without a
+ * shell (CVE-2024-27980). Then a PATH binary, then a version-pinned npx.
  *
- * SECURITY: `pattern` is passed after the `--` end-of-options marker and never
- * through a shell — the Windows npx fallback invokes `npx.cmd` directly rather
- * than `shell: true`, so a pattern like `-rf` or `$(...)` is inert.
+ * SECURITY: `pattern` follows the `--` end-of-options marker and never reaches a
+ * shell (the Windows fallback invokes `npx.cmd` directly rather than
+ * `shell: true`), so `-rf` or `$(...)` is inert.
  */
 function runAugment(pattern, cwd) {
   const isWin = process.platform === 'win32';
@@ -186,7 +263,11 @@ function runAugment(pattern, cwd) {
   }
 
   try {
-    const child = spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], spawnOpts);
+    const child = spawnSync(
+      isWin ? 'npx.cmd' : 'npx',
+      ['-y', `gitnexus@${PINNED_VERSION}`, ...args],
+      spawnOpts,
+    );
     if (!child.error && child.status === 0 && child.stderr && child.stderr.trim()) {
       return child.stderr;
     }
@@ -219,9 +300,9 @@ function main() {
     let result = '';
     try {
       if (hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid)) {
-        // #2396: a GitNexus MCP/serve process owns the single-writer DB, so a
-        // competing CLI augment would only contend on the lock. The session's
-        // MCP tools cover augmentation instead — skip silently.
+        // #2396: an MCP/serve process owns the single-writer DB, so a competing
+        // CLI augment would only contend on the lock. Its MCP tools cover
+        // augmentation instead — skip silently.
         return;
       }
       result = runAugment(pattern, cwd);
@@ -246,4 +327,6 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = { parseRgGrepPattern, tokenizeShellWords };

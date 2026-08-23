@@ -16,6 +16,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -37,6 +38,11 @@ const CLAUDE_HOOKS = path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'hooks');
 // Guard modules bundled into the Factory plugin, kept byte-identical to the
 // canonical Claude-adapter copies.
 const BUNDLED_GUARDS = ['hook-lock.js', 'hook-db-lock-probe.cjs', 'win-rm-list-json.ps1'] as const;
+
+const require_ = createRequire(import.meta.url);
+const { parseRgGrepPattern } = require_(HOOK) as {
+  parseRgGrepPattern: (command: string) => string | null;
+};
 
 // ─── Manifest / file presence ───────────────────────────────────────
 
@@ -95,6 +101,16 @@ describe('Factory mcp.json', () => {
   it('registers the gitnexus MCP server under mcpServers', () => {
     expect(mcp.mcpServers?.gitnexus?.command).toBe('npx');
     expect(mcp.mcpServers.gitnexus.args).toContain('mcp');
+  });
+
+  // Executed state, not quickstart docs: `@latest` would let a future registry
+  // upload run on MCP connect without a plugin revision.
+  it('pins the CLI to the released version instead of a mutable tag', () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, 'gitnexus', 'package.json'), 'utf-8'),
+    );
+    expect(mcp.mcpServers.gitnexus.args).toContain(`gitnexus@${pkg.version}`);
+    expect(JSON.stringify(mcp)).not.toContain('gitnexus@latest');
   });
 });
 
@@ -155,6 +171,14 @@ describe('Factory hook source regressions', () => {
     expect(source).toContain('npx.cmd');
   });
 
+  // The npx fallback runs on ordinary tool calls whenever the CLI is not on
+  // PATH, so an unpinned ref would execute whatever currently owns the tag.
+  it('pins the npx fallback to the manifest version, never a mutable tag', () => {
+    expect(source).not.toContain('gitnexus@latest');
+    expect(source).toContain("require('../.factory-plugin/plugin.json')");
+    expect(source).toContain('`gitnexus@${PINNED_VERSION}`');
+  });
+
   // Windows regression: Node refuses to spawn the .cmd launcher shims without a
   // shell (CVE-2024-27980), so `node <cliPath>` is the only branch that runs
   // there. Same escape hatch the Claude adapter honors.
@@ -179,6 +203,28 @@ describe('Factory hook source regressions', () => {
 
   it('rejects patterns shorter than 3 chars', () => {
     expect(source).toMatch(/length\s*<\s*3/);
+  });
+});
+
+// ─── Execute pattern parsing (shares the Cursor adapter's #2938 matrix) ─
+
+describe('Factory Execute pattern parser', () => {
+  it.each([
+    ['rg "User Service" src/', 'User Service'],
+    ["grep 'error boundary' -- src/", 'error boundary'],
+    ['rg User\\ Service src/', 'User Service'],
+    [String.raw`rg "C:\Users" src/`, String.raw`C:\Users`],
+    ['rg -e "User Service" src/', 'User Service'],
+    ['rg --regexp=UserService src/', 'UserService'],
+    ['grep -eUserService src/', 'UserService'],
+    ['/usr/bin/rg -- "User Service" src/', 'User Service'],
+    ['rg -- -error src/', '-error'],
+    ['rg "validateUser"', 'validateUser'],
+    ['rg -t ts UserService src/', 'UserService'],
+    ['rg --glob "*.ts" UserService', 'UserService'],
+    ['rg ab src/', null],
+  ])('extracts %j from %j', (command, expected) => {
+    expect(parseRgGrepPattern(command)).toBe(expected);
   });
 });
 

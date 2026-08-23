@@ -9,7 +9,10 @@ const SURFACES = [
   '.claude-plugin/marketplace.json',
   'gitnexus-claude-plugin/.codex-plugin/plugin.json',
   '.agents/plugins/marketplace.json',
+  'gitnexus-factory-plugin/.factory-plugin/plugin.json',
 ] as const;
+
+const FACTORY_MCP = 'gitnexus-factory-plugin/mcp.json';
 
 const MCP_SKILL_DIRS = [
   'gitnexus-plan',
@@ -24,7 +27,7 @@ const MCP_SKILL_DIRS = [
   'gitnexus-refactoring',
 ] as const;
 
-const TOTAL_SURFACES = SURFACES.length + MCP_SKILL_DIRS.length;
+const TOTAL_SURFACES = SURFACES.length + MCP_SKILL_DIRS.length + 1;
 
 function mcpPath(dir: string): string {
   return `gitnexus-claude-plugin/skills/${dir}/mcp.json`;
@@ -56,8 +59,9 @@ function makeRoot(packageVersion: string, manifestVersion: string): string {
     name: 'gitnexus-marketplace',
     plugins: [{ name: 'gitnexus', version: manifestVersion, category: 'Developer Tools' }],
   });
-  for (const dir of MCP_SKILL_DIRS) {
-    writeJson(root, mcpPath(dir), {
+  writeJson(root, SURFACES[4], { name: 'gitnexus', version: manifestVersion });
+  for (const dir of [...MCP_SKILL_DIRS.map(mcpPath), FACTORY_MCP]) {
+    writeJson(root, dir, {
       mcpServers: {
         gitnexus: { command: 'npx', args: ['-y', `gitnexus@${manifestVersion}`, 'mcp'] },
       },
@@ -89,19 +93,19 @@ describe('syncPluginManifests (#2445)', () => {
     expect(result.version).toBe('1.6.10-rc.29');
     expect(result.synced).toHaveLength(TOTAL_SURFACES);
     expect(result.stale.map(({ from }) => from)).toEqual(Array(TOTAL_SURFACES).fill('1.6.9'));
-    expect(readVersions(root)).toEqual(Array(4).fill('1.6.10-rc.29'));
+    expect(readVersions(root)).toEqual(Array(SURFACES.length).fill('1.6.10-rc.29'));
   });
 
-  it('pins the gitnexus@<version> launch arg in every plugin skill mcp.json', () => {
+  it('pins the gitnexus@<version> launch arg in every executable mcp.json', () => {
     const root = makeRoot('1.6.10-rc.29', '1.6.9');
 
     syncPluginManifests(root);
 
-    for (const dir of MCP_SKILL_DIRS) {
-      const mcp = JSON.parse(readFileSync(path.join(root, mcpPath(dir)), 'utf8')) as {
+    for (const file of [...MCP_SKILL_DIRS.map(mcpPath), FACTORY_MCP]) {
+      const mcp = JSON.parse(readFileSync(path.join(root, file), 'utf8')) as {
         mcpServers: { gitnexus: { args: string[] } };
       };
-      expect(mcp.mcpServers.gitnexus.args).toEqual(['-y', 'gitnexus@1.6.10-rc.29', 'mcp']);
+      expect(mcp.mcpServers.gitnexus.args, file).toEqual(['-y', 'gitnexus@1.6.10-rc.29', 'mcp']);
     }
   });
 
@@ -131,7 +135,7 @@ describe('syncPluginManifests (#2445)', () => {
 
     expect(result.stale).toHaveLength(TOTAL_SURFACES);
     expect(result.synced).toHaveLength(0);
-    expect(readVersions(root)).toEqual(Array(4).fill('1.6.9'));
+    expect(readVersions(root)).toEqual(Array(SURFACES.length).fill('1.6.9'));
   });
 
   it('changes only the version text and preserves the surrounding formatting', () => {
