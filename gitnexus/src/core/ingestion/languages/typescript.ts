@@ -471,7 +471,7 @@ export const typescriptProvider = defineLanguage({
 
 export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
-  extensions: ['.js', '.jsx'],
+  extensions: ['.js', '.jsx', '.mjs', '.cjs'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
     {
