@@ -20,6 +20,7 @@ import { getProvider } from '../../src/core/ingestion/languages/index.js';
 
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
+const Lua = requireVendoredGrammar('tree-sitter-lua');
 
 /**
  * Helper: parse code, run the language query, and return all @call captures
@@ -94,6 +95,26 @@ describe('inferCallForm', () => {
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
       expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+    });
+  });
+
+  describe('Lua', () => {
+    it('detects colon member calls', () => {
+      parser.setLanguage(Lua);
+      const captures = extractCallCaptures(parser, 'util:answer()', SupportedLanguages.Lua);
+      const match = captures.find((c) => c.calledName === 'answer');
+      expect(match).toBeDefined();
+      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+      expect(extractReceiverName(match!.nameNode)).toBe('util');
+    });
+
+    it('detects dot member calls', () => {
+      parser.setLanguage(Lua);
+      const captures = extractCallCaptures(parser, 'util.answer()', SupportedLanguages.Lua);
+      const match = captures.find((c) => c.calledName === 'answer');
+      expect(match).toBeDefined();
+      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
+      expect(extractReceiverName(match!.nameNode)).toBe('util');
     });
   });
 

@@ -12,8 +12,8 @@
  *   - experimental: objective-c (fork provider MVP),
  *                   vue (embedded-language / SFC complexity),
  *                   cobol (regex-provider path),
- *                   lua (definition-only legacy DAG path; scope-resolution
- *                   hooks pending — Phase B)
+ *                   lua (scope-resolution provider is active; broader
+ *                   language-contract coverage is still experimental)
  *   - quarantined: (none)
  *
  * Added after Ring 1: zig enters as `experimental` (new language

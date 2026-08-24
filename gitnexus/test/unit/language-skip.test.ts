@@ -32,7 +32,7 @@ describe('isLanguageAvailable', () => {
     if (isGrammarRuntimeSkipped(SupportedLanguages.Lua)) {
       expect(available).toBe(false);
     } else {
-      expect(typeof available).toBe('boolean');
+      expect(available).toBe(true);
     }
   });
 

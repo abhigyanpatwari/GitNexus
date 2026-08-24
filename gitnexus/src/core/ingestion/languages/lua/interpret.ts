@@ -19,14 +19,21 @@
  */
 import type { CaptureMatch, ParsedImport } from 'gitnexus-shared';
 
+function stripLuaString(s: string): string {
+  const long = s.match(/^\[(=*)\[([\s\S]*)\]\1\]$/);
+  return long ? long[2] : stripQuotes(s);
+}
+
 function stripQuotes(s: string): string {
-  return s.replace(/^["']|["']$/g, '');
+  const quoted = s.match(/^(?:(["'])([\s\S]*)\1|\[(=*)\]([\s\S]*)\]\3\])$/);
+  if (!quoted) return s;
+  return quoted[2] ?? quoted[4] ?? '';
 }
 
 export function interpretLuaImport(captures: CaptureMatch): ParsedImport | null {
   const source = captures['@import.source']?.text;
   if (source === undefined) return null;
-  const targetRaw = stripQuotes(source);
+  const targetRaw = stripLuaString(source);
   if (!targetRaw) return null;
   const localName = captures['@import.localName']?.text;
   if (localName) {
