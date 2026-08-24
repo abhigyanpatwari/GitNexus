@@ -14,7 +14,12 @@
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
-import { buildSuffixIndex, suffixResolve, type SuffixIndex } from '../../import-resolvers/utils.js';
+import {
+  buildSuffixIndex,
+  LUA_EXTENSIONS,
+  suffixResolve,
+  type SuffixIndex,
+} from '../../import-resolvers/utils.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { luaProvider } from '../lua.js';
 import { emitLuaHeritageEdges } from './heritage.js';
@@ -43,7 +48,7 @@ const luaScopeResolver: ScopeResolver = {
     return undefined;
   },
 
-  // require("a.b.c") → module path a/b/c (+ EXTENSIONS: .lua / /init.lua).
+  // require("a.b.c") → module path a/b/c (+ Lua extensions: .lua / /init.lua).
   // targetRaw arrives quote-stripped (interpretLuaImport); Lua's module
   // separator is `.`, so split on it before joining to a path.
   resolveImportTarget: (targetRaw, _fromFile, allFilePaths) => {
@@ -60,11 +65,11 @@ const luaScopeResolver: ScopeResolver = {
     // Once the suffix index exists, suffixResolve only consults the index;
     // passing a spread copy here would still traverse the entire workspace on
     // every require() despite the cache (#2909 contract).
-    return suffixResolve(parts, [], [], _cachedIndex ?? undefined);
+    return suffixResolve(parts, [], [], _cachedIndex ?? undefined, LUA_EXTENSIONS);
   },
 
   // Lua: default local-first-then-imports merge (no language-specific precedence).
-  mergeBindings: (existing) => [...existing],
+  mergeBindings: (existing, incoming) => [...existing, ...incoming],
 
   // Lua varargs (...) + optional params make static arity checks unreliable —
   // 'unknown' (no signal) is the safe minimal choice.
