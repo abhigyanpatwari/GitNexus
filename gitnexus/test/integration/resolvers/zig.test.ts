@@ -611,6 +611,9 @@ describe.skipIf(!zigAvailable)('Zig type aliases (zig-filestruct fixture, aliase
     expect(calls).toContain('viaIndex → bump');
     expect(calls).toContain('viaUnwrap → bump');
     expect(calls).toContain('viaDeref → bump');
+    // A pointer CAPTURE is deref-able too: `for (pages) |*p|` records `*Page`
+    // (not `Page`), so `const q = p.*;` still sees the pointer layer.
+    expect(calls).toContain('viaPtrCaptureDeref → bump');
   });
 });
 

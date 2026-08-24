@@ -134,8 +134,13 @@ function bindPayloads(node: SyntaxNode, resolver: ZigSubjectTypeResolver): void 
     if (subject.type === 'range_expression') continue; // `0..` — an index
     const spelling = resolver.spellingOf(subject);
     if (spelling === undefined) continue;
-    const element = isFor ? zigElementSpelling(spelling) : zigOptionalPayloadSpelling(spelling);
-    if (element === undefined) continue;
+    const projected = isFor ? zigElementSpelling(spelling) : zigOptionalPayloadSpelling(spelling);
+    if (projected === undefined) continue;
+    // `|*p|` captures a POINTER to the element/payload (the `*` is an
+    // anonymous payload child right before the identifier). Keep the written
+    // `*` so a later deref projection (`const q = p.*;`) still sees the
+    // layer; `rawName` strips it again, so method dispatch is unchanged.
+    const element = captured[i]!.previousSibling?.type === '*' ? `*${projected}` : projected;
     const rawName = normalizeZigTypeName(element);
     if (rawName.length === 0 || rawName.startsWith('@')) continue;
     const existing = host.typeBindings.get(name);

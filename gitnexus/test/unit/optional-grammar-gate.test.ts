@@ -60,9 +60,14 @@ describe('optional grammar required-gate', () => {
     }
   });
 
-  it('is inert for a grammar-key variant nobody registered', () => {
+  // `typescript:tsx` IS a registry key (`listGrammarSources()` yields it) —
+  // what makes it inert is that OPTIONAL_GRAMMAR_ENV has no entry for it, the
+  // grammar being mandatory. A key no registry ever yields is inert the same
+  // way; both stay ungated no matter what env vars are set.
+  it('is inert for a grammar key with no gate entry, registered or not', () => {
     process.env[envVar] = '1';
     expect(isOptionalGrammarRequired('typescript:tsx')).toBe(false);
+    expect(isOptionalGrammarRequired('no-such:grammar')).toBe(false);
   });
 
   // Languages with no entry must never be gated — an unregistered language

@@ -95,6 +95,14 @@ fn viaDeref(ptr: *Page) void {
     const p = ptr.*;
     p.bump();
 }
+fn viaPtrCaptureDeref(pages: []Page) void {
+    // `|*p|` captures a POINTER: the recorded type must keep the `*`
+    // (`*Page`), or the deref projection below has no layer to remove.
+    for (pages) |*p| {
+        const q = p.*;
+        q.bump();
+    }
+}
 
 // Guards: nothing typed here, no edge may appear.
 fn viaTypeConstructor() void {

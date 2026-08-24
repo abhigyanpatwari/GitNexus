@@ -594,11 +594,14 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
  * resolver so both sides agree on which deps are in-repo.
  */
 export function normalizeZigDepPath(depPath: string): string | null {
-  // POSIX (`/x`) and Windows (`C:\x`, `C:/x`) absolute paths both point
-  // outside the repository.
-  if (depPath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(depPath)) return null;
+  // Normalize separators BEFORE the absolute check so every Windows spelling
+  // is visible to it: POSIX (`/x`), drive (`C:\x`, `C:/x`), root-relative
+  // (`\x` → `/x`) and UNC (`\\server\share` → `//server/share`) paths all
+  // point outside the repository.
+  const normalized = depPath.replace(/\\/g, '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:\//.test(normalized)) return null;
   const parts: string[] = [];
-  for (const part of depPath.replace(/\\/g, '/').split('/')) {
+  for (const part of normalized.split('/')) {
     if (part === '' || part === '.') continue;
     if (part === '..') {
       if (parts.length === 0) return null;

@@ -6,10 +6,11 @@
  * `DEFINITION_ANCHOR_LABELS × ATTACHMENT_TARGET_LABELS` for the framework and
  * pipeline-phase overlays — so both generated halves are covered there. What
  * neither rule can reach is `STRUCTURAL_PAIR_DDL`: the containment, inheritance
- * and import pairs BETWEEN TWO DEFINITION LABELS. Eleven node tables are absent
+ * and import pairs BETWEEN TWO DEFINITION LABELS. Ten node tables are absent
  * from every rule's target side (`CodeElement`, `Impl`, `Namespace`,
- * `Template`, `TypeAlias`, `Typedef`, `Union`, `Static`, `Section`, `Folder`,
- * and the PDG-only `BasicBlock`), so a pair pointing at one is hand-declared or
+ * `Template`, `TypeAlias`, `Typedef`, `Static`, `Section`, `Folder`, and the
+ * PDG-only `BasicBlock` — `Union` left this set when Zig made it a linkable
+ * member container), so a pair pointing at one is hand-declared or
  * it does not exist. No predicate describes that surface — any container can
  * hold any definition — so this asks the emitters directly: run the real
  * pipeline and require every FROM/TO pair it produces to be declared.

@@ -12,6 +12,9 @@
  *   - experimental: vue (embedded-language / SFC complexity),
  *                   cobol (regex-provider path)
  *   - quarantined: (none)
+ *
+ * Added after Ring 1: zig enters as `experimental` (new language
+ * integration; promotion to `production` is a separate governance PR).
  */
 
 import { SupportedLanguages } from '../languages.js';

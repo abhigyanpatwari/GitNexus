@@ -136,13 +136,27 @@ describe('resolveZigImportInternal', () => {
 
   it('returns null for absolute `.path` deps, POSIX and Windows spellings alike', () => {
     // `normalizeZigDepPath` promises null for anything outside the repo; a
-    // `/`-only check let `C:\\local_dep` through as the relative `C:/local_dep`.
+    // `/`-only check let `C:\\local_dep` through as the relative `C:/local_dep`,
+    // and an absolute check that ran BEFORE backslash normalization let the
+    // UNC `\\\\server\\share\\local_dep` (and root-relative `\\local_dep`)
+    // through as relative paths. The `root.zig` entries below are the files
+    // those misreadings WOULD resolve — each spelling must reject, not merely
+    // miss.
     const files = new Set<string>([
       'src/main.zig',
       'C:/local_dep/src/dep.zig',
       'local_dep/src/dep.zig',
+      'local_dep/src/root.zig',
+      'server/share/local_dep/src/root.zig',
     ]);
-    for (const abs of ['/local_dep', 'C:\\local_dep', 'c:/local_dep', 'D:\\x\\local_dep']) {
+    for (const abs of [
+      '/local_dep',
+      'C:\\local_dep',
+      'c:/local_dep',
+      'D:\\x\\local_dep',
+      '\\\\server\\share\\local_dep',
+      '\\local_dep',
+    ]) {
       const zon = { pathDeps: new Map([['dep', abs]]) };
       expect(resolveZigImportInternal('src/main.zig', 'dep', files, zon)).toBeNull();
     }
