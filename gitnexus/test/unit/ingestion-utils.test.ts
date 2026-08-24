@@ -40,12 +40,9 @@ describe('getLanguageFromFilename', () => {
   });
 
   describe('JavaScript', () => {
-    it('detects .js files', () => {
-      expect(getLanguageFromFilename('index.js')).toBe(SupportedLanguages.JavaScript);
-    });
-
-    it('detects .jsx files', () => {
-      expect(getLanguageFromFilename('App.jsx')).toBe(SupportedLanguages.JavaScript);
+    it.each(['.js', '.jsx', '.mjs', '.cjs'])('detects %s files', (ext) => {
+      expect(getLanguageFromFilename(`module${ext}`)).toBe(SupportedLanguages.JavaScript);
+      expect(getProviderForFile(`src/module${ext}`)?.id).toBe(SupportedLanguages.JavaScript);
     });
   });
 
