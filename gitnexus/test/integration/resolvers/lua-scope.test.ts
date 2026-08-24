@@ -23,6 +23,7 @@ import { SupportedLanguages, type BindingRef, type ScopeId } from 'gitnexus-shar
 import { emitLuaScopeCaptures } from '../../../src/core/ingestion/languages/lua/index.js';
 import { collectLuaCaptureSideChannel } from '../../../src/core/ingestion/languages/lua/capture-side-channel.js';
 import { luaScopeResolver } from '../../../src/core/ingestion/languages/lua/scope-resolver.js';
+import { interpretLuaImport } from '../../../src/core/ingestion/languages/lua/interpret.js';
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [rel, content] of Object.entries(files)) {
@@ -55,6 +56,22 @@ describe('Lua scope resolver import extensions', () => {
   it('prefers the Lua module when another language has the same module stem', () => {
     const files = new Set(['main.lua', 'foo.ts', 'foo.lua']);
     expect(luaScopeResolver.resolveImportTarget('foo', 'main.lua', files)).toBe('foo.lua');
+  });
+
+  it('does not bind an extensionless collision ahead of the Lua module', () => {
+    const files = new Set(['main.lua', 'foo', 'foo.lua']);
+    expect(luaScopeResolver.resolveImportTarget('foo', 'main.lua', files)).toBe('foo.lua');
+  });
+
+  it('unwraps quoted and long-bracket require sources', () => {
+    const sources = ['"lib.util"', "'lib.util'", '[[lib.util]]', '[=[lib.util]=]'];
+    for (const source of sources) {
+      expect(
+        interpretLuaImport({
+          '@import.source': { text: source },
+        } as never),
+      ).toEqual({ kind: 'wildcard', targetRaw: 'lib.util' });
+    }
   });
 });
 
@@ -118,6 +135,23 @@ describe('Lua scope: bare require import', () => {
       writeFixtureRepo(tmpDir, {
         'lib/util.lua': 'return {}\n',
         'main.lua': 'require("lib.util")\n',
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const imports = getRelationships(result, 'IMPORTS').filter(
+        (e) => e.sourceFilePath?.includes('main.lua') && e.targetFilePath?.includes('util.lua'),
+      );
+      expect(imports).toHaveLength(1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('resolves a long-bracket require source in the graph', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-long-require-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'lib/util.lua': 'return {}\n',
+        'main.lua': 'require([[lib.util]])\n',
       });
       const result = await runPipelineFromRepo(tmpDir, () => {});
       const imports = getRelationships(result, 'IMPORTS').filter(

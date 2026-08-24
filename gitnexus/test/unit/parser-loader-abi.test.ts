@@ -212,13 +212,10 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
       return;
     }
 
+    const crlf = String.fromCharCode(13, 10);
     const snippets = [
-      String.raw`local value = "line\
-continued"
-`,
-      String.raw`local value = 'line\
-continued'
-`,
+      `local value = "line\\${crlf}continued"${crlf}`,
+      `local value = 'line\\${crlf}continued'${crlf}`,
     ];
     for (const snippet of snippets) {
       const parser = new Parser();
