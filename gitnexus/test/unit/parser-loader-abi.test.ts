@@ -202,4 +202,23 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
       expect(tree.rootNode.hasError).toBe(false);
     }
   });
+
+  it('accepts a real newline escaped inside a short string', () => {
+    let grammar: unknown;
+    try {
+      grammar = getLanguageGrammar(SupportedLanguages.Lua);
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      return;
+    }
+
+    const parser = new Parser();
+    parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
+    const snippet = String.raw`local value = "line\
+continued"
+`;
+    const tree = parser.parse(snippet);
+    expect(tree.rootNode.type).toBe('chunk');
+    expect(tree.rootNode.hasError).toBe(false);
+  });
 });
