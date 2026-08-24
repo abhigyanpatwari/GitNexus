@@ -55,7 +55,7 @@ export const EXTENSIONS = [
 ];
 
 /** Lua module extensions used only by Lua import resolvers. */
-export const LUA_EXTENSIONS = ['', '.lua', '/init.lua'] as const;
+export const LUA_EXTENSIONS = ['.lua', '/init.lua'] as const;
 
 /**
  * Try to match a path (with extensions) against the known file set.
