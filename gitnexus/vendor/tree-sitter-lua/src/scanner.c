@@ -48,6 +48,12 @@ struct ScannerState
   unsigned int depth;
 };
 
+// Keep the scanner state portable across parser checkpoints. The previous
+// format stored depth in one byte, which truncated long-bracket delimiters
+// with more than 255 '=' characters. Length 2 remains readable for old
+// checkpoints; new checkpoints use a full 32-bit little-endian depth.
+#define LUA_SCANNER_SERIALIZED_LENGTH 5
+
 void *tree_sitter_lua_external_scanner_create()
 {
   return calloc(1, sizeof(struct ScannerState));
@@ -62,17 +68,31 @@ unsigned int tree_sitter_lua_external_scanner_serialize(void *payload, char *buf
 {
   struct ScannerState *state = payload;
   buffer[0] = state->started;
-  buffer[1] = state->depth;
-  return 2;
+  buffer[1] = (char)(state->depth & 0xffu);
+  buffer[2] = (char)((state->depth >> 8) & 0xffu);
+  buffer[3] = (char)((state->depth >> 16) & 0xffu);
+  buffer[4] = (char)((state->depth >> 24) & 0xffu);
+  return LUA_SCANNER_SERIALIZED_LENGTH;
 }
 
 void tree_sitter_lua_external_scanner_deserialize(void *payload, const char *buffer, unsigned int length)
 {
+  struct ScannerState *state = payload;
+  state->started = 0;
+  state->depth = 0;
+
   if (length == 2)
   {
-    struct ScannerState *state = payload;
-    state->started = buffer[0];
-    state->depth = buffer[1];
+    state->started = (enum StartedToken)(unsigned char)buffer[0];
+    state->depth = (unsigned int)(unsigned char)buffer[1];
+  }
+  else if (length >= LUA_SCANNER_SERIALIZED_LENGTH)
+  {
+    state->started = (enum StartedToken)(unsigned char)buffer[0];
+    state->depth = (unsigned int)(unsigned char)buffer[1] |
+      ((unsigned int)(unsigned char)buffer[2] << 8) |
+      ((unsigned int)(unsigned char)buffer[3] << 16) |
+      ((unsigned int)(unsigned char)buffer[4] << 24);
   }
 }
 
