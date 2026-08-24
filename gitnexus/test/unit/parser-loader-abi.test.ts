@@ -179,13 +179,27 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
   }
 
   it('repeatedly creates and parses Lua parsers without stale scanner state', () => {
-    const grammar = getLanguageGrammar(SupportedLanguages.Lua);
+    let grammar: unknown;
+    try {
+      grammar = getLanguageGrammar(SupportedLanguages.Lua);
+    } catch (err) {
+      // Lua is a user-skippable vendored grammar. Its dedicated smoke must
+      // have the same unavailable-is-okay behavior as the matrix above.
+      expect(err).toBeInstanceOf(Error);
+      return;
+    }
+
+    const longEquals = '='.repeat(300);
     for (let i = 0; i < 16; i += 1) {
       const parser = new Parser();
       parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
-      const snippet = i % 2 === 0 ? 'local x = "lua"\n' : '-- comment\nlocal x = [[lua]]\n';
+      const snippet =
+        i % 2 === 0
+          ? 'local x = "lua"\n'
+          : `-- comment\nlocal x = [${longEquals}[lua]${longEquals}]\n`;
       const tree = parser.parse(snippet);
       expect(tree.rootNode.type).toBe('chunk');
+      expect(tree.rootNode.hasError).toBe(false);
     }
   });
 });

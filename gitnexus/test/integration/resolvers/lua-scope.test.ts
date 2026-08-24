@@ -19,8 +19,10 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+import { SupportedLanguages, type BindingRef, type ScopeId } from 'gitnexus-shared';
 import { emitLuaScopeCaptures } from '../../../src/core/ingestion/languages/lua/index.js';
 import { collectLuaCaptureSideChannel } from '../../../src/core/ingestion/languages/lua/capture-side-channel.js';
+import { luaScopeResolver } from '../../../src/core/ingestion/languages/lua/scope-resolver.js';
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [rel, content] of Object.entries(files)) {
@@ -29,6 +31,32 @@ function writeFixtureRepo(root: string, files: Record<string, string>): void {
     fs.writeFileSync(abs, content, 'utf8');
   }
 }
+
+describe('Lua scope resolver binding merge', () => {
+  it('retains imported bindings when layering them onto existing bindings', () => {
+    const local = {
+      def: { nodeId: 'local', filePath: 'main.lua', type: 'Variable', qualifiedName: 'local' },
+      origin: 'local',
+    } satisfies BindingRef;
+    const imported = {
+      def: { nodeId: 'imported', filePath: 'lib.lua', type: 'Variable', qualifiedName: 'imported' },
+      origin: 'import',
+    } satisfies BindingRef;
+
+    expect(luaScopeResolver.mergeBindings([local], [imported], 'scope:main' as ScopeId)).toEqual([
+      local,
+      imported,
+    ]);
+    expect(luaScopeResolver.language).toBe(SupportedLanguages.Lua);
+  });
+});
+
+describe('Lua scope resolver import extensions', () => {
+  it('prefers the Lua module when another language has the same module stem', () => {
+    const files = new Set(['main.lua', 'foo.ts', 'foo.lua']);
+    expect(luaScopeResolver.resolveImportTarget('foo', 'main.lua', files)).toBe('foo.lua');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // require("lib.util") + member call util.answer() across files
