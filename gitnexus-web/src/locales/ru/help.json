@@ -1,96 +1,96 @@
 {
   "tabs": {
-    "overview": "",
-    "ai": "",
-    "shortcuts": "",
-    "status": "",
-    "graph": "",
-    "search": ""
+    "overview": "Обзор",
+    "ai": "Nexus AI",
+    "shortcuts": "Горячие клавиши",
+    "status": "Строка состояния",
+    "graph": "Граф и узлы",
+    "search": "Поиск и фильтр"
   },
   "shortcuts": {
-    "searchNodes": "",
-    "deselectClose": "",
+    "searchNodes": "Поиск узлов",
+    "deselectClose": "Снять выделение / закрыть",
     "columns": {
-      "action": "",
-      "mac": "",
-      "windows": ""
+      "action": "Действие",
+      "mac": "Mac",
+      "windows": "Windows"
     }
   },
   "nodeTypes": {
-    "function": "",
-    "functionDesc": "",
-    "file": "",
-    "fileDesc": "",
-    "class": "",
-    "classDesc": "",
-    "method": "",
-    "methodDesc": "",
-    "interface": "",
-    "interfaceDesc": "",
-    "folder": "",
-    "folderDesc": ""
+    "function": "Функция",
+    "functionDesc": "Объявления функций",
+    "file": "Файл",
+    "fileDesc": "Исходные файлы",
+    "class": "Класс",
+    "classDesc": "Объявления классов",
+    "method": "Метод",
+    "methodDesc": "Методы классов",
+    "interface": "Интерфейс",
+    "interfaceDesc": "Интерфейсы TypeScript",
+    "folder": "Папка",
+    "folderDesc": "Узлы-каталоги"
   },
   "status": {
-    "ready": "",
-    "readyDesc": "",
-    "nodesCount": "",
-    "nodesCountDesc": "",
-    "edgesCount": "",
-    "edgesCountDesc": "",
-    "aiIndexStatus": "",
-    "aiIndexStatusDesc": "",
-    "semanticReadyBadge": "",
-    "explained": ""
+    "ready": "Готово",
+    "readyDesc": "Граф полностью загружен и интерактивен",
+    "nodesCount": "Количество узлов",
+    "nodesCountDesc": "Всего файлов и символов в графе",
+    "edgesCount": "Количество рёбер",
+    "edgesCountDesc": "Связи импортов / зависимостей",
+    "aiIndexStatus": "Статус AI-индекса",
+    "aiIndexStatusDesc": "Репозиторий полностью проиндексирован для AI-запросов",
+    "semanticReadyBadge": "Семантический готов",
+    "explained": "Пояснение к строке состояния"
   },
-  "tryAsking": "",
-  "footer": "",
-  "title": "",
-  "footerLong": "",
-  "docsGithub": "",
+  "tryAsking": "Попробуйте спросить:",
+  "footer": "GitNexus — обозреватель графа",
+  "title": "Справка и справочник",
+  "footerLong": "GitNexus — обозреватель графа кодовой базы с открытым исходным кодом",
+  "docsGithub": "Документация и GitHub ↗",
   "overview": {
-    "gettingStarted": "",
-    "whatIsTitle": "",
-    "whatIsDescription": "",
-    "currentRepoTitle": "",
-    "loadedCounts": "",
-    "threeWaysTitle": "",
-    "wayInspect": "",
-    "waySearch": "",
-    "wayAsk": "",
-    "navigationTitle": "",
-    "navZoom": "",
-    "navPan": "",
-    "navFocus": ""
+    "gettingStarted": "Начало работы",
+    "whatIsTitle": "Что такое GitNexus?",
+    "whatIsDescription": "Интерактивный обозреватель графа для вашей кодовой базы. Каждый файл, функция и импорт становятся узлом, который можно визуально исследовать, запрашивать и перемещаться по нему.",
+    "currentRepoTitle": "Ваш текущий репозиторий",
+    "loadedCounts": "Загружено: {{nodeCount}} узлов · {{edgeCount}} рёбер",
+    "threeWaysTitle": "Три способа исследования",
+    "wayInspect": "Нажимайте на узлы для просмотра",
+    "waySearch": "Ищите по имени или типу",
+    "wayAsk": "Задайте Nexus AI вопрос на естественном языке",
+    "navigationTitle": "Навигация",
+    "navZoom": "Прокрутка для масштабирования",
+    "navPan": "Перетаскивание для панорамирования",
+    "navFocus": "Двойной клик по узлу для фокусировки на его подграфе"
   },
   "graph": {
-    "nodeColorLegend": "",
-    "nodeLabel": "",
-    "sizeDescription": "",
-    "detailDescription": ""
+    "nodeColorLegend": "Цветовая легенда узлов",
+    "nodeLabel": "Узлы: {{label}}",
+    "sizeDescription": "Размер узла отражает количество связей — крупные узлы зависят от большего числа файлов. Рёбра направлены от импортирующего к импортируемому.",
+    "detailDescription": "Нажмите на любой узел, чтобы открыть панель с подробностями — импорты, экспорты и обратные зависимости."
   },
   "search": {
-    "title": "",
-    "searchNodes": "",
-    "searchDescription": "",
-    "filterPanel": "",
-    "filterDescription": "",
-    "syntax": "",
+    "title": "Поиск и фильтр",
+    "searchNodes": "Поиск узлов",
+    "searchDescription": "Поиск по имени файла, имени функции или пути импорта. Совпадающие узлы подсвечиваются в графе в реальном времени.",
+    "filterPanel": "Панель фильтров",
+    "filterDescription": "Используйте значок фильтра на левой боковой панели, чтобы изолировать определённые типы узлов, скрыть листовые узлы или сфокусироваться на диапазоне глубины от выбранного корня.",
+    "syntax": "Синтаксис поиска",
     "hints": {
-      "nameFragment": "",
-      "pathPrefix": "",
-      "nodeType": ""
+      "nameFragment": "совпадение по фрагменту имени",
+      "pathPrefix": "совпадение по префиксу пути",
+      "nodeType": "фильтр по типу узла"
     }
   },
   "ai": {
-    "title": "",
-    "semanticReady": "",
-    "description": "",
+    "title": "Nexus AI",
+    "semanticReady": "✓ Семантический анализ готов",
+    "description": "Ваш репозиторий проиндексирован и готов к семантическим запросам. Nexus AI понимает структуру кода и связи, а не только имена файлов.",
     "questions": {
-      "dependencies": "",
-      "circular": "",
-      "connected": "",
-      "imports": ""
+      "dependencies": "\"Какие файлы зависят от модуля аутентификации?\"",
+      "circular": "\"Найди циклические зависимости в этом репозитории\"",
+      "connected": "\"Каковы наиболее связанные компоненты?\"",
+      "imports": "\"Покажи мне все файлы, которые импортируют useEffect\""
     },
-    "openPrompt": ""
+    "openPrompt": "Откройте промпт через кнопку Nexus AI (в правом верхнем углу)."
   }
 }
