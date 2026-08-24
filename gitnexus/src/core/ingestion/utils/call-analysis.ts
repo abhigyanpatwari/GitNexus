@@ -362,7 +362,9 @@ export const extractReceiverNode = (nameNode: SyntaxNode): SyntaxNode | undefine
   // Lua: the receiver is the `table` field of the call's `function` variable.
   if (!receiver && callNode.type === 'call') {
     const callee = callNode.childForFieldName('function');
-    if (callee?.type === 'variable') receiver = callNode.childForFieldName('table');
+    if (callee?.type === 'variable') {
+      receiver = callNode.childForFieldName('table') ?? callee.childForFieldName('table');
+    }
   }
 
   if (
