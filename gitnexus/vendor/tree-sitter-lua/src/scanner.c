@@ -171,10 +171,20 @@ bool tree_sitter_lua_external_scanner_scan(void *payload, TSLexer *lexer, const 
       // consume any character till a short string's end, new line or eof
       do
       {
-        // consume any character after a backslash, unless it's a new line or eof
-        if (consume_if(lexer, '\\') && (lexer->lookahead == '\n' || lexer->eof(lexer)))
+        // A backslash escapes the following character. Lua also permits a
+        // backslash followed by a real newline to continue a short string;
+        // consume that newline so the scanner does not remain stuck at it.
+        if (consume_if(lexer, '\\'))
         {
-          break;
+          if (lexer->lookahead == '\n')
+          {
+            consume(lexer);
+            continue;
+          }
+          if (lexer->eof(lexer))
+          {
+            break;
+          }
         }
 
         consume(lexer);
