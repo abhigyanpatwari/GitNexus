@@ -21,9 +21,13 @@ import { resolvePhpImportInternal } from '../../import-resolvers/php.js';
 import type { SuffixIndex } from '../../import-resolvers/utils.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
-import type { ComposerConfig } from '../../language-config.js';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  mergeComposerConfigs,
+  parseComposerConfig,
+  type ComposerConfig,
+} from '../../language-config.js';
+import { readdirSync, readFileSync, type Dirent } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 
 export interface PhpResolveContext {
   readonly fromFile: string;
@@ -81,21 +85,11 @@ function parentDirectory(filePath: string): string {
 }
 
 function directoryAliases(filePath: string): string[] {
-  const normalizedPath = normalizePhpPath(filePath);
-  const separator = normalizedPath.lastIndexOf('/');
-  if (separator < 0) return [''];
-
-  const parent = normalizedPath.slice(0, separator);
-  const aliases = new Set([parent]);
-  const segments = parent.split('/').filter(Boolean);
-  for (let index = 0; index < segments.length; index++) {
-    aliases.add(segments.slice(index).join('/'));
-  }
-  return [...aliases];
+  return [parentDirectory(filePath)];
 }
 
 /**
- * Directory alias → the files under it, built once per pass.
+ * Exact repository-relative directory → the files under it, built once per pass.
  *
  * A scope-resolution pass shares one stable `parsedFiles` array across imports,
  * so the array identity is the memo key — see `perFileSet`.
@@ -301,51 +295,67 @@ const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): Php
 // ─── loadResolutionConfig ──────────────────────────────────────────────────
 
 /**
- * Load and parse `composer.json` from the repo root. Returns a
- * `ComposerConfig` object (PSR-4 namespace → directory mappings) or
- * `null` when no `composer.json` is present or it cannot be parsed.
+ * Load and parse repository and package-local `composer.json` manifests.
+ * Package mappings are rebased to repository-relative paths before merging.
  *
  * The result is threaded into each `resolvePhpImportInternal` call as
  * the `composerConfig` argument.
  */
 export function loadPhpComposerConfig(repoPath: string): ComposerConfig | null {
-  try {
-    const composerPath = join(repoPath, 'composer.json');
-    const raw = readFileSync(composerPath, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== 'object' || parsed === null) return null;
+  const skipDirectories = new Set([
+    '.git',
+    '.gitnexus',
+    'node_modules',
+    'vendor',
+    'dist',
+    'build',
+    'coverage',
+  ]);
+  const pending = [repoPath];
+  const manifests: string[] = [];
+  let incomplete = false;
+  let visitedDirectories = 0;
 
-    const composer = parsed as Record<string, unknown>;
-    const autoload = composer['autoload'] as Record<string, unknown> | undefined;
-    const autoloadDev = composer['autoload-dev'] as Record<string, unknown> | undefined;
-    if (autoload === undefined && autoloadDev === undefined) return null;
-
-    const psr4 = new Map<string, string>();
-    const hasUnmodeledAutoload = [autoload, autoloadDev].some(
-      (section) =>
-        section !== null &&
-        typeof section === 'object' &&
-        ['psr-0', 'classmap', 'files'].some((key) => key in section),
-    );
-
-    for (const section of [autoload, autoloadDev]) {
-      const raw = section?.['psr-4'];
-      if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
-
-      for (const [ns, dirs] of Object.entries(raw)) {
-        const normalizedNs = ns.replace(/\\+$/, '');
-        const dir = Array.isArray(dirs) ? dirs.find((entry) => typeof entry === 'string') : dirs;
-        if (typeof dir === 'string') {
-          const normalizedDir = dir.replace(/\\/g, '/').replace(/\/+$/, '');
-          psr4.set(normalizedNs, normalizedDir);
-        }
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    if (directory === undefined) break;
+    if (++visitedDirectories > 20_000) {
+      incomplete = true;
+      break;
+    }
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+        left.name.localeCompare(right.name),
+      );
+    } catch {
+      incomplete = true;
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name === 'composer.json') {
+        manifests.push(join(directory, entry.name));
+      } else if (entry.isDirectory() && !skipDirectories.has(entry.name)) {
+        pending.push(join(directory, entry.name));
       }
     }
-
-    return { psr4, hasUnmodeledAutoload };
-  } catch {
-    return null;
   }
+
+  const configs: ComposerConfig[] = [];
+  for (const manifest of manifests.sort()) {
+    try {
+      const baseDir = normalizePhpPath(relative(repoPath, dirname(manifest)));
+      const config = parseComposerConfig(JSON.parse(readFileSync(manifest, 'utf8')), baseDir);
+      if (config !== null) configs.push(config);
+    } catch {
+      incomplete = true;
+    }
+  }
+
+  const merged = mergeComposerConfigs(configs);
+  if (merged === null) return null;
+  if (incomplete) merged.hasUnmodeledAutoload = true;
+  return merged;
 }
 
 // ─── resolvePhpImportTarget ────────────────────────────────────────────────
@@ -442,11 +452,7 @@ export function resolvePhpImportTargetInternal(
     ...new Set(
       directories.flatMap((directory) => {
         const files = directoryIndex.get(normalizePhpPath(directory)) ?? [];
-        // A suffix alias can match directories under different roots (for
-        // example app/Models and vendor/pkg/app/Models). Picking either root
-        // would be a guess, so fail closed to the composer resolution instead.
-        const distinctParents = new Set(files.map((file) => parentDirectory(file.filePath)));
-        return distinctParents.size > 1 ? [] : files;
+        return files;
       }),
     ),
   ];

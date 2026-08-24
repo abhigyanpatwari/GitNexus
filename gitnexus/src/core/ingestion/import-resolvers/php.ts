@@ -49,8 +49,10 @@ export function resolvePhpImportInternal(
 
   if (composerConfig) {
     const sorted = getSortedPsr4(composerConfig);
-    let matchedNamespace = false;
-    let hasCatchAllNamespace = false;
+    const authoritativePsr4 =
+      composerConfig.authoritativePsr4 ?? new Set(sorted.map(([namespace]) => namespace));
+    let matchedAuthoritativeNamespace = false;
+    let hasAuthoritativeCatchAllNamespace = false;
     const ownershipPath = normalized.replace(/^\/+/, '');
 
     for (const [nsPrefix, dirPrefix] of sorted) {
@@ -61,8 +63,9 @@ export function resolvePhpImportInternal(
         ownershipPath.startsWith(nsPrefixSlash + '/') ||
         ownershipPath === nsPrefixSlash
       ) {
-        hasCatchAllNamespace ||= isCatchAll;
-        matchedNamespace = true;
+        const isAuthoritative = authoritativePsr4.has(nsPrefix);
+        matchedAuthoritativeNamespace ||= isAuthoritative;
+        hasAuthoritativeCatchAllNamespace ||= isAuthoritative && isCatchAll;
         const remainder = ownershipPath.slice(nsPrefixSlash.length).replace(/^\//, '');
 
         // 1. Try class-style PSR-4: full path → file (e.g. App\Models\User → app/Models/User.php)
@@ -77,46 +80,47 @@ export function resolvePhpImportInternal(
 
         // 2. Function/constant fallback: strip last segment (symbol name), scan namespace directory.
         //    e.g. App\Models\getUser → directory app/Models/, find first .php file in that dir.
-        const lastSlash = remainder.lastIndexOf('/');
-        const relativeNamespace = lastSlash >= 0 ? remainder.slice(0, lastSlash) : '';
-        const nsDir =
-          dirPrefix === ''
-            ? relativeNamespace
-            : relativeNamespace === ''
-              ? dirPrefix
-              : `${dirPrefix}/${relativeNamespace}`;
+        // A root/catch-all mapping cannot safely infer a symbol's declaring
+        // file from an arbitrary sibling. The higher-level PHP resolver has
+        // parsed symbol-kind and declaration evidence for function/const
+        // imports; class imports must not inherit this directory heuristic.
+        if (!isCatchAll && dirPrefix !== '') {
+          const lastSlash = remainder.lastIndexOf('/');
+          const relativeNamespace = lastSlash >= 0 ? remainder.slice(0, lastSlash) : '';
+          const nsDir = relativeNamespace === '' ? dirPrefix : `${dirPrefix}/${relativeNamespace}`;
 
-        // Prefer SuffixIndex directory lookup (O(log n + matches)) over linear scan.
-        //
-        // An EMPTY bucket is a final answer, not a miss to retry with the scan
-        // below — which is what the `else` restores, and what this comment
-        // always claimed. Re-scanning on empty was the last per-import
-        // workspace traversal left in PHP resolution after #2901: any `use`
-        // matching a PSR-4 prefix whose directory holds no direct `.php` child
-        // (`App\Legacy\Ghost`) paid a full pass, measured at 201 traversals for
-        // 200 imports.
-        //
-        // The bucket is a superset of what the scan can find, for BOTH index
-        // shapes that reach here. A root-anchored direct child `nsDir/<x>.php`
-        // has its directory exactly equal to `nsDir`, and `nsDir` is always one
-        // of that directory's own suffixes — so the shared `dirMap` (keyed on
-        // every directory suffix) necessarily contains it, as does the
-        // root-anchored parity index `languages/php/import-target.ts` builds.
-        // Empty superset therefore implies empty scan, and control falls
-        // through to the next PSR-4 prefix exactly as before.
-        if (index) {
-          const candidates = index.getFilesInDir(nsDir, '.php');
-          if (candidates.length > 0) return candidates[0];
-        } else {
-          // Linear scan, only when a SuffixIndex is genuinely unavailable.
-          const nsDirPrefix = nsDir.endsWith('/') ? nsDir : nsDir + '/';
-          for (const f of allFiles) {
-            if (
-              f.startsWith(nsDirPrefix) &&
-              f.endsWith('.php') &&
-              !f.slice(nsDirPrefix.length).includes('/')
-            ) {
-              return f;
+          // Prefer SuffixIndex directory lookup (O(log n + matches)) over linear scan.
+          //
+          // An EMPTY bucket is a final answer, not a miss to retry with the scan
+          // below — which is what the `else` restores, and what this comment
+          // always claimed. Re-scanning on empty was the last per-import
+          // workspace traversal left in PHP resolution after #2901: any `use`
+          // matching a PSR-4 prefix whose directory holds no direct `.php` child
+          // (`App\Legacy\Ghost`) paid a full pass, measured at 201 traversals for
+          // 200 imports.
+          //
+          // The bucket is a superset of what the scan can find, for BOTH index
+          // shapes that reach here. A root-anchored direct child `nsDir/<x>.php`
+          // has its directory exactly equal to `nsDir`, and `nsDir` is always one
+          // of that directory's own suffixes — so the shared `dirMap` (keyed on
+          // every directory suffix) necessarily contains it, as does the
+          // root-anchored parity index `languages/php/import-target.ts` builds.
+          // Empty superset therefore implies empty scan, and control falls
+          // through to the next PSR-4 prefix exactly as before.
+          if (index) {
+            const candidates = index.getFilesInDir(nsDir, '.php');
+            if (candidates.length > 0) return candidates[0];
+          } else {
+            // Linear scan, only when a SuffixIndex is genuinely unavailable.
+            const nsDirPrefix = nsDir.endsWith('/') ? nsDir : nsDir + '/';
+            for (const f of allFiles) {
+              if (
+                f.startsWith(nsDirPrefix) &&
+                f.endsWith('.php') &&
+                !f.slice(nsDirPrefix.length).includes('/')
+              ) {
+                return f;
+              }
             }
           }
         }
@@ -128,9 +132,9 @@ export function resolvePhpImportInternal(
     // conservative external-namespace gate, not a rewrite of mapped lookup.
     // A catch-all owns every namespace, so its misses remain authoritative.
     if (
-      sorted.length > 0 &&
+      authoritativePsr4.size > 0 &&
       !composerConfig.hasUnmodeledAutoload &&
-      (!matchedNamespace || hasCatchAllNamespace)
+      (!matchedAuthoritativeNamespace || hasAuthoritativeCatchAllNamespace)
     ) {
       return null;
     }

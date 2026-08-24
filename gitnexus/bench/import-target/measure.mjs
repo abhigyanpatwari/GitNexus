@@ -710,7 +710,13 @@ const tsBaseUrlFor = (pad) =>
   pad === 0 ? '' : Array.from({ length: pad }, (_, n) => `d${n}`).join('/');
 const phpComposerConfigFor = (pad) => ({
   psr4: new Map([['App', joinBase(tsBaseUrlFor(pad), 'src/App')]]),
+  authoritativePsr4: new Set(['App']),
 });
+const renderPhpComposerConfig = (config) =>
+  [...config.psr4]
+    .map(([namespace, directory]) => `${namespace || '<root>'}=${directory || '<root>'}`)
+    .sort()
+    .join(';');
 /** Keyed by LAYOUT name, so there is no `csharp_csproj` row: `buildFiles`
  *  aliases that arm to `csharp` before this table is read. */
 const EXTENSION = {
@@ -1032,6 +1038,12 @@ function buildFiles(lang, fileCount, pad, shape) {
                 : ext;
     files.push(`${prefix}${dir}/${stem}${suffix}`);
   }
+  // One real suffix decoy makes the PHP external gate observable: with the
+  // gate, Vendor0 stays unresolved; without it, suffix fallback resolves this
+  // path and the exact fingerprint/external-probe result changes.
+  if (layout === 'php' && files.length > 0) {
+    files[files.length - 1] = `${prefix}legacy/Vendor0/Ghost/Missing.php`;
+  }
   return files;
 }
 
@@ -1142,9 +1154,8 @@ function kotlinBenchmarkPackage(filePath) {
  * The owner segment is the file's own directory name (`Ns7`, `Models`, `pkg7`),
  * which is stable across the `small`, `deep` and `collide` arms — so the `deep`
  * arm differs from `small` in path DEPTH alone, exactly as it does for the path
- * set. That matters here: `directoryAliases` emits one entry per path segment,
- * so `filesByDirectory` is O(files × depth) and the depth arm is the only one
- * that can see it.
+ * set. `filesByDirectory` is exact and linear in the file count; the shared
+ * suffix index remains the path-depth-sensitive structure this arm measures.
  */
 function buildParsedFiles(lang, files) {
   const parsedFiles = [];
@@ -1597,6 +1608,9 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
       imports.push([from, mintTarget(lang, { local, r, d, j, dirs })]);
     }
   }
+  if (lang === 'php' && imports.length > 0) {
+    imports[0] = [files[0], 'Vendor0\\Ghost\\Missing'];
+  }
   return { files, imports };
 }
 
@@ -2029,7 +2043,9 @@ const HEAP_PROBE_TARGET = {
   // (`getFilesInDir`) before answering null — the three-map read pattern.
   csharp_csproj: 'App.Missing0',
   ruby: 'gem0/missing/thing',
-  php: 'Vendor0\\Ghost\\Missing',
+  // A mapped-but-missing class forces the Composer mapping and suffix-index
+  // read paths. The separate external probe below keeps the fast gate visible.
+  php: 'App\\HeapGhost0\\AbsentHeapProbe',
   java: 'com.google.common.vendor0.Missing',
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
@@ -2097,11 +2113,24 @@ function measureHeap(lang) {
   GC();
   GC();
   const probe = HEAP_PROBE_TARGET[lang];
-  const read = (files) => retainedPassBytes(lang, files, probe);
+  const read = (files) => retainedPassBytes(lang, files, probe, lang === 'php' ? HEAP_PAD : 0);
   const small = flatten(buildFiles(lang, HEAP_SMALL, HEAP_PAD, 'unique'));
   const bytesSmall = read(small);
   const large = flatten(buildFiles(lang, HEAP_LARGE, HEAP_PAD, 'unique'));
   const bytesLarge = read(large);
+  const phpGateShape =
+    lang === 'php'
+      ? (() => {
+          const externalProbe = 'Vendor0\\Ghost\\Missing';
+          const config = phpComposerConfigFor(HEAP_PAD);
+          const pass = newPass(lang, large, HEAP_PAD);
+          return {
+            resolution_config: renderPhpComposerConfig(config),
+            external_probe: externalProbe,
+            external_result: renderResolved(resolveOne(lang, large[0], externalProbe, pass)),
+          };
+        })()
+      : {};
   return {
     files_small: HEAP_SMALL,
     files_large: HEAP_LARGE,
@@ -2111,6 +2140,7 @@ function measureHeap(lang) {
     bytes_large: bytesLarge,
     mib_large: Number((bytesLarge / 1024 / 1024).toFixed(2)),
     ratio: Number((bytesLarge / bytesSmall / (HEAP_LARGE / HEAP_SMALL)).toFixed(3)),
+    ...phpGateShape,
   };
 }
 
@@ -2464,6 +2494,13 @@ const HEAP_SHAPE = {
     'ceiling, floor, bound and ratio passing over an arm that changed workload. Deterministic: ' +
     'a re-run will not change it.',
 };
+const PHP_HEAP_SHAPE = {
+  fields: [...HEAP_SHAPE.fields, 'resolution_config', 'external_probe', 'external_result'],
+  why:
+    HEAP_SHAPE.why +
+    ' PHP also pins the Composer mapping and a suffix-matchable external decoy so the mapped ' +
+    'index path and the external fast gate remain separate observable arms.',
+};
 /** The same, for the `context` arm. All three fields are exact strings, not
  *  bounds: this arm has no measurement noise at all — it resolves one import
  *  two ways over a three-file corpus — so anything less than equality would be
@@ -2486,7 +2523,7 @@ const CONTEXT_SHAPE = {
  *  a fifth parameter. */
 const armShapes = (lang) => [
   ...SCALES.map((scale) => [scale, SCALE_SHAPE]),
-  ['heap', HEAP_SHAPE],
+  ['heap', lang === 'php' ? PHP_HEAP_SHAPE : HEAP_SHAPE],
   ...(CONTEXT_LANGS.includes(lang) ? [['context', CONTEXT_SHAPE]] : []),
 ];
 

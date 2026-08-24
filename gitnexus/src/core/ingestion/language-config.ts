@@ -30,11 +30,101 @@ export interface GoModuleConfig {
 export interface ComposerConfig {
   /** Map of namespace prefix -> directory (e.g., "App\\" -> "app/") */
   psr4: Map<string, string>;
+  /** Production `autoload.psr-4` prefixes that may gate external namespaces.
+   *  Absent on legacy/manual configs, where every mapping remains authoritative. */
+  authoritativePsr4?: ReadonlySet<string>;
   /** True when Composer also declares an autoload mechanism this resolver does not model. */
   hasUnmodeledAutoload?: boolean;
   /** PSR-4 entries sorted by namespace length descending (longest match wins).
    *  Cached once at config load time to avoid re-sorting on every import. */
   psr4Sorted?: readonly [string, string][];
+}
+
+function normalizeComposerDirectory(baseDir: string, directory: string): string {
+  const normalizedBase = baseDir.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  const normalizedDirectory = directory
+    .replace(/\\/g, '/')
+    .replace(/^(?:\.\/)+/, '')
+    .replace(/\/+$/, '');
+  if (normalizedBase === '') return normalizedDirectory;
+  if (normalizedDirectory === '') return normalizedBase;
+  return path.posix.normalize(`${normalizedBase}/${normalizedDirectory}`);
+}
+
+/** Parse one Composer manifest without performing I/O. */
+export function parseComposerConfig(value: unknown, baseDir = ''): ComposerConfig | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const composer = value as Record<string, unknown>;
+  const autoload = composer.autoload;
+  const autoloadDev = composer['autoload-dev'];
+  if (autoload === undefined && autoloadDev === undefined) return null;
+
+  const psr4 = new Map<string, string>();
+  const authoritativePsr4 = new Set<string>();
+  let hasUnmodeledAutoload = false;
+
+  const addSection = (sectionValue: unknown, authoritative: boolean): void => {
+    if (typeof sectionValue !== 'object' || sectionValue === null || Array.isArray(sectionValue)) {
+      return;
+    }
+    const section = sectionValue as Record<string, unknown>;
+    if ('psr-0' in section || 'classmap' in section) hasUnmodeledAutoload = true;
+
+    const rawPsr4 = section['psr-4'];
+    if (typeof rawPsr4 !== 'object' || rawPsr4 === null || Array.isArray(rawPsr4)) return;
+
+    for (const [namespace, directories] of Object.entries(rawPsr4)) {
+      const stringDirectories = Array.isArray(directories)
+        ? directories.filter((entry): entry is string => typeof entry === 'string')
+        : typeof directories === 'string'
+          ? [directories]
+          : [];
+      if (stringDirectories.length === 0) continue;
+      if (stringDirectories.length > 1) hasUnmodeledAutoload = true;
+
+      const normalizedNamespace = namespace.replace(/\\+$/, '');
+      const normalizedDirectory = normalizeComposerDirectory(baseDir, stringDirectories[0]);
+      const existing = psr4.get(normalizedNamespace);
+      if (existing !== undefined && existing !== normalizedDirectory) {
+        hasUnmodeledAutoload = true;
+        continue;
+      }
+      if (existing === undefined) psr4.set(normalizedNamespace, normalizedDirectory);
+      if (authoritative) authoritativePsr4.add(normalizedNamespace);
+    }
+  };
+
+  // Production mappings win duplicate prefixes. Development mappings remain
+  // usable for test code but do not establish authority for the external gate.
+  addSection(autoload, true);
+  addSection(autoloadDev, false);
+
+  return { psr4, authoritativePsr4, hasUnmodeledAutoload };
+}
+
+/** Merge package-local Composer manifests into one repository-relative config. */
+export function mergeComposerConfigs(configs: readonly ComposerConfig[]): ComposerConfig | null {
+  if (configs.length === 0) return null;
+
+  const psr4 = new Map<string, string>();
+  const authoritativePsr4 = new Set<string>();
+  let hasUnmodeledAutoload = false;
+  for (const config of configs) {
+    hasUnmodeledAutoload ||= config.hasUnmodeledAutoload === true;
+    for (const [namespace, directory] of config.psr4) {
+      const existing = psr4.get(namespace);
+      if (existing !== undefined && existing !== directory) {
+        hasUnmodeledAutoload = true;
+        continue;
+      }
+      if (existing === undefined) psr4.set(namespace, directory);
+    }
+    for (const namespace of config.authoritativePsr4 ?? config.psr4.keys()) {
+      authoritativePsr4.add(namespace);
+    }
+  }
+  return { psr4, authoritativePsr4, hasUnmodeledAutoload };
 }
 
 /** C# project config parsed from .csproj files */
@@ -163,31 +253,13 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
   try {
     const composerPath = path.join(repoRoot, 'composer.json');
     const raw = await fs.readFile(composerPath, 'utf-8');
-    const composer = JSON.parse(raw);
-    const psr4Raw = composer.autoload?.['psr-4'] ?? {};
-    const psr4Dev = composer['autoload-dev']?.['psr-4'] ?? {};
-    const merged = { ...psr4Raw, ...psr4Dev };
-    const hasUnmodeledAutoload = [composer.autoload, composer['autoload-dev']].some(
-      (section) =>
-        section !== null &&
-        typeof section === 'object' &&
-        ['psr-0', 'classmap', 'files'].some((key) => key in section),
-    );
-
-    const psr4 = new Map<string, string>();
-    for (const [ns, dirs] of Object.entries(merged)) {
-      const dir = Array.isArray(dirs) ? dirs.find((entry) => typeof entry === 'string') : dirs;
-      if (typeof dir === 'string') {
-        const nsNorm = ns.replace(/\\+$/, '');
-        const dirNorm = dir.replace(/\\/g, '/').replace(/\/+$/, '');
-        psr4.set(nsNorm, dirNorm);
-      }
-    }
+    const config = parseComposerConfig(JSON.parse(raw));
+    if (config === null) return null;
 
     if (isDev) {
-      logger.info(`📦 Loaded ${psr4.size} PSR-4 mappings from composer.json`);
+      logger.info(`📦 Loaded ${config.psr4.size} PSR-4 mappings from composer.json`);
     }
-    return { psr4, hasUnmodeledAutoload };
+    return config;
   } catch {
     return null;
   }

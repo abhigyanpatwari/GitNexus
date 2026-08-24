@@ -28,11 +28,9 @@
  * has stopped resolving anything at all, so counting alone would stay green
  * while every PHP IMPORTS edge disappeared.
  *
- * On the one traversal PHP still pays per import in a specific case — a PSR-4
- * namespace whose directory has no direct `.php` children — see the pinned
- * residual arm at the bottom of the unit parity test. It lives in
- * `import-resolvers/php.ts`, which #2901 does not touch, so the corpora here
- * resolve through the legs that do reach the index.
+ * The no-Composer arm below separately pins a proper suffix hit and a root-file
+ * miss. That pair guards the PHP parity view itself; a raw shared-index handoff
+ * would make the root file resolve even though the traversal count stayed one.
  */
 import { describe, it, expect } from 'vitest';
 import { phpScopeResolver } from '../../src/core/ingestion/languages/php/scope-resolver.js';
@@ -73,9 +71,8 @@ describe('PHP import resolution — index reuse across use-statements (#2901)', 
 
     for (let i = 0; i < 200; i++) {
       // A PSR-4 class hit, a function import that falls back to the namespace
-      // directory, and a third-party namespace that misses. The miss is the
-      // expensive case: it matches no PSR-4 prefix and so walks every suffix ×
-      // every extension before returning null.
+      // directory, and a third-party namespace that the Composer authority
+      // gate rejects before suffix fallback.
       resolved.push(resolveImportTarget('App\\Models\\User', FROM_FILE, files, COMPOSER));
       resolved.push(resolveImportTarget('App\\Models\\getUser', FROM_FILE, files, COMPOSER));
       resolved.push(resolveImportTarget(`Psr\\Log\\Missing${i}`, FROM_FILE, files, COMPOSER));
@@ -99,12 +96,14 @@ describe('PHP import resolution — index reuse across use-statements (#2901)', 
     // that used to cost a `findIndex` pass per extension — as the only path.
     for (let i = 0; i < 200; i++) {
       resolved.push(resolveImportTarget('Legacy\\Helper', FROM_FILE, files, null));
+      resolved.push(resolveImportTarget('index', FROM_FILE, files, null));
       resolved.push(resolveImportTarget(`Psr\\Log\\Missing${i}`, FROM_FILE, files, null));
     }
 
     expect(files.scans).toBe(1);
     expect(resolved[0]).toBe('lib/Legacy/Helper.php');
     expect(resolved[1]).toBeNull();
+    expect(resolved[2]).toBeNull();
   });
 
   it('a distinct file set gets its own index (no stale cross-run reuse)', () => {
