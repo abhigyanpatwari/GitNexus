@@ -203,7 +203,7 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
     }
   });
 
-  it('accepts a real newline escaped inside a short string', () => {
+  it('accepts LF and CRLF newlines escaped inside short strings', () => {
     let grammar: unknown;
     try {
       grammar = getLanguageGrammar(SupportedLanguages.Lua);
@@ -212,13 +212,20 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
       return;
     }
 
-    const parser = new Parser();
-    parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
-    const snippet = String.raw`local value = "line\
+    const snippets = [
+      String.raw`local value = "line\
 continued"
-`;
-    const tree = parser.parse(snippet);
-    expect(tree.rootNode.type).toBe('chunk');
-    expect(tree.rootNode.hasError).toBe(false);
+`,
+      String.raw`local value = 'line\
+continued'
+`,
+    ];
+    for (const snippet of snippets) {
+      const parser = new Parser();
+      parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
+      const tree = parser.parse(snippet);
+      expect(tree.rootNode.type).toBe('chunk');
+      expect(tree.rootNode.hasError).toBe(false);
+    }
   });
 });

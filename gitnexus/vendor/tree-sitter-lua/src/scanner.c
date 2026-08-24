@@ -176,6 +176,15 @@ bool tree_sitter_lua_external_scanner_scan(void *payload, TSLexer *lexer, const 
         // consume that newline so the scanner does not remain stuck at it.
         if (consume_if(lexer, '\\'))
         {
+          if (lexer->lookahead == '\r')
+          {
+            consume(lexer);
+            if (lexer->lookahead == '\n')
+            {
+              consume(lexer);
+            }
+            continue;
+          }
           if (lexer->lookahead == '\n')
           {
             consume(lexer);
