@@ -310,7 +310,13 @@ async function loadContractRegistryResilient(
       base.repoSnapshots && typeof base.repoSnapshots === 'object' && base.repoSnapshots !== null
         ? (base.repoSnapshots as Record<string, { indexedAt: string; lastCommit: string }>)
         : {},
-    missingRepos: Array.isArray(base.missingRepos) ? (base.missingRepos as string[]) : [],
+    // Same gate as `groupStatus` uses on the same field, for the same reason:
+    // `Array.isArray` alone waves through `[{repo:'x'}]`, and `groupContracts`
+    // now returns this list AND folds it into its completeness answer, so a
+    // value we could not read would be reported as a repo name. `missingRepos`
+    // has always been required, so — unlike `unreadableRepos` below — there is
+    // no "not recorded" state to preserve: an unreadable value degrades to empty.
+    missingRepos: recordedRepoList(base.missingRepos) ?? [],
     // Spread, not `?? []`. `ContractRegistry.unreadableRepos` documents absence
     // as "not recorded", and a registry written before the field existed has no
     // opinion about which indexes were readable. Normalizing that to `[]` hands
@@ -415,7 +421,46 @@ export class GroupService {
       );
       contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
     }
-    const out: Record<string, unknown> = { contracts, crossLinks: registry.crossLinks };
+    // Lazy for the same reason `groupImpact` and `groupTrace` are: `cross-impact.js`
+    // statically pulls `bridge-db.js`, and through it the native `@ladybugdb/core`
+    // binding. A static import here would put that on every consumer of this
+    // module — including `gitnexus group list`, which touches no database at all.
+    // Only `crossRepoCompleteness` is used, and it is a pure fold over two lists
+    // (it takes no `BridgeMeta` precisely so this path, which never opens a
+    // bridge, can share it — KTD10).
+    const { crossRepoCompleteness } = await import('./cross-impact.js');
+    // `loadContractRegistryResilient` already applied `recordedRepoList` to
+    // both: `undefined` here is "the last sync recorded no opinion" (a registry
+    // written before the field existed, or a value we could not read), which is
+    // NOT the same answer as the measured empty list.
+    const { unreadableRepos, missingRepos } = registry;
+    // `incompleteRepos` is dropped on this surface only because the two lists it
+    // is derived from are returned verbatim right below; the truncation triple is
+    // the part that has no other channel here.
+    const { incompleteRepos: _incompleteRepos, ...truncation } = crossRepoCompleteness({
+      unreadableRepos,
+      missingRepos,
+      // An unrecorded `unreadableRepos` means this listing cannot say which
+      // repos the sync failed to read — so it cannot claim to be complete.
+      provenanceUnknown: unreadableRepos === undefined,
+      // A contract LISTING declares no scope to intersect with: it is the whole
+      // registry, so every configured repo is in scope by construction. The
+      // `type`/`repo`/`unmatchedOnly` filters above narrow which rows are shown,
+      // not which repos the sync had to read to produce them.
+      inScope: () => true,
+    });
+    const out: Record<string, unknown> = {
+      contracts,
+      crossLinks: registry.crossLinks,
+      missingRepos,
+      // Omitted rather than `[]` when the registry never recorded it — the same
+      // convention `skippedCorrupt` follows below, and the difference between
+      // "the sync measured zero unreadable repos" and "the sync never said".
+      ...(unreadableRepos ? { unreadableRepos } : {}),
+      // The structured triple, verbatim from the impact surface (KTD10):
+      // `truncated` always, `truncationReason` + `riskEpistemic` with it.
+      ...truncation,
+    };
     if (skippedCorrupt > 0) out.skippedCorrupt = skippedCorrupt;
     return out;
   }

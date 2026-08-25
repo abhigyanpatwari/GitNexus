@@ -40,7 +40,29 @@ const GOOD_CONTRACT = {
 };
 
 type StatusPayload = { group: string; unreadableRepos?: unknown; missingRepos?: unknown };
-type ContractsPayload = { contracts?: unknown[]; skippedCorrupt?: number; error?: string };
+/** One valid cross-link, so the control can assert that half of the payload too. */
+const GOOD_CROSS_LINK = {
+  from: { repo: 'frontend', symbolUid: 'f' },
+  to: { repo: 'backend', symbolUid: 'u' },
+  contractId: 'http::GET::/api/users',
+  type: 'http',
+  matchType: 'exact',
+  confidence: 1,
+};
+
+type ContractsPayload = {
+  contracts?: unknown[];
+  crossLinks?: unknown[];
+  skippedCorrupt?: number;
+  error?: string;
+  /** The registry's own diagnostics, echoed onto the listing. */
+  missingRepos?: unknown;
+  unreadableRepos?: unknown;
+  /** The shared incompleteness triple (KTD10) — `unknown` so a wrong TYPE fails. */
+  truncated?: unknown;
+  truncationReason?: unknown;
+  riskEpistemic?: unknown;
+};
 
 describe('unreadableRepos survives a round trip through contracts.json', () => {
   let home: string;
@@ -189,5 +211,135 @@ describe('unreadableRepos survives a round trip through contracts.json', () => {
     expect(result.error).toBeUndefined();
     expect(result.contracts).toHaveLength(1);
     expect(result.skippedCorrupt).toBe(1);
+  });
+
+  /**
+   * `group_contracts` is the third surface that can hand back a partial
+   * cross-repo answer (KTD10). `group_status` already reports the registry's
+   * two repo lists; the listing itself reported nothing at all, so an agent
+   * reading a contract set assembled from a sync that could not open half the
+   * group could not tell it apart from a complete one.
+   *
+   * The answer here is the SAME structured triple `GroupImpactResult` carries —
+   * `truncated` / `truncationReason` / `riskEpistemic` — computed by the SAME
+   * helper (`crossRepoCompleteness`), so the three surfaces cannot drift into
+   * three vocabularies.
+   */
+  describe('group_contracts reports its completeness in the shared vocabulary', () => {
+    it('names the unreadable repos and marks the listing a floor', async () => {
+      await writeRegistryJson({ unreadableRepos: ['app/backend'], contracts: [GOOD_CONTRACT] });
+
+      const result = await contracts();
+
+      expect(result.unreadableRepos).toEqual(['app/backend']);
+      expect(result.truncated).toBe(true);
+      // Not 'partial'/'timeout': nothing was cut short by a runtime limit here.
+      // The remedy is `gitnexus group sync`, not a narrower query.
+      expect(result.truncationReason).toBe('incomplete-sync');
+      expect(result.riskEpistemic).toBe('lower-bound');
+      // The rows the sync DID read are still returned — a floor, not an error.
+      expect(result.contracts).toHaveLength(1);
+    });
+
+    it('reports a measured-clean registry as complete', async () => {
+      // The companion that gives the case above its meaning: a sync that read
+      // every index recorded an answer, and that answer is an empty list.
+      await writeRegistryJson({ unreadableRepos: [], contracts: [GOOD_CONTRACT] });
+
+      const result = await contracts();
+
+      expect(result.unreadableRepos).toEqual([]);
+      expect(result.truncated).toBe(false);
+      // The two companions are set WITH `truncated`, never without it.
+      expect(result.truncationReason).toBeUndefined();
+      expect(result.riskEpistemic).toBeUndefined();
+    });
+
+    it('omits the key for a registry that predates the field, and reports a floor', async () => {
+      // Absence is "not recorded", not "none". Inventing `[]` here would tell
+      // the agent the last sync measured zero unreadable repos — it never ran
+      // the measurement — and the same conflation would then say "complete".
+      await writeRegistryJson({ contracts: [GOOD_CONTRACT] });
+
+      const result = await contracts();
+
+      expect(Object.keys(result)).not.toContain('unreadableRepos');
+      expect(result.unreadableRepos).toBeUndefined();
+      expect(result.truncated).toBe(true);
+      expect(result.truncationReason).toBe('incomplete-sync');
+      expect(result.riskEpistemic).toBe('lower-bound');
+    });
+
+    it('counts a missing repo as incompleteness even when every index opened', async () => {
+      // The two lists are independent diagnostics with one consequence: none of
+      // those repos' contracts are in the artifact. A recorded-clean
+      // `unreadableRepos` must not launder a missing member into a complete set.
+      await writeRegistryJson({
+        unreadableRepos: [],
+        missingRepos: ['svc/users'],
+        contracts: [GOOD_CONTRACT],
+      });
+
+      const result = await contracts();
+
+      expect(result.missingRepos).toEqual(['svc/users']);
+      expect(result.unreadableRepos).toEqual([]);
+      expect(result.truncated).toBe(true);
+      expect(result.truncationReason).toBe('incomplete-sync');
+      expect(result.riskEpistemic).toBe('lower-bound');
+    });
+
+    it.each(corruptValues)(
+      'does not read $label in the unreadableRepos slot as a measured zero',
+      async ({ value }) => {
+        // Same gate as `group_status`, on the same registry field: a value we
+        // could not read is unrecorded, so the listing omits the key and says
+        // it is a floor rather than reporting a clean measured empty list.
+        await writeRegistryJson({ unreadableRepos: value, contracts: [GOOD_CONTRACT] });
+
+        const result = await contracts();
+
+        expect(Object.keys(result)).not.toContain('unreadableRepos');
+        expect(result.truncated).toBe(true);
+        expect(result.truncationReason).toBe('incomplete-sync');
+      },
+    );
+
+    it.each(corruptValues)(
+      'degrades $label in the missingRepos slot to an empty list',
+      async ({ value }) => {
+        // `missingRepos` has always been required, so there is no "not
+        // recorded" state to preserve — but an unreadable value must not reach
+        // the caller (or the completeness fold) as if it were a repo list. An
+        // array of objects is the shape `Array.isArray` alone waves through.
+        await writeRegistryJson({
+          missingRepos: value,
+          unreadableRepos: [],
+          contracts: [GOOD_CONTRACT],
+        });
+
+        const result = await contracts();
+
+        expect(result.missingRepos).toEqual([]);
+        expect(result.truncated).toBe(false);
+      },
+    );
+
+    it('keeps the contract and cross-link payload it has always returned', async () => {
+      // Control. The completeness fields are an ADDITION to this payload; if
+      // this case moves, the fold broke the surface it was meant to annotate.
+      await writeRegistryJson({
+        unreadableRepos: [],
+        contracts: [GOOD_CONTRACT],
+        crossLinks: [GOOD_CROSS_LINK],
+      });
+
+      const result = await contracts();
+
+      expect(result.error).toBeUndefined();
+      expect(result.contracts).toEqual([GOOD_CONTRACT]);
+      expect(result.crossLinks).toEqual([GOOD_CROSS_LINK]);
+      expect(result.skippedCorrupt).toBeUndefined();
+    });
   });
 });
