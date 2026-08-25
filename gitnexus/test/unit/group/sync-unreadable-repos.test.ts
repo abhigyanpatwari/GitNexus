@@ -54,12 +54,18 @@ vi.mock('../../../src/storage/repo-manager.js', () => ({
 }));
 
 /**
+ * Armed by the bridge-write-failure suite at the bottom of this file, `null`
+ * everywhere else. There is no filesystem shape that makes the real writer fail
+ * while `writeContractRegistry` — same directory, one line earlier in
+ * `syncGroup` — still succeeds, and that ordering is the whole subject of the
+ * warning under test.
+ */
+/**
  * Only the read-only OPEN legs are stubbed, so `runGroupImpact` can read the
  * metadata a preserve sync just wrote without a native LadybugDB open of a
  * placeholder file. `writeBridge`, `writeBridgeMeta`, `readBridgeMeta` and
  * `bridgeMetaMatchesFile` all travel their real implementations — they are the
  * code under test here, and `syncGroup` reaches `writeBridge` through this
- * module too.
  */
 vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/core/group/bridge-db.js')>();
@@ -143,6 +149,15 @@ const PRIOR_REGISTRY = {
   contracts: [{ contractId: 'http::GET::/api/users' }],
   crossLinks: [{ contractId: 'http::GET::/api/users' }],
 };
+
+/**
+ * The one warning that describes the RUN rather than a single repo: it is the
+ * only record carrying the whole-run repo lists. The per-repo load failures
+ * logged beside it carry `repo` / `groupPath` instead, so selecting on the list
+ * field cannot pick one of those up by accident.
+ */
+const totalFailureWarning = (cap: ReturnType<typeof _captureLogger>) =>
+  cap.records().find((r) => r.level === 40 && Array.isArray(r.unreadableRepos));
 
 describe('syncGroup with an unreadable index', () => {
   let groupDir: string;
@@ -259,6 +274,61 @@ describe('syncGroup with an unreadable index', () => {
     expect(fs.readFileSync(path.join(groupDir, 'contracts.json'), 'utf8')).toBe('{"truncated": ');
   });
 
+  it('names the previous sync in the total-failure warning when a prior registry was kept', async () => {
+    // This warning used to be emitted BEFORE the prior registry was resolved,
+    // so it promised "the contracts from the previous sync" without knowing
+    // whether there were any. This is the branch on which that promise is true.
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+    fs.writeFileSync(path.join(groupDir, 'contracts.json'), JSON.stringify(PRIOR_REGISTRY));
+    const cap = _captureLogger();
+
+    let result;
+    try {
+      result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+    } finally {
+      cap.restore();
+    }
+
+    const warning = totalFailureWarning(cap);
+    expect(warning).toBeDefined();
+    // The log and the console say the same thing about which of the two
+    // happened: the CLI picks its sentence from `registryOutcome`, and this is
+    // the outcome whose sentence keeps the previous contracts.
+    expect(result.registryOutcome).toBe('preserved');
+    expect(String(warning?.msg)).toContain('previous sync');
+    // Still a warning, still carrying the lists that name the cause.
+    expect(warning?.level).toBe(40);
+    expect(warning?.unreadableRepos).toEqual(['app/backend']);
+    expect(warning?.missingRepos).toEqual([]);
+  });
+
+  it('does not claim anything was preserved when there is no prior registry', async () => {
+    // The same total failure with nothing on disk to preserve. The warning said
+    // the contracts from the previous sync were being kept — to an operator
+    // whose group has never synced, about a file that has never existed, while
+    // the console line for this same run says the opposite. What the message
+    // says about disk has to be what happened on it.
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+    const cap = _captureLogger();
+
+    let result;
+    try {
+      result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+    } finally {
+      cap.restore();
+    }
+
+    const warning = totalFailureWarning(cap);
+    expect(warning).toBeDefined();
+    expect(result.registryOutcome).toBe('no-prior-registry');
+    expect(String(warning?.msg)).not.toMatch(/previous sync|preserv|keeping|kept/i);
+    expect(String(warning?.msg)).toContain('no previous contracts.json');
+    // ...and it is still a warning carrying the same lists as the branch above.
+    expect(warning?.level).toBe(40);
+    expect(warning?.unreadableRepos).toEqual(['app/backend']);
+    expect(warning?.missingRepos).toEqual([]);
+  });
+
   it('still writes when only SOME configured repos are unreadable', async () => {
     // The case that pins the word "every" in `everyRepoFailed`. With a single
     // configured repo, "every repo failed" and "any repo failed" are the same
@@ -338,10 +408,12 @@ describe('syncGroup with an unreadable index', () => {
     // caller that asked not to write may not even have a group directory, so
     // telling it the file was left untouched describes a file that need not
     // exist.
-    const preserveWarnings = cap
+    // Selected on the sentence both total-failure messages share, so this stays
+    // decisive whichever of the two the persisting path would have emitted.
+    const totalFailureWarnings = cap
       .records()
-      .filter((r) => String(r.msg ?? '').includes('previous sync'));
-    expect(preserveWarnings).toEqual([]);
+      .filter((r) => String(r.msg ?? '').includes('No repo in this group could be read'));
+    expect(totalFailureWarnings).toEqual([]);
   });
 
   it('refuses to sync when the global registry cannot be read', async () => {

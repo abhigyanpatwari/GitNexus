@@ -546,13 +546,6 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   const persisting = Boolean(groupDir) && !opts?.skipWrite;
   let registryOutcome: RegistryWriteOutcome = 'not-attempted';
 
-  if (everyRepoFailed && persisting) {
-    logger.warn(
-      { unreadableRepos, missingRepos },
-      '⚠️ No repo in this group could be read; keeping the contracts from the previous sync.',
-    );
-  }
-
   if (groupDir && persisting && everyRepoFailed) {
     // A targeted skip, not a total one. Refusing to write at all kept the good
     // contracts but also threw away the diagnostic describing the run that just
@@ -567,12 +560,31 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     //
     // If the prior file is absent (null) or unparseable (throws), write nothing
     // — an unreadable prior registry is not a thing to rewrite from.
+    //
+    // The warning is emitted from INSIDE this branch, after the prior registry
+    // has been resolved, because which of the two sentences is true depends on
+    // what was found here. Emitted before the read it could only promise one of
+    // them, and it promised the wrong one to every group that has never synced:
+    // "keeping the contracts from the previous sync" about a file that does not
+    // exist — while the console line for the same run, driven by
+    // `registryOutcome`, said the opposite. The two now agree by construction:
+    // one message per outcome, chosen where the outcome is decided.
     const prior = await readContractRegistry(groupDir).catch(() => null);
     if (prior) {
       await writeContractRegistry(groupDir, { ...prior, missingRepos, unreadableRepos });
       registryOutcome = 'preserved';
+      logger.warn(
+        { unreadableRepos, missingRepos },
+        '⚠️ No repo in this group could be read; kept the contracts from the previous sync. ' +
+          "Only contracts.json's unreadable/missing repo lists were refreshed to describe this run.",
+      );
     } else {
       registryOutcome = 'no-prior-registry';
+      logger.warn(
+        { unreadableRepos, missingRepos },
+        '⚠️ No repo in this group could be read, and there is no previous contracts.json ' +
+          'to fall back on; nothing was written to it.',
+      );
     }
     // The bridge DATABASE is deliberately untouched: it still matches the
     // contracts that were preserved, so rebuilding it here would be the one
