@@ -36,6 +36,7 @@
 
 import type Parser from 'tree-sitter';
 import {
+  MAX_FOLD_LENGTH,
   resolveConstant as foldConstant,
   type ImportResolver,
   type ModuleConstants,
@@ -89,25 +90,76 @@ export interface JsModuleFacts {
 }
 
 /**
- * Repo-wide facts, with the two projections the shared fold needs precomputed.
+ * Repo-wide facts, with everything the shared fold needs precomputed.
  *
- * `constants` and `keys` are derived from `byFile` and are built ONCE by
- * {@link buildJsRepoFacts}, not per lookup: `resolveConstant` takes a
- * `RepoConstants` and internally materializes a key set, so deriving them at
- * each call site would make every resolution O(files) and the whole scan
- * quadratic in a repo's file count.
+ * `constants`, `keys` and `resolveImport` are derived from `byFile` and built
+ * ONCE by {@link buildJsRepoFacts}, never per lookup: materializing a key set
+ * at each call site makes every resolution O(files) and the whole scan
+ * quadratic in a repo's file count. That was only half true before —
+ * `resolveConstant` rebuilt its own key set on every fold regardless, so the
+ * mitigation this comment describes was not in force for any resolution that
+ * went through the shared core. It now takes `keys` as an argument.
  */
 export interface JsRepoFacts {
   readonly byFile: ReadonlyMap<string, JsModuleFacts>;
   readonly constants: RepoConstants;
   readonly keys: ReadonlySet<string>;
+  /**
+   * {@link resolveJsImport} bound to a prebuilt basename index and memoized for
+   * the lifetime of the facts. Every resolution inside this module goes through
+   * it rather than the bare export: the widened consumer query matches every
+   * `<identifier>.<verb>(…)` call in the repo, so an unindexed lookup ran once
+   * per call site over every repo key.
+   */
+  readonly resolveImport: ImportResolver;
+}
+
+/**
+ * Repo keys bucketed by final path segment.
+ *
+ * A tail lookup only ever matches keys whose last segment equals the
+ * candidate's last segment, so the bucket is the entire search space — turning
+ * an O(files) sweep per candidate into one map hit. `import-resolvers/utils.ts`
+ * already ships `buildSuffixIndex` for the same job, but it keeps only a first
+ * winner per suffix; this index has to SEE a collision to refuse it (below), so
+ * it keeps the whole bucket.
+ */
+type BasenameIndex = ReadonlyMap<string, readonly string[]>;
+
+function buildBasenameIndex(repoKeys: ReadonlySet<string>): BasenameIndex {
+  const index = new Map<string, string[]>();
+  for (const key of repoKeys) {
+    const base = key.slice(key.lastIndexOf('/') + 1);
+    const bucket = index.get(base);
+    if (bucket) bucket.push(key);
+    else index.set(base, [key]);
+  }
+  return index;
 }
 
 /** Build the {@link JsRepoFacts} projections from per-file facts. */
 export function buildJsRepoFacts(byFile: ReadonlyMap<string, JsModuleFacts>): JsRepoFacts {
   const constants = new Map<string, ModuleConstants>();
   for (const [key, value] of byFile) constants.set(key, value.constants);
-  return { byFile, constants, keys: new Set(byFile.keys()) };
+  const keys = new Set(byFile.keys());
+  const index = buildBasenameIndex(keys);
+  const memo = new Map<string, string | null>();
+  const resolveImport: ImportResolver = (importingFileKey, moduleSpec, repoKeys) => {
+    // Only the relative arm reads `importingFileKey`, but keying on both is a
+    // string concat and keeps the memo correct if that ever stops being true.
+    //
+    // `repoKeys` is deliberately NOT part of the key: every caller inside this
+    // module passes `facts.keys`, which is fixed for the lifetime of these
+    // facts and is the set `index` was built from. A caller passing a different
+    // set would get an answer computed against `facts.keys` — so don't.
+    const memoKey = `${importingFileKey}\u0000${moduleSpec}`;
+    const cached = memo.get(memoKey);
+    if (cached !== undefined) return cached;
+    const resolved = resolveImportWith(index, importingFileKey, moduleSpec, repoKeys);
+    memo.set(memoKey, resolved);
+    return resolved;
+  };
+  return { byFile, constants, keys, resolveImport };
 }
 
 function dirOf(fileKey: string): string {
@@ -145,23 +197,57 @@ function candidatesFor(modPath: string): string[] {
 }
 
 /**
+ * The MODULE a repo key denotes: the key without its extension, and without a
+ * trailing `/index`.
+ *
+ * `x/routes.ts` and `x/routes/index.ts` are two spellings of the same module
+ * `x/routes` — Node and `tsc` both pick the file over the directory, so a tail
+ * matching both is not ambiguous, it just has a precedence order. Two
+ * DIFFERENT identities sharing one tail is the real ambiguity, and that is what
+ * {@link resolveImportWith} refuses.
+ */
+function moduleIdentityOf(key: string): string {
+  for (const ext of JS_EXTENSIONS) {
+    if (!key.endsWith(ext)) continue;
+    const withoutExt = key.slice(0, -ext.length);
+    return withoutExt.endsWith('/index') ? withoutExt.slice(0, -'/index'.length) : withoutExt;
+  }
+  return key;
+}
+
+/**
  * The JS/TS {@link ImportResolver}.
  *
  * Relative specifiers (`./api-routes`, `../shared/api-routes`) resolve against
  * the importing file's directory and must hit an existing key exactly.
  *
- * Everything else — a bare specifier (`axios`), a tsconfig path alias
- * (`@/api-modules/shared/api-routes`), a workspace package — is matched by
- * UNIQUE PATH SUFFIX, the same strategy the Python binding uses for absolute
- * imports. This deliberately resolves aliases without reading `tsconfig.json`:
- * an alias prefix is arbitrary (`@/`, `~/`, `#app/`, any `paths` key), but the
- * segments AFTER it are a real path tail, and matching that tail against the
- * indexed file set answers the question directly. A tail shared by two or more
- * files is ambiguous and returns `null`. A bare npm package (`axios`) matches
- * no repo file and also returns `null`, which is correct — it is not ours to
- * resolve.
+ * An alias-style specifier (`@/api-modules/shared/api-routes`, `~/x/y`) or a
+ * multi-segment bare one is matched by UNIQUE PATH SUFFIX, the same strategy
+ * the Python binding uses for absolute imports. This deliberately resolves
+ * aliases without reading `tsconfig.json`: an alias prefix is arbitrary (`@/`,
+ * `~/`, `#app/`, any `paths` key), but the segments AFTER it are a real path
+ * tail, and matching that tail against the indexed file set answers the
+ * question directly.
+ *
+ * Two rules keep that from inventing resolutions:
+ *
+ *  - **A tail claimed by two distinct modules returns `null`**, checked across
+ *    EVERY candidate extension rather than within one. Returning on the first
+ *    extension that matched let precedence pre-empt the guard, so a `.ts`/`.tsx`
+ *    or `.ts`/`.js` collision — every Next.js repo — picked an arbitrary winner
+ *    while this docstring promised a skip.
+ *  - **A single-segment bare specifier never matches a repo file.** `axios`,
+ *    `lodash` and the Node builtin `http` are npm/runtime modules, not ours to
+ *    resolve; without this, a repo holding `src/lib/http.ts` "proved" that
+ *    `import http from 'http'` was an axios client. An alias tail always has a
+ *    sigil or a `/`, so this costs the feature nothing.
  */
-export const resolveJsImport: ImportResolver = (importingFileKey, moduleSpec, repoKeys) => {
+function resolveImportWith(
+  index: BasenameIndex,
+  importingFileKey: string,
+  moduleSpec: string,
+  repoKeys: ReadonlySet<string>,
+): string | null {
   if (moduleSpec === '') return null;
 
   if (moduleSpec.startsWith('./') || moduleSpec.startsWith('../')) {
@@ -179,21 +265,43 @@ export const resolveJsImport: ImportResolver = (importingFileKey, moduleSpec, re
   // Strip a leading alias sigil so `@/a/b` and `~/a/b` reduce to the tail
   // `a/b`. A scoped package (`@scope/pkg`) keeps its `@` and simply fails to
   // match any repo file below, which is the desired outcome.
-  const tail = /^[@~#]\//.test(moduleSpec) ? moduleSpec.slice(2) : moduleSpec;
+  const aliased = /^[@~#]\//.test(moduleSpec);
+  const tail = aliased ? moduleSpec.slice(2) : moduleSpec;
   if (tail === '' || tail.startsWith('.')) return null;
+  if (!aliased && !tail.includes('/')) return null; // bare npm package / Node builtin
 
-  let hit: string | null = null;
-  for (const candidate of candidatesFor(tail)) {
-    for (const key of repoKeys) {
-      if (key === candidate || key.endsWith(`/${candidate}`)) {
-        if (hit !== null && hit !== key) return null; // ambiguous — refuse to guess
-        hit = key;
+  let winner: string | null = null;
+  let winnerRank = Number.POSITIVE_INFINITY;
+  let identity: string | null = null;
+  const candidates = candidatesFor(tail);
+  for (let rank = 0; rank < candidates.length; rank++) {
+    const candidate = candidates[rank];
+    const bucket = index.get(candidate.slice(candidate.lastIndexOf('/') + 1));
+    if (bucket === undefined) continue;
+    for (const key of bucket) {
+      if (key !== candidate && !key.endsWith(`/${candidate}`)) continue;
+      const keyIdentity = moduleIdentityOf(key);
+      if (identity === null) identity = keyIdentity;
+      else if (identity !== keyIdentity) return null; // two modules share this tail
+      if (rank < winnerRank) {
+        winner = key;
+        winnerRank = rank;
       }
     }
-    if (hit !== null) return hit;
   }
-  return null;
-};
+  return winner;
+}
+
+/**
+ * Standalone {@link ImportResolver} — the same rules as {@link resolveImportWith}
+ * with the basename index built on the spot.
+ *
+ * Production goes through `JsRepoFacts.resolveImport`, which holds one index
+ * for the whole repo and memoizes; this export exists so the resolution rules
+ * can be exercised directly against a key set.
+ */
+export const resolveJsImport: ImportResolver = (importingFileKey, moduleSpec, repoKeys) =>
+  resolveImportWith(buildBasenameIndex(repoKeys), importingFileKey, moduleSpec, repoKeys);
 
 /** Unwrap TS `x as const` / `x satisfies T` to the underlying expression. */
 function unwrapTsExpression(node: Parser.SyntaxNode): Parser.SyntaxNode {
@@ -274,7 +382,8 @@ function flattenObjectLiteral(
  * A member reference inside either (`${API_ROUTE_PATH.LISTS}`) becomes a
  * dotted `ref`, which the flattened table above resolves directly.
  */
-export function parseJsConstOperands(node: Parser.SyntaxNode): Operand[] | null {
+export function parseJsConstOperands(node: Parser.SyntaxNode, depth = 0): Operand[] | null {
+  if (depth > MAX_EXPR_DEPTH) return null;
   const n = unwrapTsExpression(node);
 
   const literal = literalStringOf(n);
@@ -293,8 +402,8 @@ export function parseJsConstOperands(node: Parser.SyntaxNode): Operand[] | null 
     const left = n.childForFieldName('left');
     const right = n.childForFieldName('right');
     if (!left || !right) return null;
-    const l = parseJsConstOperands(left);
-    const r = parseJsConstOperands(right);
+    const l = parseJsConstOperands(left, depth + 1);
+    const r = parseJsConstOperands(right, depth + 1);
     return l === null || r === null ? null : [...l, ...r];
   }
 
@@ -306,7 +415,7 @@ export function parseJsConstOperands(node: Parser.SyntaxNode): Operand[] | null 
       } else if (child.type === 'template_substitution') {
         const inner = child.namedChild(0);
         if (!inner) return null;
-        const parsed = parseJsConstOperands(inner);
+        const parsed = parseJsConstOperands(inner, depth + 1);
         if (parsed === null) return null;
         out.push(...parsed);
       }
@@ -337,11 +446,11 @@ export function dottedNameOf(node: Parser.SyntaxNode): string | null {
 }
 
 /**
- * Node budget for the {@link containsAxiosCreate} subtree walk. An initializer
- * is a bounded expression in practice; the cap only stops a pathological one
- * from making extraction super-linear.
+ * How many wrapping calls {@link bindsAxiosClient} will look through. A factory
+ * is one hop (`setupInterceptors(axios.create())`); a couple more costs nothing
+ * and bounds the walk.
  */
-const MAX_CLIENT_SCAN_NODES = 400;
+const MAX_CLIENT_WRAP_DEPTH = 4;
 
 /** True when a node is `axios.create(...)`, allowing an aliased axios import. */
 function isAxiosCreateCall(
@@ -361,8 +470,8 @@ function isAxiosCreateCall(
 }
 
 /**
- * Whether an initializer expression CONTAINS an `axios.create(...)` call
- * anywhere in its subtree.
+ * Whether an initializer BINDS an axios instance — i.e. the instance is the
+ * VALUE of the binding, not merely present somewhere inside it.
  *
  * A direct `const api = axios.create(...)` is the textbook form, but the shape
  * real applications ship is a factory that decorates the instance and hands it
@@ -373,33 +482,89 @@ function isAxiosCreateCall(
  *   });
  *
  * Requiring the call to be the whole initializer would reject that — and it is
- * the single binding every call site in such an app goes through, so rejecting
- * it rejects the entire repo. Containment is the weakest premise that still
- * carries real evidence: an expression that builds an axios instance in place
- * and binds the result is an HTTP client by construction. It stays far short of
- * trusting a receiver's name, which is the precision cliff that matters here.
+ * the single binding every call site in such an app goes through. So a wrapping
+ * CALL whose result is bound counts, and the instance may be one of its
+ * arguments or a property of a directly-passed object literal.
+ *
+ * What does NOT count is the instance being an INGREDIENT of the bound value.
+ * The premise "an expression that builds an axios instance and binds the result
+ * is an HTTP client" is only true when the instance is the result; a plain
+ * subtree scan also admitted
+ *
+ *   const registry = { http: axios.create(), version: 'v1' };   // object literal
+ *   const client   = MOCK ? memoryStore : axios.create();       // ternary branch
+ *   new Map([['api', axios.create()]]);                         // constructor arg
+ *   new LRUCache({ fetchMethod: axios.create().get });          // constructor arg
+ *
+ * and `.get`/`.delete` are the two most common non-HTTP method names in JS, so
+ * every one of those made an ordinary cache or registry an HTTP consumer. Those
+ * node types are simply not walked here.
+ *
+ * A nested function body is still skipped wherever it appears — a callback that
+ * builds its own client does not vouch for the outer name.
  */
-function containsAxiosCreate(
+function bindsAxiosClient(
   node: Parser.SyntaxNode,
   imports: ReadonlyMap<string, { module: string; originalName: string }>,
+  depth = 0,
 ): boolean {
-  let budget = MAX_CLIENT_SCAN_NODES;
-  const stack: Parser.SyntaxNode[] = [unwrapTsExpression(node)];
-  while (stack.length > 0 && budget-- > 0) {
-    const cur = stack.pop() as Parser.SyntaxNode;
-    if (isAxiosCreateCall(cur, imports)) return true;
-    // A nested function body is a different scope's work, not this binding's
-    // construction — skip it so a callback that happens to build its own
-    // client does not vouch for the outer name.
-    if (
-      cur.type === 'function_declaration' ||
-      cur.type === 'function_expression' ||
-      cur.type === 'arrow_function' ||
-      cur.type === 'method_definition'
-    ) {
-      continue;
+  if (depth > MAX_CLIENT_WRAP_DEPTH) return false;
+  const n = unwrapTsExpression(node);
+
+  if (isAxiosCreateCall(n, imports)) return true;
+
+  // Transparent wrappers around the value itself.
+  if (
+    n.type === 'await_expression' ||
+    n.type === 'parenthesized_expression' ||
+    n.type === 'non_null_expression'
+  ) {
+    const inner = n.namedChild(0);
+    return inner !== null && bindsAxiosClient(inner, imports, depth + 1);
+  }
+
+  if (n.type !== 'call_expression') return false;
+
+  const args = n.childForFieldName('arguments');
+  if (!args) return false;
+  for (const arg of args.namedChildren) {
+    if (argumentHoldsAxiosClient(arg, imports, depth + 1)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether a wrapping call's ARGUMENT carries the instance.
+ *
+ * Inside an argument the instance may sit in an options object at any nesting
+ * (`createClient({ transport: { instance: axios.create() } })`) or in a list of
+ * decorators (`compose([axios.create(), withAuth])`). That is safe because the
+ * bound value is still the call's RESULT. It is the mirror of what
+ * {@link bindsAxiosClient} refuses: an object, array, ternary or `new` as the
+ * bound value itself never reaches here.
+ */
+function argumentHoldsAxiosClient(
+  node: Parser.SyntaxNode,
+  imports: ReadonlyMap<string, { module: string; originalName: string }>,
+  depth: number,
+): boolean {
+  if (depth > MAX_CLIENT_WRAP_DEPTH) return false;
+  const n = unwrapTsExpression(node);
+  if (bindsAxiosClient(n, imports, depth)) return true;
+
+  if (n.type === 'object') {
+    for (const pair of n.namedChildren) {
+      if (pair.type !== 'pair') continue;
+      const value = pair.childForFieldName('value');
+      if (value && argumentHoldsAxiosClient(value, imports, depth + 1)) return true;
     }
-    for (const child of cur.namedChildren) stack.push(child);
+    return false;
+  }
+
+  if (n.type === 'array') {
+    for (const element of n.namedChildren) {
+      if (argumentHoldsAxiosClient(element, imports, depth + 1)) return true;
+    }
   }
   return false;
 }
@@ -418,7 +583,7 @@ function recordBinding(
 ): void {
   const value = unwrapTsExpression(valueNode);
 
-  if (containsAxiosCreate(value, imports)) {
+  if (bindsAxiosClient(value, imports)) {
     clients.add(name);
     return;
   }
@@ -464,6 +629,38 @@ function recordDeclaration(
   }
 }
 
+/** Record one `import … from 'm'` statement's local bindings. */
+function recordImportStatement(
+  stmt: Parser.SyntaxNode,
+  imports: Map<string, { module: string; originalName: string }>,
+): void {
+  const source = stmt.childForFieldName('source');
+  const moduleSpec = source ? literalStringOf(source) : null;
+  if (moduleSpec === null) return;
+  for (const clause of stmt.namedChildren) {
+    if (clause.type !== 'import_clause') continue;
+    for (const spec of clause.namedChildren) {
+      // `import Default from 'm'`
+      if (spec.type === 'identifier') {
+        imports.set(spec.text, { module: moduleSpec, originalName: 'default' });
+      } else if (spec.type === 'namespace_import') {
+        const alias = spec.namedChild(0);
+        // `import * as NS from 'm'` — `NS.X` resolves to the target's `X`.
+        if (alias) imports.set(alias.text, { module: moduleSpec, originalName: '*' });
+      } else if (spec.type === 'named_imports') {
+        for (const named of spec.namedChildren) {
+          if (named.type !== 'import_specifier') continue;
+          const nameNode = named.childForFieldName('name');
+          const aliasNode = named.childForFieldName('alias');
+          if (!nameNode) continue;
+          const local = (aliasNode ?? nameNode).text;
+          imports.set(local, { module: moduleSpec, originalName: nameNode.text });
+        }
+      }
+    }
+  }
+}
+
 /**
  * Extract one file's {@link JsModuleFacts} from its parsed tree.
  *
@@ -479,41 +676,22 @@ export function extractJsModuleFacts(tree: Parser.Tree): JsModuleFacts {
   const starExports: string[] = [];
   const clients = new Set<string>();
 
+  // Imports first. ES module bindings are hoisted — `const c = ax.create(…)`
+  // above `import ax from 'axios'` is legal and binds the same `ax` — but
+  // `bindsAxiosClient` consults `imports` as each declaration is recorded, so
+  // in source order an import declared later was simply not there yet and the
+  // client went unproven.
+  for (const stmt of tree.rootNode.namedChildren) {
+    if (stmt.type === 'import_statement') recordImportStatement(stmt, imports);
+  }
+
   for (const stmt of tree.rootNode.namedChildren) {
     if (stmt.type === 'lexical_declaration' || stmt.type === 'variable_declaration') {
       recordDeclaration(stmt, literals, exprs, clients, imports, null);
       continue;
     }
 
-    if (stmt.type === 'import_statement') {
-      const source = stmt.childForFieldName('source');
-      const moduleSpec = source ? literalStringOf(source) : null;
-      if (moduleSpec === null) continue;
-      for (const clause of stmt.namedChildren) {
-        if (clause.type === 'import_clause') {
-          for (const spec of clause.namedChildren) {
-            // `import Default from 'm'`
-            if (spec.type === 'identifier') {
-              imports.set(spec.text, { module: moduleSpec, originalName: 'default' });
-            } else if (spec.type === 'namespace_import') {
-              const alias = spec.namedChild(0);
-              // `import * as NS from 'm'` — `NS.X` resolves to the target's `X`.
-              if (alias) imports.set(alias.text, { module: moduleSpec, originalName: '*' });
-            } else if (spec.type === 'named_imports') {
-              for (const named of spec.namedChildren) {
-                if (named.type !== 'import_specifier') continue;
-                const nameNode = named.childForFieldName('name');
-                const aliasNode = named.childForFieldName('alias');
-                if (!nameNode) continue;
-                const local = (aliasNode ?? nameNode).text;
-                imports.set(local, { module: moduleSpec, originalName: nameNode.text });
-              }
-            }
-          }
-        }
-      }
-      continue;
-    }
+    if (stmt.type === 'import_statement') continue; // hoisted above
 
     if (stmt.type !== 'export_statement') continue;
 
@@ -600,7 +778,7 @@ export function resolveJsMemberPath(
   ref: string,
   facts: JsRepoFacts,
 ): string | null {
-  const direct = foldConstant(fileKey, ref, facts.constants, resolveJsImport);
+  const direct = foldConstant(fileKey, ref, facts.constants, facts.resolveImport, facts.keys);
   if (direct !== null) return direct;
 
   const dot = ref.indexOf('.');
@@ -610,7 +788,7 @@ export function resolveJsMemberPath(
 
   const binding = facts.byFile.get(fileKey)?.constants.imports.get(base);
   if (!binding) return null;
-  const targetKey = resolveJsImport(fileKey, binding.module, facts.keys);
+  const targetKey = facts.resolveImport(fileKey, binding.module, facts.keys);
   if (targetKey === null) return null;
 
   // `import * as NS from 'm'` — `NS.TABLE.KEY` addresses the target's own
@@ -663,12 +841,18 @@ function resolveExportedMember(
   if (!file) return null;
 
   const local = file.exports.get(exported) ?? exported;
-  const here = foldConstant(fileKey, `${local}.${member}`, facts.constants, resolveJsImport);
+  const here = foldConstant(
+    fileKey,
+    `${local}.${member}`,
+    facts.constants,
+    facts.resolveImport,
+    facts.keys,
+  );
   if (here !== null) return here;
 
   const binding = file.constants.imports.get(exported);
   if (binding) {
-    const targetKey = resolveJsImport(fileKey, binding.module, facts.keys);
+    const targetKey = facts.resolveImport(fileKey, binding.module, facts.keys);
     if (targetKey !== null) {
       const viaImport = resolveExportedMember(
         targetKey,
@@ -682,19 +866,65 @@ function resolveExportedMember(
     }
   }
 
+  // Every star edge is walked, not just up to the first hit: two barrels
+  // re-exporting the same name is ambiguous in JS itself, so answering with
+  // whichever module happens to come first in `starExports` would be a guess
+  // dressed as a resolution.
+  let viaStar: string | null = null;
   for (const spec of file.starExports) {
-    const targetKey = resolveJsImport(fileKey, spec, facts.keys);
+    const targetKey = facts.resolveImport(fileKey, spec, facts.keys);
     if (targetKey === null) continue;
-    const viaStar = resolveExportedMember(targetKey, exported, member, facts, depth + 1, seen);
-    if (viaStar !== null) return viaStar;
+    const found = resolveExportedMember(targetKey, exported, member, facts, depth + 1, seen);
+    if (found === null) continue;
+    if (viaStar !== null && viaStar !== found) return null;
+    viaStar = found;
   }
 
-  return null;
+  return viaStar;
 }
 
 /** The local binding an exported name refers to in `fileKey` (identity if unaliased). */
 function resolveExportLocal(facts: JsRepoFacts, fileKey: string, exported: string): string {
   return facts.byFile.get(fileKey)?.exports.get(exported) ?? exported;
+}
+
+/**
+ * Recursion ceiling for the path-expression fold, and the matching term cap for
+ * a `+` chain.
+ *
+ * Nothing on this path was bounded before: `flattenConcat` recursed once per
+ * term, mutually with {@link foldTermOrPlaceholder}, on the SCAN side — which
+ * `prepareRepo`'s `try/catch` does not cover and which `HttpLanguagePlugin.scan`
+ * contractually may not throw from. ~6 400 concat terms (38 KB of source) threw
+ * `RangeError: Maximum call stack size exceeded` out of `extract()`, and
+ * `sync.ts` turns that into an unexplained "missing repo" with every contract of
+ * every kind — HTTP, gRPC, topics, includes — dropped for that repo and nothing
+ * logged. A hand-written route path is a handful of terms.
+ */
+const MAX_EXPR_DEPTH = 64;
+const MAX_CONCAT_TERMS = 256;
+
+/** One folded term, and whether its text is KNOWN rather than a placeholder. */
+interface FoldedTerm {
+  readonly text: string;
+  readonly concrete: boolean;
+}
+
+/**
+ * A folded path expression, and whether its FIRST term was concrete.
+ *
+ * `anchored` is what separates a partially-folded path from a fabricated one.
+ * `${API_ROUTE_PATH.LISTS}/${eventId}/add` is anchored — its leading segment is
+ * a resolved route constant and the rest is honest `{param}`s. `${base}${suffix}`
+ * and `${BASE}/users` are not: nothing pins where the path starts, so consumer
+ * normalization squashes them to `/{param}{param}` and `/{param}/users`, which
+ * exact-match real provider routes and invent cross-repo links. The docstring
+ * on {@link resolveJsPathExpression} always claimed at least one literal segment
+ * was required; only now is it true.
+ */
+interface FoldedPath {
+  readonly text: string;
+  readonly anchored: boolean;
 }
 
 /**
@@ -712,41 +942,135 @@ function foldTermOrPlaceholder(
   fileKey: string,
   node: Parser.SyntaxNode,
   facts: JsRepoFacts,
-): string {
+  depth: number,
+): FoldedTerm | null {
+  if (depth > MAX_EXPR_DEPTH) return null;
   const n = unwrapTsExpression(node);
 
   const literal = literalStringOf(n);
-  if (literal !== null) return literal;
+  if (literal !== null) return { text: literal, concrete: true };
 
   // A template nested inside a substitution — `` `${BASE}${`/${id}/unlike`}` ``
   // is a real shape. Recursing keeps its literal segments; emitting it verbatim
   // would collapse the whole inner template to one `{param}` and lose them.
   if (n.type === 'template_string' || n.type === 'binary_expression') {
-    const nested = resolveJsPathExpression(fileKey, n, facts);
-    if (nested !== null) return nested;
+    const nested = foldPathExpression(fileKey, n, facts, depth + 1);
+    if (nested !== null) return { text: nested.text, concrete: nested.anchored };
   }
 
   const dotted = n.type === 'identifier' ? n.text : dottedNameOf(n);
   if (dotted !== null) {
     const resolved = resolveJsMemberPath(fileKey, dotted, facts);
-    if (resolved !== null) return resolved;
-    return `\${${dotted}}`;
+    if (resolved !== null) return { text: resolved, concrete: true };
+    return { text: `\${${dotted}}`, concrete: false };
   }
 
-  return `\${${n.text}}`;
+  return { text: `\${${n.text}}`, concrete: false };
 }
 
 /** Flatten a left-nested `a + b + c` chain into its terms, or `null` if not all `+`. */
-function flattenConcat(node: Parser.SyntaxNode): Parser.SyntaxNode[] | null {
+function flattenConcat(node: Parser.SyntaxNode, depth: number): Parser.SyntaxNode[] | null {
+  if (depth > MAX_EXPR_DEPTH) return null;
   const n = unwrapTsExpression(node);
   if (n.type !== 'binary_expression') return [n];
-  if (n.childForFieldName('operator')?.text !== '+') return null;
-  const left = n.childForFieldName('left');
-  const right = n.childForFieldName('right');
-  if (!left || !right) return null;
-  const l = flattenConcat(left);
-  const r = flattenConcat(right);
-  return l === null || r === null ? null : [...l, ...r];
+
+  // The LEFT spine is walked iteratively: `a + b + c + …` parses left-nested,
+  // so recursing once per term is one stack frame per term. Only a `+` on the
+  // right can still nest, and that recursion is depth-capped.
+  const reversed: Parser.SyntaxNode[] = [];
+  let cur: Parser.SyntaxNode = n;
+  for (;;) {
+    if (reversed.length > MAX_CONCAT_TERMS) return null;
+    if (cur.childForFieldName('operator')?.text !== '+') return null;
+    const left = cur.childForFieldName('left');
+    const right = cur.childForFieldName('right');
+    if (!left || !right) return null;
+    reversed.push(right);
+    const nextLeft = unwrapTsExpression(left);
+    if (nextLeft.type !== 'binary_expression') {
+      reversed.push(nextLeft);
+      break;
+    }
+    cur = nextLeft;
+  }
+
+  const out: Parser.SyntaxNode[] = [];
+  for (let i = reversed.length - 1; i >= 0; i--) {
+    const term = reversed[i];
+    if (unwrapTsExpression(term).type !== 'binary_expression') {
+      out.push(term);
+      continue;
+    }
+    const nested = flattenConcat(term, depth + 1);
+    if (nested === null) return null;
+    out.push(...nested);
+    if (out.length > MAX_CONCAT_TERMS) return null;
+  }
+  return out;
+}
+
+/**
+ * The fold behind {@link resolveJsPathExpression}, carrying the recursion depth
+ * and reporting whether the result is anchored.
+ *
+ * `MAX_FOLD_LENGTH` is checked on the ACCUMULATED text, not per term. The
+ * shared core caps each folded constant at that length; joining an unbounded
+ * number of them made the cap a ~2048x amplifier instead of a ceiling (each
+ * `${A}` costs 4 source characters and can yield 8 192), and the result is not
+ * transient — it becomes `contractId` and `meta.path` in `contracts.json` and
+ * `bridge.lbug`. Measured 200 KB of source to 941 MB of heap before this.
+ */
+function foldPathExpression(
+  fileKey: string,
+  node: Parser.SyntaxNode,
+  facts: JsRepoFacts,
+  depth: number,
+): FoldedPath | null {
+  if (depth > MAX_EXPR_DEPTH) return null;
+  const n = unwrapTsExpression(node);
+
+  const literal = literalStringOf(n);
+  if (literal !== null) return { text: literal, anchored: true };
+
+  if (n.type === 'identifier' || n.type === 'member_expression') {
+    const dotted = n.type === 'identifier' ? n.text : dottedNameOf(n);
+    if (dotted === null) return null;
+    const resolved = resolveJsMemberPath(fileKey, dotted, facts);
+    return resolved === null ? null : { text: resolved, anchored: true };
+  }
+
+  const terms: Parser.SyntaxNode[] = [];
+  if (n.type === 'template_string') {
+    for (const child of n.namedChildren) {
+      if (child.type === 'string_fragment') {
+        terms.push(child);
+      } else if (child.type === 'template_substitution') {
+        const inner = child.namedChild(0);
+        if (inner === null) return null;
+        terms.push(inner);
+      }
+    }
+  } else if (n.type === 'binary_expression') {
+    const flattened = flattenConcat(n, depth);
+    if (flattened === null) return null;
+    terms.push(...flattened);
+  } else {
+    return null;
+  }
+
+  let out = '';
+  let anchored: boolean | null = null;
+  for (const term of terms) {
+    const folded =
+      term.type === 'string_fragment'
+        ? { text: term.text, concrete: true }
+        : foldTermOrPlaceholder(fileKey, term, facts, depth + 1);
+    if (folded === null) return null;
+    if (anchored === null) anchored = folded.concrete;
+    out += folded.text;
+    if (out.length > MAX_FOLD_LENGTH) return null;
+  }
+  return anchored === null ? null : { text: out, anchored };
 }
 
 /**
@@ -758,45 +1082,16 @@ function flattenConcat(node: Parser.SyntaxNode): Parser.SyntaxNode[] | null {
  * of those. Template and concat forms fold PARTIALLY — see
  * {@link foldTermOrPlaceholder}.
  *
- * A bare reference that resolves to nothing returns `null` (skip), because a
- * lone unresolved name carries no path information at all; a mixed expression
- * with at least one literal segment still does, so it is returned.
+ * A reference that resolves to nothing returns `null` (skip), and so does a
+ * mixed expression whose leading term is unresolved — see {@link FoldedPath}.
  */
 export function resolveJsPathExpression(
   fileKey: string,
   node: Parser.SyntaxNode,
   facts: JsRepoFacts,
 ): string | null {
-  const n = unwrapTsExpression(node);
-
-  const literal = literalStringOf(n);
-  if (literal !== null) return literal;
-
-  if (n.type === 'identifier' || n.type === 'member_expression') {
-    const dotted = n.type === 'identifier' ? n.text : dottedNameOf(n);
-    return dotted === null ? null : resolveJsMemberPath(fileKey, dotted, facts);
-  }
-
-  if (n.type === 'template_string') {
-    let out = '';
-    for (const child of n.namedChildren) {
-      if (child.type === 'string_fragment') {
-        out += child.text;
-      } else if (child.type === 'template_substitution') {
-        const inner = child.namedChild(0);
-        out += inner === null ? '${}' : foldTermOrPlaceholder(fileKey, inner, facts);
-      }
-    }
-    return out;
-  }
-
-  if (n.type === 'binary_expression') {
-    const terms = flattenConcat(n);
-    if (terms === null) return null;
-    return terms.map((term) => foldTermOrPlaceholder(fileKey, term, facts)).join('');
-  }
-
-  return null;
+  const folded = foldPathExpression(fileKey, node, facts, 0);
+  return folded !== null && folded.anchored ? folded.text : null;
 }
 
 /**
@@ -831,7 +1126,7 @@ export function isHttpClientRef(fileKey: string, name: string, facts: JsRepoFact
 
     const binding = file.constants.imports.get(currentName);
     if (!binding) return false;
-    const targetKey = resolveJsImport(currentKey, binding.module, facts.keys);
+    const targetKey = facts.resolveImport(currentKey, binding.module, facts.keys);
     if (targetKey === null) return false;
 
     currentKey = targetKey;

@@ -10,6 +10,7 @@ import {
   type PatternSpec,
 } from '../tree-sitter-scanner.js';
 import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
+import { MAX_FOLD_LENGTH } from '../../../ingestion/route-extractors/constant-resolver.js';
 import {
   DATA_ROUTE_TABLE_SOURCE,
   scanDataRouteTables,
@@ -330,12 +331,22 @@ function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNod
  */
 function buildImportMap(tree: Parser.Tree): Map<string, { name: string; module: string }> {
   const map = new Map<string, { name: string; module: string }>();
-  const walk = (node: Parser.SyntaxNode): void => {
+  // Both walks are explicit-stack, not recursive. They visit EVERY node of the
+  // file, so their depth is the source's nesting depth — and `scan` may not
+  // throw: a `RangeError` here escapes to `sync.ts`, which records the repo as
+  // an unexplained "missing repo" and drops every contract of every kind for
+  // it, silently. A file nesting template substitutions ~4 000 deep (well
+  // inside what tree-sitter will parse) was enough.
+  const stack: Parser.SyntaxNode[] = [tree.rootNode];
+  while (stack.length > 0) {
+    const node = stack.pop() as Parser.SyntaxNode;
     if (node.type === 'import_statement') {
       const sourceNode = node.childForFieldName('source');
       const module = sourceNode ? unquoteLiteral(sourceNode.text) : null;
       if (module !== null) {
-        const collect = (n: Parser.SyntaxNode): void => {
+        const inner: Parser.SyntaxNode[] = [node];
+        while (inner.length > 0) {
+          const n = inner.pop() as Parser.SyntaxNode;
           if (n.type === 'import_specifier') {
             const nameNode = n.childForFieldName('name');
             const aliasNode = n.childForFieldName('alias');
@@ -344,20 +355,15 @@ function buildImportMap(tree: Parser.Tree): Map<string, { name: string; module: 
               map.set(local.text, { name: nameNode.text, module });
             }
           }
-          for (let i = 0; i < n.namedChildCount; i++) {
-            const c = n.namedChild(i);
-            if (c) collect(c);
-          }
-        };
-        collect(node);
+          for (const c of n.namedChildren) inner.push(c);
+        }
       }
+      // An import statement cannot contain another one, and the inner loop has
+      // already visited its whole subtree.
+      continue;
     }
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const c = node.namedChild(i);
-      if (c) walk(c);
-    }
-  };
-  walk(tree.rootNode);
+    for (const c of node.namedChildren) stack.push(c);
+  }
   return map;
 }
 
@@ -427,18 +433,47 @@ function buildNodeRepoContext(args: {
     return parser;
   };
 
+  // Cost gate, in the spirit of the sibling `python.ts` pre-pass: every fact
+  // this map holds exists to prove a receiver is an axios instance or to fold a
+  // path for one. A repo where the string `axios` appears nowhere can prove no
+  // receiver, so every parse below is dead work — and parsing is the expensive
+  // half (measured 4.36 s / +258 MB RSS over 827 TypeScript files, on top of
+  // the parse `getScanInput` already does).
+  // Only the file's identity is carried between the passes, never its text: a
+  // large monorepo's whole source tree held in one array at once is the shape
+  // that produced the analyzer's scale problems, and the second read is cheap
+  // beside the parse it gates.
+  const eligible: Array<{ rel: string; language: unknown }> = [];
+  let sawAxios = false;
   for (const rel of args.files) {
     const language = grammarForFile(rel);
     if (language === null) continue;
     const content = args.readFile(rel);
-    if (content === null || content.length > MAX_PREPASS_FILE_BYTES) continue;
-    const tree = args.parseSource(parserFor(language), content);
-    if (!tree) continue;
-    try {
-      byFile.set(normalizeRel(rel), extractJsModuleFacts(tree));
-    } catch {
-      // One malformed file must never abort the pre-pass — it simply stays
-      // unresolved, exactly as it is without this pass at all.
+    // `MAX_PREPASS_FILE_BYTES` is a BYTE ceiling; `String.length` counts UTF-16
+    // code units, which under-counts every multi-byte source.
+    if (content === null || Buffer.byteLength(content, 'utf8') > MAX_PREPASS_FILE_BYTES) continue;
+    if (!sawAxios && content.includes('axios')) sawAxios = true;
+    eligible.push({ rel, language });
+  }
+
+  if (sawAxios) {
+    for (const { rel, language } of eligible) {
+      try {
+        const content = args.readFile(rel);
+        if (content === null) continue;
+        // `parseSource` belongs INSIDE the guard: `safe-parse.ts` throws
+        // `ParseTimeoutError` and makes catching it a per-caller obligation, and
+        // `prepareRepo` is contractually non-throwing. One escape here left the
+        // fact map unwritten for the WHOLE repo — and, because the orchestrator
+        // caches per plugin NAME, made all three JS/TS plugins re-walk it and
+        // fail the same way before falling back to literal-only scanning.
+        const tree = args.parseSource(parserFor(language), content);
+        if (!tree) continue;
+        byFile.set(normalizeRel(rel), extractJsModuleFacts(tree));
+      } catch {
+        // One malformed file must never abort the pre-pass — it simply stays
+        // unresolved, exactly as it is without this pass at all.
+      }
     }
   }
 
@@ -458,28 +493,72 @@ function resolveFactsFor(
 }
 
 /**
+ * Whether a folded first argument is plausibly a URL path.
+ *
+ * The query now captures ANY first argument, and "it folded to a string" is not
+ * "it is a path" — `normalizeConsumerPath` is a canonicalizer, not a validator,
+ * and it happily turns non-paths into contracts that exact-match real provider
+ * routes:
+ *
+ *   api.get(CONFIG.TIMEOUT)  // "5000"                     -> http::GET::/{param}
+ *   api.post(MSG.ERROR)      // "Could not reach the …"    -> http::POST::/could not reach the server
+ *
+ * `/{param}` matches every one-segment provider route in the group, and
+ * `matching.exclude_links_param_only_paths` defaults to `false`. A path whose
+ * leading term is an unresolved placeholder is refused for the same reason —
+ * nothing pins where it starts. (`resolveJsPathExpression` already refuses those
+ * it folded itself; this also covers the literal fallback below.)
+ */
+function looksLikeHttpPath(path: string): boolean {
+  if (path === '') return false;
+  if (/^https?:\/\//i.test(path)) return true;
+  // A `${…}` term is a runtime value that `normalizeConsumerPath` rewrites to
+  // `{param}`; its SOURCE text can be any expression (`${draft ? 'a' : 'b'}`,
+  // `${id ?? ''}`), so the checks below have to run against the normalized
+  // shape. Testing the raw source dropped every partially folded path whose
+  // unresolved term happened to contain a space.
+  const shape = path.replace(/\$\{[^}]+\}/g, '{param}');
+  if (/\s/.test(shape)) return false;
+  if (shape.startsWith('{param}')) return false;
+  const bare = shape.replace(/^\//, '');
+  return bare === '' || !/^\d+$/.test(bare);
+}
+
+/**
  * The path a consumer call's first argument denotes.
  *
  * Prefers full resolution against the repo facts; falls back to the raw
  * literal for a string/template node so a repo with no pre-pass (or an
- * unresolvable reference) behaves exactly as it did before. The fallback is
- * deliberately gated on node TYPE: `unquoteLiteral` returns unrecognized input
- * unchanged, so handing it a `member_expression` would yield the literal text
- * `API_ROUTE_PATH.LINKS` as if it were a URL path.
+ * unresolvable reference) behaves exactly as it did before.
+ *
+ * `fileKey` is already `normalizeRel`-ed by the caller — see `scanBundle`.
+ *
+ * `legacyShape` marks the exact combination this pattern matched BEFORE it was
+ * widened: the literal receiver `axios` with a string or template-string first
+ * argument. That combination keeps its old output verbatim, so this PR adds
+ * detections without removing any — `axios.get(`${API_BASE}/users`)` still
+ * yields `/{param}/users`. Everything the widened query NEWLY admits (any other
+ * receiver, or any non-literal argument) has to clear the gates.
  */
 function resolveConsumerPath(
   pathNode: Parser.SyntaxNode,
   facts: JsRepoFacts | null,
-  fileRel: string | undefined,
+  fileKey: string | undefined,
+  legacyShape: boolean,
 ): string | null {
-  if (facts && fileRel !== undefined) {
-    const resolved = resolveJsPathExpression(normalizeRel(fileRel), pathNode, facts);
-    if (resolved !== null) return resolved;
+  if (facts && fileKey !== undefined) {
+    const resolved = resolveJsPathExpression(fileKey, pathNode, facts);
+    if (resolved !== null && looksLikeHttpPath(resolved)) return resolved;
   }
-  if (pathNode.type === 'string' || pathNode.type === 'template_string') {
-    return unquoteLiteral(pathNode.text);
-  }
-  return null;
+  // The fallback is deliberately gated on node TYPE: `unquoteLiteral` returns
+  // unrecognized input unchanged, so handing it a `member_expression` would
+  // yield the literal text `API_ROUTE_PATH.LINKS` as if it were a URL path.
+  if (pathNode.type !== 'string' && pathNode.type !== 'template_string') return null;
+  const literal = unquoteLiteral(pathNode.text);
+  // The fold bails past `MAX_FOLD_LENGTH`; the raw source it falls back to has
+  // no such bound and lands in `contractId` and `meta.path` all the same.
+  if (literal === null || literal.length > MAX_FOLD_LENGTH) return null;
+  return legacyShape || looksLikeHttpPath(literal) ? literal : null;
 }
 
 function scanBundle(
@@ -493,6 +572,13 @@ function scanBundle(
   // `prepareRepo` pre-pass. Absent for a bare `scan(tree)` call, in which case
   // every cross-file resolution below floors to the literal-only behavior.
   const facts = resolveFactsFor(repoContext, fileRel);
+  // The fact map is keyed by `normalizeRel(rel)`. Normalizing at ONE place and
+  // using that value for every read keeps the two sides in step: the receiver
+  // gate used to read the raw `fileRel`, and `isHttpClientRef` cannot tell a key
+  // miss from "not a client", so any non-POSIX path (glob v13 has no
+  // `posix: true` and its walker joins with the platform separator; graph rows
+  // are a second unnormalized source) silently returned zero consumers.
+  const fileKey = fileRel === undefined ? undefined : normalizeRel(fileRel);
   // Local-binding → { declared export name, module } for the file's named
   // imports, so an express handler that is an imported (possibly aliased)
   // symbol resolves to the real definition rather than its local alias text.
@@ -633,23 +719,39 @@ function scanBundle(
     // Receiver gate. `axios.get(...)` needs no proof; anything else must be
     // traced to an `axios.create(...)` binding, or it is not ours to claim.
     const receiver = objNode.text;
-    if (receiver !== 'axios') {
-      if (!facts || !fileRel) continue;
-      if (!isHttpClientRef(fileRel, receiver, facts)) continue;
+
+    // Cross-file resolution is the only work in this file that walks a
+    // repo-wide graph, and `HttpLanguagePlugin.scan` may not throw: a single
+    // hostile call site must cost its own detection, not the repo's whole
+    // contract set (`sync.ts` catches a throw here as an unexplained "missing
+    // repo", silently, for every contract type).
+    try {
+      if (receiver !== 'axios') {
+        if (!facts || fileKey === undefined) continue;
+        if (!isHttpClientRef(fileKey, receiver, facts)) continue;
+      }
+
+      const path = resolveConsumerPath(
+        pathNode,
+        facts,
+        fileKey,
+        receiver === 'axios' &&
+          (pathNode.type === 'string' || pathNode.type === 'template_string'),
+      );
+      if (path === null) continue;
+
+      out.push({
+        role: 'consumer',
+        framework: 'axios',
+        method: methodNode.text.toUpperCase(),
+        path,
+        name: null,
+        line: pathNode.startPosition.row + 1,
+        confidence: 0.7,
+      });
+    } catch {
+      // Unresolvable is the same outcome as unresolved — skip this call site.
     }
-
-    const path = resolveConsumerPath(pathNode, facts, fileRel);
-    if (path === null) continue;
-
-    out.push({
-      role: 'consumer',
-      framework: 'axios',
-      method: methodNode.text.toUpperCase(),
-      path,
-      name: null,
-      line: pathNode.startPosition.row + 1,
-      confidence: 0.7,
-    });
   }
 
   // Consumer: jQuery shorthand $.get(url) / $.post(url, ...)
