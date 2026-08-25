@@ -921,15 +921,37 @@ export async function runGroupImpact(
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
   const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
   const localPartial = Boolean((local as { partial?: boolean }).partial);
-  // The bridge's own incompleteness, in the shared vocabulary. `inScope` accepts
-  // every repo here because a group impact query declares the whole group;
-  // narrowing it to the requested subgroup is a change to THIS argument, not to
-  // the helper.
+  // The bridge's own incompleteness, in the shared vocabulary, read through
+  // what this query DECLARED. The fan-out above already drops every neighbour
+  // outside `subgroup`, so an incomplete repo the query excluded could not have
+  // contributed a crossing to this answer — marking the answer a floor because
+  // of it makes the marker fire on results it does not describe, which is how a
+  // caller learns to ignore it. An unscoped query passes `subgroup: undefined`,
+  // which `repoInSubgroup` answers true for, so the intersection is the whole
+  // set and that path is byte-for-byte the old behaviour.
+  //
+  // The declared scope is the subgroup PLUS the query's own repo (`exact`
+  // reuses the one membership helper for the equality, rather than growing a
+  // second notion of it): the walk starts from `repoPath`'s contracts in the
+  // bridge, so if THAT is the repo the sync could not read there are no
+  // crossings to find for any scope, and a subgroup excluding it must not turn
+  // that vacuum into a confident "complete".
+  //
+  // Declared scope, not traversed scope: an incomplete repo's contracts are
+  // absent from the bridge by definition, so it is never in the set the walk
+  // reached — filtering on what was traversed would empty the intersection on
+  // every query and silently restore the fail-open.
+  //
+  // Sound only while `MAX_SUPPORTED_CROSS_DEPTH` is 1. At depth 2+ an
+  // out-of-scope repo can sit BETWEEN two in-scope ones, so dropping it would
+  // convert a genuine lower bound into a confident complete answer; widen this
+  // predicate in the same change that raises the depth.
   const bridge = crossRepoCompleteness({
     unreadableRepos: bridgePrep.meta.unreadableRepos,
     missingRepos: bridgePrep.meta.missingRepos,
     provenanceUnknown,
-    inScope: () => true,
+    inScope: (candidate) =>
+      repoInSubgroup(candidate, subgroup) || repoInSubgroup(candidate, repoPath, true),
   });
   const truncated = truncatedRepos.length > 0 || localPartial || bridge.truncated;
 

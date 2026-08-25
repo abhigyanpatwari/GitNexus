@@ -360,4 +360,90 @@ describe('group impact over a bridge built from an incomplete sync', () => {
     expect(result).toMatchObject({ truncated: true, truncationReason: 'partial' });
     expect(sortedRepos(result)).toEqual([crossingRow.neighborRepo, UNREADABLE_REPO].sort());
   });
+
+  /**
+   * The declared scope of a group-impact query is its subgroup prefix (plus
+   * the repo the walk starts from), and the incomplete-repo set has to be read
+   * through it. A subgroup-scoped query already drops every neighbour outside
+   * the prefix, so an unreadable repo it excluded could not have contributed a
+   * crossing to THIS answer — reporting it as a floor anyway marks a complete
+   * result incomplete, and a marker that fires on answers it does not describe
+   * is a marker an agent learns to ignore.
+   */
+  describe("narrowed to the query's declared scope", () => {
+    it('answers complete when the declared subgroup excludes the unreadable repo', async () => {
+      // The scoped twin of the headline case: same bridge, same metadata, but
+      // the query asks only about `svc/orders`, and `svc/users` is not in it.
+      await writeMeta({ missingRepos: [], unreadableRepos: [UNREADABLE_REPO] });
+
+      const result = await run(makeGroupToolPort(home), { subgroup: 'svc/orders' });
+
+      expect(result).toMatchObject({ truncated: false, truncatedRepos: [] });
+      expect(result).not.toHaveProperty('truncationReason');
+      expect(result).not.toHaveProperty('riskEpistemic');
+    });
+
+    it('still answers a lower bound for the same query with no subgroup', async () => {
+      // The control that keeps the case above honest: drop the scope and the
+      // very same bridge must go back to reporting the floor. An unscoped query
+      // declares the whole group, so the intersection is the whole set.
+      await writeMeta({ missingRepos: [], unreadableRepos: [UNREADABLE_REPO] });
+
+      const result = await run(makeGroupToolPort(home));
+
+      expect(result).toMatchObject({
+        truncated: true,
+        truncationReason: 'incomplete-sync',
+        riskEpistemic: 'lower-bound',
+      });
+      expect(sortedRepos(result)).toEqual([UNREADABLE_REPO]);
+    });
+
+    it('keeps the lower bound when the declared subgroup contains the unreadable repo', async () => {
+      // `svc` is a prefix of `svc/users`, so the repo IS declared here and the
+      // answer is still a floor. The filter narrows by membership, not by
+      // exact equality — a subgroup that spans the unreadable repo gains
+      // nothing from the scope.
+      await writeMeta({ missingRepos: [], unreadableRepos: [UNREADABLE_REPO] });
+
+      const result = await run(makeGroupToolPort(home), { subgroup: 'svc' });
+
+      expect(result).toMatchObject({
+        truncated: true,
+        truncationReason: 'incomplete-sync',
+        riskEpistemic: 'lower-bound',
+      });
+      expect(sortedRepos(result)).toEqual([UNREADABLE_REPO]);
+    });
+
+    it('names only the declared repos when some incomplete repos are out of scope', async () => {
+      // Two incomplete repos, one inside the declared scope and one outside.
+      // `truncatedRepos` is what an operator reads as "the repos I could not
+      // see for this question", so naming a repo the question excluded is a
+      // wrong answer in the same way marking the result incomplete is.
+      await writeMeta({ missingRepos: [MISSING_REPO], unreadableRepos: [UNREADABLE_REPO] });
+
+      const result = await run(makeGroupToolPort(home), { subgroup: UNREADABLE_REPO });
+
+      expect(result).toMatchObject({ truncated: true, truncationReason: 'incomplete-sync' });
+      expect(sortedRepos(result)).toEqual([UNREADABLE_REPO]);
+    });
+
+    it("keeps the lower bound when the unreadable repo is the query's own repo", async () => {
+      // The walk starts from `backend`'s contracts in the bridge, so when
+      // `backend` is the repo the sync could not read there are no crossings to
+      // find at all — for any scope. A subgroup that excludes the origin repo
+      // must not turn that vacuum into a confident "nothing depends on this".
+      await writeMeta({ missingRepos: [], unreadableRepos: ['backend'] });
+
+      const result = await run(makeGroupToolPort(home), { subgroup: 'svc/orders' });
+
+      expect(result).toMatchObject({
+        truncated: true,
+        truncationReason: 'incomplete-sync',
+        riskEpistemic: 'lower-bound',
+      });
+      expect(sortedRepos(result)).toEqual(['backend']);
+    });
+  });
 });
