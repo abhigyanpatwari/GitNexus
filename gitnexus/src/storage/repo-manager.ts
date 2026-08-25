@@ -616,40 +616,58 @@ const sanitizeEntries = (entries: RegistryEntry[]): RegistryEntry[] =>
   });
 
 /**
- * Read the global registry. Returns empty array if not found.
+ * Shared body for the two read modes below.
  *
  * `strict` distinguishes "the registry says nothing is registered" from "the
- * registry could not be read". The default (lenient) path collapses both into
- * `[]`, which is right for read-only listings but wrong for any caller that
- * *acts* on emptiness: an EACCES after a `sudo gitnexus analyze`, a truncated
- * JSON, or an $HOME-on-NFS blip then presents as "no repo is registered" — an
- * unreadable condition reported as missing, which is exactly the conflation
- * #3011 removes one frame further down. `syncGroup` is the caller that acts on
- * it, by replacing a good contracts.json with an empty one.
+ * registry could not be read". Lenient collapses both into `[]`.
  *
- * ENOENT stays lenient in both modes: no file genuinely means nothing has been
+ * ENOENT is lenient in BOTH modes: no file genuinely means nothing has been
  * registered yet, and every first-run path depends on that.
  */
-export const readRegistry = async (opts?: { strict?: boolean }): Promise<RegistryEntry[]> => {
+const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
   let raw: string;
   try {
     raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
   } catch (err) {
-    if (opts?.strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    if (strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     return [];
   }
   try {
     const data: unknown = JSON.parse(raw);
     if (Array.isArray(data)) return sanitizeEntries(data as RegistryEntry[]);
-    if (opts?.strict) {
+    if (strict) {
       throw new Error(`${getGlobalRegistryPath()} is not a JSON array (registry is corrupt)`);
     }
     return [];
   } catch (err) {
-    if (opts?.strict) throw err;
+    if (strict) throw err;
     return [];
   }
 };
+
+/**
+ * Read the global registry. Returns empty array if not found — and, note, also
+ * when the file exists but cannot be read or parsed. That is fine for a
+ * read-only listing, where an unreadable registry and an empty one print the
+ * same nothing. It is not fine for a caller that ACTS on emptiness; see
+ * `readRegistryStrict`.
+ */
+export const readRegistry = async (): Promise<RegistryEntry[]> => readRegistryFile(false);
+
+/**
+ * Read the global registry, refusing to report an unreadable one as empty.
+ *
+ * An EACCES after a `sudo gitnexus analyze`, a truncated registry.json, or an
+ * $HOME-on-NFS blip otherwise presents as "no repo is registered" — an
+ * unreadable condition reported as missing, which is exactly the conflation
+ * #3011 removes one frame further down. `syncGroup` is the caller that acts on
+ * that answer, by replacing a good contracts.json with an empty one.
+ *
+ * Deliberately a separate export rather than an option on `readRegistry`:
+ * leaving that signature untouched keeps its nine other call sites provably
+ * unaffected, and the mode is legible at the call site.
+ */
+export const readRegistryStrict = async (): Promise<RegistryEntry[]> => readRegistryFile(true);
 
 /**
  * Write the global registry to disk.

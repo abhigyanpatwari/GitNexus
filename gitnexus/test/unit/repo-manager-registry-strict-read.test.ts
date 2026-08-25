@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { readRegistry } from '../../src/storage/repo-manager.js';
+import { readRegistry, readRegistryStrict } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 /**
@@ -16,14 +16,16 @@ import { createTempDir } from '../helpers/test-db.js';
  * registered" — and replaced a good contracts.json with an empty one at exit 0.
  *
  * That is an unreadable condition reported as missing: the same conflation
- * #3011 removes one stack frame further down, which is why the strict mode
- * exists and why syncGroup is the caller that opts into it.
+ * #3011 removes one stack frame further down, which is why `readRegistryStrict`
+ * exists and why syncGroup is the only caller that uses it. It is a separate
+ * export rather than an option on `readRegistry` so that the nine lenient call
+ * sites keep a provably untouched signature.
  *
  * ENOENT stays lenient in both modes. No file genuinely means nothing has been
  * registered yet, and every first-run path depends on that.
  */
 
-describe('readRegistry strict mode', () => {
+describe('readRegistryStrict', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
   let savedGitnexusHome: string | undefined;
   let registryPath: string;
@@ -43,7 +45,7 @@ describe('readRegistry strict mode', () => {
 
   it('returns [] for a registry that does not exist, strict or not', async () => {
     await expect(readRegistry()).resolves.toEqual([]);
-    await expect(readRegistry({ strict: true })).resolves.toEqual([]);
+    await expect(readRegistryStrict()).resolves.toEqual([]);
   });
 
   it('reads a valid registry identically in both modes', async () => {
@@ -59,7 +61,7 @@ describe('readRegistry strict mode', () => {
     await fs.writeFile(registryPath, JSON.stringify(entries));
 
     await expect(readRegistry()).resolves.toEqual(entries);
-    await expect(readRegistry({ strict: true })).resolves.toEqual(entries);
+    await expect(readRegistryStrict()).resolves.toEqual(entries);
   });
 
   it('throws on a corrupt registry instead of reporting an empty one', async () => {
@@ -67,7 +69,7 @@ describe('readRegistry strict mode', () => {
 
     // Lenient stays lenient — existing callers keep the contract they have.
     await expect(readRegistry()).resolves.toEqual([]);
-    await expect(readRegistry({ strict: true })).rejects.toThrow();
+    await expect(readRegistryStrict()).rejects.toThrow();
   });
 
   it('throws when the registry parses but is not an array', async () => {
@@ -77,6 +79,6 @@ describe('readRegistry strict mode', () => {
     await fs.writeFile(registryPath, '{"repos": []}');
 
     await expect(readRegistry()).resolves.toEqual([]);
-    await expect(readRegistry({ strict: true })).rejects.toThrow('not a JSON array');
+    await expect(readRegistryStrict()).rejects.toThrow('not a JSON array');
   });
 });

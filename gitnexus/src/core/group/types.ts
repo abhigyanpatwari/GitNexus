@@ -103,9 +103,15 @@ export interface ContractRegistry {
   /** Configured repos with no entry in the registry. */
   missingRepos: string[];
   /**
-   * Configured repos that ARE registered but whose index could not be opened
-   * (version skew, lock, corruption). Optional so a registry written before
-   * this field existed still parses — absent means "not recorded", not "none".
+   * Configured repos that ARE registered but that this sync could not extract
+   * from — the index would not open (version skew, lock, corruption), or an
+   * extractor threw partway through. The two are one bucket because the
+   * consequence is one thing: NONE of that repo's contracts are in this
+   * registry. Distinct from `missingRepos`, which is "no entry in the
+   * registry at all" and needs a different answer from the operator.
+   *
+   * Optional so a registry written before this field existed still parses —
+   * absent means "not recorded", not "none".
    */
   unreadableRepos?: string[];
   contracts: StoredContract[];
@@ -238,11 +244,12 @@ export interface BridgeMeta {
   generatedAt: string;
   missingRepos: string[];
   /**
-   * Configured repos that ARE registered but whose index could not be opened on
-   * the sync that produced this bridge. Their contracts and every cross-link
-   * touching them are absent from `bridge.lbug`, so a cross-repo impact query
-   * against this bridge is a lower bound, not a verdict — `runGroupImpact`
-   * folds a non-empty value into its truncation fields for exactly that reason.
+   * Configured repos the sync that produced this bridge could not extract from
+   * (see `ContractRegistry.unreadableRepos`). Their contracts and every
+   * cross-link touching them are absent from `bridge.lbug`, so a cross-repo
+   * impact query against this bridge is a lower bound, not a verdict —
+   * `runGroupImpact` folds a non-empty value into its truncation fields for
+   * exactly that reason.
    * Optional: a bridge written before this field existed does not record it.
    */
   unreadableRepos?: string[];

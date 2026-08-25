@@ -154,10 +154,11 @@ vi.mock('../../../src/core/lbug/sidecar-recovery.js', () => ({
   statIfExists: vi.fn().mockResolvedValue(null),
 }));
 
-// readRegistry is called in syncGroup's else branch; resolveRepoHandle is
+// The registry read happens in syncGroup's else branch; resolveRepoHandle is
 // supplied, so an empty registry is fine (only the meta.json fallback reads it).
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   readRegistry: vi.fn().mockResolvedValue([]),
+  readRegistryStrict: vi.fn().mockResolvedValue([]),
 }));
 
 const { syncGroup } = await import('../../../src/core/group/sync.js');

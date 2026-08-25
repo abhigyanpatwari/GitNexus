@@ -43,8 +43,11 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   getMaxResidentRepos: vi.fn(() => 5),
 }));
 
+// Both bind to the same mock: `syncGroup` reads through the strict export, and
+// the refuses-to-sync case below drives it by rejecting.
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   readRegistry: (...args: unknown[]) => readRegistryMock(...args),
+  readRegistryStrict: (...args: unknown[]) => readRegistryMock(...args),
 }));
 
 const { syncGroup } = await import('../../../src/core/group/sync.js');

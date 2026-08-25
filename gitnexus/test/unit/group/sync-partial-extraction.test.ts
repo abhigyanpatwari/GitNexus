@@ -43,6 +43,7 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
 
 vi.mock('../../../src/storage/repo-manager.js', () => ({
   readRegistry: vi.fn(async () => []),
+  readRegistryStrict: vi.fn(async () => []),
 }));
 
 vi.mock('../../../src/core/group/extractors/http-route-extractor.js', () => ({

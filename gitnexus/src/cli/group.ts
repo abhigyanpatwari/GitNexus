@@ -197,7 +197,7 @@ export function registerGroupCommands(program: Command): void {
           // already printed by this same run — raising the level to `warn` would
           // only suppress the surrounding `info` output.
           console.log(
-            `\n  ⚠️ Could not read the index for: ${result.unreadableRepos.join(', ')}` +
+            `\n  ⚠️ Could not extract contracts from: ${result.unreadableRepos.join(', ')}` +
               `\n     None of their contracts are included in this sync (the warning above says why),` +
               `\n     or check \`gitnexus doctor\` in the affected repo.`,
           );

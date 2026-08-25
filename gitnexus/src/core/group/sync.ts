@@ -7,7 +7,11 @@ import {
   pinRepo,
   getMaxResidentRepos,
 } from '../lbug/pool-adapter.js';
-import { readRegistry, type RegistryEntry } from '../../storage/repo-manager.js';
+import {
+  readRegistry,
+  readRegistryStrict,
+  type RegistryEntry,
+} from '../../storage/repo-manager.js';
 import type {
   GroupConfig,
   RepoHandle,
@@ -66,7 +70,11 @@ export interface SyncResult {
   unmatched: StoredContract[];
   /** Configured repos with no entry in the registry — index them or drop them. */
   missingRepos: string[];
-  /** Configured repos that ARE registered but whose index could not be opened. */
+  /**
+   * Configured repos that ARE registered but that this sync could not extract
+   * from: the index would not open, or an extractor threw partway. Either way
+   * none of that repo's contracts are in `contracts`.
+   */
   unreadableRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
   /**
@@ -177,12 +185,13 @@ export function partitionManifestWindows(
 
 export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promise<SyncResult> {
   const missingRepos: string[] = [];
-  // Repos that ARE registered but whose index could not be opened. Kept
-  // separate from `missingRepos` because the two need different answers from
-  // the operator: a missing repo must be indexed or removed from the group,
-  // whereas an unreadable one is usually a version skew or a lock and the
-  // underlying error says which. Collapsing them (as this did) reports a
-  // LadybugDB storage-version mismatch as "repo not found".
+  // Repos that ARE registered but that we could not extract from — the index
+  // would not open, or an extractor threw partway and the repo's staged
+  // contracts were dropped. Kept separate from `missingRepos` because the two
+  // need different answers from the operator: a missing repo must be indexed or
+  // removed from the group, whereas this one is usually a version skew or a
+  // lock and the logged error says which. Collapsing them (as this did) reports
+  // a LadybugDB storage-version mismatch as "repo not found".
   const unreadableRepos: string[] = [];
   const repoSnapshots: Record<string, RepoSnapshot> = {};
   let autoContracts: StoredContract[] = [];
@@ -207,7 +216,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       // `missingRepos` is derived from this list, and an all-missing sync is
       // allowed to write — so a lenient `[]` on EACCES/corruption would replace
       // a good contracts.json with an empty one and exit 0 (#3011, one frame up).
-      registryEntries = await readRegistry({ strict: true });
+      registryEntries = await readRegistryStrict();
       const entries = registryEntries;
       const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
       const httpEx = new HttpRouteExtractor();
