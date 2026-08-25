@@ -1,10 +1,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { _captureLogger } from '../../../src/core/logger.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
-import type { ExtractedContract, GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
+import type {
+  ContractRegistry,
+  ExtractedContract,
+  GroupConfig,
+  GroupManifestLink,
+  RepoHandle,
+} from '../../../src/core/group/types.js';
 
 /**
  * Per-repo extraction is all-or-nothing.
@@ -35,9 +42,13 @@ const PARTIAL_CONTRACT: ExtractedContract = {
 
 const httpExtract = vi.fn();
 const grpcExtract = vi.fn();
+// Bound through an arrow so the test body can read its calls: which repos the
+// deferred manifest phase re-opens is the observable side of dropping a failed
+// repo's handle, and a `vi.fn()` created inside the factory is unreachable here.
+const initLbugMock = vi.fn(async () => {});
 
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
-  initLbug: vi.fn(async () => {}),
+  initLbug: (...args: unknown[]) => initLbugMock(...args),
   executeParameterized: vi.fn(async () => []),
   pinRepo: vi.fn(() => () => {}),
   getMaxResidentRepos: vi.fn(() => 5),
@@ -340,5 +351,237 @@ describe('syncGroup appending a repo that staged a large contract count', () => 
       'grpc::svc.Service/x',
       'grpc::svc.Service/y',
     ]);
+  });
+});
+
+/**
+ * A repo the sync reported unreadable contributes NO contracts to the persisted
+ * registry — including through deferred manifest resolution.
+ *
+ * Per-repo staging (above) closes the extractor door only. It leaves the
+ * manifest one open: `repoHandles` kept the failed repo's pool identity, so the
+ * windowed manifest phase still counted it among the known repos, re-opened it,
+ * and `ManifestExtractor` emitted a contract for BOTH endpoints of every link
+ * naming it. contracts.json therefore listed a repo that the very same run's
+ * `unreadableRepos` said it could not read — the contradiction the staging
+ * change exists to remove, reproduced one phase later.
+ *
+ * The narrow part is what must NOT be dropped. `ManifestExtractor` resolves both
+ * endpoints of a link and emits one contract per endpoint, so dropping the whole
+ * link would also delete the HEALTHY partner's contract. A link is not the unit
+ * of ownership; the endpoint is. Hence the filter is by endpoint repo, and the
+ * all-healthy control below is what pins the healthy partner's output so an
+ * over-broad "drop the link" fix cannot pass.
+ *
+ * Every assertion here reads the WRITTEN contracts.json, not the in-memory
+ * `SyncResult`: the file is what `group status`, the bridge builder and the next
+ * sync consume, so an in-memory-only assertion would not describe the artifact
+ * the requirement is about.
+ */
+
+const GRPC_LINK: GroupManifestLink = {
+  from: 'app/gateway',
+  to: 'app/backend',
+  type: 'grpc',
+  // `role` describes `from`: the gateway CONSUMES what the backend provides, so
+  // the provider endpoint is the repo whose extractor fails below.
+  role: 'consumer',
+  contract: 'orders.Orders/List',
+};
+
+const LINK_CONTRACT_ID = 'grpc::orders.Orders/List';
+
+const linkedConfig = (): GroupConfig => ({
+  ...config(),
+  repos: { 'app/gateway': 'gateway-repo', 'app/backend': 'backend-repo' },
+  links: [GRPC_LINK],
+});
+
+/**
+ * Resolve handles from a table keyed on the GROUP path, so a two-repo case needs
+ * no branching in the test body. Distinct `repoPath`s are what let the extractor
+ * outcome below be keyed per repo.
+ */
+const LINKED_HANDLES = new Map<string, RepoHandle>([
+  [
+    'app/gateway',
+    {
+      id: 'pool-gateway',
+      path: '/repos/gateway',
+      repoPath: '/repos/gateway',
+      storagePath: '/repos/gateway/.gitnexus',
+    },
+  ],
+  [
+    'app/backend',
+    {
+      id: 'pool-backend',
+      path: '/repos/backend',
+      repoPath: '/repos/backend',
+      storagePath: '/repos/backend/.gitnexus',
+    },
+  ],
+]);
+
+const resolveLinkedHandle = async (
+  _registryName: string,
+  groupPath: string,
+): Promise<RepoHandle | null> => LINKED_HANDLES.get(groupPath) ?? null;
+
+/**
+ * `extract(executor, repoPath, handle)` — key the outcome on the repo path so
+ * which repo fails is data, not a branch in a test body. A repo outside the
+ * failing set extracts cleanly.
+ */
+const grpcFailingIn =
+  (failing: ReadonlySet<string>) =>
+  async (_executor: unknown, repoPath: unknown): Promise<ExtractedContract[]> => {
+    if (failing.has(String(repoPath))) throw new Error('gRPC extraction failed');
+    return [];
+  };
+
+const readPersistedRegistry = (dir: string): ContractRegistry =>
+  JSON.parse(fs.readFileSync(path.join(dir, 'contracts.json'), 'utf8')) as ContractRegistry;
+
+/** `<repo>|<contractId>|<role>` — the identity a registry reader cares about. */
+const contractIdentities = (registry: ContractRegistry): string[] =>
+  registry.contracts.map((c) => `${c.repo}|${c.contractId}|${c.role}`);
+
+describe('syncGroup persisting a manifest link with an unreadable endpoint', () => {
+  let groupDir: string;
+
+  beforeEach(() => {
+    httpExtract.mockReset();
+    grpcExtract.mockReset();
+    // `mockClear`, not `mockReset` — the resolving implementation is what makes
+    // `await initLbug(...)` a no-op for every other case in this file.
+    initLbugMock.mockClear();
+    // The manifest link is the only contract source in these cases, so the
+    // per-repo extractors contribute nothing and the registry contains exactly
+    // what deferred manifest resolution emitted.
+    httpExtract.mockResolvedValue([]);
+    groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-manifest-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(groupDir, { recursive: true, force: true });
+  });
+
+  it('names no contract for the repo the same run reported unreadable', async () => {
+    grpcExtract.mockImplementation(grpcFailingIn(new Set(['/repos/backend'])));
+
+    const result = await syncGroup(linkedConfig(), {
+      groupDir,
+      resolveRepoHandle: resolveLinkedHandle,
+    });
+
+    expect(result.unreadableRepos).toEqual(['app/backend']);
+    expect(result.registryOutcome).toBe('written');
+
+    const onDisk = readPersistedRegistry(groupDir);
+    expect(onDisk.unreadableRepos).toEqual(['app/backend']);
+    expect(onDisk.contracts.filter((c) => c.repo === 'app/backend')).toEqual([]);
+    // Not just the `repo` tag: the manifest fallback uid is `manifest::<repo>::…`,
+    // so a contract can still carry the unreadable repo's name after a filter
+    // that only looked at one field.
+    expect(onDisk.contracts.filter((c) => JSON.stringify(c).includes('app/backend'))).toEqual([]);
+  });
+
+  it('keeps the healthy endpoint’s own contract from that same link', async () => {
+    grpcExtract.mockImplementation(grpcFailingIn(new Set(['/repos/backend'])));
+
+    await syncGroup(linkedConfig(), { groupDir, resolveRepoHandle: resolveLinkedHandle });
+
+    // Byte-identical to the healthy endpoint's line in the all-healthy control
+    // below — that equality IS the requirement: one endpoint failing costs the
+    // other nothing. A fix that drops the whole link empties this array.
+    expect(contractIdentities(readPersistedRegistry(groupDir))).toEqual([
+      `app/gateway|${LINK_CONTRACT_ID}|consumer`,
+    ]);
+  });
+
+  it('emits no cross-link for a pair whose other endpoint failed', async () => {
+    grpcExtract.mockImplementation(grpcFailingIn(new Set(['/repos/backend'])));
+
+    await syncGroup(linkedConfig(), { groupDir, resolveRepoHandle: resolveLinkedHandle });
+
+    // A cross-link asserts a relationship between two repos. With one of them
+    // absent from this sync there is nothing to assert it against, and a
+    // half-anchored link is exactly the "confident about something it could not
+    // read" answer the registry must not give.
+    expect(readPersistedRegistry(groupDir).crossLinks).toEqual([]);
+  });
+
+  it('emits both contracts and the cross-link when both endpoints are healthy', async () => {
+    // The control. Without it, "drop everything the link touches" passes every
+    // case above while deleting a healthy repo's contracts.
+    grpcExtract.mockImplementation(grpcFailingIn(new Set()));
+
+    const result = await syncGroup(linkedConfig(), {
+      groupDir,
+      resolveRepoHandle: resolveLinkedHandle,
+    });
+
+    expect(result.unreadableRepos).toEqual([]);
+    expect(result.registryOutcome).toBe('written');
+
+    const onDisk = readPersistedRegistry(groupDir);
+    expect(contractIdentities(onDisk)).toEqual([
+      `app/backend|${LINK_CONTRACT_ID}|provider`,
+      `app/gateway|${LINK_CONTRACT_ID}|consumer`,
+    ]);
+    expect(onDisk.crossLinks).toHaveLength(1);
+    expect(onDisk.crossLinks[0]).toMatchObject({
+      from: { repo: 'app/gateway' },
+      to: { repo: 'app/backend' },
+      type: 'grpc',
+      contractId: LINK_CONTRACT_ID,
+      matchType: 'manifest',
+    });
+  });
+
+  it('does not re-open the index it just reported unreadable', async () => {
+    // The other half of the fix, and the one a contract-level assertion cannot
+    // see: the manifest phase derives its known-repo set from `repoHandles`, so
+    // a failed repo left in that map is re-initialized and queried a second
+    // time. Filtering the OUTPUT would still hide the contracts while the sync
+    // went on reading an index it had already told the operator it could not
+    // read — and, for a window at its residency cap, spending a slot on it.
+    grpcExtract.mockImplementation(grpcFailingIn(new Set(['/repos/backend'])));
+
+    await syncGroup(linkedConfig(), { groupDir, resolveRepoHandle: resolveLinkedHandle });
+
+    const openedPools = initLbugMock.mock.calls.map((call) => String(call[0]));
+    // The gateway is opened twice: once to extract, once for its manifest
+    // window. The backend is opened once — the extraction attempt that failed —
+    // and never again.
+    expect(openedPools).toEqual(['pool-gateway', 'pool-backend', 'pool-gateway']);
+  });
+
+  it('tells the operator the endpoint was unreadable, not that it is unconfigured', async () => {
+    // The two diagnoses need different actions: an unconfigured repo means edit
+    // group.yaml, an unreadable one means re-index. Reusing the "not in
+    // config.repos" line for a repo that IS configured sends the operator to
+    // change a file that is already correct — and its "cross-links will use
+    // synthetic UIDs" tail describes an outcome that no longer happens, since
+    // this link's cross-link is dropped outright.
+    grpcExtract.mockImplementation(grpcFailingIn(new Set(['/repos/backend'])));
+    const cap = _captureLogger();
+
+    try {
+      await syncGroup(linkedConfig(), { groupDir, resolveRepoHandle: resolveLinkedHandle });
+    } finally {
+      cap.restore();
+    }
+
+    const linkWarnings = cap
+      .records()
+      .filter((r) => r.level === 40)
+      .map((r) => String(r.msg ?? ''))
+      .filter((msg) => msg.includes('[group/sync] manifest link'));
+
+    expect(linkWarnings).toHaveLength(1);
+    expect(linkWarnings[0]).toContain('could not read: app/backend');
+    expect(linkWarnings[0]).not.toContain('not in config.repos');
   });
 });

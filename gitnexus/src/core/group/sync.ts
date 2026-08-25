@@ -361,6 +361,13 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             "⚠️ Could not read this repo's index; its contracts are omitted from this sync.",
           );
           unreadableRepos.push(groupPath);
+          // Forget the handle recorded above (present only if the failure came
+          // after initLbug). Deferred manifest resolution derives its known-repo
+          // set from this map, so leaving the entry here re-opens a repo this
+          // sync has just declared unreadable and resolves its symbols against
+          // an index the same run says it could not read. Deleting an absent key
+          // is a no-op, which is exactly the initLbug-threw case.
+          repoHandles.delete(groupPath);
         }
       }
     }
@@ -392,15 +399,31 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     }
 
     if (allLinks.length > 0) {
-      // knownRepos = repos that actually initialized (have a pool handle), NOT
-      // every config.repos entry — a missing/failed repo has no handle, and
-      // intersecting against config keys would try to initLbug an undefined path.
+      // knownRepos = repos that initialized AND extracted cleanly, NOT every
+      // config.repos entry — a missing or failed repo has no handle (the catch
+      // above deletes one it recorded), and intersecting against config keys
+      // would try to initLbug an undefined path.
       const knownRepos = new Set(repoHandles.keys());
+      // Endpoints this sync could not read. Kept separate from `dangling`
+      // because the two need different answers from the operator — and because
+      // what happens to their contracts differs: a dangling endpoint still
+      // yields a synthetic-UID contract, an unreadable one yields nothing.
+      const unreadable = new Set(unreadableRepos);
       for (const link of allLinks) {
-        const dangling = [link.from, link.to].filter((r) => !knownRepos.has(r));
+        const endpoints = [link.from, link.to];
+        // "not in config.repos" has to stay literally true. An unreadable repo
+        // IS configured; telling the operator it is not sends them to edit
+        // group.yaml for a problem that only re-indexing fixes.
+        const dangling = endpoints.filter((r) => !knownRepos.has(r) && !unreadable.has(r));
         if (dangling.length > 0) {
           logger.warn(
             `[group/sync] manifest link ${link.type}:${link.contract} references repos not in config.repos: ${dangling.join(', ')} — cross-links will use synthetic UIDs`,
+          );
+        }
+        const unreadableEndpoints = endpoints.filter((r) => unreadable.has(r));
+        if (unreadableEndpoints.length > 0) {
+          logger.warn(
+            `[group/sync] manifest link ${link.type}:${link.contract} references repos this sync could not read: ${unreadableEndpoints.join(', ')} — their contracts and this link's cross-link are omitted from this sync`,
           );
         }
       }
@@ -437,8 +460,23 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           }
 
           const windowResult = await manifestEx.extractFromManifest(window.links, windowExecutors);
-          autoContracts.push(...windowResult.contracts);
-          manifestCrossLinks.push(...windowResult.crossLinks);
+          // Drop by ENDPOINT, not by link. `ManifestExtractor` resolves both
+          // endpoints of a link and emits a contract for each, so discarding a
+          // link whose provider is unreadable would delete the consumer repo's
+          // contract as well — a healthy repo losing its own output because a
+          // neighbour's index would not open. The repo that could not be read
+          // is the only thing that goes.
+          //
+          // A cross-link is an assertion about a PAIR, so it needs both ends: if
+          // either endpoint is unreadable there is nothing left to anchor it to,
+          // and a half-anchored link is precisely the confident-about-what-it-
+          // could-not-read answer the registry must not give.
+          autoContracts.push(...windowResult.contracts.filter((c) => !unreadable.has(c.repo)));
+          manifestCrossLinks.push(
+            ...windowResult.crossLinks.filter(
+              (l) => !unreadable.has(l.from.repo) && !unreadable.has(l.to.repo),
+            ),
+          );
         } finally {
           for (const release of windowReleases) {
             release();
