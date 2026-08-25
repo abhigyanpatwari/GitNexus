@@ -536,6 +536,7 @@ export const streamAllCSVsToDisk = async (
 
     // Multi-language node types share the same CSV shape (no isExported column)
     const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
+    const constHeader = `${multiLangHeader},convexEndpointFactory`;
     const MULTI_LANG_TYPES = [
       'Struct',
       'Enum',
@@ -565,7 +566,7 @@ export const streamAllCSVsToDisk = async (
         t,
         new BufferedCSVWriter(
           path.join(csvDir, `${t.toLowerCase()}.csv`),
-          t === 'Property' ? propertyHeader : multiLangHeader,
+          t === 'Property' ? propertyHeader : t === 'Const' ? constHeader : multiLangHeader,
         ),
       );
     }
@@ -758,7 +759,9 @@ export const streamAllCSVsToDisk = async (
                         // empty BOOLEAN cell fails the COPY.
                         node.properties.isDetail === true ? 'true' : 'false',
                       ]
-                    : []),
+                    : node.label === 'Const'
+                      ? [escapeCSVField(String(node.properties.convexEndpointFactory ?? ''))]
+                      : []),
                 ].join(','),
               );
             } else {

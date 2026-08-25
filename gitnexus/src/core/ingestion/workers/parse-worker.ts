@@ -2821,6 +2821,21 @@ const processFileGroup = (
         }
       }
 
+      const isExported =
+        language === SupportedLanguages.Vue && isVueSetup
+          ? isVueSetupTopLevel(nameNode || definitionNode)
+          : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName);
+      if (definitionNode && provider.definitionPropertiesExtractor) {
+        const definitionProperties = provider.definitionPropertiesExtractor({
+          nodeLabel,
+          nodeName,
+          definitionNode,
+          parsedImports: parsedFile?.parsedImports ?? [],
+          isExported,
+        });
+        if (definitionProperties !== undefined) Object.assign(methodProps, definitionProperties);
+      }
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
@@ -2830,10 +2845,7 @@ const processFileGroup = (
           startLine,
           endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
           language: language,
-          isExported:
-            language === SupportedLanguages.Vue && isVueSetup
-              ? isVueSetupTopLevel(nameNode || definitionNode)
-              : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName),
+          isExported,
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
           ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
             ? { templateArguments: classTemplateArguments }

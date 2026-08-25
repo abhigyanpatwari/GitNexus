@@ -20,6 +20,7 @@ import {
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
+import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
@@ -659,9 +660,9 @@ export interface EpistemicCauses {
    */
   readonly receiverTyping: number;
   /**
-   * Symbols on the far side of a dispatch boundary that the traversal could not
-   * attribute to the queried symbol: implementations plus interface-level
-   * consumers, summed over the boundary nodes that were flagged.
+   * Symbols on or beyond a dispatch boundary that the traversal could not
+   * attribute statically: implementations plus interface-level consumers, or
+   * an endpoint exposed through a framework runtime proxy.
    *
    * Unit: SYMBOLS, not call sites — deliberately, because a call-site count is
    * not derivable on this side. The graph does not retain per-site multiplicity
@@ -711,6 +712,7 @@ function epistemicFrom(dropped: {
   sites: number;
   external: number;
   undecided: number;
+  dispatch: number;
 }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
@@ -725,7 +727,7 @@ function epistemicFrom(dropped: {
           epistemic: 'exact',
           causes: {
             receiverTyping: 0,
-            dispatchBoundary: 0,
+            dispatchBoundary: dropped.dispatch,
             externalBoundary: dropped.external,
             undecidedSatisfaction: 0,
           },
@@ -740,7 +742,7 @@ function epistemicFrom(dropped: {
         // would read a different magnitude than the human reading the text.
         causes: {
           receiverTyping: dropped.sites,
-          dispatchBoundary: 0,
+          dispatchBoundary: dropped.dispatch,
           externalBoundary: dropped.external,
           undecidedSatisfaction: dropped.undecided,
         },
@@ -6775,6 +6777,7 @@ export class LocalBackend {
     symId: string,
     symType: string,
     symName: string,
+    direction?: 'upstream' | 'downstream',
   ): Promise<{
     epistemic: 'exact' | 'lower-bound';
     boundaries?: string[];
@@ -6821,10 +6824,19 @@ export class LocalBackend {
               ? await this.owningTypeNames(repo, symId)
               : []),
           ]);
+    const convexDispatch =
+      direction === 'downstream'
+        ? undefined
+        : await queryConvexDispatchMetadata(repo.lbugPath, symId, symName, symType);
     const droppedBoundaries = {
       ...receiverDrops,
-      notes: [...receiverDrops.notes, ...undecidedDrops.notes],
+      notes: [
+        ...receiverDrops.notes,
+        ...undecidedDrops.notes,
+        ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
+      ],
       undecided: undecidedDrops.undecided,
+      dispatch: convexDispatch === undefined ? 0 : 1,
     };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
@@ -6920,7 +6932,7 @@ export class LocalBackend {
         boundaries: [...droppedBoundaries.notes, ...boundaries],
         causes: {
           receiverTyping: droppedBoundaries.sites,
-          dispatchBoundary: dispatchBoundarySymbols,
+          dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
           externalBoundary: droppedBoundaries.external,
           undecidedSatisfaction: droppedBoundaries.undecided,
         },
@@ -7027,7 +7039,13 @@ export class LocalBackend {
       causes?: EpistemicCauses;
     }> = opts.skipEpistemic
       ? Promise.resolve({})
-      : this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
+      : this.computeEpistemicBoundary(
+          repo,
+          symId,
+          symType,
+          (sym.name || sym[1]) as string,
+          direction,
+        );
     const beanMetadataPromise =
       opts.skipEpistemic || summaryOnly
         ? Promise.resolve(undefined)

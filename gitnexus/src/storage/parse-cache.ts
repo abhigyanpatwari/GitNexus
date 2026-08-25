@@ -569,7 +569,13 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
 // scanned; #3017 is the only other claimant.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 72;
+//
+// 72 -> 74 adds import-proven Convex endpoint metadata to Const worker output.
+// A warm v72 cache has no convexEndpointFactory property, so the MCP impact
+// probe would keep claiming exact results for unchanged endpoints. Version 73
+// is intentionally skipped because the concurrent #3041 handler-identity PR
+// claims it. Re-check main and open PRs immediately before merge.
+const SCHEMA_BUMP = 74;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
