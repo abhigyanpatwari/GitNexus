@@ -163,9 +163,13 @@ export const pythonProvider = defineLanguage({
   // ── #2391 constant harvest, provider-hook form (#2980): module-level string
   // constants + from-imports for non-literal decorator route paths. Bare-name
   // refs fold through the shared resolver (no foldRoutePathOperands needed).
+  // No `moduleConstantHeuristic`: Python harvests unconditionally, exactly as
+  // #2391 shipped it. A content gate was tried here and removed on review — it
+  // required `NAME` immediately followed by `=`, so it silently dropped the two
+  // idiomatic typed-FastAPI shapes (`API: str = "/api"`,
+  // `API: Final[str] = "/api"`) and every composed constant whose RHS starts
+  // with an identifier (`USERS = BASE + "/users"`), i.e. it REGRESSED routes
+  // that already resolve on main. The worker treats a missing heuristic as
+  // default-open; only Java opts into a gate, where the cost actually bites.
   extractModuleConstants: extractPythonModuleConstants,
-  moduleConstantHeuristic: (content) =>
-    // Module-level assignment (`X = "/path"`, possibly typed/annotated) or a
-    // from-import that can bind a constant name at a decorator site.
-    /^[^\S\n]*(?:[A-Za-z_]\w*\s*=\s*['"]|from\s+[\w.]+\s+import\s)/m.test(content),
 });

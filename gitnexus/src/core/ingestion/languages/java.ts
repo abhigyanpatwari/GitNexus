@@ -18,6 +18,7 @@ import { extractSpringRoutes, extractSpringTypes } from '../route-extractors/spr
 import {
   extractJavaModuleConstants,
   foldJavaOperands,
+  isJavaConstantFile,
 } from '../route-extractors/java-const-resolver.js';
 import { javaExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -222,17 +223,24 @@ export const javaProvider = defineLanguage({
   extractRouteInheritanceTypes: extractSpringTypes,
 
   // ── #2980: constant harvest + qualified-ref fold for non-literal mapping
-  // paths (`@WinPostMapping(ApiPaths.SAVE_V1)`) — kept behind provider hooks so
+  // paths (`@PostMapping(ApiPaths.SAVE_V1)`) — kept behind provider hooks so
   // the shared ingestion layers stay language-agnostic. The heuristic is
   // SYNTAX-driven (field/import shape), never a class-name pattern: constant
   // classes are routinely named `ApiPaths`/`Routes`/`Paths`, which a
   // `*Constants`-style gate would silently drop (review round-2 High finding).
   extractModuleConstants: extractJavaModuleConstants,
+  // One gate, shared with the group side's `prepareRepo` pre-pass so the two
+  // subsystems cannot disagree about which files define constants (see
+  // JAVA_CONSTANT_FILE_RE — the previous divergence dropped constant
+  // INTERFACES on this side only, which cost the graph its Route nodes while
+  // the group still published the contract).
   moduleConstantHeuristic: (content) =>
-    /\bstatic\s+final\s+String\s/.test(content) ||
+    isJavaConstantFile(content) ||
     // `import com.winning.opt.common.ApiPaths;` — ANY class import can bind a
     // constant ref (`ApiPaths.X` at an annotation site), so gate on the
-    // general import shape, not on the imported name.
+    // general import shape, not on the imported name. Ingestion-only: this
+    // side needs the importing controller's own import table, which the group
+    // side instead derives lazily from the tree it already holds.
     /\bimport\s+(?:static\s+)?[\w.]+\s*;/.test(content),
   foldRoutePathOperands: foldJavaOperands,
 });

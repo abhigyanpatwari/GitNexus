@@ -539,14 +539,37 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // then adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so Java
 // and Kotlin caches persist scheduled, event, messaging, and managed-job facts.
 //
-// This PR originally carried its own bump (47 -> 48) for the Java constant-route
-// capture set change (route-extractors/java-const-resolver.ts + the spring.ts
-// operand branch + the parse-worker Java constant harvest): a warm pre-feature
-// cache replays `moduleConstants=0` captures verbatim and silently drops every
-// constant-based Spring route on unchanged files. After rebasing onto current
-// main the ledger already sits at 70, whose capture set post-dates and includes
-// this harvest — v70 invalidates those caches, so no additional bump is needed.
-const SCHEMA_BUMP = 70;
+// 70 -> 71 adds the Java constant-route capture set (#2980):
+// `route-extractors/java-const-resolver.ts`, the `spring.ts` operand branch,
+// and the parse-worker's provider-driven constant harvest. A warm pre-feature
+// cache replays those files' worker results with `moduleConstants` absent and
+// `routePathOperands` unset, so every constant-based Spring route on an
+// unchanged file is silently dropped — the feature is inert until something
+// else invalidates the cache.
+//
+// This branch briefly reasoned that no bump was needed because the ledger
+// "already sits at 70, whose capture set post-dates and includes this harvest".
+// It does not: v70 was cut by fe3d7e56b for Spring non-HTTP handler facts
+// (#2417 / #2891), an ancestor of this PR's base, and it cannot include a
+// harvest that does not exist on main. Because
+// `PARSE_CACHE_VERSION = ${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}` and
+// package.json is untouched here, leaving 70 makes the key BYTE-IDENTICAL
+// before and after this merge — precisely the inert-feature trap the v33/v34
+// notes above warn about. Exposure is bounded by the package version (a
+// released upgrade invalidates anyway), but same-version warm caches — dev
+// builds, CI caches, anyone who indexed with an unreleased build — replay the
+// stale captures.
+//
+// 72, not 71: open PR #3017 (`fix/nest-decorator-routes`, NestJS decorator route
+// indexing) already claims 71, with an identical pin test. Re-checking
+// origin/main alone would not catch that — main is 70 and stays 70 until one of
+// the two merges, at which point the second lands a byte-identical
+// PARSE_CACHE_VERSION and is inert. This is exactly the rule the ledger states
+// and the v37/v38 clash it was written for: the next free value above every
+// IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
+// scanned; #3017 is the only other claimant.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 72;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

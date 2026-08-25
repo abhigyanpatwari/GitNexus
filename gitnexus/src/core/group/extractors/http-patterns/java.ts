@@ -31,6 +31,7 @@ import {
 import {
   extractJavaModuleConstants,
   foldJavaOperands,
+  isJavaConstantFile,
   parseJavaConstOperands,
   type RepoConstants,
 } from '../../../ingestion/route-extractors/java-const-resolver.js';
@@ -171,6 +172,19 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
                     key: (identifier) @key
                     value: [(string_literal) @value (element_value_array_initializer (string_literal) @value)]))))
             name: (identifier) @member) @node
+          (class_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr])))) @node
+          (class_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list
+                  (element_value_pair
+                    key: (identifier) @key
+                    value: [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr]))))) @node
           (method_declaration
             (modifiers
               (annotation
@@ -511,6 +525,16 @@ interface RouteAnnotationScan {
   feignPrefixByInterfaceId: Map<number, string[]>;
   /** Spring HTTP Interface `@HttpExchange(url|value)` type-level prefixes per class/interface node id. */
   httpExchangePrefixByTypeId: Map<number, string[]>;
+  /**
+   * Class node ids whose `@RequestMapping` prefix is a constant reference or
+   * concat rather than a literal. Folding a TYPE-level prefix would need the
+   * repo constant map inside `scanRouteAnnotations`, which has no access to it,
+   * so `scan()` suppresses every method route under such a class instead of
+   * emitting it with the prefix silently dropped (a wrong path, not a missing
+   * one). Ingestion's `extractSpringRoutes` applies the identical rule — R4
+   * parity.
+   */
+  typesWithUnfoldablePrefix: Set<number>;
   /** Resolved Spring shortcut/`@RequestMapping` routes — paths × verbs yield one entry each. */
   methodRoutes: MethodRouteAnnotation[];
   /** One entry per OpenFeign `@RequestLine` whose value parses to a verb + path. */
@@ -538,6 +562,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   // feeds the OpenFeign *consumer* path in scan(). An interface carrying both
   // `@RequestMapping` and `@FeignClient(path)` lands a different value in each.
   const prefixByTypeId = new Map<number, string[]>();
+  const typesWithUnfoldablePrefix = new Set<number>();
   const feignPrefixByInterfaceId = new Map<number, string[]>();
   const httpExchangePrefixByTypeId = new Map<number, string[]>();
   const methodRoutes: MethodRouteAnnotation[] = [];
@@ -649,6 +674,11 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     // — on an interface — an OpenFeign `@FeignClient(path = "...")` prefix.
     if (ann === 'RequestMapping') {
       if (!isRouteMemberKey(keyNode)) continue;
+      if (!valueNode) {
+        // Constant-valued class prefix — see `typesWithUnfoldablePrefix`.
+        typesWithUnfoldablePrefix.add(node.id);
+        continue;
+      }
       const prefix = unquoteLiteral(valueNode.text);
       if (prefix !== null) {
         pushPrefix(prefixByTypeId, node.id, prefix);
@@ -659,13 +689,13 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     } else if (ann === 'FeignClient' && node.type === 'interface_declaration') {
       // Feign's `name`/`value` identify a service, not a path — only `path` is a prefix.
       if (!keyNode || keyNode.text !== 'path') continue;
-      const prefix = unquoteLiteral(valueNode.text);
+      const prefix = valueNode ? unquoteLiteral(valueNode.text) : null;
       if (prefix !== null) pushPrefix(feignPrefixByInterfaceId, node.id, prefix);
     } else if (ann === 'HttpExchange') {
       // Spring HTTP Interface type-level prefix: the path lives in `url`/`value`
       // (or positionally). Applies to its `@(Get|...)Exchange` consumer methods.
       if (keyNode && keyNode.text !== 'url' && keyNode.text !== 'value') continue;
-      const prefix = unquoteLiteral(valueNode.text);
+      const prefix = valueNode ? unquoteLiteral(valueNode.text) : null;
       if (prefix !== null) pushPrefix(httpExchangePrefixByTypeId, node.id, prefix);
     }
   }
@@ -715,6 +745,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
 
   return {
     prefixByTypeId,
+    typesWithUnfoldablePrefix,
     feignPrefixByInterfaceId,
     httpExchangePrefixByTypeId,
     methodRoutes: constrainedMethodRoutes,
@@ -760,9 +791,14 @@ function collectImplementedInterfaces(typeNode: Parser.SyntaxNode): string[] {
 }
 
 function collectSpringTypes(filePath: string, tree: Parser.Tree): SharedSpringType[] {
-  const { prefixByTypeId, methodRoutes } = scanRouteAnnotations(tree);
+  const { prefixByTypeId, typesWithUnfoldablePrefix, methodRoutes } = scanRouteAnnotations(tree);
   const routesByMethodId = new Map<number, Array<{ method: string; path: string }>>();
   for (const route of methodRoutes) {
+    // Constant-valued class prefix: no single prefix string exists here, so the
+    // inheritance view would publish this route unprefixed. Skip — same rule as
+    // scan() and as ingestion (R4 parity).
+    const owner = findEnclosingClass(route.methodNode);
+    if (owner && typesWithUnfoldablePrefix.has(owner.id)) continue;
     // A constant-referencing route still carries `rawPath: ''` here — folding
     // happens in scan() against the repo constant map, which this
     // inheritance-view collector has no access to. Emitting it as an empty
@@ -870,7 +906,12 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         // A gate that also matched `import ...;` would parse the entire
         // repository here (tens of thousands of files) just to build import
         // tables the fold can derive per-file on demand.
-        if (!src || !/static\s+final\s+String\s|interface\s+[A-Z]\w*\s*\{/.test(src)) {
+        //
+        // The predicate is the SHARED one the ingestion provider uses, so the
+        // two subsystems agree on which files define constants. Its previous
+        // local spelling missed `final static String` and lowercase interface
+        // names, and admitted an interface that ingestion's gate rejected.
+        if (!src || !isJavaConstantFile(src)) {
           continue;
         }
         const tree = args.parseSource(args.parser, src);
@@ -898,6 +939,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // `@RequestLine`s — from a single `matches()` pass over the tree.
     const {
       prefixByTypeId,
+      typesWithUnfoldablePrefix,
       feignPrefixByInterfaceId,
       httpExchangePrefixByTypeId,
       methodRoutes,
@@ -936,6 +978,12 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     };
 
     for (const route of methodRoutes) {
+      // A constant-valued CLASS prefix cannot be folded here, so every method
+      // route under such a class is suppressed rather than emitted at a wrong
+      // (unprefixed) path — the same rule `classesWithArrayPrefix` already
+      // encodes for the array form, and the same rule ingestion applies.
+      const owner = findEnclosingClass(route.methodNode);
+      if (owner && typesWithUnfoldablePrefix.has(owner.id)) continue;
       // Non-literal route path: fold the operand list against the repo-wide
       // constant map. Skip (never a guessed path) when the fold fails or the
       // repo context is absent (context-less fallback scanning).

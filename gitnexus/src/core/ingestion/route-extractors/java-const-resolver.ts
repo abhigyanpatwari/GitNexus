@@ -19,10 +19,16 @@
  *   }
  *
  * Reference shapes at annotation sites this binding resolves:
- *   @WinPostMapping(ApiPathConstants.DIAGNOSIS_SAVE_V1)      // qualified
- *   @WinPostMapping(com.winning.opt.X.ApiPathConstants.Y)    // FQN-qualified
- *   @WinPostMapping(DIAGNOSIS_SAVE_V1)                       // static-imported
- *   @WinPostMapping(API_CIS_V1 + "summary/save")             // inline concat
+ *   @PostMapping(ApiPathConstants.DIAGNOSIS_SAVE_V1)      // qualified
+ *   @PostMapping(com.winning.opt.X.ApiPathConstants.Y)    // FQN-qualified
+ *   @PostMapping(DIAGNOSIS_SAVE_V1)                       // static-imported
+ *   @PostMapping(API_CIS_V1 + "summary/save")             // inline concat
+ *
+ * Which ANNOTATIONS count as routes is a separate question this module has no
+ * say in: `spring-shared.ts` holds an exact-name map, so a vendor alias like
+ * `@WinPostMapping` yields no route on this base regardless of how its value
+ * folds (#2883). Folding and alias recognition compose; neither implies the
+ * other.
  *
  * Import shapes consumed:
  *   import com.winning.opt.diagnosis.api.constants.ApiPathConstants;
@@ -35,8 +41,9 @@
  */
 
 import type Parser from 'tree-sitter';
+import { unquoteSpringLiteral } from './spring-shared.js';
 import {
-  resolveConstant as foldConstant,
+  MAX_FOLD_LENGTH,
   type ImportBinding,
   type ImportResolver,
   type ModuleConstants,
@@ -52,6 +59,43 @@ export type {
 } from './constant-resolver.js';
 
 /**
+ * Cheap content gate: can this Java file DEFINE a string constant that a route
+ * annotation might reference?
+ *
+ * Exported so BOTH sides of the pipeline use the same predicate and cannot
+ * disagree about which files carry constants — the ingestion provider
+ * (`languages/java.ts`, as `moduleConstantHeuristic`) and the group extractor's
+ * `prepareRepo` pre-pass (`group/extractors/http-patterns/java.ts`). They used
+ * to spell it differently, and the two spellings disagreed on a constant
+ * INTERFACE: the group admitted it and published a provider contract at the
+ * folded path, while ingestion rejected the file and emitted no Route node for
+ * it — an R4 parity break in the losing direction, since ingestion is the side
+ * that drives the graph and `api_impact`.
+ *
+ * Arms:
+ *  - `static final String` / `final static String` — Java lets modifiers appear
+ *    in any order, and `public final static String X = "/a";` is legal.
+ *  - any `interface` declaration — interface fields are implicitly
+ *    `public static final` (JLS 9.3), so a pure constant interface carries
+ *    neither keyword and no import. `@interface` (annotation type) matches too,
+ *    costing one parse that yields nothing.
+ */
+const EXPLICIT_STRING_CONSTANT_RE = /\b(?:static\s+final|final\s+static)\s+String\s/;
+const INTERFACE_DECL_RE = /\binterface\s+\w/;
+const STRING_ASSIGNMENT_RE = /\bString\s+\w+\s*=/;
+
+export function isJavaConstantFile(source: string): boolean {
+  if (EXPLICIT_STRING_CONSTANT_RE.test(source)) return true;
+  // The interface arm is a bare word match, so on its own it admits any file
+  // whose PROSE mentions "interface " — and every admitted file costs the group
+  // side a full extra parse. Requiring a String assignment as well keeps every
+  // shape `extractJavaModuleConstants` accepts in an interface body (bare
+  // `String`, `java.lang.String`, no space before `=`, multi-declarator) while
+  // dropping the comment-only matches.
+  return INTERFACE_DECL_RE.test(source) && STRING_ASSIGNMENT_RE.test(source);
+}
+
+/**
  * The Java {@link ImportResolver}: map a fully-qualified import specifier to
  * the unique file key it refers to, or null when it cannot be pinned to
  * exactly one file.
@@ -61,14 +105,18 @@ export type {
  * file-path-keyed and Maven multi-module trees repeat package roots across
  * modules (`winning-opt-a/.../api/constants/ApiPathConstants.java` and
  * `winning-opt-b/.../api/constants/ApiPathConstants.java`), suffix matching
- * must stay UNIQUE-suffix: an import whose class name matches N files in N
- * different modules cannot be pinned by package alone — unless exactly one of
- * them ALSO matches the full package path. We therefore rank candidates:
- *   1. exact full-suffix match (`<pkg-path>/<Class>.java` as a path suffix)
- *   2. class-name-only suffix (`**&#47;<Class>.java`) when exactly one exists
- * and return null when both attempts are ambiguous.
+ * stays UNIQUE-suffix: an import whose full package+class path matches N files
+ * in N different modules cannot be pinned, so it returns null — the skip floor
+ * this module promises, never a wrong path.
+ *
+ * A nearest-shared-directory tie-break was tried here and removed on review:
+ * javac resolves duplicate FQNs by CLASSPATH ORDER, not directory proximity, so
+ * a `src/test` fixture copy or a module that merely sits closer in the tree can
+ * outrank the real dependency and yield a silently wrong literal. In a resolver
+ * whose whole contract is skip-or-correct, a plausible guess is the one answer
+ * that cannot be allowed.
  */
-export const resolveJavaImport: ImportResolver = (importingFileKey, moduleSpec, repoKeys) => {
+export const resolveJavaImport: ImportResolver = (_importingFileKey, moduleSpec, repoKeys) => {
   // A static import `a.b.C.CONST` names the class as all-but-last segment;
   // a plain import `a.b.C` names the class as last segment. Both resolve to
   // a file ending `a/b/C.java`; treating the whole spec as a path and
@@ -76,61 +124,42 @@ export const resolveJavaImport: ImportResolver = (importingFileKey, moduleSpec, 
   const asPath = moduleSpec.replace(/\./g, '/');
   const classFile = `${asPath}.java`;
 
-  // 1. Exact package-path suffix match.
+  // Exact package-path suffix match, unique or nothing.
   let hit: string | null = null;
-  let ambiguity = false;
   for (const key of repoKeys) {
     if (key === classFile || key.endsWith(`/${classFile}`)) {
-      if (hit !== null) {
-        ambiguity = true;
-        break;
-      }
+      if (hit !== null) return null; // 2+ modules carry this FQN — unresolvable
       hit = key;
     }
   }
-  if (!ambiguity) return hit;
-
-  // Ambiguous full-path match (same package+class in 2+ modules is legal in
-  // separated-source monorepos but pathological for route constants). Try
-  // disambiguating by proximity to the importing file: prefer the candidate
-  // sharing the longest leading directory prefix with the importer. This
-  // mirrors how Maven/Gradle resolve classpath collisions in practice (nearest
-  // module wins) without ever guessing across unrelated trees.
-  const candidates: string[] = [];
-  for (const key of repoKeys) {
-    if (key === classFile || key.endsWith(`/${classFile}`)) candidates.push(key);
-  }
-  if (candidates.length > 1) {
-    const importerDirs = importingFileKey.split('/').slice(0, -1);
-    let best: string | null = null;
-    let bestDepth = -1;
-    let tie = false;
-    for (const c of candidates) {
-      const cDirs = c.split('/');
-      let d = 0;
-      while (d < importerDirs.length && d < cDirs.length && importerDirs[d] === cDirs[d]) d++;
-      if (d > bestDepth) {
-        bestDepth = d;
-        best = c;
-        tie = false;
-      } else if (d === bestDepth) {
-        tie = true;
-      }
-    }
-    if (best !== null && !tie) return best;
-  }
-  return null;
+  return hit;
 };
 
-/** Is `node` a Java string literal (`"..."`) with its unquoted value? */
+/**
+ * Is `node` a Java string literal (`"..."`), and if so what value does the
+ * route layer give it?
+ *
+ * tree-sitter-java splits a `string_literal` AROUND its `escape_sequence`
+ * children, so joining `string_fragment`s alone silently DELETES every escape:
+ * `"/user/{id:\\d+}"` — the standard Spring path-variable regex constraint —
+ * folded to `/user/{id:d+}`, and a pure-escape literal (`"\\t"`) folded to the
+ * empty string. Slicing the quotes off the raw text keeps the source spelling,
+ * which is precisely what the LITERAL path does
+ * ({@link unquoteSpringLiteral}) — so `@GetMapping(ApiPaths.USER_REGEX)` and
+ * `@GetMapping("/user/{id:\\d+}")` now emit the same path for the same Java
+ * source instead of two spellings the graph cannot reconcile. Same
+ * `string_fragment`-join trap as the NestJS one in #3017.
+ */
 function stringLiteralValue(node: Parser.SyntaxNode): string | null {
   if (node.type !== 'string_literal') return null;
-  const parts = node.children.filter((c) => c.type === 'string_fragment');
-  if (parts.length === 0) {
-    // Empty literal `""` has no string_fragment child.
-    return '';
-  }
-  return parts.map((c) => c.text).join('');
+  // A Java text block is also a `string_literal` here, and `unquoteSpringLiteral`
+  // has a `"""` arm that would hand back the raw block — leading newline and
+  // incidental indentation included, both of which Java strips. Nothing
+  // downstream normalizes that, so it would publish a Route at a path like
+  // "\n      /api/v1/x\n    ". The old fragment-join returned '' here, which
+  // floored to skip; keep that floor rather than trade it for a wrong path.
+  if (node.text.startsWith('"""')) return null;
+  return unquoteSpringLiteral(node.text);
 }
 
 /**
@@ -276,7 +305,7 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
       // Type must be String (java.lang.String is implicit-imported).
       const typeNode = member.childForFieldName('type');
       if (!typeNode) continue;
-      const typeText = typeNode.text.replace(/^com\.java\.lang\./, '');
+      const typeText = typeNode.text;
       if (typeText !== 'String' && typeText !== 'java.lang.String') continue;
 
       const declarators = member.children.filter((c) => c.type === 'variable_declarator');
@@ -298,6 +327,23 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
         if (operands === null) {
           literals.delete(name);
           exprs.delete(name);
+          // …and the static IMPORT of the same simple name. A local
+          // `static final String` shadows `import static a.b.C.PATH` inside
+          // that class (JLS 6.4.1), so the correct answer for a non-foldable
+          // rebind is "unresolvable" — leaving the import alive makes the fold
+          // fall through it (computeFold: literals → exprs → imports) and
+          // return the IMPORTED value, i.e. a wrong path where the skip floor
+          // is owed. #2393's Python defect, reproduced for Java.
+          //
+          // The delete is file-scoped because these maps are (see the header:
+          // nested types flatten into one file-level namespace). So a SIBLING
+          // top-level class in the same file that legitimately uses the import
+          // loses it too and floors to skip, where javac would resolve it.
+          // That direction is the acceptable one — a missing route, not a wrong
+          // one — and the shape (two top-level classes, one shadowing a static
+          // import with a non-foldable initializer) is vanishingly rare next to
+          // the wrong-value it prevents.
+          imports.delete(name);
           if (qname) {
             literals.delete(qname);
             exprs.delete(qname);
@@ -331,33 +377,87 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
 
   const walkTypes = (node: Parser.SyntaxNode, insideInterface: boolean): void => {
     for (const child of node.children ?? []) {
-      const isClass = child.type === 'class_declaration';
       const isInterface = child.type === 'interface_declaration';
-      if (isClass || isInterface) {
-        const nameNode = child.childForFieldName('name');
-        const className = nameNode?.text ?? null;
-        const body = child.children.find(
-          (c) => c.type === 'class_body' || c.type === 'interface_body',
-        );
-        // Recompute implicit interface semantics at each type boundary: a
-        // class nested in an interface is a normal class whose fields need
-        // explicit `static final` (JLS 9.5 — only the interface's own fields
-        // are implicitly public static final). Propagating the outer
-        // `insideInterface` flag in would harvest mutable nested fields as
-        // constants and let a same-name nested field shadow a real interface
-        // constant with a stale value.
-        if (body && className) collectFieldConstants(body, isInterface, className);
-        if (body) walkTypes(body, isInterface);
-      } else if (child.type === 'enum_declaration' || child.type === 'record_declaration') {
+      // Enums and records are ordinary type declarations for constant
+      // purposes — their fields need an explicit `static final` (JLS 8.9/8.10),
+      // unlike an interface's implicitly-constant ones. They used to be only
+      // RECURSED into, never collected, so a `static final String` declared
+      // directly in an enum or record was silently absent from the map.
+      const isTypeDecl =
+        isInterface ||
+        child.type === 'class_declaration' ||
+        child.type === 'enum_declaration' ||
+        child.type === 'record_declaration';
+      if (!isTypeDecl) {
         walkTypes(child, insideInterface);
-      } else {
-        walkTypes(child, insideInterface);
+        continue;
       }
+      const className = child.childForFieldName('name')?.text ?? null;
+      const body = child.children.find(
+        (c) => c.type === 'class_body' || c.type === 'interface_body' || c.type === 'enum_body',
+      );
+      if (!body) continue;
+      // An enum's members hang one level deeper, under `enum_body_declarations`
+      // (the `enum_body` itself holds only the enum constants).
+      const memberBody = body.children.find((c) => c.type === 'enum_body_declarations') ?? body;
+      // Recompute implicit interface semantics at each type boundary: a
+      // class nested in an interface is a normal class whose fields need
+      // explicit `static final` (JLS 9.5 — only the interface's own fields
+      // are implicitly public static final). Propagating the outer
+      // `insideInterface` flag in would harvest mutable nested fields as
+      // constants and let a same-name nested field shadow a real interface
+      // constant with a stale value.
+      if (className) collectFieldConstants(memberBody, isInterface, className);
+      // Recurse over the WHOLE body, not just `memberBody`: an enum's constants
+      // are siblings of `enum_body_declarations`, so narrowing here dropped any
+      // type nested inside an enum-constant body whenever the enum also had
+      // member declarations. For a class/interface/record the two are the same
+      // node; for an enum `body` is a strict superset, and the extra visit to
+      // `enum_body_declarations` collects nothing twice (collectFieldConstants
+      // is still called on `memberBody` alone).
+      walkTypes(body, isInterface);
     }
   };
   walkTypes(tree.rootNode, false);
 
   return { literals, exprs, imports: imports as Map<string, ImportBinding> };
+}
+
+/**
+ * Per-fold state. Mirrors the guards the agnostic core carries in `foldName`,
+ * which this binding stopped delegating to once it had to resolve qualified
+ * operands itself:
+ *
+ *  - `memo` caches SUCCESSES only and is never popped. Without it a
+ *    shared-descendant DAG (`X_k = X_{k+1} + X_{k+1}`) re-folds each child once
+ *    per reference — O(2^depth) — and {@link MAX_FOLD_LENGTH} cannot save it,
+ *    because a chain whose intermediate values are the empty string never
+ *    accumulates any output. Measured before this state existed: one route over
+ *    a 31-line constants file took 2.7 s at 26 levels and 11 s at 28, on the
+ *    main thread, per file. A `null` may be transient (a name that cycles on one
+ *    branch can resolve on another), so caching it would be unsound.
+ *  - `visited` is the ACTIVE resolution stack, popped on unwind, so diamonds
+ *    fold instead of false-cycling while true cycles still terminate.
+ *  - `constantKeys` is the candidate set import ambiguity is measured over:
+ *    files that actually DEFINE a constant. Handing `resolveJavaImport` every
+ *    repo key made the two subsystems disagree — ingestion's map also holds
+ *    import-only files (its gate has an import arm), so a duplicate FQN that
+ *    defines nothing was invisible to the group and made ingestion alone floor
+ *    to skip. Hoisting it also stops rebuilding the set on every qualified ref.
+ */
+interface JavaFoldState {
+  readonly repo: RepoConstants;
+  readonly constantKeys: ReadonlySet<string>;
+  readonly visited: Set<string>;
+  readonly memo: Map<string, string>;
+}
+
+function newFoldState(repo: RepoConstants): JavaFoldState {
+  const constantKeys = new Set<string>();
+  for (const [key, mc] of repo) {
+    if (mc.literals.size > 0 || mc.exprs.size > 0) constantKeys.add(key);
+  }
+  return { repo, constantKeys, visited: new Set(), memo: new Map() };
 }
 
 /**
@@ -375,28 +475,54 @@ export function resolveJavaConstant(
   repo: RepoConstants,
   depth = 0,
 ): string | null {
-  // Cycle guard for the Java-qualified walk (self/mutual imports). The shared
-  // fold's visited-stack only guards the bare-name path below; qualified refs
-  // recurse through resolveJavaConstant directly, so bound the recursion here.
+  return resolveWithState(fileKey, name, newFoldState(repo), depth);
+}
+
+function resolveWithState(
+  fileKey: string,
+  name: string,
+  state: JavaFoldState,
+  depth: number,
+): string | null {
   if (depth > 32) return null;
-  // Qualified ref (`ApiPathConstants.FIELD`): the fold layer keys imports and
-  // constants by their IN-FILE name, so a dotted name never hits directly.
-  // Split head.tail: resolve the head through the importing file's class
-  // import, then look the tail up in the target file — first as the
-  // class-qualified alias `Head.TAIL` (what extractJavaModuleConstants
-  // records), then as a bare `TAIL` (same-file nested/interface constant).
+  const guard = `${fileKey}::${name}`;
+  const memoized = state.memo.get(guard);
+  if (memoized !== undefined) return memoized;
+  if (state.visited.has(guard)) return null; // cycle: `name` is on the active stack
+  state.visited.add(guard);
+  try {
+    const result = computeJavaFold(fileKey, name, state, depth);
+    if (result !== null) state.memo.set(guard, result);
+    return result;
+  } finally {
+    state.visited.delete(guard);
+  }
+}
+
+function computeJavaFold(
+  fileKey: string,
+  name: string,
+  state: JavaFoldState,
+  depth: number,
+): string | null {
+  const { repo, constantKeys } = state;
+  // Qualified ref (`ApiPathConstants.FIELD`): constants and imports are keyed by
+  // their IN-FILE name, so a dotted name never hits directly. Split head.tail:
+  // resolve the head through the importing file's class import, then look the
+  // tail up in the target file — first as the class-qualified alias `Head.TAIL`
+  // (what extractJavaModuleConstants records), then as a bare `TAIL` (same-file
+  // nested/interface constant).
   const dot = name.indexOf('.');
   if (dot > 0) {
     const head = name.slice(0, dot);
     const tail = name.slice(dot + 1);
-    const importing = repo.get(fileKey);
-    const imp = importing?.imports.get(head);
+    const imp = repo.get(fileKey)?.imports.get(head);
     if (imp) {
-      const targetFile = resolveJavaImport(fileKey, imp.module, new Set(repo.keys()));
+      const targetFile = resolveJavaImport(fileKey, imp.module, constantKeys);
       if (targetFile !== null) {
-        const qualified = resolveJavaConstant(targetFile, `${head}.${tail}`, repo, depth + 1);
+        const qualified = resolveWithState(targetFile, `${head}.${tail}`, state, depth + 1);
         if (qualified !== null) return qualified;
-        const bare = resolveJavaConstant(targetFile, tail, repo, depth + 1);
+        const bare = resolveWithState(targetFile, tail, state, depth + 1);
         if (bare !== null) return bare;
       }
       return null;
@@ -406,41 +532,83 @@ export function resolveJavaConstant(
     const parts = name.split('.');
     for (let cut = parts.length - 2; cut >= 1; cut--) {
       const fqn = parts.slice(0, cut + 1).join('.');
-      const targetFile = resolveJavaImport(fileKey, fqn, new Set(repo.keys()));
+      const targetFile = resolveJavaImport(fileKey, fqn, constantKeys);
       if (targetFile !== null) {
         const field = parts.slice(cut + 1).join('.');
         const declaring = parts[cut];
-        const qualified = resolveJavaConstant(targetFile, `${declaring}.${field}`, repo, depth + 1);
+        const qualified = resolveWithState(targetFile, `${declaring}.${field}`, state, depth + 1);
         if (qualified !== null) return qualified;
-        return resolveJavaConstant(targetFile, field, repo, depth + 1);
+        return resolveWithState(targetFile, field, state, depth + 1);
       }
     }
+    // No import bound the head and no FQN prefix resolved — fall through. A
+    // dotted name is ALSO a valid key in this file's own maps:
+    // `extractJavaModuleConstants` records every constant under
+    // `<DeclaringClass>.<FIELD>` as well as its simple name, so a same-file
+    // qualified reference (`ApiPaths.X` inside ApiPaths.java) resolves below.
   }
-  return foldConstant(fileKey, name, repo, resolveJavaImport);
+
+  // Name lookup: literals, then same-file expressions, then the import chase.
+  // Reached for a bare name and for a dotted name that named no import.
+  // Expressions are folded HERE rather than handed to the agnostic core because
+  // an operand of a Java initializer may itself be a QUALIFIED ref
+  // (`X = BConsts.Y + "/tail"`) and the core only knows bare names: it looks
+  // `BConsts.Y` up in maps keyed by simple name, misses, and floors the whole
+  // chain to null. Recursing through this function gives every operand the same
+  // qualified treatment the entry-point name got.
+  const mc = repo.get(fileKey);
+  if (!mc) return null;
+  const literal = mc.literals.get(name);
+  if (literal !== undefined) return literal;
+  const expr = mc.exprs.get(name);
+  if (expr !== undefined) return foldOperands(fileKey, expr, state, depth + 1);
+  const imp = mc.imports.get(name);
+  if (imp !== undefined) {
+    const targetFile = resolveJavaImport(fileKey, imp.module, constantKeys);
+    if (targetFile === null) return null;
+    return resolveWithState(targetFile, imp.originalName, state, depth + 1);
+  }
+  return null;
+}
+
+/**
+ * Concatenate an operand list, resolving each `ref` through the qualified-aware
+ * walk so `Class.CONST` works at every position, not just at the entry point.
+ *
+ * Bounded by {@link MAX_FOLD_LENGTH}: the depth cap bounds RECURSION but not
+ * OUTPUT, which grows multiplicatively (`X = A + A; A = B + B; …`), so a
+ * pathological chain would build a gigabyte-scale string before any cap fired.
+ * Overrun floors to null (#2393).
+ */
+function foldOperands(
+  fileKey: string,
+  operands: readonly Operand[],
+  state: JavaFoldState,
+  depth: number,
+): string | null {
+  let out = '';
+  for (const op of operands) {
+    if (op.kind === 'literal') {
+      out += op.value;
+    } else {
+      const piece = resolveWithState(fileKey, op.name, state, depth);
+      if (piece === null) return null;
+      out += piece;
+    }
+    if (out.length > MAX_FOLD_LENGTH) return null;
+  }
+  return out;
 }
 
 /**
  * Fold an inline operand list (e.g. `API_CIS_V1 + "summary/save"`) against
- * `fileKey`. Unlike the Python binding, refs are resolved through
- * {@link resolveJavaConstant} first — the agnostic fold has no notion of
- * Java's `Class.CONST` qualified names (its import indirection only covers
- * bare names), so each `ref` operand is resolved individually and the pieces
- * are concatenated here.
+ * `fileKey`, or null when any piece is unresolvable (skip floor).
  */
 export function foldJavaOperands(
   fileKey: string,
   operands: readonly Operand[],
   repo: RepoConstants,
 ): string | null {
-  let out = '';
-  for (const op of operands) {
-    if (op.kind === 'literal') {
-      out += op.value;
-      continue;
-    }
-    const piece = resolveJavaConstant(fileKey, op.name, repo);
-    if (piece === null) return null;
-    out += piece;
-  }
+  const out = foldOperands(fileKey, operands, newFoldState(repo), 0);
   return out === '' ? null : out;
 }

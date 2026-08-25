@@ -2969,7 +2969,12 @@ const processFileGroup = (
     // paths cross-file. Cost-gated by the provider's syntax-driven heuristic;
     // only files that carry something resolvable (a constant definition or an
     // import binding) are emitted, keeping the aggregate bounded on large repos.
-    if (provider.extractModuleConstants && provider.moduleConstantHeuristic?.(parseContent)) {
+    // A provider that declares no heuristic harvests unconditionally (`?.`
+    // would have read `undefined` as "skip" and disabled the hook outright).
+    if (
+      provider.extractModuleConstants &&
+      (!provider.moduleConstantHeuristic || provider.moduleConstantHeuristic(parseContent))
+    ) {
       const constants = provider.extractModuleConstants(tree);
       if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });

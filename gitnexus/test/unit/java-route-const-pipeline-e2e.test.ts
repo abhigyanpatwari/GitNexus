@@ -19,16 +19,18 @@
  *                                                    *Constants (the High bug)
  *     src/main/java/com/example/UserController.java — @RequestMapping prefix +
  *                                                    @PostMapping(ApiPaths.X) +
- *                                                    FQN form + inline concat +
- *                                                    static import
+ *                                                    FQN form + concat over a
+ *                                                    static-imported bare ref
  *
  * Assertions (both runs):
  *  - the emitted Route node carries the FOLDED literal path, not the expr;
  *  - ALL THREE non-literal shapes survive (qualified, FQN-qualified, concat);
  *  - a phantom `POST ` / empty path never appears (skip floor);
- *  - the warm run (parse-cache replay, no worker spawn) yields the IDENTICAL
- *    route set — the harvest result survives the structured-clone cache round
- *    trip (ModuleConstants uses Map, exercised through mapReplacer/mapReviver).
+ *  - the warm run yields the IDENTICAL route set AND is a genuine replay
+ *    (`usedWorkerPool === false`) — the harvest result survives the
+ *    structured-clone cache round trip (ModuleConstants uses Map, exercised
+ *    through mapReplacer/mapReviver). Asserting the route set alone would pass
+ *    on a cache MISS that silently reparsed.
  *
  * Rebuild gate: this test requires dist/ to be current; when dist/ is stale
  * (older than src/) it self-skips with a loud message rather than silently
@@ -42,13 +44,43 @@ import path from 'node:path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { PARSE_CACHE_VERSION, type ParseCache } from '../../src/storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../src/storage/parsedfile-store.js';
 
 // ── dist freshness gate ───────────────────────────────────────────────────
+// The worker is one emitted file among many: TypeScript emits every module in
+// this feature separately, so comparing dist/parse-worker.js against
+// src/parse-worker.ts alone passes while the resolver, the Spring extractor or
+// the provider behind it are stale — and the test then asserts against the
+// PREVIOUS build's harvest. Gate on the newest mtime across every source this
+// pipeline actually loads.
 const repoRoot = path.resolve(__dirname, '..', '..');
 const distWorker = path.join(repoRoot, 'dist', 'core', 'ingestion', 'workers', 'parse-worker.js');
-const srcWorker = path.join(repoRoot, 'src', 'core', 'ingestion', 'workers', 'parse-worker.ts');
-const distStale =
-  !fs.existsSync(distWorker) || fs.statSync(distWorker).mtimeMs < fs.statSync(srcWorker).mtimeMs;
+const GATED_SOURCES = [
+  'core/ingestion/workers/parse-worker.ts',
+  'core/ingestion/route-extractors/java-const-resolver.ts',
+  'core/ingestion/route-extractors/constant-resolver.ts',
+  'core/ingestion/route-extractors/spring.ts',
+  'core/ingestion/languages/java.ts',
+  'core/ingestion/languages/python.ts',
+  'core/ingestion/language-provider.ts',
+  'core/ingestion/pipeline-phases/parse-impl.ts',
+];
+const newestSourceMs = Math.max(
+  ...GATED_SOURCES.map((rel) => fs.statSync(path.join(repoRoot, 'src', rel)).mtimeMs),
+);
+const distStale = !fs.existsSync(distWorker) || fs.statSync(distWorker).mtimeMs < newestSourceMs;
+
+if (distStale) {
+  // `describe.skip` prints only vitest's ordinary skip marker, so without this
+  // the docblock's promised "loud message" did not exist and a stale/absent
+  // dist/ looked like a passing run.
+  console.warn(
+    '[#2980 e2e] SKIPPED: dist/ is missing or older than src/ — run `npm run build` to exercise the real pipeline.',
+  );
+}
 
 const maybeDescribe = distStale ? describe.skip : describe;
 
@@ -65,6 +97,7 @@ public class ApiPaths {
 const USER_CONTROLLER = `package com.example;
 
 import com.example.common.ApiPaths;
+import static com.example.common.ApiPaths.V1;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -81,9 +114,11 @@ public class UserController {
     @GetMapping(com.example.common.ApiPaths.ORDERS)
     public void list() {}
 
-    // Inline concat with a static-import-style bare ref (same-file constant
-    // through the composed-operand fold).
-    @PostMapping(com.example.common.ApiPaths.V1 + "/orders")
+    // Inline concat with a STATIC-IMPORTED bare ref — the shape this fixture
+    // used to only claim: it spelled the operand as the full FQN chain, which
+    // just re-tested the FQN branch above, so bare-name resolution through the
+    // import table had no coverage anywhere in the suite.
+    @PostMapping(V1 + "/orders")
     public void createOrders() {}
 }
 `;
@@ -158,6 +193,7 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
     };
 
     const result = await runPipeline(cache, files);
+    expect(result.usedWorkerPool).toBe(true);
     const routes = foldedRoutesOf(result);
 
     // All three non-literal shapes resolve to folded literals. (The class-level
@@ -186,16 +222,27 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
       onDiskKeys: new Set(),
     };
 
-    // Run #1 populates the cache; persist it like run-analyze does.
+    // Run #1 populates the cache; persist it like run-analyze does — BOTH the
+    // chunk shards and the durable ParsedFile store. `slimParseWorkerResultsForCache`
+    // blanks `parsedFiles` before writing a shard, so a warm run without the
+    // durable store cannot replay the chunk and silently falls back to the
+    // workers — which is what this test used to do while still passing.
     const run1 = await runPipeline(cache, files);
     const { saveParseCache, pruneCache } = await import('../../src/storage/parse-cache.js');
     pruneCache(cache, cache.usedKeys);
-    await saveParseCache(storageDir, cache);
+    const savedKeys = await saveParseCache(storageDir, cache);
+    expect(savedKeys.length).toBeGreaterThan(0);
+    await pruneAndSaveDurableParsedFileStore(
+      getDurableParsedFileDir(storageDir),
+      PARSE_CACHE_VERSION,
+      new Set(savedKeys),
+    );
 
     // Run #2 — warm: every chunk is a cache HIT, no worker spawn, the cached
     // ParseWorkerResult (moduleConstants included) is replayed from disk.
     const { loadParseCache } = await import('../../src/storage/parse-cache.js');
     const warm = await loadParseCache(storageDir);
+    expect(warm.onDiskKeys).toEqual(new Set(savedKeys));
     const run2 = await runPipeline(warm, files);
 
     const cold = foldedRoutesOf(run1)
@@ -206,5 +253,12 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
       .sort();
     expect(hot).toEqual(cold);
     expect(hot.length).toBeGreaterThan(0);
+    // Without this the test proves nothing about the cache: `loadParseCache`
+    // returns an EMPTY cache on any failure (missing file, corrupt JSON,
+    // version mismatch) and never throws, so a broken Map round-trip through
+    // mapReplacer/mapReviver — the exact regression this test exists for —
+    // would silently reparse through the workers and produce the same routes.
+    expect(run1.usedWorkerPool).toBe(true);
+    expect(run2.usedWorkerPool).toBe(false);
   }, 120_000);
 });

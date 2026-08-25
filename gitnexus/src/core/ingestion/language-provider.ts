@@ -347,11 +347,11 @@ interface LanguageProviderConfig {
    * parse phase can resolve non-literal decorator route paths cross-file.
    *
    * The worker calls this when BOTH hold:
-   *  - the file is cheap to harvest (provider-declared `moduleConstantHeuristic`
-   *    matched — syntax-driven, e.g. a `static final String` field or a
-   *    constants-bearing import; NEVER a class-name pattern like `*Constants`,
-   *    which silently drops route constants living in classes named e.g.
-   *    `ApiPaths`/`Routes`), and
+   *  - the provider declares no `moduleConstantHeuristic`, or the one it
+   *    declares matched — syntax-driven, e.g. a `static final String` field or
+   *    a constants-bearing import; NEVER a class-name pattern like
+   *    `*Constants`, which silently drops route constants living in classes
+   *    named e.g. `ApiPaths`/`Routes`, and
    *  - the extraction yields something resolvable (a literal, an expression, or
    *    an import binding), keeping the aggregate bounded on large repos.
    *
@@ -366,6 +366,12 @@ interface LanguageProviderConfig {
    * repos: files that cannot contribute (no constant-bearing syntax) are not
    * walked. Must be syntax-driven (field/import shape), not identifier
    * pattern-matching on class names.
+   *
+   * Default: undefined — harvest EVERY file of this language. A gate is opt-in
+   * because getting it wrong silently drops routes that already resolve, and a
+   * missed gate only costs time. Declare one only where the cost bites (Java's
+   * Maven monorepos) and only after checking it against every shape
+   * {@link extractModuleConstants} accepts.
    */
   readonly moduleConstantHeuristic?: (content: string) => boolean;
 

@@ -54,6 +54,13 @@ import { parseJavaConstOperands } from './java-const-resolver.js';
  * suppresses that class's method-level array routes rather than emit them with a
  * dropped prefix (a wrong route). Full class-array cross-product support is left
  * to a follow-up (#2280).
+ *
+ * The class-level `@value_expr` branches exist for the same reason: a
+ * CONSTANT-valued class prefix (`@RequestMapping(ApiPaths.BASE)`) cannot be
+ * folded here — the repo-wide constant map only exists in the parse phase — so
+ * they only DETECT it, and Phase 2 suppresses every method route under such a
+ * class. Without them the prefix was invisible and the method route was emitted
+ * unprefixed, i.e. at a path the application does not serve.
  */
 const ROUTE_ANNOTATION_QUERY = new Parser.Query(
   Java,
@@ -91,6 +98,24 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
               key: (identifier) @key
               value: [(string_literal) @value
                       (element_value_array_initializer (string_literal) @value)]))))) @node
+    (class_declaration
+      (modifiers
+        (annotation
+          name: [(identifier) (scoped_identifier)] @ann
+          arguments: (annotation_argument_list
+            [(identifier) @value_expr
+             (field_access) @value_expr
+             (binary_expression) @value_expr])))) @node
+    (class_declaration
+      (modifiers
+        (annotation
+          name: [(identifier) (scoped_identifier)] @ann
+          arguments: (annotation_argument_list
+            (element_value_pair
+              key: (identifier) @key
+              value: [(identifier) @value_expr
+                      (field_access) @value_expr
+                      (binary_expression) @value_expr]))))) @node
     (method_declaration
       (modifiers
         (annotation
@@ -141,6 +166,11 @@ export function extractSpringRoutes(
   // class-array cross-product support is out of scope here.
   const prefixByClassId = new Map<number, string>();
   const classesWithArrayPrefix = new Set<number>();
+  // Classes whose `@RequestMapping` prefix is a constant reference or concat.
+  // Same treatment as the array form, for the same reason: no single prefix
+  // string is knowable at extraction time, so emitting the methods below would
+  // publish them at a WRONG (unprefixed) path rather than not at all.
+  const classesWithUnfoldablePrefix = new Set<number>();
   const classHttpMethodsById = new Map<number, readonly string[]>();
   for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
     const typeNode = match.captures.find((capture) => capture.name === 'type')?.node;
@@ -158,11 +188,16 @@ export function extractSpringRoutes(
     const node = caps['node'];
     const valueNode = caps['value'];
     const keyNode = caps['key'];
-    if (!annNode || !node || !valueNode) continue;
+    const valueExprNode = caps['value_expr'];
+    if (!annNode || !node || (!valueNode && !valueExprNode)) continue;
 
     const capturedAnnotationName = annNode.text.split('.').pop() ?? annNode.text;
     if (node.type === 'class_declaration' && capturedAnnotationName === 'RequestMapping') {
       if (!isRouteMemberKey(keyNode)) continue;
+      if (!valueNode) {
+        classesWithUnfoldablePrefix.add(node.id);
+        continue;
+      }
       if (valueNode.parent?.type === 'element_value_array_initializer') {
         classesWithArrayPrefix.add(node.id);
         continue;
@@ -237,6 +272,16 @@ export function extractSpringRoutes(
     if (isArrayElement && enclosingClass && classesWithArrayPrefix.has(enclosingClass.id)) {
       continue;
     }
+    // Same rule for a CONSTANT-valued class prefix (`@RequestMapping(ApiPaths.BASE)`),
+    // and for every method route under it — not just array-form ones. The prefix
+    // needs the repo-wide constant map, which does not exist at extraction time,
+    // so the prefix would simply be dropped and the route emitted at a path the
+    // application never serves. On base such a route was not emitted at all;
+    // turning a missing fact into a wrong one is the failure this module's skip
+    // floor exists to prevent. Folding class prefixes cross-file is a follow-up.
+    if (enclosingClass && classesWithUnfoldablePrefix.has(enclosingClass.id)) {
+      continue;
+    }
 
     const classPrefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
     // `node` is the annotated `method_declaration`; its name field is the
@@ -279,6 +324,13 @@ export function extractSpringRoutes(
   for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
     const typeNode = match.captures.find((capture) => capture.name === 'type')?.node;
     if (typeNode?.type !== 'class_declaration') continue;
+    // A no-argument `@GetMapping` IS the class prefix, so a class prefix that
+    // cannot be folded here leaves nothing to emit — the route would ship with
+    // `routePath: ''` and no prefix, i.e. an empty-path Route. The Phase 2 loop
+    // above already suppresses these classes; this loop needs the same guard, or
+    // the suppression is one-sided and the group side (which routes both shapes
+    // through `methodRoutes`) disagrees with ingestion.
+    if (classesWithUnfoldablePrefix.has(typeNode.id)) continue;
     const classPrefix = prefixByClassId.get(typeNode.id) ?? '';
     const classMethods = classHttpMethodsById.get(typeNode.id) ?? ['*'];
     for (const methodNode of directMethods(typeNode)) {
