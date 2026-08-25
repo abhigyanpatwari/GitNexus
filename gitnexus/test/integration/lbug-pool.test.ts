@@ -341,7 +341,7 @@ withTestLbugDB(
         }
       });
 
-      it('QUERY_VECTOR_INDEX works through the pool once the pre-warm loads VECTOR', async (ctx) => {
+      it('QUERY_VECTOR_INDEX works through the pool after its lazy query preflight', async (ctx) => {
         const core = await import('../../src/core/lbug/lbug-adapter.js');
         const { batchInsertEmbeddings } =
           await import('../../src/core/embeddings/embedding-pipeline.js');
@@ -380,7 +380,8 @@ withTestLbugDB(
         await core.closeLbug();
 
         // The regression: through the POOL, the vector lane must work without
-        // any caller loading the extension. Pre-fix this rejects with
+        // any caller loading the extension. The query-specific preflight loads
+        // VECTOR here while exact reads remain untouched. Pre-fix this rejects with
         // "Catalog exception: function QUERY_VECTOR_INDEX is not defined".
         await initLbug('vec-repo', handle.dbPath);
         const vec = `CAST([${embedding.join(',')}] AS FLOAT[${EMBEDDING_DIMS}])`;

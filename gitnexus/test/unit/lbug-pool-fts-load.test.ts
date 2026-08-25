@@ -27,7 +27,8 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   WAL_RECOVERY_SUGGESTION: '',
 }));
 
-const { closeLbug, initLbugWithDb } = await import('../../src/core/lbug/pool-adapter.js');
+const { closeLbug, ensureVectorExtension, initLbugWithDb } =
+  await import('../../src/core/lbug/pool-adapter.js');
 
 describe('read-pool FTS loading', () => {
   afterEach(async () => {
@@ -39,7 +40,6 @@ describe('read-pool FTS loading', () => {
 
   it('loads FTS with load-only policy and caches a successful load', async () => {
     loadFTSExtensionMock.mockResolvedValue(true);
-    loadVectorExtensionMock.mockResolvedValue(true);
     const db = {} as any;
 
     await initLbugWithDb('repo-a', db, '/tmp/shared-fts-db');
@@ -51,7 +51,6 @@ describe('read-pool FTS loading', () => {
 
   it('does not fake a successful load when FTS is unavailable', async () => {
     loadFTSExtensionMock.mockResolvedValue(false);
-    loadVectorExtensionMock.mockResolvedValue(false);
     const db = {} as any;
 
     await initLbugWithDb('repo-a', db, '/tmp/shared-fts-db');
@@ -66,7 +65,7 @@ describe('read-pool FTS loading', () => {
     });
   });
 
-  it('loads VECTOR with load-only policy and caches a successful load (#2623 follow-up)', async () => {
+  it('does not probe VECTOR while initializing exact-read pools (#3021)', async () => {
     loadFTSExtensionMock.mockResolvedValue(true);
     loadVectorExtensionMock.mockResolvedValue(true);
     const db = {} as any;
@@ -74,19 +73,54 @@ describe('read-pool FTS loading', () => {
     await initLbugWithDb('repo-a', db, '/tmp/shared-vec-db');
     await initLbugWithDb('repo-b', db, '/tmp/shared-vec-db');
 
+    expect(loadVectorExtensionMock).not.toHaveBeenCalled();
+  });
+
+  it('loads VECTOR lazily once for concurrent semantic reads on a shared Database', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockResolvedValue(true);
+    const db = {} as any;
+
+    await initLbugWithDb('repo-a', db, '/tmp/shared-vec-db');
+    await initLbugWithDb('repo-b', db, '/tmp/shared-vec-db');
+
+    await expect(
+      Promise.all([ensureVectorExtension('repo-a'), ensureVectorExtension('repo-b')]),
+    ).resolves.toEqual([true, true]);
+
     expect(loadVectorExtensionMock).toHaveBeenCalledTimes(1);
     expect(loadVectorExtensionMock).toHaveBeenCalledWith(expect.anything(), {
       policy: 'load-only',
     });
   });
 
-  it('retries the VECTOR load on the next open when it was unavailable', async () => {
+  it('caches an unavailable VECTOR result until the shared Database is reopened', async () => {
     loadFTSExtensionMock.mockResolvedValue(true);
     loadVectorExtensionMock.mockResolvedValue(false);
     const db = {} as any;
 
     await initLbugWithDb('repo-a', db, '/tmp/shared-vec-db');
+    await expect(ensureVectorExtension('repo-a')).resolves.toBe(false);
+    await expect(ensureVectorExtension('repo-a')).resolves.toBe(false);
+
+    expect(loadVectorExtensionMock).toHaveBeenCalledTimes(1);
+
+    await closeLbug('repo-a');
     await initLbugWithDb('repo-b', db, '/tmp/shared-vec-db');
+    await expect(ensureVectorExtension('repo-b')).resolves.toBe(false);
+
+    expect(loadVectorExtensionMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries VECTOR after a rejected lazy load', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockRejectedValueOnce(new Error('transient load failure'));
+    loadVectorExtensionMock.mockResolvedValueOnce(true);
+    const db = {} as any;
+
+    await initLbugWithDb('repo-a', db, '/tmp/shared-vec-retry-db');
+    await expect(ensureVectorExtension('repo-a')).rejects.toThrow('transient load failure');
+    await expect(ensureVectorExtension('repo-a')).resolves.toBe(true);
 
     expect(loadVectorExtensionMock).toHaveBeenCalledTimes(2);
   });

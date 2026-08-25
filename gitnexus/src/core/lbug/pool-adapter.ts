@@ -135,6 +135,10 @@ interface SharedDB {
    *  scan (#2623 follow-up). Optional with `?? false` semantics so the
    *  construction sites stay minimal. */
   vectorLoaded?: boolean;
+  /** In-flight/completed lazy VECTOR probe for this Database lifecycle.
+   *  Retaining a false result prevents every semantic request from retrying
+   *  the same unavailable extension; teardown clears it before a reopen. */
+  vectorLoadPromise?: Promise<boolean>;
   /** File identity at open — used to detect reuse of a shared read-only handle
    *  whose on-disk index was rebuilt/swapped since it opened (only reachable
    *  when a second pool consumer shares this dbPath; #2614 F2). */
@@ -368,6 +372,7 @@ function closeOne(repoId: string): void {
         shared.refCount = 0;
         shared.ftsLoaded = false;
         shared.vectorLoaded = false;
+        shared.vectorLoadPromise = undefined;
       } else {
         shared.db.close().catch(() => {});
         dbCache.delete(entry.dbPath);
@@ -823,14 +828,6 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   if (!shared.ftsLoaded) {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
-  // VECTOR too — extension load scope is per-Database, so this one load
-  // makes QUERY_VECTOR_INDEX legal on every pooled connection. Same
-  // load-only contract as FTS above; on failure the semantic-query lane
-  // falls back to the exact scan with its own diagnostic (#2623 follow-up).
-  if (!shared.vectorLoaded) {
-    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
-  }
-
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
@@ -900,12 +897,6 @@ export async function initLbugWithDb(
   if (!shared.ftsLoaded) {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
-  // VECTOR too — same per-Database scope and load-only contract as the
-  // doInitLbug site above (#2623 follow-up).
-  if (!shared.vectorLoaded) {
-    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
-  }
-
   pool.set(repoId, {
     db: existingDb,
     available,
@@ -919,6 +910,51 @@ export async function initLbugWithDb(
   });
   ensureIdleTimer();
   traceRss('init', repoId);
+}
+
+/**
+ * Lazily load VECTOR for a semantic query.
+ *
+ * Exact graph reads never call this function, so opening their read pool does
+ * not probe or warn about an optional extension they do not use. The promise
+ * lives on SharedDB because extension scope is per Database, and also joins
+ * concurrent first semantic requests onto one LOAD attempt.
+ */
+export async function ensureVectorExtension(repoId: string): Promise<boolean> {
+  const entry = pool.get(repoId);
+  if (!entry) {
+    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
+  }
+
+  const shared = dbCache.get(entry.dbPath);
+  if (!shared) {
+    throw new Error(`LadybugDB shared handle is unavailable for repo "${repoId}".`);
+  }
+  if (shared.vectorLoaded) return true;
+  if (shared.vectorLoadPromise) return shared.vectorLoadPromise;
+
+  const loadAttempt = (async () => {
+    const conn = await checkout(entry);
+    try {
+      const loaded = await loadVectorExtension(conn, { policy: 'load-only' });
+      shared.vectorLoaded = loaded;
+      return loaded;
+    } finally {
+      checkin(entry, conn);
+    }
+  })();
+  const cachedAttempt = loadAttempt.catch((err) => {
+    // A transient checkout/load failure must not poison this Database for the
+    // rest of its lifetime. Keep resolved false cached, but let a later
+    // semantic request retry a rejected attempt.
+    if (shared.vectorLoadPromise === cachedAttempt) {
+      shared.vectorLoadPromise = undefined;
+    }
+    throw err;
+  });
+  shared.vectorLoadPromise = cachedAttempt;
+
+  return shared.vectorLoadPromise;
 }
 
 /**
@@ -1031,6 +1067,13 @@ export const executeParameterized = async (
   const entry = pool.get(repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
+  }
+
+  // Exact reads must not pay for VECTOR, but an explicit raw vector query is
+  // itself a semantic read. Preflight that narrow surface so direct pool and
+  // `cypher` callers retain the old working contract without eager startup.
+  if (/\bQUERY_VECTOR_INDEX\s*\(/i.test(cypher)) {
+    await ensureVectorExtension(repoId);
   }
 
   entry.lastUsed = Date.now();

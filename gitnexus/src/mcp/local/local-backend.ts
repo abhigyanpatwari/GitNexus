@@ -13,6 +13,7 @@ import {
   initLbug,
   executeQuery,
   executeParameterized,
+  ensureVectorExtension,
   closeLbug,
   isLbugReady,
   statDbIdentity,
@@ -3214,6 +3215,18 @@ export class LocalBackend {
       this.lastQueryEmbeddingDims.set(repo.lbugPath, dims);
       const queryVecStr = `[${queryVec.join(',')}]`;
       const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
+      let vectorReady = false;
+      try {
+        vectorReady = await ensureVectorExtension(repo.lbugPath);
+      } catch (err) {
+        if (!this.warnedVectorUnsupported) {
+          this.warnedVectorUnsupported = true;
+          logger.warn(
+            { err },
+            'GitNexus [query:vector]: vector extension load failed; using exact scan fallback',
+          );
+        }
+      }
 
       let bestChunks = new Map<
         string,
@@ -3226,9 +3239,10 @@ export class LocalBackend {
       // catch below is the fallback: any failure (extension unloadable, index
       // absent, older DB) degrades to the exact scan with a once-per-backend
       // diagnostic instead of being silently swallowed.
-      try {
-        bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-          const vectorQuery = `
+      if (vectorReady) {
+        try {
+          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+            const vectorQuery = `
             CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
@@ -3239,26 +3253,27 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-          const embResults = await executeQuery(repo.lbugPath, vectorQuery);
-          return embResults.map((row) => ({
-            nodeId: row.nodeId ?? row[0],
-            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-            startLine: row.startLine ?? row[2] ?? 0,
-            endLine: row.endLine ?? row[3] ?? 0,
-            distance: row.distance ?? row[4],
-          }));
-        });
-      } catch (err) {
-        bestChunks = new Map();
-        if (!this.warnedVectorUnsupported) {
-          // Rare diagnostic: surface why semantic search fell back to the
-          // exact scan. Emitted once per `LocalBackend` instance lifetime to
-          // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
-          this.warnedVectorUnsupported = true;
-          logger.warn(
-            { err },
-            'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
-          );
+            const embResults = await executeQuery(repo.lbugPath, vectorQuery);
+            return embResults.map((row) => ({
+              nodeId: row.nodeId ?? row[0],
+              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+              startLine: row.startLine ?? row[2] ?? 0,
+              endLine: row.endLine ?? row[3] ?? 0,
+              distance: row.distance ?? row[4],
+            }));
+          });
+        } catch (err) {
+          bestChunks = new Map();
+          if (!this.warnedVectorUnsupported) {
+            // Rare diagnostic: surface why semantic search fell back to the
+            // exact scan. Emitted once per `LocalBackend` instance lifetime to
+            // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
+            this.warnedVectorUnsupported = true;
+            logger.warn(
+              { err },
+              'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
+            );
+          }
         }
       }
 
