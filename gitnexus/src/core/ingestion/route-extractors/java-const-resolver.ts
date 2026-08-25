@@ -73,19 +73,35 @@ export type {
  * that drives the graph and `api_impact`.
  *
  * Arms:
- *  - `static final String` / `final static String` — Java lets modifiers appear
- *    in any order, and `public final static String X = "/a";` is legal.
- *  - any `interface` declaration — interface fields are implicitly
- *    `public static final` (JLS 9.3), so a pure constant interface carries
- *    neither keyword and no import. `@interface` (annotation type) matches too,
- *    costing one parse that yields nothing.
+ *  - a `static` … `String NAME =` declaration, with the modifier run matched as
+ *    a span so every legal order works (`static public final String`,
+ *    `public final static String`) and so `java.lang.String` — which the
+ *    extractor accepts — is admitted too.
+ *  - an `interface` declaration carrying a String assignment — interface fields
+ *    are implicitly `public static final` (JLS 9.3), so a pure constant
+ *    interface has neither keyword and no import. The assignment conjunct keeps
+ *    a file whose PROSE merely mentions "interface " from costing a parse.
  */
-const EXPLICIT_STRING_CONSTANT_RE = /\b(?:static\s+final|final\s+static)\s+String\s/;
+// `static` … `String NAME =` on one declaration. The modifier run is matched as
+// a span rather than as the adjacent pair `static final`, because the extractor
+// scans modifiers INDEPENDENTLY (`isStaticFinal`) and Java lets them appear in
+// any order — `static public final String`, `public final static String` — and
+// because the type may be written out as `java.lang.String`, which the
+// extractor also accepts. A gate narrower than the extractor it feeds is the
+// same defect class as the ingestion/group divergence this predicate exists to
+// prevent, just one layer down.
+//
+// The span excludes `;{}()` so it cannot jump a statement or block boundary: a
+// local `String s = "x"` inside `static void f() { … }` is not matched, because
+// reaching it from `static` crosses `(`, `)` and `{`. `final` is not required
+// even though the extractor requires it — the gate may be wider than the
+// extractor, never narrower.
+const STATIC_STRING_CONSTANT_RE = /\bstatic\b[^;{}()]{0,80}\bString\s+\w+\s*=/;
 const INTERFACE_DECL_RE = /\binterface\s+\w/;
 const STRING_ASSIGNMENT_RE = /\bString\s+\w+\s*=/;
 
 export function isJavaConstantFile(source: string): boolean {
-  if (EXPLICIT_STRING_CONSTANT_RE.test(source)) return true;
+  if (STATIC_STRING_CONSTANT_RE.test(source)) return true;
   // The interface arm is a bare word match, so on its own it admits any file
   // whose PROSE mentions "interface " — and every admitted file costs the group
   // side a full extra parse. Requiring a String assignment as well keeps every

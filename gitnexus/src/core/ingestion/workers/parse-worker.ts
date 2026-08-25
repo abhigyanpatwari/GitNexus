@@ -141,6 +141,7 @@ import {
   templateConstraintsIdTag,
 } from '../utils/template-arguments.js';
 import type { LanguageProvider } from '../language-provider.js';
+import { shouldHarvestModuleConstants } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
 import {
@@ -2969,12 +2970,10 @@ const processFileGroup = (
     // paths cross-file. Cost-gated by the provider's syntax-driven heuristic;
     // only files that carry something resolvable (a constant definition or an
     // import binding) are emitted, keeping the aggregate bounded on large repos.
-    // A provider that declares no heuristic harvests unconditionally (`?.`
-    // would have read `undefined` as "skip" and disabled the hook outright).
-    if (
-      provider.extractModuleConstants &&
-      (!provider.moduleConstantHeuristic || provider.moduleConstantHeuristic(parseContent))
-    ) {
+    // A provider that declares no heuristic harvests unconditionally — see
+    // `shouldHarvestModuleConstants`, which owns that rule so it can be tested
+    // without booting a worker.
+    if (provider.extractModuleConstants && shouldHarvestModuleConstants(provider, parseContent)) {
       const constants = provider.extractModuleConstants(tree);
       if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });

@@ -622,6 +622,21 @@ public class P { public final static String SAVE = "/api/v1/save"; }`,
       `package com.x;
 public class P { public static final String SAVE = "/api/v1/save"; }`,
     ],
+    [
+      'modifiers interleaved',
+      `package com.x;
+public class P { static public final String SAVE = "/api/v1/save"; }`,
+    ],
+    [
+      'fully-qualified java.lang.String',
+      `package com.x;
+public class P { public static final java.lang.String SAVE = "/api/v1/save"; }`,
+    ],
+    [
+      'fully-qualified type in an interface',
+      `package com.x;
+public interface P { java.lang.String SAVE = "/api/v1/save"; }`,
+    ],
   ] as const;
 
   it.each(shapes)('admits %s on BOTH sides', (_name, src) => {
@@ -633,10 +648,25 @@ public class P { public static final String SAVE = "/api/v1/save"; }`,
     expect(extractJavaModuleConstants(parse(src)).literals.get('SAVE')).toBe('/api/v1/save');
   });
 
-  it('still skips a file with no constant-bearing syntax', () => {
-    const src = `package com.x;
-public class P { void run() { System.out.println("/not-a-constant"); } }`;
+  it.each([
+    [
+      'no constant-bearing syntax',
+      `package com.x;
+public class P { void run() { System.out.println("/not-a-constant"); } }`,
+    ],
+    [
+      'a local String inside a static method',
+      `package com.x;
+public class P { static void run() { String s = "/local"; } }`,
+    ],
+    [
+      'prose that merely mentions an interface',
+      `/** interface EXTENDS (#1951). */
+public class A { void f() {} }`,
+    ],
+  ])('still skips %s', (_name, src) => {
     expect(isJavaConstantFile(src)).toBe(false);
+    expect(extractJavaModuleConstants(parse(src)).literals.size).toBe(0);
   });
 });
 

@@ -69,6 +69,25 @@ export interface AstFrameworkPatternConfig {
  * Required fields must be explicitly set; optional fields have defaults
  * applied by defineLanguage().
  */
+/**
+ * Should the parse worker run {@link LanguageProviderConfig.extractModuleConstants}
+ * on this file?
+ *
+ * Exported so the DECISION is testable without booting a worker. It encodes the
+ * one rule that is easy to get backwards: a provider that declares no
+ * `moduleConstantHeuristic` harvests unconditionally. Writing the gate as
+ * `provider.moduleConstantHeuristic?.(content)` reads `undefined` as "skip" and
+ * silently disables the hook for every provider without a heuristic — which is
+ * exactly how Python's already-shipped harvest was turned off (#2391/#2980).
+ */
+export function shouldHarvestModuleConstants(
+  provider: Pick<LanguageProvider, 'extractModuleConstants' | 'moduleConstantHeuristic'>,
+  content: string,
+): boolean {
+  if (!provider.extractModuleConstants) return false;
+  return !provider.moduleConstantHeuristic || provider.moduleConstantHeuristic(content);
+}
+
 interface LanguageProviderConfig {
   // ── Identity ──────────────────────────────────────────────────────
   readonly id: SupportedLanguages;
