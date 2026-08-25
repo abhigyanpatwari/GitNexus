@@ -435,6 +435,13 @@ export async function ensureBridgeReady(
       error: `No bridge.lbug in this group directory. Run gitnexus group sync (schema ${BRIDGE_SCHEMA_VERSION}).`,
     };
   }
+  // Pair the metadata to the database BEFORE opening it, and carry the answer.
+  // An unstamped pair is judged on the two files' write order, so any open that
+  // touched `bridge.lbug`'s mtime would silently convert "legacy but intact"
+  // into "provenance unknown" for every pre-stamp bridge on that platform. This
+  // ordering removes the question rather than betting on the answer.
+  meta.pairedWithDatabase = await bridgeMetaMatchesFile(groupDir, meta);
+
   // Use the cached read-only handle if available — avoids reopening the same
   // bridge.lbug in a long-lived MCP server, which fails on Windows because
   // the OS handle isn't fully released before the next open races in.
@@ -688,7 +695,7 @@ export async function runGroupImpact(
     bridgeProvenanceUnknown =
       bridgePrep.meta.version === 0 ||
       bridgePrep.meta.repoListsUnreadable === true ||
-      !(await bridgeMetaMatchesFile(groupDir, bridgePrep.meta));
+      bridgePrep.meta.pairedWithDatabase === false;
     bridgeIncompleteRepos = [
       ...new Set([
         ...(bridgePrep.meta.unreadableRepos ?? []),

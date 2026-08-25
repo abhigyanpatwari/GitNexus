@@ -114,6 +114,15 @@ describe('group impact fan-out is bounded by a count, not by the clock (#2787)',
       ...Array.from({ length: REPO_COUNT }, (_, i) => repoKey(i)),
     ]);
     await fsp.writeFile(path.join(groupDir, 'bridge.lbug'), '');
+    // The metadata this suite's `readBridgeMeta` mock hands back has to exist on
+    // disk as well as in the mock. It carries no size/mtime stamp, so
+    // `bridgeMetaMatchesFile` pairs it to the database by write order — and a
+    // metadata file that is not there cannot be paired to anything. Written
+    // AFTER `bridge.lbug`, which is the order a real sync produces.
+    await fsp.writeFile(
+      path.join(groupDir, 'meta.json'),
+      JSON.stringify({ version: 1, generatedAt: '', missingRepos: [] }),
+    );
   });
 
   afterEach(async () => {

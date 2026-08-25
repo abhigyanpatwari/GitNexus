@@ -659,27 +659,82 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
  * metadata being true of THIS database (cross-repo impact reads completeness
  * from it) must not treat a mismatch as fact.
  *
- * Returns `true` when BOTH halves of the stamp are absent: metadata written
- * before stamping existed cannot be verified either way, and failing those
- * closed would mark every pre-existing bridge as incomplete — trading a narrow
- * window for a repo-wide regression. Returns `false` when the database itself
- * cannot be stat'd, since metadata describing a file that is not there
- * describes nothing.
+ * When BOTH halves of the stamp are absent the metadata predates stamping, and
+ * it is judged on the write order of the two files instead — see
+ * {@link unstampedMetaPairsByWriteOrder}. Failing every unstamped metadata
+ * closed would mark all pre-existing bridges as incomplete until re-synced,
+ * trading a narrow window for a repo-wide regression; accepting them all hands
+ * back "verified" for the very window this pairing exists to catch.
  *
  * A stamp is a PAIR, so exactly one half present is rejected rather than waved
  * through. That is not the legacy shape: something wrote a stamp and did not
  * finish, which is the very condition stamping was added to detect. Joining the
  * two `undefined` checks with `||` returned "verified" for precisely the shape
  * that most deserves suspicion.
+ *
+ * Returns `false` when the database itself cannot be stat'd, on either path,
+ * since metadata describing a file that is not there describes nothing.
+ *
+ * The checks are ORDERED by how strong their evidence is, strongest first, and
+ * each later one is reached only because every earlier one had nothing to say.
+ * A future explicit provenance marker belongs ahead of both of these: a
+ * metadata file that says outright which database it describes settles the
+ * question, and neither the stamp nor the write-order heuristic may then
+ * overturn it.
  */
 export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta): Promise<boolean> {
   const stampedSize = meta.bridgeSize !== undefined;
   const stampedMtime = meta.bridgeMtimeMs !== undefined;
-  if (!stampedSize && !stampedMtime) return true;
+  if (!stampedSize && !stampedMtime) return unstampedMetaPairsByWriteOrder(groupDir);
   if (!stampedSize || !stampedMtime) return false;
   try {
     const stat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
     return stat.size === meta.bridgeSize && stat.mtimeMs === meta.bridgeMtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Could the unstamped `meta.json` plausibly have been written by the sync that
+ * put this `bridge.lbug` beside it?
+ *
+ * `writeBridge` renames the database into place and writes the metadata AFTER,
+ * so `meta.mtime >= db.mtime` holds for any pair written together — including
+ * pairs written by builds from before the stamp existed, which is what makes
+ * this usable as back-compat rather than a repo-wide "re-sync everything".
+ * The only way to reach a database strictly NEWER than the metadata beside it
+ * is a swap whose metadata write did not land: the stale-meta-beside-a-new-
+ * database window, whose completeness `runGroupImpact` would otherwise spend as
+ * fact.
+ *
+ * This is a HEURISTIC ON WRITE ORDER, not proof of provenance, and it is wrong
+ * in two directions:
+ *   - false accept — a stale metadata file that something touched after the
+ *     swap (a restore from backup, an editor save, an mtime-preserving copy of
+ *     only the database) still reads as paired. The stamp is what actually
+ *     closes that; this path only ever sees metadata with no stamp to check.
+ *   - false reject — a pair genuinely written together whose clock stepped
+ *     backwards between the two writes reads as unpaired. That is the safe
+ *     direction: it degrades a cross-repo answer to a lower bound instead of
+ *     vouching for one.
+ *
+ * Equality counts as paired. On a filesystem with coarse mtime granularity both
+ * writes land in the same tick, and demanding a strictly newer metadata file
+ * would reject every legacy bridge there for a reason that is about the
+ * filesystem rather than about the bridge.
+ *
+ * A timestamp that cannot be measured is no match, the same convention the
+ * read-only handle cache applies to a bridge it could not stat: a comparison
+ * that could not be made is not a comparison that succeeded.
+ */
+async function unstampedMetaPairsByWriteOrder(groupDir: string): Promise<boolean> {
+  try {
+    const [dbStat, metaStat] = await Promise.all([
+      fsp.stat(path.join(groupDir, 'bridge.lbug')),
+      fsp.stat(path.join(groupDir, 'meta.json')),
+    ]);
+    return metaStat.mtimeMs >= dbStat.mtimeMs;
   } catch {
     return false;
   }

@@ -261,6 +261,13 @@ const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
+  // Pins that the bridge pairing verdict is measured before the database is
+  // opened. The property it protects is about mtime behavior across OS and
+  // filesystem, and the alternative — really opening the bridge — cannot run on
+  // Windows at all (in-process write→read reopen of the same bridge.lbug is a
+  // documented limitation). Running it on every platform is the whole point:
+  // Windows is where an unverified assumption about mtime would hurt most.
+  'test/unit/group/bridge-pairing-precedes-open.test.ts',
 ];
 
 const ALL_CROSS_PLATFORM = [

@@ -56,7 +56,7 @@ vi.mock('../../../src/storage/fs-atomic.js', async (importOriginal) => {
   };
 });
 
-const { writeBridge, readBridgeMeta, bridgeMetaMatchesFile } =
+const { writeBridge, readBridgeMeta, bridgeMetaMatchesFile, closeAllCachedBridges } =
   await import('../../../src/core/group/bridge-db.js');
 
 const input = (unreadableRepos?: string[]) => ({
@@ -137,10 +137,13 @@ describe('writeBridge meta.json swap window', () => {
     await expect(bridgeMetaMatchesFile(groupDir, stale)).resolves.toBe(false);
   });
 
-  it('cannot verify metadata that carries no stamp, and does not reject it', async () => {
-    // Back-compat: a bridge written before the stamp existed is unverifiable,
-    // not stale. Failing those closed would mark every pre-existing bridge
-    // incomplete — a repo-wide regression traded for a narrow window.
+  it('accepts metadata that carries no stamp but was written after its database', async () => {
+    // Back-compat: a bridge written before the stamp existed carries no stamp
+    // to check, and failing those closed would mark every pre-existing bridge
+    // incomplete — a repo-wide regression traded for a narrow window. It is
+    // still paired to a database, though: `writeBridge` renames the database in
+    // and writes the metadata after, so this pair's write order is intact and
+    // that is what it is judged on.
     await writeBridge(groupDir, input([]));
     const meta = await readBridgeMeta(groupDir);
     const legacy = { ...meta };
@@ -242,5 +245,137 @@ describe('bridgeMetaMatchesFile with a half-written stamp', () => {
     await seedStamped();
     const meta = await readBridgeMeta(groupDir);
     await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+  });
+});
+
+describe('bridgeMetaMatchesFile pairs an unstamped meta by write order', () => {
+  /**
+   * A metadata file with no stamp cannot answer "is this the database I was
+   * written for?" from its own contents. It is not silent, though: a successful
+   * `writeBridge` renames the database into place and THEN writes the metadata,
+   * so `meta.mtime >= db.mtime` holds for every pair written together —
+   * including pairs written by builds that predate stamping, which is the whole
+   * reason those are not simply failed closed.
+   *
+   * A database strictly NEWER than the metadata beside it inverts that order,
+   * and the only way to reach it is a swap whose metadata write did not land.
+   *
+   * This is a heuristic on write order, not proof of provenance, so these cases
+   * set both timestamps explicitly with `fsp.utimes`. Nothing here sleeps and
+   * nothing waits for a filesystem to tick: the separation is written, not
+   * hoped for, so the same verdict comes back on a 1-second-granularity
+   * filesystem as on a nanosecond one.
+   */
+  let groupDir: string;
+
+  /** Fixed, whole-second instants — exactly representable on any filesystem. */
+  const WRITTEN_AT = new Date('2026-01-01T00:00:00.000Z');
+  const TEN_SECONDS_LATER = new Date('2026-01-01T00:00:10.000Z');
+
+  beforeEach(async () => {
+    renameMock.mode = 'none';
+    groupDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-bridge-unstamped-'));
+  });
+
+  afterEach(async () => {
+    renameMock.mode = 'none';
+    await closeAllCachedBridges();
+    await fsp.rm(groupDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Produce the legacy shape from a real bridge: a database written by
+   * `writeBridge` with metadata beside it that carries no stamp, exactly as a
+   * build from before stamping left it.
+   */
+  const seedUnstamped = async (): Promise<void> => {
+    await writeBridge(groupDir, input([]));
+    const metaPath = path.join(groupDir, 'meta.json');
+    const raw = JSON.parse(await fsp.readFile(metaPath, 'utf-8')) as Record<string, unknown>;
+    delete raw.bridgeSize;
+    delete raw.bridgeMtimeMs;
+    await fsp.writeFile(metaPath, JSON.stringify(raw, null, 2));
+  };
+
+  const setMtimes = async (db: Date | null, meta: Date | null): Promise<void> => {
+    if (db) await fsp.utimes(path.join(groupDir, 'bridge.lbug'), db, db);
+    if (meta) await fsp.utimes(path.join(groupDir, 'meta.json'), meta, meta);
+  };
+
+  it('accepts an unstamped pair whose two files share a timestamp', async () => {
+    // The coarse-filesystem case: both writes land in the same tick, so the
+    // order they happened in is no longer visible. Equality is the pair being
+    // written together as far as anything can tell, and rejecting it would fail
+    // every legacy bridge on a 1-second-granularity filesystem.
+    await seedUnstamped();
+    await setMtimes(WRITTEN_AT, WRITTEN_AT);
+    const meta = await readBridgeMeta(groupDir);
+
+    expect(meta.bridgeSize).toBeUndefined();
+    expect(meta.bridgeMtimeMs).toBeUndefined();
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+  });
+
+  it('accepts an unstamped meta written after the database it sits beside', async () => {
+    await seedUnstamped();
+    await setMtimes(WRITTEN_AT, TEN_SECONDS_LATER);
+    const meta = await readBridgeMeta(groupDir);
+
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+  });
+
+  it('rejects an unstamped meta when the database was replaced underneath it', async () => {
+    // The window this branch exists for. A sync that swapped the database and
+    // stopped before writing metadata leaves the PREVIOUS sync's completeness
+    // beside a database it never measured — and `runGroupImpact` spends that as
+    // fact. With no stamp to check, the inverted write order is the only thing
+    // that says so, and it says so unambiguously.
+    await seedUnstamped();
+    await setMtimes(TEN_SECONDS_LATER, WRITTEN_AT);
+    const meta = await readBridgeMeta(groupDir);
+
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(false);
+  });
+
+  it('rejects an unstamped meta when there is no database beside it at all', async () => {
+    // Metadata describing a file that is not there describes nothing. The
+    // stamped path already answers `false` here; the unstamped path must not
+    // answer `true` just because it had no stamp to compare.
+    await seedUnstamped();
+    await fsp.rm(path.join(groupDir, 'bridge.lbug'), { force: true });
+    const meta = await readBridgeMeta(groupDir);
+
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(false);
+  });
+
+  it('keeps following the stamp when a stamped pair has its file times skewed against it', async () => {
+    // The ordering guard, acceptance direction. A stamped meta whose FILE is
+    // older than the database still matches, because the stamp inside it says
+    // so and the stamp is the stronger evidence. Only the metadata file's time
+    // is moved — touching the database would invalidate the stamp itself and
+    // make this measure the wrong thing.
+    await writeBridge(groupDir, input([]));
+    const dbStat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
+    await setMtimes(null, new Date(dbStat.mtimeMs - 10_000));
+    const meta = await readBridgeMeta(groupDir);
+
+    expect(meta.bridgeSize).toBeTypeOf('number');
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+  });
+
+  it('keeps following the stamp when a stale stamped meta has the newer file time', async () => {
+    // The ordering guard, rejection direction. The mtime heuristic must not be
+    // reachable as a second chance for a stamp that already failed: this pair
+    // has the write order a paired write produces and a stamp that says the
+    // database is not the one it describes.
+    await writeBridge(groupDir, input([]));
+    const dbPath = path.join(groupDir, 'bridge.lbug');
+    const bytes = await fsp.readFile(dbPath);
+    await fsp.writeFile(dbPath, Buffer.concat([bytes, Buffer.from([0])]));
+    const dbStat = await fsp.stat(dbPath);
+    await setMtimes(null, new Date(dbStat.mtimeMs + 10_000));
+    const meta = await readBridgeMeta(groupDir);
+
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(false);
   });
 });

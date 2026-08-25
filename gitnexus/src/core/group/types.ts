@@ -254,8 +254,11 @@ export interface BridgeMeta {
    * would lose it permanently on a swap that fails with the old database still
    * in place, which is a normal Windows outcome when a read-only handle is held.
    *
-   * Optional: metadata written before this existed carries no stamp and is
-   * treated as unverifiable rather than stale.
+   * Optional: metadata written before this existed carries no stamp. Such a
+   * file is not waved through — `bridgeMetaMatchesFile` falls back to comparing
+   * the two files' modification times, since a successful write orders the
+   * database rename before the metadata write and a database NEWER than the
+   * metadata beside it therefore cannot be the one it describes.
    */
   bridgeSize?: number;
   bridgeMtimeMs?: number;
@@ -274,6 +277,25 @@ export interface BridgeMeta {
    * says the bridge's provenance is unknown.
    */
   repoListsUnreadable?: boolean;
+  /**
+   * Reader-side only: did this metadata pair with the `bridge.lbug` beside it,
+   * measured BEFORE anything opened that database?
+   *
+   * NEVER PERSISTED, for the same reason as `repoListsUnreadable`.
+   *
+   * The measurement has to happen before the open, and the answer has to be
+   * carried rather than recomputed. `runGroupImpact` and `runGroupTrace` open
+   * the bridge and only then ask about provenance, so a platform where a
+   * read-only open advances the database's mtime would fail every unstamped
+   * pair the moment it was read — turning back-compat for pre-stamp bridges
+   * into a repo-wide "everything is a lower bound". Whether any given
+   * LadybugDB build and OS does that is not something a reader should have to
+   * know, and it cannot be observed on Windows, where the in-process
+   * write→read reopen this would need is a documented limitation. Ordering the
+   * check ahead of the open makes the question moot on every platform instead
+   * of true on the ones that happen to be testable.
+   */
+  pairedWithDatabase?: boolean;
   missingRepos: string[];
   /**
    * Configured repos the sync that produced this bridge could not extract from
