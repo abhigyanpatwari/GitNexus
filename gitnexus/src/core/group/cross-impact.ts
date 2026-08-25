@@ -383,6 +383,21 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
 }
 
 /**
+ * A union rather than `Pick<GroupImpactResult, ...>` so the two states are
+ * distinguishable by their `truncated` discriminant: a caller that folds these
+ * fields into its own result (see `crossRepoCompleteness`) can then read
+ * `truncationReason` on the truncated branch without a fallback for a value
+ * that cannot be absent there.
+ */
+type TruncationFields =
+  | { truncated: false }
+  | {
+      truncated: true;
+      truncationReason: GroupImpactTruncationReason;
+      riskEpistemic: 'lower-bound';
+    };
+
+/**
  * Build the truncation fields every `runGroupImpact` return path shares.
  *
  * `riskEpistemic` must follow `truncated` mechanically: it is the marker that
@@ -397,9 +412,103 @@ function truncationFields(
   // Only read on the truncated branch, so the not-truncated call sites omit it
   // rather than passing a reason that is thrown away.
   reasonIfTruncated: GroupImpactTruncationReason = 'partial',
-): Pick<GroupImpactResult, 'truncated' | 'truncationReason' | 'riskEpistemic'> {
+): TruncationFields {
   if (!truncated) return { truncated: false };
   return { truncated: true, truncationReason: reasonIfTruncated, riskEpistemic: 'lower-bound' };
+}
+
+/**
+ * Is this bridge's metadata unable to say where its contents came from?
+ *
+ * The three reads are all about a `BridgeMeta` and stay OUT of
+ * `crossRepoCompleteness` on purpose (see its doc): they are how a caller that
+ * opened a bridge computes `provenanceUnknown`, not how every caller does.
+ *
+ *   - `version === 0` — no readable meta.json at all (`readBridgeMeta` answers
+ *     that for both "absent" and "unparseable");
+ *   - `repoListsUnreadable` — a meta.json that parsed but whose repo lists are
+ *     not repo lists. A value we could not read is not a measurement of zero,
+ *     so it may not be spent as one;
+ *   - `pairedWithDatabase === false` — a meta.json that does not describe the
+ *     database sitting beside it, which is what a sync interrupted between the
+ *     swap and the metadata write leaves behind. Measured by
+ *     `ensureBridgeReady` BEFORE the database is opened and carried on the
+ *     meta; this only reads the answer (#3012).
+ *
+ * Treating any of them as complete is the fail-open the completeness channel
+ * exists to close.
+ */
+export function bridgeProvenanceUnknown(meta: BridgeMeta): boolean {
+  return (
+    meta.version === 0 || meta.repoListsUnreadable === true || meta.pairedWithDatabase === false
+  );
+}
+
+/**
+ * Everything a caller needs in order to say whether a cross-repo answer is
+ * complete — deliberately WITHOUT naming where any of it came from.
+ *
+ * `BridgeMeta` is not in this signature, and must not be: `groupContracts`
+ * answers the same question from `contracts.json` (via
+ * `loadContractRegistryResilient`) and never opens a bridge at all, so
+ * `version` / `repoListsUnreadable` / `pairedWithDatabase` do not exist on that
+ * path. Each caller computes its own `provenanceUnknown` from whatever
+ * provenance IT has and passes the boolean in.
+ */
+export interface CrossRepoCompletenessInput {
+  /**
+   * Repos the sync could not extract from, and repos it found no entry for.
+   * Two independent diagnostics with one consequence — none of those repos'
+   * contracts are in the artifact — so they are folded into one set.
+   */
+  unreadableRepos?: readonly string[];
+  missingRepos?: readonly string[];
+  /** Computed by the caller; see `bridgeProvenanceUnknown` for the bridge one. */
+  provenanceUnknown: boolean;
+  /**
+   * The query's DECLARED scope, not the set of repos the walk happened to
+   * reach: the subgroup filter for an impact query, the two endpoint repos for
+   * a trace, every member for a query that names none. An incomplete repo the
+   * caller never asked about cannot make the caller's answer a floor, and
+   * marking it anyway is how the marker stops meaning anything. Passing the
+   * predicate in — rather than a repo list, or a subgroup — is what keeps
+   * narrowing a scope a call-site change.
+   */
+  inScope: (repoPath: string) => boolean;
+}
+
+/** The structured triple, plus the in-scope repos that produced it. */
+export type CrossRepoCompleteness = TruncationFields & {
+  /**
+   * In-scope repos absent from the artifact, deduped, in first-seen order.
+   * Empty on a provenance-unknown answer: nothing was measured there, and
+   * inventing names out of an unreadable value is not a measurement.
+   */
+  incompleteRepos: string[];
+};
+
+/**
+ * The ONE computation of "is this cross-repo answer complete?" (KTD10).
+ *
+ * Three surfaces can return a partial cross-repo answer — impact, trace, and
+ * the contract listing — and each used to decide for itself, in its own
+ * vocabulary, which is how two of them ended up saying it in prose only. The
+ * answer is the same structured triple `GroupImpactResult` already carries, so
+ * an agent reading any of them learns "complete" vs "floor" the same way.
+ *
+ * `truncationFields` derives `riskEpistemic` from `truncated` mechanically, and
+ * is reused here rather than re-implemented for the same reason it exists: the
+ * marker that says "this is a floor, not a verdict" may never drift away from
+ * the flag that says the answer was cut short (#2787).
+ */
+export function crossRepoCompleteness(input: CrossRepoCompletenessInput): CrossRepoCompleteness {
+  const incompleteRepos = [
+    ...new Set([...(input.unreadableRepos ?? []), ...(input.missingRepos ?? [])]),
+  ].filter((repoPath) => input.inScope(repoPath));
+  return {
+    ...truncationFields(input.provenanceUnknown || incompleteRepos.length > 0, 'incomplete-sync'),
+    incompleteRepos,
+  };
 }
 
 function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): void {
@@ -659,30 +768,16 @@ export async function runGroupImpact(
   // `{ cross: [], truncated: false }` — "complete: nothing depends on this" —
   // which is a wrong answer, not an empty one, for a tool an agent uses to
   // license a delete or a rename.
-  // Two ways this bridge's completeness can be unknown rather than clean, and
-  // both must read as a floor rather than as fact:
   //
-  //   - no readable meta.json at all (`readBridgeMeta` answers `version: 0` for
-  //     both "absent" and "unparseable");
-  //   - a meta.json that parsed but whose repo lists are not repo lists
-  //     (`repoListsUnreadable`). A value we could not read is not a measurement
-  //     of zero, so it may not be spent as one;
-  //   - a meta.json that does not describe the database sitting beside it,
-  //     which is what a sync interrupted between the swap and the metadata
-  //     write leaves behind. The stamp `writeBridge` records is what makes that
-  //     detectable without deleting anything.
-  //
-  // Treating any of them as complete is the fail-open this whole channel exists
-  // to close.
-  //
-  // Both are computed INSIDE the `try` below, and initialized fail-closed here
-  // only because they outlive it. The lease taken by `ensureBridgeReady` is
-  // released by that block's `finally` and nowhere else, so work done between
-  // the lease and the `try` is work whose every throw leaks a refcount the
-  // cached handle can never get back — which is how a malformed meta.json used
-  // to wedge the handle as well as crash the query.
-  let bridgeProvenanceUnknown = true;
-  let bridgeIncompleteRepos: string[] = [];
+  // The metadata read that answers it (`bridgeProvenanceUnknown`) happens
+  // INSIDE the `try` below, and the flag is initialized fail-closed here only
+  // because it outlives that block. The lease taken by `ensureBridgeReady` is
+  // released by the `finally` and nowhere else, so work done between the lease
+  // and the `try` is work whose every throw leaks a refcount the cached handle
+  // can never get back — which is how a malformed meta.json used to wedge the
+  // handle as well as crash the query. (The repo lists are folded in after the
+  // `finally`, where a throw can no longer strand the lease.)
+  let provenanceUnknown = true;
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
@@ -692,16 +787,7 @@ export async function runGroupImpact(
   let fanoutTimedOut = false;
 
   try {
-    bridgeProvenanceUnknown =
-      bridgePrep.meta.version === 0 ||
-      bridgePrep.meta.repoListsUnreadable === true ||
-      bridgePrep.meta.pairedWithDatabase === false;
-    bridgeIncompleteRepos = [
-      ...new Set([
-        ...(bridgePrep.meta.unreadableRepos ?? []),
-        ...(bridgePrep.meta.missingRepos ?? []),
-      ]),
-    ];
+    provenanceUnknown = bridgeProvenanceUnknown(bridgePrep.meta);
 
     const neighbors = await resolveBridgeNeighbors(handle, {
       localRepo: repoPath,
@@ -835,11 +921,17 @@ export async function runGroupImpact(
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
   const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
   const localPartial = Boolean((local as { partial?: boolean }).partial);
-  const truncated =
-    truncatedRepos.length > 0 ||
-    localPartial ||
-    bridgeIncompleteRepos.length > 0 ||
-    bridgeProvenanceUnknown;
+  // The bridge's own incompleteness, in the shared vocabulary. `inScope` accepts
+  // every repo here because a group impact query declares the whole group;
+  // narrowing it to the requested subgroup is a change to THIS argument, not to
+  // the helper.
+  const bridge = crossRepoCompleteness({
+    unreadableRepos: bridgePrep.meta.unreadableRepos,
+    missingRepos: bridgePrep.meta.missingRepos,
+    provenanceUnknown,
+    inScope: () => true,
+  });
+  const truncated = truncatedRepos.length > 0 || localPartial || bridge.truncated;
 
   const result: GroupImpactResult = {
     local,
@@ -865,7 +957,7 @@ export async function runGroupImpact(
           ? 'partial'
           : 'incomplete-sync',
     ),
-    truncatedRepos: [...new Set([...truncatedRepos, ...bridgeIncompleteRepos])],
+    truncatedRepos: [...new Set([...truncatedRepos, ...bridge.incompleteRepos])],
     summary: {
       direct: localSum.direct ?? 0,
       processes_affected: localSum.processes_affected ?? 0,
