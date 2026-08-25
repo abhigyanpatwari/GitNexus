@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { GroupService } from '../../../src/core/group/service.js';
+import { GroupService, type GroupToolPort } from '../../../src/core/group/service.js';
 import { makeGroupToolPort, writeGroupYaml } from './fixtures.js';
 
 /** The fields every case shares; only `unreadableRepos` is under test. */
@@ -40,6 +40,14 @@ const GOOD_CONTRACT = {
 };
 
 type StatusPayload = { group: string; unreadableRepos?: unknown; missingRepos?: unknown };
+
+/**
+ * One row of the per-repo status table. Every field is `unknown` so a wrong
+ * TYPE fails the assertion rather than being coerced past it — `undefined` and
+ * `false` are different answers about which failure a row means.
+ */
+type RepoStatusRow = { missing?: unknown; unresolvable?: unknown; unresolvableReason?: unknown };
+type RepoStatusPayload = { repos: Record<string, RepoStatusRow> };
 /** One valid cross-link, so the control can assert that half of the payload too. */
 const GOOD_CROSS_LINK = {
   from: { repo: 'frontend', symbolUid: 'f' },
@@ -340,6 +348,172 @@ describe('unreadableRepos survives a round trip through contracts.json', () => {
       expect(result.contracts).toEqual([GOOD_CONTRACT]);
       expect(result.crossLinks).toEqual([GOOD_CROSS_LINK]);
       expect(result.skippedCorrupt).toBeUndefined();
+    });
+  });
+
+  /**
+   * The per-repo table had ONE failure label — `missing`, printed as "no entry
+   * in the registry" — and every cause collapsed into it, including a global
+   * registry that could not be read at all. For that cause "no entry" is a
+   * statement about a file nothing could be read from, and it points at the
+   * wrong repair: index the repo, when the fix is to repair the registry.
+   *
+   * `getStatus` therefore reads the global registry through the STRICT mode.
+   * The lenient read's `catch { return [] }` turns an unreadable registry into
+   * an empty one, which is indistinguishable from a genuine absence — it can
+   * only ever produce the `missing` answer, so it cannot express these cases.
+   */
+  describe('group status tells a missing repo apart from an unresolvable one', () => {
+    /** A registry row carrying every field the strict read demands of one. */
+    const registryRow = (name: string): Record<string, unknown> => ({
+      name,
+      path: path.join(home, name),
+      storagePath: path.join(home, name, '.gitnexus'),
+      indexedAt: '2026-01-01T00:00:00.000Z',
+      lastCommit: 'abc123',
+    });
+
+    /**
+     * Written verbatim rather than through the registry writer: half these
+     * cases need a file shape `RegistryEntry[]` cannot express — a JSON
+     * object, a truncated write, a row that names nothing.
+     */
+    const writeGlobalRegistry = (body: string): Promise<void> =>
+      fsp.writeFile(path.join(home, 'registry.json'), body, 'utf8');
+
+    const notFound = (name: string): never => {
+      throw new Error(`Repository "${name}" not found. Available: `);
+    };
+
+    /**
+     * Stands in for `LocalBackend.resolveRepo`: a handle for the names given,
+     * and its own not-found error for the rest. The fixture only means
+     * anything while it agrees with the registry file the case wrote —
+     * `getStatus` reads that file itself, and the two answers are what these
+     * cases are about.
+     */
+    const portResolving = (resolvable: string[]): GroupToolPort => {
+      const handles = new Map(
+        resolvable.map((name) => [
+          name,
+          {
+            id: name,
+            name,
+            repoPath: path.join(home, name),
+            storagePath: path.join(home, name, '.gitnexus'),
+          },
+        ]),
+      );
+      return makeGroupToolPort(home, {
+        resolveRepo: vi.fn(async (registryName?: string) => {
+          const wanted = String(registryName);
+          return handles.get(wanted) ?? notFound(wanted);
+        }),
+      });
+    };
+
+    const statusWith = async (port: GroupToolPort): Promise<RepoStatusPayload> =>
+      (await new GroupService(port).groupStatus({ name: 'waveful' })) as RepoStatusPayload;
+
+    it('renders a repo the readable registry simply lacks as missing', async () => {
+      // The guard on the other side of the split: the new label must not
+      // swallow the old one. This repo has no row, that is exactly why
+      // resolution failed, and "no entry in the registry" is a true statement.
+      await writeGlobalRegistry(JSON.stringify([registryRow('backend-registry')]));
+
+      const result = await statusWith(portResolving(['backend-registry']));
+
+      expect(result.repos['svc/users'].missing).toBe(true);
+      expect(result.repos['svc/users'].unresolvable).toBeFalsy();
+      expect(result.repos['svc/users'].unresolvableReason).toBeUndefined();
+    });
+
+    it('renders a repo the registry does hold but cannot resolve as unresolvable', async () => {
+      // The same port failure as the case above, in the same group, with one
+      // difference: the registry HAS the row. "No entry in the registry" would
+      // be a false statement about the file the command just read.
+      await writeGlobalRegistry(
+        JSON.stringify([registryRow('backend-registry'), registryRow('svc/users-registry')]),
+      );
+
+      const result = await statusWith(portResolving(['backend-registry']));
+
+      expect(result.repos['svc/users'].unresolvable).toBe(true);
+      expect(result.repos['svc/users'].unresolvableReason).toContain('svc/users-registry');
+      // The pre-split flag keeps its meaning, so a consumer written before the
+      // split still sees an unusable repo flagged rather than a clean row.
+      expect(result.repos['svc/users'].missing).toBe(true);
+    });
+
+    it('carries both states in one payload, distinguishably', async () => {
+      // What an agent reads. Nothing resolves; the registry knows one of the
+      // two repos and not the other. Two failures, two different answers.
+      await writeGlobalRegistry(JSON.stringify([registryRow('backend-registry')]));
+
+      const result = await statusWith(portResolving([]));
+
+      expect(result.repos['backend'].unresolvable).toBe(true);
+      expect(result.repos['svc/users'].unresolvable).toBe(false);
+      expect(result.repos['backend'].missing).toBe(true);
+      expect(result.repos['svc/users'].missing).toBe(true);
+    });
+
+    const unreadableRegistries: Array<{ label: string; body: string }> = [
+      { label: 'a JSON object', body: '{"repos": []}' },
+      { label: 'a truncated write', body: '[{"name":"backend-registry",' },
+      { label: 'not JSON at all', body: 'nope' },
+    ];
+
+    it.each(unreadableRegistries)(
+      'renders every configured repo as unresolvable when the registry is $label',
+      async ({ body }) => {
+        // The answer the lenient read cannot give: it collapses this file into
+        // `[]`, and every repo then reports "no entry in the registry" — a
+        // measurement of a file nothing could be measured from.
+        await writeGlobalRegistry(body);
+
+        const result = await statusWith(portResolving([]));
+
+        expect(result.repos['backend'].unresolvable).toBe(true);
+        expect(result.repos['svc/users'].unresolvable).toBe(true);
+        expect(result.repos['backend'].unresolvableReason).toContain('registry');
+      },
+    );
+
+    it('reports every repo as unresolvable when one row cannot identify a repo', async () => {
+      // The accepted consequence of the strict read: it rejects the WHOLE
+      // registry on one unidentifiable row, so `backend` is reported
+      // unresolvable even though its own row is intact and it still resolves.
+      // Deliberate — a registry the resolver cannot trust row-wise cannot be
+      // trusted about any row — and the answer is an unresolved state, never
+      // the clean `missing: false` row this used to print.
+      await writeGlobalRegistry(
+        JSON.stringify([
+          registryRow('backend-registry'),
+          { ...registryRow('svc/users-registry'), name: '   ' },
+        ]),
+      );
+
+      const result = await statusWith(portResolving(['backend-registry', 'svc/users-registry']));
+
+      expect(result.repos['backend'].unresolvable).toBe(true);
+      expect(result.repos['backend'].missing).toBe(true);
+      expect(result.repos['svc/users'].unresolvable).toBe(true);
+    });
+
+    it('renders neither state for a group whose repos all resolve', async () => {
+      // Control. Both labels are for failures; a healthy group must show
+      // neither, or the split is just a new way to raise a false alarm.
+      await writeGlobalRegistry(
+        JSON.stringify([registryRow('backend-registry'), registryRow('svc/users-registry')]),
+      );
+
+      const result = await statusWith(portResolving(['backend-registry', 'svc/users-registry']));
+
+      expect(result.repos['backend'].missing).toBe(false);
+      expect(result.repos['backend'].unresolvable).toBeFalsy();
+      expect(result.repos['svc/users'].missing).toBe(false);
+      expect(result.repos['svc/users'].unresolvable).toBeFalsy();
     });
   });
 });

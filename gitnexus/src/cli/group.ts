@@ -120,6 +120,14 @@ export function registerGroupCommands(program: Command): void {
               indexStale: boolean;
               contractsStale: boolean;
               missing: boolean;
+              /**
+               * Optional here on purpose: a payload produced before the split
+               * carries no such key, and an absent one must degrade to the
+               * label this command has always printed rather than to the new
+               * one — an unrecorded cause is not evidence of a cause.
+               */
+              unresolvable?: boolean;
+              unresolvableReason?: string;
               commitsBehind?: number;
             }
           >;
@@ -130,6 +138,23 @@ export function registerGroupCommands(program: Command): void {
         console.log('  Repo index / contracts staleness:');
         for (const [repoPath, row] of Object.entries(st.repos || {})) {
           if (row.missing) {
+            // Two different facts with two different remedies: a repo the
+            // registry never heard of is fixed by indexing it, while an entry
+            // the resolver choked on is fixed by repairing the registry.
+            // Printing "no entry in the registry" for the second one states a
+            // cause that was never measured, and points at the wrong repair.
+            if (row.unresolvable) {
+              // The reason can be multi-line — an ambiguous registry names
+              // every colliding clone. Fold it onto this row's line rather
+              // than truncating it: those paths are what the operator acts on,
+              // and a table row that swallows half its own explanation is the
+              // failure this label exists to stop.
+              const why = (row.unresolvableReason ?? 'the registry entry could not be resolved')
+                .replace(/\s+/g, ' ')
+                .trim();
+              console.log(`  ${repoPath.padEnd(25)} UNRESOLVABLE (${why})`);
+              continue;
+            }
             console.log(`  ${repoPath.padEnd(25)} MISSING   (no entry in the registry)`);
             continue;
           }

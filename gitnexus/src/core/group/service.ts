@@ -6,7 +6,12 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
-import { loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
+import {
+  loadMeta,
+  readRegistryStrict,
+  type RegistryEntry,
+  type RepoMeta,
+} from '../../storage/repo-manager.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
@@ -235,6 +240,32 @@ function isCrossLink(raw: unknown): raw is CrossLink {
 function recordedRepoList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.every((entry) => typeof entry === 'string') ? (value as string[]) : undefined;
+}
+
+/**
+ * Does the global registry hold a row for this configured group member?
+ *
+ * Consulted only once resolution has ALREADY failed, to choose which of the
+ * two failures `group status` reports. It mirrors the two tiers
+ * `LocalBackend.resolveRepo` matches a bare group-config value on — the
+ * registry `name`, case-insensitively, and the repo `path` — and deliberately
+ * stops short of its hashed-id and partial-name tiers: those exist to be
+ * generous about what an operator typed, while this predicate only decides
+ * between two labels, and a looser match here would relabel a genuine registry
+ * miss as an unresolvable row. That is the same conflation this reporting
+ * exists to remove, pointed the other way.
+ */
+function registryIdentifies(entries: RegistryEntry[], registryName: string): boolean {
+  const wantedName = registryName.toLowerCase();
+  const wantedPath = path.resolve(registryName);
+  return entries.some((entry) => {
+    if (typeof entry.name === 'string' && entry.name.toLowerCase() === wantedName) return true;
+    if (typeof entry.path !== 'string') return false;
+    const stored = path.resolve(entry.path);
+    return process.platform === 'win32'
+      ? stored.toLowerCase() === wantedPath.toLowerCase()
+      : stored === wantedPath;
+  });
 }
 
 async function loadContractRegistryResilient(
@@ -647,17 +678,70 @@ export class GroupService {
     }
     const registry = await readContractRegistry(groupDir);
 
+    /**
+     * The STRICT global-registry read, deliberately — this is the one caller
+     * that has to tell "the registry says nothing about this repo" apart from
+     * "the registry could not be read at all", and only the strict mode can.
+     * `readRegistry`'s `catch { return [] }` collapses a malformed registry
+     * into an empty one, which is indistinguishable from a genuine absence and
+     * would report every configured repo as having no entry — the exact
+     * conflation the two labels below exist to remove.
+     *
+     * The consequence is accepted knowingly: the strict read rejects the WHOLE
+     * registry when any single row fails to identify a repo, so one malformed
+     * row renders every member of the group unresolvable, including members
+     * whose own rows are fine. That is the honest verdict — a registry the
+     * resolver cannot trust row-wise cannot be trusted about any row — and it
+     * is reported as an unresolved state, never as a clean one.
+     *
+     * ENOENT is not a failure in either mode: no registry file genuinely means
+     * nothing has been registered yet, so every repo is legitimately missing.
+     */
+    let registryEntries: RegistryEntry[] | null = null;
+    let registryReadError: string | null = null;
+    try {
+      registryEntries = await readRegistryStrict();
+    } catch (err) {
+      registryReadError = err instanceof Error ? err.message : String(err);
+    }
+
     const repoStatuses: Record<
       string,
       {
         indexStale: boolean;
         contractsStale: boolean;
+        /**
+         * Unchanged meaning: this repo has no usable status. It stays `true`
+         * for BOTH failures below, so a consumer written before the split
+         * still sees every unusable repo flagged. Reporting an unresolvable
+         * repo as `missing: false` would hand that consumer `indexStale:
+         * false` for a repo nothing was ever read from — a false all-clear.
+         */
         missing: boolean;
+        /**
+         * Which failure `missing` means: `false` is a genuine registry miss,
+         * `true` is an entry the resolver could not turn into a repo. Additive
+         * — always present on every row, so an agent can branch on it without
+         * having to treat an absent key as either answer.
+         */
+        unresolvable: boolean;
+        /** Set only when `unresolvable`; says what could not be resolved. */
+        unresolvableReason?: string;
         commitsBehind?: number;
       }
     > = {};
 
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
+      if (registryEntries === null) {
+        repoStatuses[repoPath] = {
+          indexStale: false,
+          contractsStale: false,
+          missing: true,
+          unresolvable: true,
+          unresolvableReason: `the global registry could not be read: ${registryReadError}`,
+        };
+        continue;
+      }
       try {
         const repoObj = await this.port.resolveRepo(registryName);
         const meta: Partial<Pick<RepoMeta, 'lastCommit' | 'indexedAt'>> =
@@ -675,10 +759,25 @@ export class GroupService {
           indexStale: staleness.isStale,
           contractsStale: Boolean(contractsStale),
           missing: false,
+          unresolvable: false,
           commitsBehind: staleness.commitsBehind,
         };
-      } catch {
-        repoStatuses[repoPath] = { indexStale: false, contractsStale: false, missing: true };
+      } catch (err) {
+        // The registry read succeeded, so its answer about this row is
+        // trustworthy: a row that is there and still would not resolve is a
+        // different fact from a row that was never there, and the operator's
+        // next move differs (repair the entry vs. index the repo).
+        const known = registryIdentifies(registryEntries, registryName);
+        const reason = err instanceof Error ? err.message : String(err);
+        repoStatuses[repoPath] = {
+          indexStale: false,
+          contractsStale: false,
+          missing: true,
+          unresolvable: known,
+          ...(known
+            ? { unresolvableReason: `registry entry "${registryName}" did not resolve: ${reason}` }
+            : {}),
+        };
       }
     }
 
