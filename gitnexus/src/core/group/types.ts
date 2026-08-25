@@ -124,8 +124,15 @@ export interface RepoHandle {
   storagePath: string;
 }
 
-/** Why local impact or fan-out stopped early (e.g. wall-clock budget exhausted). */
-export type GroupImpactTruncationReason = 'timeout' | 'partial';
+/**
+ * Why local impact or fan-out stopped early (e.g. wall-clock budget exhausted).
+ *
+ * `'timeout'` and `'partial'` are runtime limits — the same query can succeed on
+ * a retry. `'incomplete-sync'` is structural: the bridge itself was built from a
+ * sync that could not read every configured repo, so those repos' contracts are
+ * absent from every query against it until `gitnexus group sync` succeeds.
+ */
+export type GroupImpactTruncationReason = 'timeout' | 'partial' | 'incomplete-sync';
 
 export interface GroupImpactResult {
   local: unknown;
@@ -230,4 +237,13 @@ export interface BridgeMeta {
   version: number;
   generatedAt: string;
   missingRepos: string[];
+  /**
+   * Configured repos that ARE registered but whose index could not be opened on
+   * the sync that produced this bridge. Their contracts and every cross-link
+   * touching them are absent from `bridge.lbug`, so a cross-repo impact query
+   * against this bridge is a lower bound, not a verdict — `runGroupImpact`
+   * folds a non-empty value into its truncation fields for exactly that reason.
+   * Optional: a bridge written before this field existed does not record it.
+   */
+  unreadableRepos?: string[];
 }

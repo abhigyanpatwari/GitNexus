@@ -7,6 +7,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type {
   BridgeHandle,
+  BridgeMeta,
   ContractType,
   CrossRepoImpact,
   GroupConfig,
@@ -418,7 +419,7 @@ function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): v
 
 export async function ensureBridgeReady(
   groupDir: string,
-): Promise<{ handle: BridgeHandle } | { error: string }> {
+): Promise<{ handle: BridgeHandle; meta: BridgeMeta } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
   if (meta.version > 0 && meta.version !== BRIDGE_SCHEMA_VERSION) {
     return {
@@ -442,7 +443,7 @@ export async function ensureBridgeReady(
       error: `Could not open bridge.lbug read-only (schema ${BRIDGE_SCHEMA_VERSION}). Run gitnexus group sync.`,
     };
   }
-  return { handle };
+  return { handle, meta };
 }
 
 function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
@@ -641,6 +642,21 @@ export async function runGroupImpact(
   if ('error' in bridgePrep) return { error: bridgePrep.error };
 
   const handle = bridgePrep.handle;
+  // Repos the sync that built this bridge could not account for. Their
+  // contracts — and every cross-link touching them — are simply absent from
+  // bridge.lbug, and nothing else in this walk can notice that: the only
+  // incompleteness channel on the result is `truncationFields`, driven by
+  // fan-out state. Without folding these in, a query about a symbol whose one
+  // downstream consumer lives in an unreadable repo returns
+  // `{ cross: [], truncated: false }` — "complete: nothing depends on this" —
+  // which is a wrong answer, not an empty one, for a tool an agent uses to
+  // license a delete or a rename.
+  const bridgeIncompleteRepos = [
+    ...new Set([
+      ...(bridgePrep.meta.unreadableRepos ?? []),
+      ...(bridgePrep.meta.missingRepos ?? []),
+    ]),
+  ];
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
@@ -782,7 +798,15 @@ export async function runGroupImpact(
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
   const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
   const localPartial = Boolean((local as { partial?: boolean }).partial);
-  const truncated = truncatedRepos.length > 0 || localPartial;
+  const truncated = truncatedRepos.length > 0 || localPartial || bridgeIncompleteRepos.length > 0;
+  // Runtime limits first — they are what the caller can retry. 'incomplete-sync'
+  // is reported only when nothing was merely cut short, because its remedy is a
+  // different one: re-run `gitnexus group sync`, not the query.
+  const truncationReason: GroupImpactTruncationReason = fanoutTimedOut
+    ? 'timeout'
+    : truncatedRepos.length > 0 || localPartial
+      ? 'partial'
+      : 'incomplete-sync';
 
   const result: GroupImpactResult = {
     local,
@@ -794,8 +818,8 @@ export async function runGroupImpact(
     // and under-reporting a blast radius is the unsafe direction (an agent told
     // LOW proceeds; told CRITICAL it stops). Marking the floor keeps the
     // warning intact while making the incompleteness legible.
-    ...truncationFields(truncated, fanoutTimedOut ? 'timeout' : 'partial'),
-    truncatedRepos: [...new Set(truncatedRepos)],
+    ...truncationFields(truncated, truncationReason),
+    truncatedRepos: [...new Set([...truncatedRepos, ...bridgeIncompleteRepos])],
     summary: {
       direct: localSum.direct ?? 0,
       processes_affected: localSum.processes_affected ?? 0,

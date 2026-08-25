@@ -668,6 +668,12 @@ export interface WriteBridgeInput {
   crossLinks: CrossLink[];
   repoSnapshots: Record<string, RepoSnapshot>;
   missingRepos: string[];
+  /**
+   * Repos whose index could not be opened this sync. Recorded in meta.json so
+   * cross-repo impact can tell "nothing depends on this" from "we could not
+   * look" — the bridge built here is missing every contract those repos own.
+   */
+  unreadableRepos?: string[];
 }
 
 /**
@@ -967,6 +973,9 @@ export async function writeBridge(
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       missingRepos: input.missingRepos,
+      ...(input.unreadableRepos && input.unreadableRepos.length > 0
+        ? { unreadableRepos: input.unreadableRepos }
+        : {}),
     });
 
     return report;
