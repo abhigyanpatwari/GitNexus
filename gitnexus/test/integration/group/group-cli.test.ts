@@ -107,3 +107,71 @@ describe('group CLI', () => {
     }
   });
 });
+
+describe('group contracts reports its completeness', () => {
+  /**
+   * `groupContracts` returns the structured triple alongside the contracts, so
+   * an agent can tell a complete listing from a floor. The `--json` path used
+   * to destructure `{ contracts, crossLinks }` and re-serialize just those two,
+   * which silently dropped every other field the service returned — including
+   * the ones that say the listing is incomplete. Printing the payload whole is
+   * what keeps a new field from needing a matching CLI edit to become visible.
+   */
+  const seedRegistry = (group: string, registry: Record<string, unknown>): void => {
+    const groupDir = path.join(tmpHome, 'groups', group);
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(path.join(groupDir, 'contracts.json'), JSON.stringify(registry, null, 2));
+  };
+
+  const baseRegistry = {
+    version: 1,
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    contracts: [],
+    crossLinks: [],
+    repoSnapshots: {},
+    missingRepos: [],
+  };
+
+  it('carries the incompleteness fields through --json', () => {
+    expect(runGroup(['create', 'jsonfloor']).status).toBe(0);
+    seedRegistry('jsonfloor', { ...baseRegistry, unreadableRepos: ['app/backend'] });
+
+    const r = runGroup(['contracts', 'jsonfloor', '--json']);
+    expect(r.status).toBe(0);
+    const payload = JSON.parse(r.stdout) as Record<string, unknown>;
+
+    expect(payload.unreadableRepos).toEqual(['app/backend']);
+    expect(payload.truncated).toBe(true);
+    expect(payload.truncationReason).toBe('incomplete-sync');
+    expect(payload.riskEpistemic).toBe('lower-bound');
+    // Still everything it always returned.
+    expect(payload.contracts).toEqual([]);
+    expect(payload.crossLinks).toEqual([]);
+  });
+
+  it('tells a human reader the listing is a floor, and which repos are missing from it', () => {
+    expect(runGroup(['create', 'humanfloor']).status).toBe(0);
+    seedRegistry('humanfloor', { ...baseRegistry, unreadableRepos: ['app/backend'] });
+
+    const r = runGroup(['contracts', 'humanfloor']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('app/backend');
+    expect(r.stdout.toLowerCase()).toContain('incomplete');
+  });
+
+  it('control: a complete registry says nothing about truncation on either surface', () => {
+    expect(runGroup(['create', 'complete']).status).toBe(0);
+    seedRegistry('complete', { ...baseRegistry, unreadableRepos: [] });
+
+    const j = JSON.parse(runGroup(['contracts', 'complete', '--json']).stdout) as Record<
+      string,
+      unknown
+    >;
+    expect(j.truncated).toBe(false);
+    expect(j.truncationReason).toBeUndefined();
+    expect(j.riskEpistemic).toBeUndefined();
+
+    const h = runGroup(['contracts', 'complete']);
+    expect(h.stdout.toLowerCase()).not.toContain('incomplete');
+  });
+});

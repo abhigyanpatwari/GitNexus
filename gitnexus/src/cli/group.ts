@@ -433,7 +433,7 @@ export function registerGroupCommands(program: Command): void {
           return;
         }
 
-        const { contracts, crossLinks } = raw as {
+        const { contracts, crossLinks, truncated, unreadableRepos, missingRepos } = raw as {
           contracts: Array<{
             role: string;
             contractId: string;
@@ -447,10 +447,19 @@ export function registerGroupCommands(program: Command): void {
             confidence: number;
             contractId: string;
           }>;
+          truncated?: boolean;
+          unreadableRepos?: string[];
+          missingRepos?: string[];
         };
 
         if (opts.json) {
-          console.log(JSON.stringify({ contracts, crossLinks }, null, 2));
+          // The whole payload, not a re-serialized subset. Destructuring the two
+          // fields this command happens to print and rebuilding an object from
+          // them dropped everything else the service returned — which is how the
+          // completeness fields were invisible here while the MCP tool carried
+          // them. Printing `raw` means a field added to the service reaches
+          // `--json` without a matching edit in this file.
+          console.log(JSON.stringify(raw, null, 2));
         } else {
           console.log(`Contracts (${contracts.length}):`);
           for (const c of contracts) {
@@ -460,6 +469,19 @@ export function registerGroupCommands(program: Command): void {
           for (const l of crossLinks) {
             console.log(
               `  ${l.from.repo} -> ${l.to.repo}  [${l.matchType}, conf=${l.confidence}]  ${l.contractId}`,
+            );
+          }
+          if (truncated) {
+            // Counts above are a floor, not a census. Name the repos when the
+            // registry recorded them, and say so plainly when it did not — a
+            // listing that cannot say what it is missing is still incomplete.
+            const absent = [...(unreadableRepos ?? []), ...(missingRepos ?? [])];
+            console.log(
+              absent.length > 0
+                ? `\n⚠️ This listing is incomplete: the last sync could not account for ${absent.join(', ')}.` +
+                    `\n   Contracts from those repos are absent, so the counts above are a lower bound.`
+                : `\n⚠️ This listing is incomplete: the last sync did not record which repos it could` +
+                    `\n   read, so the counts above are a lower bound. Re-run group sync.`,
             );
           }
         }
