@@ -255,19 +255,28 @@ export function registerGroupCommands(program: Command): void {
             `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
           );
         } else if (result.registryOutcome === 'preserved') {
+          // "Did NOT write contracts.json" was false: this path rewrites the
+          // file, keeping the previous sync's contracts and replacing only the
+          // two diagnostic lists. Saying otherwise sent an operator looking at
+          // an unchanged mtime to conclude the sync had not run.
           console.log(
-            `\nDid NOT write contracts.json — no repo in this group could be read.` +
-              `\n  The contracts from the previous sync are preserved; only the unreadable/missing` +
-              `\n  repo lists were refreshed. Fix the repos above and re-run.`,
+            `\nKept the previous contracts.json — no repo in this group could be read.` +
+              `\n  Its contracts and cross-links are unchanged; only the unreadable/missing` +
+              `\n  repo lists were refreshed to describe THIS run. Fix the repos above and re-run.`,
           );
         } else if (result.registryOutcome === 'no-prior-registry') {
           // Distinct from `preserved` on purpose: there is nothing on disk to
           // preserve, so promising the previous sync's contracts are safe would
           // send the operator looking for a file that has never existed.
+          //
+          // Scoped to contracts.json rather than claiming nothing at all was
+          // written: this path still records the run against an existing
+          // bridge's metadata, and a blanket "nothing was written" would be the
+          // same kind of false statement about disk as the line above.
           console.log(
             `\nDid NOT write contracts.json — no repo in this group could be read,` +
-              `\n  and there is no previous contracts.json to fall back on. Nothing was` +
-              `\n  written. Fix the repos above and re-run.`,
+              `\n  and there is no previous contracts.json to fall back on. Fix the repos` +
+              `\n  above and re-run.`,
           );
         }
       }
