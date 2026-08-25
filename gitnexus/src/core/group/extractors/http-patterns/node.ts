@@ -739,8 +739,7 @@ function scanBundle(
         pathNode,
         facts,
         fileKey,
-        receiver === 'axios' &&
-          (pathNode.type === 'string' || pathNode.type === 'template_string'),
+        receiver === 'axios' && (pathNode.type === 'string' || pathNode.type === 'template_string'),
       );
       if (path === null) continue;
 

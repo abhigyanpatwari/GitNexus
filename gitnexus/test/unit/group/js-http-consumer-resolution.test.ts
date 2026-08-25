@@ -590,10 +590,7 @@ describe('JS/TS HTTP consumer resolution', () => {
     // The placeholder is a runtime value that consumer normalization reads as
     // {param}; its source text is not part of the path shape.
     expect(consumers(detections).map((d) => d.path)).toEqual(
-      expect.arrayContaining([
-        "/events/${draft ? 'draft' : 'live'}",
-        '/links/${page ?? 1}',
-      ]),
+      expect.arrayContaining(["/events/${draft ? 'draft' : 'live'}", '/links/${page ?? 1}']),
     );
   });
 
@@ -605,10 +602,7 @@ describe('JS/TS HTTP consumer resolution', () => {
       jsParser.parse('axios.get(`${API_BASE}/users`); axios.get(`${a}${b}`);'),
     );
 
-    expect(consumers(detections).map((d) => d.path)).toEqual([
-      '${API_BASE}/users',
-      '${a}${b}',
-    ]);
+    expect(consumers(detections).map((d) => d.path)).toEqual(['${API_BASE}/users', '${a}${b}']);
   });
 
   it('caps the literal fallback of an oversized template too', () => {
@@ -722,13 +716,25 @@ describe('resolveJsImport', () => {
 
   it('refuses a tail two different modules claim, across extensions', () => {
     expect(
-      resolveJsImport('src/x.ts', '@/shared/routes', keys('a/shared/routes.ts', 'b/shared/routes.ts')),
+      resolveJsImport(
+        'src/x.ts',
+        '@/shared/routes',
+        keys('a/shared/routes.ts', 'b/shared/routes.ts'),
+      ),
     ).toBeNull();
     expect(
-      resolveJsImport('src/x.ts', '@/shared/routes', keys('a/shared/routes.ts', 'b/shared/routes.tsx')),
+      resolveJsImport(
+        'src/x.ts',
+        '@/shared/routes',
+        keys('a/shared/routes.ts', 'b/shared/routes.tsx'),
+      ),
     ).toBeNull();
     expect(
-      resolveJsImport('src/x.ts', '@/shared/routes', keys('a/shared/routes.ts', 'b/shared/routes.js')),
+      resolveJsImport(
+        'src/x.ts',
+        '@/shared/routes',
+        keys('a/shared/routes.ts', 'b/shared/routes.js'),
+      ),
     ).toBeNull();
     expect(
       resolveJsImport(
