@@ -7,7 +7,6 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type {
   BridgeHandle,
-  BridgeMeta,
   ContractType,
   CrossRepoImpact,
   GroupConfig,
@@ -30,6 +29,7 @@ import {
   getCachedBridgeReadOnly,
   queryBridge,
   readBridgeMeta,
+  type ReadBridgeMeta,
 } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 import { compareCodeUnits } from '../../lib/utils.js';
@@ -420,7 +420,7 @@ function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): v
 
 export async function ensureBridgeReady(
   groupDir: string,
-): Promise<{ handle: BridgeHandle; meta: BridgeMeta } | { error: string }> {
+): Promise<{ handle: BridgeHandle; meta: ReadBridgeMeta } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
   if (meta.version > 0 && meta.version !== BRIDGE_SCHEMA_VERSION) {
     return {
@@ -657,21 +657,25 @@ export async function runGroupImpact(
   //
   //   - no readable meta.json at all (`readBridgeMeta` answers `version: 0` for
   //     both "absent" and "unparseable");
+  //   - a meta.json that parsed but whose repo lists are not repo lists
+  //     (`repoListsUnreadable`). A value we could not read is not a measurement
+  //     of zero, so it may not be spent as one;
   //   - a meta.json that does not describe the database sitting beside it,
   //     which is what a sync interrupted between the swap and the metadata
   //     write leaves behind. The stamp `writeBridge` records is what makes that
   //     detectable without deleting anything.
   //
-  // Treating either as complete is the fail-open this whole channel exists to
-  // close.
-  const bridgeProvenanceUnknown =
-    bridgePrep.meta.version === 0 || !(await bridgeMetaMatchesFile(groupDir, bridgePrep.meta));
-  const bridgeIncompleteRepos = [
-    ...new Set([
-      ...(bridgePrep.meta.unreadableRepos ?? []),
-      ...(bridgePrep.meta.missingRepos ?? []),
-    ]),
-  ];
+  // Treating any of them as complete is the fail-open this whole channel exists
+  // to close.
+  //
+  // Both are computed INSIDE the `try` below, and initialized fail-closed here
+  // only because they outlive it. The lease taken by `ensureBridgeReady` is
+  // released by that block's `finally` and nowhere else, so work done between
+  // the lease and the `try` is work whose every throw leaks a refcount the
+  // cached handle can never get back — which is how a malformed meta.json used
+  // to wedge the handle as well as crash the query.
+  let bridgeProvenanceUnknown = true;
+  let bridgeIncompleteRepos: string[] = [];
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
@@ -681,6 +685,17 @@ export async function runGroupImpact(
   let fanoutTimedOut = false;
 
   try {
+    bridgeProvenanceUnknown =
+      bridgePrep.meta.version === 0 ||
+      bridgePrep.meta.repoListsUnreadable === true ||
+      !(await bridgeMetaMatchesFile(groupDir, bridgePrep.meta));
+    bridgeIncompleteRepos = [
+      ...new Set([
+        ...(bridgePrep.meta.unreadableRepos ?? []),
+        ...(bridgePrep.meta.missingRepos ?? []),
+      ]),
+    ];
+
     const neighbors = await resolveBridgeNeighbors(handle, {
       localRepo: repoPath,
       uids,

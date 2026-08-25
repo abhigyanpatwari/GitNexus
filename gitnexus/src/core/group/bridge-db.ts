@@ -675,13 +675,96 @@ export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta):
   }
 }
 
-export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
+/**
+ * What `readBridgeMeta` answers: the metadata, plus the one thing the file
+ * itself cannot say — whether the repo lists in it were readable at all.
+ *
+ * A field that is simply ABSENT is "not recorded": `unreadableRepos` is
+ * optional, and metadata written before it existed has no opinion about which
+ * indexes opened. A field that is PRESENT but not a list of repo paths is a
+ * different state again — a measurement we could not take — and callers whose
+ * answer depends on the list (cross-repo impact reads completeness from it)
+ * must report a floor rather than a verdict.
+ */
+export interface ReadBridgeMeta extends BridgeMeta {
+  /**
+   * True when `meta.json` parsed but one of its repo lists held a value this
+   * reader could not use. The unusable value is dropped rather than passed on,
+   * so `missingRepos: []` on such a result is inert filler — this flag, not the
+   * empty list, is what says the bridge's provenance is unknown.
+   */
+  repoListsUnreadable?: boolean;
+}
+
+/**
+ * A recorded repo list is an array of strings. Anything else — a bare string,
+ * an object, an array of objects — is a value we could not read, which is "not
+ * recorded", not "none".
+ *
+ * Mirrors `recordedRepoList` in `service.ts`, which applies the same gate to
+ * the registry's copies of these same two lists. `Array.isArray` alone is not
+ * enough: only an array of strings survives `cli/group.ts`'s `.join(', ')` as
+ * repo paths rather than as `[object Object]`.
+ */
+function recordedRepoList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.every((entry) => typeof entry === 'string') ? (value as string[]) : undefined;
+}
+
+/**
+ * Read `meta.json`, validating the SHAPE of what it holds.
+ *
+ * The read and the parse have always been guarded — an absent or unparseable
+ * file answers `version: 0`, which every caller already treats as "no
+ * provenance". What was not guarded is a file that parses into something that
+ * is not this shape: `runGroupImpact` spread both repo lists directly into a
+ * `Set`, so a non-iterable there threw a TypeError out of the whole cross-repo
+ * query, from a point where the bridge lease had been taken and not yet
+ * released. A malformed file is a reason to answer "provenance unknown", never
+ * a reason to crash the question.
+ */
+export async function readBridgeMeta(groupDir: string): Promise<ReadBridgeMeta> {
+  const unreadable: ReadBridgeMeta = { version: 0, generatedAt: '', missingRepos: [] };
+  let parsed: unknown;
   try {
     const content = await fsp.readFile(path.join(groupDir, 'meta.json'), 'utf-8');
-    return JSON.parse(content) as BridgeMeta;
+    parsed = JSON.parse(content);
   } catch {
-    return { version: 0, generatedAt: '', missingRepos: [] };
+    return unreadable;
   }
+  // `JSON.parse` succeeds on `null`, `7` and `[]` too, and none of them are
+  // metadata. Reading `.version` off the first of those is a thrown TypeError;
+  // reading it off the others silently yields `undefined`, which passes the
+  // version gate as if the bridge had been vouched for.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return unreadable;
+
+  const raw = parsed as Partial<BridgeMeta>;
+  const missingRepos = recordedRepoList(raw.missingRepos);
+  const unreadableRepos = recordedRepoList(raw.unreadableRepos);
+  // Each list is judged on its own: a file whose `unreadableRepos` is garbage
+  // can still carry a `missingRepos` that was genuinely measured, and throwing
+  // that away would turn one unknown into two.
+  const repoListsUnreadable =
+    (raw.missingRepos !== undefined && missingRepos === undefined) ||
+    (raw.unreadableRepos !== undefined && unreadableRepos === undefined);
+
+  const meta: ReadBridgeMeta = {
+    ...raw,
+    // A version that is not a number cannot be compared against
+    // BRIDGE_SCHEMA_VERSION; `0` is this file's existing word for "provenance
+    // unknown", which is exactly what such a file gives us.
+    version: typeof raw.version === 'number' ? raw.version : 0,
+    generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : '',
+    missingRepos: missingRepos ?? [],
+  };
+  // Absent, not empty. `unreadableRepos` is optional and "not recorded" is a
+  // distinct state from "measured none", so an unusable value is dropped rather
+  // than carried through — `repoListsUnreadable` is what records that something
+  // was there and could not be read.
+  if (unreadableRepos) meta.unreadableRepos = unreadableRepos;
+  else delete meta.unreadableRepos;
+  if (repoListsUnreadable) meta.repoListsUnreadable = true;
+  return meta;
 }
 
 /* ------------------------------------------------------------------ */

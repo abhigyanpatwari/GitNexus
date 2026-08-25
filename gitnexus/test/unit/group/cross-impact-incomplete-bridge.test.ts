@@ -45,7 +45,7 @@ vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
 });
 
 const { runGroupImpact } = await import('../../../src/core/group/cross-impact.js');
-const { writeBridgeMeta } = await import('../../../src/core/group/bridge-db.js');
+const { writeBridgeMeta, closeBridgeDb } = await import('../../../src/core/group/bridge-db.js');
 
 const UNREADABLE_REPO = 'svc/users';
 const MISSING_REPO = 'svc/billing';
@@ -106,6 +106,22 @@ describe('group impact over a bridge built from an incomplete sync', () => {
       generatedAt: '2026-01-01T00:00:00.000Z',
       ...meta,
     });
+
+  /**
+   * meta.json exactly as given. `writeBridgeMeta` is typed, and the values
+   * these cases are about are ones `BridgeMeta` forbids — which is precisely
+   * why nothing on the read path was checking for them: a truncated write, a
+   * hand-edit, or a foreign writer can still leave them on disk.
+   */
+  const writeRawMeta = (fields: Record<string, unknown>): Promise<void> =>
+    fsp.writeFile(
+      path.join(groupDir, 'meta.json'),
+      JSON.stringify({
+        version: BRIDGE_SCHEMA_VERSION,
+        generatedAt: '2026-01-01T00:00:00.000Z',
+        ...fields,
+      }),
+    );
 
   const run = (port: GroupToolPort, extraParams: Record<string, unknown> = {}) =>
     runGroupImpact(
@@ -198,6 +214,92 @@ describe('group impact over a bridge built from an incomplete sync', () => {
 
   it('reports an unparseable meta.json as a floor too', async () => {
     await fsp.writeFile(path.join(groupDir, 'meta.json'), '{"version": ');
+
+    const result = await run(makeGroupToolPort(home));
+
+    expect(result).toMatchObject({ truncated: true, truncationReason: 'incomplete-sync' });
+  });
+
+  it('answers a lower bound when the missing-repo list is an object, instead of throwing', async () => {
+    // `runGroupImpact` spread both repo lists straight into a `new Set([...])`.
+    // A non-iterable value there is a TypeError thrown out of the whole query —
+    // an operator asking about their blast radius gets a stack trace instead of
+    // the honest "this bridge's provenance is unreadable, treat the answer as a
+    // floor" that the very same metadata already licenses.
+    await writeRawMeta({ missingRepos: { 'svc/users': true } });
+
+    const result = await run(makeGroupToolPort(home));
+
+    expect(result).toMatchObject({
+      truncated: true,
+      truncationReason: 'incomplete-sync',
+      riskEpistemic: 'lower-bound',
+    });
+    // Nothing was measured, so nothing is named. The reason field carries the
+    // signal; inventing repo names out of an unreadable value would not.
+    expect(shapeOf(result).truncatedRepos).toEqual([]);
+  });
+
+  it('answers a lower bound when the unreadable-repo list is a number', async () => {
+    // The other list, and a non-iterable of a different kind — a scalar reaches
+    // the same spread. `missingRepos` here IS well formed and measured empty,
+    // which is what makes this case about the second list alone.
+    await writeRawMeta({ missingRepos: [], unreadableRepos: 3 });
+
+    const result = await run(makeGroupToolPort(home));
+
+    expect(result).toMatchObject({
+      truncated: true,
+      truncationReason: 'incomplete-sync',
+      riskEpistemic: 'lower-bound',
+    });
+    expect(shapeOf(result).truncatedRepos).toEqual([]);
+  });
+
+  it('does not report the entries of a list that is not a list of repo paths', async () => {
+    // `Array.isArray` alone would pass this: it is an array, and it is even
+    // partly right. But `truncatedRepos` is printed by `cli/group.ts` with
+    // `.join(', ')`, so the object entry surfaces to an operator as
+    // `[object Object]` — a repo name that does not exist, presented as a
+    // measurement. A value we cannot read is not a value we half-report.
+    await writeRawMeta({ missingRepos: [MISSING_REPO, { repo: UNREADABLE_REPO }] });
+
+    const result = await run(makeGroupToolPort(home));
+
+    expect(result).toMatchObject({
+      truncated: true,
+      truncationReason: 'incomplete-sync',
+      riskEpistemic: 'lower-bound',
+    });
+    expect(shapeOf(result).truncatedRepos).toEqual([]);
+  });
+
+  it('releases the bridge handle on a malformed meta.json, and answers the next query normally', async () => {
+    // The throw happened AFTER the read-only bridge lease was taken and BEFORE
+    // the `try` whose `finally` releases it, so every malformed-metadata query
+    // burned a refcount that is never given back — the cached handle can then
+    // never be closed or invalidated, and `group sync` cannot swap the database
+    // underneath it on Windows. Releasing is not a detail of the fix: it is why
+    // a second query on the same group still gets an answer.
+    vi.mocked(closeBridgeDb).mockClear();
+    await writeRawMeta({ missingRepos: {} });
+
+    await run(makeGroupToolPort(home));
+
+    expect(vi.mocked(closeBridgeDb).mock.calls.length).toBe(1);
+
+    await writeMeta({ missingRepos: [], unreadableRepos: [] });
+    const second = await run(makeGroupToolPort(home));
+
+    expect(second).toMatchObject({ truncated: false, truncatedRepos: [] });
+    expect(vi.mocked(closeBridgeDb).mock.calls.length).toBe(2);
+  });
+
+  it('reports a meta.json that is not an object at all as a floor, not as a crash', async () => {
+    // `JSON.parse('null')` succeeds, so the parse guard never fires and the
+    // cast hands `null` to a `.version` read. Same class as the two lists: a
+    // successfully-parsed file whose SHAPE is not metadata.
+    await fsp.writeFile(path.join(groupDir, 'meta.json'), 'null');
 
     const result = await run(makeGroupToolPort(home));
 
