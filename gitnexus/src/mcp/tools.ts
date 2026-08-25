@@ -853,12 +853,13 @@ WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single
 
 WHEN TO USE: After changing group.yaml or re-indexing member repos.
 
-READ THE RESULT: \`missingRepos\` are configured repos with no entry in the registry (index them, or drop them from group.yaml); \`unreadableRepos\` ARE registered but this sync could not extract from them — the index would not open (version skew, lock, corruption), or an extractor failed partway — so NONE of their contracts are in this sync and a following group_impact / group_contracts is a lower bound, not a verdict. \`registryOutcome\` says what happened to the file: 'written', or 'preserved' when nothing could be read and the previous sync's contracts were kept.`,
+READ THE RESULT: \`missingRepos\` are configured repos with no entry in the registry (index them, or drop them from group.yaml); \`unreadableRepos\` ARE registered but this sync could not extract from them — the index would not open (version skew, lock, corruption), or an extractor failed partway — so NONE of their contracts are in this sync and a following group_impact / group_contracts is a lower bound, not a verdict. \`registryOutcome\` says what happened to the file, and the three values a call here can return each need a different response: 'written' — this run's contracts replaced contracts.json; 'preserved' — nothing could be read, so contracts.json was rewritten keeping the previous sync's contracts and cross-links verbatim and refreshing only \`missingRepos\`/\`unreadableRepos\` to describe THIS run (the file changed, the contracts in it did not, and they are as old as the last sync that succeeded); 'no-prior-registry' — nothing could be read AND there was no previous contracts.json to carry forward, so none was written and this group has no contract registry on disk. Only 'no-prior-registry' means there is nothing to read: after it, group_contracts / group_impact have no registry at all rather than a stale one, so fix the repos above and re-run before trusting either.`,
     // Usually writes contracts.json, so conservatively non-idempotent even
-    // though output is deterministic for identical input. It does NOT write
-    // when no configured repo could be read: that path preserves the previous
-    // registry's contracts and refreshes only its diagnostic fields
-    // (`registryOutcome: 'preserved'`).
+    // though output is deterministic for identical input. When no configured
+    // repo could be read it still rewrites the file, keeping the previous
+    // registry's contracts and refreshing only its diagnostic fields
+    // (`registryOutcome: 'preserved'`); it writes nothing when there was no
+    // previous registry to carry forward (`'no-prior-registry'`).
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',

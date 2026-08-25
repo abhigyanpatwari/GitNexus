@@ -290,6 +290,32 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  // U27: `RegistryWriteOutcome` has four members, three of which a group_sync
+  // MCP call can actually return (`not-attempted` needs `skipWrite`/no
+  // `groupDir`, neither reachable through this tool). An agent that only knows
+  // 'written' and 'preserved' reads the third — nothing readable AND no prior
+  // registry — as "your previous contracts survived", which is a claim about a
+  // file that does not exist (R4).
+  it('group_sync description names every registry outcome reachable through the tool', () => {
+    const syncTool = GITNEXUS_TOOLS.find((t) => t.name === 'group_sync')!;
+    const d = syncTool.description;
+    expect(d).toContain('registryOutcome');
+    expect(d).toContain("'written'");
+    expect(d).toContain("'preserved'");
+    expect(d).toContain("'no-prior-registry'");
+    // Naming the value is not describing it: the outcome an agent has to act on
+    // differently is "there is no contracts.json on disk at all".
+    expect(d).toMatch(/no previous contracts\.json|no contracts\.json (exists|was written)/i);
+    // `not-attempted` is unreachable through this tool; documenting it would
+    // advertise an outcome no caller can observe.
+    expect(d).not.toContain('not-attempted');
+    // 'preserved' rewrites contracts.json (keeping the previous contracts and
+    // cross-links, refreshing the diagnostic lists). Nothing here may say the
+    // file was left alone — that sent an operator reading an unchanged mtime to
+    // conclude the sync never ran.
+    expect(d).not.toMatch(/did NOT write .*'preserved'|untouched|left alone|unwritten/i);
+  });
+
   it('impact, query, and context expose optional service with minLength', () => {
     for (const n of ['impact', 'query', 'context'] as const) {
       const tool = GITNEXUS_TOOLS.find((t) => t.name === n)!;
@@ -394,3 +420,8 @@ describe('GITNEXUS_TOOLS', () => {
     expect(shapeCheckTool.description).toContain('pre-change analysis');
   });
 });
+
+// U28: a cross-repo answer that is a floor says so with `truncated` +
+// `truncationReason`, and the agent-facing surfaces have to teach that
+// vocabulary — an agent that cannot tell a retryable runtime limit from a
+// structural one retries a query that will return the same floor forever (R8).
