@@ -33,7 +33,7 @@ const MAX_RESOLVE_DEPTH = 8;
  * whose true value is genuinely huge — building it risks a `RangeError`/heap OOM,
  * so we floor to `null` (skip) instead (#2393). The depth cap bounds recursion but
  * NOT output size, which grows multiplicatively; this bounds the output. */
-const MAX_FOLD_LENGTH = 8192;
+export const MAX_FOLD_LENGTH = 8192;
 
 /**
  * One term of a constant's right-hand side. A `+`-concatenation
