@@ -799,14 +799,6 @@ export async function runGroupImpact(
   const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
   const localPartial = Boolean((local as { partial?: boolean }).partial);
   const truncated = truncatedRepos.length > 0 || localPartial || bridgeIncompleteRepos.length > 0;
-  // Runtime limits first — they are what the caller can retry. 'incomplete-sync'
-  // is reported only when nothing was merely cut short, because its remedy is a
-  // different one: re-run `gitnexus group sync`, not the query.
-  const truncationReason: GroupImpactTruncationReason = fanoutTimedOut
-    ? 'timeout'
-    : truncatedRepos.length > 0 || localPartial
-      ? 'partial'
-      : 'incomplete-sync';
 
   const result: GroupImpactResult = {
     local,
@@ -818,7 +810,20 @@ export async function runGroupImpact(
     // and under-reporting a blast radius is the unsafe direction (an agent told
     // LOW proceeds; told CRITICAL it stops). Marking the floor keeps the
     // warning intact while making the incompleteness legible.
-    ...truncationFields(truncated, truncationReason),
+    // Runtime limits first — they are what the caller can retry. 'incomplete-sync'
+    // is the remaining cause once nothing was merely cut short, and its remedy is
+    // a different one: re-run `gitnexus group sync`, not the query. Computed
+    // inline because `truncationFields` reads the reason ONLY on the truncated
+    // branch — naming it in a variable invited reading it on the complete path,
+    // where it would say 'incomplete-sync' about a complete result.
+    ...truncationFields(
+      truncated,
+      fanoutTimedOut
+        ? 'timeout'
+        : truncatedRepos.length > 0 || localPartial
+          ? 'partial'
+          : 'incomplete-sync',
+    ),
     truncatedRepos: [...new Set([...truncatedRepos, ...bridgeIncompleteRepos])],
     summary: {
       direct: localSum.direct ?? 0,

@@ -222,6 +222,21 @@ function isCrossLink(raw: unknown): raw is CrossLink {
   return typeof o.contractId === 'string' && typeof o.type === 'string';
 }
 
+/**
+ * A recorded repo list is an array of strings. Anything else — absent, a bare
+ * string, an object, an array of objects — is a value we could not read, which
+ * is "not recorded", not "none".
+ *
+ * `Array.isArray` alone is not enough: `['app/backend']` and `[{repo:'x'}]` are
+ * both arrays, and only the second reaches `cli/group.ts`'s `.join(', ')` as
+ * `[object Object]`. Reporting a shape we do not understand as if we had
+ * measured it is the whole failure mode this change exists to remove.
+ */
+function recordedRepoList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.every((entry) => typeof entry === 'string') ? (value as string[]) : undefined;
+}
+
 async function loadContractRegistryResilient(
   groupDir: string,
 ): Promise<
@@ -302,8 +317,8 @@ async function loadContractRegistryResilient(
     // the caller "the last sync found none unreadable" — an unmeasured state
     // rendered as a clean result, which is the same conflation this whole
     // change removes.
-    ...(Array.isArray(base.unreadableRepos)
-      ? { unreadableRepos: base.unreadableRepos as string[] }
+    ...(recordedRepoList(base.unreadableRepos)
+      ? { unreadableRepos: recordedRepoList(base.unreadableRepos) }
       : {}),
     contracts,
     crossLinks,
@@ -631,14 +646,14 @@ export class GroupService {
       // A `contracts.json` carrying a string here reached `cli/group.ts` and
       // died in `.join(', ')`, i.e. an unreadable registry crashing the command
       // whose job is to explain unreadable things.
-      missingRepos: Array.isArray(registry?.missingRepos) ? registry.missingRepos : [],
-      // Left `undefined` when the registry does not record it — absent means
-      // "not recorded", not "none" (see ContractRegistry). A corrupt non-array
-      // value is also "not recorded": it is a value we could not read, and
-      // reporting it as an empty list would be the same conflation again.
-      unreadableRepos: Array.isArray(registry?.unreadableRepos)
-        ? registry.unreadableRepos
-        : undefined,
+      //
+      // `missingRepos` has always been required, so there is no "not recorded"
+      // state to preserve for it — an unreadable value degrades to empty.
+      missingRepos: recordedRepoList(registry?.missingRepos) ?? [],
+      // `unreadableRepos` does have one: absent means "not recorded", not
+      // "none" (see ContractRegistry), and a value we could not read is equally
+      // unrecorded. Reporting either as an empty list is the same conflation.
+      unreadableRepos: recordedRepoList(registry?.unreadableRepos),
       repos: repoStatuses,
     };
   }

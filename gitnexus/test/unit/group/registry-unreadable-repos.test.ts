@@ -115,6 +115,11 @@ describe('unreadableRepos survives a round trip through contracts.json', () => {
     { label: 'null', value: null },
     { label: 'a bare string', value: 'app/backend' },
     { label: 'an object', value: { 'app/backend': true } },
+    // An array of the wrong element type is the shape `Array.isArray` alone
+    // waves through, and it is the one that reaches `.join(', ')` and renders
+    // as `[object Object]` — a measurement the operator can read but not act on.
+    { label: 'an array of objects', value: [{ repo: 'app/backend' }] },
+    { label: 'an array of numbers', value: [1, 2] },
   ];
 
   it.each(corruptValues)(
