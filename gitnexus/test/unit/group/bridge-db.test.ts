@@ -153,17 +153,18 @@ describe('writeBridge + read', () => {
     expect(exists).toBe(true);
   });
 
-  it('drops the previous meta.json before swapping the database file', async () => {
+  it("replaces the previous sync's metadata on a successful rebuild", async () => {
     // meta.json describes the bridge's completeness, and since #3011 that is
     // load-bearing: runGroupImpact folds `unreadableRepos ∪ missingRepos` into
-    // its truncation fields. The swap and the meta write are two operations, so
-    // a sync interrupted between them decides which way the window fails —
-    // a STALE meta would claim the newly swapped bridge is complete, while an
-    // ABSENT one is read as unknown provenance and reported as a floor.
+    // its truncation fields, so a value from an earlier sync is a wrong answer
+    // about this one.
     //
-    // Seed a "previous sync recorded nothing unreadable" meta, then run a sync
-    // that DOES have an unreadable repo, and confirm the old value cannot
-    // survive: the meta on disk is the new one, never the seeded one.
+    // Scope, stated because the obvious stronger reading is wrong: this covers
+    // the SUCCESSFUL path only. It cannot pin the removal-before-swap ordering,
+    // because writeBridge overwrites meta.json at the end either way — the
+    // assertions below hold with the removal in either position. The ordering
+    // is pinned in `bridge-meta-swap-window.test.ts`, which fails the swap
+    // itself and checks the previous sync's metadata cannot survive it.
     await writeBridge(tmpDir, {
       contracts: [makeContract()],
       crossLinks: [],
@@ -185,10 +186,12 @@ describe('writeBridge + read', () => {
     expect(after.unreadableRepos).toEqual(['svc/users']);
   });
 
-  it('leaves NO meta.json when the swap fails partway', async () => {
-    // The window itself. If the rename throws after the old meta is gone, the
-    // bridge has no metadata — which readers must treat as unknown provenance.
-    // The failure that matters is a stale meta surviving; assert it cannot.
+  it('reports version 0 for a bridge whose meta.json is gone', async () => {
+    // `version: 0` is the "no provenance" signal `runGroupImpact` fails closed
+    // on, so it is worth asserting directly rather than only through the
+    // callers that consume it. No fault is injected into writeBridge here —
+    // the file is removed afterwards — so this pins readBridgeMeta's contract,
+    // not the write ordering (see `bridge-meta-swap-window.test.ts` for that).
     await writeBridge(tmpDir, {
       contracts: [makeContract()],
       crossLinks: [],
@@ -200,7 +203,6 @@ describe('writeBridge + read', () => {
     await fsp.rm(path.join(tmpDir, 'meta.json'), { force: true });
     const meta = await readBridgeMeta(tmpDir);
 
-    // `version: 0` is the "no provenance" signal runGroupImpact fails closed on.
     expect(meta.version).toBe(0);
     expect(meta.unreadableRepos).toBeUndefined();
   });
