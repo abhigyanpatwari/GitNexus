@@ -651,6 +651,13 @@ export async function runGroupImpact(
   // `{ cross: [], truncated: false }` — "complete: nothing depends on this" —
   // which is a wrong answer, not an empty one, for a tool an agent uses to
   // license a delete or a rename.
+  // A bridge with no readable meta.json has no provenance: `readBridgeMeta`
+  // answers `version: 0` for both "absent" and "unparseable", and `writeBridge`
+  // leaves exactly that state in the window between swapping the database file
+  // and writing the new metadata — the window a failed or interrupted sync
+  // stops in. Treating it as complete is the fail-open this whole channel
+  // exists to close, so an unknown-provenance bridge is reported as truncated.
+  const bridgeProvenanceUnknown = bridgePrep.meta.version === 0;
   const bridgeIncompleteRepos = [
     ...new Set([
       ...(bridgePrep.meta.unreadableRepos ?? []),
@@ -798,7 +805,11 @@ export async function runGroupImpact(
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
   const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
   const localPartial = Boolean((local as { partial?: boolean }).partial);
-  const truncated = truncatedRepos.length > 0 || localPartial || bridgeIncompleteRepos.length > 0;
+  const truncated =
+    truncatedRepos.length > 0 ||
+    localPartial ||
+    bridgeIncompleteRepos.length > 0 ||
+    bridgeProvenanceUnknown;
 
   const result: GroupImpactResult = {
     local,

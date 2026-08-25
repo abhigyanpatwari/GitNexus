@@ -177,6 +177,33 @@ describe('group impact over a bridge built from an incomplete sync', () => {
     expect(result).not.toHaveProperty('riskEpistemic');
   });
 
+  it('reports a bridge with no meta.json at all as a floor, not as complete', async () => {
+    // `writeBridge` swaps the database file and writes meta.json as two steps,
+    // so a sync interrupted between them leaves a NEW bridge with NO metadata.
+    // `readBridgeMeta` answers `version: 0` for that (and for an unparseable
+    // one), which carries no repo lists — so reading it as "complete" would
+    // hand back a confident `{ cross: [], truncated: false }` about a bridge
+    // whose provenance is unknown. That is the fail-open this channel exists
+    // to close, arriving through the door the write path leaves open.
+    await fsp.rm(path.join(groupDir, 'meta.json'), { force: true });
+
+    const result = await run(makeGroupToolPort(home));
+
+    expect(result).toMatchObject({
+      truncated: true,
+      truncationReason: 'incomplete-sync',
+      riskEpistemic: 'lower-bound',
+    });
+  });
+
+  it('reports an unparseable meta.json as a floor too', async () => {
+    await fsp.writeFile(path.join(groupDir, 'meta.json'), '{"version": ');
+
+    const result = await run(makeGroupToolPort(home));
+
+    expect(result).toMatchObject({ truncated: true, truncationReason: 'incomplete-sync' });
+  });
+
   it('does not read a meta.json written before the field existed as incomplete', async () => {
     // Back-compat: `unreadableRepos` is optional, and a bridge written by an
     // older build simply does not record it. Absence must not be read as "some

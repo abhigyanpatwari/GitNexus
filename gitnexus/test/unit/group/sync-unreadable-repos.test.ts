@@ -203,8 +203,33 @@ describe('syncGroup with an unreadable index', () => {
 
     const result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
 
-    expect(result.registryOutcome).toBe('preserved');
+    // NOT `preserved`. Nothing exists to preserve, and the CLI turns that word
+    // into "the contracts from the previous sync are preserved" — which sends
+    // an operator whose group has never synced looking for a file that has
+    // never existed. Same class of confident-wrong-answer as the rest of this.
+    expect(result.registryOutcome).toBe('no-prior-registry');
     expect(fs.existsSync(path.join(groupDir, 'contracts.json'))).toBe(false);
+  });
+
+  it('reports `preserved` only when a prior registry was actually refreshed', async () => {
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+    fs.writeFileSync(path.join(groupDir, 'contracts.json'), JSON.stringify(PRIOR_REGISTRY));
+
+    const result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+
+    expect(result.registryOutcome).toBe('preserved');
+  });
+
+  it('does not report `preserved` when the prior registry will not parse', async () => {
+    // An unparseable prior is not a thing that got carried forward either.
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+    fs.writeFileSync(path.join(groupDir, 'contracts.json'), '{"truncated": ');
+
+    const result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+
+    expect(result.registryOutcome).toBe('no-prior-registry');
+    // ...and the unparseable file is left exactly as it was, not replaced.
+    expect(fs.readFileSync(path.join(groupDir, 'contracts.json'), 'utf8')).toBe('{"truncated": ');
   });
 
   it('still writes when only SOME configured repos are unreadable', async () => {

@@ -235,6 +235,15 @@ export function registerGroupCommands(program: Command): void {
               `\n  The contracts from the previous sync are preserved; only the unreadable/missing` +
               `\n  repo lists were refreshed. Fix the repos above and re-run.`,
           );
+        } else if (result.registryOutcome === 'no-prior-registry') {
+          // Distinct from `preserved` on purpose: there is nothing on disk to
+          // preserve, so promising the previous sync's contracts are safe would
+          // send the operator looking for a file that has never existed.
+          console.log(
+            `\nDid NOT write contracts.json — no repo in this group could be read,` +
+              `\n  and there is no previous contracts.json to fall back on. Nothing was` +
+              `\n  written. Fix the repos above and re-run.`,
+          );
         }
       }
     });

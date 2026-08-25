@@ -58,8 +58,18 @@ const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
   encoding: 'utf8',
 }).trim();
 
-/** Everything the TypeScript and JavaScript toolchains treat as a source module. */
-const SOURCE_EXTENSIONS = /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+/**
+ * Every tracked text format a raw NUL would silently turn binary.
+ *
+ * Not just the JS/TS family: git's heuristic does not care what language a file
+ * is, and this repo tracks Python, Java, Go, Rust, C/C++, Ruby, PHP, Kotlin,
+ * Swift, C#, shell and Dart sources as resolver fixtures. A NUL in any of them
+ * costs that file its diff exactly the same way. Scanning them is free —
+ * measured across all 2315 non-JS tracked source files here, the hit count is
+ * zero — so the narrower list was an unforced gap, not a tradeoff.
+ */
+const SOURCE_EXTENSIONS =
+  /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts|py|pyi|java|kt|kts|go|rs|c|h|cc|cpp|hpp|cs|rb|php|swift|scala|dart|lua|pl|sh|bash|zsh|sql|vue|svelte|toml|cfg|ini)$/;
 
 /** Scope of the wider control-byte rule. git paths are always `/`-separated. */
 const STRICT_SOURCE_ROOT = 'gitnexus/src/';
@@ -191,6 +201,13 @@ const PLANTED_NUL_SOURCE = ['const a = 1;', 'const b = 2;', "const sep = '\u0000
 /** Line 2 carries a raw ESC — the byte the repo-wide half deliberately allows. */
 const PLANTED_ESCAPE_SOURCE = ['const a = 1;', "const red = '\u001b[31m';", ''].join('\n');
 
+/**
+ * The same defect in a non-JS source file. git classifies this as binary for
+ * exactly the same reason, and an allowlist that stops at `.cts` would collect
+ * neither the file nor the byte.
+ */
+const PLANTED_PY_NUL_SOURCE = ['a = 1', 'b = 2', "sep = '\u0000'", ''].join('\n');
+
 function writeFixture(dir: string, name: string, source: string): ScanTarget {
   const abs = path.join(dir, name);
   // Written as a Buffer so the escapes above land as single raw bytes on disk,
@@ -264,6 +281,7 @@ describe('source hygiene', () => {
     fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'source-control-bytes-'));
     const planted = [
       writeFixture(fixtureDir, 'planted-escape.ts', PLANTED_ESCAPE_SOURCE),
+      writeFixture(fixtureDir, 'planted-nul.py', PLANTED_PY_NUL_SOURCE),
       writeFixture(fixtureDir, 'planted-nul.ts', PLANTED_NUL_SOURCE),
     ];
 
@@ -272,10 +290,28 @@ describe('source hygiene', () => {
 
     // Without this the guard above is unfalsifiable: a collector that returns
     // an empty list, or a locator that never matches, passes it forever.
-    expect(nulOffenders.map(describeOffender)).toEqual(['planted-nul.ts:3 contains 0x00']);
-    expect(controlOffenders.map(describeOffender)).toEqual([
-      'planted-escape.ts:2 contains 0x1b',
+    expect(nulOffenders.map(describeOffender)).toEqual([
+      'planted-nul.py:3 contains 0x00',
       'planted-nul.ts:3 contains 0x00',
     ]);
+    expect(controlOffenders.map(describeOffender)).toEqual([
+      'planted-escape.ts:2 contains 0x1b',
+      'planted-nul.py:3 contains 0x00',
+      'planted-nul.ts:3 contains 0x00',
+    ]);
+  });
+
+  it('collects tracked sources outside the JS/TS family', () => {
+    // The allowlist is the collector's only filter, so a language missing from
+    // it is a language the NUL rule silently does not cover. This goes red if
+    // the list is ever narrowed back to JS/TS.
+    const collected = TRACKED_SOURCE_FILES.map((target) => target.rel);
+    const byExtension = (ext: string): number =>
+      collected.filter((rel) => rel.endsWith(ext)).length;
+
+    expect(byExtension('.py')).toBeGreaterThan(0);
+    expect(byExtension('.java')).toBeGreaterThan(0);
+    expect(byExtension('.go')).toBeGreaterThan(0);
+    expect(byExtension('.rs')).toBeGreaterThan(0);
   });
 });

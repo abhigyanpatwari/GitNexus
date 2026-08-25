@@ -616,6 +616,29 @@ const sanitizeEntries = (entries: RegistryEntry[]): RegistryEntry[] =>
   });
 
 /**
+ * A registry row we can actually resolve a repo from.
+ *
+ * `Array.isArray` is not enough on the strict path: `[{}]` is a JSON array, so
+ * a malformed registry passed the shape check, every configured repo failed to
+ * resolve, and — because none of them produced a load ERROR — the total-failure
+ * guard stayed off and a good contracts.json was replaced by an empty one. That
+ * is the same fail-open the strict mode exists to close, one level down from
+ * the file to the rows inside it.
+ *
+ * Only the three fields the resolution path actually depends on are required.
+ * `indexedAt` / `lastCommit` are deliberately NOT: callers already default them
+ * (`e?.indexedAt || ''`), so demanding them would reject a legacy row that
+ * resolves perfectly well — trading a fail-open for a fail-shut on real data.
+ */
+const isResolvableEntry = (value: unknown): value is RegistryEntry => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const e = value as Record<string, unknown>;
+  return (
+    typeof e.name === 'string' && typeof e.path === 'string' && typeof e.storagePath === 'string'
+  );
+};
+
+/**
  * Shared body for the two read modes below.
  *
  * `strict` distinguishes "the registry says nothing is registered" from "the
@@ -634,11 +657,24 @@ const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
   }
   try {
     const data: unknown = JSON.parse(raw);
-    if (Array.isArray(data)) return sanitizeEntries(data as RegistryEntry[]);
-    if (strict) {
-      throw new Error(`${getGlobalRegistryPath()} is not a JSON array (registry is corrupt)`);
+    if (!Array.isArray(data)) {
+      if (strict) {
+        throw new Error(`${getGlobalRegistryPath()} is not a JSON array (registry is corrupt)`);
+      }
+      return [];
     }
-    return [];
+    if (strict) {
+      // Reject the WHOLE registry, never filter the bad rows out. Dropping them
+      // would report the repos they name as unregistered, which is precisely
+      // the unreadable-as-missing answer this mode refuses to give.
+      const bad = data.findIndex((entry) => !isResolvableEntry(entry));
+      if (bad !== -1) {
+        throw new Error(
+          `${getGlobalRegistryPath()} entry ${bad} is missing name/path/storagePath (registry is corrupt)`,
+        );
+      }
+    }
+    return sanitizeEntries(data as RegistryEntry[]);
   } catch (err) {
     if (strict) throw err;
     return [];

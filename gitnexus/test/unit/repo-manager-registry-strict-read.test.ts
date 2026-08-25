@@ -72,6 +72,59 @@ describe('readRegistryStrict', () => {
     await expect(readRegistryStrict()).rejects.toThrow();
   });
 
+  it('throws when a row is missing the fields the resolver needs', async () => {
+    // `[{}]` is a JSON array, so an array-shape check alone waved it through.
+    // Every configured repo then failed to resolve and landed in missingRepos;
+    // because none produced a load ERROR the total-failure guard stayed off,
+    // and a good contracts.json was replaced with an empty one at exit 0. Same
+    // fail-open as an unreadable file, one level down.
+    await fs.writeFile(registryPath, JSON.stringify([{}]));
+
+    await expect(readRegistry()).resolves.toEqual([{}]);
+    await expect(readRegistryStrict()).rejects.toThrow('registry is corrupt');
+  });
+
+  it('throws on a row whose required fields are the wrong type', async () => {
+    await fs.writeFile(
+      registryPath,
+      JSON.stringify([{ name: 'backend-repo', path: 42, storagePath: '/s' }]),
+    );
+
+    await expect(readRegistryStrict()).rejects.toThrow('registry is corrupt');
+  });
+
+  it('rejects the whole registry rather than dropping the bad row', async () => {
+    // Filtering would report the repos the surviving rows do not name as
+    // unregistered — the unreadable-as-missing answer this mode exists to
+    // refuse, reintroduced as a silent partial read.
+    await fs.writeFile(
+      registryPath,
+      JSON.stringify([
+        {
+          name: 'good-repo',
+          path: '/repos/good',
+          storagePath: '/repos/good/.gitnexus',
+          indexedAt: '2026-01-01T00:00:00.000Z',
+          lastCommit: 'abc123',
+        },
+        {},
+      ]),
+    );
+
+    await expect(readRegistryStrict()).rejects.toThrow('entry 1');
+  });
+
+  it('accepts a legacy row that omits indexedAt and lastCommit', async () => {
+    // Those two are defaulted by every caller (`e?.indexedAt || ''`), so
+    // demanding them would turn a fail-open into a fail-shut on real data.
+    const legacy = [
+      { name: 'backend-repo', path: '/repos/backend', storagePath: '/repos/backend/.gitnexus' },
+    ];
+    await fs.writeFile(registryPath, JSON.stringify(legacy));
+
+    await expect(readRegistryStrict()).resolves.toEqual(legacy);
+  });
+
   it('throws when the registry parses but is not an array', async () => {
     // A JSON object here is corruption too, and it is the shape most likely to
     // survive a partial write: `[]` is what the lenient path would return, which

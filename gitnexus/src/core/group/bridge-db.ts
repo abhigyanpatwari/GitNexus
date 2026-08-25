@@ -929,7 +929,22 @@ export async function writeBridge(
       }
     }
 
-    // 3. Atomic swap: old→.bak, tmp→final, rm .bak
+    // 3a. Drop the OLD meta.json before the swap.
+    //
+    // meta.json describes the bridge's completeness, and since #3011 that is
+    // load-bearing: `runGroupImpact` folds `meta.unreadableRepos ∪ missingRepos`
+    // into its truncation fields, so a query answered against a bridge whose
+    // meta belongs to a different sync is a confidently wrong answer.
+    //
+    // The swap below and the meta write in step 4 are two operations, so there
+    // is a window between them. Removing the old file first decides which way
+    // that window fails: an ABSENT meta (which runGroupImpact treats as
+    // incomplete) rather than a STALE one that would claim the new bridge is
+    // complete. Losing meta for a bridge that is actually fine only over-reports
+    // truncation, and the next successful sync restores it.
+    await fsp.rm(path.join(groupDir, 'meta.json'), { force: true });
+
+    // 3b. Atomic swap: old→.bak, tmp→final, rm .bak
     //
     // The current database file (with its `.wal` / `.shadow` sidecars) is
     // moved aside, then the freshly built tmp database takes its place.
@@ -968,7 +983,8 @@ export async function writeBridge(
     }
     await removeLbugFile(bakPath);
 
-    // 4. Write meta.json
+    // 4. Write the new meta.json. Until this lands the bridge has none, and
+    //    readers must treat that as "provenance unknown", not "complete".
     await writeBridgeMeta(groupDir, {
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),

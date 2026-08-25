@@ -56,13 +56,17 @@ export interface SyncOptions {
  *                     `crossLinks` and `repoSnapshots` were kept verbatim and
  *                     only the diagnostic fields (`missingRepos` /
  *                     `unreadableRepos`) were refreshed to describe this run.
- *                     Also reported when there was no prior file to preserve,
- *                     since the invariant is the same: this run replaced
- *                     nothing with an empty set.
+ * - `no-prior-registry` — nothing could be read AND there was no prior
+ *                     contracts.json to carry forward (or it would not parse),
+ *                     so nothing was written at all. Split out from
+ *                     `preserved` because the operator-facing sentence differs:
+ *                     telling someone their previous contracts are safe when
+ *                     the group has never synced sends them looking for a file
+ *                     that does not exist.
  * - `not-attempted` — the caller asked not to write (`skipWrite`, or no
  *                     `groupDir` was supplied).
  */
-export type RegistryWriteOutcome = 'written' | 'preserved' | 'not-attempted';
+export type RegistryWriteOutcome = 'written' | 'preserved' | 'no-prior-registry' | 'not-attempted';
 
 export interface SyncResult {
   contracts: StoredContract[];
@@ -494,7 +498,6 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   }
 
   if (groupDir && persisting && everyRepoFailed) {
-    registryOutcome = 'preserved';
     // A targeted skip, not a total one. Refusing to write at all kept the good
     // contracts but also threw away the diagnostic describing the run that just
     // happened: `group status` then read the PREVIOUS sync's file, found no
@@ -511,6 +514,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     const prior = await readContractRegistry(groupDir).catch(() => null);
     if (prior) {
       await writeContractRegistry(groupDir, { ...prior, missingRepos, unreadableRepos });
+      registryOutcome = 'preserved';
+    } else {
+      registryOutcome = 'no-prior-registry';
     }
     // The bridge is deliberately untouched: it still matches the contracts that
     // were preserved, so rebuilding it here would be the one write that could
@@ -540,7 +546,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn(
         { err: msg, groupDir },
-        '⚠️ writeBridge failed; contracts.json is intact but bridge.lbug is stale. Re-run `gitnexus group sync` to retry.',
+        '⚠️ writeBridge failed; contracts.json is intact but bridge.lbug is stale. ' +
+          'Cross-repo impact will report `truncated` until a sync succeeds. ' +
+          'Re-run `gitnexus group sync` to retry.',
       );
     }
   }

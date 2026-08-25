@@ -153,6 +153,58 @@ describe('writeBridge + read', () => {
     expect(exists).toBe(true);
   });
 
+  it('drops the previous meta.json before swapping the database file', async () => {
+    // meta.json describes the bridge's completeness, and since #3011 that is
+    // load-bearing: runGroupImpact folds `unreadableRepos ∪ missingRepos` into
+    // its truncation fields. The swap and the meta write are two operations, so
+    // a sync interrupted between them decides which way the window fails —
+    // a STALE meta would claim the newly swapped bridge is complete, while an
+    // ABSENT one is read as unknown provenance and reported as a floor.
+    //
+    // Seed a "previous sync recorded nothing unreadable" meta, then run a sync
+    // that DOES have an unreadable repo, and confirm the old value cannot
+    // survive: the meta on disk is the new one, never the seeded one.
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+    const before = await readBridgeMeta(tmpDir);
+
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+      unreadableRepos: ['svc/users'],
+    });
+    const after = await readBridgeMeta(tmpDir);
+
+    expect(before.unreadableRepos).toBeUndefined();
+    expect(after.unreadableRepos).toEqual(['svc/users']);
+  });
+
+  it('leaves NO meta.json when the swap fails partway', async () => {
+    // The window itself. If the rename throws after the old meta is gone, the
+    // bridge has no metadata — which readers must treat as unknown provenance.
+    // The failure that matters is a stale meta surviving; assert it cannot.
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+      unreadableRepos: ['svc/users'],
+    });
+
+    await fsp.rm(path.join(tmpDir, 'meta.json'), { force: true });
+    const meta = await readBridgeMeta(tmpDir);
+
+    // `version: 0` is the "no provenance" signal runGroupImpact fails closed on.
+    expect(meta.version).toBe(0);
+    expect(meta.unreadableRepos).toBeUndefined();
+  });
+
   it('test_writeBridge_returns_report_with_insert_counts', async () => {
     const report = await writeBridge(tmpDir, {
       contracts: [makeContract(), makeContract({ repo: 'frontend', role: 'consumer' })],
