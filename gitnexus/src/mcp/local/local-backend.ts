@@ -7041,6 +7041,9 @@ export class LocalBackend {
     const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
     let frontier = [symId];
     let traversalComplete = true;
+    // Fetch one sentinel row beyond the cap so generated object bindings
+    // degrade visibly instead of allocating an unbounded seed frontier.
+    const OBJECT_CALLABLE_MEMBER_CAP = 5000;
 
     // Fix #480: For Java (and other JVM) Class/Interface nodes, CALLS edges
     // point to Constructor nodes and IMPORTS edges point to File nodes — not
@@ -7135,11 +7138,14 @@ export class LocalBackend {
           `
           MATCH (n)-[hm:CodeRelation]->(member:Function)
           WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
-          RETURN member.id AS id
+          RETURN DISTINCT member.id AS id
+          ORDER BY id
+          LIMIT ${OBJECT_CALLABLE_MEMBER_CAP + 1}
         `,
           { symId },
         );
-        for (const row of memberRows) {
+        if (memberRows.length > OBJECT_CALLABLE_MEMBER_CAP) traversalComplete = false;
+        for (const row of memberRows.slice(0, OBJECT_CALLABLE_MEMBER_CAP)) {
           const memberId = row.id || row[0];
           if (memberId && !visited.has(memberId)) {
             visited.add(memberId);

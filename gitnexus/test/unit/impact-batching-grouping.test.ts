@@ -324,4 +324,53 @@ describe('impact: batching and grouping', () => {
     // Cleanup env
     delete process.env.IMPACT_MAX_CHUNKS;
   });
+
+  it('caps implicit object-callable expansion and reports partial impact', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-object-cap',
+      name: 'repo-object-cap',
+      repoPath: '/tmp/repo-object-cap',
+      storagePath: '/tmp/repo-object-cap/.gitnexus',
+      lbugPath: '/tmp/repo-object-cap/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = String(args[1] ?? '');
+      if (query.includes("hm.type = 'HAS_METHOD'") && query.includes('member:Function')) {
+        return Array.from({ length: 5001 }, (_, i) => ({ id: `member-${i}` }));
+      }
+      return [];
+    });
+
+    const result = await (backend as any)._runImpactBFS(
+      repoHandle,
+      { id: 'owner', name: 'owner' },
+      'Const',
+      'downstream',
+      {
+        maxDepth: 1,
+        relationTypes: ['CALLS'],
+        includeTests: false,
+        minConfidence: 0,
+        skipEpistemic: true,
+        skipEnrichment: true,
+      },
+    );
+
+    const memberCall = executeParameterizedMock.mock.calls.find((args: any[]) =>
+      String(args[1] ?? '').includes('member:Function'),
+    );
+    const traversalCall = executeParameterizedMock.mock.calls.find((args: any[]) =>
+      String(args[1] ?? '').includes('r.type IN $relTypes'),
+    );
+    expect(String(memberCall?.[1])).toContain('RETURN DISTINCT member.id AS id');
+    expect(String(memberCall?.[1])).toContain('ORDER BY id');
+    expect(String(memberCall?.[1])).toContain('LIMIT 5001');
+    expect(traversalCall?.[2]?.frontierIds).toHaveLength(5001);
+    expect(result.partial).toBe(true);
+  });
 });
