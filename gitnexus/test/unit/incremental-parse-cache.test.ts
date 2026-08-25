@@ -221,14 +221,23 @@ describe('PARSE_CACHE_VERSION', () => {
   // Version 69 added #2969's JS/TS data-route-table decoratorRoutes. Version 70
   // adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so it is
   // the next free value after both cache payload changes.
-  it('pins SCHEMA_BUMP to 70 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(70);
+  // Moved 70 -> 71 for #2980's Java constant-route capture set (moduleConstants
+  // + routePathOperands). This branch first argued no bump was needed because
+  // "the ledger already sits at 70, whose capture set post-dates and includes
+  // this harvest" — it does not: 70 was cut by fe3d7e56b for #2417/#2891, an
+  // ancestor of this PR's base. Leaving it made PARSE_CACHE_VERSION byte-
+  // identical across the merge, so every same-package-version warm cache
+  // replayed pre-feature captures and the feature was inert. 71 is the next
+  // free value above every claim at this merge — origin/main is 70 and open
+  // PR #3017 already claims 71, so 71 would have collided.
+  it('pins SCHEMA_BUMP to 72 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(72);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
     // Every nearby historical or in-flight value is rejected, including 69,
     // which carried the route-table payload before this merge.
-    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]) {
+    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
   });
