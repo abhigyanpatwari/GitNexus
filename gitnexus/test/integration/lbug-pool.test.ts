@@ -376,13 +376,12 @@ withTestLbugDB(
         // loads are per-Database, so a shared/injected Database would inherit
         // the VECTOR load from createVectorIndex above and pass even without
         // the pre-warm fix. A fresh Database has nothing loaded — only the
-        // pool's own pre-warm can make the vector lane legal.
+        // pool's own lazy query preflight can make the vector lane legal.
         await core.closeLbug();
 
         // The regression: through the POOL, the vector lane must work without
         // any caller loading the extension. The query-specific preflight loads
-        // VECTOR here while exact reads remain untouched. Pre-fix this rejects with
-        // "Catalog exception: function QUERY_VECTOR_INDEX is not defined".
+        // VECTOR here while exact reads remain untouched.
         await initLbug('vec-repo', handle.dbPath);
         const vec = `CAST([${embedding.join(',')}] AS FLOAT[${EMBEDDING_DIMS}])`;
         const rows = (await executeQuery(

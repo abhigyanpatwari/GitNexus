@@ -1,14 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { loadFTSExtensionMock, loadVectorExtensionMock } = vi.hoisted(() => ({
-  loadFTSExtensionMock: vi.fn(),
-  loadVectorExtensionMock: vi.fn(),
-}));
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+const { createLbugDatabaseMock, loadFTSExtensionMock, loadVectorExtensionMock } = vi.hoisted(
+  () => ({
+    createLbugDatabaseMock: vi.fn(),
+    loadFTSExtensionMock: vi.fn(),
+    loadVectorExtensionMock: vi.fn(),
+  }),
+);
 
 vi.mock('@ladybugdb/core', () => ({
   default: {
     Database: vi.fn(),
     Connection: vi.fn(function (this: any) {
+      this.query = vi.fn(async () => ({ getAll: async () => [], close: vi.fn() }));
       this.close = vi.fn().mockResolvedValue(undefined);
     }),
   },
@@ -21,18 +29,22 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
-  createLbugDatabase: vi.fn(),
+  createLbugDatabase: createLbugDatabaseMock,
   toNativeSafePath: vi.fn((p: string) => p),
   isWalCorruptionError: vi.fn(() => false),
   WAL_RECOVERY_SUGGESTION: '',
 }));
 
-const { closeLbug, ensureVectorExtension, initLbugWithDb } =
+const { closeLbug, ensureVectorExtension, initLbug, initLbugWithDb } =
   await import('../../src/core/lbug/pool-adapter.js');
 
 describe('read-pool FTS loading', () => {
+  const tempDirs: string[] = [];
+
   afterEach(async () => {
     await closeLbug().catch(() => {});
+    await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    createLbugDatabaseMock.mockReset();
     loadFTSExtensionMock.mockReset();
     loadVectorExtensionMock.mockReset();
     loadVectorExtensionMock.mockResolvedValue(false);
@@ -94,21 +106,29 @@ describe('read-pool FTS loading', () => {
     });
   });
 
-  it('caches an unavailable VECTOR result until the shared Database is reopened', async () => {
+  it('caches an unavailable VECTOR result until a non-external Database is reopened', async () => {
     loadFTSExtensionMock.mockResolvedValue(true);
     loadVectorExtensionMock.mockResolvedValue(false);
-    const db = {} as any;
+    const dir = await mkdtemp(path.join(tmpdir(), 'gitnexus-vector-reopen-'));
+    tempDirs.push(dir);
+    const dbPath = path.join(dir, 'index.lbug');
+    await writeFile(dbPath, 'fixture');
+    const firstDb = { init: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+    const secondDb = { init: vi.fn(), close: vi.fn().mockResolvedValue(undefined) };
+    createLbugDatabaseMock.mockReturnValueOnce(firstDb).mockReturnValueOnce(secondDb);
 
-    await initLbugWithDb('repo-a', db, '/tmp/shared-vec-db');
+    await initLbug('repo-a', dbPath);
     await expect(ensureVectorExtension('repo-a')).resolves.toBe(false);
     await expect(ensureVectorExtension('repo-a')).resolves.toBe(false);
 
     expect(loadVectorExtensionMock).toHaveBeenCalledTimes(1);
 
     await closeLbug('repo-a');
-    await initLbugWithDb('repo-b', db, '/tmp/shared-vec-db');
+    await initLbug('repo-b', dbPath);
     await expect(ensureVectorExtension('repo-b')).resolves.toBe(false);
 
+    expect(createLbugDatabaseMock).toHaveBeenCalledTimes(2);
+    expect(firstDb.close).toHaveBeenCalledTimes(1);
     expect(loadVectorExtensionMock).toHaveBeenCalledTimes(2);
   });
 
