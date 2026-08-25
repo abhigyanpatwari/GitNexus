@@ -32,6 +32,7 @@ import { detectServiceBoundaries, assignService } from './service-boundary-detec
 import type { CypherExecutor } from './contract-extractor.js';
 import { readContractRegistry, writeContractRegistry } from './storage.js';
 import { refreshPreservedBridgeMeta, writeBridge } from './bridge-db.js';
+import { withGroupSyncLock } from './group-lock.js';
 import type { ContractRegistry } from './types.js';
 
 import { logger } from '../logger.js';
@@ -546,111 +547,125 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   const persisting = Boolean(groupDir) && !opts?.skipWrite;
   let registryOutcome: RegistryWriteOutcome = 'not-attempted';
 
-  if (groupDir && persisting && everyRepoFailed) {
-    // A targeted skip, not a total one. Refusing to write at all kept the good
-    // contracts but also threw away the diagnostic describing the run that just
-    // happened: `group status` then read the PREVIOUS sync's file, found no
-    // `unreadableRepos`, and reported a healthy group — or, worse, printed the
-    // previous run's unreadable list as if it were this one's.
-    //
-    // So carry `contracts` / `crossLinks` / `repoSnapshots` forward verbatim and
-    // refresh only the two diagnostic fields. `generatedAt` is carried forward
-    // too: it dates the contracts, which are still the previous run's, and
-    // moving it would claim this run produced them.
-    //
-    // If the prior file is absent (null) or unparseable (throws), write nothing
-    // — an unreadable prior registry is not a thing to rewrite from.
-    //
-    // The warning is emitted from INSIDE this branch, after the prior registry
-    // has been resolved, because which of the two sentences is true depends on
-    // what was found here. Emitted before the read it could only promise one of
-    // them, and it promised the wrong one to every group that has never synced:
-    // "keeping the contracts from the previous sync" about a file that does not
-    // exist — while the console line for the same run, driven by
-    // `registryOutcome`, said the opposite. The two now agree by construction:
-    // one message per outcome, chosen where the outcome is decided.
-    const prior = await readContractRegistry(groupDir).catch(() => null);
-    if (prior) {
-      await writeContractRegistry(groupDir, { ...prior, missingRepos, unreadableRepos });
-      registryOutcome = 'preserved';
-      logger.warn(
-        { unreadableRepos, missingRepos },
-        '⚠️ No repo in this group could be read; kept the contracts from the previous sync. ' +
-          "Only contracts.json's unreadable/missing repo lists were refreshed to describe this run.",
-      );
-    } else {
-      registryOutcome = 'no-prior-registry';
-      logger.warn(
-        { unreadableRepos, missingRepos },
-        '⚠️ No repo in this group could be read, and there is no previous contracts.json ' +
-          'to fall back on; nothing was written to it.',
-      );
-    }
-    // The bridge DATABASE is deliberately untouched: it still matches the
-    // contracts that were preserved, so rebuilding it here would be the one
-    // write that could lose them.
-    //
-    // Its METADATA is a different file and a different question. `meta.json` —
-    // not contracts.json — is where `runGroupImpact` reads completeness from, so
-    // refreshing one and not the other left them telling different stories: the
-    // registry said "this sync could not read app/backend" while a cross-repo
-    // query answered `{ cross: [], truncated: false }`, i.e. fully accounted for.
-    //
-    // `refreshPreservedBridgeMeta` updates the same two diagnostic fields there,
-    // and — because this rewrite moves meta.json's mtime and would otherwise
-    // launder a pair the write-order rule had been rejecting — records an
-    // explicit `provenanceUnknown` marker whenever the existing pair does not
-    // already check out. It re-stamps only a pair that already matched, so no
-    // preserve run can ever increase the number of pairs that pass the check.
-    //
-    // Not wrapped in a catch, unlike `writeBridge` on the success path below:
-    // there contracts.json is canonical and already written, so a stale bridge
-    // is a recoverable degradation. Here the write IS the guard against a
-    // confident wrong answer, and swallowing its failure would reinstate the
-    // very fail-open it closes. `writeContractRegistry` above is unguarded for
-    // the same reason, into the same directory.
-    await refreshPreservedBridgeMeta(groupDir, { missingRepos, unreadableRepos });
-  }
+  // R9: from here to the end of the persist section is the critical section —
+  // the re-read of the prior registry, `contracts.json`, and the bridge rebuild.
+  // Two syncs of one group that overlap here do not merge; the later write simply
+  // replaces the earlier one. Acquired EXACTLY ONCE, here: `acquireIndexLock` is
+  // not reentrant, and nothing below this point takes the same lock (a second
+  // acquisition would deadlock on the happy path, not on an edge case). A sync
+  // that cannot be protected throws instead of running — see group-lock.ts.
+  //
+  // A non-persisting run (no `groupDir`, or `skipWrite`) writes nothing, so it
+  // takes no lock and cannot be blocked by one.
+  if (groupDir && persisting) {
+    await withGroupSyncLock(groupDir, async () => {
+      if (everyRepoFailed) {
+        // A targeted skip, not a total one. Refusing to write at all kept the good
+        // contracts but also threw away the diagnostic describing the run that just
+        // happened: `group status` then read the PREVIOUS sync's file, found no
+        // `unreadableRepos`, and reported a healthy group — or, worse, printed the
+        // previous run's unreadable list as if it were this one's.
+        //
+        // So carry `contracts` / `crossLinks` / `repoSnapshots` forward verbatim and
+        // refresh only the two diagnostic fields. `generatedAt` is carried forward
+        // too: it dates the contracts, which are still the previous run's, and
+        // moving it would claim this run produced them.
+        //
+        // If the prior file is absent (null) or unparseable (throws), write nothing
+        // — an unreadable prior registry is not a thing to rewrite from.
+        //
+        // The warning is emitted from INSIDE this branch, after the prior registry
+        // has been resolved, because which of the two sentences is true depends on
+        // what was found here. Emitted before the read it could only promise one of
+        // them, and it promised the wrong one to every group that has never synced:
+        // "keeping the contracts from the previous sync" about a file that does not
+        // exist — while the console line for the same run, driven by
+        // `registryOutcome`, said the opposite. The two now agree by construction:
+        // one message per outcome, chosen where the outcome is decided.
+        const prior = await readContractRegistry(groupDir).catch(() => null);
+        if (prior) {
+          await writeContractRegistry(groupDir, { ...prior, missingRepos, unreadableRepos });
+          registryOutcome = 'preserved';
+          logger.warn(
+            { unreadableRepos, missingRepos },
+            '⚠️ No repo in this group could be read; kept the contracts from the previous sync. ' +
+              "Only contracts.json's unreadable/missing repo lists were refreshed to describe this run.",
+          );
+        } else {
+          registryOutcome = 'no-prior-registry';
+          logger.warn(
+            { unreadableRepos, missingRepos },
+            '⚠️ No repo in this group could be read, and there is no previous contracts.json ' +
+              'to fall back on; nothing was written to it.',
+          );
+        }
+        // The bridge DATABASE is deliberately untouched: it still matches the
+        // contracts that were preserved, so rebuilding it here would be the one
+        // write that could lose them.
+        //
+        // Its METADATA is a different file and a different question. `meta.json` —
+        // not contracts.json — is where `runGroupImpact` reads completeness from, so
+        // refreshing one and not the other left them telling different stories: the
+        // registry said "this sync could not read app/backend" while a cross-repo
+        // query answered `{ cross: [], truncated: false }`, i.e. fully accounted for.
+        //
+        // `refreshPreservedBridgeMeta` updates the same two diagnostic fields there,
+        // and — because this rewrite moves meta.json's mtime and would otherwise
+        // launder a pair the write-order rule had been rejecting — records an
+        // explicit `provenanceUnknown` marker whenever the existing pair does not
+        // already check out. It re-stamps only a pair that already matched, so no
+        // preserve run can ever increase the number of pairs that pass the check.
+        //
+        // Not wrapped in a catch, unlike `writeBridge` on the success path below:
+        // there contracts.json is canonical and already written, so a stale bridge
+        // is a recoverable degradation. Here the write IS the guard against a
+        // confident wrong answer, and swallowing its failure would reinstate the
+        // very fail-open it closes. `writeContractRegistry` above is unguarded for
+        // the same reason, into the same directory.
+        await refreshPreservedBridgeMeta(groupDir, { missingRepos, unreadableRepos });
+      }
 
-  if (groupDir && persisting && !everyRepoFailed) {
-    await writeContractRegistry(groupDir, registry);
-    registryOutcome = 'written';
-    // writeBridge failure (disk full, schema error, permission denied) must
-    // not mask the registry — contracts.json was just written successfully
-    // and is the canonical source of truth. A stale or absent bridge
-    // degrades cross-repo queries to the previous sync's answers (or, with no
-    // bridge at all, to an error naming the missing file), which is recoverable
-    // on the next sync. Surface the failure as a warning so operators can
-    // act, but do not propagate it.
-    // (PR #1156 follow-up review: writeBridge error in sync.ts propagates
-    // uncaught.)
-    try {
-      await writeBridge(groupDir, {
-        contracts: allContracts,
-        crossLinks,
-        repoSnapshots,
-        missingRepos,
-        unreadableRepos,
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      // Says what this branch guarantees, and stops at that. The previous
-      // wording promised that cross-repo impact would report `truncated` until
-      // a sync succeeded — a signal nothing here produces: a failed writeBridge
-      // leaves the previous sync's database beside the metadata stamped for it,
-      // so the pair still checks out and the completeness fields still describe
-      // the run that wrote them. Re-stamping that metadata to make the promise
-      // true is the one thing not to do — it would recreate exactly the
-      // metadata/database mis-pairing the stamping on the preserve path above
-      // exists to prevent.
-      logger.warn(
-        { err: msg, groupDir },
-        '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
-          'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
-          "the previous sync's contracts, and nothing marks them as superseded. " +
-          'Re-run `gitnexus group sync` to retry.',
-      );
-    }
+      if (!everyRepoFailed) {
+        await writeContractRegistry(groupDir, registry);
+        registryOutcome = 'written';
+        // writeBridge failure (disk full, schema error, permission denied) must
+        // not mask the registry — contracts.json was just written successfully
+        // and is the canonical source of truth. A stale or absent bridge
+        // degrades cross-repo queries to the previous sync's answers (or, with no
+        // bridge at all, to an error naming the missing file), which is recoverable
+        // on the next sync. Surface the failure as a warning so operators can
+        // act, but do not propagate it.
+        // (PR #1156 follow-up review: writeBridge error in sync.ts propagates
+        // uncaught.)
+        try {
+          await writeBridge(groupDir, {
+            contracts: allContracts,
+            crossLinks,
+            repoSnapshots,
+            missingRepos,
+            unreadableRepos,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // Says what this branch guarantees, and stops at that. The previous
+          // wording promised that cross-repo impact would report `truncated` until
+          // a sync succeeded — a signal nothing here produces: a failed writeBridge
+          // leaves the previous sync's database beside the metadata stamped for it,
+          // so the pair still checks out and the completeness fields still describe
+          // the run that wrote them. Re-stamping that metadata to make the promise
+          // true is the one thing not to do — it would recreate exactly the
+          // metadata/database mis-pairing the stamping on the preserve path above
+          // exists to prevent.
+          logger.warn(
+            { err: msg, groupDir },
+            '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
+              'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
+              "the previous sync's contracts, and nothing marks them as superseded. " +
+              'Re-run `gitnexus group sync` to retry.',
+          );
+        }
+      }
+    });
   }
 
   return {

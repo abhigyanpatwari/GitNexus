@@ -208,6 +208,18 @@ const SPAWN_CLI = [
   // exposed a file-backend double-admit race here (#2658 review); the reclaim is
   // now judgment-verified so a live holder is never displaced.
   'test/integration/analyze-index-lock-concurrency.test.ts',
+  // The per-group sync lock (R9), same class of guarantee one level up: real
+  // child processes contend for one group's lock while this process runs a real
+  // `syncGroup`, and the CLI case spawns the real command. Everything that
+  // varies here is platform-owned — which backend `selectBackend()` picks
+  // (Windows named pipe / Linux abstract socket / macOS file lock), kernel
+  // auto-release on SIGKILL vs. the file backend's pid-liveness reclaim, and
+  // `mkdir` over an occupied path. The fail-closed cases pin
+  // GITNEXUS_INDEX_LOCK_BACKEND=file so the filesystem branch is exercised on
+  // every OS rather than only where it is the default; no case is skipped on
+  // any platform, because a skipped case turns "a sync that cannot be protected
+  // does not run" into a claim that holds on Ubuntu only.
+  'test/integration/group/group-sync-lock-concurrency.test.ts',
   // The three `dist/` module-load closure guards, all built on the shared
   // child-process probe in `test/helpers/module-load-probe.ts`. That probe IS
   // the platform-varying part: it spawns `process.execPath` in array form,

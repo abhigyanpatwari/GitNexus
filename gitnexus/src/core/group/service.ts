@@ -408,13 +408,24 @@ export class GroupService {
     // MCP server startup entirely and off every non-sync group call. The CLI
     // already does exactly this at `cli/group.ts`'s sync command.
     const { syncGroup } = await import('./sync.js');
-    const result = await syncGroup(config, {
-      groupDir,
-      exactOnly: Boolean(params.exactOnly),
-      skipEmbeddings: Boolean(params.skipEmbeddings),
-      allowStale: Boolean(params.allowStale),
-      verbose: Boolean(params.verbose),
-    });
+    const { GroupSyncLockError } = await import('./group-lock.js');
+    let result: Awaited<ReturnType<typeof syncGroup>>;
+    try {
+      result = await syncGroup(config, {
+        groupDir,
+        exactOnly: Boolean(params.exactOnly),
+        skipEmbeddings: Boolean(params.skipEmbeddings),
+        allowStale: Boolean(params.allowStale),
+        verbose: Boolean(params.verbose),
+      });
+    } catch (err) {
+      // Fails closed (R9): this sync could not be protected against a concurrent
+      // one, so it did not run and wrote nothing. Return it through the same
+      // error channel a missing group uses — NEVER as a success payload of zeroes,
+      // which an agent would read as "the group genuinely has no contracts".
+      if (!(err instanceof GroupSyncLockError)) throw err;
+      return { error: err.message };
+    }
     return {
       contracts: result.contracts.length,
       crossLinks: result.crossLinks.length,

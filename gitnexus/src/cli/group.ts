@@ -204,19 +204,34 @@ export function registerGroupCommands(program: Command): void {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
       const { loadGroupConfig } = await import('../core/group/config-parser.js');
       const { syncGroup } = await import('../core/group/sync.js');
+      const { GroupSyncLockError } = await import('../core/group/group-lock.js');
 
       const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
       const config = await loadGroupConfig(groupDir);
 
       console.log(`Syncing group "${name}" (${Object.keys(config.repos).length} repos)...\n`);
 
-      const result = await syncGroup(config, {
-        groupDir,
-        allowStale: Boolean(opts.allowStale),
-        verbose: Boolean(opts.verbose),
-        skipEmbeddings: Boolean(opts.skipEmbeddings),
-        exactOnly: Boolean(opts.exactOnly),
-      });
+      let result: Awaited<ReturnType<typeof syncGroup>>;
+      try {
+        result = await syncGroup(config, {
+          groupDir,
+          allowStale: Boolean(opts.allowStale),
+          verbose: Boolean(opts.verbose),
+          skipEmbeddings: Boolean(opts.skipEmbeddings),
+          exactOnly: Boolean(opts.exactOnly),
+        });
+      } catch (err) {
+        // A sync that could not take the group's lock did NOT run and wrote
+        // nothing (R9 fails closed). That is an operator-actionable outcome, not
+        // a crash, so report it as a failed command rather than letting it
+        // surface as an unhandled rejection with a stack trace — commander's
+        // async actions have no error handler, so an uncaught throw here would
+        // print exactly that.
+        if (!(err instanceof GroupSyncLockError)) throw err;
+        logger.error(`⚠️ Did not sync group "${name}": ${err.message}`);
+        process.exitCode = 1;
+        return;
+      }
 
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
