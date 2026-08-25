@@ -629,13 +629,27 @@ const sanitizeEntries = (entries: RegistryEntry[]): RegistryEntry[] =>
  * `indexedAt` / `lastCommit` are deliberately NOT: callers already default them
  * (`e?.indexedAt || ''`), so demanding them would reject a legacy row that
  * resolves perfectly well — trading a fail-open for a fail-shut on real data.
+ *
+ * Two of the three must also be non-blank, because `typeof '' === 'string'`
+ * passes a row that cannot identify anything. `name` is what
+ * `defaultResolveHandle` matches a configured repo against, so a blank one
+ * matches nothing and puts every repo in `missingRepos` — the same fail-open,
+ * dressed as a clean answer. `storagePath` is what the resolved handle carries
+ * to `path.join(storagePath, 'lbug')`; blank, that joins to a relative `lbug`
+ * under the CWD, so the sync opens an index that is not the repo's.
+ *
+ * `path` stays at the bare string check, on the same reasoning that exempts
+ * `indexedAt` / `lastCommit`: require only what the resolution path depends on
+ * to IDENTIFY the repo. This check rejects the WHOLE registry, which is
+ * machine-wide, so a field tightened past what resolution needs would let one
+ * blank value in one row break every group sync on the machine — including
+ * groups whose repos all resolve.
  */
 const isResolvableEntry = (value: unknown): value is RegistryEntry => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const e = value as Record<string, unknown>;
-  return (
-    typeof e.name === 'string' && typeof e.path === 'string' && typeof e.storagePath === 'string'
-  );
+  const identifies = (v: unknown): boolean => typeof v === 'string' && v.trim() !== '';
+  return identifies(e.name) && identifies(e.storagePath) && typeof e.path === 'string';
 };
 
 /**
@@ -670,7 +684,7 @@ const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
       const bad = data.findIndex((entry) => !isResolvableEntry(entry));
       if (bad !== -1) {
         throw new Error(
-          `${getGlobalRegistryPath()} entry ${bad} is missing name/path/storagePath (registry is corrupt)`,
+          `${getGlobalRegistryPath()} entry ${bad} does not identify a repo — name and storagePath must be non-empty strings and path must be a string (registry is corrupt)`,
         );
       }
     }

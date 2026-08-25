@@ -1,8 +1,20 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { readRegistry, readRegistryStrict } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+import { syncGroup } from '../../src/core/group/sync.js';
+import type { GroupConfig } from '../../src/core/group/types.js';
+
+// `syncGroup` is driven here through the REAL registry file and the REAL
+// `defaultResolveHandle`, which is the pairing under test; only the pool is
+// stubbed, so no LadybugDB index has to exist for a resolved repo to sync.
+vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
+  initLbug: vi.fn(async () => {}),
+  executeParameterized: vi.fn(async () => []),
+  pinRepo: vi.fn(() => () => {}),
+  getMaxResidentRepos: vi.fn(() => 5),
+}));
 
 /**
  * `readRegistry` used to answer every failure with `[]`.
@@ -29,6 +41,38 @@ describe('readRegistryStrict', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
   let savedGitnexusHome: string | undefined;
   let registryPath: string;
+
+  /** A row every field of which the resolution path can use. */
+  const resolvableRow = () => ({
+    name: 'backend-repo',
+    // Deliberately inside the temp home: `syncGroup` joins `storagePath` with
+    // `meta.json`, and a stray real file there would make the snapshot
+    // assertion below depend on the host.
+    path: path.join(tmpHome.dbPath, 'repos', 'backend'),
+    storagePath: path.join(tmpHome.dbPath, 'repos', 'backend', '.gitnexus'),
+    indexedAt: '2026-01-01T00:00:00.000Z',
+    lastCommit: 'abc123',
+  });
+
+  const makeConfig = (repos: Record<string, string>): GroupConfig => ({
+    version: 1,
+    name: 'test',
+    description: '',
+    repos,
+    links: [],
+    packages: {},
+    detect: {
+      http: false,
+      grpc: false,
+      thrift: false,
+      topics: false,
+      shared_libs: false,
+      embedding_fallback: false,
+      includes: false,
+      workspace_deps: false,
+    },
+    matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+  });
 
   beforeEach(async () => {
     tmpHome = await createTempDir('gitnexus-registry-strict-');
@@ -123,6 +167,63 @@ describe('readRegistryStrict', () => {
     await fs.writeFile(registryPath, JSON.stringify(legacy));
 
     await expect(readRegistryStrict()).resolves.toEqual(legacy);
+  });
+
+  it('rejects a row whose `name` is blank, and names the offending index', async () => {
+    // `typeof e.name === 'string'` is true of `''`, so a blank name walked
+    // straight past the shape check and then failed to match ANY configured
+    // repo in `defaultResolveHandle` — every repo landed in missingRepos, no
+    // load ERROR was produced, the total-failure guard stayed off, and a good
+    // contracts.json was replaced by an empty one. A field the resolution path
+    // matches on cannot be blank and still identify a repo.
+    const rows = [resolvableRow(), { ...resolvableRow(), name: '' }];
+    await fs.writeFile(registryPath, JSON.stringify(rows));
+
+    // Lenient keeps the contract it has: it hands the row back untouched.
+    await expect(readRegistry()).resolves.toEqual(rows);
+    await expect(readRegistryStrict()).rejects.toThrow('entry 1');
+  });
+
+  it('rejects a row whose `name` is whitespace only', async () => {
+    await fs.writeFile(registryPath, JSON.stringify([{ ...resolvableRow(), name: '   ' }]));
+
+    await expect(readRegistryStrict()).rejects.toThrow('registry is corrupt');
+  });
+
+  it('rejects a row whose `storagePath` is whitespace only', async () => {
+    // `storagePath` is what the handle carries to `path.join(storagePath,
+    // 'lbug')`. Blank, that joins to a relative `lbug` under the CWD — an
+    // index that is not this repo's, opened without anyone saying so.
+    await fs.writeFile(registryPath, JSON.stringify([{ ...resolvableRow(), storagePath: '  ' }]));
+
+    await expect(readRegistry()).resolves.toHaveLength(1);
+    await expect(readRegistryStrict()).rejects.toThrow('registry is corrupt');
+  });
+
+  it('accepts a row whose unused `path` is blank, and syncs the repo it names', async () => {
+    // The counter-case that fixes the width of the rule. `path` is not what
+    // identifies a repo, so tightening it too would trade this fail-open for a
+    // fail-shut: one blank `path` anywhere in the MACHINE-WIDE registry would
+    // reject the whole file and break every group sync on the machine,
+    // including groups whose repos all resolve. Same principle as indexedAt /
+    // lastCommit — require only what the resolution path depends on.
+    const row = { ...resolvableRow(), path: '   ' };
+    await fs.writeFile(registryPath, JSON.stringify([row]));
+
+    await expect(readRegistryStrict()).resolves.toEqual([row]);
+
+    const result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), {
+      skipWrite: true,
+    });
+
+    // Resolved: not reported missing, and the snapshot carries THIS row's
+    // registry metadata, which only a successful name match could supply.
+    expect(result.missingRepos).toEqual([]);
+    expect(result.unreadableRepos).toEqual([]);
+    expect(result.repoSnapshots['app/backend']).toEqual({
+      indexedAt: '2026-01-01T00:00:00.000Z',
+      lastCommit: 'abc123',
+    });
   });
 
   it('throws when the registry parses but is not an array', async () => {
