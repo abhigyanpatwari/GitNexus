@@ -170,3 +170,77 @@ describe('writeBridge meta.json swap window', () => {
     expect(after.unreadableRepos).toEqual(['svc/users']);
   });
 });
+
+describe('bridgeMetaMatchesFile with a half-written stamp', () => {
+  let groupDir: string;
+
+  beforeEach(async () => {
+    renameMock.mode = 'none';
+    groupDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-bridge-partial-'));
+  });
+
+  afterEach(async () => {
+    renameMock.mode = 'none';
+    await fsp.rm(groupDir, { recursive: true, force: true });
+  });
+
+  /**
+   * A stamp is a PAIR. Either both halves describe the database beside them or
+   * the metadata cannot vouch for it at all.
+   *
+   * The absent-stamp branch exists for metadata written before stamping, which
+   * is a benign, known state. A metadata file carrying exactly one half is not
+   * that: something wrote a stamp and did not finish, which is the very
+   * condition the stamp was added to detect. Accepting it — as an `undefined`
+   * check joined by `||` did — hands back "verified" for the one shape that
+   * most deserves suspicion.
+   */
+  const seedStamped = async (): Promise<void> => {
+    await writeBridge(groupDir, input([]));
+  };
+
+  const rewriteMeta = async (mutate: (m: Record<string, unknown>) => void): Promise<void> => {
+    const metaPath = path.join(groupDir, 'meta.json');
+    const raw = JSON.parse(await fsp.readFile(metaPath, 'utf-8')) as Record<string, unknown>;
+    mutate(raw);
+    await fsp.writeFile(metaPath, JSON.stringify(raw, null, 2));
+  };
+
+  it('rejects metadata carrying a size but no mtime', async () => {
+    await seedStamped();
+    await rewriteMeta((m) => {
+      delete m.bridgeMtimeMs;
+    });
+    const meta = await readBridgeMeta(groupDir);
+    expect(meta.bridgeSize).toBeTypeOf('number');
+    expect(meta.bridgeMtimeMs).toBeUndefined();
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(false);
+  });
+
+  it('rejects metadata carrying an mtime but no size', async () => {
+    await seedStamped();
+    await rewriteMeta((m) => {
+      delete m.bridgeSize;
+    });
+    const meta = await readBridgeMeta(groupDir);
+    expect(meta.bridgeMtimeMs).toBeTypeOf('number');
+    expect(meta.bridgeSize).toBeUndefined();
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(false);
+  });
+
+  it('still accepts metadata carrying neither half, which is the legacy shape', async () => {
+    await seedStamped();
+    await rewriteMeta((m) => {
+      delete m.bridgeSize;
+      delete m.bridgeMtimeMs;
+    });
+    const meta = await readBridgeMeta(groupDir);
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+  });
+
+  it('control: a fully stamped pair written together still matches', async () => {
+    await seedStamped();
+    const meta = await readBridgeMeta(groupDir);
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+  });
+});

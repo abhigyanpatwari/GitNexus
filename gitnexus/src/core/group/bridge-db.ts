@@ -659,14 +659,24 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
  * metadata being true of THIS database (cross-repo impact reads completeness
  * from it) must not treat a mismatch as fact.
  *
- * Returns `true` when the stamp is absent: metadata written before this existed
- * cannot be verified either way, and failing those closed would mark every
- * pre-existing bridge as incomplete — trading a narrow window for a repo-wide
- * regression. Returns `false` when the database itself cannot be stat'd, since
- * metadata describing a file that is not there describes nothing.
+ * Returns `true` when BOTH halves of the stamp are absent: metadata written
+ * before stamping existed cannot be verified either way, and failing those
+ * closed would mark every pre-existing bridge as incomplete — trading a narrow
+ * window for a repo-wide regression. Returns `false` when the database itself
+ * cannot be stat'd, since metadata describing a file that is not there
+ * describes nothing.
+ *
+ * A stamp is a PAIR, so exactly one half present is rejected rather than waved
+ * through. That is not the legacy shape: something wrote a stamp and did not
+ * finish, which is the very condition stamping was added to detect. Joining the
+ * two `undefined` checks with `||` returned "verified" for precisely the shape
+ * that most deserves suspicion.
  */
 export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta): Promise<boolean> {
-  if (meta.bridgeSize === undefined || meta.bridgeMtimeMs === undefined) return true;
+  const stampedSize = meta.bridgeSize !== undefined;
+  const stampedMtime = meta.bridgeMtimeMs !== undefined;
+  if (!stampedSize && !stampedMtime) return true;
+  if (!stampedSize || !stampedMtime) return false;
   try {
     const stat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
     return stat.size === meta.bridgeSize && stat.mtimeMs === meta.bridgeMtimeMs;
