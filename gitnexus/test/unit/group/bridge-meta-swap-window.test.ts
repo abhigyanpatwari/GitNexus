@@ -379,3 +379,74 @@ describe('bridgeMetaMatchesFile pairs an unstamped meta by write order', () => {
     await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(false);
   });
 });
+
+describe('bridgeMetaMatchesFile reads an explicit provenance marker first', () => {
+  /**
+   * The strongest evidence a metadata file can carry about which database it
+   * describes is a statement from the writer that it does NOT describe the one
+   * beside it. `bridgeMetaMatchesFile` orders its checks by evidence strength,
+   * and this one outranks both of the others — its doc has said so since the
+   * stamp landed; these cases make it true.
+   *
+   * The marker exists because the preserve path in `syncGroup` refreshes
+   * `meta.json` without touching `bridge.lbug`. That rewrite is atomic, so the
+   * metadata's mtime becomes now while the database's stays old — the write
+   * order a paired write produces, and the shape the unstamped rule ACCEPTS.
+   * Writing "no stamp" instead of a marker would therefore let a preserve sync
+   * convert a pair the rule had been rejecting into one it waves through.
+   */
+  let groupDir: string;
+
+  beforeEach(async () => {
+    renameMock.mode = 'none';
+    groupDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-bridge-marker-'));
+  });
+
+  afterEach(async () => {
+    renameMock.mode = 'none';
+    await closeAllCachedBridges();
+    await fsp.rm(groupDir, { recursive: true, force: true });
+  });
+
+  it('rejects a marked pair whose stamp matches the database beside it', async () => {
+    await writeBridge(groupDir, input([]));
+    const meta = await readBridgeMeta(groupDir);
+
+    // The control: this exact pair is otherwise verified by the stamp.
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(true);
+
+    await expect(
+      bridgeMetaMatchesFile(groupDir, { ...meta, provenanceUnknown: true }),
+    ).resolves.toBe(false);
+  });
+
+  it('rejects a marked pair whose write order says it is paired', async () => {
+    // The unstamped branch, and the one the preserve path actually reaches: an
+    // atomic metadata rewrite always leaves `meta.mtime >= db.mtime`, so the
+    // heuristic has nothing left to object to and the marker is the only
+    // surviving record of the verdict.
+    await writeBridge(groupDir, input([]));
+    const meta = await readBridgeMeta(groupDir);
+    const legacy = { ...meta };
+    delete legacy.bridgeSize;
+    delete legacy.bridgeMtimeMs;
+
+    await expect(bridgeMetaMatchesFile(groupDir, legacy)).resolves.toBe(true);
+
+    await expect(
+      bridgeMetaMatchesFile(groupDir, { ...legacy, provenanceUnknown: true }),
+    ).resolves.toBe(false);
+  });
+
+  it('rejects a marked metadata file even when the database is gone', async () => {
+    // Nothing about the files can overturn the marker, including the absence of
+    // the file the stamp branch would have stat'd.
+    await writeBridge(groupDir, input([]));
+    const meta = await readBridgeMeta(groupDir);
+    await fsp.rm(path.join(groupDir, 'bridge.lbug'), { force: true });
+
+    await expect(
+      bridgeMetaMatchesFile(groupDir, { ...meta, provenanceUnknown: true }),
+    ).resolves.toBe(false);
+  });
+});

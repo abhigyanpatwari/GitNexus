@@ -677,12 +677,18 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
  *
  * The checks are ORDERED by how strong their evidence is, strongest first, and
  * each later one is reached only because every earlier one had nothing to say.
- * A future explicit provenance marker belongs ahead of both of these: a
- * metadata file that says outright which database it describes settles the
- * question, and neither the stamp nor the write-order heuristic may then
- * overturn it.
+ * `provenanceUnknown` therefore comes first: a metadata file whose own writer
+ * says it cannot vouch for the database beside it has settled the question, and
+ * neither the stamp nor the write-order heuristic may overturn that.
+ *
+ * The marker is not decoration. `refreshPreservedBridgeMeta` rewrites this file
+ * atomically without touching the database, which leaves `meta.mtime` newer —
+ * the write order a paired write produces, and the one the unstamped branch
+ * ACCEPTS. Reading the marker after that branch (or not at all) hands back
+ * "verified" for a pair the same code path had just found broken.
  */
 export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta): Promise<boolean> {
+  if (meta.provenanceUnknown) return false;
   const stampedSize = meta.bridgeSize !== undefined;
   const stampedMtime = meta.bridgeMtimeMs !== undefined;
   if (!stampedSize && !stampedMtime) return unstampedMetaPairsByWriteOrder(groupDir);
@@ -809,6 +815,109 @@ export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
   else delete meta.unreadableRepos;
   if (repoListsUnreadable) meta.repoListsUnreadable = true;
   return meta;
+}
+
+/* ------------------------------------------------------------------ */
+/*  refreshPreservedBridgeMeta                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What a refresh did to `meta.json`.
+ *
+ * - `restamped`          — the pair still matched, so the lists were refreshed
+ *                          and the stamp re-taken from the database on disk.
+ * - `provenance-unknown` — the pair did NOT match (or there is no database to
+ *                          match), so the lists were refreshed and the metadata
+ *                          marked as unable to vouch for the file beside it.
+ * - `no-bridge`          — neither `meta.json` nor `bridge.lbug` exists, so
+ *                          there is no pair to keep honest and nothing written.
+ */
+export type PreservedBridgeMetaOutcome = 'restamped' | 'provenance-unknown' | 'no-bridge';
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fsp.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bring `meta.json`'s diagnostic lists up to date with a sync that PRESERVED
+ * the bridge instead of rebuilding it, without ever making the metadata claim
+ * more about the database than it did before.
+ *
+ * `syncGroup`'s total-failure path keeps the previous run's contracts and
+ * deliberately leaves `bridge.lbug` alone — the contracts that bridge holds are
+ * the ones being preserved. But `runGroupImpact` reads completeness from
+ * `meta.json`, not from `contracts.json`, so leaving the metadata alone too left
+ * the two files telling different stories: the registry said "this sync could
+ * not read svc/users" while a cross-repo query answered "complete, nothing
+ * depends on this" (R4/R6).
+ *
+ * The refresh is the whole difficulty. It rewrites `meta.json` atomically, so
+ * the file's mtime becomes now while the database's stays old — which is the
+ * write order a paired write produces, and precisely what
+ * `unstampedMetaPairsByWriteOrder` accepts. Three rules follow, and each of them
+ * is load-bearing:
+ *
+ *  1. Ask `bridgeMetaMatchesFile` FIRST, on the file as it stands. After the
+ *     write the question is unanswerable, because the write is what destroys
+ *     the evidence.
+ *  2. Re-stamp only when that answer was yes. Re-stamping a pair that already
+ *     failed would MANUFACTURE the provenance the failure just denied — the
+ *     same metadata/database mis-pairing stamping exists to prevent (KTD6).
+ *  3. When it was no, record `provenanceUnknown` explicitly and carry the
+ *     existing stamp fields through verbatim. Writing "no stamp" instead is
+ *     worse, not better: an unstamped file is judged on the two file times,
+ *     and this write has just put them in the accepting order.
+ *
+ * Nothing here opens, reads, or writes the database. The only `stat` of it
+ * happens on the branch where the pair was just verified.
+ */
+export async function refreshPreservedBridgeMeta(
+  groupDir: string,
+  diagnostics: { missingRepos: string[]; unreadableRepos: string[] },
+): Promise<PreservedBridgeMetaOutcome> {
+  const dbPath = path.join(groupDir, 'bridge.lbug');
+  const [metaOnDisk, dbOnDisk] = await Promise.all([
+    fileExists(path.join(groupDir, 'meta.json')),
+    fileExists(dbPath),
+  ]);
+  // Nothing on either side of the pair. `readBridgeMeta` already answers
+  // `version: 0` — provenance unknown — for an absent file, so a file written
+  // here would say what the absence already says while inventing state for a
+  // bridge that has never existed.
+  if (!metaOnDisk && !dbOnDisk) return 'no-bridge';
+
+  const existing = await readBridgeMeta(groupDir);
+  const paired = await bridgeMetaMatchesFile(groupDir, existing);
+
+  const refreshed: BridgeMeta = { ...existing, ...diagnostics };
+  // NEVER PERSISTED (see `BridgeMeta`): both are things a READER computes ABOUT
+  // a file, and this is the first code in the repo that reads metadata and
+  // writes it back. `pairedWithDatabase` is the poisonous one — persisted, it
+  // would tell every future reader that the pair had been verified.
+  delete refreshed.repoListsUnreadable;
+  delete refreshed.pairedWithDatabase;
+
+  if (paired) {
+    const stat = await fsp.stat(dbPath).catch(() => null);
+    if (stat) {
+      refreshed.bridgeSize = stat.size;
+      refreshed.bridgeMtimeMs = stat.mtimeMs;
+      await writeBridgeMeta(groupDir, refreshed);
+      return 'restamped';
+    }
+    // The database disappeared between the pairing check and this stat. There
+    // is nothing left to stamp, so fall through and say so rather than write a
+    // stamp describing a file that is gone.
+  }
+
+  refreshed.provenanceUnknown = true;
+  await writeBridgeMeta(groupDir, refreshed);
+  return 'provenance-unknown';
 }
 
 /* ------------------------------------------------------------------ */

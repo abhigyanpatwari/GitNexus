@@ -31,7 +31,7 @@ import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { readContractRegistry, writeContractRegistry } from './storage.js';
-import { writeBridge } from './bridge-db.js';
+import { refreshPreservedBridgeMeta, writeBridge } from './bridge-db.js';
 import type { ContractRegistry } from './types.js';
 
 import { logger } from '../logger.js';
@@ -574,9 +574,30 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     } else {
       registryOutcome = 'no-prior-registry';
     }
-    // The bridge is deliberately untouched: it still matches the contracts that
-    // were preserved, so rebuilding it here would be the one write that could
-    // lose them.
+    // The bridge DATABASE is deliberately untouched: it still matches the
+    // contracts that were preserved, so rebuilding it here would be the one
+    // write that could lose them.
+    //
+    // Its METADATA is a different file and a different question. `meta.json` —
+    // not contracts.json — is where `runGroupImpact` reads completeness from, so
+    // refreshing one and not the other left them telling different stories: the
+    // registry said "this sync could not read app/backend" while a cross-repo
+    // query answered `{ cross: [], truncated: false }`, i.e. fully accounted for.
+    //
+    // `refreshPreservedBridgeMeta` updates the same two diagnostic fields there,
+    // and — because this rewrite moves meta.json's mtime and would otherwise
+    // launder a pair the write-order rule had been rejecting — records an
+    // explicit `provenanceUnknown` marker whenever the existing pair does not
+    // already check out. It re-stamps only a pair that already matched, so no
+    // preserve run can ever increase the number of pairs that pass the check.
+    //
+    // Not wrapped in a catch, unlike `writeBridge` on the success path below:
+    // there contracts.json is canonical and already written, so a stale bridge
+    // is a recoverable degradation. Here the write IS the guard against a
+    // confident wrong answer, and swallowing its failure would reinstate the
+    // very fail-open it closes. `writeContractRegistry` above is unguarded for
+    // the same reason, into the same directory.
+    await refreshPreservedBridgeMeta(groupDir, { missingRepos, unreadableRepos });
   }
 
   if (groupDir && persisting && !everyRepoFailed) {

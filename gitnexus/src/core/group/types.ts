@@ -296,6 +296,39 @@ export interface BridgeMeta {
    * of true on the ones that happen to be testable.
    */
   pairedWithDatabase?: boolean;
+  /**
+   * PERSISTED, unlike the two fields above: the writer of this metadata could
+   * not establish that it describes the `bridge.lbug` beside it, and no reader
+   * may conclude otherwise from the files alone.
+   *
+   * Written by `refreshPreservedBridgeMeta` — the preserve path in `syncGroup`,
+   * which refreshes the diagnostic lists of a bridge it deliberately does NOT
+   * rebuild. That refresh rewrites `meta.json` ATOMICALLY, so this file's mtime
+   * becomes now while the database's stays old; and "metadata newer than the
+   * database beside it" is exactly the write order that
+   * `unstampedMetaPairsByWriteOrder` accepts. A refresh that simply carried the
+   * old fields forward would therefore convert a pair that check had been
+   * REJECTING into one it waves through — laundering unknown provenance into
+   * verified provenance, which is the fail-open this whole channel exists to
+   * close.
+   *
+   * "Just don't write a stamp" is not a substitute, and is worse: an unstamped
+   * metadata file is judged on the two file times, and the refresh has already
+   * moved them into the accepting order. The verdict has to be recorded IN the
+   * file, because the write that records it is itself what destroys the
+   * evidence a reader would otherwise use.
+   *
+   * `bridgeMetaMatchesFile` rejects on this ahead of both the stamp and the
+   * write-order heuristic, so `ensureBridgeReady` answers
+   * `pairedWithDatabase: false` and `bridgeProvenanceUnknown` reports the
+   * cross-repo answer as a lower bound. That is the ONE enforcement point; do
+   * not add a second reader for this field.
+   *
+   * Self-clearing: a successful `writeBridge` builds fresh metadata from a
+   * literal and never sets it, so the next good sync retires the marker without
+   * anything having to delete it.
+   */
+  provenanceUnknown?: boolean;
   missingRepos: string[];
   /**
    * Configured repos the sync that produced this bridge could not extract from

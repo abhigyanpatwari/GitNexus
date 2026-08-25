@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { _captureLogger } from '../../../src/core/logger.js';
-import type { GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
+import type { BridgeHandle, GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
+import { BRIDGE_SCHEMA_VERSION } from '../../../src/core/group/bridge-schema.js';
+import { makeGroupToolPort, writeGroupYaml } from './fixtures.js';
 
 /**
  * A repo that is registered but whose index cannot be opened must not be
@@ -50,7 +53,31 @@ vi.mock('../../../src/storage/repo-manager.js', () => ({
   readRegistryStrict: (...args: unknown[]) => readRegistryMock(...args),
 }));
 
+/**
+ * Only the read-only OPEN legs are stubbed, so `runGroupImpact` can read the
+ * metadata a preserve sync just wrote without a native LadybugDB open of a
+ * placeholder file. `writeBridge`, `writeBridgeMeta`, `readBridgeMeta` and
+ * `bridgeMetaMatchesFile` all travel their real implementations — they are the
+ * code under test here, and `syncGroup` reaches `writeBridge` through this
+ * module too.
+ */
+vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/core/group/bridge-db.js')>();
+  return {
+    ...actual,
+    getCachedBridgeReadOnly: vi.fn(
+      async (groupDir: string) =>
+        ({ _db: {}, _conn: {}, groupDir, _readOnly: true }) as BridgeHandle,
+    ),
+    queryBridge: vi.fn(async () => [] as Array<Record<string, unknown>>),
+    closeBridgeDb: vi.fn(async () => undefined),
+  };
+});
+
 const { syncGroup } = await import('../../../src/core/group/sync.js');
+const { runGroupImpact } = await import('../../../src/core/group/cross-impact.js');
+const { bridgeMetaMatchesFile, closeAllCachedBridges, readBridgeMeta, writeBridgeMeta } =
+  await import('../../../src/core/group/bridge-db.js');
 
 const registryEntry = (name: string, dir: string) => ({
   name,
@@ -335,5 +362,355 @@ describe('syncGroup with an unreadable index', () => {
     ).rejects.toThrow('EACCES');
 
     expect(JSON.parse(fs.readFileSync(contractsPath, 'utf8'))).toEqual(PRIOR_REGISTRY);
+  });
+});
+
+/**
+ * The preserve path rewrites `contracts.json` and deliberately does NOT rebuild
+ * `bridge.lbug` — the contracts that bridge holds are the ones being preserved,
+ * so rebuilding it from an extraction that read nothing is the one write that
+ * could lose them.
+ *
+ * But `meta.json`, not `contracts.json`, is where `runGroupImpact` reads
+ * completeness from. Leaving it alone therefore left the two files telling
+ * different stories: `contracts.json` said "this sync could not read app/backend"
+ * while a cross-repo query, reading the previous sync's metadata, answered
+ * `{ cross: [], truncated: false }` — fully accounted for. That is a confident
+ * wrong answer about the exact thing the completeness channel exists to make
+ * legible, and it is what R6 forbids.
+ *
+ * Refreshing the metadata is not free, though, and the naive version of it is
+ * worse than the bug. This file rewrites `meta.json` ATOMICALLY, so its mtime
+ * becomes now while `bridge.lbug`'s stays old — which is precisely the shape
+ * the unstamped write-order rule ACCEPTS. A refresh that just carried the old
+ * fields forward would therefore LAUNDER a pair that was already broken into
+ * one that passes `bridgeMetaMatchesFile`. Hence the explicit marker, and hence
+ * the cases below that pin a broken pair as still broken afterwards.
+ */
+describe('the preserve path and the bridge metadata beside it', () => {
+  let home: string;
+  let groupDir: string;
+  let dbPath: string;
+  let metaPath: string;
+
+  /** Fixed, whole-second instants — exactly representable on any filesystem. */
+  const WRITTEN_AT = new Date('2026-01-01T00:00:00.000Z');
+  const TEN_SECONDS_LATER = new Date('2026-01-01T00:00:10.000Z');
+  const PRIOR_META_GENERATED_AT = '2026-01-01T00:00:00.000Z';
+
+  beforeEach(async () => {
+    initLbugMock.mockReset();
+    readRegistryMock.mockReset();
+    readRegistryMock.mockResolvedValue(REGISTRY);
+    home = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-preserve-bridge-'));
+    groupDir = path.join(home, 'groups', 'waveful');
+    dbPath = path.join(groupDir, 'bridge.lbug');
+    metaPath = path.join(groupDir, 'meta.json');
+    await writeGroupYaml(groupDir, ['app/backend']);
+  });
+
+  afterEach(async () => {
+    await closeAllCachedBridges();
+    await fsp.rm(home, { recursive: true, force: true });
+  });
+
+  const seedPriorRegistry = (): Promise<void> =>
+    fsp.writeFile(path.join(groupDir, 'contracts.json'), JSON.stringify(PRIOR_REGISTRY));
+
+  /** A stamped pair that matches: what a successful `writeBridge` leaves behind. */
+  const seedMatchingPair = async (): Promise<void> => {
+    await fsp.writeFile(dbPath, 'the previous sync database');
+    const stat = await fsp.stat(dbPath);
+    await writeBridgeMeta(groupDir, {
+      version: BRIDGE_SCHEMA_VERSION,
+      generatedAt: PRIOR_META_GENERATED_AT,
+      bridgeSize: stat.size,
+      bridgeMtimeMs: stat.mtimeMs,
+      missingRepos: [],
+      unreadableRepos: [],
+    });
+  };
+
+  /**
+   * The legacy shape, broken: metadata with no stamp sitting beside a database
+   * that was replaced after it. `unstampedMetaPairsByWriteOrder` is the ONLY
+   * thing that can see this, and it sees it purely through the two file times —
+   * which is why an atomic rewrite of `meta.json` erases the evidence.
+   */
+  const seedUnstampedPairWithNewerDatabase = async (): Promise<void> => {
+    await fsp.writeFile(dbPath, 'a database swapped in after the metadata');
+    await writeBridgeMeta(groupDir, {
+      version: BRIDGE_SCHEMA_VERSION,
+      generatedAt: PRIOR_META_GENERATED_AT,
+      missingRepos: [],
+      unreadableRepos: [],
+    });
+    await fsp.utimes(metaPath, WRITTEN_AT, WRITTEN_AT);
+    await fsp.utimes(dbPath, TEN_SECONDS_LATER, TEN_SECONDS_LATER);
+  };
+
+  const runTotalFailureSync = () => {
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+    return syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+  };
+
+  const runSuccessfulSync = () => {
+    initLbugMock.mockReset();
+    return syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), {
+      groupDir,
+      resolveRepoHandle: handleTable(['backend-repo']),
+    });
+  };
+
+  const runImpact = () =>
+    runGroupImpact(
+      { port: makeGroupToolPort(home), gitnexusDir: home },
+      { name: 'waveful', repo: 'app/backend', target: 'publish', direction: 'upstream' },
+    );
+
+  const pairsAfterwards = async (): Promise<boolean> =>
+    bridgeMetaMatchesFile(groupDir, await readBridgeMeta(groupDir));
+
+  it('reports the repos this sync could not read as a lower bound on the next cross-repo query', async () => {
+    // The headline case, and the one that makes `contracts.json` and `group
+    // impact` describe the same set of unaccounted repos. Every other signal
+    // says "complete": the local walk finished, the bridge returned no
+    // crossings, no cap and no clock fired.
+    await seedPriorRegistry();
+    await seedMatchingPair();
+
+    const result = await runTotalFailureSync();
+    expect(result.registryOutcome).toBe('preserved');
+
+    const impact = await runImpact();
+
+    expect(impact).toMatchObject({
+      cross: [],
+      truncated: true,
+      truncationReason: 'incomplete-sync',
+      riskEpistemic: 'lower-bound',
+      truncatedRepos: ['app/backend'],
+    });
+  });
+
+  it('leaves the bridge database itself byte-for-byte untouched', async () => {
+    // The contracts this bridge holds are the ones being preserved. A refresh
+    // that rebuilt it would be the single write capable of losing them.
+    await seedPriorRegistry();
+    await seedMatchingPair();
+    const before = await fsp.readFile(dbPath);
+    const beforeStat = await fsp.stat(dbPath);
+
+    await runTotalFailureSync();
+
+    expect(await fsp.readFile(dbPath)).toEqual(before);
+    const afterStat = await fsp.stat(dbPath);
+    expect(afterStat.size).toBe(beforeStat.size);
+    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+  });
+
+  it('keeps a stamped pair that already failed the check failing, with its stamp untouched', async () => {
+    // Re-stamping here would MANUFACTURE provenance: it would declare that this
+    // metadata describes the database beside it, which is the one thing the
+    // failed check just said is not known. The stamp fields are carried through
+    // verbatim instead — dropping them would leave an unstamped file whose
+    // freshly-moved mtime the write-order rule then accepts.
+    await seedPriorRegistry();
+    await fsp.writeFile(dbPath, 'a database this metadata was never written for');
+    await writeBridgeMeta(groupDir, {
+      version: BRIDGE_SCHEMA_VERSION,
+      generatedAt: PRIOR_META_GENERATED_AT,
+      bridgeSize: 999_999,
+      bridgeMtimeMs: 1_700_000_000_000,
+      missingRepos: [],
+      unreadableRepos: [],
+    });
+    expect(await pairsAfterwards()).toBe(false);
+
+    await runTotalFailureSync();
+
+    const after = await readBridgeMeta(groupDir);
+    expect(after.bridgeSize).toBe(999_999);
+    expect(after.bridgeMtimeMs).toBe(1_700_000_000_000);
+    expect(after.provenanceUnknown).toBe(true);
+    expect(after.unreadableRepos).toEqual(['app/backend']);
+    expect(await pairsAfterwards()).toBe(false);
+  });
+
+  it('keeps an unstamped pair that already failed the check failing, though the rewrite moves meta.json to now', async () => {
+    // The laundering case, and the only shape that exercises the write-order
+    // rule. Before the sync the database is NEWER than the metadata beside it,
+    // which is the inverted write order that rule rejects. The atomic rewrite
+    // then makes `meta.json` the newer file — the exact shape it ACCEPTS — so
+    // without an explicit marker a preserve sync would hand back "verified" for
+    // a pair it just found broken.
+    await seedPriorRegistry();
+    await seedUnstampedPairWithNewerDatabase();
+    expect(await pairsAfterwards()).toBe(false);
+
+    await runTotalFailureSync();
+
+    const dbStat = await fsp.stat(dbPath);
+    const metaStat = await fsp.stat(metaPath);
+    // The evidence the write-order rule reads has genuinely been inverted...
+    expect(metaStat.mtimeMs).toBeGreaterThanOrEqual(dbStat.mtimeMs);
+    const after = await readBridgeMeta(groupDir);
+    // ...no stamp was invented to replace it...
+    expect(after.bridgeSize).toBeUndefined();
+    expect(after.bridgeMtimeMs).toBeUndefined();
+    // ...and the verdict survives in the metadata, which is the only place it
+    // can, because the refresh cannot avoid moving the mtime.
+    expect(after.provenanceUnknown).toBe(true);
+    expect(await pairsAfterwards()).toBe(false);
+
+    const impact = await runImpact();
+    expect(impact).toMatchObject({
+      truncated: true,
+      truncationReason: 'incomplete-sync',
+      riskEpistemic: 'lower-bound',
+    });
+  });
+
+  it('never writes either reader-side field back into meta.json', async () => {
+    // `repoListsUnreadable` and `pairedWithDatabase` are things a READER
+    // computes ABOUT a file; both are documented NEVER PERSISTED. This path is
+    // the first code to read metadata and write it back, so a naive
+    // `writeBridgeMeta(await readBridgeMeta(dir))` persists whichever of them
+    // the read produced. A stale `pairedWithDatabase: true` on disk is actively
+    // poisonous: it tells every future reader the pair was verified.
+    await seedPriorRegistry();
+    await fsp.writeFile(dbPath, 'db');
+    await fsp.writeFile(
+      metaPath,
+      JSON.stringify({
+        version: BRIDGE_SCHEMA_VERSION,
+        generatedAt: PRIOR_META_GENERATED_AT,
+        // Not a list of repo paths, so `readBridgeMeta` answers with
+        // `repoListsUnreadable: true` on the object this path then rewrites.
+        missingRepos: { 'app/backend': true },
+        // A foreign writer, a hand-edit, or an earlier naive round-trip.
+        pairedWithDatabase: true,
+      }),
+    );
+
+    await runTotalFailureSync();
+
+    const raw = JSON.parse(await fsp.readFile(metaPath, 'utf8')) as Record<string, unknown>;
+    expect(raw).not.toHaveProperty('pairedWithDatabase');
+    expect(raw).not.toHaveProperty('repoListsUnreadable');
+    // ...and the unusable list was replaced by this run's real measurement,
+    // rather than being carried forward as garbage.
+    expect(raw.missingRepos).toEqual([]);
+    expect(raw.unreadableRepos).toEqual(['app/backend']);
+  });
+
+  it('completes when there is no bridge.lbug for the metadata to describe', async () => {
+    // `writeBridge` can leave this behind: the old database is renamed aside
+    // and the new one never arrives. The refresh must not stat a file that is
+    // not there, and must not vouch for one either.
+    await seedPriorRegistry();
+    await writeBridgeMeta(groupDir, {
+      version: BRIDGE_SCHEMA_VERSION,
+      generatedAt: PRIOR_META_GENERATED_AT,
+      bridgeSize: 4096,
+      bridgeMtimeMs: 1_700_000_000_000,
+      missingRepos: [],
+      unreadableRepos: [],
+    });
+
+    const result = await runTotalFailureSync();
+
+    expect(result.registryOutcome).toBe('preserved');
+    expect(fs.existsSync(dbPath)).toBe(false);
+    const after = await readBridgeMeta(groupDir);
+    expect(after.provenanceUnknown).toBe(true);
+    // Carried through verbatim: the stamp still records which database this
+    // metadata was written for, which is information, not a claim about what
+    // is on disk now.
+    expect(after.bridgeSize).toBe(4096);
+    expect(after.bridgeMtimeMs).toBe(1_700_000_000_000);
+    expect(after.unreadableRepos).toEqual(['app/backend']);
+
+    // The query that follows answers rather than throwing. With no database
+    // there is nothing to answer FROM, so it names the missing file and sends
+    // the operator to `group sync` — never a confident "nothing depends on
+    // this". (The lower-bound answer is the shape above, where a database IS
+    // present and the marker is what stops it being trusted.)
+    const impact = await runImpact();
+    expect(impact).toMatchObject({ error: expect.stringContaining('No bridge.lbug') });
+  });
+
+  it('does not manufacture metadata for a bridge that has never existed', async () => {
+    // Neither file is on disk, so there is no pair that could disagree with
+    // anything and nothing to keep honest. `readBridgeMeta` already answers
+    // `version: 0` — provenance unknown — for an absent file, and writing a
+    // `version: 0` file that says the same thing only invents state.
+    await seedPriorRegistry();
+
+    await runTotalFailureSync();
+
+    expect(fs.existsSync(metaPath)).toBe(false);
+    expect(fs.existsSync(dbPath)).toBe(false);
+  });
+
+  it('records this run against a database whose metadata is missing entirely', async () => {
+    // The other half of the pair being absent. The database is real and the
+    // metadata is gone — provenance is already unknown, and staying silent
+    // costs the operator the NAMES of the repos this run could not read.
+    await seedPriorRegistry();
+    await fsp.writeFile(dbPath, 'a database with no metadata beside it');
+
+    await runTotalFailureSync();
+
+    const after = await readBridgeMeta(groupDir);
+    expect(after.provenanceUnknown).toBe(true);
+    expect(after.unreadableRepos).toEqual(['app/backend']);
+    expect(await pairsAfterwards()).toBe(false);
+  });
+
+  it('does not launder the pair it already marked on a second preserve run', async () => {
+    // The invariant in its strongest form: no preserve run ever increases the
+    // number of pairs that pass the check. The second run reads metadata that
+    // now carries the marker, and the marker has to survive its own rewrite.
+    await seedPriorRegistry();
+    await seedUnstampedPairWithNewerDatabase();
+
+    await runTotalFailureSync();
+    expect(await pairsAfterwards()).toBe(false);
+
+    await runTotalFailureSync();
+
+    const after = await readBridgeMeta(groupDir);
+    expect(after.provenanceUnknown).toBe(true);
+    expect(await pairsAfterwards()).toBe(false);
+  });
+
+  it('clears the marker on the next successful sync', async () => {
+    // Nothing clears the marker deliberately: a successful `writeBridge`
+    // builds fresh metadata from a literal and simply never sets the field.
+    // That is what keeps a marked bridge from being marked forever.
+    await seedPriorRegistry();
+    await seedUnstampedPairWithNewerDatabase();
+    await runTotalFailureSync();
+    expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBe(true);
+
+    const ok = await runSuccessfulSync();
+
+    expect(ok.registryOutcome).toBe('written');
+    const after = await readBridgeMeta(groupDir);
+    expect(after.provenanceUnknown).toBeUndefined();
+    expect(await pairsAfterwards()).toBe(true);
+  });
+
+  it('control: a successful sync writes a pair that passes the check, unmarked', async () => {
+    // Without this, "the marker is absent after a good sync" could be true
+    // because the marker is absent from everything.
+    const ok = await runSuccessfulSync();
+
+    expect(ok.registryOutcome).toBe('written');
+    const after = await readBridgeMeta(groupDir);
+    expect(after.provenanceUnknown).toBeUndefined();
+    expect(after.unreadableRepos).toEqual([]);
+    expect(await pairsAfterwards()).toBe(true);
   });
 });
