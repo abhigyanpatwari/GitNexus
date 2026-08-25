@@ -836,6 +836,12 @@ const CALLABLE_PREFIX_BOUNDARY_TYPES: ReadonlySet<string> = new Set<string>([
   'anonymous_object_creation_expression', // C#
 ]);
 
+/**
+ * Function-valued object properties use the binding owner in their identity;
+ * shorthand methods already have Method identity and must remain byte-identical.
+ */
+const shouldObjectOwnerQualifyCallable = (label: NodeLabel): boolean => label === 'Function';
+
 const enclosingCallablePrefix = (
   node: SyntaxNode,
   filePath: string,
@@ -903,13 +909,22 @@ const callableOwnQualifiedName = (
   // `ownName === null` branch below carries the position INSTEAD of a name,
   // never in addition to one, so the two spellings cannot stack.
   const ownName = efnResult?.funcName ?? genericFuncName(fnNode) ?? null;
+  let finalLabel = efnResult?.label ?? inferFunctionLabel(fnNode.type);
+  if (provider.labelOverride) {
+    const override = provider.labelOverride(fnNode, finalLabel);
+    if (override !== null) finalLabel = override;
+  }
 
   const prefix = enclosingCallablePrefix(fnNode, filePath, provider);
   const classInfo =
     prefix === undefined
       ? cachedFindEnclosingClassInfo(fnNode, filePath, provider.resolveEnclosingOwner)
       : null;
-  const owner = prefix ?? classInfo?.className;
+  const objectOwner =
+    prefix === undefined && classInfo === null && shouldObjectOwnerQualifyCallable(finalLabel)
+      ? findObjectLiteralBindingInfo(fnNode, filePath, { includeOwnerName: true })?.ownerName
+      : undefined;
+  const owner = prefix ?? classInfo?.className ?? objectOwner;
   const result =
     prefix !== undefined
       ? nestedCallableQualifiedName(prefix, fnNode, ownName ?? 'fn')
@@ -970,8 +985,17 @@ const findEnclosingFunctionId = (
         // to the METHOD, not directly to the class, and a Go receiver method can
         // never itself be nested inside another callable.
         const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
+        const objectOwnerName =
+          nestedPrefix === undefined &&
+          classInfo === null &&
+          shouldObjectOwnerQualifyCallable(finalLabel)
+            ? findObjectLiteralBindingInfo(current, filePath, { includeOwnerName: true })?.ownerName
+            : undefined;
         const ownerName =
-          nestedPrefix ?? classInfo?.className ?? standaloneMethodInfo?.receiverType ?? undefined;
+          nestedPrefix ??
+          classInfo?.className ??
+          standaloneMethodInfo?.receiverType ??
+          objectOwnerName;
         // Lockstep with the other two id-building phases — see
         // `nestedCallableQualifiedName`, which is the shared rule. When a
         // nested prefix exists it IS `ownerName`, so this branch and the
@@ -2382,13 +2406,16 @@ const processFileGroup = (
       // and the merged name then looks workspace-unique to name inference,
       // which resolves reads of it to a node representing both.
       const objectLiteralOwnerInfo =
-        !enclosingClassId && (nodeLabel === 'Method' || nodeLabel === 'Property') && definitionNode
+        !enclosingClassId &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Property') &&
+        definitionNode
           ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
             findObjectLiteralBindingInfo(definitionNode, file.path, {
-              // Only `Property` opts into the qualifier; `Method` ids must stay
-              // byte-identical or every object-literal method in every indexed
-              // repo changes id.
-              includeOwnerName: nodeLabel === 'Property',
+              // Function-valued properties need the owner in their identity or
+              // same-named handlers in sibling objects collapse (#3041).
+              // `Method` stays byte-identical; its existing owner edge is enough.
+              includeOwnerName:
+                shouldObjectOwnerQualifyCallable(nodeLabel) || nodeLabel === 'Property',
             }) ??
             // R3-4: an anonymous literal in return position is owned by the
             // function whose shape it is. Last in the chain so a variable-bound
@@ -2920,7 +2947,7 @@ const processFileGroup = (
           type: memberEdgeType,
           confidence: 1.0,
           reason: objectLiteralOwnerInfo
-            ? 'object literal method belongs to exported object binding'
+            ? 'object literal member belongs to exported object binding'
             : '',
         });
       }

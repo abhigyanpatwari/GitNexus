@@ -568,8 +568,13 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // and the v37/v38 clash it was written for: the next free value above every
 // IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
 // scanned; #3017 is the only other claimant.
+//
+// 72 -> 73 makes function-valued object members owner-qualified (#3041).
+// A warm v72 cache replays the old collapsed Function ids and omits the new
+// Const -> Function HAS_METHOD ownership edges, so this identity correction
+// must invalidate unchanged files rather than waiting for a source edit.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 72;
+const SCHEMA_BUMP = 73;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
