@@ -118,6 +118,12 @@ export const withGroupSyncLock = async <T>(
   operation: () => Promise<T>,
 ): Promise<T> => {
   let handle: IndexLockHandle;
+  // The wrapper times the acquisition itself. `IndexLockTimeoutError` carries
+  // `holder` and `holderKnown` and nothing else — the elapsed wait exists only
+  // inside its inherited message string, so the figure has to be measured here
+  // to be reported without that message. `Date.now()` matches how the primitive
+  // measures its own wait.
+  const acquireStartedAt = Date.now();
   try {
     handle = await acquireIndexLock(getGroupSyncLockDir(groupDir), {
       timeoutMs: GROUP_SYNC_LOCK_TIMEOUT_MS,
@@ -131,10 +137,30 @@ export const withGroupSyncLock = async <T>(
         ),
     });
   } catch (err) {
-    // The inherited timeout message is reused verbatim: it is the only place the
-    // elapsed wait is recorded, and a group-specific wording is a separate change.
+    // The inherited message names "another gitnexus analyze" as the holder —
+    // a cause this detection path cannot establish. Nothing but a group sync
+    // ever locks `<groupDir>/sync-lock` (see the module header), and on the
+    // socket backend the holder is not identifiable at all. Re-word it around
+    // what IS known: which group, which operation, and how long we waited.
     if (err instanceof IndexLockTimeoutError) {
-      throw new GroupSyncLockError('timeout', groupDir, err.message, err);
+      throw new GroupSyncLockError(
+        'timeout',
+        groupDir,
+        `Timed out after ${Date.now() - acquireStartedAt}ms waiting for the sync lock on ` +
+          `group "${path.basename(groupDir)}" (${getGroupSyncLockDir(groupDir)}). ` +
+          // `holderKnown` is false on the socket backend and on the file
+          // backend's malformed/vanished-lock timeouts, where `holder` is a
+          // placeholder (`pid -1`). Presenting that as a real owner would be the
+          // same unestablished claim in a new form.
+          (err.holderKnown
+            ? `Held by pid ${err.holder.pid} on ${err.holder.hostname} ` +
+              `(invocation ${err.holder.invocationId}). `
+            : `The lock stayed held for the whole wait, but this lock backend ` +
+              `cannot identify the holder. `) +
+          `Nothing was written and this group was not synced. ` +
+          `Re-run once the other sync of this group has finished.`,
+        err,
+      );
     }
     throw new GroupSyncLockError(
       'unavailable',

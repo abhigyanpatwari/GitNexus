@@ -24,6 +24,7 @@ import {
   GROUP_SYNC_LOCK_TIMEOUT_MS,
   GroupSyncLockError,
   getGroupSyncLockDir,
+  withGroupSyncLock,
 } from '../../../src/core/group/group-lock.js';
 import { GroupService } from '../../../src/core/group/service.js';
 import { makeGroupToolPort } from '../../unit/group/fixtures.js';
@@ -363,8 +364,9 @@ describe('group sync lock — fails closed', () => {
 
     expect(ran).toBe(false);
     expect(err).toMatchObject({ name: 'GroupSyncLockError', reason: 'timeout' });
-    // The inherited message carries the elapsed wait; it is the only record of it.
-    expect((err as Error).message).toContain('Timed out after 600000ms');
+    // The wording is the subject of the suite below; here it only has to be the
+    // group lock's own message rather than the primitive's raw failure text.
+    expect((err as Error).message).toContain('sync lock on group "timed-out"');
     // The original error is preserved as `cause`, holder metadata intact. Asserted
     // structurally, not with `instanceof`: this case drives a freshly re-evaluated
     // module graph, whose `IndexLockTimeoutError` is a different class object from
@@ -405,6 +407,149 @@ describe('group sync lock — fails closed', () => {
     expect(seen).toHaveLength(1);
     expect(seen[0].timeoutMs).toBe(GROUP_SYNC_LOCK_TIMEOUT_MS);
     expect(Number.isFinite(seen[0].timeoutMs as number)).toBe(true);
+  }, 60_000);
+});
+
+describe('group sync lock — what the timeout says happened', () => {
+  /**
+   * Drive `withGroupSyncLock` against an `acquireIndexLock` that waits `waitMs`
+   * and then times out exactly as the primitive does, and hand back the error
+   * the wrapper produced.
+   *
+   * `reportedMs` is the figure baked into the INHERITED message and is
+   * deliberately nowhere near the real wait: a wrapper that re-uses the
+   * primitive's text reports that number, one that times the acquisition itself
+   * reports `waitMs`. `IndexLockTimeoutError` carries no elapsed field, so the
+   * two are the only places the figure can come from.
+   */
+  const timedOutAcquire = async (opts: {
+    groupDir: string;
+    waitMs: number;
+    reportedMs: number;
+    holderKnown: boolean;
+  }): Promise<Error | null> => {
+    // `holderKnown: false` mirrors `unknownHolder()` in index-lock.ts: the
+    // socket backend exposes no owner metadata, so the record is a placeholder
+    // (`pid -1`) that no message may present as a real holder.
+    const holder: LockRecord = {
+      v: 1,
+      pid: opts.holderKnown ? 4242 : -1,
+      hostname: os.hostname(),
+      startTime: null,
+      token: opts.holderKnown ? 't' : '',
+      invocationId: opts.holderKnown ? 'other-sync' : '<unreadable>',
+      acquiredAt: opts.holderKnown ? new Date().toISOString() : '',
+    };
+
+    vi.resetModules();
+    vi.doMock(indexLockSpecifier, async () => {
+      const actual =
+        await vi.importActual<typeof import('../../../src/storage/index-lock.js')>(
+          indexLockSpecifier,
+        );
+      return {
+        ...actual,
+        acquireIndexLock: async () => {
+          await sleep(opts.waitMs);
+          throw new actual.IndexLockTimeoutError(holder, opts.reportedMs, opts.holderKnown);
+        },
+      };
+    });
+    const fresh = await import(groupLockSpecifier);
+
+    return fresh
+      .withGroupSyncLock(opts.groupDir, async () => undefined)
+      .then(
+        () => null,
+        (e: Error) => e,
+      );
+  };
+
+  const waitedMsIn = (message: string): number =>
+    Number(/Timed out after (\d+)ms/.exec(message)?.[1] ?? NaN);
+
+  it('names the group, the operation, and the wait it measured itself', async () => {
+    const groupDir = makeGroup('slow-group');
+    const err = await timedOutAcquire({
+      groupDir,
+      waitMs: 120,
+      reportedMs: 600_000,
+      holderKnown: true,
+    });
+
+    expect(err).toMatchObject({ name: 'GroupSyncLockError', reason: 'timeout' });
+    const msg = String(err?.message);
+    expect(msg).toContain('sync lock on group "slow-group"');
+    expect(msg).toContain(getGroupSyncLockDir(groupDir));
+    expect(msg).toContain('was not synced');
+
+    // The elapsed wait is this wrapper's own measurement. The primitive
+    // announced 600000ms; the acquisition actually took ~120ms, and only a
+    // wrapper that timed it can say so. Half the sleep is the floor, the way
+    // the exclusion case above bounds its own wait — a timer cannot fire at
+    // half its delay on any host.
+    const waited = waitedMsIn(msg);
+    expect(Number.isFinite(waited)).toBe(true);
+    expect(waited).toBeGreaterThanOrEqual(60);
+    expect(msg).not.toContain('600000');
+
+    // The primitive's error is still the cause, so nothing is lost by rewording.
+    expect((err as { cause?: unknown }).cause).toMatchObject({
+      name: 'IndexLockTimeoutError',
+      holder: { invocationId: 'other-sync' },
+    });
+  }, 60_000);
+
+  it('does not blame an analyze, and does not name a holder the backend cannot identify', async () => {
+    // The inherited message says "another gitnexus analyze" holds the lock —
+    // a cause this path cannot establish (nothing but a group sync ever locks
+    // `<groupDir>/sync-lock`), and on the socket backend it cannot name the
+    // holder at all: `holderKnown` is false and `holder.pid` is the placeholder
+    // -1. Fail-closed made both claims user-visible for the first time.
+    const groupDir = makeGroup('anonymous-holder');
+    const err = await timedOutAcquire({
+      groupDir,
+      waitMs: 0,
+      reportedMs: 600_000,
+      holderKnown: false,
+    });
+
+    const msg = String(err?.message);
+    expect(msg).toContain('sync lock on group "anonymous-holder"');
+    expect(msg).not.toMatch(/analyze/i);
+    // No pid is quoted at all — not the placeholder, not any other. Matched on
+    // the shape the message would use to name one, so a random temp-directory
+    // segment cannot satisfy it by accident.
+    expect(msg).not.toMatch(/pid\s+-?\d+/i);
+    expect(msg).toContain('cannot identify the holder');
+  }, 60_000);
+
+  it('names the holder when the backend does identify one', async () => {
+    // The other half of the branch: on the file backend the record is real, and
+    // suppressing it would throw away the one thing that lets an operator find
+    // the process to wait for.
+    const groupDir = makeGroup('identified-holder');
+    const err = await timedOutAcquire({
+      groupDir,
+      waitMs: 0,
+      reportedMs: 600_000,
+      holderKnown: true,
+    });
+
+    const msg = String(err?.message);
+    expect(msg).toMatch(/pid 4242/);
+    expect(msg).toContain(os.hostname());
+    expect(msg).toContain('other-sync');
+    expect(msg).not.toMatch(/analyze/i);
+    expect(msg).not.toContain('cannot identify the holder');
+  }, 60_000);
+
+  it('control: an acquisition that succeeds raises nothing', async () => {
+    // No mock: the real lock, uncontended. Without this, every assertion above
+    // could be satisfied by a wrapper that failed on every acquisition.
+    const groupDir = makeGroup('uncontended-message');
+
+    await expect(withGroupSyncLock(groupDir, async () => 'ran')).resolves.toBe('ran');
   }, 60_000);
 });
 
