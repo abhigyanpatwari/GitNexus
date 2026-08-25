@@ -450,6 +450,25 @@ describe('JS/TS HTTP consumer resolution', () => {
     expect(consumers(detections)).toEqual([]);
   });
 
+  it('keeps an all-numeric path that is written as a path', () => {
+    const detections = scanRepo(
+      {
+        'src/lib/axios.config.ts': AXIOS_CONFIG,
+        'src/api/legacy.api.ts': `
+          import api from '../lib/axios.config';
+          export const load = () => api.get('/123');
+        `,
+      },
+      'src/api/legacy.api.ts',
+    );
+
+    // The leading slash is what separates a route from a folded timeout; the
+    // consumer normalizer reads the segment as {param} either way.
+    expect(consumers(detections)).toContainEqual(
+      expect.objectContaining({ method: 'GET', path: '/123' }),
+    );
+  });
+
   it('refuses a path whose leading term never resolved', () => {
     const detections = scanRepo(
       {

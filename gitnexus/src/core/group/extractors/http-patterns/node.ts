@@ -520,8 +520,12 @@ function looksLikeHttpPath(path: string): boolean {
   const shape = path.replace(/\$\{[^}]+\}/g, '{param}');
   if (/\s/.test(shape)) return false;
   if (shape.startsWith('{param}')) return false;
-  const bare = shape.replace(/^\//, '');
-  return bare === '' || !/^\d+$/.test(bare);
+  // An all-digit string is a path only when it is written as one. A leading
+  // slash is that evidence: `client.get('/123')` is a route whose segment the
+  // consumer normalizer reads as `{param}`, while a bare `"5000"` folded out of
+  // `CONFIG.TIMEOUT` is a timeout that would match every one-segment provider.
+  if (!shape.startsWith('/')) return !/^\d+$/.test(shape);
+  return true;
 }
 
 /**
