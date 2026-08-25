@@ -88,6 +88,35 @@ vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
   };
 });
 
+/**
+ * Armed by the concurrent-sync suite at the bottom of this file, `null`
+ * everywhere else. It runs INSIDE the real group sync lock — after this sync
+ * acquired it, before its persist section starts — which is the one window in
+ * which another sync's write can land: extraction runs OUTSIDE the lock, so a
+ * sync that queued behind a winner is holding stats it took before the winner
+ * ever wrote. Nothing in-process can reach that window otherwise, and a rare
+ * interleave is not a test.
+ */
+let whileWaitingForTheGroupLock: (() => Promise<void>) | null = null;
+
+/**
+ * A pass-through in every test that does not arm the hook: the REAL lock is
+ * acquired, on the real `<groupDir>/sync-lock`, exactly as production does.
+ */
+vi.mock('../../../src/core/group/group-lock.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/core/group/group-lock.js')>();
+  return {
+    ...actual,
+    withGroupSyncLock: <T>(groupDir: string, operation: () => Promise<T>): Promise<T> =>
+      actual.withGroupSyncLock(groupDir, async () => {
+        const hook = whileWaitingForTheGroupLock;
+        whileWaitingForTheGroupLock = null;
+        if (hook) await hook();
+        return operation();
+      }),
+  };
+});
+
 const { syncGroup } = await import('../../../src/core/group/sync.js');
 const { runGroupImpact } = await import('../../../src/core/group/cross-impact.js');
 const { bridgeMetaMatchesFile, closeAllCachedBridges, readBridgeMeta, writeBridgeMeta } =
@@ -879,5 +908,181 @@ describe('the warning after a failed bridge write', () => {
 
     expect(result.registryOutcome).toBe('written');
     expect(bridgeWarning(cap)).toBeUndefined();
+  });
+});
+
+/**
+ * R9, the half a lock does not fix: serializing is not ordering.
+ *
+ * Both syncs run EXTRACTION outside the lock and only the persist section
+ * inside it, so a total-failure sync that queues behind a healthy one arrives at
+ * the critical section holding a snapshot of a group it read minutes ago. The
+ * preserve path then re-reads `contracts.json` as `prior` — and the file it
+ * finds is the winner's, written while this run waited — and stamps its own
+ * all-unreadable lists over it. That is not a rare interleave: it is what
+ * happens every time the total-failure sync loses the race, and it downgrades a
+ * registry that describes repos that were readable seconds earlier.
+ *
+ * The guard is a compare-and-swap on the prior file's own identity: stat it
+ * BEFORE acquiring, re-stat AFTER, and skip the diagnostic refresh when the two
+ * differ. Keyed on the file, not on `generatedAt`: that field is stamped when
+ * the registry object is built (before the lock), so a winner that waited writes
+ * one OLDER than the loser's start, and the preserve path carries it forward
+ * verbatim by design — after any preserve sync it does not date the write at
+ * all. File identity also needs no cross-process clock agreement and has no
+ * undefined case for an absent or unparseable timestamp.
+ */
+describe('a total-failure sync that reaches the group lock second', () => {
+  let groupDir: string;
+  let contractsPath: string;
+  let dbPath: string;
+  let metaPath: string;
+
+  /** What the sync that won the lock wrote while this one was still waiting. */
+  const WINNER_REGISTRY = {
+    version: 1,
+    generatedAt: '2026-02-02T00:00:00.000Z',
+    repoSnapshots: {},
+    missingRepos: [],
+    unreadableRepos: [],
+    contracts: [{ contractId: 'http::GET::/api/users' }, { contractId: 'http::POST::/api/users' }],
+    crossLinks: [{ contractId: 'http::GET::/api/users' }],
+  };
+
+  beforeEach(() => {
+    initLbugMock.mockReset();
+    readRegistryMock.mockReset();
+    readRegistryMock.mockResolvedValue(REGISTRY);
+    whileWaitingForTheGroupLock = null;
+    groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-second-'));
+    contractsPath = path.join(groupDir, 'contracts.json');
+    dbPath = path.join(groupDir, 'bridge.lbug');
+    metaPath = path.join(groupDir, 'meta.json');
+  });
+
+  afterEach(async () => {
+    whileWaitingForTheGroupLock = null;
+    await closeAllCachedBridges();
+    fs.rmSync(groupDir, { recursive: true, force: true });
+  });
+
+  const runTotalFailureSync = () => {
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+    return syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+  };
+
+  const seedPriorRegistry = (): void =>
+    fs.writeFileSync(contractsPath, JSON.stringify(PRIOR_REGISTRY));
+
+  /** The winner's write, landing while this sync waits on the lock. */
+  const winnerWritesTheRegistry = async (): Promise<void> => {
+    fs.writeFileSync(contractsPath, JSON.stringify(WINNER_REGISTRY));
+  };
+
+  const readOnDisk = (): Record<string, unknown> =>
+    JSON.parse(fs.readFileSync(contractsPath, 'utf8')) as Record<string, unknown>;
+
+  it('leaves the registry the winning sync wrote exactly as it found it, and reports preserved', async () => {
+    seedPriorRegistry();
+    whileWaitingForTheGroupLock = winnerWritesTheRegistry;
+
+    const result = await runTotalFailureSync();
+
+    // Byte-identical to what the winner wrote. NOT the winner's contracts with
+    // this run's all-unreadable list stamped over them, which is what re-reading
+    // `prior` inside the lock produces — a registry that says every repo in the
+    // group is unreadable, written on top of a sync that had just read them.
+    expect(fs.readFileSync(contractsPath, 'utf8')).toBe(JSON.stringify(WINNER_REGISTRY));
+    expect(readOnDisk().unreadableRepos).toEqual([]);
+    // The existing outcome, not a new one: nothing was written and a prior
+    // registry was kept, which is exactly what `preserved` already means. A new
+    // value would fall through `cli/group.ts`'s outcome chain, which has no
+    // fallback branch, and falsify the guard asserting the sync tool's
+    // description names every reachable outcome.
+    expect(result.registryOutcome).toBe('preserved');
+    // ...and the caller still learns what THIS run could not read.
+    expect(result.unreadableRepos).toEqual(['app/backend']);
+  });
+
+  it('treats a registry that was absent before the lock and present after as changed', async () => {
+    // No prior file at all when this sync stat'd: on its own reading it was
+    // heading for `no-prior-registry` (write nothing), and then found a registry
+    // to "refresh" — one belonging to a sync it never overlapped in extraction.
+    whileWaitingForTheGroupLock = winnerWritesTheRegistry;
+
+    const result = await runTotalFailureSync();
+
+    expect(fs.readFileSync(contractsPath, 'utf8')).toBe(JSON.stringify(WINNER_REGISTRY));
+    expect(readOnDisk().unreadableRepos).toEqual([]);
+    expect(result.registryOutcome).toBe('preserved');
+  });
+
+  it('does not stamp this run into the bridge metadata beside the registry it skipped', async () => {
+    // `meta.json` is where `runGroupImpact` reads completeness from, so writing
+    // this run's lists there is the same downgrade one file over: it would
+    // report repos as unaccounted for that the winning sync had just accounted
+    // for. The refresh describes THIS run, and on this path this run is the
+    // stale one — and `refreshPreservedBridgeMeta` moves meta.json's mtime and
+    // can mark a pair `provenanceUnknown`, so it can only degrade a pair the
+    // winner left consistent. Nothing is written, which is what makes
+    // `preserved` an honest answer here.
+    fs.writeFileSync(dbPath, 'the winning sync database');
+    const dbStat = fs.statSync(dbPath);
+    await writeBridgeMeta(groupDir, {
+      version: BRIDGE_SCHEMA_VERSION,
+      generatedAt: '2026-02-02T00:00:00.000Z',
+      bridgeSize: dbStat.size,
+      bridgeMtimeMs: dbStat.mtimeMs,
+      missingRepos: [],
+      unreadableRepos: [],
+    });
+    const metaBefore = fs.readFileSync(metaPath, 'utf8');
+    const metaStatBefore = fs.statSync(metaPath);
+    seedPriorRegistry();
+    whileWaitingForTheGroupLock = winnerWritesTheRegistry;
+
+    await runTotalFailureSync();
+
+    expect(fs.readFileSync(metaPath, 'utf8')).toBe(metaBefore);
+    expect(fs.statSync(metaPath).mtimeMs).toBe(metaStatBefore.mtimeMs);
+    const meta = await readBridgeMeta(groupDir);
+    expect(meta.unreadableRepos).toEqual([]);
+    expect(meta.provenanceUnknown).toBeUndefined();
+  });
+
+  it('refreshes as usual when it is the sync that got to the lock first', async () => {
+    // The same interleaving in the other order: the other sync is still
+    // extracting and has written nothing, so this run's stats match across the
+    // acquisition and the diagnostic refresh — the entire point of the preserve
+    // path — must still happen. A guard that fired on "a second sync exists"
+    // rather than on "the file changed" would freeze the diagnostics of every
+    // contended group.
+    seedPriorRegistry();
+    let otherSyncStillExtracting = false;
+    whileWaitingForTheGroupLock = async () => {
+      otherSyncStillExtracting = true;
+    };
+
+    const result = await runTotalFailureSync();
+
+    expect(otherSyncStillExtracting).toBe(true);
+    expect(result.registryOutcome).toBe('preserved');
+    const onDisk = readOnDisk();
+    expect(onDisk.contracts).toEqual(PRIOR_REGISTRY.contracts);
+    expect(onDisk.unreadableRepos).toEqual(['app/backend']);
+  });
+
+  it('control: an uncontended sync sees identical stats and refreshes as usual', async () => {
+    // Nothing armed at all, so the compare-and-swap runs over a file no one
+    // else touched. Without this, every assertion above could be satisfied by a
+    // guard that skipped the refresh on every run.
+    seedPriorRegistry();
+
+    const result = await runTotalFailureSync();
+
+    expect(result.registryOutcome).toBe('preserved');
+    const onDisk = readOnDisk();
+    expect(onDisk.contracts).toEqual(PRIOR_REGISTRY.contracts);
+    expect(onDisk.unreadableRepos).toEqual(['app/backend']);
   });
 });

@@ -133,6 +133,51 @@ function dedupeCrossLinks(links: CrossLink[]): CrossLink[] {
   return out;
 }
 
+/**
+ * Identity of `contracts.json` at one instant — or its recorded ABSENCE, which
+ * is a state of its own: a registry that did not exist before the lock and does
+ * exist inside it changed just as decisively as one whose bytes moved.
+ *
+ * Deliberately NOT `generatedAt`. That field is stamped when the registry object
+ * is built, before the lock is acquired, so a sync that waited writes a
+ * `generatedAt` older than the start of the sync queued behind it; and the
+ * preserve path carries it forward verbatim by design — it dates the contracts,
+ * not the write — so after any preserve sync it does not date the write at all,
+ * which is exactly the pairing this comparison is for. File identity also needs
+ * no clock agreement between processes and has no undefined case for an absent,
+ * unparseable, or future-dated timestamp.
+ */
+interface RegistryFileIdentity {
+  present: boolean;
+  size: number;
+  mtimeMs: number;
+  /**
+   * `writeContractRegistry` publishes through `writeFileAtomic` (write-then-
+   * rename), so a replacement arrives as a different inode even when its size
+   * and mtime happen to match. Where the platform does not supply a meaningful
+   * inode the field is simply equal on both sides and the other two decide.
+   */
+  ino: number;
+}
+
+const ABSENT_REGISTRY: RegistryFileIdentity = { present: false, size: 0, mtimeMs: 0, ino: 0 };
+
+/**
+ * Stat `contracts.json` (the name storage.ts writes and service.ts reads, both
+ * as a literal); any stat failure reads as "no identity to compare".
+ */
+const readRegistryIdentity = async (groupDir: string): Promise<RegistryFileIdentity> => {
+  try {
+    const st = await fs.stat(path.join(groupDir, 'contracts.json'));
+    return { present: true, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino };
+  } catch {
+    return ABSENT_REGISTRY;
+  }
+};
+
+const sameRegistryFile = (a: RegistryFileIdentity, b: RegistryFileIdentity): boolean =>
+  a.present === b.present && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ino === b.ino;
+
 /** A batch of manifest links whose referenced in-group repos fit one resident window. */
 export interface ManifestWindow {
   links: GroupManifestLink[];
@@ -557,9 +602,59 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   //
   // A non-persisting run (no `groupDir`, or `skipWrite`) writes nothing, so it
   // takes no lock and cannot be blocked by one.
+  //
+  // Stat'd HERE, outside the lock, on purpose: `withGroupSyncLock` is the call
+  // that waits, so an identity read after it has already absorbed whatever the
+  // sync ahead of us wrote. This is the "before" half of the compare-and-swap
+  // the total-failure branch performs below.
+  const registryIdentityBeforeLock =
+    groupDir && persisting ? await readRegistryIdentity(groupDir) : ABSENT_REGISTRY;
+
   if (groupDir && persisting) {
     await withGroupSyncLock(groupDir, async () => {
       if (everyRepoFailed) {
+        // R9, the half the lock does not fix: serializing is not ordering.
+        // EXTRACTION ran outside this lock, so a sync that queued behind another
+        // one arrives here holding a picture of the group from minutes ago —
+        // while `prior`, re-read below, is whatever the sync ahead of it just
+        // wrote. Stamping this run's all-unreadable lists onto that file
+        // downgrades a registry describing repos that were readable seconds
+        // earlier, and it happens EVERY time the total-failure sync loses the
+        // race, not on some rare interleave.
+        //
+        // So compare the prior file's own identity across the acquisition and,
+        // when it moved, keep what is there and write nothing. Keyed on the file
+        // rather than on `generatedAt` — see {@link RegistryFileIdentity} for
+        // why that field cannot answer this question.
+        //
+        // The outcome is the existing `preserved`: nothing was written and a
+        // prior registry was kept, which is precisely what the word already
+        // means. A new `RegistryWriteOutcome` would fall through
+        // `cli/group.ts`'s outcome chain, which has no fallback branch.
+        //
+        // `refreshPreservedBridgeMeta` is skipped along with the write, and
+        // deliberately: it stamps THIS run's diagnostics into `meta.json`, and
+        // on this path this run is the stale one. Writing them would report as
+        // unaccounted-for the very repos the winning sync had just accounted
+        // for — the same downgrade, one file over — and the refresh also moves
+        // meta.json's mtime and can mark the pair `provenanceUnknown`, so it can
+        // only degrade a pair the winner left consistent.
+        const registryIdentityAfterLock = await readRegistryIdentity(groupDir);
+        if (!sameRegistryFile(registryIdentityBeforeLock, registryIdentityAfterLock)) {
+          registryOutcome = 'preserved';
+          logger.warn(
+            { unreadableRepos, missingRepos },
+            '⚠️ No repo in this group could be read, and another sync replaced contracts.json ' +
+              'while this one waited for the group lock. Kept that file exactly as it is and ' +
+              "wrote nothing: this run's unreadable/missing repo lists were NOT recorded, " +
+              'because they describe a group state older than the file on disk.',
+          );
+          // Everything after this point in the locked section belongs to the
+          // `!everyRepoFailed` branch, so returning skips nothing else. The lock
+          // is released in `withGroupSyncLock`'s `finally` either way.
+          return;
+        }
+
         // A targeted skip, not a total one. Refusing to write at all kept the good
         // contracts but also threw away the diagnostic describing the run that just
         // happened: `group status` then read the PREVIOUS sync's file, found no
