@@ -1609,7 +1609,7 @@ export const insertNodeToLbug = async (
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:Const {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, convexEndpointFactory: ${formatCypherValue(properties.convexEndpointFactory ?? '')}})`;
+      query = `CREATE (n:Const {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, convexEndpointFactory: ${formatCypherValue(properties.convexEndpointFactory ?? '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
@@ -1704,7 +1704,7 @@ export const batchInsertNodesToLbug = async (
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:Const {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.convexEndpointFactory = ${formatCypherValue(properties.convexEndpointFactory ?? '')}`;
+          query = `MERGE (n:Const {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.convexEndpointFactory = ${formatCypherValue(properties.convexEndpointFactory ?? '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`

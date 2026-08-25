@@ -56,11 +56,12 @@ describe('Convex endpoint metadata persistence contract', () => {
 
   it('keeps the Const schema and COPY column list aligned', async () => {
     const { getCopyQuery } = await import('../../src/core/lbug/lbug-adapter.js');
+    const copyQuery = getCopyQuery('Const', '/tmp/const.csv');
 
     expect(CONST_SCHEMA).toContain('convexEndpointFactory STRING');
-    expect(getCopyQuery('Const', '/tmp/const.csv')).toContain(
-      'content, description, convexEndpointFactory',
-    );
+    expect(CONST_SCHEMA).not.toContain('isExported BOOLEAN');
+    expect(copyQuery).toContain('content, description, convexEndpointFactory');
+    expect(copyQuery).not.toContain('isExported');
   });
 
   it('persists the property through single-node CREATE', async () => {
@@ -72,9 +73,9 @@ describe('Convex endpoint metadata persistence contract', () => {
       true,
     );
 
-    expect(queries.find((query) => query.startsWith('CREATE (n:Const'))).toContain(
-      "convexEndpointFactory: 'query'",
-    );
+    const createQuery = queries.find((query) => query.startsWith('CREATE (n:Const'));
+    expect(createQuery).toContain("convexEndpointFactory: 'query'");
+    expect(createQuery).not.toContain('isExported');
   });
 
   it('persists the property through incremental MERGE', async () => {
@@ -86,8 +87,8 @@ describe('Convex endpoint metadata persistence contract', () => {
       batchInsertNodesToLbug([{ label: 'Const', properties: endpoint }], '/tmp/convex-merge/lbug'),
     ).resolves.toEqual({ inserted: 1, failed: 0 });
 
-    expect(queries.find((query) => query.startsWith('MERGE (n:Const'))).toContain(
-      "n.convexEndpointFactory = 'query'",
-    );
+    const mergeQuery = queries.find((query) => query.startsWith('MERGE (n:Const'));
+    expect(mergeQuery).toContain("n.convexEndpointFactory = 'query'");
+    expect(mergeQuery).not.toContain('isExported');
   });
 });
