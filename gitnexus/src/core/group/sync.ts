@@ -334,7 +334,18 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           // Every enabled extractor for this repo succeeded — commit its
           // contracts. Reached only on the non-throwing path.
-          autoContracts.push(...repoContracts);
+          //
+          // Appended one at a time rather than spread. `push(...repoContracts)`
+          // passes every staged contract as a separate ARGUMENT, and the engine
+          // caps how many arguments one call may take — a cap set by the host's
+          // available stack, so it is a different number on every machine.
+          // Before staging, this line carried a single extractor's output; the
+          // staging above makes it carry the whole repo's, which is enough for
+          // a large repo to raise `RangeError: Maximum call stack size exceeded`
+          // here. The throw lands in the catch below, so a repo whose contracts
+          // all extracted cleanly gets reported as one whose index could not be
+          // read. The loop bounds the append by memory instead.
+          for (const contract of repoContracts) autoContracts.push(contract);
         } catch (err) {
           // This spans initLbug plus all contract extraction for the repo. The
           // error used to be discarded entirely, so the only trace of (say) a
