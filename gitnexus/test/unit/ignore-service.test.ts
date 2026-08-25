@@ -204,8 +204,8 @@ describe('shouldIgnorePath', () => {
       expect(shouldIgnorePath('keep-ui/public/monaco-workers/125.js')).toBe(true);
     });
 
-    it('ignores TypeScript declaration files', () => {
-      expect(shouldIgnorePath('types/index.d.ts')).toBe(true);
+    it('keeps tracked TypeScript declaration files discoverable', () => {
+      expect(shouldIgnorePath('types/index.d.ts')).toBe(false);
     });
 
     it('ignores Laravel compiled Blade view cache files', () => {
@@ -226,6 +226,9 @@ describe('shouldIgnorePath', () => {
     it.each([
       'src/index.ts',
       'src/components/Button.tsx',
+      'apps/client/src/shared/env/getAppEnv.ts',
+      'packages/ai/src/generated/bundle.ts',
+      'apps/client/src/vite-env.d.ts',
       'lib/utils.py',
       'cmd/server/main.go',
       'src/main.rs',
@@ -238,6 +241,13 @@ describe('shouldIgnorePath', () => {
     ])('does not ignore source file %s', (filePath) => {
       expect(shouldIgnorePath(filePath)).toBe(false);
     });
+
+    it.each(['env/lib/python3.12/site-packages/pkg/module.py', 'generated/client.ts'])(
+      'prunes ambiguous artifact directories only at the repository root: %s',
+      (filePath) => {
+        expect(shouldIgnorePath(filePath)).toBe(true);
+      },
+    );
   });
 });
 
@@ -255,6 +265,8 @@ describe('isHardcodedIgnoredDirectory', () => {
     expect(isHardcodedIgnoredDirectory('lib')).toBe(false);
     expect(isHardcodedIgnoredDirectory('app')).toBe(false);
     expect(isHardcodedIgnoredDirectory('local')).toBe(false);
+    expect(isHardcodedIgnoredDirectory('env')).toBe(false);
+    expect(isHardcodedIgnoredDirectory('generated')).toBe(false);
   });
 });
 

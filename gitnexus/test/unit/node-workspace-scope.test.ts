@@ -90,6 +90,22 @@ describe('workspace boundary', () => {
     expect(packages?.byName.has('@repo/web')).toBe(true);
   });
 
+  it('prunes root artifact workspaces while keeping nested source directories', async () => {
+    const root = repo({
+      'package.json': JSON.stringify({
+        name: 'root',
+        workspaces: ['generated/*', 'packages/*/generated'],
+      }),
+      'generated/output/package.json': pkg('@repo/root-artifact'),
+      'packages/api/generated/package.json': pkg('@repo/generated-source'),
+    });
+
+    const packages = await loadNodeWorkspacePackages(root);
+
+    expect(packages?.byName.has('@repo/root-artifact')).toBe(false);
+    expect(packages?.byName.has('@repo/generated-source')).toBe(true);
+  });
+
   it('honours a `!` exclusion', async () => {
     const root = repo({
       'pnpm-workspace.yaml': 'packages:\n  - "packages/*"\n  - "!packages/internal"\n',

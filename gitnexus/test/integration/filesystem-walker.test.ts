@@ -187,6 +187,67 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('ambiguous source-directory names (#3039)', () => {
+    let sourceDir: string;
+
+    beforeAll(async () => {
+      sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-source-names-'));
+      await fs.mkdir(path.join(sourceDir, 'apps', 'client', 'src', 'shared', 'env'), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(sourceDir, 'packages', 'ai', 'src', 'generated'), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(sourceDir, 'build-cache', 'generated'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'env', 'lib', 'python3.12', 'site-packages', 'pkg'), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(sourceDir, 'generated'), { recursive: true });
+
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'shared', 'env', 'getAppEnv.ts'),
+        'export const getAppEnv = () => "test";\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'packages', 'ai', 'src', 'generated', 'bundle.ts'),
+        'export const bundled = true;\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'vite-env.d.ts'),
+        'declare const APP_ENV: string;\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'build-cache', 'generated', 'ignored.ts'),
+        'export const ignored = true;\n',
+      );
+      await fs.writeFile(path.join(sourceDir, '.gitignore'), 'build-cache/generated/\n');
+      await fs.writeFile(
+        path.join(sourceDir, 'env', 'lib', 'python3.12', 'site-packages', 'pkg', 'module.py'),
+        'VALUE = 1\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'generated', 'client.ts'),
+        'export const generatedClient = true;\n',
+      );
+    });
+
+    afterAll(async () => {
+      await fs.rm(sourceDir, { recursive: true, force: true });
+    });
+
+    it('discovers nested env/generated and .d.ts source while pruning root artifacts', async () => {
+      const files = await walkRepositoryPaths(sourceDir);
+      const paths = files.map((file) => file.path);
+
+      expect(paths).toContain('apps/client/src/shared/env/getAppEnv.ts');
+      expect(paths).toContain('packages/ai/src/generated/bundle.ts');
+      expect(paths).toContain('apps/client/src/vite-env.d.ts');
+      expect(paths).not.toContain('build-cache/generated/ignored.ts');
+      expect(paths).not.toContain('env/lib/python3.12/site-packages/pkg/module.py');
+      expect(paths).not.toContain('generated/client.ts');
+    });
+  });
+
   describe('.gitnexusignore support', () => {
     let nexusignoreDir: string;
 
