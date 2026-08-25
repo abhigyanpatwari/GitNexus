@@ -27,7 +27,7 @@
   "counts": {
     "files_one": "{{count}} файл",
     "files_few": "{{count}} файла",
-    "files_many": "{{count} файлов",
+    "files_many": "{{count}} файлов",
     "files_other": "{{count}} файлов",
     "nodes_one": "{{count}} узел",
     "nodes_few": "{{count}} узла",
