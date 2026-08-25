@@ -351,6 +351,24 @@ describe('auto-sync', () => {
     await expect(fs.access(target)).rejects.toThrow();
   });
 
+  it('gives concurrent partial clone quarantines unique destinations', async () => {
+    const quarantineRoot = path.join(gitnexusHome, 'watch', 'quarantine');
+    const first = path.join(tempDir, 'one', 'partial-repo');
+    const second = path.join(tempDir, 'two', 'partial-repo');
+    await Promise.all([fs.mkdir(first, { recursive: true }), fs.mkdir(second, { recursive: true })]);
+
+    const [firstDestination, secondDestination] = await Promise.all([
+      quarantineAutoSyncPartial(first, quarantineRoot),
+      quarantineAutoSyncPartial(second, quarantineRoot),
+    ]);
+
+    expect(firstDestination).not.toBe(secondDestination);
+    await expect(fs.access(firstDestination)).resolves.toBeUndefined();
+    await expect(fs.access(secondDestination)).resolves.toBeUndefined();
+    await expect(fs.access(first)).rejects.toThrow();
+    await expect(fs.access(second)).rejects.toThrow();
+  });
+
   it('rejects group-writable configured clone roots', async () => {
     if (process.platform === 'win32') return;
     const root = path.join(tempDir, 'group-writable-repos');
@@ -388,10 +406,17 @@ describe('auto-sync', () => {
 
   it('rejects unsafe auto-sync branch names', () => {
     expect(() => validateAutoSyncBranchName('feature/good-branch')).not.toThrow();
+    expect(() => validateAutoSyncBranchName('foo./bar')).not.toThrow();
     expect(() => validateAutoSyncBranchName('-upload-pack=evil')).toThrow('must not start');
     expect(() => validateAutoSyncBranchName('feature bad')).toThrow('whitespace');
     expect(() => validateAutoSyncBranchName('feature..bad')).toThrow('must not contain ".."');
     expect(() => validateAutoSyncBranchName('bad:ref')).toThrow('not allowed');
+    expect(() => validateAutoSyncBranchName('feature.')).toThrow('must not end');
+    expect(() => validateAutoSyncBranchName('feature/')).toThrow('must not end');
+    expect(() => validateAutoSyncBranchName('feature//branch')).toThrow('consecutive');
+    expect(() => validateAutoSyncBranchName('feature@{x')).toThrow('must not contain "@{"');
+    expect(() => validateAutoSyncBranchName('.hidden')).toThrow('hidden');
+    expect(() => validateAutoSyncBranchName('foo/bar.lock')).toThrow('hidden or .lock');
   });
 
   it('extracts safe repository names from remote URLs', () => {
@@ -411,6 +436,7 @@ describe('auto-sync', () => {
   });
 
   it('allows only github, gitlab, and gitee SSH SCP remote URLs', () => {
+    expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/repo')).not.toThrow();
     expect(() => validateAutoSyncRemoteUrl('git@github.com:im-fan/multica.git')).not.toThrow();
     expect(() => validateAutoSyncRemoteUrl('git@gitlab.com:group/subgroup/repo.git')).not.toThrow();
     expect(() =>

@@ -65,6 +65,15 @@ describe('file lock', () => {
     const lockPath = await tempLockPath();
     await acquireFileLock(lockPath, { pid: 111, processStartTime: 'old-start' });
 
+    await expect(
+      acquireFileLock(lockPath, {
+        pid: 222,
+        processStartTime: 'next-start',
+        isProcessAlive: () => true,
+        readProcessStartTime: () => 'old-start',
+      }),
+    ).rejects.toBeInstanceOf(FileLockBusyError);
+
     const nextRelease = await acquireFileLock(lockPath, {
       pid: 222,
       processStartTime: 'next-start',
@@ -81,6 +90,23 @@ describe('file lock', () => {
 
     await expect(acquireFileLock(lockPath)).rejects.toBeInstanceOf(FileLockBusyError);
     await expect(fs.access(lockPath)).resolves.toBeUndefined();
+  });
+
+  it('recovers when a stale reclaim guard was left by a crashed contender', async () => {
+    const lockPath = await tempLockPath();
+    await acquireFileLock(lockPath, { pid: 999, processStartTime: 'abandoned' });
+    await acquireFileLock(`${lockPath}.reclaim`, {
+      pid: 998,
+      processStartTime: 'abandoned-reclaimer',
+    });
+
+    const release = await acquireFileLock(lockPath, {
+      pid: 1000,
+      processStartTime: 'next',
+      isProcessAlive: () => false,
+    });
+
+    await release();
   });
 
   it('waits for the current holder when retries are configured', async () => {

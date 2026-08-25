@@ -67,6 +67,7 @@ export function createAutoSyncAnalysisRunner(
 
       let terminalOutcome: WorkerMessage | undefined;
       let terminationGrace: ReturnType<typeof setTimeout> | undefined;
+      let terminationReason: 'timeout' | 'cancelled' | undefined;
       let settled = false;
       const cleanup = () => {
         deps.clearTimeoutFn(timeout);
@@ -80,33 +81,46 @@ export function createAutoSyncAnalysisRunner(
         if (error) reject(error);
         else resolve(result!);
       };
-      const timeout = deps.setTimeoutFn(() => {
+      const requestTermination = (reason: 'timeout' | 'cancelled') => {
+        if (settled || terminationReason) return;
+        terminationReason = reason;
+        deps.clearTimeoutFn(timeout);
         child.kill('SIGTERM');
         terminationGrace = deps.setTimeoutFn(() => {
           child.kill('SIGKILL');
-          settle(new Error(`Analysis timed out after ${timeoutMs}ms.`));
+          settle(
+            new Error(
+              reason === 'timeout' ? `Analysis timed out after ${timeoutMs}ms.` : 'Analysis cancelled.',
+            ),
+          );
         }, TERMINATION_GRACE_MS);
-      }, timeoutMs);
-      const onAbort = () => {
-        child.kill('SIGKILL');
-        settle(new Error('Analysis cancelled.'));
       };
+      const timeout = deps.setTimeoutFn(() => requestTermination('timeout'), timeoutMs);
+      const onAbort = () => requestTermination('cancelled');
       signal?.addEventListener('abort', onAbort, { once: true });
 
       child.on('message', (message: WorkerMessage) => {
-        if (message.type !== 'progress') terminalOutcome ??= message;
+        // Once timeout/cancellation requested shutdown, its reason owns the
+        // result. A terminal IPC can already be queued behind SIGTERM.
+        if (message.type === 'progress' || terminalOutcome || terminationReason) return;
+        terminalOutcome = message;
+        deps.clearTimeoutFn(timeout);
       });
       child.on('error', (error) => {
         settle(new Error(`Auto-sync analyze worker error: ${error.message}`));
       });
       child.on('exit', (code, childSignal) => {
         if (settled) return;
-        if (terminationGrace) {
+        if (terminationReason === 'timeout') {
           settle(
             new Error(
               `Analysis timed out after ${timeoutMs}ms and worker exited (${childSignal ?? code ?? 'unknown'}).`,
             ),
           );
+          return;
+        }
+        if (terminationReason === 'cancelled') {
+          settle(new Error('Analysis cancelled.'));
           return;
         }
         if (terminalOutcome?.type === 'complete') {

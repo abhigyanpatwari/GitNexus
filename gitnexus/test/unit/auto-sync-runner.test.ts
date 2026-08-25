@@ -295,7 +295,7 @@ describe('auto-sync runner', () => {
       })),
       saveState: vi.fn(async () => {}),
       writeCommitInfo: vi.fn(async () => {}),
-      addRepoToGroup: vi.fn(async () => false),
+      addRepoToGroup: vi.fn(async () => true),
       syncGroupByName: vi.fn(async () => {}),
       getAvailableMemoryGB: vi.fn(() => 8),
     });
@@ -308,7 +308,7 @@ describe('auto-sync runner', () => {
     expect(result.analyzed).toBe(0);
     expect(result.skippedAnalysis).toBe(1);
     expect(deps.runAnalysis).not.toHaveBeenCalled();
-    expect(deps.syncGroupByName).not.toHaveBeenCalled();
+    expect(deps.syncGroupByName).toHaveBeenCalledWith('back_end');
   });
 
   it('uses remote identity under local_path as the clone target', async () => {
@@ -1115,13 +1115,14 @@ describe('auto-sync starter', () => {
       return timer;
     }) as unknown as typeof setInterval;
     const stderr = { write: vi.fn() };
-    let releaseRun: (() => void) | undefined;
+    const releaseRuns: Array<() => void> = [];
     const runOnce = vi.fn(
       () =>
         new Promise<any>((resolve) => {
-          releaseRun = () => resolve({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 });
+          releaseRuns.push(() => resolve({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 }));
         }),
     );
+    let handle: Awaited<ReturnType<typeof startAutoSyncWatch>> | undefined;
 
     try {
       process.env.GITNEXUS_HOME = tempDir;
@@ -1137,7 +1138,7 @@ describe('auto-sync starter', () => {
         ].join('\n'),
       );
 
-      await startAutoSyncWatch({ setIntervalFn, runOnce, stderr });
+      handle = await startAutoSyncWatch({ setIntervalFn, runOnce, stderr });
       scheduled?.();
 
       expect(runOnce).toHaveBeenCalledTimes(1);
@@ -1145,12 +1146,17 @@ describe('auto-sync starter', () => {
         '[auto-sync] Previous run is still active; skipping overlapping run.\n',
       );
 
-      releaseRun?.();
+      releaseRuns.shift()?.();
       await new Promise((resolve) => setTimeout(resolve, 0));
       scheduled?.();
 
       expect(runOnce).toHaveBeenCalledTimes(2);
+      releaseRuns.shift()?.();
+      await handle?.stop();
+      handle = undefined;
     } finally {
+      releaseRuns.splice(0).forEach((release) => release());
+      await handle?.stop();
       if (previousHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = previousHome;
       await fs.rm(tempDir, { recursive: true, force: true });

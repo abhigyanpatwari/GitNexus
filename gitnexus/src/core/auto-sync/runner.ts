@@ -301,8 +301,9 @@ export async function runAutoSyncOnce(
 
     if (repoResult.project.groupName) {
       let groupMembershipOk = false;
+      let membershipAdded = false;
       try {
-        await deps.addRepoToGroup(
+        membershipAdded = await deps.addRepoToGroup(
           repoResult.project,
           getAutoSyncRepoIdentity(repoResult.remoteUrl),
           getAutoSyncRepoIdentity(repoResult.remoteUrl),
@@ -314,7 +315,10 @@ export async function runAutoSyncOnce(
           `[auto-sync] Group update failed for ${repoResult.project.groupName}: ${(err as Error).message}`,
         );
       }
-      if (groupMembershipOk && analyzeStatus === 'success') {
+      if (
+        groupMembershipOk &&
+        (analyzeStatus === 'success' || (membershipAdded && analyzeStatus === 'skipped'))
+      ) {
         groupsToSync.add(repoResult.project.groupName);
       }
     }

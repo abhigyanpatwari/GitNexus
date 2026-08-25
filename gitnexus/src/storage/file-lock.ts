@@ -61,6 +61,7 @@ export async function acquireFileLock(
         if (
           await reclaimStaleLock(
             resolvedPath,
+            owner,
             options.isProcessAlive ?? isProcessAlive,
             options.readProcessStartTime ?? readProcessStartTime,
           )
@@ -81,14 +82,21 @@ export async function acquireFileLock(
 
 async function reclaimStaleLock(
   lockPath: string,
+  guardOwner: FileLockOwner,
   ownerIsAlive: (pid: number) => boolean,
   getProcessStartTime: (pid: number) => string | undefined,
 ): Promise<boolean> {
   const reclaimGuardPath = `${lockPath}.reclaim`;
+  let releaseReclaimGuard: () => Promise<void>;
   try {
-    await fs.mkdir(reclaimGuardPath);
+    releaseReclaimGuard = await acquireFileLock(reclaimGuardPath, {
+      pid: guardOwner.pid,
+      processStartTime: guardOwner.processStartTime,
+      isProcessAlive: ownerIsAlive,
+      readProcessStartTime: getProcessStartTime,
+    });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+    if (error instanceof FileLockBusyError) return false;
     throw error;
   }
 
@@ -103,7 +111,7 @@ async function reclaimStaleLock(
     await fs.rm(lockPath, { force: true });
     return true;
   } finally {
-    await fs.rmdir(reclaimGuardPath);
+    await releaseReclaimGuard();
   }
 }
 

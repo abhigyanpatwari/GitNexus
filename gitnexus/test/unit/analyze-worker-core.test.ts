@@ -32,7 +32,6 @@ const baseResult: AnalyzeResult = {
 
 const okRun: WorkerAnalysisDeps['runFullAnalysis'] = vi.fn(async () => baseResult);
 const okFinalize: WorkerAnalysisDeps['assertAnalysisFinalized'] = vi.fn(async () => undefined);
-const okLock: WorkerAnalysisDeps['acquireAnalysisLock'] = vi.fn(async () => async () => undefined);
 const alwaysClaim: WorkerAnalysisDeps['claimTerminal'] = () => true;
 
 describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
@@ -50,7 +49,6 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
       {
         runFullAnalysis: okRun,
         assertAnalysisFinalized,
-        acquireAnalysisLock: okLock,
         send,
         claimTerminal: alwaysClaim,
       },
@@ -72,7 +70,6 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
       {
         runFullAnalysis: okRun,
         assertAnalysisFinalized: okFinalize,
-        acquireAnalysisLock: okLock,
         send,
         claimTerminal: alwaysClaim,
       },
@@ -93,7 +90,6 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
       {
         runFullAnalysis: run,
         assertAnalysisFinalized: okFinalize,
-        acquireAnalysisLock: okLock,
         send,
         claimTerminal: alwaysClaim,
       },
@@ -101,31 +97,6 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
     );
 
     expect(run.mock.calls[0]?.[3]).toBe(receipt);
-  });
-
-  it('does not enter analysis when another worker holds the repo lock', async () => {
-    const send = vi.fn<(msg: WorkerMessage) => void>();
-    const run = vi.fn<WorkerAnalysisDeps['runFullAnalysis']>(async () => baseResult);
-
-    await runWorkerAnalysis(
-      '/repo',
-      {},
-      {
-        runFullAnalysis: run,
-        assertAnalysisFinalized: okFinalize,
-        acquireAnalysisLock: vi.fn(async () => {
-          throw new Error('Lock is already held for /repo');
-        }),
-        send,
-        claimTerminal: alwaysClaim,
-      },
-    );
-
-    expect(run).not.toHaveBeenCalled();
-    expect(send).toHaveBeenCalledWith({
-      type: 'error',
-      message: 'Lock is already held for /repo',
-    });
   });
 
   it('reports error when finalization passes but the analysis itself throws', async () => {
@@ -143,7 +114,6 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
       {
         runFullAnalysis: failingRun,
         assertAnalysisFinalized: finalize,
-        acquireAnalysisLock: okLock,
         send,
         claimTerminal: alwaysClaim,
       },
@@ -196,7 +166,6 @@ describe('runWorkerAnalysis — terminal-claim coordination (#2264 P3)', () => {
       {
         runFullAnalysis: okRun,
         assertAnalysisFinalized: okFinalize,
-        acquireAnalysisLock: okLock,
         send,
         claimTerminal: alreadyClaimed,
       },

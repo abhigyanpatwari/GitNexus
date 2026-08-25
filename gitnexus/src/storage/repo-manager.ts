@@ -18,7 +18,6 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
-import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot, stripUrlCredentials } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
@@ -642,17 +641,10 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  // Atomic tmp+rename (mirrors saveMeta): a crash mid-write can never leave a
-  // truncated/half-written registry.json that the next load would treat as
-  // empty and silently drop every registered repo (#2106 R9).
-  const target = getGlobalRegistryPath();
-  const tmp = `${target}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
-  try {
-    await fs.writeFile(tmp, JSON.stringify(sanitizeEntries(entries), null, 2), 'utf-8');
-    await fs.rename(tmp, target);
-  } finally {
-    await fs.unlink(tmp).catch(() => {});
-  }
+  await writeFileAtomic(
+    getGlobalRegistryPath(),
+    JSON.stringify(sanitizeEntries(entries), null, 2),
+  );
 };
 
 /**

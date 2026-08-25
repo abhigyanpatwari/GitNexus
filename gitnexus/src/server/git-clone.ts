@@ -523,6 +523,8 @@ export async function cloneOrPull(
     await assertDirectoryOwnerAndPermissions(cloneRoot);
   }
   await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
+  await fs.mkdir(path.dirname(safeTarget), { recursive: true });
+  await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
   await assertPreRealpathContainment(cloneRoot, safeTarget);
 
   const exists = await fs.access(path.join(safeTarget, '.git')).then(
@@ -600,9 +602,6 @@ export async function cloneOrPull(
     if (targetExists && (await fs.readdir(safeTarget)).length > 0) {
       throw new Error(`Clone target already exists but is not a git repository: ${safeTarget}`);
     }
-    await fs.mkdir(path.dirname(safeTarget), { recursive: true });
-    await assertNoSymlinkPath(cloneRoot, safeTarget, Boolean(options?.allowedCloneRoot));
-    await assertPreRealpathContainment(cloneRoot, safeTarget);
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
     try {
       const runGitImpl = options?.runGitForTest ?? runGit;

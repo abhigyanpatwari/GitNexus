@@ -11,8 +11,6 @@
  *   Child -> Parent: { type: 'error', message: string }
  */
 
-import path from 'path';
-import { createHash } from 'crypto';
 import type { StartMessage, WorkerMessage } from './analyze-worker-protocol.js';
 import { runWorkerAnalysis, createTerminalClaim } from './analyze-worker-core.js';
 type BoundedCheckpointBeforeExit =
@@ -105,13 +103,12 @@ process.on('message', async (msg: StartMessage) => {
     const prepared = await identityModule.captureAnalyzerIdentityBeforeLoad(
       import.meta.url,
       async () => {
-        const [analysisModule, repoManager, shutdownHelpers, fileLock] = await Promise.all([
+        const [analysisModule, repoManager, shutdownHelpers] = await Promise.all([
           import('../core/run-analyze.js'),
           import('../storage/repo-manager.js'),
           import('../core/lbug/shutdown-helpers.js'),
-          import('../storage/file-lock.js'),
         ]);
-        return { analysisModule, repoManager, shutdownHelpers, fileLock };
+        return { analysisModule, repoManager, shutdownHelpers };
       },
     );
     boundedCheckpointBeforeExit = prepared.loaded.shutdownHelpers.boundedCheckpointBeforeExit;
@@ -125,18 +122,6 @@ process.on('message', async (msg: StartMessage) => {
       {
         runFullAnalysis: prepared.loaded.analysisModule.runFullAnalysis,
         assertAnalysisFinalized: prepared.loaded.repoManager.assertAnalysisFinalized,
-        acquireAnalysisLock: (repoPath) => {
-          const repoKey = createHash('sha256')
-            .update(prepared.loaded.repoManager.canonicalizePath(repoPath))
-            .digest('hex');
-          return prepared.loaded.fileLock.acquireFileLock(
-            path.join(
-              prepared.loaded.repoManager.getGlobalDir(),
-              'locks',
-              `analyze-${repoKey}.lock`,
-            ),
-          );
-        },
         send,
         claimTerminal,
       },

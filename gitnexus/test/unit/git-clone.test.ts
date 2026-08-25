@@ -637,6 +637,29 @@ describe('git-clone', () => {
       }
     });
 
+    it('creates missing nested parents before checking controlled clone containment', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const target = path.join(root, 'github.com', 'owner', 'repo');
+      const runGitForTest = vi.fn(async () => {
+        await fs.mkdir(path.join(target, '.git'), { recursive: true });
+        return '';
+      });
+      try {
+        await expect(
+          cloneOrPull('git@github.com:owner/repo', target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            allowAutoSyncSsh: true,
+            runGitForTest,
+          }),
+        ).resolves.toBe(target);
+
+        expect(runGitForTest).toHaveBeenCalledOnce();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
     it('allows auto-sync SSH SCP clone URLs with a per-repo timeout', async () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const target = path.join(root, 'repo');
