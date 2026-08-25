@@ -60,17 +60,25 @@ vi.mock('../../../src/storage/repo-manager.js', () => ({
  * `syncGroup` — still succeeds, and that ordering is the whole subject of the
  * warning under test.
  */
+let writeBridgeFailure: Error | null = null;
+
 /**
  * Only the read-only OPEN legs are stubbed, so `runGroupImpact` can read the
  * metadata a preserve sync just wrote without a native LadybugDB open of a
  * placeholder file. `writeBridge`, `writeBridgeMeta`, `readBridgeMeta` and
  * `bridgeMetaMatchesFile` all travel their real implementations — they are the
  * code under test here, and `syncGroup` reaches `writeBridge` through this
+ * module too. The `writeBridge` wrapper below is a pass-through in every test
+ * that does not arm `writeBridgeFailure`.
  */
 vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/core/group/bridge-db.js')>();
   return {
     ...actual,
+    writeBridge: vi.fn(async (...args: Parameters<typeof actual.writeBridge>) => {
+      if (writeBridgeFailure) throw writeBridgeFailure;
+      return actual.writeBridge(...args);
+    }),
     getCachedBridgeReadOnly: vi.fn(
       async (groupDir: string) =>
         ({ _db: {}, _conn: {}, groupDir, _readOnly: true }) as BridgeHandle,
@@ -784,5 +792,92 @@ describe('the preserve path and the bridge metadata beside it', () => {
     expect(after.provenanceUnknown).toBeUndefined();
     expect(after.unreadableRepos).toEqual([]);
     expect(await pairsAfterwards()).toBe(true);
+  });
+});
+
+/**
+ * The branch taken when `writeBridge` throws. `contracts.json` has already been
+ * written and is canonical by then, so the failure is a recoverable degradation
+ * — and the warning is the ONLY thing this branch produces. The return value,
+ * `registryOutcome` and every file on disk are identical whether the sentence
+ * is true or not, which is why the text needs an assertion of its own instead of
+ * borrowing a state assertion from elsewhere in this file.
+ */
+describe('the warning after a failed bridge write', () => {
+  let groupDir: string;
+
+  beforeEach(() => {
+    initLbugMock.mockReset();
+    readRegistryMock.mockReset();
+    readRegistryMock.mockResolvedValue(REGISTRY);
+    writeBridgeFailure = null;
+    groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-bridge-write-'));
+  });
+
+  afterEach(async () => {
+    writeBridgeFailure = null;
+    await closeAllCachedBridges();
+    fs.rmSync(groupDir, { recursive: true, force: true });
+  });
+
+  const runSync = () =>
+    syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), {
+      groupDir,
+      resolveRepoHandle: handleTable(['backend-repo']),
+    });
+
+  /** The bridge-failure warning is the only record carrying `groupDir`. */
+  const bridgeWarning = (cap: ReturnType<typeof _captureLogger>) =>
+    cap.records().find((r) => r.level === 40 && typeof r.groupDir === 'string');
+
+  it('names the registry as intact and does not promise a truncation this branch never reports', async () => {
+    writeBridgeFailure = new Error('ENOSPC: no space left on device');
+    const cap = _captureLogger();
+
+    let result;
+    try {
+      result = await runSync();
+    } finally {
+      cap.restore();
+    }
+
+    // The registry write happens before the bridge write and is not rolled back
+    // — the reason this failure is survivable at all.
+    expect(result.registryOutcome).toBe('written');
+
+    const warning = bridgeWarning(cap);
+    expect(warning).toBeDefined();
+    expect(String(warning?.msg)).toContain('contracts.json is intact');
+    // The claim the code does not keep. A failed `writeBridge` leaves the
+    // PREVIOUS sync's database and the metadata stamped for it untouched, so the
+    // next cross-repo query reads a pair that checks out, finds no unreadable
+    // repos recorded in it, and answers `truncated: false` — from contracts this
+    // sync has already superseded. Nothing on this branch marks the bridge at
+    // all, so telling the operator to wait for `truncated` is telling them to
+    // wait for a signal that is never coming.
+    expect(String(warning?.msg)).not.toMatch(/truncat/i);
+    // What the code does guarantee instead: the registry is the good copy, the
+    // bridge may still answer from the previous sync, and only another sync
+    // replaces it.
+    expect(String(warning?.msg)).toMatch(/previous sync/i);
+    expect(String(warning?.msg)).toContain('group sync');
+    // ...and the underlying failure still reaches the operator.
+    expect(String(warning?.err)).toContain('ENOSPC');
+  });
+
+  it('control: a sync whose bridge write succeeds emits no such warning', async () => {
+    // Without this, "the warning does not promise a truncation" could be true
+    // because no warning is emitted on any run at all.
+    const cap = _captureLogger();
+
+    let result;
+    try {
+      result = await runSync();
+    } finally {
+      cap.restore();
+    }
+
+    expect(result.registryOutcome).toBe('written');
+    expect(bridgeWarning(cap)).toBeUndefined();
   });
 });

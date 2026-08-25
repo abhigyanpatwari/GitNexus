@@ -618,8 +618,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     // writeBridge failure (disk full, schema error, permission denied) must
     // not mask the registry — contracts.json was just written successfully
     // and is the canonical source of truth. A stale or absent bridge
-    // degrades impact queries to empty results, which is recoverable on
-    // the next sync. Surface the failure as a warning so operators can
+    // degrades cross-repo queries to the previous sync's answers (or, with no
+    // bridge at all, to an error naming the missing file), which is recoverable
+    // on the next sync. Surface the failure as a warning so operators can
     // act, but do not propagate it.
     // (PR #1156 follow-up review: writeBridge error in sync.ts propagates
     // uncaught.)
@@ -633,10 +634,20 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Says what this branch guarantees, and stops at that. The previous
+      // wording promised that cross-repo impact would report `truncated` until
+      // a sync succeeded — a signal nothing here produces: a failed writeBridge
+      // leaves the previous sync's database beside the metadata stamped for it,
+      // so the pair still checks out and the completeness fields still describe
+      // the run that wrote them. Re-stamping that metadata to make the promise
+      // true is the one thing not to do — it would recreate exactly the
+      // metadata/database mis-pairing the stamping on the preserve path above
+      // exists to prevent.
       logger.warn(
         { err: msg, groupDir },
-        '⚠️ writeBridge failed; contracts.json is intact but bridge.lbug is stale. ' +
-          'Cross-repo impact will report `truncated` until a sync succeeds. ' +
+        '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
+          'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
+          "the previous sync's contracts, and nothing marks them as superseded. " +
           'Re-run `gitnexus group sync` to retry.',
       );
     }
