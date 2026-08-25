@@ -93,7 +93,7 @@
     "focusDepthDesc": "Показывать узлы в пределах N переходов от выбранного",
     "hops_one": "{{count}} переход",
     "hops_few": "{{count}} перехода",
-    "hops_many": "{{count}} перехода",
+    "hops_many": "{{count}} переходов",
     "hops_other": "{{count}} переходов",
     "colorLegend": "Цветовая легенда"
   },
