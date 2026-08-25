@@ -650,6 +650,31 @@ export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promi
   await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(meta, null, 2));
 }
 
+/**
+ * Does `meta` still describe the `bridge.lbug` sitting next to it?
+ *
+ * `writeBridge` stamps the database's size and mtime into the metadata it
+ * writes, so a metadata file left over from an earlier sync cannot match a
+ * database that was replaced after it. Callers whose answer depends on the
+ * metadata being true of THIS database (cross-repo impact reads completeness
+ * from it) must not treat a mismatch as fact.
+ *
+ * Returns `true` when the stamp is absent: metadata written before this existed
+ * cannot be verified either way, and failing those closed would mark every
+ * pre-existing bridge as incomplete — trading a narrow window for a repo-wide
+ * regression. Returns `false` when the database itself cannot be stat'd, since
+ * metadata describing a file that is not there describes nothing.
+ */
+export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta): Promise<boolean> {
+  if (meta.bridgeSize === undefined || meta.bridgeMtimeMs === undefined) return true;
+  try {
+    const stat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
+    return stat.size === meta.bridgeSize && stat.mtimeMs === meta.bridgeMtimeMs;
+  } catch {
+    return false;
+  }
+}
+
 export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
   try {
     const content = await fsp.readFile(path.join(groupDir, 'meta.json'), 'utf-8');
@@ -929,22 +954,7 @@ export async function writeBridge(
       }
     }
 
-    // 3a. Drop the OLD meta.json before the swap.
-    //
-    // meta.json describes the bridge's completeness, and since #3011 that is
-    // load-bearing: `runGroupImpact` folds `meta.unreadableRepos ∪ missingRepos`
-    // into its truncation fields, so a query answered against a bridge whose
-    // meta belongs to a different sync is a confidently wrong answer.
-    //
-    // The swap below and the meta write in step 4 are two operations, so there
-    // is a window between them. Removing the old file first decides which way
-    // that window fails: an ABSENT meta (which runGroupImpact treats as
-    // incomplete) rather than a STALE one that would claim the new bridge is
-    // complete. Losing meta for a bridge that is actually fine only over-reports
-    // truncation, and the next successful sync restores it.
-    await fsp.rm(path.join(groupDir, 'meta.json'), { force: true });
-
-    // 3b. Atomic swap: old→.bak, tmp→final, rm .bak
+    // 3. Atomic swap: old→.bak, tmp→final, rm .bak
     //
     // The current database file (with its `.wal` / `.shadow` sidecars) is
     // moved aside, then the freshly built tmp database takes its place.
@@ -983,11 +993,33 @@ export async function writeBridge(
     }
     await removeLbugFile(bakPath);
 
-    // 4. Write the new meta.json. Until this lands the bridge has none, and
-    //    readers must treat that as "provenance unknown", not "complete".
+    // 4. Write the new meta.json, STAMPED WITH THE FILE IT DESCRIBES.
+    //
+    // meta.json carries the bridge's completeness, and since #3011 that is
+    // load-bearing: `runGroupImpact` folds `unreadableRepos ∪ missingRepos`
+    // into its truncation fields. The swap above and this write are two
+    // operations, so a sync that stops between them leaves the previous sync's
+    // meta beside a new database — and reading that as fact is a confidently
+    // wrong answer about the one thing this channel exists to make legible.
+    //
+    // Deleting the old meta before the swap would decide which way that window
+    // fails, but at an unacceptable price: the rename of the old database is
+    // wrapped in a catch that also swallows a FAILED rename (a held read-only
+    // handle does this on Windows), so `writeBridge` can throw with the old,
+    // perfectly good database still in place — and its metadata already gone,
+    // unrecoverably, for as long as the swap keeps failing.
+    //
+    // So destroy nothing and pair the two instead: record the size and mtime of
+    // the database this metadata describes, and let readers check that the pair
+    // still belongs together (`bridgeMetaMatchesFile`). A stale meta cannot match
+    // a freshly renamed database, and a sync that fails before the swap leaves a
+    // matching pair untouched.
+    const finalStat = await fsp.stat(finalPath);
     await writeBridgeMeta(groupDir, {
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
+      bridgeSize: finalStat.size,
+      bridgeMtimeMs: finalStat.mtimeMs,
       missingRepos: input.missingRepos,
       // Persisted whenever the caller supplied it, `[]` included: an empty list
       // is the measurement "this sync accounted for every repo", and it is a

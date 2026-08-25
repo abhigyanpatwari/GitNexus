@@ -25,6 +25,7 @@ import {
 } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
 import {
+  bridgeMetaMatchesFile,
   closeBridgeDb,
   getCachedBridgeReadOnly,
   queryBridge,
@@ -651,13 +652,20 @@ export async function runGroupImpact(
   // `{ cross: [], truncated: false }` — "complete: nothing depends on this" —
   // which is a wrong answer, not an empty one, for a tool an agent uses to
   // license a delete or a rename.
-  // A bridge with no readable meta.json has no provenance: `readBridgeMeta`
-  // answers `version: 0` for both "absent" and "unparseable", and `writeBridge`
-  // leaves exactly that state in the window between swapping the database file
-  // and writing the new metadata — the window a failed or interrupted sync
-  // stops in. Treating it as complete is the fail-open this whole channel
-  // exists to close, so an unknown-provenance bridge is reported as truncated.
-  const bridgeProvenanceUnknown = bridgePrep.meta.version === 0;
+  // Two ways this bridge's completeness can be unknown rather than clean, and
+  // both must read as a floor rather than as fact:
+  //
+  //   - no readable meta.json at all (`readBridgeMeta` answers `version: 0` for
+  //     both "absent" and "unparseable");
+  //   - a meta.json that does not describe the database sitting beside it,
+  //     which is what a sync interrupted between the swap and the metadata
+  //     write leaves behind. The stamp `writeBridge` records is what makes that
+  //     detectable without deleting anything.
+  //
+  // Treating either as complete is the fail-open this whole channel exists to
+  // close.
+  const bridgeProvenanceUnknown =
+    bridgePrep.meta.version === 0 || !(await bridgeMetaMatchesFile(groupDir, bridgePrep.meta));
   const bridgeIncompleteRepos = [
     ...new Set([
       ...(bridgePrep.meta.unreadableRepos ?? []),

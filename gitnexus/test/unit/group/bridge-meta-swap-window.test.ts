@@ -11,33 +11,53 @@ import { makeContract } from './fixtures.js';
  * a detail.
  *
  * `meta.json` records which repos the sync could not account for, and since
- * #3011 `runGroupImpact` folds that into its truncation fields. So a STALE
- * meta left beside a NEWLY swapped bridge asserts that the new bridge is as
- * complete as the previous sync was — a confident wrong answer about the exact
- * thing this channel exists to make legible. An ABSENT meta is read as unknown
- * provenance and reported as a floor, which is merely conservative.
+ * #3011 `runGroupImpact` folds that into its truncation fields. So a STALE meta
+ * left beside a NEWLY swapped bridge asserts that the new bridge is as complete
+ * as the previous sync was — a confident wrong answer about the exact thing this
+ * channel exists to make legible.
  *
- * The write path therefore removes the old meta BEFORE the swap. This file
- * pins that ordering by failing the swap itself: if the removal were moved
- * after the rename (or dropped), the previous sync's meta would survive here.
+ * Deleting the old meta before the swap would close that, and is wrong. The
+ * rename of the old database is wrapped in a catch that also swallows a FAILED
+ * rename — a held read-only handle does this on Windows — so `writeBridge` can
+ * throw with the old, perfectly good database still in place. Its metadata would
+ * then be gone unrecoverably, and cross-repo impact would answer "we cannot say"
+ * for as long as the swap kept failing. That is a working feature destroyed to
+ * close a narrow window.
+ *
+ * So nothing is deleted. `writeBridge` stamps the database's size and mtime into
+ * the metadata, and `bridgeMetaMatchesFile` checks the pair still belongs
+ * together. This file pins both halves: a stale meta is rejected, and a sync
+ * that fails leaves the previous, matching pair intact.
  */
 
-const renameMock = vi.hoisted(() => ({ failOn: '' }));
+/**
+ * `mode` selects which rename fails, and the distinction matters:
+ *
+ *  - `'all'` models the Windows shape the fix is really about. The old
+ *    database's move to `.bak` is itself wrapped in a catch that swallows
+ *    failures, so a held read-only handle makes that move fail SILENTLY and the
+ *    subsequent `tmp -> bridge.lbug` throw — leaving the old database exactly
+ *    where it was, still valid.
+ *  - `'final'` fails only the `tmp -> bridge.lbug` step, so the old database has
+ *    already been moved aside to `.bak` and no database is in place at all.
+ */
+const renameMock = vi.hoisted(() => ({ mode: 'none' as 'none' | 'all' | 'final' }));
 
 vi.mock('../../../src/storage/fs-atomic.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/storage/fs-atomic.js')>();
   return {
     ...actual,
     retryRename: async (src: string, dst: string) => {
-      if (renameMock.failOn && dst.endsWith(renameMock.failOn)) {
-        throw new Error(`simulated rename failure for ${dst}`);
-      }
+      const fails =
+        renameMock.mode === 'all' || (renameMock.mode === 'final' && dst.endsWith('bridge.lbug'));
+      if (fails) throw new Error(`simulated rename failure for ${dst}`);
       return actual.retryRename(src, dst);
     },
   };
 });
 
-const { writeBridge, readBridgeMeta } = await import('../../../src/core/group/bridge-db.js');
+const { writeBridge, readBridgeMeta, bridgeMetaMatchesFile } =
+  await import('../../../src/core/group/bridge-db.js');
 
 const input = (unreadableRepos?: string[]) => ({
   contracts: [makeContract()],
@@ -51,32 +71,91 @@ describe('writeBridge meta.json swap window', () => {
   let groupDir: string;
 
   beforeEach(async () => {
-    renameMock.failOn = '';
+    renameMock.mode = 'none';
     groupDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-bridge-window-'));
   });
 
   afterEach(async () => {
-    renameMock.failOn = '';
+    renameMock.mode = 'none';
     await fsp.rm(groupDir, { recursive: true, force: true });
   });
 
-  it('leaves no metadata behind when the database swap fails', async () => {
-    // A complete previous sync, so the meta on disk says "nothing unreadable".
-    await writeBridge(groupDir, input());
+  it('keeps the previous metadata when the database swap fails, and it still matches', async () => {
+    // The regression this file exists for. An earlier version of the fix deleted
+    // meta.json before the swap; because the old-database rename is inside a
+    // catch that swallows failures, `writeBridge` can throw with that database
+    // still in place — and the metadata describing it already destroyed.
+    await writeBridge(groupDir, input([]));
     const seeded = await readBridgeMeta(groupDir);
 
-    // The next sync fails at the moment it replaces the database file.
-    renameMock.failOn = 'bridge.lbug';
+    // Every rename fails, so the old database never moves: this is the shape a
+    // held handle produces on Windows.
+    renameMock.mode = 'all';
     await expect(writeBridge(groupDir, input(['svc/users']))).rejects.toThrow('simulated rename');
 
     const after = await readBridgeMeta(groupDir);
 
-    expect(seeded.version).toBeGreaterThan(0);
-    // The seeded meta must NOT have survived. If it had, an impact query
-    // against whatever bridge is now on disk would read "complete" from a
-    // previous run's measurement.
-    expect(after.version).toBe(0);
-    await expect(fsp.access(path.join(groupDir, 'meta.json'))).rejects.toThrow();
+    // Nothing was lost: the previous sync's measurement survives...
+    expect(after.version).toBe(seeded.version);
+    expect(after.generatedAt).toBe(seeded.generatedAt);
+    expect(after.unreadableRepos).toEqual([]);
+    // ...and it still describes the database that is actually on disk, so
+    // cross-repo impact keeps answering from it instead of degrading to a floor
+    // until some future sync happens to succeed.
+    await expect(bridgeMetaMatchesFile(groupDir, after)).resolves.toBe(true);
+  });
+
+  it('reports no match when the swap moved the database aside and then failed', async () => {
+    // The other failure shape: the old database reached `.bak` and the new one
+    // never arrived, so there is no `bridge.lbug` for the surviving metadata to
+    // describe. Rejecting is correct here — `ensureBridgeReady` fails loudly on
+    // the absent database anyway, which is a better answer than a silent floor.
+    await writeBridge(groupDir, input([]));
+    const seeded = await readBridgeMeta(groupDir);
+
+    renameMock.mode = 'final';
+    await expect(writeBridge(groupDir, input(['svc/users']))).rejects.toThrow('simulated rename');
+
+    const after = await readBridgeMeta(groupDir);
+
+    expect(after.generatedAt).toBe(seeded.generatedAt);
+    await expect(bridgeMetaMatchesFile(groupDir, after)).resolves.toBe(false);
+  });
+
+  it('rejects metadata that describes a different database', async () => {
+    // The other half: the stale-meta-beside-a-new-bridge window. Simulated by
+    // replacing the database underneath a metadata file that was written for
+    // the previous one — which is the state a sync interrupted between the swap
+    // and the metadata write leaves behind.
+    await writeBridge(groupDir, input([]));
+    const stale = await readBridgeMeta(groupDir);
+
+    const dbPath = path.join(groupDir, 'bridge.lbug');
+    const bytes = await fsp.readFile(dbPath);
+    await fsp.writeFile(dbPath, Buffer.concat([bytes, Buffer.from([0])]));
+
+    await expect(bridgeMetaMatchesFile(groupDir, stale)).resolves.toBe(false);
+  });
+
+  it('cannot verify metadata that carries no stamp, and does not reject it', async () => {
+    // Back-compat: a bridge written before the stamp existed is unverifiable,
+    // not stale. Failing those closed would mark every pre-existing bridge
+    // incomplete — a repo-wide regression traded for a narrow window.
+    await writeBridge(groupDir, input([]));
+    const meta = await readBridgeMeta(groupDir);
+    const legacy = { ...meta };
+    delete legacy.bridgeSize;
+    delete legacy.bridgeMtimeMs;
+
+    await expect(bridgeMetaMatchesFile(groupDir, legacy)).resolves.toBe(true);
+  });
+
+  it('rejects a stamp when the database is gone entirely', async () => {
+    await writeBridge(groupDir, input([]));
+    const meta = await readBridgeMeta(groupDir);
+    await fsp.rm(path.join(groupDir, 'bridge.lbug'), { force: true });
+
+    await expect(bridgeMetaMatchesFile(groupDir, meta)).resolves.toBe(false);
   });
 
   it('records the new metadata when the swap succeeds', async () => {

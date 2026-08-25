@@ -242,6 +242,23 @@ export interface BridgeHandle {
 export interface BridgeMeta {
   version: number;
   generatedAt: string;
+  /**
+   * Size and mtime of the `bridge.lbug` this metadata was written for, so a
+   * reader can tell whether the two still belong together.
+   *
+   * `writeBridge` replaces the database and writes this file as two operations;
+   * a sync that stops between them leaves the PREVIOUS sync's metadata beside a
+   * new database, and `runGroupImpact` reads completeness from that metadata.
+   * Stamping the pair is what lets `bridgeMetaMatchesFile` reject the mismatch
+   * without anything having to be deleted — deleting the old metadata up front
+   * would lose it permanently on a swap that fails with the old database still
+   * in place, which is a normal Windows outcome when a read-only handle is held.
+   *
+   * Optional: metadata written before this existed carries no stamp and is
+   * treated as unverifiable rather than stale.
+   */
+  bridgeSize?: number;
+  bridgeMtimeMs?: number;
   missingRepos: string[];
   /**
    * Configured repos the sync that produced this bridge could not extract from
