@@ -467,7 +467,14 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     generatedAt: new Date().toISOString(),
     repoSnapshots,
     missingRepos,
-    ...(unreadableRepos.length > 0 ? { unreadableRepos } : {}),
+    // Always recorded, including when empty. The field is optional on the TYPE
+    // so a registry written before it existed still parses, and absence there
+    // means "not recorded" — but this run DID measure it, and `[]` is that
+    // measurement. Omitting the empty case made "measured, none" unreachable:
+    // every clean sync produced a registry that `group status` then reported as
+    // not recorded, telling the operator to re-run the sync that had just
+    // succeeded. The tri-state only works if the writer commits to it.
+    unreadableRepos,
     contracts: allContracts,
     crossLinks,
   };

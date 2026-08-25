@@ -989,9 +989,11 @@ export async function writeBridge(
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
       missingRepos: input.missingRepos,
-      ...(input.unreadableRepos && input.unreadableRepos.length > 0
-        ? { unreadableRepos: input.unreadableRepos }
-        : {}),
+      // Persisted whenever the caller supplied it, `[]` included: an empty list
+      // is the measurement "this sync accounted for every repo", and it is a
+      // different claim from a bridge that never recorded the field. Omitted
+      // only when the caller passed nothing to record.
+      ...(input.unreadableRepos ? { unreadableRepos: input.unreadableRepos } : {}),
     });
 
     return report;

@@ -205,6 +205,21 @@ describe('writeBridge + read', () => {
     expect(meta.unreadableRepos).toBeUndefined();
   });
 
+  it('persists an explicitly empty unreadableRepos measurement', async () => {
+    // Same distinction as the registry: `[]` means the sync accounted for every
+    // repo, and dropping it collapses that into "never recorded".
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+      unreadableRepos: [],
+    });
+
+    const meta = await readBridgeMeta(tmpDir);
+    expect(meta.unreadableRepos).toEqual([]);
+  });
+
   it('test_writeBridge_returns_report_with_insert_counts', async () => {
     const report = await writeBridge(tmpDir, {
       contracts: [makeContract(), makeContract({ repo: 'frontend', role: 'consumer' })],

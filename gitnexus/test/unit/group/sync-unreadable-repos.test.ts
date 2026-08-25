@@ -257,6 +257,28 @@ describe('syncGroup with an unreadable index', () => {
     expect(onDisk.unreadableRepos).toEqual(['app/backend']);
   });
 
+  it('records an empty unreadable list on a clean sync, not an absent one', async () => {
+    // `[]` is a measurement — "this sync accounted for every repo" — and it is
+    // a different claim from a registry that never recorded the field. Omitting
+    // the empty case made that state unreachable: every clean sync wrote a
+    // registry whose `unreadableRepos` was absent, so `gitnexus group status`
+    // reported it as not recorded and told the operator to re-run the sync that
+    // had just succeeded.
+    const result = await syncGroup(
+      makeConfig({ 'app/backend': 'backend-repo', 'app/web': 'web-repo' }),
+      { groupDir, resolveRepoHandle: handleTable(['backend-repo', 'web-repo']) },
+    );
+
+    expect(result.unreadableRepos).toEqual([]);
+    expect(result.registryOutcome).toBe('written');
+
+    const onDisk = JSON.parse(
+      fs.readFileSync(path.join(groupDir, 'contracts.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(onDisk).toHaveProperty('unreadableRepos');
+    expect(onDisk.unreadableRepos).toEqual([]);
+  });
+
   it('still writes when every repo is merely MISSING and none failed to load', async () => {
     // A group whose repos were all deregistered legitimately syncs to empty.
     // The guard must stay off here: it is gated on a load ERROR, not on an
