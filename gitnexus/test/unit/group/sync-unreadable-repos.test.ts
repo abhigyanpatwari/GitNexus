@@ -65,19 +65,26 @@ let writeBridgeFailure: Error | null = null;
 /**
  * Only the read-only OPEN legs are stubbed, so `runGroupImpact` can read the
  * metadata a preserve sync just wrote without a native LadybugDB open of a
- * placeholder file. `writeBridge`, `writeBridgeMeta`, `readBridgeMeta` and
+ * placeholder file. The bridge write, `writeBridgeMeta`, `readBridgeMeta` and
  * `bridgeMetaMatchesFile` all travel their real implementations — they are the
- * code under test here, and `syncGroup` reaches `writeBridge` through this
- * module too. The `writeBridge` wrapper below is a pass-through in every test
- * that does not arm `writeBridgeFailure`.
+ * code under test here, and `syncGroup` reaches the bridge write through this
+ * module too. The wrapper below is a pass-through in every test that does not
+ * arm `writeBridgeFailure`.
+ *
+ * It intercepts `writeBridgeUnlocked`, NOT the exported `writeBridge`: the swap
+ * comes in two halves, and `syncGroup` calls the lock-free one because it is
+ * already inside `withGroupSyncLock` (a second acquisition of a non-reentrant
+ * lock would hang every sync). Arming the acquiring wrapper instead would inject
+ * a fault into a function this path never calls, and the failure branch below
+ * would go quietly untested.
  */
 vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/core/group/bridge-db.js')>();
   return {
     ...actual,
-    writeBridge: vi.fn(async (...args: Parameters<typeof actual.writeBridge>) => {
+    writeBridgeUnlocked: vi.fn(async (...args: Parameters<typeof actual.writeBridgeUnlocked>) => {
       if (writeBridgeFailure) throw writeBridgeFailure;
-      return actual.writeBridge(...args);
+      return actual.writeBridgeUnlocked(...args);
     }),
     getCachedBridgeReadOnly: vi.fn(
       async (groupDir: string) =>

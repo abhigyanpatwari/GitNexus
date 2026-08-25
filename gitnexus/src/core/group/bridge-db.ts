@@ -11,6 +11,7 @@ import {
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
+import { withGroupSyncLock } from './group-lock.js';
 import { createLogger } from '../logger.js';
 import { retryRename, writeFileAtomic } from '../../storage/fs-atomic.js';
 
@@ -875,6 +876,17 @@ async function fileExists(filePath: string): Promise<boolean> {
  *
  * Nothing here opens, reads, or writes the database. The only `stat` of it
  * happens on the branch where the pair was just verified.
+ *
+ * NOT SPLIT into locked/unlocked halves the way {@link writeBridge} is, and
+ * deliberately. Its one caller is `syncGroup`'s preserve branch, which is
+ * already inside `withGroupSyncLock` — so this write is ALREADY serialized
+ * against every other sync of the group, and taking the lock here would be the
+ * second acquisition of a non-reentrant primitive that the split exists to
+ * avoid. An acquiring wrapper would therefore have zero production callers,
+ * and no test calls this function at all: it would be dead code standing in for
+ * a guarantee the caller already provides. If a caller outside the critical
+ * section ever appears, it needs the same treatment `writeBridge` got — a
+ * wrapper, not a lock moved down here.
  */
 export async function refreshPreservedBridgeMeta(
   groupDir: string,
@@ -969,7 +981,33 @@ function errMessage(err: unknown): string {
   }
 }
 
-export async function writeBridge(
+/**
+ * Rebuild `bridge.lbug` and its `meta.json`, ASSUMING THE CALLER ALREADY HOLDS
+ * THE GROUP SYNC LOCK for `groupDir` (R9).
+ *
+ * PRECONDITION — the group lock is held. There is exactly one production call
+ * site, `syncGroup` in sync.ts, and it is already inside
+ * `withGroupSyncLock(groupDir, …)` when it gets here. Enforced by this comment
+ * rather than by a type, matching `registerRepoUnlocked` / `withRegistryLock`
+ * in repo-manager.ts, which splits the same shape for the same reason.
+ *
+ * WHY THE SPLIT EXISTS AT ALL. The swap this function performs — old database
+ * aside, temp database into place, then `meta.json` written as a SECOND
+ * operation — is the write two concurrent syncs can interleave into a pairing
+ * that never existed: one sync's metadata beside the other's database. That
+ * needs mutual exclusion. But taking the lock HERE would be a second
+ * acquisition of a non-reentrant primitive inside a region that already holds
+ * it, and it would hang every single sync on the happy path, not some rare
+ * interleave. So the exclusion is the caller's, and this function only states
+ * the precondition. {@link writeBridge} is the acquiring wrapper for callers
+ * who are not already inside that region.
+ *
+ * SCOPE — writer-writer only. The reader-side promotion of a leftover
+ * `bridge.lbug.bak` runs on ordinary reads, outside anybody's critical section;
+ * `bridgeMetaMatchesFile` remains the reader's defense there and is not
+ * replaced by this lock.
+ */
+export async function writeBridgeUnlocked(
   groupDir: string,
   input: WriteBridgeInput,
 ): Promise<WriteBridgeReport> {
@@ -1275,6 +1313,33 @@ export async function writeBridge(
       /* best-effort cleanup */
     });
   }
+}
+
+/**
+ * Rebuild `bridge.lbug` and its `meta.json` as the only writer of `groupDir`.
+ *
+ * The acquiring half of the split described on {@link writeBridgeUnlocked}: for
+ * callers that are NOT already inside the group's critical section, this takes
+ * the group sync lock around the whole swap and releases it afterwards. Two
+ * concurrent calls therefore run one after the other, so the `meta.json` left
+ * on disk is stamped for the `bridge.lbug` left on disk instead of for the
+ * loser's, which is the pairing the swap-plus-metadata sequence would otherwise
+ * let them interleave into.
+ *
+ * NOT used by `syncGroup`, and it must not be: that path already holds this
+ * lock, and `acquireIndexLock` is not reentrant, so routing it here would make
+ * every ordinary sync wait out the full `GROUP_SYNC_LOCK_TIMEOUT_MS` ceiling
+ * against itself. It calls {@link writeBridgeUnlocked} directly.
+ *
+ * Fails closed exactly as `withGroupSyncLock` does: if the lock cannot be
+ * acquired, a `GroupSyncLockError` is thrown and NOTHING is written —
+ * `bridge.lbug` and `meta.json` are left as they were.
+ */
+export async function writeBridge(
+  groupDir: string,
+  input: WriteBridgeInput,
+): Promise<WriteBridgeReport> {
+  return withGroupSyncLock(groupDir, () => writeBridgeUnlocked(groupDir, input));
 }
 
 /* ------------------------------------------------------------------ */

@@ -54,9 +54,14 @@
  * lock's fail-closed timeout into an unbounded hang.
  *
  * ACQUIRED EXACTLY ONCE, by `syncGroup`, around its whole persist section.
- * Nothing beneath it — `writeContractRegistry`, `refreshPreservedBridgeMeta`,
- * `writeBridge` — takes this lock; a second acquisition would deadlock a
- * non-reentrant primitive on the HAPPY path, not on some edge case.
+ * Nothing it calls beneath that point — `writeContractRegistry`,
+ * `refreshPreservedBridgeMeta`, `writeBridgeUnlocked` — takes this lock; a
+ * second acquisition would deadlock a non-reentrant primitive on the HAPPY
+ * path, not on some edge case. `bridge-db.ts` exports the swap in both forms
+ * for exactly that reason: `writeBridgeUnlocked` for the held-lock caller
+ * (`syncGroup`), and the `writeBridge` wrapper, which acquires here, for direct
+ * callers that are outside the region. The same split `repo-manager.ts` uses
+ * for `registerRepoUnlocked` / `registerRepo`.
  *
  * SCOPE CAVEAT (recorded, not solved): the default socket backend uses Linux
  * abstract sockets, which are network-namespace-scoped. Two containers that

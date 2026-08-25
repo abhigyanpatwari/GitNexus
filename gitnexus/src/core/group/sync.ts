@@ -31,7 +31,7 @@ import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { readContractRegistry, writeContractRegistry } from './storage.js';
-import { refreshPreservedBridgeMeta, writeBridge } from './bridge-db.js';
+import { refreshPreservedBridgeMeta, writeBridgeUnlocked } from './bridge-db.js';
 import { withGroupSyncLock } from './group-lock.js';
 import type { ContractRegistry } from './types.js';
 
@@ -732,8 +732,16 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         // act, but do not propagate it.
         // (PR #1156 follow-up review: writeBridge error in sync.ts propagates
         // uncaught.)
+        //
+        // `writeBridgeUnlocked`, not `writeBridge`: we are inside
+        // `withGroupSyncLock` already, and the exported `writeBridge` wrapper
+        // acquires that same non-reentrant lock. Calling it here would block
+        // every sync against its own held lock until the wait ceiling expired —
+        // on the happy path, not on an edge case. The wrapper exists for callers
+        // outside this region; the swap it protects is protected here by the
+        // acquisition above.
         try {
-          await writeBridge(groupDir, {
+          await writeBridgeUnlocked(groupDir, {
             contracts: allContracts,
             crossLinks,
             repoSnapshots,

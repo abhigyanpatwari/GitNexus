@@ -10,13 +10,18 @@ import {
   closeBridgeDb,
   contractNodeId,
   writeBridge,
+  writeBridgeUnlocked,
+  bridgeMetaMatchesFile,
   openBridgeDbReadOnly,
   readBridgeMeta,
   bridgeExists,
   createContractLookupIndex,
   indexContract,
   findContractNode,
+  type WriteBridgeInput,
 } from '../../../src/core/group/bridge-db.js';
+import { getGroupSyncLockDir, withGroupSyncLock } from '../../../src/core/group/group-lock.js';
+import { BRIDGE_SCHEMA_VERSION } from '../../../src/core/group/bridge-schema.js';
 import { retryRename } from '../../../src/storage/fs-atomic.js';
 import type { BridgeHandle, CrossLink } from '../../../src/core/group/types.js';
 import { makeContract } from './fixtures.js';
@@ -516,6 +521,226 @@ describe('writeBridge + read', () => {
     expect(meta.generatedAt).toBe('');
     expect(meta.missingRepos).toEqual([]);
   });
+});
+/* ------------------------------------------------------------------ */
+/*  The bridge swap runs inside the caller's critical section (R9)     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * R9, writer-writer half. The swap and the metadata write are two operations:
+ * `bridge.lbug` is renamed into place first, and only then is `meta.json`
+ * written with the size and mtime of the file it describes. Two writers that
+ * overlap can therefore leave one writer's metadata beside the other's
+ * database. What prevents it is the group sync lock, held across the whole
+ * swap.
+ *
+ * That is why the swap comes in two halves. `writeBridgeUnlocked` assumes the
+ * lock is already held and is what `syncGroup` calls from inside its
+ * `withGroupSyncLock` region; `writeBridge` is the thin acquiring wrapper for
+ * callers that are not already in that region — every caller in this file, and
+ * every other direct caller in the suite. Routing the held-lock caller through
+ * the wrapper instead would be a SECOND acquisition of a non-reentrant
+ * primitive, which does not fail fast: it waits out the ten-minute ceiling
+ * against a lock its own call stack holds. The first case below is the
+ * regression gate for exactly that, and it goes red by timeout.
+ *
+ * SCOPE, so the block is not read as more than it is: this is writer-writer
+ * exclusion only. The reader-side promotion of a leftover backup file runs on
+ * ordinary reads, outside anyone's critical section, and `bridgeMetaMatchesFile`
+ * remains the reader's defense there.
+ *
+ * Nothing here opens `bridge.lbug`. The in-process write-then-read reopen is
+ * the documented LadybugDB Windows limitation this file skips elsewhere
+ * (`itLbugReopen`), so every assertion below is made on file state and on
+ * `bridgeMetaMatchesFile`, which reads `meta.json` and the database's `stat`
+ * and never opens it. No case in this block is platform-skipped, and the
+ * surrounding `writeBridge + read` describe is the unchanged control for the
+ * single-direct-call path.
+ */
+describe("writeBridge — the swap runs inside the caller's critical section (R9)", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bridge-lock-'));
+  });
+
+  afterEach(async () => {
+    await cleanupTempDir(tmpDir);
+  });
+
+  /** One contract, plus a `missingRepos` marker naming the writer that built it. */
+  const payload = (writer: string): WriteBridgeInput => ({
+    contracts: [makeContract({ repo: writer })],
+    crossLinks: [],
+    repoSnapshots: {},
+    missingRepos: [writer],
+  });
+
+  /**
+   * How long a contended writer is given to finish while the lock is held
+   * elsewhere. An uncontended write of this payload takes ~50-110ms in this
+   * suite, so the window is more than fifteen times the work — "still not
+   * finished" is a statement about the lock rather than about how fast the host
+   * is, and a wrapper that does not acquire finishes inside it on any host.
+   */
+  const CONTENDED_WINDOW_MS = 2000;
+
+  /**
+   * A plain existence check. Deliberately NOT `bridgeExists`, which is a READER
+   * and promotes a leftover `bridge.lbug.bak` back into place on its way to an
+   * answer — the reader-side path this block makes no claim about, and one that
+   * would repair the crashed state the last case is trying to hand to the next
+   * writer.
+   */
+  const onDisk = (name: string): Promise<boolean> =>
+    fsp.access(path.join(tmpDir, name)).then(
+      () => true,
+      () => false,
+    );
+
+  it('a caller that already holds the group lock completes the swap without acquiring a second one', async () => {
+    // The production shape: `syncGroup` holds the lock across its whole persist
+    // section and calls the LOCK-FREE half from inside it. `acquireIndexLock` is
+    // not reentrant, so a swap that acquired for itself would not fail fast — it
+    // would wait out GROUP_SYNC_LOCK_TIMEOUT_MS (ten minutes) against a lock this
+    // very call stack is holding. The short per-case timeout is the assertion:
+    // this case goes red by TIMEOUT the moment the inner half starts acquiring.
+    const report = await withGroupSyncLock(tmpDir, () =>
+      writeBridgeUnlocked(tmpDir, payload('held-lock-caller')),
+    );
+
+    expect(report.contractsInserted).toBe(1);
+    expect(await bridgeExists(tmpDir)).toBe(true);
+    const meta = await readBridgeMeta(tmpDir);
+    expect(meta.missingRepos).toEqual(['held-lock-caller']);
+    expect(await bridgeMetaMatchesFile(tmpDir, meta)).toBe(true);
+  }, 15_000);
+
+  it('a direct write cannot enter the swap while another holder has the group lock', async () => {
+    // The exclusion itself, observed as ordering rather than as a race: a holder
+    // takes the group lock, a direct `writeBridge` starts underneath it, and the
+    // write may not complete until the holder lets go. Nothing is mocked — the
+    // holder takes the same real lock the wrapper does.
+    const order: string[] = [];
+    let markHeld!: () => void;
+    const lockIsHeld = new Promise<void>((resolve) => {
+      markHeld = resolve;
+    });
+    let releaseHolder!: () => void;
+    const holderMayRelease = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+
+    const holder = withGroupSyncLock(tmpDir, async () => {
+      markHeld();
+      await holderMayRelease;
+      order.push('holder-released');
+    });
+    await lockIsHeld;
+
+    let settled = false;
+    const contender = writeBridge(tmpDir, payload('contender')).then(() => {
+      order.push('write-finished');
+      settled = true;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, CONTENDED_WINDOW_MS));
+    // The write is still outside the swap. Without the wrapper's acquisition it
+    // has long since finished, and the ordering assertion below inverts.
+    expect(settled).toBe(false);
+    // And it has not written anything either: the swap is what produces both files.
+    expect(await onDisk('bridge.lbug')).toBe(false);
+    expect(await onDisk('meta.json')).toBe(false);
+
+    releaseHolder();
+    await holder;
+    await contender;
+
+    expect(order).toEqual(['holder-released', 'write-finished']);
+    expect((await readBridgeMeta(tmpDir)).missingRepos).toEqual(['contender']);
+  }, 30_000);
+
+  it('after two contended direct writes the metadata on disk vouches for the database on disk', async () => {
+    // Two writers into one group at once. Serialized, the loser's swap completes
+    // in full before the winner's begins, so what is left is one writer's
+    // database under one writer's metadata — never a mixture, and never a stamp
+    // taken from the other writer's file.
+    const [first, second] = await Promise.all([
+      writeBridge(tmpDir, payload('writer-a')),
+      writeBridge(tmpDir, payload('writer-b')),
+    ]);
+    expect(first.contractsInserted).toBe(1);
+    expect(second.contractsInserted).toBe(1);
+
+    const meta = await readBridgeMeta(tmpDir);
+    // Exactly one writer's measurement — not both, not neither.
+    expect(meta.missingRepos).toHaveLength(1);
+    expect(['writer-a', 'writer-b']).toContain(meta.missingRepos[0]);
+    // ...and the stamp it carries describes the database that is actually there.
+    expect(await bridgeMetaMatchesFile(tmpDir, meta)).toBe(true);
+    expect(meta.provenanceUnknown).toBeUndefined();
+    expect(meta.version).toBe(BRIDGE_SCHEMA_VERSION);
+
+    // Nothing is left half-swapped: the backup was consumed and neither staging
+    // directory survives its writer.
+    const left = await fsp.readdir(tmpDir);
+    expect(left.filter((f) => f.startsWith('bridge.lbug.bak'))).toEqual([]);
+    expect(left.filter((f) => f.startsWith('bridge-tmp-'))).toEqual([]);
+  }, 60_000);
+
+  it('the wrapper releases the group lock, so the next writer is not blocked by the last one', async () => {
+    await writeBridge(tmpDir, payload('first'));
+
+    // Sequential, not concurrent. A wrapper that acquired and never released
+    // would not fail here — it would hang until the ten-minute ceiling, which is
+    // what the short per-case timeout turns into a red.
+    await expect(withGroupSyncLock(tmpDir, async () => 'free')).resolves.toBe('free');
+
+    const again = await writeBridge(tmpDir, payload('second'));
+    expect(again.contractsInserted).toBe(1);
+    const meta = await readBridgeMeta(tmpDir);
+    expect(meta.missingRepos).toEqual(['second']);
+    expect(await bridgeMetaMatchesFile(tmpDir, meta)).toBe(true);
+  }, 30_000);
+
+  it('a writer that died mid-swap leaves state the next write recovers from', async () => {
+    await writeBridge(tmpDir, payload('before-the-crash'));
+
+    // Reproduce what a process killed between the two renames leaves behind: the
+    // live database moved aside to `bridge.lbug.bak`, no `bridge.lbug` at all,
+    // the staging directory it never cleaned up, and its lock directory still on
+    // disk. That last one matters on the file backend, where the directory
+    // outlives the holder; on the socket backend the kernel drops the binding
+    // when the holder dies and there is nothing on disk to leave. Pre-creating it
+    // is harmless there and load-bearing here, which is why it is not skipped.
+    await fsp.rename(path.join(tmpDir, 'bridge.lbug'), path.join(tmpDir, 'bridge.lbug.bak'));
+    for (const suffix of ['.wal', '.shadow']) {
+      await fsp
+        .rename(
+          path.join(tmpDir, `bridge.lbug${suffix}`),
+          path.join(tmpDir, `bridge.lbug.bak${suffix}`),
+        )
+        .catch(() => {
+          /* sidecar absent — nothing to move */
+        });
+    }
+    const orphanStaging = path.join(tmpDir, 'bridge-tmp-deadwriter');
+    await fsp.mkdir(orphanStaging, { recursive: true });
+    await fsp.writeFile(path.join(orphanStaging, 'bridge.lbug'), 'half-written');
+    await fsp.mkdir(getGroupSyncLockDir(tmpDir), { recursive: true });
+    expect(await onDisk('bridge.lbug')).toBe(false);
+    expect(await onDisk('bridge.lbug.bak')).toBe(true);
+
+    const report = await writeBridge(tmpDir, payload('after-the-crash'));
+
+    expect(report.contractsInserted).toBe(1);
+    expect(await onDisk('bridge.lbug')).toBe(true);
+    const meta = await readBridgeMeta(tmpDir);
+    expect(meta.missingRepos).toEqual(['after-the-crash']);
+    expect(await bridgeMetaMatchesFile(tmpDir, meta)).toBe(true);
+    // The dead writer's backup is consumed by the recovery, not inherited by it.
+    expect(await onDisk('bridge.lbug.bak')).toBe(false);
+  }, 60_000);
 });
 
 /* ------------------------------------------------------------------ */
