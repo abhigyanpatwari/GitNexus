@@ -143,10 +143,18 @@ export function registerGroupCommands(program: Command): void {
         // before this was tracked has no opinion, while an empty array is a
         // measurement. Printing nothing for both would let an unmeasured sync
         // read as evidence that every index opened cleanly.
+        //
+        // `undefined` covers two ways of not knowing — the field is absent, or
+        // it held something that was not a list of repo paths and `getStatus`
+        // declined to guess. Naming only the first would make a corrupt
+        // registry read as a merely old one, which is the same shape of wrong
+        // answer this command exists to stop giving.
         const unreadable = st.unreadableRepos;
         if (unreadable === undefined) {
           console.log(
-            `\n  Last sync unreadable repos: not recorded (registry predates this field — re-run \`gitnexus group sync\`)`,
+            `\n  Last sync unreadable repos: not recorded` +
+              `\n     (the registry predates this field, or its value could not be read)` +
+              `\n     Re-run \`gitnexus group sync\` to record it.`,
           );
         } else if (unreadable.length > 0) {
           console.log(`\n  Last sync unreadable repos: ${unreadable.join(', ')}`);
