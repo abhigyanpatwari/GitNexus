@@ -13,6 +13,8 @@ import {
   LIST_REPOS_DEFAULT_LIMIT,
   LIST_REPOS_MAX_LIMIT,
 } from '../../src/mcp/tools.js';
+import { getResourceTemplates, type ResourceTemplate } from '../../src/mcp/resources.js';
+import { GROUP_IMPACT_TRUNCATION_REASONS } from '../../src/core/group/types.js';
 
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
@@ -425,3 +427,53 @@ describe('GITNEXUS_TOOLS', () => {
 // `truncationReason`, and the agent-facing surfaces have to teach that
 // vocabulary — an agent that cannot tell a retryable runtime limit from a
 // structural one retries a query that will return the same floor forever (R8).
+describe('cross-repo incompleteness vocabulary', () => {
+  const impactDescription = (): string =>
+    GITNEXUS_TOOLS.find((t) => t.name === 'impact')!.description;
+
+  const groupStatusTemplate = (): ResourceTemplate =>
+    getResourceTemplates().find((t) => t.uriTemplate === 'gitnexus://group/{name}/status')!;
+
+  it('impact description names every truncation reason the group surfaces can return', () => {
+    const d = impactDescription();
+    expect(d).toContain('truncationReason');
+    // Iterates the RUNTIME array on purpose: a hand-listed expectation here
+    // would keep passing after a fourth reason is added and left undescribed,
+    // which is the only failure this guard exists to catch.
+    for (const reason of GROUP_IMPACT_TRUNCATION_REASONS) {
+      expect(
+        d,
+        `truncationReason '${reason}' is not explained in the impact description`,
+      ).toContain(`'${reason}'`);
+    }
+  });
+
+  it("impact description gives 'incomplete-sync' a re-sync remedy, not a retry", () => {
+    const d = impactDescription();
+    // The structural cause and its remedy: the bridge is missing those repos'
+    // contracts, so the same query returns the same floor until a sync fixes it.
+    expect(d).toContain('group_sync');
+    expect(d).toMatch(/'incomplete-sync'[\s\S]{0,600}group_sync/);
+    // ...and truncated:true must no longer read as "the fan-out ran out of
+    // room": on 'incomplete-sync' zero crossings may have been attempted.
+    expect(d).toMatch(/truncated:true does NOT always mean/i);
+  });
+
+  it('group status resource description explains the absent / empty / populated tri-state', () => {
+    const d = groupStatusTemplate().description;
+    expect(d).toContain('unreadableRepos');
+    // Three states, one vocabulary (R8): absent = the sync never recorded which
+    // repos it could read, empty = it measured none, populated = it named them.
+    // Describing it as a two-state turns "unknown" into "none".
+    expect(d).toMatch(/absent/i);
+    expect(d).toMatch(/empty/i);
+    expect(d).toMatch(/populated/i);
+  });
+
+  it('group status resource description tells an absent repo from an unresolvable one', () => {
+    const d = groupStatusTemplate().description;
+    expect(d).toContain('missing');
+    expect(d).toContain('unresolvable');
+    expect(d).toContain('unresolvableReason');
+  });
+});

@@ -137,8 +137,17 @@ export interface RepoHandle {
  * a retry. `'incomplete-sync'` is structural: the bridge itself was built from a
  * sync that could not read every configured repo, so those repos' contracts are
  * absent from every query against it until `gitnexus group sync` succeeds.
+ *
+ * A runtime array rather than a bare type union: every value here has to be
+ * explained on the agent-facing surface that returns it, and only an enumerable
+ * list lets a guard test assert that. A test that hand-lists the members passes
+ * forever once a fourth is added — which is the exact drift the guard exists to
+ * catch, so the list an agent is promised and the list the code can emit have
+ * to come from the same place.
  */
-export type GroupImpactTruncationReason = 'timeout' | 'partial' | 'incomplete-sync';
+export const GROUP_IMPACT_TRUNCATION_REASONS = ['timeout', 'partial', 'incomplete-sync'] as const;
+
+export type GroupImpactTruncationReason = (typeof GROUP_IMPACT_TRUNCATION_REASONS)[number];
 
 export interface GroupImpactResult {
   local: unknown;
