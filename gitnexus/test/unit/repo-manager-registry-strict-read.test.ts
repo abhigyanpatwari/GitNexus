@@ -1,0 +1,82 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { readRegistry } from '../../src/storage/repo-manager.js';
+import { createTempDir } from '../helpers/test-db.js';
+
+/**
+ * `readRegistry` used to answer every failure with `[]`.
+ *
+ * For a listing that is harmless — an unreadable registry and an empty one look
+ * the same in `gitnexus list`, and both print nothing. For a caller that *acts*
+ * on emptiness it is not: `syncGroup` derives `missingRepos` from this list, and
+ * an all-missing sync is allowed to write, so an EACCES after a
+ * `sudo gitnexus analyze`, a truncated registry.json, or an $HOME-on-NFS blip
+ * turned "I could not read the registry" into the factual claim "no repo is
+ * registered" — and replaced a good contracts.json with an empty one at exit 0.
+ *
+ * That is an unreadable condition reported as missing: the same conflation
+ * #3011 removes one stack frame further down, which is why the strict mode
+ * exists and why syncGroup is the caller that opts into it.
+ *
+ * ENOENT stays lenient in both modes. No file genuinely means nothing has been
+ * registered yet, and every first-run path depends on that.
+ */
+
+describe('readRegistry strict mode', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+  let registryPath: string;
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-strict-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    registryPath = path.join(tmpHome.dbPath, 'registry.json');
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+  });
+
+  it('returns [] for a registry that does not exist, strict or not', async () => {
+    await expect(readRegistry()).resolves.toEqual([]);
+    await expect(readRegistry({ strict: true })).resolves.toEqual([]);
+  });
+
+  it('reads a valid registry identically in both modes', async () => {
+    const entries = [
+      {
+        name: 'backend-repo',
+        path: '/repos/backend',
+        storagePath: '/repos/backend/.gitnexus',
+        indexedAt: '2026-01-01T00:00:00.000Z',
+        lastCommit: 'abc123',
+      },
+    ];
+    await fs.writeFile(registryPath, JSON.stringify(entries));
+
+    await expect(readRegistry()).resolves.toEqual(entries);
+    await expect(readRegistry({ strict: true })).resolves.toEqual(entries);
+  });
+
+  it('throws on a corrupt registry instead of reporting an empty one', async () => {
+    await fs.writeFile(registryPath, '{"truncated": ');
+
+    // Lenient stays lenient — existing callers keep the contract they have.
+    await expect(readRegistry()).resolves.toEqual([]);
+    await expect(readRegistry({ strict: true })).rejects.toThrow();
+  });
+
+  it('throws when the registry parses but is not an array', async () => {
+    // A JSON object here is corruption too, and it is the shape most likely to
+    // survive a partial write: `[]` is what the lenient path would return, which
+    // is indistinguishable from a registry that really has no entries.
+    await fs.writeFile(registryPath, '{"repos": []}');
+
+    await expect(readRegistry()).resolves.toEqual([]);
+    await expect(readRegistry({ strict: true })).rejects.toThrow('not a JSON array');
+  });
+});

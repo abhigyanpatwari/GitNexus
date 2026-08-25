@@ -26,7 +26,7 @@ import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
 import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
-import { writeContractRegistry } from './storage.js';
+import { readContractRegistry, writeContractRegistry } from './storage.js';
 import { writeBridge } from './bridge-db.js';
 import type { ContractRegistry } from './types.js';
 
@@ -44,6 +44,22 @@ export interface SyncOptions {
   skipEmbeddings?: boolean;
 }
 
+/**
+ * What happened to `contracts.json` on a given sync.
+ *
+ * - `written`       — the contracts extracted by this run replaced the file.
+ * - `preserved`     — nothing could be read, so the previous run's `contracts`,
+ *                     `crossLinks` and `repoSnapshots` were kept verbatim and
+ *                     only the diagnostic fields (`missingRepos` /
+ *                     `unreadableRepos`) were refreshed to describe this run.
+ *                     Also reported when there was no prior file to preserve,
+ *                     since the invariant is the same: this run replaced
+ *                     nothing with an empty set.
+ * - `not-attempted` — the caller asked not to write (`skipWrite`, or no
+ *                     `groupDir` was supplied).
+ */
+export type RegistryWriteOutcome = 'written' | 'preserved' | 'not-attempted';
+
 export interface SyncResult {
   contracts: StoredContract[];
   crossLinks: CrossLink[];
@@ -53,6 +69,12 @@ export interface SyncResult {
   /** Configured repos that ARE registered but whose index could not be opened. */
   unreadableRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
+  /**
+   * What this sync did to `contracts.json`. Callers must not announce a write
+   * they did not get: without this, `group sync` printed "Wrote contracts.json
+   * (0 contracts, 0 cross-links)" about a file it had deliberately left alone.
+   */
+  registryOutcome: RegistryWriteOutcome;
 }
 
 export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry[]): string {
@@ -181,7 +203,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     if (eo && eo.length === 0) {
       autoContracts = await (eo as () => Promise<StoredContract[]>)();
     } else {
-      registryEntries = await readRegistry();
+      // Strict: an unreadable registry must not present as an empty one here.
+      // `missingRepos` is derived from this list, and an all-missing sync is
+      // allowed to write — so a lenient `[]` on EACCES/corruption would replace
+      // a good contracts.json with an empty one and exit 0 (#3011, one frame up).
+      registryEntries = await readRegistry({ strict: true });
       const entries = registryEntries;
       const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
       const httpEx = new HttpRouteExtractor();
@@ -199,6 +225,13 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
         const poolId = handle.id;
         const lbugPath = path.join(handle.storagePath, 'lbug');
+        // Staged per repo, not appended straight to `autoContracts`. Extractors
+        // run in sequence and any one of them can throw; appending as we go left
+        // a repo whose HTTP extractor succeeded and whose gRPC extractor failed
+        // contributing a partial set to the registry while the catch below told
+        // the operator its "contracts are omitted from this sync". Per-repo
+        // output is now all-or-nothing, which is what that message describes.
+        const repoContracts: StoredContract[] = [];
         try {
           await initLbug(poolId, lbugPath);
           // No pin here: contract extraction below uses `executor` while this
@@ -218,7 +251,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           if (config.detect.http) {
             const extracted = await httpEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
-              autoContracts.push({
+              repoContracts.push({
                 ...c,
                 repo: groupPath,
                 service: assignService(c.symbolRef.filePath, boundaries),
@@ -229,7 +262,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           if (config.detect.grpc) {
             const extracted = await grpcEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
-              autoContracts.push({
+              repoContracts.push({
                 ...c,
                 repo: groupPath,
                 service: assignService(c.symbolRef.filePath, boundaries),
@@ -240,7 +273,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           if (config.detect.thrift) {
             const extracted = await thriftEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
-              autoContracts.push({
+              repoContracts.push({
                 ...c,
                 repo: groupPath,
                 service: assignService(c.symbolRef.filePath, boundaries),
@@ -251,7 +284,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           if (config.detect.topics) {
             const extracted = await topicEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
-              autoContracts.push({
+              repoContracts.push({
                 ...c,
                 repo: groupPath,
                 service: assignService(c.symbolRef.filePath, boundaries),
@@ -262,7 +295,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           if (config.detect.includes) {
             const extracted = await includeEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
-              autoContracts.push({
+              repoContracts.push({
                 ...c,
                 repo: groupPath,
                 service: assignService(c.symbolRef.filePath, boundaries),
@@ -285,14 +318,22 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
               lastCommit: e?.lastCommit || '',
             };
           }
+
+          // Every enabled extractor for this repo succeeded — commit its
+          // contracts. Reached only on the non-throwing path.
+          autoContracts.push(...repoContracts);
         } catch (err) {
           // This spans initLbug plus all contract extraction for the repo. The
           // error used to be discarded entirely, so the only trace of (say) a
           // storage-version mismatch was an empty contracts.json and a later
           // `group status` claiming the repo was missing. Surface it.
-          const msg = err instanceof Error ? err.message : String(err);
+          // Pass the Error itself, not `err.message`: pino's default `err`
+          // serializer captures `.stack` and `.cause` only from a real Error,
+          // and nothing else in this catch retains the original — for a change
+          // whose entire purpose is surfacing a swallowed error, discarding the
+          // stack before logging it defeats the point.
           logger.warn(
-            { err: msg, repo: regName, groupPath, lbugPath },
+            { err, repo: regName, groupPath, lbugPath },
             "⚠️ Could not read this repo's index; its contracts are omitted from this sync.",
           );
           unreadableRepos.push(groupPath);
@@ -428,15 +469,48 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     unreadableRepos.length > 0 &&
     unreadableRepos.length + missingRepos.length === configuredRepoCount;
 
-  if (everyRepoFailed) {
+  // Both the warning and the guard belong to the persisting path only. Gating
+  // just on `everyRepoFailed` told a `skipWrite` caller that an existing
+  // contracts.json was being left untouched — about a file the call was never
+  // going to touch, and which for most dry-run callers does not exist.
+  const groupDir = opts?.groupDir;
+  const persisting = Boolean(groupDir) && !opts?.skipWrite;
+  let registryOutcome: RegistryWriteOutcome = 'not-attempted';
+
+  if (everyRepoFailed && persisting) {
     logger.warn(
       { unreadableRepos, missingRepos },
-      '⚠️ No repo in this group could be read; leaving the existing contracts.json untouched.',
+      '⚠️ No repo in this group could be read; keeping the contracts from the previous sync.',
     );
   }
 
-  if (opts?.groupDir && !opts.skipWrite && !everyRepoFailed) {
-    await writeContractRegistry(opts.groupDir, registry);
+  if (groupDir && persisting && everyRepoFailed) {
+    registryOutcome = 'preserved';
+    // A targeted skip, not a total one. Refusing to write at all kept the good
+    // contracts but also threw away the diagnostic describing the run that just
+    // happened: `group status` then read the PREVIOUS sync's file, found no
+    // `unreadableRepos`, and reported a healthy group — or, worse, printed the
+    // previous run's unreadable list as if it were this one's.
+    //
+    // So carry `contracts` / `crossLinks` / `repoSnapshots` forward verbatim and
+    // refresh only the two diagnostic fields. `generatedAt` is carried forward
+    // too: it dates the contracts, which are still the previous run's, and
+    // moving it would claim this run produced them.
+    //
+    // If the prior file is absent (null) or unparseable (throws), write nothing
+    // — an unreadable prior registry is not a thing to rewrite from.
+    const prior = await readContractRegistry(groupDir).catch(() => null);
+    if (prior) {
+      await writeContractRegistry(groupDir, { ...prior, missingRepos, unreadableRepos });
+    }
+    // The bridge is deliberately untouched: it still matches the contracts that
+    // were preserved, so rebuilding it here would be the one write that could
+    // lose them.
+  }
+
+  if (groupDir && persisting && !everyRepoFailed) {
+    await writeContractRegistry(groupDir, registry);
+    registryOutcome = 'written';
     // writeBridge failure (disk full, schema error, permission denied) must
     // not mask the registry — contracts.json was just written successfully
     // and is the canonical source of truth. A stale or absent bridge
@@ -446,16 +520,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     // (PR #1156 follow-up review: writeBridge error in sync.ts propagates
     // uncaught.)
     try {
-      await writeBridge(opts.groupDir, {
+      await writeBridge(groupDir, {
         contracts: allContracts,
         crossLinks,
         repoSnapshots,
         missingRepos,
+        unreadableRepos,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.warn(
-        { err: msg, groupDir: opts.groupDir },
+        { err: msg, groupDir },
         '⚠️ writeBridge failed; contracts.json is intact but bridge.lbug is stale. Re-run `gitnexus group sync` to retry.',
       );
     }
@@ -468,5 +543,6 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     missingRepos,
     unreadableRepos,
     repoSnapshots,
+    registryOutcome,
   };
 }

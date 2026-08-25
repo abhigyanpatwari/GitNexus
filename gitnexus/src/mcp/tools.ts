@@ -851,9 +851,14 @@ WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single
     name: 'group_sync',
     description: `Rebuild the Contract Registry (contracts.json) for a group: extract HTTP contracts, apply manifest links, exact-match cross-links.
 
-WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
-    // Writes contracts.json on every call; conservatively non-idempotent
-    // even though output is deterministic for identical input.
+WHEN TO USE: After changing group.yaml or re-indexing member repos.
+
+READ THE RESULT: \`missingRepos\` are configured repos with no entry in the registry (index them, or drop them from group.yaml); \`unreadableRepos\` ARE registered but their index could not be opened (version skew, lock, corruption) — their contracts are absent from this sync, so a following group_impact / group_contracts is a lower bound, not a verdict. \`registryOutcome\` says what happened to the file: 'written', or 'preserved' when nothing could be read and the previous sync's contracts were kept.`,
+    // Usually writes contracts.json, so conservatively non-idempotent even
+    // though output is deterministic for identical input. It does NOT write
+    // when no configured repo could be read: that path preserves the previous
+    // registry's contracts and refreshes only its diagnostic fields
+    // (`registryOutcome: 'preserved'`).
     annotations: DESTRUCTIVE_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',

@@ -296,7 +296,15 @@ async function loadContractRegistryResilient(
         ? (base.repoSnapshots as Record<string, { indexedAt: string; lastCommit: string }>)
         : {},
     missingRepos: Array.isArray(base.missingRepos) ? (base.missingRepos as string[]) : [],
-    unreadableRepos: Array.isArray(base.unreadableRepos) ? (base.unreadableRepos as string[]) : [],
+    // Spread, not `?? []`. `ContractRegistry.unreadableRepos` documents absence
+    // as "not recorded", and a registry written before the field existed has no
+    // opinion about which indexes were readable. Normalizing that to `[]` hands
+    // the caller "the last sync found none unreadable" — an unmeasured state
+    // rendered as a clean result, which is the same conflation this whole
+    // change removes.
+    ...(Array.isArray(base.unreadableRepos)
+      ? { unreadableRepos: base.unreadableRepos as string[] }
+      : {}),
     contracts,
     crossLinks,
   };
@@ -361,6 +369,10 @@ export class GroupService {
       unmatched: result.unmatched.length,
       missingRepos: result.missingRepos,
       unreadableRepos: result.unreadableRepos,
+      // An agent that calls group_sync and then group_contracts a moment later
+      // can otherwise see contract counts that disagree with this payload, with
+      // nothing here explaining why the write was skipped.
+      registryOutcome: result.registryOutcome,
     };
   }
 
@@ -613,8 +625,20 @@ export class GroupService {
     return {
       group: name,
       lastSync: registry?.generatedAt || null,
-      missingRepos: registry?.missingRepos || [],
-      unreadableRepos: registry?.unreadableRepos || [],
+      // `readContractRegistry` is a bare `JSON.parse(...) as ContractRegistry`,
+      // so both of these are whatever the file happened to hold — the
+      // validation in `loadContractRegistryResilient` never runs on this path.
+      // A `contracts.json` carrying a string here reached `cli/group.ts` and
+      // died in `.join(', ')`, i.e. an unreadable registry crashing the command
+      // whose job is to explain unreadable things.
+      missingRepos: Array.isArray(registry?.missingRepos) ? registry.missingRepos : [],
+      // Left `undefined` when the registry does not record it — absent means
+      // "not recorded", not "none" (see ContractRegistry). A corrupt non-array
+      // value is also "not recorded": it is a value we could not read, and
+      // reporting it as an empty list would be the same conflation again.
+      unreadableRepos: Array.isArray(registry?.unreadableRepos)
+        ? registry.unreadableRepos
+        : undefined,
       repos: repoStatuses,
     };
   }

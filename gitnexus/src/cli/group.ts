@@ -130,7 +130,7 @@ export function registerGroupCommands(program: Command): void {
         console.log('  Repo index / contracts staleness:');
         for (const [repoPath, row] of Object.entries(st.repos || {})) {
           if (row.missing) {
-            console.log(`  ${repoPath.padEnd(25)} MISSING   (not in registry or unreadable)`);
+            console.log(`  ${repoPath.padEnd(25)} MISSING   (no entry in the registry)`);
             continue;
           }
           const idx = row.indexStale
@@ -139,8 +139,16 @@ export function registerGroupCommands(program: Command): void {
           const ctr = row.contractsStale ? ' CONTRACTS_STALE' : '';
           console.log(`  ${repoPath.padEnd(25)} ${idx}${ctr}`);
         }
-        const unreadable = st.unreadableRepos || [];
-        if (unreadable.length > 0) {
+        // `undefined` and `[]` are different answers here: a registry written
+        // before this was tracked has no opinion, while an empty array is a
+        // measurement. Printing nothing for both would let an unmeasured sync
+        // read as evidence that every index opened cleanly.
+        const unreadable = st.unreadableRepos;
+        if (unreadable === undefined) {
+          console.log(
+            `\n  Last sync unreadable repos: not recorded (registry predates this field — re-run \`gitnexus group sync\`)`,
+          );
+        } else if (unreadable.length > 0) {
           console.log(`\n  Last sync unreadable repos: ${unreadable.join(', ')}`);
         }
         if ((st.missingRepos || []).length > 0) {
@@ -184,9 +192,13 @@ export function registerGroupCommands(program: Command): void {
         // or empty contract count, so they are reported before the counts —
         // otherwise a run that read nothing looks exactly like a clean run.
         if (result.unreadableRepos.length > 0) {
+          // No "re-run with GITNEXUS_LOG_LEVEL=warn" hint: the default level is
+          // `info`, and pino emits `warn` (40) at `info` (30), so the reason was
+          // already printed by this same run — raising the level to `warn` would
+          // only suppress the surrounding `info` output.
           console.log(
             `\n  ⚠️ Could not read the index for: ${result.unreadableRepos.join(', ')}` +
-              `\n     Their contracts are omitted. Re-run with GITNEXUS_LOG_LEVEL=warn to see why,` +
+              `\n     None of their contracts are included in this sync (the warning above says why),` +
               `\n     or check \`gitnexus doctor\` in the affected repo.`,
           );
         }
@@ -200,9 +212,22 @@ export function registerGroupCommands(program: Command): void {
         const exactLinks = result.crossLinks.filter((l) => l.matchType === 'exact');
         console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);
         console.log(`  unmatched: ${result.unmatched.length} contracts`);
-        console.log(
-          `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
-        );
+        // Driven by what actually happened to the file. This line used to be
+        // unconditional, so a run that deliberately preserved the previous
+        // registry still announced `Wrote contracts.json (0 contracts, 0
+        // cross-links)` — a confident false statement about persisted state, on
+        // the exact path this command exists to make legible.
+        if (result.registryOutcome === 'written') {
+          console.log(
+            `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
+          );
+        } else if (result.registryOutcome === 'preserved') {
+          console.log(
+            `\nDid NOT write contracts.json — no repo in this group could be read.` +
+              `\n  The contracts from the previous sync are preserved; only the unreadable/missing` +
+              `\n  repo lists were refreshed. Fix the repos above and re-run.`,
+          );
+        }
       }
     });
 
