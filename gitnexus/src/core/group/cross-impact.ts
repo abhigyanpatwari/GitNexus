@@ -7,6 +7,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type {
   BridgeHandle,
+  BridgeMeta,
   ContractType,
   CrossRepoImpact,
   GroupConfig,
@@ -29,7 +30,6 @@ import {
   getCachedBridgeReadOnly,
   queryBridge,
   readBridgeMeta,
-  type ReadBridgeMeta,
 } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 import { compareCodeUnits } from '../../lib/utils.js';
@@ -420,7 +420,7 @@ function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): v
 
 export async function ensureBridgeReady(
   groupDir: string,
-): Promise<{ handle: BridgeHandle; meta: ReadBridgeMeta } | { error: string }> {
+): Promise<{ handle: BridgeHandle; meta: BridgeMeta } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
   if (meta.version > 0 && meta.version !== BRIDGE_SCHEMA_VERSION) {
     return {

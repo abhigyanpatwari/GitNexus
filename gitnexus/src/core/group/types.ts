@@ -259,6 +259,21 @@ export interface BridgeMeta {
    */
   bridgeSize?: number;
   bridgeMtimeMs?: number;
+  /**
+   * Reader-side only: true when `meta.json` parsed but one of its repo lists
+   * held a value that was not a list of repo paths.
+   *
+   * NEVER PERSISTED. `readBridgeMeta` sets it to describe what it found in the
+   * file; `writeBridgeMeta`'s only caller builds a fresh literal, so it cannot
+   * round-trip back to disk. It lives on this interface rather than on a
+   * reader-only subtype so that `readBridgeMeta` keeps the exact signature
+   * every caller already compiles against.
+   *
+   * The unusable value is dropped rather than normalized, so `missingRepos: []`
+   * on such a result is inert filler — this flag, not the empty list, is what
+   * says the bridge's provenance is unknown.
+   */
+  repoListsUnreadable?: boolean;
   missingRepos: string[];
   /**
    * Configured repos the sync that produced this bridge could not extract from

@@ -676,27 +676,6 @@ export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta):
 }
 
 /**
- * What `readBridgeMeta` answers: the metadata, plus the one thing the file
- * itself cannot say — whether the repo lists in it were readable at all.
- *
- * A field that is simply ABSENT is "not recorded": `unreadableRepos` is
- * optional, and metadata written before it existed has no opinion about which
- * indexes opened. A field that is PRESENT but not a list of repo paths is a
- * different state again — a measurement we could not take — and callers whose
- * answer depends on the list (cross-repo impact reads completeness from it)
- * must report a floor rather than a verdict.
- */
-export interface ReadBridgeMeta extends BridgeMeta {
-  /**
-   * True when `meta.json` parsed but one of its repo lists held a value this
-   * reader could not use. The unusable value is dropped rather than passed on,
-   * so `missingRepos: []` on such a result is inert filler — this flag, not the
-   * empty list, is what says the bridge's provenance is unknown.
-   */
-  repoListsUnreadable?: boolean;
-}
-
-/**
  * A recorded repo list is an array of strings. Anything else — a bare string,
  * an object, an array of objects — is a value we could not read, which is "not
  * recorded", not "none".
@@ -723,8 +702,8 @@ function recordedRepoList(value: unknown): string[] | undefined {
  * released. A malformed file is a reason to answer "provenance unknown", never
  * a reason to crash the question.
  */
-export async function readBridgeMeta(groupDir: string): Promise<ReadBridgeMeta> {
-  const unreadable: ReadBridgeMeta = { version: 0, generatedAt: '', missingRepos: [] };
+export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
+  const unreadable: BridgeMeta = { version: 0, generatedAt: '', missingRepos: [] };
   let parsed: unknown;
   try {
     const content = await fsp.readFile(path.join(groupDir, 'meta.json'), 'utf-8');
@@ -748,7 +727,7 @@ export async function readBridgeMeta(groupDir: string): Promise<ReadBridgeMeta> 
     (raw.missingRepos !== undefined && missingRepos === undefined) ||
     (raw.unreadableRepos !== undefined && unreadableRepos === undefined);
 
-  const meta: ReadBridgeMeta = {
+  const meta: BridgeMeta = {
     ...raw,
     // A version that is not a number cannot be compared against
     // BRIDGE_SCHEMA_VERSION; `0` is this file's existing word for "provenance
