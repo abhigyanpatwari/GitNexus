@@ -18,6 +18,7 @@ import {
 import {
   buildJsRepoFacts,
   extractJsModuleFacts,
+  isAxiosNamespace,
   isHttpClientRef,
   resolveJsPathExpression,
   type JsModuleFacts,
@@ -730,7 +731,15 @@ function scanBundle(
     // contract set (`sync.ts` catches a throw here as an unexplained "missing
     // repo", silently, for every contract type).
     try {
-      if (receiver !== 'axios') {
+      // The receiver is admitted when it IS the axios module — the bare
+      // spelling this pattern trusted before it was widened, or a declared
+      // import/require of 'axios' under any name — or when it traces to an
+      // `axios.create(...)` instance. Nothing else.
+      const isModule =
+        facts === null || fileKey === undefined
+          ? receiver === 'axios'
+          : isAxiosNamespace(fileKey, receiver, facts);
+      if (!isModule) {
         if (!facts || fileKey === undefined) continue;
         if (!isHttpClientRef(fileKey, receiver, facts)) continue;
       }
@@ -739,7 +748,7 @@ function scanBundle(
         pathNode,
         facts,
         fileKey,
-        receiver === 'axios' && (pathNode.type === 'string' || pathNode.type === 'template_string'),
+        isModule && (pathNode.type === 'string' || pathNode.type === 'template_string'),
       );
       if (path === null) continue;
 

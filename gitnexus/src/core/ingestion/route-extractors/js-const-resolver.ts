@@ -87,6 +87,18 @@ export interface JsModuleFacts {
    * chains are followed at query time by {@link isHttpClientRef}, not here.
    */
   readonly clients: Set<string>;
+  /**
+   * True when this file declares its own top-level binding named `axios` that
+   * is NOT the axios module.
+   *
+   * The bare spelling `axios` is trusted without proof — it predates this
+   * binding and is what the original query matched on. That is right for
+   * `import axios from 'axios'` and for `const axios = require('axios')`, and
+   * wrong for `const axios = fakeFactory`, where the spelling is the only
+   * evidence and it is false. One flag, because the shortcut only ever applies
+   * to this one name.
+   */
+  readonly axiosShadowed: boolean;
 }
 
 /**
@@ -456,6 +468,7 @@ const MAX_CLIENT_WRAP_DEPTH = 4;
 function isAxiosCreateCall(
   node: Parser.SyntaxNode,
   imports: ReadonlyMap<string, { module: string; originalName: string }>,
+  axiosShadowed: boolean,
 ): boolean {
   if (node.type !== 'call_expression') return false;
   const fn = node.childForFieldName('function');
@@ -465,8 +478,21 @@ function isAxiosCreateCall(
   if (!object || object.type !== 'identifier') return false;
   // `import axios from 'axios'` is the overwhelming convention, but the local
   // name is the importer's choice (`import ax from 'axios'`), so trust the
-  // module specifier over the spelling whenever the file declares one.
-  return object.text === 'axios' || imports.get(object.text)?.module === 'axios';
+  // module specifier over the spelling whenever the file declares one. The
+  // bare spelling is the fallback, and it is only evidence while the file has
+  // not bound that name to something else.
+  if (imports.get(object.text)?.module === 'axios') return true;
+  return object.text === 'axios' && !axiosShadowed;
+}
+
+/** The module a `require('…')` initializer names, or `null` if it is not one. */
+function requireSpecifierOf(node: Parser.SyntaxNode): string | null {
+  const n = unwrapTsExpression(node);
+  if (n.type !== 'call_expression') return null;
+  if (n.childForFieldName('function')?.text !== 'require') return null;
+  const args = n.childForFieldName('arguments');
+  const first = args?.namedChild(0);
+  return first ? literalStringOf(first) : null;
 }
 
 /**
@@ -506,12 +532,13 @@ function isAxiosCreateCall(
 function bindsAxiosClient(
   node: Parser.SyntaxNode,
   imports: ReadonlyMap<string, { module: string; originalName: string }>,
+  axiosShadowed: boolean,
   depth = 0,
 ): boolean {
   if (depth > MAX_CLIENT_WRAP_DEPTH) return false;
   const n = unwrapTsExpression(node);
 
-  if (isAxiosCreateCall(n, imports)) return true;
+  if (isAxiosCreateCall(n, imports, axiosShadowed)) return true;
 
   // Transparent wrappers around the value itself.
   if (
@@ -520,7 +547,7 @@ function bindsAxiosClient(
     n.type === 'non_null_expression'
   ) {
     const inner = n.namedChild(0);
-    return inner !== null && bindsAxiosClient(inner, imports, depth + 1);
+    return inner !== null && bindsAxiosClient(inner, imports, axiosShadowed, depth + 1);
   }
 
   if (n.type !== 'call_expression') return false;
@@ -528,7 +555,7 @@ function bindsAxiosClient(
   const args = n.childForFieldName('arguments');
   if (!args) return false;
   for (const arg of args.namedChildren) {
-    if (argumentHoldsAxiosClient(arg, imports, depth + 1)) return true;
+    if (argumentHoldsAxiosClient(arg, imports, axiosShadowed, depth + 1)) return true;
   }
   return false;
 }
@@ -546,24 +573,25 @@ function bindsAxiosClient(
 function argumentHoldsAxiosClient(
   node: Parser.SyntaxNode,
   imports: ReadonlyMap<string, { module: string; originalName: string }>,
+  axiosShadowed: boolean,
   depth: number,
 ): boolean {
   if (depth > MAX_CLIENT_WRAP_DEPTH) return false;
   const n = unwrapTsExpression(node);
-  if (bindsAxiosClient(n, imports, depth)) return true;
+  if (bindsAxiosClient(n, imports, axiosShadowed, depth)) return true;
 
   if (n.type === 'object') {
     for (const pair of n.namedChildren) {
       if (pair.type !== 'pair') continue;
       const value = pair.childForFieldName('value');
-      if (value && argumentHoldsAxiosClient(value, imports, depth + 1)) return true;
+      if (value && argumentHoldsAxiosClient(value, imports, axiosShadowed, depth + 1)) return true;
     }
     return false;
   }
 
   if (n.type === 'array') {
     for (const element of n.namedChildren) {
-      if (argumentHoldsAxiosClient(element, imports, depth + 1)) return true;
+      if (argumentHoldsAxiosClient(element, imports, axiosShadowed, depth + 1)) return true;
     }
   }
   return false;
@@ -580,10 +608,11 @@ function recordBinding(
   exprs: Map<string, readonly Operand[]>,
   clients: Set<string>,
   imports: ReadonlyMap<string, { module: string; originalName: string }>,
+  axiosShadowed: boolean,
 ): void {
   const value = unwrapTsExpression(valueNode);
 
-  if (bindsAxiosClient(value, imports)) {
+  if (bindsAxiosClient(value, imports, axiosShadowed)) {
     clients.add(name);
     return;
   }
@@ -617,6 +646,7 @@ function recordDeclaration(
   exprs: Map<string, readonly Operand[]>,
   clients: Set<string>,
   imports: ReadonlyMap<string, { module: string; originalName: string }>,
+  axiosShadowed: boolean,
   exports: Map<string, string> | null,
 ): void {
   for (const declarator of decl.namedChildren) {
@@ -624,7 +654,7 @@ function recordDeclaration(
     const nameNode = declarator.childForFieldName('name');
     const valueNode = declarator.childForFieldName('value');
     if (!nameNode || nameNode.type !== 'identifier' || !valueNode) continue;
-    recordBinding(nameNode.text, valueNode, literals, exprs, clients, imports);
+    recordBinding(nameNode.text, valueNode, literals, exprs, clients, imports, axiosShadowed);
     exports?.set(nameNode.text, nameNode.text);
   }
 }
@@ -681,13 +711,41 @@ export function extractJsModuleFacts(tree: Parser.Tree): JsModuleFacts {
   // `bindsAxiosClient` consults `imports` as each declaration is recorded, so
   // in source order an import declared later was simply not there yet and the
   // client went unproven.
+  //
+  // CommonJS `const ax = require('axios')` is collected here too. It is the
+  // same binding by another spelling, and without it an aliased require
+  // resolved to nothing at all while the un-aliased one worked only because
+  // `axios` happens to be the name the spelling shortcut trusts.
+  let axiosShadowed = false;
   for (const stmt of tree.rootNode.namedChildren) {
-    if (stmt.type === 'import_statement') recordImportStatement(stmt, imports);
+    if (stmt.type === 'import_statement') {
+      recordImportStatement(stmt, imports);
+      continue;
+    }
+    const decl = stmt.type === 'export_statement' ? stmt.childForFieldName('declaration') : stmt;
+    if (
+      decl === null ||
+      (decl.type !== 'lexical_declaration' && decl.type !== 'variable_declaration')
+    ) {
+      continue;
+    }
+    for (const declarator of decl.namedChildren) {
+      if (declarator.type !== 'variable_declarator') continue;
+      const nameNode = declarator.childForFieldName('name');
+      const valueNode = declarator.childForFieldName('value');
+      if (!nameNode || nameNode.type !== 'identifier') continue;
+      const required = valueNode === null ? null : requireSpecifierOf(valueNode);
+      if (required !== null) {
+        imports.set(nameNode.text, { module: required, originalName: 'default' });
+      } else if (nameNode.text === 'axios') {
+        axiosShadowed = true;
+      }
+    }
   }
 
   for (const stmt of tree.rootNode.namedChildren) {
     if (stmt.type === 'lexical_declaration' || stmt.type === 'variable_declaration') {
-      recordDeclaration(stmt, literals, exprs, clients, imports, null);
+      recordDeclaration(stmt, literals, exprs, clients, imports, axiosShadowed, null);
       continue;
     }
 
@@ -706,7 +764,7 @@ export function extractJsModuleFacts(tree: Parser.Tree): JsModuleFacts {
         declaration.type === 'lexical_declaration' ||
         declaration.type === 'variable_declaration'
       ) {
-        recordDeclaration(declaration, literals, exprs, clients, imports, exports);
+        recordDeclaration(declaration, literals, exprs, clients, imports, axiosShadowed, exports);
       }
       continue;
     }
@@ -716,7 +774,7 @@ export function extractJsModuleFacts(tree: Parser.Tree): JsModuleFacts {
       if (value.type === 'identifier') {
         exports.set('default', value.text);
       } else {
-        recordBinding(DEFAULT_LOCAL, value, literals, exprs, clients, imports);
+        recordBinding(DEFAULT_LOCAL, value, literals, exprs, clients, imports, axiosShadowed);
         exports.set('default', DEFAULT_LOCAL);
       }
       continue;
@@ -755,7 +813,7 @@ export function extractJsModuleFacts(tree: Parser.Tree): JsModuleFacts {
     }
   }
 
-  return { constants: { literals, exprs, imports }, exports, starExports, clients };
+  return { constants: { literals, exprs, imports }, exports, starExports, clients, axiosShadowed };
 }
 
 /**
@@ -1107,6 +1165,25 @@ export function resolveJsPathExpression(
  * HTTP-verb method — would classify every Express `router.get('/x', handler)`
  * provider as a consumer of itself.
  */
+/**
+ * Whether `name`, as a receiver in `fileKey`, IS the axios module — as opposed
+ * to an instance built from it, which is {@link isHttpClientRef}'s question.
+ *
+ * Two ways to be it. The bare spelling `axios` predates the widened query — it
+ * is what the original `(#eq? @obj "axios")` pattern matched — so it stays
+ * trusted by default, and a file with no facts keeps exactly that behavior; it
+ * is withdrawn only where the file itself binds that name to something else.
+ * The other way is a declared import or `require` of `'axios'` under any local
+ * name, which is proof rather than convention and covers the aliased form the
+ * spelling rule cannot see.
+ */
+export function isAxiosNamespace(fileKey: string, name: string, facts: JsRepoFacts): boolean {
+  const file = facts.byFile.get(fileKey);
+  if (file === undefined) return name === 'axios';
+  if (file.constants.imports.get(name)?.module === 'axios') return true;
+  return name === 'axios' && !file.axiosShadowed;
+}
+
 export function isHttpClientRef(fileKey: string, name: string, facts: JsRepoFacts): boolean {
   let currentKey = fileKey;
   let currentName = name;

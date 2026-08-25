@@ -649,6 +649,74 @@ describe('JS/TS HTTP consumer resolution', () => {
     );
   });
 
+  it('does NOT trust the spelling `axios` when the file binds that name itself', () => {
+    const detections = scanRepo(
+      {
+        'src/shadow.ts': `
+          const axios = fakeFactory;
+          const api = axios.create();
+          export const a = () => api.get('/x');
+          export const b = () => axios.get('/y');
+        `,
+        'src/mock.ts': `
+          const axios = { create: () => ({ get: (u: string) => u }) };
+          const api = axios.create();
+          export const c = () => api.get('/z');
+        `,
+      },
+      'src/shadow.ts',
+    );
+
+    // The spelling is the only evidence here, and it is false.
+    expect(consumers(detections)).toEqual([]);
+    expect(
+      consumers(
+        scanRepo(
+          {
+            'src/mock.ts': `
+              const axios = { create: () => ({ get: (u: string) => u }) };
+              const api = axios.create();
+              export const c = () => api.get('/z');
+            `,
+          },
+          'src/mock.ts',
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('resolves a CommonJS require of axios, aliased or not', () => {
+    const cjs = (local: string) => `
+      const ${local} = require('axios');
+      const api = ${local}.create({ baseURL: '/' });
+      export const viaInstance = () => api.get('/instance');
+      export const viaModule = () => ${local}.get('/module');
+    `;
+
+    for (const local of ['axios', 'ax']) {
+      const detections = scanRepo({ 'src/cjs.ts': cjs(local) }, 'src/cjs.ts');
+      expect(consumers(detections).map((d) => d.path)).toEqual(
+        expect.arrayContaining(['/instance', '/module']),
+      );
+    }
+  });
+
+  it('resolves the axios module used directly under an import alias', () => {
+    const detections = scanRepo(
+      {
+        'src/aliased.ts': `
+          import ax from 'axios';
+          export const f = () => ax.get('/health');
+        `,
+      },
+      'src/aliased.ts',
+    );
+
+    expect(consumers(detections)).toContainEqual(
+      expect.objectContaining({ method: 'GET', path: '/health' }),
+    );
+  });
+
   it('refuses a name two `export *` barrels both provide', () => {
     const detections = scanRepo(
       {
