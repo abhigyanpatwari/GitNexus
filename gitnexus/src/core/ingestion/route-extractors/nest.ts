@@ -20,22 +20,55 @@
  * class. As there, the prefix travels on `ExtractedDecoratorRoute.prefix` and
  * the routes phase performs the join via `normalizeExtractedRoutePath`, so
  * NestJS routes are keyed identically to every other framework's.
+ *
+ * Known limitation: the URLs produced here are CONTROLLER-RELATIVE. A global
+ * prefix (`app.setGlobalPrefix('api')`) and URI versioning are applied by the
+ * bootstrap file, not by any decorator this file can see, so neither is
+ * reflected — a route served at `/api/v1/venues/search` is stored as
+ * `/venues/search`. The module's "drop rather than guess" floor is unavailable
+ * for it: the evidence lives in a different file, so honouring it would mean
+ * dropping every Nest route in every repo. `spring.ts` has the same hole for
+ * `server.servlet.context-path`; `ExtractedDecoratorRoute.prefix` is the
+ * channel a cross-file follow-up would use, the way FastAPI resolves its mount.
  */
 
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
+import { plainString } from './data-route-table.js';
 
-/** NestJS method decorators → HTTP verb. */
-const NEST_METHOD_DECORATORS: Record<string, string> = {
-  Get: 'GET',
-  Post: 'POST',
-  Put: 'PUT',
-  Patch: 'PATCH',
-  Delete: 'DELETE',
-  Head: 'HEAD',
-  Options: 'OPTIONS',
-  All: '*',
-};
+/**
+ * NestJS method decorators → HTTP verb. A Map rather than an object literal
+ * because the lookup key is an arbitrary decorator name read out of source: a
+ * plain object answers `@toString()` with `Object.prototype.toString`, which is
+ * truthy and would be emitted verbatim as the route's httpMethod.
+ */
+const NEST_METHOD_DECORATORS: ReadonlyMap<string, string> = new Map([
+  ['Get', 'GET'],
+  ['Post', 'POST'],
+  ['Put', 'PUT'],
+  ['Patch', 'PATCH'],
+  ['Delete', 'DELETE'],
+  ['Head', 'HEAD'],
+  ['Options', 'OPTIONS'],
+  ['All', '*'],
+  // `@Sse` mounts a real GET endpoint that streams; it is as much a route as
+  // `@Get`. `@Search` is deliberately absent — `normalizeRouteMethod` rejects
+  // SEARCH as non-standard and would key the route by URL alone, colliding
+  // with every other verb on that path.
+  ['Sse', 'GET'],
+]);
+
+/**
+ * Class node types that can carry a `@Controller`. `export abstract class C`
+ * parses as `abstract_class_declaration`, a DIFFERENT node type — and a
+ * decorated abstract base sharing CRUD routes with its subclasses is ordinary
+ * Nest, so matching `class_declaration` alone silently drops the whole
+ * controller rather than one route.
+ */
+const CLASS_DECLARATION_TYPES: ReadonlySet<string> = new Set([
+  'class_declaration',
+  'abstract_class_declaration',
+]);
 
 /**
  * Cheap parse-free gate. Every JS/TS file in every repo reaches this hook, so
@@ -76,24 +109,54 @@ function decoratorName(decorator: Parser.SyntaxNode): string | null {
  * (`@Controller(ROUTES.VENUES)`) whose value we cannot read must drop the route
  * rather than silently mount it at the wrong URL. `route_map` presents its
  * output as fact, and a wrong path is worse than a missing one.
+ *
+ * Reading the literal is delegated to `plainString`, the same judge the
+ * data-route-table extractor uses, so both agree on what is readable. Filtering
+ * `string_fragment` children and joining them looks equivalent and is not:
+ * tree-sitter SPLITS a literal around each `escape_sequence`, and the join then
+ * DELETES the escape rather than decoding it. `@Get(':id(\\d+)')` — the ordinary
+ * spelling of a Nest regex param, whose value is `:id(\d+)` — came out as
+ * `:id(d+)`, and `@Get('/v\u0069ews')` came out as `/vews`. Both are paths the
+ * app never serves, i.e. the wrong-URL outcome the paragraph above forbids.
  */
-function decoratorLiteralArg(decorator: Parser.SyntaxNode): string | null | undefined {
+/**
+ * A property key's name, for the two spellings that carry one: `{ path: … }`
+ * (a `property_identifier`) and `{ 'path': … }` (a `string`). Reading only the
+ * first would drop the ENTIRE controller over a pair of quotes — the same
+ * whole-class cost the object form is handled to avoid. A computed key
+ * (`{ [KEY]: … }`) has no readable name and keeps the drop.
+ */
+function objectKeyName(pair: Parser.SyntaxNode): string | null {
+  const key = pair.childForFieldName('key');
+  if (!key) return null;
+  return key.type === 'property_identifier' ? key.text : plainString(key);
+}
+
+function decoratorLiteralArg(decorator: Parser.SyntaxNode): string | null {
   const call = decoratorCall(decorator);
   if (!call) return ''; // bare `@Get` with no call — no path of its own
   const args = call.childForFieldName('arguments');
   const first = args?.namedChild(0);
   if (!first) return ''; // `@Get()` — no path of its own
 
-  if (first.type === 'string' || first.type === 'template_string') {
-    if (first.namedChildren.some((c) => c.type === 'template_substitution')) return null;
-    const fragments = first.namedChildren.filter((c) => c.type === 'string_fragment');
-    // An empty literal (`@Controller('')`) has no fragments and is a real ''.
-    return fragments.map((f) => f.text).join('');
+  // `@Controller({ path: 'cats', version: '1' })` is the documented form for
+  // URI/header versioning, and its path is a plain literal sitting right there.
+  // Worth reading rather than dropping, because the asymmetry is severe: an
+  // unreadable METHOD path costs one route, an unreadable PREFIX costs every
+  // route on the class.
+  if (first.type === 'object') {
+    const pathPair = first.namedChildren.find(
+      (child) => child.type === 'pair' && objectKeyName(child) === 'path',
+    );
+    const value = pathPair?.childForFieldName('value') ?? null;
+    // No `path` key, or a computed one, leaves the prefix unknowable.
+    return value === null ? null : plainString(value);
   }
 
   // An array form (`@Get(['a', 'b'])`), an identifier, a member expression, a
-  // call — all unreadable here. Skip rather than guess.
-  return null;
+  // call — none of them is a readable literal, and `plainString` answers `null`
+  // for every one of them. Skip rather than guess.
+  return plainString(first);
 }
 
 /**
@@ -185,7 +248,7 @@ export function extractNestRoutes(
   const out: ExtractedDecoratorRoute[] = [];
 
   const visit = (node: Parser.SyntaxNode): void => {
-    if (node.type === 'class_declaration') {
+    if (CLASS_DECLARATION_TYPES.has(node.type)) {
       const prefix = controllerPrefix(node);
       // `undefined` — not a controller at all. `null` — a controller whose
       // prefix could not be read, so its routes' URLs are unknowable.
@@ -211,17 +274,50 @@ function collectClassRoutes(
   const body = classNode.childForFieldName('body');
   if (!body) return;
 
-  for (const member of body.namedChildren) {
-    if (member.type !== 'method_definition') continue;
+  // ONE forward pass over the body, accumulating the decorator run and flushing
+  // it at each method. Calling `precedingDecorators` per method instead is
+  // quadratic in methods-per-controller for a reason that is invisible in the
+  // source: `namedChildren` is an UNCACHED getter in node-tree-sitter, so every
+  // call re-marshals the entire class body into fresh JS objects before the
+  // `findIndex`. Measured here, 800 methods cost 362ms (450us/method, up from
+  // 42us/method at 50); a single pass is flat. `spring.ts` never had this
+  // because a Java annotation is a child of the declaration it annotates.
+  const pending: Parser.SyntaxNode[] = [];
 
-    for (const decorator of precedingDecorators(member)) {
+  for (const member of body.namedChildren) {
+    if (member.type === 'decorator') {
+      pending.push(member);
+      continue;
+    }
+    // Same reason as in `precedingDecorators`: a JSDoc block between a
+    // decorator stack and its method must not hide the route (a real
+    // controller shape, pinned by the suite). Known limitation of that skip: a
+    // decorator ORPHANED by a commented-out handler is then absorbed onto the
+    // NEXT method, minting a phantom route with the wrong handler. There is no
+    // AST fix — an orphan followed by a comment is indistinguishable from a
+    // stack whose method happens to be documented — and losing every
+    // documented route is the worse trade, so it is made deliberately.
+    if (member.type === 'comment') continue;
+    if (member.type !== 'method_definition') {
+      pending.length = 0;
+      continue;
+    }
+
+    // tree-sitter-javascript makes a method decorator a CHILD of the
+    // `method_definition`, not a preceding sibling as in tree-sitter-typescript
+    // — and this extractor is registered on the JavaScript provider too, which
+    // already advertises `framework: 'nestjs'`. Reading only siblings meant
+    // every `.js` Nest controller emitted nothing. On TypeScript the first
+    // named child is the method name, so `leadingDecorators` contributes
+    // nothing there and no route is collected twice.
+    for (const decorator of [...pending, ...leadingDecorators(member)]) {
       const name = decoratorName(decorator);
       if (name === null) continue;
-      const httpMethod = NEST_METHOD_DECORATORS[name];
-      if (!httpMethod) continue;
+      const httpMethod = NEST_METHOD_DECORATORS.get(name);
+      if (httpMethod === undefined) continue;
 
       const routePath = decoratorLiteralArg(decorator);
-      if (routePath === null || routePath === undefined) continue; // unreadable → skip
+      if (routePath === null) continue; // unreadable → skip
 
       const handlerName = member.childForFieldName('name')?.text;
 
@@ -241,5 +337,6 @@ function collectClassRoutes(
         ...(handlerName === undefined ? {} : { handlerName }),
       });
     }
+    pending.length = 0;
   }
 }

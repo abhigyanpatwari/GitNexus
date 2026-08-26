@@ -116,7 +116,14 @@ function decodeJavaScriptStringLiteral(raw: string): string | null {
   return decoded;
 }
 
-function plainString(node: SyntaxNode): string | null {
+/**
+ * A `string`/`template_string` node's decoded value, or `null` when it is not a
+ * readable literal (an interpolated template, an unterminated escape). Shared
+ * with the NestJS extractor so both agree on what a readable literal is —
+ * notably that escapes must be DECODED, not dropped, because tree-sitter splits
+ * a literal around every `escape_sequence`.
+ */
+export function plainString(node: SyntaxNode): string | null {
   if (node.type === 'string') return decodeJavaScriptStringLiteral(node.text);
   if (
     node.type === 'template_string' &&
