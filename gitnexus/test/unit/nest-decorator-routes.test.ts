@@ -624,6 +624,35 @@ describe('NestJS decorator routes', () => {
     ).toEqual([]);
   });
 
+  // The other half of the modifier check, and the half a mutation can actually
+  // reach: these modifiers must NOT reject. `async` matters most — it is the
+  // dominant shape of a real Nest handler, so widening the exclusion set to
+  // include it would silently delete most routes in most Nest repos while the
+  // table above stayed green. `override` and an accessibility modifier are the
+  // other tokens that sit in the same position on a `method_definition`, and a
+  // method merely NAMED `get`/`set`/`static` is a property_identifier, not a
+  // modifier — it must survive too.
+  it.each([
+    { label: 'an async method', member: "@Get('s') async s() {}" },
+    { label: 'a public method', member: "@Get('s') public s() {}" },
+    { label: 'a protected method', member: "@Get('s') protected s() {}" },
+    {
+      label: 'an async method with an accessibility modifier',
+      member: "@Get('s') public async s() {}",
+    },
+    { label: 'a method named get', member: "@Get('s') get() {}" },
+    { label: 'a method named static', member: "@Get('s') static() {}" },
+  ])('still emits the route for $label', ({ member }) => {
+    expect(
+      urls(`
+        @Controller('v')
+        export class C {
+          ${member}
+        }
+      `),
+    ).toEqual(['GET /v/s']);
+  });
+
   it('still emits the route for that same decorator on an instance method', () => {
     // The control for the table above — identical source minus the modifier.
     // It is what makes those three empty results evidence of the modifier
