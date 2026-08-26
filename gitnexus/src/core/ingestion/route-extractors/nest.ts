@@ -21,6 +21,15 @@
  * the routes phase performs the join via `normalizeExtractedRoutePath`, so
  * NestJS routes are keyed identically to every other framework's.
  *
+ * The multi-path form `@Get(['a', 'b'])` mounts the handler at BOTH paths, so
+ * it emits both routes: N paths is N elements of the returned
+ * `ExtractedDecoratorRoute[]`, which is already how this layer spells N routes
+ * — the same representation `spring.ts` reaches for `@GetMapping({"/a","/b"})`,
+ * and the reason neither needs a special case downstream. The CLASS-level array
+ * (`@Controller(['a', 'b'])`) is DECLINED rather than cross-multiplied over the
+ * class's methods, again matching `spring.ts`: there an array-form class prefix
+ * only ever suppresses the class, with the cross-product tracked in #2280.
+ *
  * Known limitation: the URLs produced here are CONTROLLER-RELATIVE. A global
  * prefix (`app.setGlobalPrefix('api')`) and URI versioning are applied by the
  * bootstrap file, not by any decorator this file can see, so neither is
@@ -92,17 +101,26 @@ function decoratorName(decorator: Parser.SyntaxNode): string | null {
 }
 
 /**
- * The literal string first argument of a decorator call, or `''` when the
- * decorator takes no argument (`@Controller()` / `@Get()` — both legal and both
- * meaning "no path segment of my own").
+ * The literal path(s) a decorator call mounts, one entry per path — or `['']`
+ * when the decorator takes no argument (`@Controller()` / `@Get()` — both legal
+ * and both meaning "no path segment of my own").
  *
- * Returns `null` when an argument IS present but is not a plain literal. That
- * is deliberately distinct from `''`: a computed prefix
+ * A list rather than a single string because `@Get(['a', 'b'])` mounts the
+ * handler at two URLs, and two routes is what the caller's output contract
+ * already says that in: `ExtractedDecoratorRoute[]`. No new field, and no
+ * special case at the emit site — the same shape `spring.ts` gets for free from
+ * a query that matches one element at a time.
+ *
+ * Returns `null` when an argument IS present but is not a readable literal.
+ * That is deliberately distinct from `['']`: a computed prefix
  * (`@Controller(ROUTES.VENUES)`) whose value we cannot read must drop the route
  * rather than silently mount it at the wrong URL. `route_map` presents its
- * output as fact, and a wrong path is worse than a missing one.
+ * output as fact, and a wrong path is worse than a missing one. `[]` is a third
+ * answer and means neither of those: `@Get([])` is legal, knowably mounts
+ * nothing, and so emits nothing — it must never be read as the unknowable case,
+ * which is the one that suppresses a whole controller.
  *
- * Reading the literal is delegated to `plainString`, the same judge the
+ * Reading one literal is delegated to `plainString`, the same judge the
  * data-route-table extractor uses, so both agree on what is readable. Filtering
  * `string_fragment` children and joining them looks equivalent and is not:
  * tree-sitter SPLITS a literal around each `escape_sequence`, and the join then
@@ -111,36 +129,68 @@ function decoratorName(decorator: Parser.SyntaxNode): string | null {
  * `:id(d+)`, and `@Get('/v\u0069ews')` came out as `/vews`. Both are paths the
  * app never serves, i.e. the wrong-URL outcome the paragraph above forbids.
  */
-function decoratorLiteralArg(decorator: Parser.SyntaxNode): string | null {
+function decoratorLiteralPaths(decorator: Parser.SyntaxNode): readonly string[] | null {
   const call = decorator.namedChild(0);
   // A bare `@Injectable` with no call, or `@Get()` with no argument — legal,
   // and both mean "no path segment of my own".
-  if (call?.type !== 'call_expression') return '';
+  if (call?.type !== 'call_expression') return [''];
   const first = call.childForFieldName('arguments')?.namedChild(0);
-  if (!first) return '';
+  if (!first) return [''];
+  // The object form belongs to `@Controller` alone — a verb decorator takes
+  // `string | string[]`, so Nest mounts nothing for `@Get({ path: 'a' })`.
+  // Reading it as a route would mint a URL the app never serves, which is the
+  // invented fact this module refuses; an unreadable shape drops instead.
+  if (first.type === 'object' && decoratorName(decorator) !== 'Controller') return null;
+  return literalPaths(first);
+}
 
+/**
+ * The paths carried by one decorator ARGUMENT node, split out from
+ * {@link decoratorLiteralPaths} only so the object form can re-enter it: Nest
+ * accepts an array inside `{ path: … }` as well, and reusing the same judge is
+ * what keeps `@Controller({ path: ['a', 'b'] })` from being read by a second,
+ * laxer set of rules that has drifted from this one.
+ */
+function literalPaths(node: Parser.SyntaxNode): readonly string[] | null {
   // `@Controller({ path: 'cats', version: '1' })` is the documented form for
   // URI/header versioning, and its path is a plain literal sitting right there.
   // Worth reading rather than dropping, because the asymmetry is severe: an
   // unreadable METHOD path costs one route, an unreadable PREFIX costs every
   // route on the class.
-  if (first.type === 'object') {
+  if (node.type === 'object') {
     // `propertyName` reads both spellings that carry a name — `{ path: … }` and
     // `{ 'path': … }` — so the class is not dropped over a pair of quotes. A
     // computed key (`{ [KEY]: … }`) has none, and keeps the drop, as does a
     // computed value.
-    const path = first.namedChildren.find((child) => {
+    const path = node.namedChildren.find((child) => {
       const key = child.type === 'pair' ? child.childForFieldName('key') : null;
       return key !== null && propertyName(key) === 'path';
     });
     const value = path?.childForFieldName('value');
-    return value ? plainString(value) : null;
+    return value ? literalPaths(value) : null;
   }
 
-  // An array form (`@Get(['a', 'b'])`), an identifier, a member expression, a
-  // call — none of them is a readable literal, and `plainString` answers `null`
-  // for every one of them. Skip rather than guess.
-  return plainString(first);
+  // `array` is the node type in all three grammars this extractor runs under —
+  // tree-sitter-typescript's `typescript` and `tsx`, and tree-sitter-javascript
+  // — probed rather than assumed, because a name that differs in one of them
+  // would silently restore the old drop for that grammar alone.
+  if (node.type === 'array') {
+    const paths: string[] = [];
+    for (const element of node.namedChildren) {
+      const value = plainString(element);
+      // One unreadable element poisons the whole array. Emitting the readable
+      // ones would present a partial mapping as a complete one — the endpoint
+      // behind `ROUTES.ADMIN` would be missing from a controller that otherwise
+      // looks fully covered, which is the same wrong-answer-dressed-as-fact this
+      // module refuses above, only harder to notice.
+      if (value === null) return null;
+      paths.push(value);
+    }
+    return paths;
+  }
+
+  const value = plainString(node);
+  return value === null ? null : [value];
 }
 
 /**
@@ -205,11 +255,25 @@ function classDecorators(classNode: Parser.SyntaxNode): Parser.SyntaxNode[] {
   return out;
 }
 
-/** The `@Controller(...)` prefix for a class, or undefined when it has none. */
+/**
+ * The `@Controller(...)` prefix for a class, or undefined when it has none.
+ * One string, not a list: a class-level array (`@Controller(['a', 'b'])`) is
+ * DECLINED here, exactly as `spring.ts` declines an array-form
+ * `@RequestMapping` — it detects the shape only to suppress the class, leaving
+ * the prefix × method cross-product to #2280. Collapsing to `null` is that
+ * suppression, and this parity is deliberate, not an oversight: the two
+ * extractors solve the same shape and should not disagree about which half of
+ * it is supported.
+ */
 function controllerPrefix(classNode: Parser.SyntaxNode): string | null | undefined {
   for (const decorator of classDecorators(classNode)) {
     if (decoratorName(decorator) !== 'Controller') continue;
-    return decoratorLiteralArg(decorator);
+    const paths = decoratorLiteralPaths(decorator);
+    // `@Controller([])` lands here too and needs no answer of its own: a
+    // controller mounted at no path serves no route, so "emit nothing for this
+    // class" is what both readings of it come to.
+    if (paths === null || paths.length !== 1) return null;
+    return paths[0];
   }
   return undefined;
 }
@@ -298,26 +362,32 @@ function collectClassRoutes(
       const httpMethod = NEST_METHOD_DECORATORS.get(name);
       if (httpMethod === undefined) continue;
 
-      const routePath = decoratorLiteralArg(decorator);
-      if (routePath === null) continue; // unreadable → skip
+      const routePaths = decoratorLiteralPaths(decorator);
+      if (routePaths === null) continue; // unreadable → skip
 
       const handlerName = member.childForFieldName('name')?.text;
 
-      out.push({
-        filePath,
-        // A pathless `@Get()` is the controller's index route and carries no
-        // segment of its own. Emit '/' rather than '': `claim()` in
-        // call-processor short-circuits on a falsy routePath, so an empty
-        // string would still produce the Route node but silently lose its
-        // handler symbol — the route would exist with nothing attached to it.
-        // Both spellings normalize to the same URL against the prefix.
-        routePath: routePath === '' ? '/' : routePath,
-        httpMethod,
-        decoratorName: name,
-        lineNumber: member.startPosition.row + 1 + lineOffset,
-        prefix: prefix === '' ? null : prefix,
-        ...(handlerName === undefined ? {} : { handlerName }),
-      });
+      // One route per path. `@Get(['a', 'b'])` mounts the handler at both, and
+      // everything else about the two is identical — same verb, same handler,
+      // same line — so the loop is the whole of the multi-path support. An
+      // empty array falls out as zero iterations without a special case.
+      for (const routePath of routePaths) {
+        out.push({
+          filePath,
+          // A pathless `@Get()` is the controller's index route and carries no
+          // segment of its own. Emit '/' rather than '': `claim()` in
+          // call-processor short-circuits on a falsy routePath, so an empty
+          // string would still produce the Route node but silently lose its
+          // handler symbol — the route would exist with nothing attached to it.
+          // Both spellings normalize to the same URL against the prefix.
+          routePath: routePath === '' ? '/' : routePath,
+          httpMethod,
+          decoratorName: name,
+          lineNumber: member.startPosition.row + 1 + lineOffset,
+          prefix: prefix === '' ? null : prefix,
+          ...(handlerName === undefined ? {} : { handlerName }),
+        });
+      }
     }
 
     // Anything that is not a decorator or a comment ends the run — including

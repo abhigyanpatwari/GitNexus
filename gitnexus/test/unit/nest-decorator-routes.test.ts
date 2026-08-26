@@ -201,9 +201,12 @@ describe('NestJS decorator routes', () => {
   it.each([
     { label: 'a constant it cannot read', argument: 'ROUTES.SEARCH' },
     { label: 'an interpolated template', argument: '`${prefix}/search`' },
-    { label: 'an array form it cannot reduce to one URL', argument: "['a', 'b']" },
+    { label: 'an array with one element it cannot read', argument: "['a', ROUTES.ADMIN]" },
   ])('drops a route whose path is $label', ({ argument }) => {
     // A wrong URL is worse than a missing one — route_map presents this as fact.
+    // The array row is why one bad element poisons the whole array rather than
+    // emitting its readable siblings: a half-mapped controller reads as a fully
+    // mapped one, which is the same lie with less to notice.
     expect(
       extract(`
         @Controller('x')
@@ -273,6 +276,80 @@ describe('NestJS decorator routes', () => {
     expect(normalizeExtractedRoutePath(route.routePath, route.prefix ?? null)).toBe('/a');
   });
 
+  // ─── Multi-path (array form) ───────────────────────────────────────
+
+  it('emits one route per path for the array form', () => {
+    // `@Get(['a','b'])` mounts the handler at BOTH URLs, so both are routes.
+    // N paths needs no new field to say so: N routes is what an
+    // ExtractedDecoratorRoute[] already is, the same representation spring.ts
+    // uses for `@GetMapping({"/a","/b"})`.
+    const routes = extract(`
+      @Controller('x')
+      export class C {
+        @Get(['a', 'b'])
+        search() {}
+      }
+    `);
+
+    expect(format(routes)).toEqual(['GET /x/a', 'GET /x/b']);
+    // Everything other than the path is the same route twice — in particular
+    // the handler, or only one of the two URLs would resolve to a symbol.
+    expect(routes.map((r) => r.handlerName)).toEqual(['search', 'search']);
+  });
+
+  it('reads a single-element array as that one path', () => {
+    expect(
+      urls(`
+        @Controller(['a'])
+        export class C {
+          @Get(['b']) b() {}
+        }
+      `),
+    ).toEqual(['GET /a/b']);
+  });
+
+  it('emits nothing for an empty array path, and drops only the route it skips', () => {
+    // `@Get([])` is legal and mounts no URL. It is neither a pathless `@Get()`
+    // nor an unreadable path: reading it as the first would mint `GET /x`, a
+    // URL the app does not serve.
+    expect(
+      extract(`
+        @Controller('x')
+        export class C {
+          @Get([]) none() {}
+        }
+      `),
+    ).toEqual([]);
+
+    // Whichever the reason a path yields no route — knowably empty, or
+    // unreadable — it costs exactly its own route and not the controller's
+    // others, which is what makes a per-decorator skip safe.
+    expect(
+      urls(`
+        @Controller('x')
+        export class C {
+          @Get([]) none() {}
+          @Get(ROUTES.ADMIN) admin() {}
+          @Get('a') a() {}
+        }
+      `),
+    ).toEqual(['GET /x/a']);
+  });
+
+  it('decodes escapes inside array elements too', () => {
+    // Each element goes through the same `plainString` a scalar path does, so
+    // the split-around-escape_sequence trap cannot come back on this arm alone.
+    expect(
+      extract(`
+        @Controller('u')
+        export class C {
+          @Get([':id(\\\\d+)', '/v\\u0069ews'])
+          one() {}
+        }
+      `).map((r) => r.routePath),
+    ).toEqual([':id(\\d+)', '/views']);
+  });
+
   // ─── Controller shapes ─────────────────────────────────────────────
 
   it('extracts routes from an abstract controller base class', () => {
@@ -316,6 +393,44 @@ describe('NestJS decorator routes', () => {
     { label: 'a computed path', argument: '{ path: BASE_PATH }' },
     { label: 'a computed path key', argument: "{ [PATH_KEY]: 'cats' }" },
   ])('still drops a controller whose object form has $label', ({ argument }) => {
+    expect(
+      extract(`
+        @Controller(${argument})
+        export class C {
+          @Get('a') a() {}
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it.each([
+    { label: 'a single path', argument: "{ path: 'a' }" },
+    { label: 'an array of paths', argument: "{ path: ['a', 'b'] }" },
+  ])('mints nothing from the object form on a VERB decorator ($label)', ({ argument }) => {
+    // `@Controller` takes the object form; `@Get` and friends take
+    // `string | string[]`. Nest mounts nothing here, so emitting a route would
+    // invent a URL — the failure this module exists to avoid, and the reason
+    // the class prefix below is deliberately readable: the route is dropped
+    // because the METHOD path is unreadable, not because the class was.
+    expect(
+      extract(`
+        @Controller('x')
+        export class C {
+          @Get(${argument}) a() {}
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it.each([
+    { label: 'the bare array form', argument: "['a', 'b']" },
+    { label: 'an array inside the object form', argument: "{ path: ['a', 'b'] }" },
+  ])('declines a controller whose prefix is multi-path: $label', ({ argument }) => {
+    // Deliberate parity with spring.ts, which detects an array-form class
+    // @RequestMapping only to SUPPRESS that class, leaving the prefix x method
+    // cross-product to #2280. The method path here is perfectly readable, so
+    // the alternative is not "drop one route" but "publish it under one of the
+    // two prefixes, or none" — URLs the application does not serve.
     expect(
       extract(`
         @Controller(${argument})
