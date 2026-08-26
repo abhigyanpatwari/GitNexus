@@ -12,7 +12,8 @@
  * Fixture: `test/fixtures/multi-verb-route-app/`
  *   - ItemController.java: GET /api/items, POST /api/items, GET /api/widgets
  *   - app/api/widgets/route.ts: Next.js filesystem route → /api/widgets
- *   - api/widgetsController.ts: NestJS `@All` → method-agnostic /api/widgets
+ *   - api/widgetsController.ts: NestJS `@All` → method-agnostic /api/widgets,
+ *     plus `@Get('gadgets')` → GET /api/gadgets (the non-colliding witness)
  *   - web/itemsClient.ts: verb-less fetch() consumers of both URLs
  */
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -93,6 +94,32 @@ describe('Multi-verb Route node identity (#2289)', () => {
 
     expect(fsNode, 'filesystem Route node /api/widgets should exist').toBeTruthy();
     expect(fsNode!.properties.handlerSymbolId).toBeUndefined();
+  });
+
+  it('extracts a NON-colliding NestJS route (the witness that #3049 suppressed a REAL claim)', () => {
+    // Load-bearing for the assertion above it, which cannot stand alone:
+    // `handlerSymbolId === undefined` passes identically whether the guard
+    // correctly dropped a real NestJS `@All` claim or whether NestJS
+    // extraction produced nothing at all. Disproved by experiment — commenting
+    // out `...extractNestRoutes(...args)` in `languages/typescript.ts` and
+    // rebuilding `dist/` left the whole suite green.
+    //
+    // Asserting that the `WidgetsController` class and its `handleEveryVerb`
+    // method exist does NOT repair that, and is the first thing the next
+    // reader will try: those nodes come from the definitions phase, which runs
+    // regardless, while `extractNestRoutes` is wired only as the
+    // `decoratorRoutes` hook and contributes no class or method node.
+    // `@All('widgets')` also cannot witness its own extraction — it collides
+    // on `routeNodeKey`, is dropped as a duplicate, and leaves no graph trace.
+    // A second route at a URL nothing else claims is the only evidence the
+    // graph can carry, so this node existing IS the proof the `@All` claim the
+    // guard suppressed was real.
+    const gadgets = routeNode(routeId('GET', '/api/gadgets'));
+
+    expect(gadgets, 'NestJS GET /api/gadgets Route node should exist').toBeTruthy();
+
+    const handler = result.graph.getNode(String(gadgets!.properties.handlerSymbolId));
+    expect(String(handler?.properties.name)).toBe('listGadgets');
   });
 
   it('still resolves a same-URL route that did NOT lose its key', () => {
