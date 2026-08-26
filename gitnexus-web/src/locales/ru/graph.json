@@ -157,7 +157,7 @@
     "filterPlaceholder": "Фильтровать процессы...",
     "detected_one": "Обнаружен {{count}} процесс",
     "detected_few": "Обнаружено {{count}} процесса",
-    "detected_many": "Обнаружено {{count}} процесса", 
+    "detected_many": "Обнаружено {{count}} процессов", 
     "detected_other": "Обнаружено {{count}} процессов",
     "fullMap": "Полная карта процессов",
     "viewCombined_one": "Просмотреть объединённую карту {{count}} процесса",
