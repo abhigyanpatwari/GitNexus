@@ -604,11 +604,28 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // re-bumping is unusual, but the ledger's rule is about what a warm cache can
 // replay, not about how the value was reached.
 //
-// 76 is still the next free value above origin/main (74) and above every
-// in-flight claim: #3046 (73) and #1616 (a stale 2) remain the only other open
-// PRs touching this constant.
+// 76 -> 77 because 76 was NOT free. While this branch sat in review, origin/main
+// advanced to ac68f5254 and #3046 took 76 — the value this branch already held.
+// `gitnexus/package.json` is 1.6.9 on both sides, so `PARSE_CACHE_VERSION` was
+// the byte-identical string `76+1.6.9` on two branches that changed
+// incompatible worker output. Every warm cache would have been reused across
+// both features, making both inert while every test stayed green.
+//
+// The sharpest part: #3046 skipped 75 BECAUSE this branch held it, then took
+// 76 — and this branch had meanwhile moved 75 -> 76 for the array form. Two
+// PRs each doing the bookkeeping correctly still collided, because each
+// re-checked once and neither re-checked after the other moved. That is what
+// the re-check line below is for, and why it says AT MERGE rather than
+// when you pick the number.
+//
+// 77 is free at this merge: origin/main is 76, and the open PRs touching this
+// constant are #2840 (a stale 71) and #1616 (a stale 2). Note the scan method
+// matters — `gh pr diff` exits non-zero on an inaccessible fork and prints
+// nothing, so a grep over its output silently skips that PR. #2840 was missed
+// exactly that way and had to be read through the contents API at the PR head.
+// An "exhaustive" scan that fails open is how this constant keeps colliding.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 76;
+const SCHEMA_BUMP = 77;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
