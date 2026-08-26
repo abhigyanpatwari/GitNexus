@@ -71,7 +71,10 @@
     "upload": {
       "button": "Загрузить папку",
       "uploading": "Загрузка...",
-      "selected": "{{fileCount}} файлов готово ({{dropped}} пропущено: .git, node_modules, build output)",
+      "selected_one": "{{fileCount}} файл готов ({{dropped}} пропущено: .git, node_modules, build output)",
+      "selected_few": "{{fileCount}} файла готово ({{dropped}} пропущено: .git, node_modules, build output)",
+      "selected_many": "{{fileCount}} файлов готово ({{dropped}} пропущено: .git, node_modules, build output)",
+      "selected_other": "{{fileCount}} файлов готово ({{dropped}} пропущено: .git, node_modules, build output)",
       "empty": "В этой папке не найдено анализируемых файлов."
     }
   }
