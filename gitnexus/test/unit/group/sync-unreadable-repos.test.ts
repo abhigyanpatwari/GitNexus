@@ -37,7 +37,27 @@ const LBUG_VERSION_ERROR =
   'Database file version: 43, Current build storage version: 40)';
 
 const initLbugMock = vi.fn();
-const readRegistryMock = vi.fn();
+const readRegistryStrictMock = vi.fn();
+
+/**
+ * A SEPARATE mock from the strict one, and that separation is the whole point.
+ *
+ * Both exports used to resolve to one mock, so the refuses-to-sync case below —
+ * which drives the read by rejecting — got the same rejection whichever export
+ * `syncGroup` called. It would have passed identically against the lenient read
+ * it exists to rule out, which is to say it measured nothing about which read is
+ * used.
+ *
+ * The implementation here is the lenient export's real contract: `readRegistry`
+ * swallows EACCES and a corrupt file alike and answers `[]`. Pointing
+ * `syncGroup` at it therefore turns an unreadable registry back into "no repo is
+ * registered" — every configured repo MISSING, the total-failure guard off, a
+ * good contracts.json replaced by an empty one at exit 0 — and the case goes
+ * red. On this path production reaches the lenient export only under
+ * `detect.workspace_deps`, which `makeConfig` leaves off, so no other case in
+ * this file can see the split.
+ */
+const readRegistryLenientMock = vi.fn(async (..._args: unknown[]): Promise<never[]> => []);
 
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   initLbug: (...args: unknown[]) => initLbugMock(...args),
@@ -46,11 +66,9 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   getMaxResidentRepos: vi.fn(() => 5),
 }));
 
-// Both bind to the same mock: `syncGroup` reads through the strict export, and
-// the refuses-to-sync case below drives it by rejecting.
 vi.mock('../../../src/storage/repo-manager.js', () => ({
-  readRegistry: (...args: unknown[]) => readRegistryMock(...args),
-  readRegistryStrict: (...args: unknown[]) => readRegistryMock(...args),
+  readRegistry: (...args: unknown[]) => readRegistryLenientMock(...args),
+  readRegistryStrict: (...args: unknown[]) => readRegistryStrictMock(...args),
 }));
 
 /**
@@ -208,8 +226,12 @@ describe('syncGroup with an unreadable index', () => {
 
   beforeEach(() => {
     initLbugMock.mockReset();
-    readRegistryMock.mockReset();
-    readRegistryMock.mockResolvedValue(REGISTRY);
+    readRegistryStrictMock.mockReset();
+    readRegistryStrictMock.mockResolvedValue(REGISTRY);
+    // `mockClear`, not `mockReset`: the lenient answer IS its implementation
+    // (see its declaration), so resetting would erase the very behaviour that
+    // makes calling it distinguishable from calling the strict one.
+    readRegistryLenientMock.mockClear();
     groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-unreadable-'));
   });
 
@@ -467,8 +489,15 @@ describe('syncGroup with an unreadable index', () => {
     // (it needs a load error), and a good contracts.json was replaced by an
     // empty one at exit 0. That is an unreadable condition reported as missing,
     // one frame above the code this change fixes.
+    //
+    // Only the STRICT export is armed to reject. The lenient one is a separate
+    // mock answering `[]` — production's own lenient behaviour — so a `syncGroup`
+    // reading through it never sees this failure at all: it would sync a group
+    // whose every repo is "unregistered" and overwrite the prior registry, which
+    // is what makes each of the three assertions below a statement about which
+    // read was used rather than about EACCES.
     const eacces = Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
-    readRegistryMock.mockRejectedValue(eacces);
+    readRegistryStrictMock.mockRejectedValue(eacces);
 
     const contractsPath = path.join(groupDir, 'contracts.json');
     fs.writeFileSync(contractsPath, JSON.stringify(PRIOR_REGISTRY));
@@ -478,6 +507,10 @@ describe('syncGroup with an unreadable index', () => {
     ).rejects.toThrow('EACCES');
 
     expect(JSON.parse(fs.readFileSync(contractsPath, 'utf8'))).toEqual(PRIOR_REGISTRY);
+    // The direct form of the same claim, so a regression names itself instead of
+    // arriving as "expected a rejection, got a resolved sync".
+    expect(readRegistryLenientMock).not.toHaveBeenCalled();
+    expect(readRegistryStrictMock).toHaveBeenCalled();
   });
 });
 
@@ -516,8 +549,8 @@ describe('the preserve path and the bridge metadata beside it', () => {
 
   beforeEach(async () => {
     initLbugMock.mockReset();
-    readRegistryMock.mockReset();
-    readRegistryMock.mockResolvedValue(REGISTRY);
+    readRegistryStrictMock.mockReset();
+    readRegistryStrictMock.mockResolvedValue(REGISTRY);
     home = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-preserve-bridge-'));
     groupDir = path.join(home, 'groups', 'waveful');
     dbPath = path.join(groupDir, 'bridge.lbug');
@@ -844,8 +877,8 @@ describe('the warning after a failed bridge write', () => {
 
   beforeEach(() => {
     initLbugMock.mockReset();
-    readRegistryMock.mockReset();
-    readRegistryMock.mockResolvedValue(REGISTRY);
+    readRegistryStrictMock.mockReset();
+    readRegistryStrictMock.mockResolvedValue(REGISTRY);
     writeBridgeFailure = null;
     groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-bridge-write-'));
   });
@@ -958,8 +991,8 @@ describe('a total-failure sync that reaches the group lock second', () => {
 
   beforeEach(() => {
     initLbugMock.mockReset();
-    readRegistryMock.mockReset();
-    readRegistryMock.mockResolvedValue(REGISTRY);
+    readRegistryStrictMock.mockReset();
+    readRegistryStrictMock.mockResolvedValue(REGISTRY);
     whileWaitingForTheGroupLock = null;
     groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-second-'));
     contractsPath = path.join(groupDir, 'contracts.json');
