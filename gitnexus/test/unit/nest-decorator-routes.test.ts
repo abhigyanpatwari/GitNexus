@@ -599,4 +599,86 @@ describe('NestJS decorator routes', () => {
       `),
     ).toEqual(['GET /di/a']);
   });
+
+  // ─── Members Nest never registers as handlers ──────────────────────
+
+  // Nest's `RequestMapping` writes the handler onto the class PROTOTYPE's
+  // `descriptor.value`, and `RouterExplorer` scans prototype instance methods
+  // for that metadata. A `static` method lives on the constructor and is never
+  // scanned; an accessor's descriptor carries `get`/`set` and no `value` to
+  // register. A verb decorator on any of the three mounts NOTHING, so a route
+  // minted from one is a URL the app does not serve — the same
+  // wrong-answer-dressed-as-fact the object-form refusals above exist for.
+  it.each([
+    { label: 'a static method', member: "@Get('s') static s() {}" },
+    { label: 'a getter', member: "@Get('s') get s(): string { return ''; }" },
+    { label: 'a setter', member: "@Get('s') set s(v: string) {}" },
+  ])('mints nothing for $label, which Nest never registers as a handler', ({ member }) => {
+    expect(
+      extract(`
+        @Controller('v')
+        export class C {
+          ${member}
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('still emits the route for that same decorator on an instance method', () => {
+    // The control for the table above — identical source minus the modifier.
+    // It is what makes those three empty results evidence of the modifier
+    // check rather than of a fixture that happens to parse to nothing.
+    expect(
+      urls(`
+        @Controller('v')
+        export class C {
+          @Get('s') s() {}
+        }
+      `),
+    ).toEqual(['GET /v/s']);
+  });
+
+  it('drops a decorated static method under the JavaScript grammar too', () => {
+    // tree-sitter-javascript makes a method decorator a CHILD of
+    // `method_definition`, so `children` reads `decorator | static |
+    // property_identifier | …` and the modifier is NOT at a fixed index — the
+    // check has to test every child's type. The instance method beside it is
+    // the in-fixture control: its route proves this .js arm still measures
+    // something rather than passing on a fixture that parses to nothing.
+    expect(
+      jsUrls(`
+        @Controller('v')
+        export class C {
+          @Get('s')
+          static s() {}
+
+          @Get('i')
+          i() {}
+        }
+      `),
+    ).toEqual(['GET /v/i']);
+  });
+
+  it("does not donate a non-handler member's decorator run to the method after it", () => {
+    // Pins the UNCONDITIONAL `pending.length = 0` at the end of the member
+    // loop, NOT the modifier check: a non-handler must fall through to that
+    // clear rather than `continue` past it. Deliberately green before the
+    // modifier check existed too — there the static member consumed the run
+    // into its own (wrong) route and then cleared it — so this goes red only
+    // if a future edit adds the early `continue`. Asserted over the routes
+    // attributed to `i`, because the whole-output form would instead be
+    // measuring the modifier check the table above already covers.
+    const routes = extract(`
+      @Controller('v')
+      export class C {
+        @Get('s')
+        static s() {}
+
+        @Get('i')
+        i() {}
+      }
+    `);
+
+    expect(format(routes.filter((route) => route.handlerName === 'i'))).toEqual(['GET /v/i']);
+  });
 });

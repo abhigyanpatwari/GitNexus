@@ -393,6 +393,48 @@ export function extractNestRoutes(
   return out;
 }
 
+/**
+ * Modifiers that take a `method_definition` out of Nest's handler set.
+ *
+ * Nest's `RequestMapping` writes the handler onto the class PROTOTYPE's
+ * `descriptor.value`, and `RouterExplorer` scans prototype instance methods for
+ * that metadata. A `static` method lives on the constructor and is never
+ * scanned; an accessor's descriptor carries `get`/`set` and no `value` to
+ * register. A verb decorator on any of the three therefore mounts NOTHING, so a
+ * route minted from one is a URL the app does not serve — the invented fact
+ * this module refuses everywhere else.
+ */
+const NON_HANDLER_MODIFIERS: ReadonlySet<string> = new Set(['static', 'get', 'set']);
+
+/**
+ * Whether Nest could register this `method_definition` as a request handler.
+ *
+ * Reads `children`, NOT `namedChildren`, and that is the whole difficulty:
+ * `static`, `get` and `set` are ANONYMOUS tokens in all three grammars this
+ * extractor runs under, so they never appear among named children. A static
+ * method, a getter, a setter and a plain method expose the IDENTICAL
+ * `namedChildren` (`property_identifier`, `formal_parameters`,
+ * `statement_block`) — probed, not assumed — so the module's usual
+ * `namedChildren` idiom cannot see the modifier at all and every one of the
+ * three reads as an ordinary handler.
+ *
+ * Tests every child's TYPE rather than indexing a position, because the
+ * position is not stable: under tree-sitter-javascript a method decorator is a
+ * CHILD of `method_definition`, so `children[0]` there is the `decorator` and
+ * the modifier sits behind it, while under tree-sitter-typescript the decorator
+ * is a preceding sibling and the modifier comes first.
+ *
+ * The scan is bounded by one method's own children (a handful), so it is not
+ * the uncached-getter trap {@link collectClassRoutes} documents — that one bites
+ * when a PARENT's child list is re-marshalled once per member.
+ */
+function isRequestHandler(member: Parser.SyntaxNode): boolean {
+  for (const child of member.children) {
+    if (NON_HANDLER_MODIFIERS.has(child.type)) return false;
+  }
+  return true;
+}
+
 function collectClassRoutes(
   classNode: Parser.SyntaxNode,
   prefix: string,
@@ -435,8 +477,18 @@ function collectClassRoutes(
     // every `.js` Nest controller emitted nothing. On TypeScript the first
     // named child is the method name, so `leadingDecorators` contributes
     // nothing there and no route is collected twice.
+    //
+    // A static member, a getter and a setter are decorated exactly like a
+    // handler and registered as none, so they contribute no decorators (see
+    // `isRequestHandler`). They still fall THROUGH to the `pending.length = 0`
+    // below rather than `continue` past it: skipping the clear would hand their
+    // decorator run to the next method, trading a phantom route for a
+    // misattributed one — the strictly worse of the two, since it corrupts a
+    // route that is otherwise correct.
     const decorators =
-      member.type === 'method_definition' ? [...pending, ...leadingDecorators(member)] : [];
+      member.type === 'method_definition' && isRequestHandler(member)
+        ? [...pending, ...leadingDecorators(member)]
+        : [];
     for (const decorator of decorators) {
       const name = decoratorName(decorator);
       if (name === null) continue;
