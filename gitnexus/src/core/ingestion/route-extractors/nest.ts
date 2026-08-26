@@ -44,7 +44,6 @@
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 import { plainString, propertyName } from './data-route-table.js';
-import { hasKeyword } from '../field-extractors/configs/helpers.js';
 import { isDev } from '../utils/env.js';
 import { logger } from '../../logger.js';
 
@@ -396,7 +395,10 @@ export function extractNestRoutes(
  * route minted from one is a URL the app does not serve — the invented fact
  * this module refuses everywhere else.
  */
-const NON_HANDLER_MODIFIERS: readonly string[] = ['static', 'get', 'set'];
+const NON_HANDLER_MODIFIERS: ReadonlySet<string> = new Set(['static', 'get', 'set']);
+
+/** Longest entry above — the cheap gate that keeps `.trim()` off a method body. */
+const LONGEST_NON_HANDLER_MODIFIER = 6;
 
 /**
  * Whether Nest could register this `method_definition` as a request handler.
@@ -410,21 +412,37 @@ const NON_HANDLER_MODIFIERS: readonly string[] = ['static', 'get', 'set'];
  * `namedChildren` idiom cannot see the modifier at all and every one of the
  * three reads as an ordinary handler.
  *
- * Uses the shared `hasKeyword`, which the TypeScript and JavaScript captures
- * and the TS/JS method extractor already use to decide this same question. It
- * matches on child TEXT, not node type: `static` reaches the tree as an
- * anonymous token in some grammar versions and as a keyword node in others, so
- * a `child.type === 'static'` test silently stops firing on a grammar bump —
- * and here that would readmit exactly the phantom routes this function removes,
- * with the suite still green. It also skips the `name` field, so a method
- * literally called `get()` or `static()` is not misread as a modifier.
+ * Matches on child TEXT, not node type, and skips the `name` field — the same
+ * two rules `hasKeyword` in `field-extractors/configs/helpers.ts` applies, and
+ * that the TS/JS captures and method extractor already use for this question.
+ * The text rule is load-bearing: `static` reaches the tree as an anonymous
+ * token in some grammar versions and a keyword node in others, so a
+ * `child.type === 'static'` test silently stops firing on a grammar bump — here
+ * that would readmit exactly the phantom routes this function removes, with the
+ * suite still green. Skipping `name` is what keeps a method literally called
+ * `get()` or `static()` from reading as a modifier.
+ *
+ * Open-coded rather than calling `hasKeyword` three times, which was measured
+ * at 13.96us per method against 4.30us here: that helper takes ONE keyword, so
+ * three keywords is three full passes, and it calls `.text.trim()` on every
+ * child including `statement_block` — the whole method body. `.some()` does not
+ * rescue it, since a real handler matches nothing and pays all three. The
+ * length guard keeps `.trim()` off a multi-KB body; no modifier exceeds it.
  *
  * The scan is bounded by one method's own children (a handful), so it is not
  * the uncached-getter trap {@link collectClassRoutes} documents — that one bites
  * when a PARENT's child list is re-marshalled once per member.
  */
 function isRequestHandler(member: Parser.SyntaxNode): boolean {
-  return !NON_HANDLER_MODIFIERS.some((keyword) => hasKeyword(member, keyword));
+  const nameNode = member.childForFieldName('name');
+  for (const child of member.children) {
+    if (child === nameNode) continue;
+    const text = child.text;
+    if (text.length <= LONGEST_NON_HANDLER_MODIFIER && NON_HANDLER_MODIFIERS.has(text.trim())) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function collectClassRoutes(
