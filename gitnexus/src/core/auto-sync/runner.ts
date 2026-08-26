@@ -223,7 +223,7 @@ export async function runAutoSyncOnce(
           kind: 'failed' as const,
           project: item.project,
           remoteUrl: item.remoteUrl,
-          targetDir: '',
+          targetDir: item.targetDir ?? '',
           status: 'sync_failed' as const,
           lastSyncTime,
         };
@@ -372,7 +372,7 @@ export async function addRepoToGroup(
 export function getAutoSyncRepoIdentity(remoteUrl: string): string {
   validateAutoSyncRemoteUrl(remoteUrl);
   const [, host, remotePath] = /^git@([^:\s/]+):([^\s]+)$/.exec(remoteUrl.trim())!;
-  return `${host.toLowerCase()}/${remotePath.replace(/\.git$/, '')}`;
+  return `${host.toLowerCase()}/${remotePath.replace(/\.git$/i, '')}`;
 }
 
 export async function syncGroupByName(groupName: string): Promise<void> {

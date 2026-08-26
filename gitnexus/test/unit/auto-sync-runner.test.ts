@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   addRepoToGroup,
+  getAutoSyncRepoIdentity,
   getConfiguredRepoPath,
   getAutoSyncWatchPaths,
   readAutoSyncWatchStatus,
@@ -275,6 +276,12 @@ describe('auto-sync runner', () => {
       duplicateConfig.projects[1],
       'gitlab.com/team-b/service',
       'gitlab.com/team-b/service',
+    );
+  });
+
+  it('normalizes the .git suffix case in auto-sync repository identities', () => {
+    expect(getAutoSyncRepoIdentity('git@GitHub.com:team/service.GIT')).toBe(
+      'github.com/team/service',
     );
   });
 
@@ -617,6 +624,35 @@ describe('auto-sync runner', () => {
     expect(errorLogger).toHaveBeenCalledWith(
       expect.stringContaining('Analysis failed for /tmp/repos/gitee.com/qts_server/qts_account'),
     );
+  });
+
+  it('records the resolved target directory when a post-sync operation fails', async () => {
+    const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+      cloneOrPull: vi.fn(async (_url, targetDir) => targetDir),
+      getCurrentBranch: vi.fn(() => 'master'),
+      getCurrentCommit: vi.fn(() => {
+        throw new Error('git log failed');
+      }),
+      loadState: vi.fn(async () => ({})),
+      saveState: vi.fn(async () => {}),
+      writeCommitInfo: vi.fn(async () => {}),
+      getAvailableMemoryGB: vi.fn(() => 8),
+    });
+
+    await expect(
+      runAutoSyncOnce(config, {
+        deps,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      }),
+    ).resolves.toEqual({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 1 });
+
+    expect(deps.writeCommitInfo).toHaveBeenCalledWith([
+      expect.objectContaining({
+        remoteUrl: 'git@gitee.com:qts_server/qts_account.git',
+        localPath: '/tmp/repos/gitee.com/qts_server/qts_account',
+        status: 'sync_failed',
+      }),
+    ]);
   });
 
   it('isolates clone-root resolution failures to the affected project', async () => {
