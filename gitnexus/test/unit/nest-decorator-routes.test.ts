@@ -403,9 +403,92 @@ describe('NestJS decorator routes', () => {
     ).toEqual([]);
   });
 
+  // A `path` pair proves the mount point only when nothing ELSE in the object
+  // can replace it. `{ path: 'cats', ...options }` reads as `cats` under a
+  // first-match scan and mounts wherever `options.path` says at runtime;
+  // `{ path: 'cats', path: 'dogs' }` mounts at `dogs`. Both are the wrong-URL
+  // outcome this module calls worse than a missing one, and both are silent —
+  // a published `/cats` looks exactly like a correct one. So the object is read
+  // only when every member is a named, non-repeated pair: the whole-entry
+  // fail-closed shape `routeFromObject` uses in data-route-table.ts.
+  it.each([
+    // `options.path` overrides the pair above it, so the extracted prefix and
+    // the served prefix disagree with nothing in the file to say so.
+    { label: 'a trailing spread', argument: "{ path: 'cats', ...options }" },
+    // Deterministically SAFE under JS evaluation order — a later `path` pair
+    // always wins over an earlier spread — and refused anyway. Reading member
+    // order as proof makes the verdict turn on which side of the spread the
+    // author happened to type `path`, and how often each spelling occurs in
+    // real controllers is unmeasured. Meanwhile the two failure directions are
+    // not symmetric: reading it wrong publishes a URL the app never serves, and
+    // `route_map`/`api_impact` present that as fact, while refusing omits a
+    // route that is still findable in source.
+    { label: 'a leading spread', argument: "{ ...options, path: 'cats' }" },
+    { label: 'nothing but a spread', argument: '{ ...options }' },
+    // Last write wins at runtime, so a first-match scan names the loser.
+    { label: 'a repeated path key', argument: "{ path: 'cats', path: 'dogs' }" },
+    // Visible only through `propertyName`: compared as raw key text, `path` and
+    // `'path'` are two different keys and the duplicate check never fires.
+    {
+      label: 'a repeated path key in its quoted spelling',
+      argument: "{ path: 'cats', 'path': 'dogs' }",
+    },
+    // Refusal is on ANY repeated key, not only `path` — a duplicate anywhere is
+    // evidence the object is not the fixed literal it reads as.
+    {
+      label: 'a repeated key other than path',
+      argument: "{ path: 'a', version: '1', version: '2' }",
+    },
+    // A computed key could evaluate to `path` and take the mount with it.
+    { label: 'a computed key beside the path', argument: "{ path: 'a', [dynamicKey]: 'b' }" },
+    // `shorthand_property_identifier` and `method_definition`; neither is a
+    // `pair`, so neither offers a key/value this file can read.
+    { label: 'a shorthand property', argument: '{ path }' },
+    { label: 'a method', argument: "{ path: 'a', getFoo() {} }" },
+  ])('refuses an object form whose path another member could override: $label', ({ argument }) => {
+    expect(
+      extract(`
+        @Controller(${argument})
+        export class C {
+          @Get('b') b() {}
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it.each([
+    // A comment between two pairs is ordinary formatting. It has to be skipped
+    // BEFORE the not-a-pair test above, or the refusal fires on it and costs
+    // the controller every route it has.
+    {
+      label: 'a comment between its pairs',
+      argument: "{ path: 'a', /* URI versioning */ version: '1' }",
+    },
+    // Only `path` has to be provable. A non-literal value on an unrelated key
+    // is benign: `containsExecutingExpression` in data-route-table.ts refuses
+    // these, but it guards whole-entry declarativeness for a static route
+    // table — a different invariant from "can this member move the mount".
+    {
+      label: 'non-literal values on keys other than path',
+      argument: "{ path: 'a', host: 'x', scope: Scope.REQUEST, durable: true }",
+    },
+  ])('still reads the prefix out of an object form with $label', ({ argument }) => {
+    expect(
+      urls(`
+        @Controller(${argument})
+        export class C {
+          @Get('b') b() {}
+        }
+      `),
+    ).toEqual(['GET /a/b']);
+  });
+
   it.each([
     { label: 'a single path', argument: "{ path: 'a' }" },
     { label: 'an array of paths', argument: "{ path: ['a', 'b'] }" },
+    // The verb gate short-circuits on the object form before the object is
+    // walked at all, so the class-form refusal never gets a say here.
+    { label: 'an object the class form would also refuse', argument: "{ path: 'a', ...options }" },
   ])('mints nothing from the object form on a VERB decorator ($label)', ({ argument }) => {
     // `@Controller` takes the object form; `@Get` and friends take
     // `string | string[]`. Nest mounts nothing here, so emitting a route would
