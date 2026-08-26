@@ -75,7 +75,7 @@
     "clear": "Очистить",
     "rows": "строк",
     "highlighted": "выделено",
-    "showingRows": "Показано 50 из {{count}} строк"
+    "showingRows_other": "Показано 50 из {{count}} строк"
   },
   "fileTree": {
     "expandPanel": "Развернуть панель",
