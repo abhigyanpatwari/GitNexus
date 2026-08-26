@@ -1022,7 +1022,7 @@ describe('a total-failure sync that reaches the group lock second', () => {
   const readOnDisk = (): Record<string, unknown> =>
     JSON.parse(fs.readFileSync(contractsPath, 'utf8')) as Record<string, unknown>;
 
-  it('leaves the registry the winning sync wrote exactly as it found it, and reports preserved', async () => {
+  it('leaves the registry the winning sync wrote exactly as it found it, and reports superseded', async () => {
     seedPriorRegistry();
     whileWaitingForTheGroupLock = winnerWritesTheRegistry;
 
@@ -1039,7 +1039,7 @@ describe('a total-failure sync that reaches the group lock second', () => {
     // value would fall through `cli/group.ts`'s outcome chain, which has no
     // fallback branch, and falsify the guard asserting the sync tool's
     // description names every reachable outcome.
-    expect(result.registryOutcome).toBe('preserved');
+    expect(result.registryOutcome).toBe('superseded');
     // ...and the caller still learns what THIS run could not read.
     expect(result.unreadableRepos).toEqual(['app/backend']);
   });
@@ -1054,7 +1054,7 @@ describe('a total-failure sync that reaches the group lock second', () => {
 
     expect(fs.readFileSync(contractsPath, 'utf8')).toBe(JSON.stringify(WINNER_REGISTRY));
     expect(readOnDisk().unreadableRepos).toEqual([]);
-    expect(result.registryOutcome).toBe('preserved');
+    expect(result.registryOutcome).toBe('superseded');
   });
 
   it('does not stamp this run into the bridge metadata beside the registry it skipped', async () => {

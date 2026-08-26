@@ -1,6 +1,7 @@
 // gitnexus/src/cli/group.ts
 import { createRequire } from 'node:module';
 import type { Command } from 'commander';
+import type { RegistryWriteOutcome } from '../core/group/sync.js';
 import { logger } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -265,35 +266,32 @@ export function registerGroupCommands(program: Command): void {
         // registry still announced `Wrote contracts.json (0 contracts, 0
         // cross-links)` — a confident false statement about persisted state, on
         // the exact path this command exists to make legible.
-        if (result.registryOutcome === 'written') {
-          console.log(
-            `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
-          );
-        } else if (result.registryOutcome === 'preserved') {
-          // "Did NOT write contracts.json" was false: this path rewrites the
-          // file, keeping the previous sync's contracts and replacing only the
-          // two diagnostic lists. Saying otherwise sent an operator looking at
-          // an unchanged mtime to conclude the sync had not run.
-          console.log(
+        // Exhaustive by construction: a `Record` keyed on the union means a
+        // new outcome fails the build here instead of printing nothing, which
+        // is what previously pushed a distinct state into `preserved` and made
+        // this summary false on one of the two branches it then covered.
+        const OUTCOME_LINE: Record<RegistryWriteOutcome, string | null> = {
+          written:
+            `\nWrote contracts.json (${result.contracts.length} contracts, ` +
+            `${result.crossLinks.length} cross-links)`,
+          preserved:
             `\nKept the previous contracts.json — no repo in this group could be read.` +
-              `\n  Its contracts and cross-links are unchanged; only the unreadable/missing` +
-              `\n  repo lists were refreshed to describe THIS run. Fix the repos above and re-run.`,
-          );
-        } else if (result.registryOutcome === 'no-prior-registry') {
-          // Distinct from `preserved` on purpose: there is nothing on disk to
-          // preserve, so promising the previous sync's contracts are safe would
-          // send the operator looking for a file that has never existed.
-          //
-          // Scoped to contracts.json rather than claiming nothing at all was
-          // written: this path still records the run against an existing
-          // bridge's metadata, and a blanket "nothing was written" would be the
-          // same kind of false statement about disk as the line above.
-          console.log(
+            `\n  Its contracts and cross-links are unchanged; only the unreadable/missing` +
+            `\n  repo lists were refreshed to describe THIS run. Fix the repos above and re-run.`,
+          superseded:
+            `\nDid NOT touch contracts.json — no repo in this group could be read, and another` +
+            `\n  sync replaced the file while this one waited for the group lock. That sync's` +
+            `\n  result stands and this run's repo lists were NOT recorded: they describe a` +
+            `\n  group state older than what is on disk. Fix the repos above and re-run.`,
+          'no-prior-registry':
             `\nDid NOT write contracts.json — no repo in this group could be read,` +
-              `\n  and there is no previous contracts.json to fall back on. Fix the repos` +
-              `\n  above and re-run.`,
-          );
-        }
+            `\n  and there is no previous contracts.json to fall back on. Fix the repos` +
+            `\n  above and re-run.`,
+          // Nothing to say: the caller asked for no write.
+          'not-attempted': null,
+        };
+        const line = OUTCOME_LINE[result.registryOutcome];
+        if (line) console.log(line);
       }
     });
 

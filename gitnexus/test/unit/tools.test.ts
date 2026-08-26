@@ -304,6 +304,7 @@ describe('GITNEXUS_TOOLS', () => {
     expect(d).toContain('registryOutcome');
     expect(d).toContain("'written'");
     expect(d).toContain("'preserved'");
+    expect(d).toContain("'superseded'");
     expect(d).toContain("'no-prior-registry'");
     // Naming the value is not describing it: the outcome an agent has to act on
     // differently is "there is no contracts.json on disk at all".
@@ -312,10 +313,17 @@ describe('GITNEXUS_TOOLS', () => {
     // advertise an outcome no caller can observe.
     expect(d).not.toContain('not-attempted');
     // 'preserved' rewrites contracts.json (keeping the previous contracts and
-    // cross-links, refreshing the diagnostic lists). Nothing here may say the
+    // cross-links, refreshing the diagnostic lists). ITS clause may not say the
     // file was left alone — that sent an operator reading an unchanged mtime to
-    // conclude the sync never ran.
-    expect(d).not.toMatch(/did NOT write .*'preserved'|untouched|left alone|unwritten/i);
+    // conclude the sync never ran. Scoped to that clause rather than the whole
+    // description, because 'superseded' genuinely does leave the file untouched
+    // and describing it accurately must not trip this.
+    const preservedClause = d.slice(d.indexOf("'preserved'"), d.indexOf("'superseded'"));
+    expect(preservedClause).not.toMatch(/did NOT write|untouched|left alone|unwritten/i);
+    // ...and the superseded clause must say exactly that, or the two collapse
+    // back into one word for two different things on disk.
+    const supersededClause = d.slice(d.indexOf("'superseded'"), d.indexOf("'no-prior-registry'"));
+    expect(supersededClause).toMatch(/untouched|not recorded/i);
   });
 
   it('impact, query, and context expose optional service with minLength', () => {
