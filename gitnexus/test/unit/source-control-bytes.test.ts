@@ -61,15 +61,42 @@ const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
 /**
  * Every tracked text format a raw NUL would silently turn binary.
  *
- * Not just the JS/TS family: git's heuristic does not care what language a file
- * is, and this repo tracks Python, Java, Go, Rust, C/C++, Ruby, PHP, Kotlin,
- * Swift, C#, shell and Dart sources as resolver fixtures. A NUL in any of them
- * costs that file its diff exactly the same way. Scanning them is free —
- * measured across all 2315 non-JS tracked source files here, the hit count is
- * zero — so the narrower list was an unforced gap, not a tradeoff.
+ * Not just the JS/TS family, and not just code: git's heuristic does not care
+ * what a file is for. This repo tracks Python, Java, Go, Rust, C/C++, Ruby,
+ * PHP, Kotlin, Swift, C#, COBOL, shell and Dart sources as resolver fixtures,
+ * and it hand-edits far more configuration than source — `package.json`, the
+ * workflow YAML, `go.mod` and `*.csproj` fixtures, the docs, and the vitest
+ * `.snap` files that are regenerated on demand and reviewed as diffs. A NUL
+ * costs any of them its diff on exactly the same terms.
+ *
+ * `.scm` (tree-sitter queries) and `.gyp` are listed for the same reason, even
+ * though every tracked instance of both today sits inside the vendored
+ * grammar tree: the day a first-party query file lands outside it, it is
+ * covered without a second round of this.
+ *
+ * The list stays an ALLOWLIST rather than "everything git tracks" because the
+ * index also names the tree-sitter `.node` prebuilds and a `.png`, and those 31
+ * files are genuinely binary — they are the whole reason a NUL scan cannot just
+ * read the index.
  */
 const SOURCE_EXTENSIONS =
-  /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts|py|pyi|java|kt|kts|go|rs|c|h|cc|cpp|hpp|cs|rb|php|swift|scala|dart|lua|pl|sh|bash|zsh|sql|vue|svelte|toml|cfg|ini)$/;
+  /\.(?:ts|tsx|js|jsx|mjs|cjs|mts|cts|py|pyi|java|kt|kts|go|rs|c|h|cc|cpp|hpp|cs|rb|php|swift|scala|dart|lua|pl|sh|bash|zsh|cbl|cpy|jcl|sql|vue|svelte|html|htm|css|scss|less|jinja|toml|cfg|ini|properties|env|example|json|jsonc|jsonl|yml|yaml|xml|csv|txt|md|mdc|mdm|mdx|snap|scm|proto|lock|mod|sum|csproj|props|targets|sln|gradle|gyp|gypi|ps1|bat|cmd)$/;
+
+/**
+ * Tracked text files whose whole NAME is the format — the half no extension
+ * regex can reach.
+ *
+ * {@link SOURCE_EXTENSIONS} is end-anchored on a dot, so `Dockerfile`,
+ * `CODEOWNERS`, `LICENSE`, `SHA256SUMS` and the husky hook never match it at
+ * any width, and neither does a bare dotfile like `.gitignore` or
+ * `.prettierrc`, whose entire name reads as an extension. Every one of them is
+ * hand-edited here, and a NUL would cost each of them its diff.
+ *
+ * Matched against the BASENAME, so one entry covers every directory the name
+ * appears in, and matched case-sensitively, which is how git stores the path.
+ */
+const SOURCE_BASENAMES =
+  /^(?:Dockerfile(?:\..+)?|CODEOWNERS|LICENSE|SHA256SUMS|pre-commit|\.(?:cursorrules|dockerignore|git-blame-ignore-revs|gitattributes|gitignore|gitkeep|gitleaksignore|npmignore|prettierignore|prettierrc|windsurfrules))$/;
 
 /** Scope of the wider control-byte rule. git paths are always `/`-separated. */
 const STRICT_SOURCE_ROOT = 'gitnexus/src/';
@@ -167,6 +194,19 @@ async function scanTargets(
   return offenders.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : a.line - b.line));
 }
 
+/**
+ * The collector's whole filter, in one predicate.
+ *
+ * Exposed as a function so the planted-fixture cases below can put a fixture
+ * name through the SAME decision the repo-wide scan makes. Asserting on
+ * `scanTargets` alone proves only that the byte locator works; it says nothing
+ * about whether the collector would ever hand that file to the locator, and
+ * that second half is the one that has been too narrow.
+ */
+function isScannedTextFile(rel: string): boolean {
+  return SOURCE_EXTENSIONS.test(rel) || SOURCE_BASENAMES.test(path.posix.basename(rel));
+}
+
 function listTrackedSourceFiles(): ScanTarget[] {
   const stdout = execFileSync('git', ['ls-files', '-z'], {
     cwd: REPO_ROOT,
@@ -174,10 +214,11 @@ function listTrackedSourceFiles(): ScanTarget[] {
     maxBuffer: 64 * 1024 * 1024,
   });
   // `-z` emits raw, NUL-terminated paths, so nothing is quoted or escaped and
-  // the trailing empty segment is dropped by the extension filter.
+  // the trailing empty segment is dropped by the filter (it has neither a
+  // matching extension nor a matching basename).
   return stdout
     .split('\u0000')
-    .filter((rel) => SOURCE_EXTENSIONS.test(rel))
+    .filter((rel) => isScannedTextFile(rel))
     .map((rel) => ({ abs: path.join(REPO_ROOT, rel), rel }));
 }
 
@@ -207,6 +248,18 @@ const PLANTED_ESCAPE_SOURCE = ['const a = 1;', "const red = '\u001b[31m';", ''].
  * neither the file nor the byte.
  */
 const PLANTED_PY_NUL_SOURCE = ['a = 1', 'b = 2', "sep = '\u0000'", ''].join('\n');
+
+/**
+ * The same defect again, in the four shapes the JS/TS extension list could not
+ * reach. The last two are why a second, basename filter has to exist at all:
+ * `Dockerfile` has no extension, and `.gitignore` is a name that IS its
+ * extension, so an end-anchored `\.(…)$` regex can never match either,
+ * however far its alternation is widened.
+ */
+const PLANTED_JSON_NUL_SOURCE = ['{', '  "a": 1,', '  "sep": "\u0000"', '}', ''].join('\n');
+const PLANTED_MD_NUL_SOURCE = ['# Heading', 'separator: \u0000', ''].join('\n');
+const PLANTED_DOCKERFILE_NUL_SOURCE = ['FROM node:22-bookworm', 'RUN echo \u0000', ''].join('\n');
+const PLANTED_DOTFILE_NUL_SOURCE = ['dist/', 'sep-\u0000/', ''].join('\n');
 
 function writeFixture(dir: string, name: string, source: string): ScanTarget {
   const abs = path.join(dir, name);
@@ -313,5 +366,72 @@ describe('source hygiene', () => {
     expect(byExtension('.java')).toBeGreaterThan(0);
     expect(byExtension('.go')).toBeGreaterThan(0);
     expect(byExtension('.rs')).toBeGreaterThan(0);
+  });
+
+  it('reports a planted NUL in the shapes the JS/TS extension list never reached', async () => {
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'source-control-bytes-'));
+    const planted = [
+      writeFixture(fixtureDir, '.gitignore', PLANTED_DOTFILE_NUL_SOURCE),
+      writeFixture(fixtureDir, 'Dockerfile', PLANTED_DOCKERFILE_NUL_SOURCE),
+      writeFixture(fixtureDir, 'planted-nul.json', PLANTED_JSON_NUL_SOURCE),
+      writeFixture(fixtureDir, 'planted-nul.md', PLANTED_MD_NUL_SOURCE),
+    ];
+
+    // Through the collector's own predicate, not straight into the locator: a
+    // file the collector never yields is a file the guard never reads, and that
+    // is the failure mode both halves of the filter exist to close. Dropping
+    // either half deletes entries from this list.
+    const scanned = planted.filter((target) => isScannedTextFile(target.rel));
+    const offenders = await scanTargets(scanned, findNulByte);
+
+    expect(offenders.map(describeOffender)).toEqual([
+      '.gitignore:2 contains 0x00',
+      'Dockerfile:2 contains 0x00',
+      'planted-nul.json:3 contains 0x00',
+      'planted-nul.md:2 contains 0x00',
+    ]);
+  });
+
+  it('collects every tracked text format, files with no extension included', () => {
+    const collected = TRACKED_SOURCE_FILES.map((target) => target.rel);
+    const byExtension = (ext: string): number =>
+      collected.filter((rel) => rel.endsWith(ext)).length;
+
+    // Data and configuration formats. git's heuristic does not care that these
+    // are not code: a NUL costs `package.json` its diff exactly as it costs a
+    // `.ts` file, and every format below is hand-edited in this repo.
+    expect(byExtension('.json')).toBeGreaterThan(0);
+    expect(byExtension('.yml')).toBeGreaterThan(0);
+    expect(byExtension('.yaml')).toBeGreaterThan(0);
+    expect(byExtension('.md')).toBeGreaterThan(0);
+    expect(byExtension('.snap')).toBeGreaterThan(0);
+    expect(byExtension('.txt')).toBeGreaterThan(0);
+    expect(byExtension('.csproj')).toBeGreaterThan(0);
+    expect(byExtension('go.mod')).toBeGreaterThan(0);
+    expect(byExtension('.properties')).toBeGreaterThan(0);
+    expect(byExtension('.cbl')).toBeGreaterThan(0);
+
+    // The basename half. An end-anchored EXTENSION regex cannot reach any of
+    // these however far its alternation is widened, so widening alone would
+    // have left all of them outside the guard.
+    expect(collected).toContain('.devcontainer/Dockerfile');
+    expect(collected).toContain('.github/CODEOWNERS');
+    expect(collected).toContain('.husky/pre-commit');
+    expect(collected).toContain('LICENSE');
+    expect(byExtension('.gitignore')).toBeGreaterThan(0);
+    expect(byExtension('.prettierrc')).toBeGreaterThan(0);
+  });
+
+  it('still leaves tracked binary formats out of the scan', () => {
+    const collected = TRACKED_SOURCE_FILES.map((target) => target.rel);
+
+    // Why this stays an allowlist rather than "everything git tracks". The
+    // index also names the tree-sitter prebuilds and one docs screenshot, and
+    // those 31 files are the only tracked files here that really do carry a
+    // NUL — scanning them would report all 31 forever.
+    expect(collected.filter((rel) => rel.endsWith('.node'))).toEqual([]);
+    expect(collected.filter((rel) => rel.endsWith('.png'))).toEqual([]);
+    expect(isScannedTextFile('gitnexus/prebuilds/linux-x64/tree-sitter-kotlin.node')).toBe(false);
+    expect(isScannedTextFile('Documentation/docs-asset/kilo-code-mcp.png')).toBe(false);
   });
 });
