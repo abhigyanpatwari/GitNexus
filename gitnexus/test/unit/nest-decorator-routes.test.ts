@@ -602,6 +602,27 @@ describe('NestJS decorator routes', () => {
 
   // ─── Members Nest never registers as handlers ──────────────────────
 
+  /** Routes a controller emits when `member` is its only member. */
+  const memberUrls = (member: string) =>
+    urls(`
+      @Controller('v')
+      export class C {
+        ${member}
+      }
+    `);
+
+  /** A non-handler followed by a real one — the shape both arms below need. */
+  const STATIC_THEN_INSTANCE = `
+      @Controller('v')
+      export class C {
+        @Get('s')
+        static s() {}
+
+        @Get('i')
+        i() {}
+      }
+    `;
+
   // Nest's `RequestMapping` writes the handler onto the class PROTOTYPE's
   // `descriptor.value`, and `RouterExplorer` scans prototype instance methods
   // for that metadata. A `static` method lives on the constructor and is never
@@ -614,14 +635,7 @@ describe('NestJS decorator routes', () => {
     { label: 'a getter', member: "@Get('s') get s(): string { return ''; }" },
     { label: 'a setter', member: "@Get('s') set s(v: string) {}" },
   ])('mints nothing for $label, which Nest never registers as a handler', ({ member }) => {
-    expect(
-      extract(`
-        @Controller('v')
-        export class C {
-          ${member}
-        }
-      `),
-    ).toEqual([]);
+    expect(memberUrls(member)).toEqual([]);
   });
 
   // The other half of the modifier check, and the half a mutation can actually
@@ -642,29 +656,12 @@ describe('NestJS decorator routes', () => {
     },
     { label: 'a method named get', member: "@Get('s') get() {}" },
     { label: 'a method named static', member: "@Get('s') static() {}" },
-  ])('still emits the route for $label', ({ member }) => {
-    expect(
-      urls(`
-        @Controller('v')
-        export class C {
-          ${member}
-        }
-      `),
-    ).toEqual(['GET /v/s']);
-  });
-
-  it('still emits the route for that same decorator on an instance method', () => {
-    // The control for the table above — identical source minus the modifier.
-    // It is what makes those three empty results evidence of the modifier
+    // The control for the mints-nothing table above: identical source minus the
+    // modifier, which is what makes those three empty results evidence of the
     // check rather than of a fixture that happens to parse to nothing.
-    expect(
-      urls(`
-        @Controller('v')
-        export class C {
-          @Get('s') s() {}
-        }
-      `),
-    ).toEqual(['GET /v/s']);
+    { label: 'a plain instance method', member: "@Get('s') s() {}" },
+  ])('still emits the route for $label', ({ member }) => {
+    expect(memberUrls(member)).toEqual(['GET /v/s']);
   });
 
   it('drops a decorated static method under the JavaScript grammar too', () => {
@@ -674,18 +671,7 @@ describe('NestJS decorator routes', () => {
     // check has to test every child's type. The instance method beside it is
     // the in-fixture control: its route proves this .js arm still measures
     // something rather than passing on a fixture that parses to nothing.
-    expect(
-      jsUrls(`
-        @Controller('v')
-        export class C {
-          @Get('s')
-          static s() {}
-
-          @Get('i')
-          i() {}
-        }
-      `),
-    ).toEqual(['GET /v/i']);
+    expect(jsUrls(STATIC_THEN_INSTANCE)).toEqual(['GET /v/i']);
   });
 
   it("does not donate a non-handler member's decorator run to the method after it", () => {
@@ -697,16 +683,7 @@ describe('NestJS decorator routes', () => {
     // if a future edit adds the early `continue`. Asserted over the routes
     // attributed to `i`, because the whole-output form would instead be
     // measuring the modifier check the table above already covers.
-    const routes = extract(`
-      @Controller('v')
-      export class C {
-        @Get('s')
-        static s() {}
-
-        @Get('i')
-        i() {}
-      }
-    `);
+    const routes = extract(STATIC_THEN_INSTANCE);
 
     expect(format(routes.filter((route) => route.handlerName === 'i'))).toEqual(['GET /v/i']);
   });

@@ -44,6 +44,7 @@
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 import { plainString, propertyName } from './data-route-table.js';
+import { hasKeyword } from '../field-extractors/configs/helpers.js';
 import { isDev } from '../utils/env.js';
 import { logger } from '../../logger.js';
 
@@ -131,10 +132,7 @@ function decoratorName(decorator: Parser.SyntaxNode): string | null {
  * `:id(d+)`, and `@Get('/v\u0069ews')` came out as `/vews`. Both are paths the
  * app never serves, i.e. the wrong-URL outcome the paragraph above forbids.
  */
-function decoratorLiteralPaths(
-  decorator: Parser.SyntaxNode,
-  filePath: string,
-): readonly string[] | null {
+function decoratorLiteralPaths(decorator: Parser.SyntaxNode): readonly string[] | null {
   const call = decorator.namedChild(0);
   // A bare `@Injectable` with no call, or `@Get()` with no argument — legal,
   // and both mean "no path segment of my own".
@@ -146,42 +144,7 @@ function decoratorLiteralPaths(
   // Reading it as a route would mint a URL the app never serves, which is the
   // invented fact this module refuses; an unreadable shape drops instead.
   if (first.type === 'object' && decoratorName(decorator) !== 'Controller') return null;
-  return literalPaths(first, filePath);
-}
-
-/**
- * How much of a refused options object to quote in the dev line. Enough to
- * recognise the shape, bounded because an options object is arbitrary source.
- */
-const REFUSED_OBJECT_LOG_LIMIT = 160;
-
-/**
- * Decline an options object whose `path` is not provable, and say so.
- *
- * Gated on `isDev` exactly as the routes phase gates its own registry line
- * (`pipeline-phases/routes.ts`), and emitted at `info` rather than `debug`
- * because the logger's base level IS `info`: an `isDev`-gated `logger.debug`
- * would be gated twice and stay silent in the very dev run it exists for.
- *
- * Names the FILE, not just the shape — a controller dropped without a path to
- * look at is only marginally louder than one dropped in silence, and this
- * refusal costs every route on the class. The line number is deliberately
- * absent: `lineOffset` (a Vue SFC `<script>` block shifts every row) is not
- * threaded this deep, and a row that is wrong for embedded scripts would send
- * the reader to a line the decorator is not on. The quoted shape locates it.
- */
-function refuseUnprovableObject(node: Parser.SyntaxNode, filePath: string): null {
-  if (isDev) {
-    const shape = node.text.replace(/\s+/g, ' ');
-    const quoted =
-      shape.length > REFUSED_OBJECT_LOG_LIMIT
-        ? `${shape.slice(0, REFUSED_OBJECT_LOG_LIMIT)}…`
-        : shape;
-    logger.info(
-      `🗺️ NestJS: dropped @Controller in ${filePath} — a member of its options object could override \`path\`: ${quoted}`,
-    );
-  }
-  return null;
+  return literalPaths(first);
 }
 
 /**
@@ -191,7 +154,7 @@ function refuseUnprovableObject(node: Parser.SyntaxNode, filePath: string): null
  * what keeps `@Controller({ path: ['a', 'b'] })` from being read by a second,
  * laxer set of rules that has drifted from this one.
  */
-function literalPaths(node: Parser.SyntaxNode, filePath: string): readonly string[] | null {
+function literalPaths(node: Parser.SyntaxNode): readonly string[] | null {
   // `@Controller({ path: 'cats', version: '1' })` is the documented form for
   // URI/header versioning, and its path is a plain literal sitting right there.
   // Worth reading rather than dropping, because the asymmetry is severe: an
@@ -218,10 +181,10 @@ function literalPaths(node: Parser.SyntaxNode, filePath: string): readonly strin
       // — probed and identical across the three grammars this extractor runs
       // under. None offers a key/value this file can read, and the first can
       // introduce or overwrite `path` from a value declared elsewhere.
-      if (child.type !== 'pair') return refuseUnprovableObject(node, filePath);
+      if (child.type !== 'pair') return null;
       const key = child.childForFieldName('key');
       const value = child.childForFieldName('value');
-      if (key === null || value === null) return refuseUnprovableObject(node, filePath);
+      if (key === null || value === null) return null;
       // Compared through `propertyName`, the same judge used to READ the key —
       // so `{ path: … }` and `{ 'path': … }` are one key and collide as
       // duplicates. Comparing raw key text instead makes them two distinct
@@ -232,7 +195,7 @@ function literalPaths(node: Parser.SyntaxNode, filePath: string): readonly strin
       // ignored. A repeated key is refused wherever it appears, not only on
       // `path`: a duplicate anywhere is evidence the object is not the fixed
       // literal it reads as, and cost is one controller against a wrong URL.
-      if (name === null || values.has(name)) return refuseUnprovableObject(node, filePath);
+      if (name === null || values.has(name)) return null;
       values.set(name, value);
     }
 
@@ -245,7 +208,7 @@ function literalPaths(node: Parser.SyntaxNode, filePath: string): readonly strin
     // A missing `path` keeps the existing drop and must never read as `''`:
     // `@Controller({ version: '1' })` mounts at a prefix this decorator does
     // not state, and `''` would publish every one of its methods at the root.
-    return path === undefined ? null : literalPaths(path, filePath);
+    return path === undefined ? null : literalPaths(path);
   }
 
   // `array` is the node type in all three grammars this extractor runs under —
@@ -314,6 +277,13 @@ function leadingDecorators(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
 }
 
 /**
+ * Cap on the decorator text quoted in the dropped-controller log. Long enough
+ * to identify the shape, short enough not to dump a wrapped multi-line
+ * decorator into the operator's terminal.
+ */
+const DROPPED_CONTROLLER_LOG_LIMIT = 160;
+
+/**
  * Every decorator attached to a class, across the two shapes the grammar
  * produces — which differ by whether the class is exported:
  *
@@ -349,11 +319,33 @@ function controllerPrefix(
 ): string | null | undefined {
   for (const decorator of classDecorators(classNode)) {
     if (decoratorName(decorator) !== 'Controller') continue;
-    const paths = decoratorLiteralPaths(decorator, filePath);
+    const paths = decoratorLiteralPaths(decorator);
     // `@Controller([])` lands here too and needs no answer of its own: a
     // controller mounted at no path serves no route, so "emit nothing for this
     // class" is what both readings of it come to.
-    if (paths === null || paths.length !== 1) return null;
+    if (paths === null || paths.length !== 1) {
+      // The single funnel for EVERY whole-controller drop — an unreadable
+      // constant (`@Controller(ROUTES.VENUES)`), a multi-path array, an
+      // unreadable array element, and an options object whose `path` another
+      // member could override all return null here. Reporting at the refusal
+      // sites instead would make the rarest cause the loudest, and leave the
+      // motivating one from this module's own header silent.
+      //
+      // `isDev` at `info`, not `debug`: the logger's base level IS `info`, so
+      // an isDev-gated `debug` is gated twice and stays silent in exactly the
+      // dev run it exists for. Same shape the routes phase uses.
+      if (isDev) {
+        const shape = decorator.text.replace(/\s+/g, ' ');
+        logger.info(
+          `🗺️ NestJS: dropped @Controller in ${filePath} — its prefix is not provable: ${
+            shape.length > DROPPED_CONTROLLER_LOG_LIMIT
+              ? `${shape.slice(0, DROPPED_CONTROLLER_LOG_LIMIT)}…`
+              : shape
+          }`,
+        );
+      }
+      return null;
+    }
     return paths[0];
   }
   return undefined;
@@ -404,7 +396,7 @@ export function extractNestRoutes(
  * route minted from one is a URL the app does not serve — the invented fact
  * this module refuses everywhere else.
  */
-const NON_HANDLER_MODIFIERS: ReadonlySet<string> = new Set(['static', 'get', 'set']);
+const NON_HANDLER_MODIFIERS: readonly string[] = ['static', 'get', 'set'];
 
 /**
  * Whether Nest could register this `method_definition` as a request handler.
@@ -418,21 +410,21 @@ const NON_HANDLER_MODIFIERS: ReadonlySet<string> = new Set(['static', 'get', 'se
  * `namedChildren` idiom cannot see the modifier at all and every one of the
  * three reads as an ordinary handler.
  *
- * Tests every child's TYPE rather than indexing a position, because the
- * position is not stable: under tree-sitter-javascript a method decorator is a
- * CHILD of `method_definition`, so `children[0]` there is the `decorator` and
- * the modifier sits behind it, while under tree-sitter-typescript the decorator
- * is a preceding sibling and the modifier comes first.
+ * Uses the shared `hasKeyword`, which the TypeScript and JavaScript captures
+ * and the TS/JS method extractor already use to decide this same question. It
+ * matches on child TEXT, not node type: `static` reaches the tree as an
+ * anonymous token in some grammar versions and as a keyword node in others, so
+ * a `child.type === 'static'` test silently stops firing on a grammar bump —
+ * and here that would readmit exactly the phantom routes this function removes,
+ * with the suite still green. It also skips the `name` field, so a method
+ * literally called `get()` or `static()` is not misread as a modifier.
  *
  * The scan is bounded by one method's own children (a handful), so it is not
  * the uncached-getter trap {@link collectClassRoutes} documents — that one bites
  * when a PARENT's child list is re-marshalled once per member.
  */
 function isRequestHandler(member: Parser.SyntaxNode): boolean {
-  for (const child of member.children) {
-    if (NON_HANDLER_MODIFIERS.has(child.type)) return false;
-  }
-  return true;
+  return !NON_HANDLER_MODIFIERS.some((keyword) => hasKeyword(member, keyword));
 }
 
 function collectClassRoutes(
@@ -495,7 +487,7 @@ function collectClassRoutes(
       const httpMethod = NEST_METHOD_DECORATORS.get(name);
       if (httpMethod === undefined) continue;
 
-      const routePaths = decoratorLiteralPaths(decorator, filePath);
+      const routePaths = decoratorLiteralPaths(decorator);
       if (routePaths === null) continue; // unreadable → skip
 
       const handlerName = member.childForFieldName('name')?.text;

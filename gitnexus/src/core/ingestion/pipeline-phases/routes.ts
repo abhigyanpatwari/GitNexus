@@ -256,35 +256,33 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       }
     }
 
+    // One writer for every pre-seeded route, so recording membership cannot be
+    // forgotten. Inlining `has` / `set` / `add` at each site made the invariant
+    // a convention three call sites had to remember — and a fourth source that
+    // forgot the `add` would reopen #3049 exactly as silently as the source-set
+    // it replaced. This is the shape `claim()` in call-processor.ts uses for the
+    // same reason: one helper writes the collection and its key set together.
+    const preSeed = (url: string, entry: Omit<RouteEntry, 'url'>): boolean => {
+      if (routeRegistry.has(url)) return false;
+      routeRegistry.set(url, { ...entry, url });
+      preSeededKeys.add(url);
+      return true;
+    };
+
     for (const p of allPaths) {
       if (expoAppPaths.has(p)) {
         const expoURL = expoFileToRouteURL(p);
-        if (expoURL && !routeRegistry.has(expoURL)) {
-          routeRegistry.set(expoURL, {
-            filePath: p,
-            source: 'expo-filesystem-route',
-            url: expoURL,
-          });
-          preSeededKeys.add(expoURL);
+        if (expoURL && preSeed(expoURL, { filePath: p, source: 'expo-filesystem-route' })) {
           continue;
         }
       }
       const nextjsURL = nextjsFileToRouteURL(p);
-      if (nextjsURL && !routeRegistry.has(nextjsURL)) {
-        routeRegistry.set(nextjsURL, {
-          filePath: p,
-          source: 'nextjs-filesystem-route',
-          url: nextjsURL,
-        });
-        preSeededKeys.add(nextjsURL);
+      if (nextjsURL && preSeed(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' })) {
         continue;
       }
       if (p.endsWith('.php')) {
         const phpURL = phpFileToRouteURL(p);
-        if (phpURL && !routeRegistry.has(phpURL)) {
-          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route', url: phpURL });
-          preSeededKeys.add(phpURL);
-        }
+        if (phpURL) preSeed(phpURL, { filePath: p, source: 'php-file-route' });
       }
     }
 

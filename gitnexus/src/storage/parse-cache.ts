@@ -619,11 +619,28 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // when you pick the number.
 //
 // 77 is free at this merge: origin/main is 76, and the open PRs touching this
-// constant are #2840 (a stale 71) and #1616 (a stale 2). Note the scan method
-// matters — `gh pr diff` exits non-zero on an inaccessible fork and prints
-// nothing, so a grep over its output silently skips that PR. #2840 was missed
-// exactly that way and had to be read through the contents API at the PR head.
-// An "exhaustive" scan that fails open is how this constant keeps colliding.
+// constant are #2840 (a stale 71) and #1616 (a stale 2). Scan with the contents
+// API at each PR head, not `gh pr diff` — that exits non-zero on an
+// inaccessible fork and prints nothing, so a grep over its output skips the PR
+// silently. #2840 was missed exactly that way this round.
+//
+// WHY THIS IS STILL A HAND-PICKED NUMBER, when `SCHEMA_FINGERPRINT` next door
+// is a derived sha256 that cannot collide. The derivation exists and already
+// runs: `resolveAnalyzerRunnerIdentity` computes `build.digest` over the
+// analyzer build tree on every analyze. It is not used here because it moves on
+// ANY build change — a comment-only edit, this paragraph included — so every
+// dev and CI rebuild would force a full re-parse of every repo. That is the
+// expensive half of the trade, and `PARSE_CACHE_VERSION` already carries the
+// package version, so this counter's only job is separating builds that SHARE
+// one: dev, CI, unreleased. Exactly the population a whole-build digest would
+// punish, and exactly the population that hits the exact-clash failure.
+//
+// So the counter stays, and the open cost is that a bump nobody makes is
+// invisible: a capture change with no bump ships inert and no check can see it.
+// #2860 (a base-branch CI comparison) closes the "not greater than main" axis
+// only. A digest over just the determinant subset — the language queries plus
+// `route-extractors/` and `workers/` module content — would close the missing-
+// bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
 const SCHEMA_BUMP = 77;
 const GITNEXUS_PKG_VERSION = (() => {
