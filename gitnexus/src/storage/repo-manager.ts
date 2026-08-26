@@ -737,8 +737,14 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => readRegistryFi
  * that answer, by replacing a good contracts.json with an empty one.
  *
  * Deliberately a separate export rather than an option on `readRegistry`:
- * leaving that signature untouched keeps its nine other call sites provably
- * unaffected, and the mode is legible at the call site.
+ * leaving that signature untouched keeps every existing lenient call site
+ * provably unaffected, and the mode is legible at the call site.
+ *
+ * No count here on purpose. This comment carried one, it said nine, and the
+ * real figure was thirteen by the time anyone checked and fourteen shortly
+ * after — a number in prose beside code that moves is a claim that rots
+ * silently, which is the defect class this whole change set is about. The
+ * argument does not need the figure: it holds for one call site or fifty.
  */
 export const readRegistryStrict = async (): Promise<RegistryEntry[]> => readRegistryFile(true);
 

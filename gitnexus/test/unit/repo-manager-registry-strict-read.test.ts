@@ -32,8 +32,8 @@ vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
  * That is an unreadable condition reported as missing: the same conflation
  * #3011 removes one stack frame further down, which is why `readRegistryStrict`
  * exists and why syncGroup is the only caller that uses it. It is a separate
- * export rather than an option on `readRegistry` so that the nine lenient call
- * sites keep a provably untouched signature.
+ * export rather than an option on `readRegistry` so that every lenient call
+ * site keeps a provably untouched signature.
  *
  * ENOENT stays lenient in both modes. No file genuinely means nothing has been
  * registered yet, and every first-run path depends on that.
