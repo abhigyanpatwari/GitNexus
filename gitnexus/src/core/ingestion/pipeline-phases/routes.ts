@@ -174,6 +174,32 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Route sources written straight into `routeRegistry` from the file list, never
+ * through `addRoute`. `resolveRouteHandlerSymbols` walks only `extractedRoutes`
+ * and `decoratorRoutes`, so it never sees these URLs and its `claimed` set never
+ * contains them — which means a handler stamped on one of these keys was
+ * resolved for a DIFFERENT route.
+ *
+ * That is reachable, and it fabricates rather than omits (#3049). A
+ * method-agnostic route (`@All`, a Django function view, a verb-less dispatch
+ * guard) keys by URL alone via `routeNodeKey`, so it collides with a
+ * file-convention route at the same URL. It claims the key unopposed in
+ * `claim()`, then loses first-writer-wins here in `addRoute` and is dropped as a
+ * duplicate — and without this guard the surviving file-convention node would
+ * read that handler and present another application's controller method as its
+ * own. `api_impact` is documented to be run BEFORE editing a route handler, so
+ * it would answer with a handler from the wrong app.
+ *
+ * Dropping the losing route is a separate and deliberate consequence of
+ * URL-only identity; this only stops the false attribution.
+ */
+const PRE_SEEDED_ROUTE_SOURCES: ReadonlySet<string> = new Set([
+  'expo-filesystem-route',
+  'nextjs-filesystem-route',
+  'php-file-route',
+]);
+
 export const routesPhase: PipelinePhase<RoutesOutput> = {
   name: 'routes',
   deps: ['parse'],
@@ -311,7 +337,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         const { source: routeSource, method: routeMethod, url } = entry;
         const handlerPath = handlerPathFor(routeKey, entry);
         const content = handlerContents.get(handlerPath);
-        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
+        // A pre-seeded route can never legitimately appear in
+        // `routeHandlerSymbols`, so a key that does is a route that LOST (#3049).
+        const handlerSymbolId = PRE_SEEDED_ROUTE_SOURCES.has(routeSource)
+          ? undefined
+          : routeHandlerSymbols.get(routeKey);
         const analysisContent =
           entry.source === DATA_ROUTE_TABLE_SOURCE && content
             ? handlerSymbolContent(

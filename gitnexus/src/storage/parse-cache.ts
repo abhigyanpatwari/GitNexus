@@ -593,7 +593,22 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // open PR touching gitnexus/src/storage/parse-cache.ts was scanned at this
 // merge: #3046 (73) and #1616 (a stale 2) are the only other claimants.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 75;
+//
+// 75 -> 76 for the NestJS multi-path (array) form: `@Get(['a','b'])` now yields
+// one `decoratorRoutes` entry per path where it previously yielded none. That
+// changes worker output for the same file, and 75 was already claimed earlier
+// on this same branch — so a warm cache written by a dev or CI build at v75,
+// before the array form landed, would replay the pre-feature captures under a
+// BYTE-IDENTICAL `PARSE_CACHE_VERSION` and the array form would be inert. The
+// package version is untouched here, so it cannot rescue that case. Same-branch
+// re-bumping is unusual, but the ledger's rule is about what a warm cache can
+// replay, not about how the value was reached.
+//
+// 76 is still the next free value above origin/main (74) and above every
+// in-flight claim: #3046 (73) and #1616 (a stale 2) remain the only other open
+// PRs touching this constant.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 76;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
