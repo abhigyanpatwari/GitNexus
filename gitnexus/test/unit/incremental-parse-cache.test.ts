@@ -230,7 +230,7 @@ describe('PARSE_CACHE_VERSION', () => {
   // replayed pre-feature captures and the feature was inert. 71 is the next
   // free value above every claim at this merge — origin/main is 70 and open
   // PR #3017 already claims 71, so 71 would have collided.
-  it('pins SCHEMA_BUMP to 73 so concurrent bumps cannot silently collide (#2766)', () => {
+  it('pins SCHEMA_BUMP to 73 so object-callable identity caches cannot survive #3041', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(73);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly

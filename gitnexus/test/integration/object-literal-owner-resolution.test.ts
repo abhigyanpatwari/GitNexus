@@ -157,7 +157,7 @@ describe.skipIf(!hasDistWorker)('object-literal owner resolution — worker pipe
 
     // The Method node id encodes arity disambiguation (#1 = one-arity overload).
     // Pin the canonical id so a regression that targets a phantom node fails.
-    const expectedTargetId = generateId('Method', 'src/service.ts:getUser#1');
+    const expectedTargetId = generateId('Method', 'src/service.ts:fooService.getUser#1');
     expect(callerToGetUser).toEqual([
       {
         targetId: expectedTargetId,
@@ -263,8 +263,7 @@ function helperA(ctx: unknown) { return ctx; }
 function helperB(ctx: unknown) { return ctx; }
 function helperC(ctx: unknown) { return ctx; }
 
-export const first = query({ handler: async (ctx: unknown) => helperA(ctx) });
-export const second = query({ handler: async (ctx: unknown) => helperB(ctx) });
+export const first = query({ handler: async (ctx: unknown) => helperA(ctx) }); export const second = query({ handler: async (ctx: unknown) => helperB(ctx) });
 export let third = query({ handler: async (ctx: unknown) => helperC(ctx) });
 `,
       });
@@ -324,6 +323,21 @@ export let third = query({ handler: async (ctx: unknown) => helperC(ctx) });
         ].sort(),
       );
     });
+
+    it('keeps owner-qualified handlers reachable from their file definition', () => {
+      const defined = getRelationships(result, 'DEFINES')
+        .filter((edge) => edge.target === 'handler')
+        .map((edge) => edge.rel.targetId)
+        .sort();
+
+      expect(defined).toEqual(
+        [
+          generateId('Function', 'src/convex.ts:first.handler'),
+          generateId('Function', 'src/convex.ts:second.handler'),
+          generateId('Function', 'src/convex.ts:third.handler'),
+        ].sort(),
+      );
+    });
   },
 );
 
@@ -333,9 +347,146 @@ describe.skipIf(!hasDistWorker)('object-literal shorthand method identity (#3041
 
   beforeAll(async () => {
     repoRoot = writeFixture({
-      'src/shorthand.ts': `function helper(value: string) { return value; }
-export const service = {
-  run(value: string) { return helper(value); },
+      'src/shorthand.ts': `function helperA(value: string) { return value; }
+function helperB(value: string) { return value; }
+export const alpha = { run(value: string) { return helperA(value); } };
+export const beta = { run(value: string) { return helperB(value); } };
+`,
+    });
+    result = await runPipelineFromRepo(repoRoot, () => undefined, {
+      skipGraphPhases: true,
+    });
+  }, 60_000);
+
+  afterAll(() => removeFixture(repoRoot));
+
+  it('gives sibling shorthand methods distinct owner-qualified identities and calls', () => {
+    const nodeIds = new Set<string>();
+    result.graph.forEachNode((node) => nodeIds.add(node.id));
+    const alphaRun = generateId('Method', 'src/shorthand.ts:alpha.run#1');
+    const betaRun = generateId('Method', 'src/shorthand.ts:beta.run#1');
+    const calls = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.target === 'helperA' || edge.target === 'helperB')
+      .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
+      .sort();
+
+    expect(nodeIds.has(alphaRun)).toBe(true);
+    expect(nodeIds.has(betaRun)).toBe(true);
+    expect(calls).toEqual([`${alphaRun}->helperA`, `${betaRun}->helperB`]);
+  });
+
+  it('keeps shorthand methods on both File DEFINES and binding HAS_METHOD edges', () => {
+    const methodIds = [
+      generateId('Method', 'src/shorthand.ts:alpha.run#1'),
+      generateId('Method', 'src/shorthand.ts:beta.run#1'),
+    ].sort();
+    const defined = getRelationships(result, 'DEFINES')
+      .filter((edge) => edge.target === 'run')
+      .map((edge) => edge.rel.targetId)
+      .sort();
+    const owned = getRelationships(result, 'HAS_METHOD')
+      .filter((edge) => edge.target === 'run')
+      .map((edge) => edge.rel.targetId)
+      .sort();
+
+    expect(defined).toEqual(methodIds);
+    expect(owned).toEqual(methodIds);
+  });
+});
+
+describe.skipIf(!hasDistWorker)('object-literal dotted property identity (#3041)', () => {
+  let repoRoot: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoRoot = writeFixture({
+      'src/dotted.ts': `function helperC(value: number) { return value; }
+function helperD(value: number) { return value; }
+export const p = { 'q.r': (value: number) => helperC(value) };
+export const z = { r: (value: number) => helperD(value) };
+`,
+    });
+    result = await runPipelineFromRepo(repoRoot, () => undefined, {
+      skipGraphPhases: true,
+    });
+  }, 60_000);
+
+  afterAll(() => removeFixture(repoRoot));
+
+  it('attributes dotted and plain member calls to their own owner-qualified nodes', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.target === 'helperC' || edge.target === 'helperD')
+      .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
+      .sort();
+
+    expect(calls).toEqual(
+      [
+        `${generateId('Function', 'src/dotted.ts:p.q.r')}->helperC`,
+        `${generateId('Function', 'src/dotted.ts:z.r')}->helperD`,
+      ].sort(),
+    );
+  });
+});
+
+describe.skipIf(!hasDistWorker)('object-literal array ownership barrier (#3041)', () => {
+  let repoRoot: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoRoot = writeFixture({
+      'src/array.ts': `function helperA(value: number) { return value; }
+function helperB(value: number) { return value; }
+export const handlers = [
+  { handle: (value: number) => helperA(value) },
+  { handle: (value: number) => helperB(value) },
+];
+`,
+    });
+    result = await runPipelineFromRepo(repoRoot, () => undefined, {
+      skipGraphPhases: true,
+    });
+  }, 60_000);
+
+  afterAll(() => removeFixture(repoRoot));
+
+  it('keeps array-contained callables distinct without inventing ownership', () => {
+    const falseId = generateId('Function', 'src/array.ts:handlers.handle');
+    const bareId = generateId('Function', 'src/array.ts:handle');
+    const handlerIds = [
+      generateId('Function', 'src/array.ts:handle@3:12'),
+      generateId('Function', 'src/array.ts:handle@4:12'),
+    ].sort();
+    const nodeIds = new Set<string>();
+    result.graph.forEachNode((node) => nodeIds.add(node.id));
+    const calls = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.target === 'helperA' || edge.target === 'helperB')
+      .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
+      .sort();
+    const falseOwnership = getRelationships(result, 'HAS_METHOD').filter(
+      (edge) => edge.source === 'handlers' && edge.target === 'handle',
+    );
+
+    expect(nodeIds.has(falseId)).toBe(false);
+    expect(nodeIds.has(bareId)).toBe(false);
+    expect(handlerIds.every((id) => nodeIds.has(id))).toBe(true);
+    expect(calls).toEqual([`${handlerIds[0]}->helperA`, `${handlerIds[1]}->helperB`].sort());
+    expect(falseOwnership).toEqual([]);
+  });
+});
+
+describe.skipIf(!hasDistWorker)('nested array object Method identity (#3041)', () => {
+  let repoRoot: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoRoot = writeFixture({
+      'src/nested-array.ts': `function helperA(value: number) { return value; }
+function helperB(value: number) { return value; }
+export const registry = {
+  groups: [[
+    { handle(value: number) { return helperA(value); } },
+    { handle(value: number) { return helperB(value); } },
+  ]],
 };
 `,
     });
@@ -346,16 +497,24 @@ export const service = {
 
   afterAll(() => removeFixture(repoRoot));
 
-  it('attributes outgoing calls to the existing shorthand Method node', () => {
+  it('position-qualifies shorthand methods through nested arrays and objects', () => {
+    const expectedIds = [
+      generateId('Method', 'src/nested-array.ts:handle@4:6#1'),
+      generateId('Method', 'src/nested-array.ts:handle@5:6#1'),
+    ].sort();
     const nodeIds = new Set<string>();
     result.graph.forEachNode((node) => nodeIds.add(node.id));
-    const calls = getRelationships(result, 'CALLS').filter(
-      (edge) => edge.source === 'run' && edge.target === 'helper',
+    const calls = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.target === 'helperA' || edge.target === 'helperB')
+      .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
+      .sort();
+    const ownership = getRelationships(result, 'HAS_METHOD').filter(
+      (edge) => edge.target === 'handle',
     );
 
-    expect(calls).toHaveLength(1);
-    expect(nodeIds.has(calls[0].rel.sourceId)).toBe(true);
-    expect(calls[0].rel.sourceId).toBe(generateId('Method', 'src/shorthand.ts:run#1'));
+    expect(expectedIds.every((id) => nodeIds.has(id))).toBe(true);
+    expect(calls).toEqual([`${expectedIds[0]}->helperA`, `${expectedIds[1]}->helperB`].sort());
+    expect(ownership).toEqual([]);
   });
 });
 

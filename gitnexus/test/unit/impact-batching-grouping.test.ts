@@ -340,8 +340,17 @@ describe('impact: batching and grouping', () => {
 
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = String(args[1] ?? '');
-      if (query.includes("hm.type = 'HAS_METHOD'") && query.includes('member:Function')) {
-        return Array.from({ length: 5001 }, (_, i) => ({ id: `member-${i}` }));
+      if (
+        query.includes("hm.type = 'HAS_METHOD'") &&
+        query.includes('member:Function') &&
+        query.includes('member:Method')
+      ) {
+        return Array.from({ length: 5001 }, (_, i) => ({
+          id: `member-${i}`,
+          name: `member${i}`,
+          type: i % 2 === 0 ? 'Function' : 'Method',
+          filePath: 'src/object.ts',
+        }));
       }
       return [];
     });
@@ -368,9 +377,86 @@ describe('impact: batching and grouping', () => {
       String(args[1] ?? '').includes('r.type IN $relTypes'),
     );
     expect(String(memberCall?.[1])).toContain('RETURN DISTINCT member.id AS id');
+    expect(String(memberCall?.[1])).toContain('member:Method');
+    expect(String(memberCall?.[1])).toContain('UNION ALL');
     expect(String(memberCall?.[1])).toContain('ORDER BY id');
     expect(String(memberCall?.[1])).toContain('LIMIT 5001');
-    expect(traversalCall?.[2]?.frontierIds).toHaveLength(5001);
+    expect(traversalCall?.[2]?.frontierIds).toEqual(['owner']);
+    expect(result.byDepth['1']).toHaveLength(5000);
+    expect(result.partial).toBe(true);
+  });
+
+  it('marks object impact partial when callable seeding fails', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-object-seed-failure',
+      name: 'repo-object-seed-failure',
+      repoPath: '/tmp/repo-object-seed-failure',
+      storagePath: '/tmp/repo-object-seed-failure/.gitnexus',
+      lbugPath: '/tmp/repo-object-seed-failure/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = String(args[1] ?? '');
+      if (query.includes('member:Function')) throw new Error('seed unavailable');
+      return [];
+    });
+
+    const result = await (backend as any)._runImpactBFS(
+      repoHandle,
+      { id: 'owner', name: 'owner' },
+      'Const',
+      'downstream',
+      {
+        maxDepth: 1,
+        relationTypes: ['CALLS'],
+        includeTests: false,
+        minConfidence: 0,
+        skipEpistemic: true,
+        skipEnrichment: true,
+      },
+    );
+
+    expect(result.partial).toBe(true);
+  });
+
+  it('marks class impact partial when structural seeding fails', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-class-seed-failure',
+      name: 'repo-class-seed-failure',
+      repoPath: '/tmp/repo-class-seed-failure',
+      storagePath: '/tmp/repo-class-seed-failure/.gitnexus',
+      lbugPath: '/tmp/repo-class-seed-failure/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = String(args[1] ?? '');
+      if (query.includes('(c:Constructor)')) throw new Error('seed unavailable');
+      return [];
+    });
+
+    const result = await (backend as any)._runImpactBFS(
+      repoHandle,
+      { id: 'class-owner', name: 'Owner' },
+      'Class',
+      'downstream',
+      {
+        maxDepth: 1,
+        relationTypes: ['CALLS'],
+        includeTests: false,
+        minConfidence: 0,
+        skipEpistemic: true,
+        skipEnrichment: true,
+      },
+    );
+
     expect(result.partial).toBe(true);
   });
 });

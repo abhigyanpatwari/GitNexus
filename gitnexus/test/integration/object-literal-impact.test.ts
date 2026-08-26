@@ -21,6 +21,9 @@ const THIRD_HANDLER = 'Function:src/convex.ts:third.handler';
 const HELPER_A = 'Function:src/convex.ts:helperA';
 const HELPER_B = 'Function:src/convex.ts:helperB';
 const HELPER_C = 'Function:src/convex.ts:helperC';
+const SERVICE = 'Const:src/convex.ts:service';
+const SERVICE_RUN = 'Method:src/convex.ts:service.run#0';
+const HELPER_D = 'Function:src/convex.ts:helperD';
 
 withTestLbugDB(
   'object-literal-impact-3041',
@@ -64,6 +67,56 @@ withTestLbugDB(
         expect(ids).not.toContain(HELPER_B);
       });
 
+      it('counts the implicit member as depth 1 and its callee as depth 2', async () => {
+        const firstHop = await backend.callTool('impact', {
+          target: 'first',
+          direction: 'downstream',
+          maxDepth: 1,
+        });
+        expect(firstHop.byDepth?.['1']?.map((entry: { id: string }) => entry.id)).toEqual([
+          FIRST_HANDLER,
+        ]);
+        expect(firstHop.byDepth?.['2']).toBeUndefined();
+
+        const secondHop = await backend.callTool('impact', {
+          target: 'first',
+          direction: 'downstream',
+          maxDepth: 2,
+        });
+        expect(secondHop.byDepth?.['1']?.map((entry: { id: string }) => entry.id)).toEqual([
+          FIRST_HANDLER,
+        ]);
+        expect(secondHop.byDepth?.['2']?.map((entry: { id: string }) => entry.id)).toContain(
+          HELPER_A,
+        );
+        expect(secondHop.summary?.direct).toBe(1);
+      });
+
+      it('does not widen an explicit CALLS-only traversal through HAS_METHOD', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'first',
+          direction: 'downstream',
+          relationTypes: ['CALLS'],
+          maxDepth: 3,
+        });
+
+        expect(result.impactedCount).toBe(0);
+        expect(result.byDepth).toEqual({});
+      });
+
+      it('enters a Method-labelled shorthand member on the default traversal', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'service',
+          direction: 'downstream',
+          maxDepth: 2,
+        });
+
+        expect(result.byDepth?.['1']?.map((entry: { id: string }) => entry.id)).toEqual([
+          SERVICE_RUN,
+        ]);
+        expect(result.byDepth?.['2']?.map((entry: { id: string }) => entry.id)).toEqual([HELPER_D]);
+      });
+
       it('preserves explicit HAS_METHOD traversal depth', async () => {
         const firstHop = await backend.callTool('impact', {
           target: 'first',
@@ -100,12 +153,17 @@ withTestLbugDB(
       `CREATE (:Function {id: '${HELPER_A}', name: 'helperA', filePath: 'src/convex.ts', startLine: 5, endLine: 5})`,
       `CREATE (:Function {id: '${HELPER_B}', name: 'helperB', filePath: 'src/convex.ts', startLine: 6, endLine: 6})`,
       `CREATE (:Function {id: '${HELPER_C}', name: 'helperC', filePath: 'src/convex.ts', startLine: 7, endLine: 7})`,
+      `CREATE (:Const {id: '${SERVICE}', name: 'service', filePath: 'src/convex.ts', startLine: 8, endLine: 8})`,
+      `CREATE (:Method {id: '${SERVICE_RUN}', name: 'run', filePath: 'src/convex.ts', startLine: 8, endLine: 8})`,
+      `CREATE (:Function {id: '${HELPER_D}', name: 'helperD', filePath: 'src/convex.ts', startLine: 9, endLine: 9})`,
       `MATCH (a:Const), (b:Function) WHERE a.id = '${FIRST}' AND b.id = '${FIRST_HANDLER}' CREATE (a)-[:CodeRelation {type: 'HAS_METHOD', confidence: 1.0, reason: 'object literal member'}]->(b)`,
       `MATCH (a:Const), (b:Function) WHERE a.id = '${SECOND}' AND b.id = '${SECOND_HANDLER}' CREATE (a)-[:CodeRelation {type: 'HAS_METHOD', confidence: 1.0, reason: 'object literal member'}]->(b)`,
       `MATCH (a:Variable), (b:Function) WHERE a.id = '${THIRD}' AND b.id = '${THIRD_HANDLER}' CREATE (a)-[:CodeRelation {type: 'HAS_METHOD', confidence: 1.0, reason: 'object literal member'}]->(b)`,
       `MATCH (a:Function), (b:Function) WHERE a.id = '${FIRST_HANDLER}' AND b.id = '${HELPER_A}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.85, reason: 'direct'}]->(b)`,
       `MATCH (a:Function), (b:Function) WHERE a.id = '${SECOND_HANDLER}' AND b.id = '${HELPER_B}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.85, reason: 'direct'}]->(b)`,
       `MATCH (a:Function), (b:Function) WHERE a.id = '${THIRD_HANDLER}' AND b.id = '${HELPER_C}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.85, reason: 'direct'}]->(b)`,
+      `MATCH (a:Const), (b:Method) WHERE a.id = '${SERVICE}' AND b.id = '${SERVICE_RUN}' CREATE (a)-[:CodeRelation {type: 'HAS_METHOD', confidence: 1.0, reason: 'object literal member'}]->(b)`,
+      `MATCH (a:Method), (b:Function) WHERE a.id = '${SERVICE_RUN}' AND b.id = '${HELPER_D}' CREATE (a)-[:CodeRelation {type: 'CALLS', confidence: 0.85, reason: 'direct'}]->(b)`,
     ],
     poolAdapter: true,
     afterSetup: async (handle) => {

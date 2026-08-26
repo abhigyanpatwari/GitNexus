@@ -208,6 +208,18 @@ const SPAWN_CLI = [
   // exposed a file-backend double-admit race here (#2658 review); the reclaim is
   // now judgment-verified so a live holder is never displaced.
   'test/integration/analyze-index-lock-concurrency.test.ts',
+  // The per-group sync lock (R9), same class of guarantee one level up: real
+  // child processes contend for one group's lock while this process runs a real
+  // `syncGroup`, and the CLI case spawns the real command. Everything that
+  // varies here is platform-owned — which backend `selectBackend()` picks
+  // (Windows named pipe / Linux abstract socket / macOS file lock), kernel
+  // auto-release on SIGKILL vs. the file backend's pid-liveness reclaim, and
+  // `mkdir` over an occupied path. The fail-closed cases pin
+  // GITNEXUS_INDEX_LOCK_BACKEND=file so the filesystem branch is exercised on
+  // every OS rather than only where it is the default; no case is skipped on
+  // any platform, because a skipped case turns "a sync that cannot be protected
+  // does not run" into a claim that holds on Ubuntu only.
+  'test/integration/group/group-sync-lock-concurrency.test.ts',
   // The three `dist/` module-load closure guards, all built on the shared
   // child-process probe in `test/helpers/module-load-probe.ts`. That probe IS
   // the platform-varying part: it spawns `process.execPath` in array form,
@@ -261,6 +273,28 @@ const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
+  // Pins that the bridge pairing verdict is measured before the database is
+  // opened. The property it protects is about mtime behavior across OS and
+  // filesystem, and the alternative — really opening the bridge — cannot run on
+  // Windows at all (in-process write→read reopen of the same bridge.lbug is a
+  // documented limitation). Running it on every platform is the whole point:
+  // Windows is where an unverified assumption about mtime would hurt most.
+  'test/unit/group/bridge-pairing-precedes-open.test.ts',
+  // The raw-control-byte guard reads every tracked text file `git ls-files`
+  // reports — 4893 of them — and decides membership from the git path, which is
+  // always `/`-separated no matter what the host separator is. Both halves of
+  // that are platform-varying: the collector basename-matches with
+  // `path.posix.basename` against `git ls-files -z` output while the reads go
+  // through `path.join`, so on Windows the same string is consumed under two
+  // separator conventions in one pass, and only a real windows-latest run
+  // proves they agree. It is also the file-count-heaviest read loop in the
+  // suite, so it is where a per-file filesystem cost (NTFS + Defender, or
+  // macOS's slower stat path) would show up first. No case is skipped on any
+  // platform: a guard that only holds on Ubuntu is not a guard on the file
+  // whose NUL it exists to catch. Budget: the heaviest single case is one
+  // 4893-file pass — 2.3 s on a slow virtualised filesystem, 0.34 s on a local
+  // disk — against a 30 s testTimeout.
+  'test/unit/source-control-bytes.test.ts',
 ];
 
 const ALL_CROSS_PLATFORM = [

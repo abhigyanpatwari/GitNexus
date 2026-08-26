@@ -1,8 +1,9 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
-  boundCallableStartRow,
+  boundCallableStartPosition,
   localIdentity,
   nestedCallableQualifiedName,
+  positionQualifiedCallableName,
 } from './callable-id.js';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
@@ -91,6 +92,7 @@ import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
+  isArrayContainedObjectLiteralMember,
   findReturnShapeOwnerInfo,
   isReturnShapeProperty,
   findMemberAssignmentOwnerInfo,
@@ -837,10 +839,11 @@ const CALLABLE_PREFIX_BOUNDARY_TYPES: ReadonlySet<string> = new Set<string>([
 ]);
 
 /**
- * Function-valued object properties use the binding owner in their identity;
- * shorthand methods already have Method identity and must remain byte-identical.
+ * Object-literal callables use the binding owner in their identity so spelling
+ * a member as a property or shorthand method cannot change its graph semantics.
  */
-const shouldObjectOwnerQualifyCallable = (label: NodeLabel): boolean => label === 'Function';
+const shouldObjectOwnerQualifyCallable = (label: NodeLabel): boolean =>
+  label === 'Function' || label === 'Method';
 
 const enclosingCallablePrefix = (
   node: SyntaxNode,
@@ -925,6 +928,11 @@ const callableOwnQualifiedName = (
       ? findObjectLiteralBindingInfo(fnNode, filePath, { includeOwnerName: true })?.ownerName
       : undefined;
   const owner = prefix ?? classInfo?.className ?? objectOwner;
+  const needsArrayPosition =
+    owner === undefined &&
+    ownName !== null &&
+    shouldObjectOwnerQualifyCallable(finalLabel) &&
+    isArrayContainedObjectLiteralMember(fnNode);
   const result =
     prefix !== undefined
       ? nestedCallableQualifiedName(prefix, fnNode, ownName ?? 'fn')
@@ -932,7 +940,9 @@ const callableOwnQualifiedName = (
         ? localIdentity(fnNode, 'fn')
         : owner
           ? `${owner}.${ownName}`
-          : ownName;
+          : needsArrayPosition
+            ? positionQualifiedCallableName(ownName, fnNode.startPosition)
+            : ownName;
   callableQualifiedNameCache.set(fnNode, result);
   return result;
 };
@@ -996,6 +1006,10 @@ const findEnclosingFunctionId = (
           classInfo?.className ??
           standaloneMethodInfo?.receiverType ??
           objectOwnerName;
+        const needsArrayPosition =
+          ownerName === undefined &&
+          shouldObjectOwnerQualifyCallable(finalLabel) &&
+          isArrayContainedObjectLiteralMember(current);
         // Lockstep with the other two id-building phases — see
         // `nestedCallableQualifiedName`, which is the shared rule. When a
         // nested prefix exists it IS `ownerName`, so this branch and the
@@ -1005,7 +1019,9 @@ const findEnclosingFunctionId = (
             ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
             : ownerName
               ? `${ownerName}.${funcName}`
-              : funcName;
+              : needsArrayPosition
+                ? positionQualifiedCallableName(funcName, current.startPosition)
+                : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
@@ -2303,23 +2319,24 @@ const processFileGroup = (
       // wrapper while scope-resolution anchors on the INNER expression. The
       // position join is line-only, so `startLine` must follow the initializer
       // (ids still use `definitionNode` via `localIdentity`).
-      const startRow =
+      const startPosition =
         definitionNode &&
         (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
-          ? boundCallableStartRow(
+          ? boundCallableStartPosition(
               definitionNode,
               nodeName,
               nodeLabel,
               parsedFile?.localDefs,
               nameNode,
             )
-          : definitionNode?.startPosition.row;
+          : definitionNode?.startPosition;
       const startLine =
-        startRow !== undefined
-          ? startRow + lineOffset
+        startPosition !== undefined
+          ? startPosition.row + lineOffset
           : nameNode
             ? nameNode.startPosition.row + lineOffset
             : lineOffset;
+      const startColumn = startPosition?.column ?? nameNode?.startPosition.column ?? 0;
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
       const needsOwner =
@@ -2405,23 +2422,31 @@ const processFileGroup = (
       // and COLLAPSE INTO ONE node — two distinct settings become one symbol,
       // and the merged name then looks workspace-unique to name inference,
       // which resolves reads of it to a node representing both.
+      const objectLiteralBindingInfo =
+        !enclosingClassId &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Property') &&
+        definitionNode
+          ? findObjectLiteralBindingInfo(definitionNode, file.path, {
+              includeOwnerName:
+                shouldObjectOwnerQualifyCallable(nodeLabel) || nodeLabel === 'Property',
+            })
+          : null;
       const objectLiteralOwnerInfo =
         !enclosingClassId &&
         (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Property') &&
         definitionNode
           ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
-            findObjectLiteralBindingInfo(definitionNode, file.path, {
-              // Function-valued properties need the owner in their identity or
-              // same-named handlers in sibling objects collapse (#3041).
-              // `Method` stays byte-identical; its existing owner edge is enough.
-              includeOwnerName:
-                shouldObjectOwnerQualifyCallable(nodeLabel) || nodeLabel === 'Property',
-            }) ??
+            objectLiteralBindingInfo ??
             // R3-4: an anonymous literal in return position is owned by the
             // function whose shape it is. Last in the chain so a variable-bound
             // literal keeps its existing owner and its existing id.
             (nodeLabel === 'Property' ? findReturnShapeOwnerInfo(definitionNode, file.path) : null))
           : null;
+      const isArrayContainedObjectCallable =
+        !enclosingClassId &&
+        shouldObjectOwnerQualifyCallable(nodeLabel) &&
+        definitionNode !== undefined &&
+        isArrayContainedObjectLiteralMember(definitionNode);
       // Provenance for narrowing (R3-4). A return shape is a real definition but
       // the weaker one, and the unique-name pass ranks declared anchors above it
       // so indexing these cannot change an answer that already resolved.
@@ -2519,7 +2544,9 @@ const processFileGroup = (
                   // define `bar` stay distinct nodes.
                   objectLiteralOwnerInfo?.ownerName !== undefined
                   ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
-                  : nodeName;
+                  : isArrayContainedObjectCallable
+                    ? positionQualifiedCallableName(nodeName, startPosition)
+                    : nodeName;
 
       // #2742: qualify by the enclosing `mod` chain, so two same-named items at
       // different module depths in one file are DISTINCT nodes. Without this,
@@ -2855,6 +2882,10 @@ const processFileGroup = (
           name: nodeName,
           filePath: file.path,
           startLine,
+          ...(shouldObjectOwnerQualifyCallable(nodeLabel) &&
+          (objectLiteralBindingInfo?.ownerName || isArrayContainedObjectCallable)
+            ? { startColumn }
+            : {}),
           endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
           language: language,
           isExported:
@@ -2923,8 +2954,12 @@ const processFileGroup = (
           : {}),
       });
 
-      // Only emit File -> Symbol DEFINES for top-level symbols (issue #1944).
-      if (ownerId === undefined) {
+      // Object-literal callables remain file definitions as well as members of
+      // their exported binding. Class members still use HAS_METHOD alone.
+      const isTopLevelObjectCallable =
+        objectLiteralBindingInfo?.ownerName !== undefined &&
+        shouldObjectOwnerQualifyCallable(nodeLabel);
+      if (ownerId === undefined || isTopLevelObjectCallable) {
         const fileId = generateId('File', file.path);
         const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
         result.relationships.push({
