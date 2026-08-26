@@ -958,6 +958,98 @@ export async function ensureVectorExtension(repoId: string): Promise<boolean> {
 }
 
 /**
+ * Detect an actual VECTOR procedure call without treating source text stored in
+ * Cypher literals or comments as executable syntax.
+ */
+function callsVectorIndex(cypher: string): boolean {
+  if (!/QUERY_VECTOR_INDEX/i.test(cypher)) return false;
+
+  let code = '';
+  let state: 'code' | 'single' | 'double' | 'backtick' | 'line-comment' | 'block-comment' = 'code';
+  let backtickIdentifier = '';
+
+  for (let i = 0; i < cypher.length; i++) {
+    const ch = cypher[i];
+    const next = cypher[i + 1];
+
+    if (state === 'code') {
+      if (ch === "'" || ch === '"' || ch === '`') {
+        state = ch === "'" ? 'single' : ch === '"' ? 'double' : 'backtick';
+        if (state === 'backtick') backtickIdentifier = '';
+        code += ' ';
+      } else if (ch === '/' && next === '/') {
+        state = 'line-comment';
+        code += '  ';
+        i++;
+      } else if (ch === '/' && next === '*') {
+        state = 'block-comment';
+        code += '  ';
+        i++;
+      } else {
+        code += ch;
+      }
+      continue;
+    }
+
+    if (state === 'line-comment') {
+      if (ch === '\n' || ch === '\r') {
+        state = 'code';
+        code += ch;
+      } else {
+        code += ' ';
+      }
+      continue;
+    }
+
+    if (state === 'block-comment') {
+      if (ch === '*' && next === '/') {
+        state = 'code';
+        code += '  ';
+        i++;
+      } else {
+        code += ch === '\n' || ch === '\r' ? ch : ' ';
+      }
+      continue;
+    }
+
+    if (state === 'backtick') {
+      if (ch === '`' && next === '`') {
+        backtickIdentifier += '`';
+        code += '  ';
+        i++;
+      } else if (ch === '`') {
+        state = 'code';
+        code +=
+          backtickIdentifier.toUpperCase() === 'QUERY_VECTOR_INDEX' ? 'QUERY_VECTOR_INDEX' : ' ';
+      } else if (ch === '\\' && next !== undefined) {
+        backtickIdentifier += next;
+        code += '  ';
+        i++;
+      } else {
+        backtickIdentifier += ch;
+        code += ch === '\n' || ch === '\r' ? ch : ' ';
+      }
+      continue;
+    }
+
+    if (ch === '\\') {
+      code += ' ';
+      if (next !== undefined) {
+        code += next === '\n' || next === '\r' ? next : ' ';
+        i++;
+      }
+      continue;
+    }
+
+    const closesLiteral = (state === 'single' && ch === "'") || (state === 'double' && ch === '"');
+    if (closesLiteral) state = 'code';
+    code += ch === '\n' || ch === '\r' ? ch : ' ';
+  }
+
+  return /\bCALL\s+QUERY_VECTOR_INDEX\s*\(/i.test(code);
+}
+
+/**
  * Checkout a connection from the pool.
  * Returns an available connection, or creates a new one if under the cap.
  * If all connections are busy and at cap, queues the caller until one is returned.
@@ -1064,21 +1156,31 @@ export const executeParameterized = async (
     poolSidecarLogger.warn(message),
   );
 
-  const entry = pool.get(repoId);
+  let entry = pool.get(repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
-  // Exact reads must not pay for VECTOR, but an explicit raw vector query is
-  // itself a semantic read. Preflight that narrow surface so direct pool and
-  // `cypher` callers retain the old working contract without eager startup.
-  if (/\bQUERY_VECTOR_INDEX\s*\(/i.test(cypher)) {
-    await ensureVectorExtension(repoId);
+  // Exact reads must not pay for VECTOR, but an explicit raw vector procedure
+  // call is a semantic read. Preflight before taking the query connection:
+  // ensureVectorExtension performs its own checkout, so holding one here could
+  // make a saturated pool wait for a connection that every caller is holding.
+  // A load rejection must not replace the query's own diagnostic.
+  if (callsVectorIndex(cypher)) {
+    await ensureVectorExtension(repoId).catch(() => false);
+
+    // The preflight suspends, so close/re-init may replace the pool entry.
+    // Re-read it before checkout to avoid querying through a stale handle.
+    entry = pool.get(repoId);
+    if (!entry) {
+      throw new Error(
+        `LadybugDB connection pool closed for repo "${repoId}" (re-init/teardown); retry the query.`,
+      );
+    }
   }
 
-  entry.lastUsed = Date.now();
-
   const conn = await checkout(entry);
+  entry.lastUsed = Date.now();
   silenceStdout();
   activeQueryCount++;
   let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;

@@ -17,6 +17,14 @@ vi.mock('@ladybugdb/core', () => ({
     Database: vi.fn(),
     Connection: vi.fn(function (this: any) {
       this.query = vi.fn(async () => ({ getAll: async () => [], close: vi.fn() }));
+      this.prepare = vi.fn(async () => ({
+        isSuccess: () => true,
+        getErrorMessage: async () => '',
+      }));
+      this.execute = vi.fn(async () => ({
+        getAll: async () => [],
+        close: vi.fn().mockResolvedValue(undefined),
+      }));
       this.close = vi.fn().mockResolvedValue(undefined);
     }),
   },
@@ -35,7 +43,7 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   WAL_RECOVERY_SUGGESTION: '',
 }));
 
-const { closeLbug, ensureVectorExtension, initLbug, initLbugWithDb } =
+const { closeLbug, ensureVectorExtension, executeParameterized, initLbug, initLbugWithDb } =
   await import('../../src/core/lbug/pool-adapter.js');
 
 describe('read-pool FTS loading', () => {
@@ -143,5 +151,102 @@ describe('read-pool FTS loading', () => {
     await expect(ensureVectorExtension('repo-a')).resolves.toBe(true);
 
     expect(loadVectorExtensionMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('preflights VECTOR only for executable QUERY_VECTOR_INDEX calls', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockResolvedValue(false);
+    await initLbugWithDb('repo-a', {} as any, '/tmp/vector-call-detection-db');
+
+    const exactReads = [
+      "RETURN 'CALL QUERY_VECTOR_INDEX(' AS sourceText",
+      'RETURN "CALL QUERY_VECTOR_INDEX(" AS sourceText',
+      'RETURN `CALL QUERY_VECTOR_INDEX(` AS propertyName',
+      'RETURN `QUERY_VECTOR_INDEX` AS propertyName',
+      "RETURN 'CALL `QUERY_VECTOR_INDEX`(' AS sourceText",
+      '// CALL QUERY_VECTOR_INDEX(\nRETURN 1 AS value',
+      '// CALL `QUERY_VECTOR_INDEX`(\nRETURN 1 AS value',
+      '/* CALL QUERY_VECTOR_INDEX( */ RETURN 1 AS value',
+      '/* CALL `QUERY_VECTOR_INDEX`( */ RETURN 1 AS value',
+    ];
+    for (const cypher of exactReads) {
+      await expect(executeParameterized('repo-a', cypher, {})).resolves.toEqual([]);
+    }
+    expect(loadVectorExtensionMock).not.toHaveBeenCalled();
+
+    await expect(
+      executeParameterized(
+        'repo-a',
+        "call query_vector_index\n('CodeEmbedding', 'embedding_idx', [0.1], 1)",
+        {},
+      ),
+    ).resolves.toEqual([]);
+    expect(loadVectorExtensionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preflights VECTOR for a backtick-escaped procedure identifier', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockResolvedValue(false);
+    await initLbugWithDb('repo-a', {} as any, '/tmp/vector-quoted-call-detection-db');
+
+    await expect(
+      executeParameterized(
+        'repo-a',
+        "CALL /* legal comment */ `QUERY_VECTOR_INDEX`('CodeEmbedding', 'embedding_idx', [0.1], 1)",
+        {},
+      ),
+    ).resolves.toEqual([]);
+    expect(loadVectorExtensionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not hold query connections while a saturated VECTOR preflight loads', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    let releaseVectorLoad: ((loaded: boolean) => void) | undefined;
+    loadVectorExtensionMock.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          releaseVectorLoad = resolve;
+        }),
+    );
+    await initLbugWithDb('repo-a', {} as any, '/tmp/vector-saturation-db');
+
+    const calls = Array.from({ length: 8 }, () =>
+      executeParameterized(
+        'repo-a',
+        "CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'embedding_idx', [0.1], 1)",
+        {},
+      ),
+    );
+
+    try {
+      await vi.waitFor(() => expect(loadVectorExtensionMock).toHaveBeenCalledTimes(1), {
+        timeout: 500,
+      });
+      releaseVectorLoad?.(true);
+      await expect(Promise.all(calls)).resolves.toHaveLength(8);
+    } finally {
+      if (releaseVectorLoad) {
+        releaseVectorLoad(true);
+      } else {
+        // Allows the old hold-one/wait-for-one ordering to unwind promptly
+        // instead of leaving its pool waiter alive until the 30-second timeout.
+        await closeLbug('repo-a');
+      }
+      await Promise.allSettled(calls);
+    }
+  });
+
+  it('lets a direct vector query report its own error when preflight rejects', async () => {
+    loadFTSExtensionMock.mockResolvedValue(true);
+    loadVectorExtensionMock.mockRejectedValueOnce(new Error('transient load failure'));
+    await initLbugWithDb('repo-a', {} as any, '/tmp/vector-preflight-rejection-db');
+
+    await expect(
+      executeParameterized(
+        'repo-a',
+        "CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'embedding_idx', [0.1], 1)",
+        {},
+      ),
+    ).resolves.toEqual([]);
   });
 });

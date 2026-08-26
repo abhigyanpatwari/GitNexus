@@ -1249,12 +1249,12 @@ export class LocalBackend {
   private warnedSiblingDrift: Set<string> = new Set();
 
   /**
-   * One-shot stderr warning for the VECTOR-extension fallback. Without this
-   * guard the diagnostic would fire on every `semanticSearch()` call on
-   * platforms where the extension is unsupported (e.g. Windows), making MCP
-   * stderr noisy per DoD §2.8.
+   * One-shot stderr guards for distinct VECTOR load and index-query failures.
+   * Keeping them separate preserves both diagnostics across semanticSearch calls
+   * without repeating either on hot paths.
    */
-  private warnedVectorUnsupported = false;
+  private warnedVectorLoadFailed = false;
+  private warnedVectorQueryFailed = false;
 
   /**
    * One-shot warning when a pruned or Node-unloadable optional embedding stack
@@ -3219,8 +3219,8 @@ export class LocalBackend {
       try {
         vectorReady = await ensureVectorExtension(repo.lbugPath);
       } catch (err) {
-        if (!this.warnedVectorUnsupported) {
-          this.warnedVectorUnsupported = true;
+        if (!this.warnedVectorLoadFailed) {
+          this.warnedVectorLoadFailed = true;
           logger.warn(
             { err },
             'GitNexus [query:vector]: vector extension load failed; using exact scan fallback',
@@ -3232,13 +3232,10 @@ export class LocalBackend {
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      // Always TRY the vector lane — no platform gate. LadybugDB ships the
-      // VECTOR extension for every supported platform, Windows included
-      // (#2623 follow-up; the old `platform !== 'win32'` gate was stale), so
-      // whether the index is queryable is a per-machine runtime fact. The
-      // catch below is the fallback: any failure (extension unloadable, index
-      // absent, older DB) degrades to the exact scan with a once-per-backend
-      // diagnostic instead of being silently swallowed.
+      // Try the vector lane only after its lazy load succeeds. An unavailable
+      // extension is already reported by ExtensionManager; an index/query
+      // failure below gets its own once-per-backend diagnostic before the exact
+      // scan fallback.
       if (vectorReady) {
         try {
           bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
@@ -3264,11 +3261,11 @@ export class LocalBackend {
           });
         } catch (err) {
           bestChunks = new Map();
-          if (!this.warnedVectorUnsupported) {
+          if (!this.warnedVectorQueryFailed) {
             // Rare diagnostic: surface why semantic search fell back to the
             // exact scan. Emitted once per `LocalBackend` instance lifetime to
             // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
-            this.warnedVectorUnsupported = true;
+            this.warnedVectorQueryFailed = true;
             logger.warn(
               { err },
               'GitNexus [query:vector]: vector index query failed; using exact scan fallback',

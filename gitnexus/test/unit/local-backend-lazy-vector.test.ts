@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { _captureLogger } from '../../src/core/logger.js';
 
 const executeQueryMock = vi.fn();
 const ensureVectorExtensionMock = vi.fn();
@@ -26,7 +27,9 @@ const runSemanticSearch = (backend: LocalBackend): Promise<unknown[]> =>
 
 describe('LocalBackend semantic search lazy VECTOR loading (#3021)', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    executeQueryMock.mockReset();
+    ensureVectorExtensionMock.mockReset();
+    embedQueryMock.mockReset();
     embedQueryMock.mockResolvedValue([0.1, 0.2, 0.3]);
   });
 
@@ -84,5 +87,33 @@ describe('LocalBackend semantic search lazy VECTOR loading (#3021)', () => {
         String(cypher).includes('QUERY_VECTOR_INDEX'),
       ),
     ).toBe(false);
+  });
+
+  it('reports load and index-query failures independently', async () => {
+    executeQueryMock.mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
+      if (cypher.includes('QUERY_VECTOR_INDEX')) throw new Error('stale vector index');
+      return [];
+    });
+    ensureVectorExtensionMock
+      .mockRejectedValueOnce(new Error('transient load failure'))
+      .mockResolvedValueOnce(true);
+    const backend = new LocalBackend();
+    const cap = _captureLogger();
+
+    try {
+      await expect(runSemanticSearch(backend)).resolves.toEqual([]);
+      await expect(runSemanticSearch(backend)).resolves.toEqual([]);
+
+      const messages = cap.records().map((record) => String(record.msg ?? ''));
+      expect(
+        messages.filter((message) => message.includes('vector extension load failed')),
+      ).toHaveLength(1);
+      expect(
+        messages.filter((message) => message.includes('vector index query failed')),
+      ).toHaveLength(1);
+    } finally {
+      cap.restore();
+    }
   });
 });
