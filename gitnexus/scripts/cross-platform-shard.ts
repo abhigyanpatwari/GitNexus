@@ -65,6 +65,16 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/antigravity-hook-e2e.test.ts': 7,
   'test/unit/index-lock.test.ts': 5,
   'test/unit/setup.test.ts': 5,
+  // ESTIMATE, not a measurement. This file asserts almost nothing; it READS —
+  // one 4893-file pass over every tracked text file, plus an 830-file pass over
+  // `src/`. Measured at 2.3 s and 0.3 s per pass on a virtualised and a local
+  // Linux filesystem respectively, so the cost is entirely per-file open
+  // latency, which is the term Windows inflates most (NTFS plus Defender on
+  // every read). Scaled from the slower Linux figure to keep the split
+  // conservative rather than let the 8 s PER_FILE_OVERHEAD floor under-charge
+  // a file that touches more paths than anything else here. Replace with a real
+  // figure after the first green Windows matrix run.
+  'test/unit/source-control-bytes.test.ts': 15,
 };
 
 /**
