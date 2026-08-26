@@ -116,7 +116,7 @@
     "references_other": "{{count}} ссылок",
     "lines_one": "{{count}} строка",
     "lines_few": "{{count}} строки",
-    "lines_many": "{{count}} строки",
+    "lines_many": "{{count}} строк",
     "lines_other": "{{count}} строк",
     "codeNotAvailable": "Код недоступен в памяти для {{path}}"
   },
