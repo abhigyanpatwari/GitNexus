@@ -1,7 +1,11 @@
 /**
  * Smoke-test `gitnexus group` CLI (same spawn pattern as cli-e2e.test.ts, via
  * CLI_SPAWN_PREFIX: built dist in CI, tsx-on-source locally).
- * Does not exercise LadybugDB-backed commands end-to-end (needs indexed fixtures).
+ * Does not exercise LadybugDB-backed QUERY commands end-to-end (needs indexed
+ * fixtures). `group sync` IS driven end-to-end below, but only through the two
+ * shapes that need no indexed repo: a group whose members are absent from the
+ * registry, and a group whose members are registered at a storage path holding
+ * no `lbug` file at all — which is what makes them unreadable.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { CLI_SPAWN_PREFIX } from '../../helpers/cli-entry.js';
@@ -297,5 +301,279 @@ matching:
     expect(r.stdout).toMatch(/^ +backend +UNRESOLVABLE \(.*registry\.json.*\)$/m);
     expect(r.stdout).toMatch(/^ +svc\/users +UNRESOLVABLE \(.*registry\.json.*\)$/m);
     expect(r.stdout).not.toContain('MISSING');
+  });
+});
+
+/**
+ * A group.yaml with every detector off, so nothing in a sync opens a repo graph
+ * and the only thing that can vary is what the registry says about its members.
+ *
+ * `links` is spliced in verbatim because the two shapes below need different
+ * ones: a manifest link is the single input that makes a sync produce contracts
+ * with no indexed repo (synthetic UIDs — see
+ * `group-service-sync-lazy-import.test.ts`), which is what gives the wrote-line
+ * counts to assert something other than zeroes.
+ */
+function writeGroupYaml(
+  home: string,
+  group: string,
+  repos: Record<string, string>,
+  links = '[]',
+): string {
+  const groupDir = path.join(home, 'groups', group);
+  fs.mkdirSync(groupDir, { recursive: true });
+  const repoLines = Object.entries(repos)
+    .map(([groupPath, registryName]) => `  ${groupPath}: ${registryName}`)
+    .join('\n');
+  fs.writeFileSync(
+    path.join(groupDir, 'group.yaml'),
+    `version: 1
+name: ${group}
+description: ""
+repos:
+${repoLines}
+links: ${links}
+packages: {}
+detect:
+  http: false
+  grpc: false
+  thrift: false
+  topics: false
+  shared_libs: false
+  embedding_fallback: false
+  includes: false
+  workspace_deps: false
+matching:
+  bm25_threshold: 0.7
+  embedding_threshold: 0.65
+  max_candidates_per_step: 3
+`,
+    'utf8',
+  );
+  return groupDir;
+}
+
+/**
+ * `group sync` has three mutually exclusive things it can say about
+ * contracts.json, and the sentence is the ONLY channel that distinguishes them:
+ * all three exit 0, and two of them leave the file's contract counts identical.
+ *
+ * The line used to be the unconditional `Wrote contracts.json (0 contracts, 0
+ * cross-links)`, printed even on a run that deliberately kept the previous
+ * registry — a confident false statement about persisted state on the exact
+ * path this command exists to make legible. These go through the real CLI
+ * because the sentence IS the deliverable: the service payload can carry
+ * `registryOutcome` perfectly while the console still says one thing for all
+ * three.
+ */
+describe('group sync says what it did to contracts.json', () => {
+  let home: string;
+
+  /** Contracts a preserve run must carry forward untouched. */
+  const PRIOR_REGISTRY = {
+    version: 1,
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    repoSnapshots: {},
+    missingRepos: [],
+    unreadableRepos: [],
+    contracts: [],
+    crossLinks: [],
+  };
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-group-sync-outcome-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  /**
+   * Registry rows whose storage directory exists but holds no `lbug` file, so
+   * `initLbug` throws `LadybugDB not found at …` for every one of them. That is
+   * a load ERROR, not an absence: the repos resolve, and every one of them
+   * lands on `unreadableRepos` — the only state that reaches the two
+   * total-failure branches. A row missing from registry.json instead reports as
+   * MISSING and syncs to a written registry, which is the other case below.
+   */
+  const registerReposWithNoIndex = (registryNames: Record<string, string>): void => {
+    const rows = Object.entries(registryNames).map(([registryName, dirName]) => {
+      const repoPath = path.join(home, dirName);
+      const storagePath = path.join(repoPath, '.gitnexus');
+      fs.mkdirSync(storagePath, { recursive: true });
+      return {
+        name: registryName,
+        path: repoPath,
+        storagePath,
+        indexedAt: '2026-01-01T00:00:00.000Z',
+        lastCommit: 'abc123',
+      };
+    });
+    fs.writeFileSync(path.join(home, 'registry.json'), JSON.stringify(rows), 'utf8');
+  };
+
+  it('prints what it wrote, and the counts, on a sync that produced a registry', () => {
+    // Every member is genuinely absent from the registry, which is a clean
+    // (if empty-handed) sync: the total-failure guard is gated on a load error,
+    // never on an empty result. The declared manifest link still yields two
+    // synthetic contracts and one cross-link, so the counts in the line are
+    // non-zero and therefore say something.
+    const groupDir = writeGroupYaml(
+      home,
+      'wrote',
+      { 'app/backend': 'wrote-backend', 'app/frontend': 'wrote-frontend' },
+      `
+  - from: app/frontend
+    to: app/backend
+    type: custom
+    contract: rotateSigningKey
+    role: consumer`,
+    );
+    fs.writeFileSync(path.join(home, 'registry.json'), '[]', 'utf8');
+
+    const r = runGroupIn(home, ['sync', 'wrote']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Wrote contracts.json (2 contracts, 1 cross-links)');
+    // The other two sentences are about the same file and contradict this one.
+    expect(r.stdout).not.toContain('Kept the previous contracts.json');
+    expect(r.stdout).not.toContain('Did NOT write contracts.json');
+    expect(fs.existsSync(path.join(groupDir, 'contracts.json'))).toBe(true);
+  });
+
+  it('says the previous contracts.json was KEPT when no repo could be read', () => {
+    // "Did NOT write contracts.json" was false here: this path REWRITES the
+    // file, keeping the previous sync's contracts and replacing only the two
+    // diagnostic lists. Saying otherwise sent an operator looking at an
+    // unchanged mtime to conclude the sync had not run.
+    const groupDir = writeGroupYaml(home, 'kept', {
+      'app/backend': 'kept-backend',
+      'app/frontend': 'kept-frontend',
+    });
+    registerReposWithNoIndex({ 'kept-backend': 'backend', 'kept-frontend': 'frontend' });
+    const contractsPath = path.join(groupDir, 'contracts.json');
+    fs.writeFileSync(contractsPath, JSON.stringify(PRIOR_REGISTRY), 'utf8');
+
+    const r = runGroupIn(home, ['sync', 'kept']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(
+      'Kept the previous contracts.json — no repo in this group could be read.',
+    );
+    expect(r.stdout).toContain('Its contracts and cross-links are unchanged');
+    expect(r.stdout).not.toContain('Wrote contracts.json');
+    expect(r.stdout).not.toContain('Did NOT write contracts.json');
+
+    // What makes the sentence true rather than merely present: the file is
+    // still there, its contracts are the previous run's, and only the
+    // diagnostic list describes THIS run.
+    const onDisk = JSON.parse(fs.readFileSync(contractsPath, 'utf8')) as Record<string, unknown>;
+    expect(onDisk.contracts).toEqual(PRIOR_REGISTRY.contracts);
+    expect(onDisk.generatedAt).toBe(PRIOR_REGISTRY.generatedAt);
+    expect(onDisk.unreadableRepos).toEqual(['app/backend', 'app/frontend']);
+  });
+
+  it('says nothing was written when no repo could be read and there is no prior registry', () => {
+    // Distinct from the branch above on purpose: there is nothing on disk to
+    // keep, so promising the previous sync's contracts are safe would send an
+    // operator whose group has never synced looking for a file that has never
+    // existed.
+    const groupDir = writeGroupYaml(home, 'nothing', {
+      'app/backend': 'nothing-backend',
+      'app/frontend': 'nothing-frontend',
+    });
+    registerReposWithNoIndex({ 'nothing-backend': 'backend', 'nothing-frontend': 'frontend' });
+
+    const r = runGroupIn(home, ['sync', 'nothing']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(
+      'Did NOT write contracts.json — no repo in this group could be read,',
+    );
+    expect(r.stdout).toContain('there is no previous contracts.json to fall back on');
+    expect(r.stdout).not.toContain('Wrote contracts.json');
+    expect(r.stdout).not.toContain('Kept the previous contracts.json');
+    // And the claim is true of disk: no file was invented to go with it.
+    expect(fs.existsSync(path.join(groupDir, 'contracts.json'))).toBe(false);
+  });
+});
+
+/**
+ * `undefined` and `[]` are different answers about the last sync's unreadable
+ * repos — "never recorded" versus the measurement "none" — and `group status`
+ * is where an operator reads them. Printing nothing for both would let an
+ * unmeasured sync read as evidence that every index opened cleanly, which is
+ * the fail-open the tri-state exists to close.
+ */
+describe('group status reports what the last sync recorded as unreadable', () => {
+  let home: string;
+
+  const BASE_REGISTRY = {
+    version: 1,
+    generatedAt: '2026-01-01T00:00:00.000Z',
+    repoSnapshots: {},
+    missingRepos: [],
+    contracts: [],
+    crossLinks: [],
+  };
+
+  const NOT_RECORDED_LINE = 'Last sync unreadable repos: not recorded';
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-group-status-unreadable-'));
+    // An empty registry, so every member reports MISSING and nothing in the
+    // per-repo table can vary between these three cases.
+    fs.writeFileSync(path.join(home, 'registry.json'), '[]', 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  const seed = (group: string, registry: Record<string, unknown>): void => {
+    const groupDir = writeGroupYaml(home, group, {
+      'app/backend': `${group}-backend`,
+      'app/frontend': `${group}-frontend`,
+    });
+    fs.writeFileSync(path.join(groupDir, 'contracts.json'), JSON.stringify(registry), 'utf8');
+  };
+
+  it('says the field was not recorded when the registry never carried it', () => {
+    // A contracts.json written before the field existed has no opinion about
+    // which indexes were readable, and the remedy is to re-run the sync — not
+    // to conclude that none of them failed.
+    seed('unrecorded', BASE_REGISTRY);
+
+    const r = runGroupIn(home, ['status', 'unrecorded']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain(NOT_RECORDED_LINE);
+    expect(r.stdout).toContain('the registry predates this field, or its value could not be read');
+    expect(r.stdout).toContain('Re-run `gitnexus group sync` to record it.');
+  });
+
+  it('says nothing at all when the registry recorded an empty list', () => {
+    // `[]` is a measurement — this sync accounted for every repo — so there is
+    // no caveat to print and no repo to name. Reporting the "not recorded"
+    // caveat here would tell an operator to re-run the sync that just
+    // succeeded.
+    seed('measured', { ...BASE_REGISTRY, unreadableRepos: [] });
+
+    const r = runGroupIn(home, ['status', 'measured']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('Last sync unreadable repos');
+  });
+
+  it('names the repos when the registry recorded some', () => {
+    // Without this, "says nothing at all" above would also be satisfied by a
+    // command that never printed this line on any registry.
+    seed('named', { ...BASE_REGISTRY, unreadableRepos: ['app/backend'] });
+
+    const r = runGroupIn(home, ['status', 'named']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Last sync unreadable repos: app/backend');
+    expect(r.stdout).not.toContain(NOT_RECORDED_LINE);
   });
 });
