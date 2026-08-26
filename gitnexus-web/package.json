@@ -46,7 +46,7 @@
     "pandemonium": "^2.4.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.8",
-    "react-i18next": "^17.0.11",
+    "react-i18next": "^17.0.12",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
     "react-zoom-pan-pinch": "^4.0.3",
