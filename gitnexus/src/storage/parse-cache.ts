@@ -568,7 +568,6 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // and the v37/v38 clash it was written for: the next free value above every
 // IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
 // scanned; #3017 is the only other claimant.
-// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
 //
 // 72 -> 74 adds import-proven Convex endpoint metadata to Const/Function worker
 // output. A warm v72 cache has no convexEndpointFactory property, so the MCP
@@ -578,6 +577,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // migration needs both guarantees. Version 73 is intentionally skipped because
 // concurrent PR #3046 (fixes #3041) claims it. Re-check main and open PRs
 // immediately before merge.
+//
+// 74 -> 76 makes object-literal Function and Method members owner-qualified
+// (#3041). A warm v74 cache replays the old collapsed callable ids and omits
+// the new Const/Variable -> callable HAS_METHOD ownership edges, so this bump
+// makes unchanged files re-parse rather than waiting for a source edit. The
+// persisted graph is rebuilt separately when `analyzerRunnerIdentitiesEqual`
+// detects the changed analyzer build in run-analyze.ts. Both guards are
+// required; a parse-cache bump alone must never be read as a graph rebuild.
+// Version 75 is intentionally skipped because concurrent PR #3017 claims it.
 //
 // 74 -> 75 adds #3009's NestJS decorator routes to the JS/TS decoratorRoutes
 // channel. Same reasoning as 69: a warm pre-feature cache replays unchanged
