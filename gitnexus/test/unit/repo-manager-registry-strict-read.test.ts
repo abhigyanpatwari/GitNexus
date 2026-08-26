@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { inspect } from 'node:util';
 import { readRegistry, readRegistryStrict } from '../../src/storage/repo-manager.js';
+import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { syncGroup } from '../../src/core/group/sync.js';
 import type { GroupConfig } from '../../src/core/group/types.js';
@@ -224,6 +226,81 @@ describe('readRegistryStrict', () => {
       indexedAt: '2026-01-01T00:00:00.000Z',
       lastCommit: 'abc123',
     });
+  });
+
+  /**
+   * A credential-shaped secret, distinctive enough that the whole failure
+   * surface can be grepped for it. Synthetic — not a real token.
+   */
+  const REGISTRY_SECRET = 'LEAKCAN4RY';
+
+  /**
+   * A corrupt registry whose break sits directly on a credential.
+   *
+   * The shape is a short write landing over a longer one: the head is the new
+   * content, and the tail is what was left of the old file — which resumes in
+   * the middle of a remote URL's HTTPS userinfo. `registry.json` is the one
+   * file every gitnexus process on the machine writes and `withRegistryLock`
+   * degrades to unlocked on timeout, so two writers really can produce this.
+   *
+   * What matters is where the parser stops: the first byte it rejects is the
+   * first byte of the credential, and V8 quotes a ten-character window either
+   * side of that position into `SyntaxError.message`. Registry rows carry
+   * remote URLs with userinfo verbatim (a pre-existing capture-side issue), so
+   * the bytes in that window are a live secret.
+   */
+  const corruptRegistryOnACredential = (): string =>
+    `[{"name":"backend-repo","path":"/repos/backend","storagePath":"/repos/backend/.gitnexus",` +
+    `"remoteUrl":"https://gnx-bot:${REGISTRY_SECRET}@github.com/acme/backend.git"},` +
+    `${REGISTRY_SECRET}@github.com/acme/backend.git"}]`;
+
+  it('names a corrupt registry without quoting its bytes, on the throw or the log', async () => {
+    // One test, every channel. A rejection an operator never sees the message
+    // of is still rendered somewhere: `groupStatus` interpolates it verbatim
+    // into `unresolvableReason` for an MCP client, the CLI prints it, and any
+    // `logger.error({ err }, …)` on the way would serialise message, stack and
+    // `cause` into the MCP client's log file on disk. So assert on all of them.
+    await fs.writeFile(registryPath, corruptRegistryOnACredential());
+
+    let cap: LoggerCapture | undefined;
+    let thrown: unknown;
+    try {
+      cap = _captureLogger('trace');
+      await readRegistryStrict();
+    } catch (err) {
+      thrown = err;
+    } finally {
+      cap?.restore();
+    }
+    const logged = cap?.text() ?? '';
+
+    expect(thrown).toBeInstanceOf(Error);
+    const error = thrown as Error;
+
+    // Channel 1: the message every renderer above reads.
+    expect(error.message).not.toContain(REGISTRY_SECRET);
+    // Channel 2: `cause`, which pino's error serialiser and `util.inspect`
+    // both walk. Discarding the parser error means there is nothing to walk.
+    expect(error.cause).toBeUndefined();
+    // Channel 3: whatever a generic stringifier reaches — own properties,
+    // stack, and the cause chain in one shot.
+    expect(inspect(error, { depth: null })).not.toContain(REGISTRY_SECRET);
+    // Channel 4: the log. Nothing is logged here at all, and the assertion
+    // holds the line against "log the Error object" being added later.
+    expect(logged).not.toContain(REGISTRY_SECRET);
+
+    // And it still says what failed. Host-independent: the raw parser error
+    // names neither the path nor the failure class, on any V8.
+    expect(error.message).toContain(registryPath);
+    expect(error.message).toContain('registry is corrupt');
+  });
+
+  it('still reports that same credential-bearing registry as empty on the lenient path', async () => {
+    // The guarded parse must not change what lenient callers see: `gitnexus
+    // list` and the eight other lenient sites still get `[]`, not a throw.
+    await fs.writeFile(registryPath, corruptRegistryOnACredential());
+
+    await expect(readRegistry()).resolves.toEqual([]);
   });
 
   it('throws when the registry parses but is not an array', async () => {

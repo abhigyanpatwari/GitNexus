@@ -670,7 +670,30 @@ const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
     return [];
   }
   try {
-    const data: unknown = JSON.parse(raw);
+    // The parse gets its OWN guarded region, narrower than the checks below,
+    // and the parser's error is DISCARDED rather than rethrown.
+    //
+    // `JSON.parse`'s SyntaxError quotes a ten-character window of the source
+    // either side of the break — `Unexpected token 'L', ..."end.git"},<here>"...`.
+    // Registry rows carry remote URLs with their HTTPS userinfo verbatim, so a
+    // registry that breaks on one of those URLs puts the credential into that
+    // window, and the thrown message is not the only place it goes from there:
+    // `groupStatus` interpolates it into `unresolvableReason` for an MCP
+    // client, and `gitnexus group sync` prints it.
+    //
+    // Not logged and not attached as `cause` either, deliberately against this
+    // file's own convention of handing the `Error` object to the logger so it
+    // captures stack and cause: under MCP stdio the client writes those records
+    // to a log file on disk, so following the convention here would move the
+    // byte window from one channel to a more durable one. The parser's position
+    // offset is not worth a credential — the path and the failure class are
+    // what an operator acts on, and they are what the two errors below say too.
+    let data: unknown;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error(`${getGlobalRegistryPath()} is not valid JSON (registry is corrupt)`);
+    }
     if (!Array.isArray(data)) {
       if (strict) {
         throw new Error(`${getGlobalRegistryPath()} is not a JSON array (registry is corrupt)`);
