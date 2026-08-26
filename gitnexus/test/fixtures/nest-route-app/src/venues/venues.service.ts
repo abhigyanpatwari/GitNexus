@@ -28,9 +28,7 @@ export class VenuesService {
   }
 
   deleteVenue(id: string): void {
-    this.rows.splice(
-      this.rows.findIndex((row) => row.id === id),
-      1,
-    );
+    const index = this.rows.findIndex((row) => row.id === id);
+    if (index !== -1) this.rows.splice(index, 1);
   }
 }

@@ -133,9 +133,16 @@ function decoratorName(decorator: Parser.SyntaxNode): string | null {
  */
 function decoratorLiteralPaths(decorator: Parser.SyntaxNode): readonly string[] | null {
   const call = decorator.namedChild(0);
-  // A bare `@Injectable` with no call, or `@Get()` with no argument — legal,
-  // and both mean "no path segment of my own".
-  if (call?.type !== 'call_expression') return [''];
+  // A Nest route decorator is a FACTORY: `@Get()` invokes it and returns the
+  // decorator that registers the route. A BARE `@Get` is the factory itself,
+  // never applied, so Nest registers nothing — emitting a route for it would
+  // publish a URL the app does not serve. The same holds one level up for a
+  // bare `@Controller`, which registers no controller.
+  //
+  // `@Get()` with no ARGUMENT is different and still a real pathless route:
+  // what distinguishes them is the call, not the argument list. That case falls
+  // through to the `!first` branch below.
+  if (call?.type !== 'call_expression') return null;
   const first = call.childForFieldName('arguments')?.namedChild(0);
   if (!first) return [''];
   // The object form belongs to `@Controller` alone — a verb decorator takes

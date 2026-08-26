@@ -600,6 +600,54 @@ describe('NestJS decorator routes', () => {
     ).toEqual(['GET /di/a']);
   });
 
+  // A Nest route decorator is a FACTORY: `@Get()` invokes it and returns the
+  // decorator that registers the route. A bare `@Get` is the factory itself,
+  // never applied to anything, so Nest registers nothing — emitting a route for
+  // it publishes a URL the app does not serve. `@Get()` with no argument IS a
+  // real pathless route and must keep working; the difference is the call, not
+  // the argument list.
+  it.each([
+    { label: 'a bare verb decorator', member: '@Get a() {}' },
+    {
+      label: 'a bare verb decorator beside a real one',
+      member: "@Get a() {}\n  @Post('b') b() {}",
+    },
+  ])('mints no route for $label', ({ member }) => {
+    expect(
+      urls(`
+        @Controller('x')
+        export class C {
+          ${member}
+        }
+      `).filter((route) => route.startsWith('GET')),
+    ).toEqual([]);
+  });
+
+  it('drops a class whose @Controller is bare rather than invoked', () => {
+    // Same rule one level up: an uninvoked `@Controller` registers no
+    // controller, so its methods are not routes either.
+    expect(
+      extract(`
+        @Controller
+        export class C {
+          @Get('a') a() {}
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('still emits a pathless route for an INVOKED decorator with no argument', () => {
+    // The control: `@Get()` differs from `@Get` by the call, and only the call.
+    expect(
+      urls(`
+        @Controller('x')
+        export class C {
+          @Get() a() {}
+        }
+      `),
+    ).toEqual(['GET /x']);
+  });
+
   // ─── Members Nest never registers as handlers ──────────────────────
 
   /** Routes a controller emits when `member` is its only member. */
