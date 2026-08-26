@@ -942,9 +942,19 @@ export interface WriteBridgeInput {
   repoSnapshots: Record<string, RepoSnapshot>;
   missingRepos: string[];
   /**
-   * Repos whose index could not be opened this sync. Recorded in meta.json so
-   * cross-repo impact can tell "nothing depends on this" from "we could not
-   * look" — the bridge built here is missing every contract those repos own.
+   * Repos this sync could not extract from — see
+   * `ContractRegistry.unreadableRepos` for the full definition, which this
+   * field carries unchanged.
+   *
+   * Deliberately not restated here. The narrower wording this once had ("whose
+   * index could not be opened") described one of the two causes and silently
+   * excluded the other, an extractor that threw partway through — so the same
+   * field meant one thing on the registry, another on the bridge input, and a
+   * third on the result. One definition, referenced twice, cannot drift.
+   *
+   * Recorded in meta.json so cross-repo impact can tell "nothing depends on
+   * this" from "we could not look": the bridge built here is missing every
+   * contract those repos own.
    */
   unreadableRepos?: string[];
 }
