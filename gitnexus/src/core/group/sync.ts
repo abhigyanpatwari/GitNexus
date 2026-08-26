@@ -30,7 +30,7 @@ import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
 import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
-import { readContractRegistry, writeContractRegistry } from './storage.js';
+import { getContractRegistryPath, readContractRegistry, writeContractRegistry } from './storage.js';
 import { refreshPreservedBridgeMeta, writeBridgeUnlocked } from './bridge-db.js';
 import { withGroupSyncLock } from './group-lock.js';
 import type { ContractRegistry } from './types.js';
@@ -64,10 +64,23 @@ export interface SyncOptions {
  *                     telling someone their previous contracts are safe when
  *                     the group has never synced sends them looking for a file
  *                     that does not exist.
+ * - `superseded`    — nothing could be read, and while this run waited for the
+ *                     group lock another sync replaced contracts.json. That
+ *                     file was left exactly as it is and NOTHING was written:
+ *                     this run's diagnostics describe a group state older than
+ *                     what is on disk. Distinct from `preserved` because the
+ *                     two differ in what happened to the file, which is the
+ *                     only thing this value is for — `preserved` rewrote it,
+ *                     this did not touch it.
  * - `not-attempted` — the caller asked not to write (`skipWrite`, or no
  *                     `groupDir` was supplied).
  */
-export type RegistryWriteOutcome = 'written' | 'preserved' | 'no-prior-registry' | 'not-attempted';
+export type RegistryWriteOutcome =
+  | 'written'
+  | 'preserved'
+  | 'superseded'
+  | 'no-prior-registry'
+  | 'not-attempted';
 
 export interface SyncResult {
   contracts: StoredContract[];
@@ -168,7 +181,7 @@ const ABSENT_REGISTRY: RegistryFileIdentity = { present: false, size: 0, mtimeMs
  */
 const readRegistryIdentity = async (groupDir: string): Promise<RegistryFileIdentity> => {
   try {
-    const st = await fs.stat(path.join(groupDir, 'contracts.json'));
+    const st = await fs.stat(getContractRegistryPath(groupDir));
     return { present: true, size: st.size, mtimeMs: st.mtimeMs, ino: st.ino };
   } catch {
     return ABSENT_REGISTRY;
@@ -627,10 +640,15 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         // rather than on `generatedAt` — see {@link RegistryFileIdentity} for
         // why that field cannot answer this question.
         //
-        // The outcome is the existing `preserved`: nothing was written and a
-        // prior registry was kept, which is precisely what the word already
-        // means. A new `RegistryWriteOutcome` would fall through
-        // `cli/group.ts`'s outcome chain, which has no fallback branch.
+        // Its own outcome, not `preserved`. The two differ in the one thing
+        // this value reports — `preserved` rewrites contracts.json with this
+        // run's diagnostics, this path does not touch it and deliberately does
+        // NOT record them. Folding them together made the tool description and
+        // the CLI summary say the file had been rewritten on a branch that
+        // wrote nothing, which is the class of false statement about disk this
+        // whole change set removes. That it would have fallen through the CLI's
+        // outcome chain was a renderer limitation deciding a domain value; the
+        // chain is exhaustive now instead.
         //
         // `refreshPreservedBridgeMeta` is skipped along with the write, and
         // deliberately: it stamps THIS run's diagnostics into `meta.json`, and
@@ -641,7 +659,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         // only degrade a pair the winner left consistent.
         const registryIdentityAfterLock = await readRegistryIdentity(groupDir);
         if (!sameRegistryFile(registryIdentityBeforeLock, registryIdentityAfterLock)) {
-          registryOutcome = 'preserved';
+          registryOutcome = 'superseded';
           logger.warn(
             { unreadableRepos, missingRepos },
             '⚠️ No repo in this group could be read, and another sync replaced contracts.json ' +

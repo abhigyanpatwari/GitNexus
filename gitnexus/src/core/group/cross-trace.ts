@@ -31,9 +31,11 @@ import {
   ensureBridgeReady,
   MAX_SUPPORTED_CROSS_DEPTH,
 } from './cross-impact.js';
-import type { CrossRepoCompleteness } from './cross-impact.js';
+import type { CrossRepoCompleteness } from './completeness.js';
+import { truncationFields } from './completeness.js';
 import { compareCodeUnits } from '../../lib/utils.js';
 import { closeBridgeDb, queryBridge } from './bridge-db.js';
+import { repoInSubgroup } from './group-path-utils.js';
 import type {
   GroupPdgFlowHop,
   GroupRepoHandle,
@@ -236,16 +238,14 @@ function traceCompleteness(
   runtimeTruncated: boolean,
 ): GroupTraceCompleteness {
   const repos = bridge.incompleteRepos.length > 0 ? { truncatedRepos: bridge.incompleteRepos } : {};
-  if (runtimeTruncated) {
-    return { truncated: true, truncationReason: 'partial', riskEpistemic: 'lower-bound', ...repos };
-  }
+  // Through `truncationFields`, not hand-written: `riskEpistemic` must follow
+  // `truncated` mechanically, and a third writer of that pair is how the
+  // invariant drifts (#2787). The bridge branch re-spreads the helper's own
+  // output rather than naming its fields.
+  if (runtimeTruncated) return { ...truncationFields(true, 'partial'), ...repos };
   if (!bridge.truncated) return {};
-  return {
-    truncated: true,
-    truncationReason: bridge.truncationReason,
-    riskEpistemic: bridge.riskEpistemic,
-    ...repos,
-  };
+  const { incompleteRepos: _incompleteRepos, ...fields } = bridge;
+  return { ...fields, ...repos };
 }
 
 /**
@@ -965,7 +965,12 @@ async function stitchCrossRepo(
     // them" is a verdict or a floor.
     const bridge = bridgeCompletenessFor(
       bridgePrep.meta,
-      (repoPath) => repoPath === fromEp.member.repoPath || repoPath === toEp.member.repoPath,
+      // `repoInSubgroup(..., exact)` rather than `===`: it normalizes separators
+      // and strips trailing slashes, which bare equality does not, so the same
+      // group.yaml spelling cannot be in scope for impact and out of scope here.
+      (repoPath) =>
+        repoInSubgroup(repoPath, fromEp.member.repoPath, true) ||
+        repoInSubgroup(repoPath, toEp.member.repoPath, true),
     );
     const { crossings, truncated: crossingsTruncated } = await listCrossingsBetween(
       handle,

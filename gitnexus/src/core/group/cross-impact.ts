@@ -12,7 +12,6 @@ import type {
   CrossRepoImpact,
   GroupConfig,
   GroupImpactResult,
-  GroupImpactTruncationReason,
   MatchType,
   OutOfScopeLink,
 } from './types.js';
@@ -32,6 +31,16 @@ import {
   readBridgeMeta,
 } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+// Re-exported so the three surfaces keep one import site for the vocabulary,
+// while the fold itself stays in a leaf module no native binding reaches.
+export {
+  truncationFields,
+  crossRepoCompleteness,
+  type TruncationFields,
+  type CrossRepoCompleteness,
+  type CrossRepoCompletenessInput,
+} from './completeness.js';
+import { truncationFields, crossRepoCompleteness } from './completeness.js';
 import { compareCodeUnits } from '../../lib/utils.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
@@ -383,41 +392,6 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
 }
 
 /**
- * A union rather than `Pick<GroupImpactResult, ...>` so the two states are
- * distinguishable by their `truncated` discriminant: a caller that folds these
- * fields into its own result (see `crossRepoCompleteness`) can then read
- * `truncationReason` on the truncated branch without a fallback for a value
- * that cannot be absent there.
- */
-type TruncationFields =
-  | { truncated: false }
-  | {
-      truncated: true;
-      truncationReason: GroupImpactTruncationReason;
-      riskEpistemic: 'lower-bound';
-    };
-
-/**
- * Build the truncation fields every `runGroupImpact` return path shares.
- *
- * `riskEpistemic` must follow `truncated` mechanically: it is the marker that
- * tells a caller the `risk` value is a floor rather than a verdict, and
- * `mergeRisk` can only under-report once a crossing is dropped. Attaching it at
- * each return let two of the four paths set `truncated` without it, so a
- * truncated result read as complete — deriving it in one place is what keeps
- * the invariant from drifting again (#2787).
- */
-function truncationFields(
-  truncated: boolean,
-  // Only read on the truncated branch, so the not-truncated call sites omit it
-  // rather than passing a reason that is thrown away.
-  reasonIfTruncated: GroupImpactTruncationReason = 'partial',
-): TruncationFields {
-  if (!truncated) return { truncated: false };
-  return { truncated: true, truncationReason: reasonIfTruncated, riskEpistemic: 'lower-bound' };
-}
-
-/**
  * Is this bridge's metadata unable to say where its contents came from?
  *
  * The three reads are all about a `BridgeMeta` and stay OUT of
@@ -442,73 +416,6 @@ export function bridgeProvenanceUnknown(meta: BridgeMeta): boolean {
   return (
     meta.version === 0 || meta.repoListsUnreadable === true || meta.pairedWithDatabase === false
   );
-}
-
-/**
- * Everything a caller needs in order to say whether a cross-repo answer is
- * complete — deliberately WITHOUT naming where any of it came from.
- *
- * `BridgeMeta` is not in this signature, and must not be: `groupContracts`
- * answers the same question from `contracts.json` (via
- * `loadContractRegistryResilient`) and never opens a bridge at all, so
- * `version` / `repoListsUnreadable` / `pairedWithDatabase` do not exist on that
- * path. Each caller computes its own `provenanceUnknown` from whatever
- * provenance IT has and passes the boolean in.
- */
-export interface CrossRepoCompletenessInput {
-  /**
-   * Repos the sync could not extract from, and repos it found no entry for.
-   * Two independent diagnostics with one consequence — none of those repos'
-   * contracts are in the artifact — so they are folded into one set.
-   */
-  unreadableRepos?: readonly string[];
-  missingRepos?: readonly string[];
-  /** Computed by the caller; see `bridgeProvenanceUnknown` for the bridge one. */
-  provenanceUnknown: boolean;
-  /**
-   * The query's DECLARED scope, not the set of repos the walk happened to
-   * reach: the subgroup filter for an impact query, the two endpoint repos for
-   * a trace, every member for a query that names none. An incomplete repo the
-   * caller never asked about cannot make the caller's answer a floor, and
-   * marking it anyway is how the marker stops meaning anything. Passing the
-   * predicate in — rather than a repo list, or a subgroup — is what keeps
-   * narrowing a scope a call-site change.
-   */
-  inScope: (repoPath: string) => boolean;
-}
-
-/** The structured triple, plus the in-scope repos that produced it. */
-export type CrossRepoCompleteness = TruncationFields & {
-  /**
-   * In-scope repos absent from the artifact, deduped, in first-seen order.
-   * Empty on a provenance-unknown answer: nothing was measured there, and
-   * inventing names out of an unreadable value is not a measurement.
-   */
-  incompleteRepos: string[];
-};
-
-/**
- * The ONE computation of "is this cross-repo answer complete?" (KTD10).
- *
- * Three surfaces can return a partial cross-repo answer — impact, trace, and
- * the contract listing — and each used to decide for itself, in its own
- * vocabulary, which is how two of them ended up saying it in prose only. The
- * answer is the same structured triple `GroupImpactResult` already carries, so
- * an agent reading any of them learns "complete" vs "floor" the same way.
- *
- * `truncationFields` derives `riskEpistemic` from `truncated` mechanically, and
- * is reused here rather than re-implemented for the same reason it exists: the
- * marker that says "this is a floor, not a verdict" may never drift away from
- * the flag that says the answer was cut short (#2787).
- */
-export function crossRepoCompleteness(input: CrossRepoCompletenessInput): CrossRepoCompleteness {
-  const incompleteRepos = [
-    ...new Set([...(input.unreadableRepos ?? []), ...(input.missingRepos ?? [])]),
-  ].filter((repoPath) => input.inScope(repoPath));
-  return {
-    ...truncationFields(input.provenanceUnknown || incompleteRepos.length > 0, 'incomplete-sync'),
-    incompleteRepos,
-  };
 }
 
 function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): void {
@@ -953,7 +860,13 @@ export async function runGroupImpact(
     inScope: (candidate) =>
       repoInSubgroup(candidate, subgroup) || repoInSubgroup(candidate, repoPath, true),
   });
-  const truncated = truncatedRepos.length > 0 || localPartial || bridge.truncated;
+  // One predicate, read twice below. Written out at both sites, a third runtime
+  // cause added to the flag and forgotten at the reason would label a
+  // retry-able answer `incomplete-sync` — telling the operator to re-sync for
+  // something a retry fixes. That reason-vs-flag drift is what `truncationFields`
+  // exists to prevent.
+  const runtimeTruncated = truncatedRepos.length > 0 || localPartial;
+  const truncated = runtimeTruncated || bridge.truncated;
 
   const result: GroupImpactResult = {
     local,
@@ -973,11 +886,7 @@ export async function runGroupImpact(
     // where it would say 'incomplete-sync' about a complete result.
     ...truncationFields(
       truncated,
-      fanoutTimedOut
-        ? 'timeout'
-        : truncatedRepos.length > 0 || localPartial
-          ? 'partial'
-          : 'incomplete-sync',
+      fanoutTimedOut ? 'timeout' : runtimeTruncated ? 'partial' : 'incomplete-sync',
     ),
     truncatedRepos: [...new Set([...truncatedRepos, ...bridge.incompleteRepos])],
     summary: {

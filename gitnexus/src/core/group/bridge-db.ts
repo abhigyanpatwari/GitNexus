@@ -5,6 +5,7 @@ import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
 import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+import { recordedRepoList } from './completeness.js';
 import {
   closeLbugConnection,
   openLbugConnection,
@@ -762,21 +763,6 @@ async function unstampedMetaPairsByWriteOrder(groupDir: string): Promise<boolean
   } catch {
     return false;
   }
-}
-
-/**
- * A recorded repo list is an array of strings. Anything else — a bare string,
- * an object, an array of objects — is a value we could not read, which is "not
- * recorded", not "none".
- *
- * Mirrors `recordedRepoList` in `service.ts`, which applies the same gate to
- * the registry's copies of these same two lists. `Array.isArray` alone is not
- * enough: only an array of strings survives `cli/group.ts`'s `.join(', ')` as
- * repo paths rather than as `[object Object]`.
- */
-function recordedRepoList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.every((entry) => typeof entry === 'string') ? (value as string[]) : undefined;
 }
 
 /**

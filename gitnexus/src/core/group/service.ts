@@ -7,11 +7,15 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
 import {
+  canonicalizePath,
   loadMeta,
   readRegistryStrict,
+  registryPathEquals,
   type RegistryEntry,
   type RepoMeta,
 } from '../../storage/repo-manager.js';
+import { crossRepoCompleteness } from './completeness.js';
+import { recordedRepoList } from './completeness.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
@@ -228,21 +232,6 @@ function isCrossLink(raw: unknown): raw is CrossLink {
 }
 
 /**
- * A recorded repo list is an array of strings. Anything else — absent, a bare
- * string, an object, an array of objects — is a value we could not read, which
- * is "not recorded", not "none".
- *
- * `Array.isArray` alone is not enough: `['app/backend']` and `[{repo:'x'}]` are
- * both arrays, and only the second reaches `cli/group.ts`'s `.join(', ')` as
- * `[object Object]`. Reporting a shape we do not understand as if we had
- * measured it is the whole failure mode this change exists to remove.
- */
-function recordedRepoList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.every((entry) => typeof entry === 'string') ? (value as string[]) : undefined;
-}
-
-/**
  * Does the global registry hold a row for this configured group member?
  *
  * Consulted only once resolution has ALREADY failed, to choose which of the
@@ -257,14 +246,16 @@ function recordedRepoList(value: unknown): string[] | undefined {
  */
 function registryIdentifies(entries: RegistryEntry[], registryName: string): boolean {
   const wantedName = registryName.toLowerCase();
-  const wantedPath = path.resolve(registryName);
+  // Path equality goes through the registry's own rule rather than a local
+  // `resolve` + platform-case compare. `canonicalizePath` also follows symlinks,
+  // so a row registered through one and looked up through the other still
+  // matches — and there is one definition of registry path identity instead of
+  // a third, weaker copy of it living in a group module nobody would grep.
+  const wantedPath = canonicalizePath(registryName);
   return entries.some((entry) => {
     if (typeof entry.name === 'string' && entry.name.toLowerCase() === wantedName) return true;
     if (typeof entry.path !== 'string') return false;
-    const stored = path.resolve(entry.path);
-    return process.platform === 'win32'
-      ? stored.toLowerCase() === wantedPath.toLowerCase()
-      : stored === wantedPath;
+    return registryPathEquals(canonicalizePath(entry.path), wantedPath);
   });
 }
 
@@ -334,6 +325,8 @@ async function loadContractRegistryResilient(
     }
   }
 
+  // Bound once: the gate is a full array scan and the ternary below used it twice.
+  const recordedUnreadable = recordedRepoList(base.unreadableRepos);
   const registry: ContractRegistry = {
     version: typeof base.version === 'number' ? base.version : 0,
     generatedAt: typeof base.generatedAt === 'string' ? base.generatedAt : '',
@@ -354,9 +347,7 @@ async function loadContractRegistryResilient(
     // the caller "the last sync found none unreadable" — an unmeasured state
     // rendered as a clean result, which is the same conflation this whole
     // change removes.
-    ...(recordedRepoList(base.unreadableRepos)
-      ? { unreadableRepos: recordedRepoList(base.unreadableRepos) }
-      : {}),
+    ...(recordedUnreadable ? { unreadableRepos: recordedUnreadable } : {}),
     contracts,
     crossLinks,
   };
@@ -463,14 +454,6 @@ export class GroupService {
       );
       contracts = contracts.filter((c) => !matchedIds.has(`${c.repo}::${c.contractId}`));
     }
-    // Lazy for the same reason `groupImpact` and `groupTrace` are: `cross-impact.js`
-    // statically pulls `bridge-db.js`, and through it the native `@ladybugdb/core`
-    // binding. A static import here would put that on every consumer of this
-    // module — including `gitnexus group list`, which touches no database at all.
-    // Only `crossRepoCompleteness` is used, and it is a pure fold over two lists
-    // (it takes no `BridgeMeta` precisely so this path, which never opens a
-    // bridge, can share it — KTD10).
-    const { crossRepoCompleteness } = await import('./cross-impact.js');
     // `loadContractRegistryResilient` already applied `recordedRepoList` to
     // both: `undefined` here is "the last sync recorded no opinion" (a registry
     // written before the field existed, or a value we could not read), which is
