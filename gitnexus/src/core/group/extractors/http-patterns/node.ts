@@ -9,11 +9,21 @@ import {
   type LanguagePatterns,
   type PatternSpec,
 } from '../tree-sitter-scanner.js';
-import type { HttpDetection, HttpLanguagePlugin } from './types.js';
+import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
+import { MAX_FOLD_LENGTH } from '../../../ingestion/route-extractors/constant-resolver.js';
 import {
   DATA_ROUTE_TABLE_SOURCE,
   scanDataRouteTables,
 } from '../../../ingestion/route-extractors/data-route-table.js';
+import {
+  buildJsRepoFacts,
+  extractJsModuleFacts,
+  isAxiosNamespace,
+  isHttpClientRef,
+  resolveJsPathExpression,
+  type JsModuleFacts,
+  type JsRepoFacts,
+} from '../../../ingestion/route-extractors/js-const-resolver.js';
 
 /**
  * Node.js / TypeScript HTTP plugin family. Handles:
@@ -98,15 +108,28 @@ const FETCH_WITH_OPTIONS_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
-// ─── Consumer: axios.get/post/... ────────────────────────────────────
-const AXIOS_SPEC: PatternSpec<Record<string, never>> = {
+// ─── Consumer: <httpClient>.get/post/... ─────────────────────────────
+// Widened from a literal `axios` receiver with a literal path. Application
+// code satisfies neither: it calls through a configured instance
+// (`const api = axios.create({ baseURL })`, imported at the call site under
+// whatever name the app chose) and passes the path by reference from a shared
+// route table (`api.get(API_ROUTE_PATH.LINKS)`). The query therefore matches
+// ANY identifier receiver with an HTTP-verb method and ANY first argument;
+// `scanBundle` admits a match only after PROVING the receiver is an axios
+// instance and resolving the argument to a path.
+//
+// The proof gate is load-bearing, not belt-and-braces: EXPRESS_SPEC above
+// matches `router.get('/x', handler)` / `app.post(...)` as PROVIDERS. A
+// receiver admitted on spelling alone would re-emit every Express route in the
+// repo as a consumer of itself, on both sides of every cross-repo pair.
+const HTTP_CLIENT_SPEC: PatternSpec<Record<string, never>> = {
   meta: {},
   query: `
     (call_expression
       function: (member_expression
-        object: (identifier) @obj (#eq? @obj "axios")
+        object: (identifier) @obj
         property: (property_identifier) @http_method (#match? @http_method "^(get|post|put|delete|patch)$"))
-      arguments: (arguments . [(string) (template_string)] @path))
+      arguments: (arguments . (_) @path))
   `,
 };
 
@@ -158,7 +181,7 @@ interface NodePatternBundle {
   express: CompiledPatterns<Record<string, never>>;
   fetchNoOptions: CompiledPatterns<Record<string, never>>;
   fetchWithOptions: CompiledPatterns<Record<string, never>>;
-  axios: CompiledPatterns<Record<string, never>>;
+  httpClient: CompiledPatterns<Record<string, never>>;
   jqueryShorthand: CompiledPatterns<Record<string, never>>;
   jqueryAjax: CompiledPatterns<Record<string, never>>;
   axiosObject: CompiledPatterns<Record<string, never>>;
@@ -177,7 +200,7 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
     express: mk(EXPRESS_SPEC, 'express'),
     fetchNoOptions: mk(FETCH_NO_OPTIONS_SPEC, 'fetch-no-options'),
     fetchWithOptions: mk(FETCH_WITH_OPTIONS_SPEC, 'fetch-with-options'),
-    axios: mk(AXIOS_SPEC, 'axios'),
+    httpClient: mk(HTTP_CLIENT_SPEC, 'http-client'),
     jqueryShorthand: mk(JQUERY_SHORTHAND_SPEC, 'jquery-shorthand'),
     jqueryAjax: mk(JQUERY_AJAX_SPEC, 'jquery-ajax'),
     axiosObject: mk(AXIOS_OBJECT_SPEC, 'axios-object'),
@@ -309,12 +332,22 @@ function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNod
  */
 function buildImportMap(tree: Parser.Tree): Map<string, { name: string; module: string }> {
   const map = new Map<string, { name: string; module: string }>();
-  const walk = (node: Parser.SyntaxNode): void => {
+  // Both walks are explicit-stack, not recursive. They visit EVERY node of the
+  // file, so their depth is the source's nesting depth — and `scan` may not
+  // throw: a `RangeError` here escapes to `sync.ts`, which records the repo as
+  // an unexplained "missing repo" and drops every contract of every kind for
+  // it, silently. A file nesting template substitutions ~4 000 deep (well
+  // inside what tree-sitter will parse) was enough.
+  const stack: Parser.SyntaxNode[] = [tree.rootNode];
+  while (stack.length > 0) {
+    const node = stack.pop() as Parser.SyntaxNode;
     if (node.type === 'import_statement') {
       const sourceNode = node.childForFieldName('source');
       const module = sourceNode ? unquoteLiteral(sourceNode.text) : null;
       if (module !== null) {
-        const collect = (n: Parser.SyntaxNode): void => {
+        const inner: Parser.SyntaxNode[] = [node];
+        while (inner.length > 0) {
+          const n = inner.pop() as Parser.SyntaxNode;
           if (n.type === 'import_specifier') {
             const nameNode = n.childForFieldName('name');
             const aliasNode = n.childForFieldName('alias');
@@ -323,25 +356,234 @@ function buildImportMap(tree: Parser.Tree): Map<string, { name: string; module: 
               map.set(local.text, { name: nameNode.text, module });
             }
           }
-          for (let i = 0; i < n.namedChildCount; i++) {
-            const c = n.namedChild(i);
-            if (c) collect(c);
-          }
-        };
-        collect(node);
+          for (const c of n.namedChildren) inner.push(c);
+        }
       }
+      // An import statement cannot contain another one, and the inner loop has
+      // already visited its whole subtree.
+      continue;
     }
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const c = node.namedChild(i);
-      if (c) walk(c);
-    }
-  };
-  walk(tree.rootNode);
+    for (const c of node.namedChildren) stack.push(c);
+  }
   return map;
 }
 
-function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection[] {
+// ─── Repo pre-pass: cross-file route tables + HTTP client instances ──
+//
+// Both halves of a real consumer call live in files OTHER than the call site:
+// the client is created in `lib/axios.config.ts` and the path in
+// `shared/api-routes.ts`. A per-file scan cannot see either, which is why the
+// literal-only patterns matched almost nothing on application code. The
+// pre-pass builds a repo-wide fact map once so `scan` can resolve both.
+
+interface NodeRepoContext {
+  readonly facts: JsRepoFacts;
+}
+
+/**
+ * Shared across the three JS/TS plugins.
+ *
+ * JS, TS and TSX are distinct `HttpLanguagePlugin` objects, and the
+ * orchestrator caches `prepareRepo` output per plugin NAME — so a polyglot
+ * frontend would build this identical map three times. All three are called
+ * with the same memoized file-list array within one extraction run, so keying
+ * on that array's identity collapses the work to a single pass. A later run
+ * passes a different array and correctly rebuilds; the weak key lets the old
+ * map be collected with it.
+ */
+const REPO_CONTEXT_BY_FILE_LIST = new WeakMap<readonly string[], NodeRepoContext>();
+
+/**
+ * Skip ceiling for the pre-pass, mirroring the analyzer's default
+ * `--max-file-size`. A minified bundle is megabytes on one line and defines no
+ * route table a human wrote; parsing it costs far more than it can return.
+ */
+const MAX_PREPASS_FILE_BYTES = 512 * 1024;
+
+/** Repo-relative path in the same POSIX form the fact map is keyed by. */
+function normalizeRel(rel: string): string {
+  return rel.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/** The grammar a JS/TS-family file should be parsed with, or null if not one. */
+function grammarForFile(rel: string): unknown | null {
+  const lower = rel.toLowerCase();
+  if (lower.endsWith('.tsx')) return TypeScript.tsx;
+  if (/\.[cm]?ts$/.test(lower)) return TypeScript.typescript;
+  if (/\.[cm]?jsx?$/.test(lower)) return JavaScript;
+  return null;
+}
+
+function buildNodeRepoContext(args: {
+  files: string[];
+  readFile: (rel: string) => string | null;
+  parseSource: (parser: Parser, src: string) => Parser.Tree | null;
+}): NodeRepoContext {
+  const cached = REPO_CONTEXT_BY_FILE_LIST.get(args.files);
+  if (cached) return cached;
+
+  const byFile = new Map<string, JsModuleFacts>();
+  const parsers = new Map<unknown, Parser>();
+  const parserFor = (language: unknown): Parser => {
+    let parser = parsers.get(language);
+    if (!parser) {
+      parser = new Parser();
+      parser.setLanguage(language as Parameters<Parser['setLanguage']>[0]);
+      parsers.set(language, parser);
+    }
+    return parser;
+  };
+
+  // Cost gate, in the spirit of the sibling `python.ts` pre-pass: every fact
+  // this map holds exists to prove a receiver is an axios instance or to fold a
+  // path for one. A repo where the string `axios` appears nowhere can prove no
+  // receiver, so every parse below is dead work — and parsing is the expensive
+  // half (measured 4.36 s / +258 MB RSS over 827 TypeScript files, on top of
+  // the parse `getScanInput` already does).
+  // Only the file's identity is carried between the passes, never its text: a
+  // large monorepo's whole source tree held in one array at once is the shape
+  // that produced the analyzer's scale problems, and the second read is cheap
+  // beside the parse it gates.
+  const eligible: Array<{ rel: string; language: unknown }> = [];
+  let sawAxios = false;
+  for (const rel of args.files) {
+    const language = grammarForFile(rel);
+    if (language === null) continue;
+    const content = args.readFile(rel);
+    // `MAX_PREPASS_FILE_BYTES` is a BYTE ceiling; `String.length` counts UTF-16
+    // code units, which under-counts every multi-byte source.
+    if (content === null || Buffer.byteLength(content, 'utf8') > MAX_PREPASS_FILE_BYTES) continue;
+    if (!sawAxios && content.includes('axios')) sawAxios = true;
+    eligible.push({ rel, language });
+  }
+
+  if (sawAxios) {
+    for (const { rel, language } of eligible) {
+      try {
+        const content = args.readFile(rel);
+        if (content === null) continue;
+        // `parseSource` belongs INSIDE the guard: `safe-parse.ts` throws
+        // `ParseTimeoutError` and makes catching it a per-caller obligation, and
+        // `prepareRepo` is contractually non-throwing. One escape here left the
+        // fact map unwritten for the WHOLE repo — and, because the orchestrator
+        // caches per plugin NAME, made all three JS/TS plugins re-walk it and
+        // fail the same way before falling back to literal-only scanning.
+        const tree = args.parseSource(parserFor(language), content);
+        if (!tree) continue;
+        byFile.set(normalizeRel(rel), extractJsModuleFacts(tree));
+      } catch {
+        // One malformed file must never abort the pre-pass — it simply stays
+        // unresolved, exactly as it is without this pass at all.
+      }
+    }
+  }
+
+  const ctx: NodeRepoContext = { facts: buildJsRepoFacts(byFile) };
+  REPO_CONTEXT_BY_FILE_LIST.set(args.files, ctx);
+  return ctx;
+}
+
+/** The repo facts to resolve against, or null when there was no pre-pass. */
+function resolveFactsFor(
+  repoContext: RepoContext | undefined,
+  fileRel: string | undefined,
+): JsRepoFacts | null {
+  const ctx = repoContext as NodeRepoContext | undefined;
+  if (!ctx || fileRel === undefined) return null;
+  return ctx.facts;
+}
+
+/**
+ * Whether a folded first argument is plausibly a URL path.
+ *
+ * The query now captures ANY first argument, and "it folded to a string" is not
+ * "it is a path" — `normalizeConsumerPath` is a canonicalizer, not a validator,
+ * and it happily turns non-paths into contracts that exact-match real provider
+ * routes:
+ *
+ *   api.get(CONFIG.TIMEOUT)  // "5000"                     -> http::GET::/{param}
+ *   api.post(MSG.ERROR)      // "Could not reach the …"    -> http::POST::/could not reach the server
+ *
+ * `/{param}` matches every one-segment provider route in the group, and
+ * `matching.exclude_links_param_only_paths` defaults to `false`. A path whose
+ * leading term is an unresolved placeholder is refused for the same reason —
+ * nothing pins where it starts. (`resolveJsPathExpression` already refuses those
+ * it folded itself; this also covers the literal fallback below.)
+ */
+function looksLikeHttpPath(path: string): boolean {
+  if (path === '') return false;
+  if (/^https?:\/\//i.test(path)) return true;
+  // A `${…}` term is a runtime value that `normalizeConsumerPath` rewrites to
+  // `{param}`; its SOURCE text can be any expression (`${draft ? 'a' : 'b'}`,
+  // `${id ?? ''}`), so the checks below have to run against the normalized
+  // shape. Testing the raw source dropped every partially folded path whose
+  // unresolved term happened to contain a space.
+  const shape = path.replace(/\$\{[^}]+\}/g, '{param}');
+  if (/\s/.test(shape)) return false;
+  if (shape.startsWith('{param}')) return false;
+  // An all-digit string is a path only when it is written as one. A leading
+  // slash is that evidence: `client.get('/123')` is a route whose segment the
+  // consumer normalizer reads as `{param}`, while a bare `"5000"` folded out of
+  // `CONFIG.TIMEOUT` is a timeout that would match every one-segment provider.
+  if (!shape.startsWith('/')) return !/^\d+$/.test(shape);
+  return true;
+}
+
+/**
+ * The path a consumer call's first argument denotes.
+ *
+ * Prefers full resolution against the repo facts; falls back to the raw
+ * literal for a string/template node so a repo with no pre-pass (or an
+ * unresolvable reference) behaves exactly as it did before.
+ *
+ * `fileKey` is already `normalizeRel`-ed by the caller — see `scanBundle`.
+ *
+ * `legacyShape` marks the exact combination this pattern matched BEFORE it was
+ * widened: the literal receiver `axios` with a string or template-string first
+ * argument. That combination keeps its old output verbatim, so this PR adds
+ * detections without removing any — `axios.get(`${API_BASE}/users`)` still
+ * yields `/{param}/users`. Everything the widened query NEWLY admits (any other
+ * receiver, or any non-literal argument) has to clear the gates.
+ */
+function resolveConsumerPath(
+  pathNode: Parser.SyntaxNode,
+  facts: JsRepoFacts | null,
+  fileKey: string | undefined,
+  legacyShape: boolean,
+): string | null {
+  if (facts && fileKey !== undefined) {
+    const resolved = resolveJsPathExpression(fileKey, pathNode, facts);
+    if (resolved !== null && looksLikeHttpPath(resolved)) return resolved;
+  }
+  // The fallback is deliberately gated on node TYPE: `unquoteLiteral` returns
+  // unrecognized input unchanged, so handing it a `member_expression` would
+  // yield the literal text `API_ROUTE_PATH.LINKS` as if it were a URL path.
+  if (pathNode.type !== 'string' && pathNode.type !== 'template_string') return null;
+  const literal = unquoteLiteral(pathNode.text);
+  // The fold bails past `MAX_FOLD_LENGTH`; the raw source it falls back to has
+  // no such bound and lands in `contractId` and `meta.path` all the same.
+  if (literal === null || literal.length > MAX_FOLD_LENGTH) return null;
+  return legacyShape || looksLikeHttpPath(literal) ? literal : null;
+}
+
+function scanBundle(
+  bundle: NodePatternBundle,
+  tree: Parser.Tree,
+  repoContext?: RepoContext,
+  fileRel?: string,
+): HttpDetection[] {
   const out: HttpDetection[] = [];
+  // Repo-wide constant / HTTP-client facts, when the orchestrator ran the
+  // `prepareRepo` pre-pass. Absent for a bare `scan(tree)` call, in which case
+  // every cross-file resolution below floors to the literal-only behavior.
+  const facts = resolveFactsFor(repoContext, fileRel);
+  // The fact map is keyed by `normalizeRel(rel)`. Normalizing at ONE place and
+  // using that value for every read keeps the two sides in step: the receiver
+  // gate used to read the raw `fileRel`, and `isHttpClientRef` cannot tell a key
+  // miss from "not a client", so any non-POSIX path (glob v13 has no
+  // `posix: true` and its walker joins with the platform separator; graph rows
+  // are a second unnormalized source) silently returned zero consumers.
+  const fileKey = fileRel === undefined ? undefined : normalizeRel(fileRel);
   // Local-binding → { declared export name, module } for the file's named
   // imports, so an express handler that is an imported (possibly aliased)
   // symbol resolves to the real definition rather than its local alias text.
@@ -471,22 +713,57 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
     });
   }
 
-  // Consumer: axios.<verb>(url)
-  for (const match of runCompiledPatterns(bundle.axios, tree)) {
+  // Consumer: <httpClient>.<verb>(url) — `axios` itself, or any receiver the
+  // repo pre-pass proves is an axios instance.
+  for (const match of runCompiledPatterns(bundle.httpClient, tree)) {
     const methodNode = match.captures.http_method;
     const pathNode = match.captures.path;
-    if (!methodNode || !pathNode) continue;
-    const path = unquoteLiteral(pathNode.text);
-    if (path === null) continue;
-    out.push({
-      role: 'consumer',
-      framework: 'axios',
-      method: methodNode.text.toUpperCase(),
-      path,
-      name: null,
-      line: pathNode.startPosition.row + 1,
-      confidence: 0.7,
-    });
+    const objNode = match.captures.obj;
+    if (!methodNode || !pathNode || !objNode) continue;
+
+    // Receiver gate. `axios.get(...)` needs no proof; anything else must be
+    // traced to an `axios.create(...)` binding, or it is not ours to claim.
+    const receiver = objNode.text;
+
+    // Cross-file resolution is the only work in this file that walks a
+    // repo-wide graph, and `HttpLanguagePlugin.scan` may not throw: a single
+    // hostile call site must cost its own detection, not the repo's whole
+    // contract set (`sync.ts` catches a throw here as an unexplained "missing
+    // repo", silently, for every contract type).
+    try {
+      // The receiver is admitted when it IS the axios module — the bare
+      // spelling this pattern trusted before it was widened, or a declared
+      // import/require of 'axios' under any name — or when it traces to an
+      // `axios.create(...)` instance. Nothing else.
+      const isModule =
+        facts === null || fileKey === undefined
+          ? receiver === 'axios'
+          : isAxiosNamespace(fileKey, receiver, facts);
+      if (!isModule) {
+        if (!facts || fileKey === undefined) continue;
+        if (!isHttpClientRef(fileKey, receiver, facts)) continue;
+      }
+
+      const path = resolveConsumerPath(
+        pathNode,
+        facts,
+        fileKey,
+        isModule && (pathNode.type === 'string' || pathNode.type === 'template_string'),
+      );
+      if (path === null) continue;
+
+      out.push({
+        role: 'consumer',
+        framework: 'axios',
+        method: methodNode.text.toUpperCase(),
+        path,
+        name: null,
+        line: pathNode.startPosition.row + 1,
+        confidence: 0.7,
+      });
+    } catch {
+      // Unresolvable is the same outcome as unresolved — skip this call site.
+    }
   }
 
   // Consumer: jQuery shorthand $.get(url) / $.post(url, ...)
@@ -574,17 +851,20 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
 export const JAVASCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'javascript-http',
   language: JavaScript,
-  scan: (tree) => scanBundle(JAVASCRIPT_BUNDLE, tree),
+  prepareRepo: buildNodeRepoContext,
+  scan: (tree, repoContext, fileRel) => scanBundle(JAVASCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
 export const TYPESCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'typescript-http',
   language: TypeScript.typescript,
-  scan: (tree) => scanBundle(TYPESCRIPT_BUNDLE, tree),
+  prepareRepo: buildNodeRepoContext,
+  scan: (tree, repoContext, fileRel) => scanBundle(TYPESCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
 export const TSX_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'tsx-http',
   language: TypeScript.tsx,
-  scan: (tree) => scanBundle(TSX_BUNDLE, tree),
+  prepareRepo: buildNodeRepoContext,
+  scan: (tree, repoContext, fileRel) => scanBundle(TSX_BUNDLE, tree, repoContext, fileRel),
 };
