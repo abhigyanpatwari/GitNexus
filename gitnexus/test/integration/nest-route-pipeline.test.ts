@@ -88,19 +88,6 @@ describe('NestJS decorator route ingestion pipeline', () => {
     expect(routeNodes().length).toBeGreaterThan(0);
   });
 
-  it('joins the @Controller prefix with each method path into the Route node URL', () => {
-    // `/venues/search`, not `search` and not `/search`: the join is what the
-    // extractor cannot do alone — it ships `prefix` and the routes phase folds
-    // it in via `normalizeExtractedRoutePath`.
-    expect(identities()).toEqual([
-      'DELETE /venues/:id',
-      'GET /health',
-      'GET /venues',
-      'GET /venues/search',
-      'POST /venues',
-    ]);
-  });
-
   it('mounts a pathless @Get() at the controller prefix WITH its handler attached', () => {
     // The reason `nest.ts` emits '/' instead of '' for a pathless decorator:
     // `claim()` short-circuits on a falsy `routePath`, so '' would still create
@@ -115,10 +102,14 @@ describe('NestJS decorator route ingestion pipeline', () => {
     });
   });
 
-  it('resolves every route to the controller method that declared it', () => {
-    // `claim()` is first-writer-wins per `(method, url)`; a mis-keyed route
-    // would show up here as a handler donated to the wrong URL, not as an
-    // absence.
+  it('joins each @Controller prefix with its method paths and resolves every handler', () => {
+    // Two invariants, one table, because a projection of this assertion can
+    // only fail where this one already does. The join is what the extractor
+    // cannot do alone — it ships `prefix` and the routes phase folds it in via
+    // `normalizeExtractedRoutePath`, so these read `/venues/search`, not
+    // `search`. And `claim()` is first-writer-wins per `(method, url)`, so a
+    // mis-keyed route surfaces as a handler donated to the wrong URL rather
+    // than as an absence.
     expect(routes()).toEqual([
       {
         identity: 'DELETE /venues/:id',

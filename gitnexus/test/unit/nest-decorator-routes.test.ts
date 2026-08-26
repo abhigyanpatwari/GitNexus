@@ -16,17 +16,17 @@ jsParser.setLanguage(JavaScript);
 const extract = (source: string) =>
   extractNestRoutes(tsParser.parse(source), 'src/x.controller.ts');
 
+const extractJs = (source: string) =>
+  extractNestRoutes(jsParser.parse(source), 'src/x.controller.js');
+
 /** What the routes phase will key the Route node by: verb + joined path. */
-const urls = (source: string) =>
-  extract(source).map(
+const format = (routes: ReturnType<typeof extract>) =>
+  routes.map(
     (r) => `${r.httpMethod} ${normalizeExtractedRoutePath(r.routePath, r.prefix ?? null)}`,
   );
 
-/** The same, parsed with tree-sitter-javascript instead. */
-const jsUrls = (source: string) =>
-  extractNestRoutes(jsParser.parse(source), 'src/x.controller.js').map(
-    (r) => `${r.httpMethod} ${normalizeExtractedRoutePath(r.routePath, r.prefix ?? null)}`,
-  );
+const urls = (source: string) => format(extract(source));
+const jsUrls = (source: string) => format(extractJs(source));
 
 describe('NestJS decorator routes', () => {
   it('joins the controller prefix with each method path', () => {
@@ -198,13 +198,17 @@ describe('NestJS decorator routes', () => {
     ).toEqual(['GET /y/real']);
   });
 
-  it('drops a route whose path is a constant it cannot read', () => {
+  it.each([
+    { label: 'a constant it cannot read', argument: 'ROUTES.SEARCH' },
+    { label: 'an interpolated template', argument: '`${prefix}/search`' },
+    { label: 'an array form it cannot reduce to one URL', argument: "['a', 'b']" },
+  ])('drops a route whose path is $label', ({ argument }) => {
     // A wrong URL is worse than a missing one — route_map presents this as fact.
     expect(
       extract(`
         @Controller('x')
         export class C {
-          @Get(ROUTES.SEARCH)
+          @Get(${argument})
           search() {}
         }
       `),
@@ -218,30 +222,6 @@ describe('NestJS decorator routes', () => {
         export class C {
           @Get('search')
           search() {}
-        }
-      `),
-    ).toEqual([]);
-  });
-
-  it('drops an interpolated template path rather than emitting its source text', () => {
-    expect(
-      extract(`
-        @Controller('x')
-        export class C {
-          @Get(\`\${prefix}/search\`)
-          search() {}
-        }
-      `),
-    ).toEqual([]);
-  });
-
-  it('ignores an array-form path it cannot reduce to one URL', () => {
-    expect(
-      extract(`
-        @Controller('x')
-        export class C {
-          @Get(['a', 'b'])
-          multi() {}
         }
       `),
     ).toEqual([]);

@@ -136,7 +136,12 @@ export function plainString(node: SyntaxNode): string | null {
   return null;
 }
 
-function propertyName(node: SyntaxNode): string | null {
+/**
+ * A property key's name, for the spellings that carry one — `{ path: … }` and
+ * `{ 'path': … }`. A computed key (`{ [KEY]: … }`) has none. Shared with the
+ * NestJS extractor, which reads `@Controller({ path: … })` the same way.
+ */
+export function propertyName(node: SyntaxNode): string | null {
   if (node.type === 'identifier' || node.type === 'property_identifier') return node.text;
   if (node.type === 'string') return plainString(node);
   return null;

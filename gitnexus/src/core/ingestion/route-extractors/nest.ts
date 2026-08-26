@@ -34,7 +34,7 @@
 
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
-import { plainString } from './data-route-table.js';
+import { plainString, propertyName } from './data-route-table.js';
 
 /**
  * NestJS method decorators → HTTP verb. A Map rather than an object literal
@@ -78,14 +78,6 @@ const CLASS_DECLARATION_TYPES: ReadonlySet<string> = new Set([
  */
 const CONTROLLER_HINT = '@Controller';
 
-/** The decorator's call expression, whether or not it has an argument list. */
-function decoratorCall(decorator: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  const inner = decorator.namedChild(0);
-  if (!inner) return null;
-  if (inner.type === 'call_expression') return inner;
-  return null;
-}
-
 /** The decorator's name — `Controller` for `@Controller('x')`, `Get` for `@Get()`. */
 function decoratorName(decorator: Parser.SyntaxNode): string | null {
   const inner = decorator.namedChild(0);
@@ -119,25 +111,13 @@ function decoratorName(decorator: Parser.SyntaxNode): string | null {
  * `:id(d+)`, and `@Get('/v\u0069ews')` came out as `/vews`. Both are paths the
  * app never serves, i.e. the wrong-URL outcome the paragraph above forbids.
  */
-/**
- * A property key's name, for the two spellings that carry one: `{ path: … }`
- * (a `property_identifier`) and `{ 'path': … }` (a `string`). Reading only the
- * first would drop the ENTIRE controller over a pair of quotes — the same
- * whole-class cost the object form is handled to avoid. A computed key
- * (`{ [KEY]: … }`) has no readable name and keeps the drop.
- */
-function objectKeyName(pair: Parser.SyntaxNode): string | null {
-  const key = pair.childForFieldName('key');
-  if (!key) return null;
-  return key.type === 'property_identifier' ? key.text : plainString(key);
-}
-
 function decoratorLiteralArg(decorator: Parser.SyntaxNode): string | null {
-  const call = decoratorCall(decorator);
-  if (!call) return ''; // bare `@Get` with no call — no path of its own
-  const args = call.childForFieldName('arguments');
-  const first = args?.namedChild(0);
-  if (!first) return ''; // `@Get()` — no path of its own
+  const call = decorator.namedChild(0);
+  // A bare `@Injectable` with no call, or `@Get()` with no argument — legal,
+  // and both mean "no path segment of my own".
+  if (call?.type !== 'call_expression') return '';
+  const first = call.childForFieldName('arguments')?.namedChild(0);
+  if (!first) return '';
 
   // `@Controller({ path: 'cats', version: '1' })` is the documented form for
   // URI/header versioning, and its path is a plain literal sitting right there.
@@ -145,12 +125,16 @@ function decoratorLiteralArg(decorator: Parser.SyntaxNode): string | null {
   // unreadable METHOD path costs one route, an unreadable PREFIX costs every
   // route on the class.
   if (first.type === 'object') {
-    const pathPair = first.namedChildren.find(
-      (child) => child.type === 'pair' && objectKeyName(child) === 'path',
-    );
-    const value = pathPair?.childForFieldName('value') ?? null;
-    // No `path` key, or a computed one, leaves the prefix unknowable.
-    return value === null ? null : plainString(value);
+    // `propertyName` reads both spellings that carry a name — `{ path: … }` and
+    // `{ 'path': … }` — so the class is not dropped over a pair of quotes. A
+    // computed key (`{ [KEY]: … }`) has none, and keeps the drop, as does a
+    // computed value.
+    const path = first.namedChildren.find((child) => {
+      const key = child.type === 'pair' ? child.childForFieldName('key') : null;
+      return key !== null && propertyName(key) === 'path';
+    });
+    const value = path?.childForFieldName('value');
+    return value ? plainString(value) : null;
   }
 
   // An array form (`@Get(['a', 'b'])`), an identifier, a member expression, a
@@ -162,19 +146,19 @@ function decoratorLiteralArg(decorator: Parser.SyntaxNode): string | null {
 /**
  * Decorators that immediately precede `node` among its parent's named children.
  * In tree-sitter-typescript a decorator is a SIBLING placed before the thing it
- * decorates — both at `export_statement`/`program` level for a class and inside
- * `class_body` for a method — and decorators stack.
+ * decorates — at `export_statement`/`program` level for a class — and
+ * decorators stack.
+ *
+ * Walks the sibling chain rather than indexing into `parent.namedChildren`,
+ * which is the same uncached-getter trap {@link collectClassRoutes} documents:
+ * a class's parent is usually `program`, so reading the list marshals every
+ * top-level statement in the file, once per class. That is quadratic in
+ * top-level statements — measured 200ms for a file of 800 classes, against
+ * 0.9ms for this form.
  */
 function precedingDecorators(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
-  const parent = node.parent;
-  if (!parent) return [];
-  const siblings = parent.namedChildren;
-  const index = siblings.findIndex((c) => c.id === node.id);
-  if (index < 0) return [];
-
   const out: Parser.SyntaxNode[] = [];
-  for (let i = index - 1; i >= 0; i--) {
-    const sibling = siblings[i];
+  for (let sibling = node.previousNamedSibling; sibling; sibling = sibling.previousNamedSibling) {
     // A comment between the decorators and the thing they decorate is ordinary
     // (`@Post('x')` then a JSDoc block then the method) and must not terminate
     // the stack — doing so makes the whole decorated route invisible.
@@ -210,14 +194,14 @@ function leadingDecorators(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
  *                                            i.e. a SIBLING of the class_declaration
  *
  * Checking only one of them silently drops half of all controllers, so collect
- * from both plus the sibling position for either node.
+ * from both, plus the sibling position for the class itself. There is no fourth
+ * source: both grammars fold a class's decorators INTO the `export_statement`
+ * production, so an `export_statement` never has one as a preceding sibling.
  */
 function classDecorators(classNode: Parser.SyntaxNode): Parser.SyntaxNode[] {
   const out = [...leadingDecorators(classNode), ...precedingDecorators(classNode)];
   const wrapper = classNode.parent;
-  if (wrapper?.type === 'export_statement') {
-    out.push(...leadingDecorators(wrapper), ...precedingDecorators(wrapper));
-  }
+  if (wrapper?.type === 'export_statement') out.push(...leadingDecorators(wrapper));
   return out;
 }
 
@@ -298,10 +282,6 @@ function collectClassRoutes(
     // stack whose method happens to be documented — and losing every
     // documented route is the worse trade, so it is made deliberately.
     if (member.type === 'comment') continue;
-    if (member.type !== 'method_definition') {
-      pending.length = 0;
-      continue;
-    }
 
     // tree-sitter-javascript makes a method decorator a CHILD of the
     // `method_definition`, not a preceding sibling as in tree-sitter-typescript
@@ -310,7 +290,9 @@ function collectClassRoutes(
     // every `.js` Nest controller emitted nothing. On TypeScript the first
     // named child is the method name, so `leadingDecorators` contributes
     // nothing there and no route is collected twice.
-    for (const decorator of [...pending, ...leadingDecorators(member)]) {
+    const decorators =
+      member.type === 'method_definition' ? [...pending, ...leadingDecorators(member)] : [];
+    for (const decorator of decorators) {
       const name = decoratorName(decorator);
       if (name === null) continue;
       const httpMethod = NEST_METHOD_DECORATORS.get(name);
@@ -337,6 +319,10 @@ function collectClassRoutes(
         ...(handlerName === undefined ? {} : { handlerName }),
       });
     }
+
+    // Anything that is not a decorator or a comment ends the run — including
+    // the method that just consumed it, so a decorated FIELD's stack is never
+    // absorbed onto the method after it.
     pending.length = 0;
   }
 }
