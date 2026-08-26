@@ -3,6 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { makeContract } from './fixtures.js';
+import { BRIDGE_SCHEMA_VERSION } from '../../../src/core/group/bridge-schema.js';
 
 /**
  * `writeBridge` replaces `bridge.lbug` and writes `meta.json` as two separate
@@ -448,5 +449,58 @@ describe('bridgeMetaMatchesFile reads an explicit provenance marker first', () =
     await expect(
       bridgeMetaMatchesFile(groupDir, { ...meta, provenanceUnknown: true }),
     ).resolves.toBe(false);
+  });
+});
+
+describe('readBridgeMeta normalizes a version that is not a version', () => {
+  let groupDir: string;
+
+  beforeEach(async () => {
+    renameMock.mode = 'none';
+    groupDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-bridge-version-'));
+  });
+
+  afterEach(async () => {
+    renameMock.mode = 'none';
+    await fsp.rm(groupDir, { recursive: true, force: true });
+  });
+
+  /**
+   * `0` is this file's word for "no provenance", and every gate is written
+   * against it. A parseable but impossible version — negative, fractional,
+   * NaN-adjacent — is not a schema version, and if it survives the read it
+   * splits the gates apart: the two openers compare `> 0 && !== CURRENT` and
+   * let it through, `bridgeExists` compares `=== 0 || === CURRENT` and says the
+   * bridge is not there, and the provenance check compares `=== 0` and calls
+   * the answer complete. Four gates, four verdicts, one file.
+   *
+   * Normalizing at the reader is what keeps them agreeing, rather than teaching
+   * each gate the same new case.
+   */
+  const seedVersion = async (version: unknown): Promise<void> => {
+    await fsp.writeFile(path.join(groupDir, 'bridge.lbug'), 'db');
+    await fsp.writeFile(
+      path.join(groupDir, 'meta.json'),
+      JSON.stringify({ version, generatedAt: '', missingRepos: [] }),
+    );
+  };
+
+  it.each([
+    ['negative', -1],
+    ['fractional', 1.5],
+    // JSON cannot carry Infinity — it serializes to `null`, so this one is
+    // caught by the pre-existing type check rather than by the range check.
+    // Kept because it is a shape a hand-edited file can still present.
+    ['infinite', Number.POSITIVE_INFINITY],
+  ])('reads a %s version as no provenance rather than as a schema version', async (_label, v) => {
+    await seedVersion(v);
+    const meta = await readBridgeMeta(groupDir);
+    expect(meta.version).toBe(0);
+  });
+
+  it('control: the current schema version is preserved exactly', async () => {
+    await seedVersion(BRIDGE_SCHEMA_VERSION);
+    const meta = await readBridgeMeta(groupDir);
+    expect(meta.version).toBe(BRIDGE_SCHEMA_VERSION);
   });
 });

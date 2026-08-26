@@ -821,7 +821,16 @@ export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
     // A version that is not a number cannot be compared against
     // BRIDGE_SCHEMA_VERSION; `0` is this file's existing word for "provenance
     // unknown", which is exactly what such a file gives us.
-    version: typeof raw.version === 'number' ? raw.version : 0,
+    // `0` is this file's word for "no provenance". A version that is not a
+    // positive integer is not a schema version, and letting one through splits
+    // the four gates that read this field: `ensureBridgeReady` and
+    // `openBridgeDbReadOnly` both compare `> 0 && !== CURRENT` and would open
+    // the bridge, `bridgeExists` compares `=== 0 || === CURRENT` and would say
+    // it is not there, and `bridgeProvenanceUnknown` compares `=== 0` and would
+    // call the answer complete. Normalizing here keeps all four agreeing
+    // instead of teaching each one the same new case.
+    version:
+      Number.isInteger(raw.version) && (raw.version as number) > 0 ? (raw.version as number) : 0,
     generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : '',
     missingRepos: missingRepos ?? [],
   };
