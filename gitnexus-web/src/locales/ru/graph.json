@@ -112,7 +112,7 @@
     "aiCitations": "Цитаты AI",
     "references_one": "{{count}} ссылка",
     "references_few": "{{count}} ссылки",
-    "references_many": "{{count}} ссылки",
+    "references_many": "{{count}} ссылок",
     "references_other": "{{count}} ссылок",
     "lines_one": "{{count}} строка",
     "lines_few": "{{count}} строки",
