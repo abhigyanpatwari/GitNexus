@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AnalyzeOptions, AnalyzeResult } from '../run-analyze.js';
 import type { WorkerMessage } from '../../server/analyze-worker.js';
+import { autoHeapCapMb } from '../ingestion/utils/effective-ram.js';
 
 const _require = createRequire(import.meta.url);
 const TERMINATION_GRACE_MS = 10_000;
@@ -58,9 +59,14 @@ export function createAutoSyncAnalysisRunner(
         reject(new Error(`Auto-sync analyze worker is missing: ${workerPath}`));
         return;
       }
+      const workerHeapMb = Math.min(8192, autoHeapCapMb());
       const execArgv = isDev
-        ? ['--import', pathToFileURL(_require.resolve('tsx/esm')).href, '--max-old-space-size=8192']
-        : ['--max-old-space-size=8192'];
+        ? [
+            '--import',
+            pathToFileURL(_require.resolve('tsx/esm')).href,
+            `--max-old-space-size=${workerHeapMb}`,
+          ]
+        : [`--max-old-space-size=${workerHeapMb}`];
       const child = deps.forkWorker(workerPath, execArgv);
       child.stdout?.resume();
       child.stderr?.resume();

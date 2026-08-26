@@ -84,11 +84,24 @@ describe('file lock', () => {
     await nextRelease();
   });
 
-  it('fails closed for a legacy or invalid lock without owner metadata', async () => {
+  it('fails closed for legacy or invalid lock contents without owner metadata', async () => {
     const lockPath = await tempLockPath();
-    await fs.mkdir(lockPath, { recursive: true });
+    const invalidContents = ['legacy lock', '{not json', JSON.stringify({ pid: 123 })];
+    await fs.mkdir(path.dirname(lockPath), { recursive: true });
 
-    await expect(acquireFileLock(lockPath)).rejects.toBeInstanceOf(FileLockBusyError);
+    for (const content of invalidContents) {
+      await fs.writeFile(lockPath, content, 'utf-8');
+      await expect(
+        acquireFileLock(lockPath, { pid: 456, processStartTime: 'next-start' }),
+      ).rejects.toBeInstanceOf(FileLockBusyError);
+      await expect(fs.readFile(lockPath, 'utf-8')).resolves.toBe(content);
+      await fs.rm(lockPath);
+    }
+
+    await fs.mkdir(lockPath, { recursive: true });
+    await expect(
+      acquireFileLock(lockPath, { pid: 456, processStartTime: 'next-start' }),
+    ).rejects.toBeInstanceOf(FileLockBusyError);
     await expect(fs.access(lockPath)).resolves.toBeUndefined();
   });
 

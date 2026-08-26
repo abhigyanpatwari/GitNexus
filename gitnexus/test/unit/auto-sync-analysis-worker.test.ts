@@ -1,5 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
+
+const { autoHeapCapMbMock } = vi.hoisted(() => ({ autoHeapCapMbMock: vi.fn(() => 512) }));
+vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
+  autoHeapCapMb: autoHeapCapMbMock,
+}));
+
 import { createAutoSyncAnalysisRunner } from '../../src/core/auto-sync/analysis-worker-launch.js';
 
 describe('auto-sync analysis worker', () => {
@@ -10,9 +16,14 @@ describe('auto-sync analysis worker', () => {
       stdout: { resume: vi.fn() },
       stderr: { resume: vi.fn() },
     });
-    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+    const forkWorker = vi.fn(() => child as any);
+    const run = createAutoSyncAnalysisRunner({ forkWorker });
 
     const result = run('/tmp/repo', { branch: 'main' }, 50);
+    expect(forkWorker).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['--max-old-space-size=512']),
+    );
     child.emit('message', { type: 'progress', phase: 'parsing', progress: 20 });
     child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
     child.emit('exit', 0, null);

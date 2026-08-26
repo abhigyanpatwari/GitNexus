@@ -117,6 +117,10 @@ export function validateGitUrl(url: string): void {
     throw new Error('Only https:// and http:// git URLs are allowed');
   }
 
+  if (parsed.search || parsed.hash) {
+    throw new Error('Git URLs must not include query strings or fragments');
+  }
+
   const host = parsed.hostname.toLowerCase();
 
   // Block known dangerous hostnames (cloud metadata services)

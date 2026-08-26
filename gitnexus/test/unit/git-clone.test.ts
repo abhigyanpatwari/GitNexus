@@ -197,6 +197,15 @@ describe('git-clone', () => {
       expect(() => validateGitUrl('http://gitlab.com/user/repo.git')).not.toThrow();
     });
 
+    it('rejects query strings and fragments instead of reinterpreting clone remotes', () => {
+      expect(() => validateGitUrl('https://github.com/user/repo.git?ref=main')).toThrow(
+        'must not include query strings or fragments',
+      );
+      expect(() => validateGitUrl('https://github.com/user/repo.git#main')).toThrow(
+        'must not include query strings or fragments',
+      );
+    });
+
     it('blocks SSH protocol', () => {
       expect(() => validateGitUrl('ssh://git@github.com/user/repo.git')).toThrow(
         'Only https:// and http://',

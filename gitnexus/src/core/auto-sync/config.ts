@@ -246,7 +246,11 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
 }
 
 export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
-  const match = /^git@([^:\s/]+):([^\s]+)$/.exec(remoteUrl.trim());
+  const trimmed = remoteUrl.trim();
+  if (trimmed.includes('?') || trimmed.includes('#')) {
+    throw new Error('must not include query strings or fragments');
+  }
+  const match = /^git@([^:\s/]+):([^\s]+)$/.exec(trimmed);
   if (!match) {
     throw new Error(
       'must use an SSH URL on github.com, gitlab.com, or gitee.com',
