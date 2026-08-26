@@ -37,13 +37,22 @@ import { fileURLToPath } from 'node:url';
  *
  * The file list comes from `git ls-files` at the repository root rather than a
  * directory walk: it is exactly the set git applies its binary heuristic to, it
- * never descends into `node_modules`, `dist` or `vendor`, and it honours
- * `.gitignore` for free. The tradeoff is that a brand-new file is only covered
- * once git knows about it — `git add -N` is enough.
+ * never descends into `node_modules` or `dist`, and it honours `.gitignore` for
+ * free. The tradeoff is that a brand-new file is only covered once git knows
+ * about it — `git add -N` is enough. What it does NOT skip is vendored code,
+ * which is tracked here; that is the one deliberate exclusion, and it is named
+ * in {@link UNSCANNED_ROOT} below.
  *
  * Files are read as Buffers and scanned byte-wise. Decoding each one to a
- * string first bought nothing: the scan is ~10 ms for the whole repo, and the
- * reads dominate, which is why they go through a small concurrency pool.
+ * string first bought nothing: LOCATING the byte is ~14 ms for the whole repo
+ * (1.6 ms of `Buffer.indexOf` across the 33 MB NUL set, 12 ms of the
+ * byte-at-a-time C0 loop across the 11 MB `src/` subset), and the READS dominate
+ * it by two orders of magnitude — 4893 files, ~0.3 s warm on a local disk and
+ * several seconds on a virtualised or network one. That ratio is why the reads
+ * go through a small concurrency pool, and why {@link UNSCANNED_ROOT} is worth
+ * having: without it the same scan pulls in 4969 files and 97 MB, because four
+ * generated `parser.c` files under the vendored grammar tree are 62 MB between
+ * them.
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -100,6 +109,25 @@ const SOURCE_BASENAMES =
 
 /** Scope of the wider control-byte rule. git paths are always `/`-separated. */
 const STRICT_SOURCE_ROOT = 'gitnexus/src/';
+
+/**
+ * The one tracked root this guard deliberately does not scan.
+ *
+ * `gitnexus/vendor/` is upstream tree-sitter grammars, vendored wholesale. It
+ * is never hand-edited, so the mistake this guard exists to catch cannot happen
+ * there — and it is where the whole cost is: four generated `parser.c` files
+ * are 62 MB of the 97 MB the allowlist would otherwise read, two thirds of the
+ * scan for 76 of its 4969 files.
+ *
+ * An ANCHORED PREFIX, deliberately, and deliberately case-SENSITIVE. Matching a
+ * `vendor` path SEGMENT, or matching case-insensitively, would also drop three
+ * tracked paths that live outside this root and are reviewed as diffs like any
+ * other source here: `gitnexus-web/src/vendor/leiden/`, the Kotlin
+ * `vendor/Assert.kt` resolver fixture, and the PHP `src/Vendor/Utils/Format.php`
+ * one. That loss would be silent — the guard would simply stop covering them —
+ * which is why the exclusion case below pins both halves.
+ */
+const UNSCANNED_ROOT = 'gitnexus/vendor/';
 
 /** Enough to hide per-file I/O latency without risking EMFILE. */
 const READ_CONCURRENCY = 16;
@@ -204,6 +232,7 @@ async function scanTargets(
  * that second half is the one that has been too narrow.
  */
 function isScannedTextFile(rel: string): boolean {
+  if (rel.startsWith(UNSCANNED_ROOT)) return false;
   return SOURCE_EXTENSIONS.test(rel) || SOURCE_BASENAMES.test(path.posix.basename(rel));
 }
 
@@ -433,5 +462,44 @@ describe('source hygiene', () => {
     expect(collected.filter((rel) => rel.endsWith('.png'))).toEqual([]);
     expect(isScannedTextFile('gitnexus/prebuilds/linux-x64/tree-sitter-kotlin.node')).toBe(false);
     expect(isScannedTextFile('Documentation/docs-asset/kilo-code-mcp.png')).toBe(false);
+  });
+
+  it('skips the vendored grammar tree without dropping first-party `vendor` paths', () => {
+    const collected = TRACKED_SOURCE_FILES.map((target) => target.rel);
+
+    expect(collected.filter((rel) => rel.startsWith(UNSCANNED_ROOT))).toEqual([]);
+
+    // Both halves in one assertion, because the cheap way to write the
+    // exclusion — a `vendor` path SEGMENT, or a case-insensitive match — passes
+    // the line above and silently drops these three. Nothing else would notice:
+    // a file that leaves the collected set just stops being guarded.
+    expect(collected).toContain('gitnexus-web/src/vendor/leiden/index.js');
+    expect(collected).toContain(
+      'gitnexus/test/fixtures/lang-resolution/kotlin-import-package-evidence/vendor/Assert.kt',
+    );
+    expect(collected).toContain(
+      'gitnexus/test/fixtures/lang-resolution/php-namespace-fallback-isolation/src/Vendor/Utils/Format.php',
+    );
+
+    // Case-sensitivity, pinned on the predicate rather than on the tracked set,
+    // because nothing tracked today is named `gitnexus/Vendor/` — so a
+    // case-insensitive prefix would cost this repo nothing YET, and only the
+    // predicate can say the rule out loud. The repo already proves the casing
+    // distinction is live: `src/Vendor/Utils/Format.php` above is first-party.
+    expect(isScannedTextFile('gitnexus/Vendor/tree-sitter-c/src/parser.c')).toBe(true);
+    // ...and the anchor itself, for the same reason: only the leading path is
+    // vendored, not every directory that happens to be called `vendor`.
+    expect(isScannedTextFile('gitnexus/src/core/vendor/adapter.ts')).toBe(true);
+    expect(isScannedTextFile(`${UNSCANNED_ROOT}tree-sitter-c/src/parser.c`)).toBe(false);
+
+    // And the first-party half of the formats the vendored tree also uses is
+    // still collected, so the exclusion cost coverage of nothing.
+    const outsideRoot = (ext: string): number =>
+      collected.filter((rel) => rel.endsWith(ext) && !rel.startsWith(UNSCANNED_ROOT)).length;
+    expect(outsideRoot('.c')).toBeGreaterThan(0);
+    expect(outsideRoot('.h')).toBeGreaterThan(0);
+    expect(outsideRoot('.js')).toBeGreaterThan(0);
+    expect(outsideRoot('.json')).toBeGreaterThan(0);
+    expect(outsideRoot('.md')).toBeGreaterThan(0);
   });
 });
