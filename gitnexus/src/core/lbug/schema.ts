@@ -51,6 +51,7 @@ CREATE NODE TABLE Function (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  convexEndpointFactory STRING,
   PRIMARY KEY (id)
 )`;
 

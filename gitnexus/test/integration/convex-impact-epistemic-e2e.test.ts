@@ -27,6 +27,7 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
 let repoDir = '';
 let warmReplayUsedWorkers = true;
 const replayProperties = new Map<string, unknown>();
+let bareHandlerFunctionId = '';
 
 withTestLbugDB(
   'convex-impact-epistemic-e2e',
@@ -44,6 +45,7 @@ withTestLbugDB(
           ['aliasedWrite', 'mutation'],
           ['generatedAction', 'internalAction'],
           ['javascriptQuery', 'query'],
+          ['bareHandler', 'query'],
           ['publicQuery', 'query'],
         ]),
       );
@@ -65,9 +67,21 @@ withTestLbugDB(
 
         expect(result.epistemic).toBe('lower-bound');
         expect(result.boundaries.join(' ')).toContain(`Convex ${factory}`);
-        expect(result.causes.dispatchBoundary).toBe(1);
+        expect(result.causes.dispatchBoundary).toBe(0);
       },
     );
+
+    it('marks a bare Function handler as lower-bound', async () => {
+      expect(bareHandlerFunctionId).not.toBe('');
+      const result = await backend.callTool('impact', {
+        target_uid: bareHandlerFunctionId,
+        direction: 'upstream',
+      });
+
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.boundaries.join(' ')).toContain('Convex query');
+      expect(result.causes.dispatchBoundary).toBe(0);
+    });
 
     it.each([
       ['unrelatedQuery', 'endpoints.ts'],
@@ -124,14 +138,15 @@ withTestLbugDB(
       fs.mkdirSync(repoDir, { recursive: true });
       fs.writeFileSync(
         path.join(repoDir, 'endpoints.ts'),
-        `import { query, mutation as write } from 'convex/server';
-import { internalAction as internalRun } from './_generated/server';
+        `import { queryGeneric as query, mutationGeneric as write } from 'convex/server';
+import { query as generatedQuery, internalAction as internalRun } from './_generated/server';
 import { query as dbQuery } from './database';
 
 export const publicQuery = // legal line-comment trivia
   query({ handler: async () => null });
 export const aliasedWrite = write({ handler: async () => null });
 export const generatedAction = internalRun({ handler: async () => null });
+export const bareHandler = generatedQuery(async () => null);
 export const unrelatedQuery = dbQuery({ handler: async () => null });
 `,
       );
@@ -171,8 +186,11 @@ export const javascriptQuery = query({ handler: async () => null });
       });
       warmReplayUsedWorkers = replay.usedWorkerPool;
       replay.graph.forEachNode((node) => {
-        if (node.label === 'Const' && node.properties.convexEndpointFactory !== undefined) {
+        if (node.properties.convexEndpointFactory !== undefined) {
           replayProperties.set(node.properties.name, node.properties.convexEndpointFactory);
+          if (node.label === 'Function' && node.properties.name === 'bareHandler') {
+            bareHandlerFunctionId = node.id;
+          }
         }
       });
 

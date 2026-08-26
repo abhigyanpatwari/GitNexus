@@ -1547,6 +1547,9 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Function') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, convexEndpointFactory) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Property') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
@@ -1605,6 +1608,11 @@ export const insertNodeToLbug = async (
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
       query = `CREATE (n:Class {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, frameworkAnnotations: ${formatCypherStringArray(properties.frameworkAnnotations)}})`;
+    } else if (label === 'Function') {
+      const descPart = properties.description
+        ? `, description: ${formatCypherValue(properties.description)}`
+        : '';
+      query = `CREATE (n:Function {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, convexEndpointFactory: ${formatCypherValue(properties.convexEndpointFactory ?? '')}})`;
     } else if (label === 'Const') {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
@@ -1700,6 +1708,11 @@ export const batchInsertNodesToLbug = async (
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
           query = `MERGE (n:Class {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.frameworkAnnotations = ${formatCypherStringArray(properties.frameworkAnnotations)}`;
+        } else if (label === 'Function') {
+          const descPart = properties.description
+            ? `, n.description = ${formatCypherValue(properties.description)}`
+            : '';
+          query = `MERGE (n:Function {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.convexEndpointFactory = ${formatCypherValue(properties.convexEndpointFactory ?? '')}`;
         } else if (label === 'Const') {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`

@@ -20,13 +20,34 @@ describe('Convex dispatch metadata compatibility', () => {
     expect(result?.boundary).toContain('re-index');
   });
 
-  it('keeps unrelated transient query failures fail-soft', async () => {
+  it('marks unrelated query failures as conservatively incomplete', async () => {
     const transientFailure = async (): Promise<never> => {
       throw new Error('database busy');
     };
 
+    const result = await queryConvexDispatchMetadata(
+      '/tmp/index',
+      'Const:x',
+      'x',
+      'Const',
+      transientFailure,
+    );
+
+    expect(result?.probeFailed).toBe(true);
+    expect(result?.boundary).toContain('could not be checked');
+  });
+
+  it('queries Function metadata without an undeclared deterministic LIMIT', async () => {
+    let cypher = '';
+    const runQuery = async (_path: string, query: string) => {
+      cypher = query;
+      return [{ factory: 'query' }];
+    };
+
     await expect(
-      queryConvexDispatchMetadata('/tmp/index', 'Const:x', 'x', 'Const', transientFailure),
-    ).resolves.toBeUndefined();
+      queryConvexDispatchMetadata('/tmp/index', 'Function:x', 'x', 'Function', runQuery),
+    ).resolves.toMatchObject({ factory: 'query' });
+    expect(cypher).toContain('MATCH (n:Function');
+    expect(cypher).not.toContain('LIMIT');
   });
 });

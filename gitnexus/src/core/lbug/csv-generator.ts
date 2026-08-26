@@ -483,7 +483,7 @@ export const streamAllCSVsToDisk = async (
     const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
     const functionWriter = new BufferedCSVWriter(
       path.join(csvDir, 'function.csv'),
-      codeElementHeader,
+      `${codeElementHeader},convexEndpointFactory`,
     );
     const classWriter = new BufferedCSVWriter(
       path.join(csvDir, 'class.csv'),
@@ -735,6 +735,8 @@ export const streamAllCSVsToDisk = async (
             ];
             if (node.label === 'Class') {
               row.push(escapeCSVField(formatCSVStringArray(node.properties.frameworkAnnotations)));
+            } else if (node.label === 'Function') {
+              row.push(escapeCSVField(String(node.properties.convexEndpointFactory ?? '')));
             }
             pending = writer.addRow(row.join(','));
           } else {

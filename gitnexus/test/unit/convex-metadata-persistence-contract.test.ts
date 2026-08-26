@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CONST_SCHEMA } from '../../src/core/lbug/schema.js';
+import { CONST_SCHEMA, FUNCTION_SCHEMA } from '../../src/core/lbug/schema.js';
 
 interface FakeQueryResult {
   getAll: () => Promise<unknown[]>;
@@ -57,10 +57,13 @@ describe('Convex endpoint metadata persistence contract', () => {
   it('keeps the Const schema and COPY column list aligned', async () => {
     const { getCopyQuery } = await import('../../src/core/lbug/lbug-adapter.js');
     const copyQuery = getCopyQuery('Const', '/tmp/const.csv');
+    const functionCopyQuery = getCopyQuery('Function', '/tmp/function.csv');
 
     expect(CONST_SCHEMA).toContain('convexEndpointFactory STRING');
+    expect(FUNCTION_SCHEMA).toContain('convexEndpointFactory STRING');
     expect(CONST_SCHEMA).not.toContain('isExported BOOLEAN');
     expect(copyQuery).toContain('content, description, convexEndpointFactory');
+    expect(functionCopyQuery).toContain('isExported, content, description, convexEndpointFactory');
     expect(copyQuery).not.toContain('isExported');
   });
 
@@ -76,6 +79,17 @@ describe('Convex endpoint metadata persistence contract', () => {
     const createQuery = queries.find((query) => query.startsWith('CREATE (n:Const'));
     expect(createQuery).toContain("convexEndpointFactory: 'query'");
     expect(createQuery).not.toContain('isExported');
+
+    await expect(
+      insertNodeToLbug(
+        'Function',
+        { ...endpoint, id: 'Function:src/endpoints.ts:getUser' },
+        '/tmp/convex-create/lbug',
+      ),
+    ).resolves.toBe(true);
+    const functionQuery = queries.find((query) => query.startsWith('CREATE (n:Function'));
+    expect(functionQuery).toContain("convexEndpointFactory: 'query'");
+    expect(functionQuery).toContain('isExported: true');
   });
 
   it('persists the property through incremental MERGE', async () => {
@@ -90,5 +104,20 @@ describe('Convex endpoint metadata persistence contract', () => {
     const mergeQuery = queries.find((query) => query.startsWith('MERGE (n:Const'));
     expect(mergeQuery).toContain("n.convexEndpointFactory = 'query'");
     expect(mergeQuery).not.toContain('isExported');
+
+    await expect(
+      batchInsertNodesToLbug(
+        [
+          {
+            label: 'Function',
+            properties: { ...endpoint, id: 'Function:src/endpoints.ts:getUser' },
+          },
+        ],
+        '/tmp/convex-merge/lbug',
+      ),
+    ).resolves.toEqual({ inserted: 1, failed: 0 });
+    const functionQuery = queries.find((query) => query.startsWith('MERGE (n:Function'));
+    expect(functionQuery).toContain("n.convexEndpointFactory = 'query'");
+    expect(functionQuery).toContain('n.isExported = true');
   });
 });

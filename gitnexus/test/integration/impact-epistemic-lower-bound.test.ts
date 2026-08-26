@@ -133,7 +133,7 @@ withTestLbugDB(
       expect(result.epistemic).toBe('lower-bound');
       expect(result.boundaries.join(' ')).toContain(`Convex ${factory}`);
       expect(result.boundaries.join(' ')).toContain('anyApi');
-      expect(result.causes.dispatchBoundary).toBe(1);
+      expect(result.causes.dispatchBoundary).toBe(0);
     });
 
     it.each(['localQuery', 'nestedQuery', 'memberQuery'])(

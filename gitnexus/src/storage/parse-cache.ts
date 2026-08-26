@@ -570,11 +570,14 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // scanned; #3017 is the only other claimant.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
 //
-// 72 -> 74 adds import-proven Convex endpoint metadata to Const worker output.
-// A warm v72 cache has no convexEndpointFactory property, so the MCP impact
-// probe would keep claiming exact results for unchanged endpoints. Version 73
-// is intentionally skipped because the concurrent #3041 handler-identity PR
-// claims it. Re-check main and open PRs immediately before merge.
+// 72 -> 74 adds import-proven Convex endpoint metadata to Const/Function worker
+// output. A warm v72 cache has no convexEndpointFactory property, so the MCP
+// impact probe would keep claiming exact results for unchanged endpoints. The
+// parse-cache bump makes unchanged files re-parse; analyzer runner identity
+// drift separately forces the graph re-emit (run-analyze.ts), and an id/schema
+// migration needs both guarantees. Version 73 is intentionally skipped because
+// concurrent PR #3046 (fixes #3041) claims it. Re-check main and open PRs
+// immediately before merge.
 const SCHEMA_BUMP = 74;
 const GITNEXUS_PKG_VERSION = (() => {
   try {

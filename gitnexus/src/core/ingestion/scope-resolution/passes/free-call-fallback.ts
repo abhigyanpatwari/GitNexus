@@ -787,7 +787,7 @@ export function pickUniqueGlobalCallable(
   // because the list would then depend on the caller's scope, not just its file.
   const cacheKey =
     scopeDefsCache !== undefined && isCallerVisible === undefined
-      ? `${name} ${callerFilePath}`
+      ? `${name}\0${callerFilePath}`
       : undefined;
   let scopeDefs: readonly SymbolDefinition[] | undefined =
     cacheKey !== undefined ? scopeDefsCache!.get(cacheKey) : undefined;

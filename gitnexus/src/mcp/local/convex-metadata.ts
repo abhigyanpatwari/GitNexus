@@ -1,9 +1,11 @@
 import { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { logger } from '../../core/logger.js';
 
 export interface ConvexDispatchMetadata {
   readonly factory?: string;
   readonly boundary: string;
   readonly staleIndex?: true;
+  readonly probeFailed?: true;
 }
 
 function isMissingConvexMetadataProperty(error: unknown): boolean {
@@ -20,14 +22,15 @@ export async function queryConvexDispatchMetadata(
   symbolType: string,
   runQuery: typeof executeParameterized = executeParameterized,
 ): Promise<ConvexDispatchMetadata | undefined> {
-  if (symbolType !== 'Const') return undefined;
+  if (symbolType !== 'Const' && symbolType !== 'Function') return undefined;
+
+  const nodeLabel = symbolType === 'Function' ? 'Function' : 'Const';
 
   try {
     const rows = await runQuery(
       lbugPath,
-      `MATCH (n:Const {id: $symbolId})
-       RETURN n.convexEndpointFactory AS factory
-       LIMIT 1`,
+      `MATCH (n:${nodeLabel} {id: $symbolId})
+       RETURN n.convexEndpointFactory AS factory`,
       { symbolId },
     );
     const row = rows[0];
@@ -52,7 +55,18 @@ export async function queryConvexDispatchMetadata(
           'convexEndpointFactory; re-index before treating impact as exact.',
       };
     }
-    // Additive evidence only. Transient failures must not abort impact.
-    return undefined;
+    logger.warn(
+      {
+        context: 'impact:convex-metadata',
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'GitNexus Convex metadata probe failed (degraded)',
+    );
+    return {
+      probeFailed: true,
+      boundary:
+        'Convex runtime-proxy metadata could not be checked; impact remains a lower bound ' +
+        'until the metadata probe succeeds.',
+    };
   }
 }
