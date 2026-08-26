@@ -268,6 +268,14 @@ export interface BridgeMeta {
    * the two files' modification times, since a successful write orders the
    * database rename before the metadata write and a database NEWER than the
    * metadata beside it therefore cannot be the one it describes.
+   *
+   * That fallback proves WRITE ORDER, not provenance, and is wrong in both
+   * directions — a non-monotonic clock can make a mis-paired set read as
+   * ordered, and any copy or restore that rewrites the database's times after
+   * the metadata's demotes an intact legacy pair to a lower bound until the
+   * next sync re-stamps it. A stamped pair never reaches that fallback, which
+   * is the reason to prefer stamping over widening the heuristic. Both
+   * directions are spelled out at `bridgeMetaMatchesFile`.
    */
   bridgeSize?: number;
   bridgeMtimeMs?: number;

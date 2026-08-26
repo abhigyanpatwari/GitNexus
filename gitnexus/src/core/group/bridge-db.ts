@@ -715,16 +715,33 @@ export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta):
  * database window, whose completeness `runGroupImpact` would otherwise spend as
  * fact.
  *
- * This is a HEURISTIC ON WRITE ORDER, not proof of provenance, and it is wrong
- * in two directions:
- *   - false accept — a stale metadata file that something touched after the
- *     swap (a restore from backup, an editor save, an mtime-preserving copy of
- *     only the database) still reads as paired. The stamp is what actually
- *     closes that; this path only ever sees metadata with no stamp to check.
- *   - false reject — a pair genuinely written together whose clock stepped
- *     backwards between the two writes reads as unpaired. That is the safe
- *     direction: it degrades a cross-repo answer to a lower bound instead of
- *     vouching for one.
+ * This is a HEURISTIC ON WRITE ORDER, not proof of provenance. It answers "were
+ * these two written in the order a successful sync writes them?", and treats
+ * that as a proxy for "do these two belong together". It is wrong in two
+ * directions, and neither is theoretical:
+ *   - FALSE ACCEPT, from a non-monotonic wall clock. `mtimeMs` is realtime, not
+ *     monotonic, so an NTP step backwards, a VM snapshot restore or container
+ *     clock skew between the database write and the metadata write can leave a
+ *     genuinely mis-paired set reading as ordered. Anything that touches the
+ *     stale metadata after a swap does the same — a restore from backup, an
+ *     editor save, a copy that preserves only the database's times. The STAMP
+ *     is what actually closes this; a pair that has one never reaches here.
+ *
+ *     Coarse filesystem mtime granularity is NOT this hazard, despite looking
+ *     like it: it collapses a pair written together to equal times, and equal
+ *     is accepted, which is the correct verdict for that pair.
+ *
+ *   - FALSE REJECT, from anything that rewrites the database's mtime after the
+ *     metadata's — `cp -r`, `rsync` without `-t`, a machine move, a restore
+ *     that replays files in directory order. An intact legacy pair is then
+ *     demoted to a lower bound and stays there until the next successful sync
+ *     re-stamps it; there is no other recovery, because nothing on the read
+ *     path can distinguish it from the swap window it is imitating.
+ *
+ *     This direction is the safe one — it degrades an answer to a floor rather
+ *     than vouching for one — but it is a real, reachable cost, not a
+ *     theoretical one, and it is NOT true that the rule can only ever demote
+ *     pairs that were already broken.
  *
  * Equality counts as paired. On a filesystem with coarse mtime granularity both
  * writes land in the same tick, and demanding a strictly newer metadata file
