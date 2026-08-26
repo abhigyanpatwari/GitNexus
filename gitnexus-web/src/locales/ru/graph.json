@@ -166,7 +166,7 @@
     "intraCommunity": "Внутрисообщественный",
     "steps_one": "{{count}} шаг",
     "steps_few": "{{count}} шага",
-    "steps_many": "{{count}} шага",
+    "steps_many": "{{count}} шагов",
     "steps_other": "{{count}} шагов",
     "clusters_one": "{{count}} кластер",
     "clusters_few": "{{count}} кластера",
