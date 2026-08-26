@@ -170,7 +170,7 @@
     "steps_other": "{{count}} шагов",
     "clusters_one": "{{count}} кластер",
     "clusters_few": "{{count}} кластера",
-    "clusters_many": "{{count}} кластера",
+    "clusters_many": "{{count}} кластеров",
     "clusters_other": "{{count}} кластеров",
     "highlightTitle": "Нажмите, чтобы включить подсветку в графе",
     "removeHighlightTitle": "Нажмите, чтобы выключить подсветку в графе",
