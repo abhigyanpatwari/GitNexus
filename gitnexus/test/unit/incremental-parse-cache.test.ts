@@ -218,20 +218,27 @@ describe('PARSE_CACHE_VERSION', () => {
   // the pre-fix fan-out. This branch staged 64 above the claims live at the
   // time (61, 62, 63); all three landed and cascaded main to 67, so 68 is the
   // next free value above every claim at merge — the rule, re-applied.
-  // Version 71 adds #3009's NestJS decorator routes to the same JS/TS
-  // decoratorRoutes channel, so a warm v70 cache cannot replay the empty
-  // route set that change fixes.
   // Version 69 added #2969's JS/TS data-route-table decoratorRoutes. Version 70
   // adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so it is
   // the next free value after both cache payload changes.
-  it('pins SCHEMA_BUMP to 71 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(71);
+  // Moved 70 -> 71 for #2980's Java constant-route capture set (moduleConstants
+  // + routePathOperands). 72 -> 74 added import-proven Convex endpoint metadata,
+  // skipping 73 because open PR #3046 claims it.
+  // Version 75 adds #3009's NestJS decorator routes to the same JS/TS
+  // decoratorRoutes channel, so a warm pre-feature cache cannot replay the empty
+  // route set that change fixes. This branch originally claimed 71; origin/main
+  // cascaded past it (71 to #2980, 74 to Convex) while the PR was open, so 71
+  // would now be BELOW main and the reuse gate would never fire. 75 is the next
+  // free value above origin/main and above every in-flight claim (#3046 at 73,
+  // #1616 at a stale 2) — the rule, re-applied at merge, not at authoring time.
+  it('pins SCHEMA_BUMP to 75 so concurrent bumps cannot silently collide (#2766)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(75);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
     // Every nearby historical or in-flight value is rejected, including 69,
     // which carried the route-table payload before this merge.
-    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]) {
+    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
   });

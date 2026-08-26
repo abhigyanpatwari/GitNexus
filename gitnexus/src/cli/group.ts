@@ -1,6 +1,7 @@
 // gitnexus/src/cli/group.ts
 import { createRequire } from 'node:module';
 import type { Command } from 'commander';
+import type { RegistryWriteOutcome } from '../core/group/sync.js';
 import { logger } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -120,16 +121,42 @@ export function registerGroupCommands(program: Command): void {
               indexStale: boolean;
               contractsStale: boolean;
               missing: boolean;
+              /**
+               * Optional here on purpose: a payload produced before the split
+               * carries no such key, and an absent one must degrade to the
+               * label this command has always printed rather than to the new
+               * one — an unrecorded cause is not evidence of a cause.
+               */
+              unresolvable?: boolean;
+              unresolvableReason?: string;
               commitsBehind?: number;
             }
           >;
           missingRepos?: string[];
+          unreadableRepos?: string[];
         };
 
         console.log('  Repo index / contracts staleness:');
         for (const [repoPath, row] of Object.entries(st.repos || {})) {
           if (row.missing) {
-            console.log(`  ${repoPath.padEnd(25)} MISSING   (not in registry or unreadable)`);
+            // Two different facts with two different remedies: a repo the
+            // registry never heard of is fixed by indexing it, while an entry
+            // the resolver choked on is fixed by repairing the registry.
+            // Printing "no entry in the registry" for the second one states a
+            // cause that was never measured, and points at the wrong repair.
+            if (row.unresolvable) {
+              // The reason can be multi-line — an ambiguous registry names
+              // every colliding clone. Fold it onto this row's line rather
+              // than truncating it: those paths are what the operator acts on,
+              // and a table row that swallows half its own explanation is the
+              // failure this label exists to stop.
+              const why = (row.unresolvableReason ?? 'the registry entry could not be resolved')
+                .replace(/\s+/g, ' ')
+                .trim();
+              console.log(`  ${repoPath.padEnd(25)} UNRESOLVABLE (${why})`);
+              continue;
+            }
+            console.log(`  ${repoPath.padEnd(25)} MISSING   (no entry in the registry)`);
             continue;
           }
           const idx = row.indexStale
@@ -137,6 +164,26 @@ export function registerGroupCommands(program: Command): void {
             : 'OK        ';
           const ctr = row.contractsStale ? ' CONTRACTS_STALE' : '';
           console.log(`  ${repoPath.padEnd(25)} ${idx}${ctr}`);
+        }
+        // `undefined` and `[]` are different answers here: a registry written
+        // before this was tracked has no opinion, while an empty array is a
+        // measurement. Printing nothing for both would let an unmeasured sync
+        // read as evidence that every index opened cleanly.
+        //
+        // `undefined` covers two ways of not knowing — the field is absent, or
+        // it held something that was not a list of repo paths and `getStatus`
+        // declined to guess. Naming only the first would make a corrupt
+        // registry read as a merely old one, which is the same shape of wrong
+        // answer this command exists to stop giving.
+        const unreadable = st.unreadableRepos;
+        if (unreadable === undefined) {
+          console.log(
+            `\n  Last sync unreadable repos: not recorded` +
+              `\n     (the registry predates this field, or its value could not be read)` +
+              `\n     Re-run \`gitnexus group sync\` to record it.`,
+          );
+        } else if (unreadable.length > 0) {
+          console.log(`\n  Last sync unreadable repos: ${unreadable.join(', ')}`);
         }
         if ((st.missingRepos || []).length > 0) {
           console.log(`\n  Last sync missing repos: ${st.missingRepos!.join(', ')}`);
@@ -158,30 +205,93 @@ export function registerGroupCommands(program: Command): void {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
       const { loadGroupConfig } = await import('../core/group/config-parser.js');
       const { syncGroup } = await import('../core/group/sync.js');
+      const { GroupSyncLockError } = await import('../core/group/group-lock.js');
 
       const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
       const config = await loadGroupConfig(groupDir);
 
       console.log(`Syncing group "${name}" (${Object.keys(config.repos).length} repos)...\n`);
 
-      const result = await syncGroup(config, {
-        groupDir,
-        allowStale: Boolean(opts.allowStale),
-        verbose: Boolean(opts.verbose),
-        skipEmbeddings: Boolean(opts.skipEmbeddings),
-        exactOnly: Boolean(opts.exactOnly),
-      });
+      let result: Awaited<ReturnType<typeof syncGroup>>;
+      try {
+        result = await syncGroup(config, {
+          groupDir,
+          allowStale: Boolean(opts.allowStale),
+          verbose: Boolean(opts.verbose),
+          skipEmbeddings: Boolean(opts.skipEmbeddings),
+          exactOnly: Boolean(opts.exactOnly),
+        });
+      } catch (err) {
+        // A sync that could not take the group's lock did NOT run and wrote
+        // nothing (R9 fails closed). That is an operator-actionable outcome, not
+        // a crash, so report it as a failed command rather than letting it
+        // surface as an unhandled rejection with a stack trace — commander's
+        // async actions have no error handler, so an uncaught throw here would
+        // print exactly that.
+        if (!(err instanceof GroupSyncLockError)) throw err;
+        logger.error(`⚠️ Did not sync group "${name}": ${err.message}`);
+        process.exitCode = 1;
+        return;
+      }
 
       if (opts.json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
+        // Repos we could not read are the most likely explanation for a small
+        // or empty contract count, so they are reported before the counts —
+        // otherwise a run that read nothing looks exactly like a clean run.
+        if (result.unreadableRepos.length > 0) {
+          // No "re-run with GITNEXUS_LOG_LEVEL=warn" hint: the default level is
+          // `info`, and pino emits `warn` (40) at `info` (30), so the reason was
+          // already printed by this same run — raising the level to `warn` would
+          // only suppress the surrounding `info` output.
+          console.log(
+            `\n  ⚠️ Could not extract contracts from: ${result.unreadableRepos.join(', ')}` +
+              `\n     None of their contracts are included in this sync (the warning above says why),` +
+              `\n     or check \`gitnexus doctor\` in the affected repo.`,
+          );
+        }
+        if (result.missingRepos.length > 0) {
+          console.log(
+            `\n  ⚠️ Not found in the registry: ${result.missingRepos.join(', ')}` +
+              `\n     Index them with \`gitnexus analyze\`, or remove them from group.yaml.`,
+          );
+        }
         console.log(`\nMatching cascade:`);
         const exactLinks = result.crossLinks.filter((l) => l.matchType === 'exact');
         console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);
         console.log(`  unmatched: ${result.unmatched.length} contracts`);
-        console.log(
-          `\nWrote contracts.json (${result.contracts.length} contracts, ${result.crossLinks.length} cross-links)`,
-        );
+        // Driven by what actually happened to the file. This line used to be
+        // unconditional, so a run that deliberately preserved the previous
+        // registry still announced `Wrote contracts.json (0 contracts, 0
+        // cross-links)` — a confident false statement about persisted state, on
+        // the exact path this command exists to make legible.
+        // Exhaustive by construction: a `Record` keyed on the union means a
+        // new outcome fails the build here instead of printing nothing, which
+        // is what previously pushed a distinct state into `preserved` and made
+        // this summary false on one of the two branches it then covered.
+        const OUTCOME_LINE: Record<RegistryWriteOutcome, string | null> = {
+          written:
+            `\nWrote contracts.json (${result.contracts.length} contracts, ` +
+            `${result.crossLinks.length} cross-links)`,
+          preserved:
+            `\nKept the previous contracts.json — no repo in this group could be read.` +
+            `\n  Its contracts and cross-links are unchanged; only the unreadable/missing` +
+            `\n  repo lists were refreshed to describe THIS run. Fix the repos above and re-run.`,
+          superseded:
+            `\nDid NOT touch contracts.json — no repo in this group could be read, and another` +
+            `\n  sync replaced the file while this one waited for the group lock. That sync's` +
+            `\n  result stands and this run's repo lists were NOT recorded: they describe a` +
+            `\n  group state older than what is on disk. Fix the repos above and re-run.`,
+          'no-prior-registry':
+            `\nDid NOT write contracts.json — no repo in this group could be read,` +
+            `\n  and there is no previous contracts.json to fall back on. Fix the repos` +
+            `\n  above and re-run.`,
+          // Nothing to say: the caller asked for no write.
+          'not-attempted': null,
+        };
+        const line = OUTCOME_LINE[result.registryOutcome];
+        if (line) console.log(line);
       }
     });
 
@@ -370,7 +480,7 @@ export function registerGroupCommands(program: Command): void {
           return;
         }
 
-        const { contracts, crossLinks } = raw as {
+        const { contracts, crossLinks, truncated, unreadableRepos, missingRepos } = raw as {
           contracts: Array<{
             role: string;
             contractId: string;
@@ -384,10 +494,19 @@ export function registerGroupCommands(program: Command): void {
             confidence: number;
             contractId: string;
           }>;
+          truncated?: boolean;
+          unreadableRepos?: string[];
+          missingRepos?: string[];
         };
 
         if (opts.json) {
-          console.log(JSON.stringify({ contracts, crossLinks }, null, 2));
+          // The whole payload, not a re-serialized subset. Destructuring the two
+          // fields this command happens to print and rebuilding an object from
+          // them dropped everything else the service returned — which is how the
+          // completeness fields were invisible here while the MCP tool carried
+          // them. Printing `raw` means a field added to the service reaches
+          // `--json` without a matching edit in this file.
+          console.log(JSON.stringify(raw, null, 2));
         } else {
           console.log(`Contracts (${contracts.length}):`);
           for (const c of contracts) {
@@ -397,6 +516,19 @@ export function registerGroupCommands(program: Command): void {
           for (const l of crossLinks) {
             console.log(
               `  ${l.from.repo} -> ${l.to.repo}  [${l.matchType}, conf=${l.confidence}]  ${l.contractId}`,
+            );
+          }
+          if (truncated) {
+            // Counts above are a floor, not a census. Name the repos when the
+            // registry recorded them, and say so plainly when it did not — a
+            // listing that cannot say what it is missing is still incomplete.
+            const absent = [...(unreadableRepos ?? []), ...(missingRepos ?? [])];
+            console.log(
+              absent.length > 0
+                ? `\n⚠️ This listing is incomplete: the last sync could not account for ${absent.join(', ')}.` +
+                    `\n   Contracts from those repos are absent, so the counts above are a lower bound.`
+                : `\n⚠️ This listing is incomplete: the last sync did not record which repos it could` +
+                    `\n   read, so the counts above are a lower bound. Re-run group sync.`,
             );
           }
         }

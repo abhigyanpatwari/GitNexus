@@ -97,7 +97,22 @@ export function getResourceTemplates(): ResourceTemplate[] {
     {
       uriTemplate: 'gitnexus://group/{name}/status',
       name: 'Group Index Status',
-      description: 'Per-repo index and contract-registry staleness for a repository group',
+      // The payload is a bare serialization, so nothing in it says which of
+      // three states a reader is looking at. Both distinctions below are
+      // additive fields whose meaning is invisible without this: `missing`
+      // alone cannot separate "not registered" from "registry unreadable", and
+      // an omitted `unreadableRepos` key looks exactly like a measured zero.
+      description:
+        'Per-repo index and contract-registry staleness for a repository group. ' +
+        'Every configured repo carries both `missing` and `unresolvable`: a repo genuinely absent ' +
+        'from the global registry is missing:true with unresolvable:false; a repo whose registry ' +
+        'entry could not be read or resolved is unresolvable:true with an unresolvableReason ' +
+        '(missing stays true there too, so a consumer written before the split still sees every ' +
+        'unusable repo); a healthy repo is neither. The group-level unreadableRepos list is ' +
+        'three-state, and an ABSENT key is not an empty one: absent means the last sync never ' +
+        'recorded which repos it could read (provenance unknown — treat cross-repo answers for ' +
+        'this group as a floor), an empty list means the sync measured none, and a populated list ' +
+        'names the repos whose contracts are missing from the registry.',
       mimeType: 'text/yaml',
     },
   ];
@@ -389,7 +404,12 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(
     '  - gitnexus://group/{name}/contracts: Group contract registry (optional ?type=&repo=&unmatchedOnly=)',
   );
-  lines.push('  - gitnexus://group/{name}/status: Group index / contract staleness');
+  lines.push(
+    '  - gitnexus://group/{name}/status: Group index / contract staleness — separates a repo absent ' +
+      'from the registry (missing, not unresolvable) from one whose entry could not be read ' +
+      '(unresolvable + unresolvableReason), and carries unreadableRepos as absent=never recorded / ' +
+      'empty=measured none / populated=named',
+  );
 
   return lines.join('\n');
 }

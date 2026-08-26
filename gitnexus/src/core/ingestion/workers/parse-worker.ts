@@ -141,6 +141,11 @@ import {
   templateConstraintsIdTag,
 } from '../utils/template-arguments.js';
 import type { LanguageProvider } from '../language-provider.js';
+import {
+  mergeCanonicalDefinitionProperties,
+  runDefinitionPropertiesExtractor,
+  shouldHarvestModuleConstants,
+} from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
 import {
@@ -1421,7 +1426,6 @@ export function extractORMQueries(
 
 import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
 import {
-  extractPythonModuleConstants,
   parseConstOperands,
   type ModuleConstants,
   type Operand,
@@ -2821,19 +2825,38 @@ const processFileGroup = (
         }
       }
 
+      const isExported =
+        language === SupportedLanguages.Vue && isVueSetup
+          ? isVueSetupTopLevel(nameNode || definitionNode)
+          : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName);
+      if (definitionNode && provider.definitionPropertiesExtractor) {
+        const definitionProperties = runDefinitionPropertiesExtractor(
+          provider.definitionPropertiesExtractor,
+          {
+            nodeLabel,
+            nodeName,
+            definitionNode,
+            parsedImports: parsedFile?.parsedImports ?? [],
+            isExported,
+          },
+          (error) =>
+            reportWarning(
+              `Definition property extraction failed for ${file.path}:${nodeName}: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        );
+        if (definitionProperties !== undefined) Object.assign(methodProps, definitionProperties);
+      }
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
-        properties: {
+        properties: mergeCanonicalDefinitionProperties(methodProps, {
           name: nodeName,
           filePath: file.path,
           startLine,
           endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
           language: language,
-          isExported:
-            language === SupportedLanguages.Vue && isVueSetup
-              ? isVueSetupTopLevel(nameNode || definitionNode)
-              : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName),
+          isExported,
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
           ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
             ? { templateArguments: classTemplateArguments }
@@ -2848,10 +2871,9 @@ const processFileGroup = (
               }
             : {}),
           ...(description !== undefined ? { description } : {}),
-          ...methodProps,
           ...(declaredType !== undefined ? { declaredType } : {}),
           ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
-        },
+        }),
       });
 
       // enclosingClassId already computed above (before nodeId generation)
@@ -2963,11 +2985,18 @@ const processFileGroup = (
         (result.routerModuleAliases ??= []),
         (result.routerConstructorPrefixes ??= []),
       );
-      // #2391: harvest module-level string constants + from-imports so parse-impl
-      // can resolve non-literal decorator route paths cross-file. Only emit for
-      // files that carry something resolvable (a constant definition or an import
-      // binding) to keep the aggregate bounded on large repos.
-      const constants = extractPythonModuleConstants(tree);
+    }
+
+    // #2391/#2980: harvest module-level string constants + import bindings via
+    // the provider hook so parse-impl can resolve non-literal decorator route
+    // paths cross-file. Cost-gated by the provider's syntax-driven heuristic;
+    // only files that carry something resolvable (a constant definition or an
+    // import binding) are emitted, keeping the aggregate bounded on large repos.
+    // A provider that declares no heuristic harvests unconditionally — see
+    // `shouldHarvestModuleConstants`, which owns that rule so it can be tested
+    // without booting a worker.
+    if (provider.extractModuleConstants && shouldHarvestModuleConstants(provider, parseContent)) {
+      const constants = provider.extractModuleConstants(tree);
       if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });
       }
