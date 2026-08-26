@@ -753,6 +753,16 @@ export class GroupService {
         };
         continue;
       }
+      // Only `resolveRepo` is inside the try that produces the
+      // "did not resolve" label, so the label is earned rather than assumed.
+      // `loadMeta` and `checkStaleness` cannot throw — the first returns null on
+      // every error, the second catches everything — but the reading below them
+      // can, and did: `registry.repoSnapshots` is read off a bare
+      // `JSON.parse(...) as ContractRegistry` with no shape check, so a
+      // contracts.json missing that field threw a TypeError into this catch and
+      // reported every repo as an unresolvable GLOBAL-registry entry. That sent
+      // the operator to repair the wrong file. The optional chain below closes
+      // the crash; this split stops the next one being mislabelled the same way.
       try {
         const repoObj = await this.port.resolveRepo(registryName);
         const meta: Partial<Pick<RepoMeta, 'lastCommit' | 'indexedAt'>> =
@@ -762,7 +772,7 @@ export class GroupService {
           ? checkStaleness(repoObj.repoPath, meta.lastCommit)
           : { isStale: true, commitsBehind: -1 };
 
-        const snapshot = registry?.repoSnapshots[repoPath];
+        const snapshot = registry?.repoSnapshots?.[repoPath];
         const contractsStale =
           snapshot && meta.indexedAt ? snapshot.indexedAt !== meta.indexedAt : !snapshot;
 
