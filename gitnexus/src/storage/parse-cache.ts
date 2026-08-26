@@ -569,16 +569,25 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
 // scanned; #3017 is the only other claimant.
 //
-// 72 -> 73 makes object-literal Function and Method members owner-qualified
-// (#3041). A warm v72 cache replays the old collapsed callable ids and omits
+// 72 -> 74 adds import-proven Convex endpoint metadata to Const/Function worker
+// output. A warm v72 cache has no convexEndpointFactory property, so the MCP
+// impact probe would keep claiming exact results for unchanged endpoints. The
+// parse-cache bump makes unchanged files re-parse; analyzer runner identity
+// drift separately forces the graph re-emit (run-analyze.ts), and an id/schema
+// migration needs both guarantees. Version 73 is intentionally skipped because
+// concurrent PR #3046 (fixes #3041) claims it. Re-check main and open PRs
+// immediately before merge.
+//
+// 74 -> 76 makes object-literal Function and Method members owner-qualified
+// (#3041). A warm v74 cache replays the old collapsed callable ids and omits
 // the new Const/Variable -> callable HAS_METHOD ownership edges, so this bump
-// makes unchanged files re-parse rather than waiting for a source edit.
-// Re-parsing is only the parse-layer half of an id-shape migration: the
+// makes unchanged files re-parse rather than waiting for a source edit. The
 // persisted graph is rebuilt separately when `analyzerRunnerIdentitiesEqual`
 // detects the changed analyzer build in run-analyze.ts. Both guards are
 // required; a parse-cache bump alone must never be read as a graph rebuild.
+// Version 75 is intentionally skipped because concurrent PR #3017 claims it.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 73;
+const SCHEMA_BUMP = 76;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

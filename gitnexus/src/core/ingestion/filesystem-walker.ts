@@ -22,6 +22,27 @@ export interface FilePath {
 const READ_CONCURRENCY = 32;
 const ANALYZE_PROGRESS_ACTIVE_ENV = 'GITNEXUS_ANALYZE_PROGRESS_ACTIVE';
 
+const DECLARATION_COMPANION_SUFFIXES = [
+  { declaration: '.d.ts', implementations: ['.ts', '.tsx'] },
+  { declaration: '.d.mts', implementations: ['.mts'] },
+  { declaration: '.d.cts', implementations: ['.cts'] },
+] as const;
+
+const hasImplementationSibling = (
+  declarationPath: string,
+  scannedPaths: ReadonlySet<string>,
+): boolean => {
+  const companion = DECLARATION_COMPANION_SUFFIXES.find(({ declaration }) =>
+    declarationPath.endsWith(declaration),
+  );
+  if (!companion) return false;
+
+  // Keep standalone declarations. Only suppress declaration output that sits
+  // beside an implementation with the corresponding module suffix.
+  const stem = declarationPath.slice(0, -companion.declaration.length);
+  return companion.implementations.some((suffix) => scannedPaths.has(`${stem}${suffix}`));
+};
+
 const warnLargeFileSkip = (message: string): void => {
   if (process.env[ANALYZE_PROGRESS_ACTIVE_ENV] === '1') {
     // analyze.ts routes console.warn through the progress bar logger while
@@ -84,10 +105,17 @@ export const walkRepositoryPaths = async (
     }
   }
 
+  const scannedPaths = new Set(entries.map((entry) => entry.path));
+  const deduplicatedEntries = entries.filter(
+    (entry) => !hasImplementationSibling(entry.path, scannedPaths),
+  );
+
   // Filesystem/glob traversal order is not stable across filesystems or repeated
   // scans. Canonicalize once at the scan boundary so every downstream phase sees
   // the same repository order.
-  entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+  deduplicatedEntries.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
 
   if (skippedLarge > 0) {
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;
@@ -123,7 +151,7 @@ export const walkRepositoryPaths = async (
     }
   }
 
-  return entries;
+  return deduplicatedEntries;
 };
 
 /**

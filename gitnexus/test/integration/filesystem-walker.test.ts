@@ -187,6 +187,125 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('ambiguous source-directory names (#3039)', () => {
+    let sourceDir: string;
+
+    beforeAll(async () => {
+      sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-source-names-'));
+      await fs.mkdir(path.join(sourceDir, 'apps', 'client', 'src', 'shared', 'env'), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(sourceDir, 'packages', 'ai', 'src', 'generated'), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(sourceDir, 'build-cache', 'generated'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'env'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'generated'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'backend', 'env', 'Scripts'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'backend', 'env', 'include'), { recursive: true });
+      await fs.mkdir(path.join(sourceDir, 'backend', 'env', 'share'), { recursive: true });
+
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'shared', 'env', 'getAppEnv.ts'),
+        'export const getAppEnv = () => "test";\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'packages', 'ai', 'src', 'generated', 'bundle.ts'),
+        'export const bundled = true;\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'vite-env.d.ts'),
+        'declare const APP_ENV: string;\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'service.ts'),
+        'export class UserService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'service.d.ts'),
+        'export declare class UserService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'legacy.js'),
+        'export class LegacyService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'apps', 'client', 'src', 'legacy.d.ts'),
+        'export declare class LegacyService {}\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'build-cache', 'generated', 'ignored.ts'),
+        'export const ignored = true;\n',
+      );
+      await fs.writeFile(path.join(sourceDir, '.gitignore'), 'build-cache/generated/\n');
+      await fs.writeFile(path.join(sourceDir, 'env', 'pyvenv.cfg'), 'home = python\n');
+      await fs.writeFile(path.join(sourceDir, 'env', 'settings.py'), 'VALUE = 1\n');
+      await fs.writeFile(path.join(sourceDir, 'backend', 'env', 'pyvenv.cfg'), 'home = python\n');
+      await fs.writeFile(
+        path.join(sourceDir, 'backend', 'env', 'Scripts', 'activate_this.py'),
+        'VALUE = 1\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'backend', 'env', 'include', 'header.py'),
+        'VALUE = 1\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'backend', 'env', 'share', 'manual.py'),
+        'VALUE = 1\n',
+      );
+      await fs.writeFile(
+        path.join(sourceDir, 'generated', 'client.ts'),
+        'export const generatedClient = true;\n',
+      );
+    });
+
+    afterAll(async () => {
+      await fs.rm(sourceDir, { recursive: true, force: true });
+    });
+
+    it('discovers nested env/generated and .d.ts source while pruning root artifacts', async () => {
+      const files = await walkRepositoryPaths(sourceDir);
+      const paths = files.map((file) => file.path);
+
+      expect(paths).toContain('apps/client/src/shared/env/getAppEnv.ts');
+      expect(paths).toContain('packages/ai/src/generated/bundle.ts');
+      expect(paths).toContain('apps/client/src/vite-env.d.ts');
+      expect(paths).toContain('apps/client/src/service.ts');
+      expect(paths).not.toContain('apps/client/src/service.d.ts');
+      expect(paths).toContain('apps/client/src/legacy.js');
+      expect(paths).toContain('apps/client/src/legacy.d.ts');
+      expect(paths).not.toContain('build-cache/generated/ignored.ts');
+      expect(paths).not.toContain('env/settings.py');
+      expect(paths).not.toContain('backend/env/Scripts/activate_this.py');
+      expect(paths).not.toContain('backend/env/include/header.py');
+      expect(paths).not.toContain('backend/env/share/manual.py');
+      expect(paths).not.toContain('generated/client.ts');
+    });
+
+    it('preserves case variants that were not hardcoded ignore names', async () => {
+      const caseDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-source-case-'));
+      try {
+        await fs.mkdir(path.join(caseDir, 'Generated'), { recursive: true });
+        await fs.mkdir(path.join(caseDir, 'Env'), { recursive: true });
+        await fs.writeFile(
+          path.join(caseDir, 'Generated', 'client.cs'),
+          'public class GeneratedClient {}\n',
+        );
+        await fs.writeFile(
+          path.join(caseDir, 'Env', 'settings.ts'),
+          'export const environment = "test";\n',
+        );
+
+        const paths = (await walkRepositoryPaths(caseDir)).map((file) => file.path);
+
+        expect(paths).toContain('Generated/client.cs');
+        expect(paths).toContain('Env/settings.ts');
+      } finally {
+        await fs.rm(caseDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('.gitnexusignore support', () => {
     let nexusignoreDir: string;
 
@@ -394,6 +513,7 @@ describe('filesystem-walker', () => {
   describe('large file skip threshold (#991)', () => {
     let sizeDir: string;
     const BIG_FILE = 'src/big.ts';
+    const BIG_DECLARATION = 'src/big.d.ts';
     const BIG_FILE_BYTES = 600 * 1024;
     const ORIGINAL_ENV = process.env.GITNEXUS_MAX_FILE_SIZE;
     let cap: ReturnType<typeof _captureLogger>;
@@ -403,6 +523,10 @@ describe('filesystem-walker', () => {
       await fs.mkdir(path.join(sizeDir, 'src'), { recursive: true });
       await fs.writeFile(path.join(sizeDir, 'src', 'small.ts'), 'export const x = 1;');
       await fs.writeFile(path.join(sizeDir, BIG_FILE), 'x'.repeat(BIG_FILE_BYTES));
+      await fs.writeFile(
+        path.join(sizeDir, BIG_DECLARATION),
+        'export declare const generatedTypes: string;\n',
+      );
     });
 
     afterAll(async () => {
@@ -429,6 +553,7 @@ describe('filesystem-walker', () => {
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths).toContain('src/small.ts');
       expect(paths).not.toContain(BIG_FILE);
+      expect(paths).toContain(BIG_DECLARATION);
     });
 
     it('includes the 600KB file when GITNEXUS_MAX_FILE_SIZE=1024', async () => {
@@ -436,6 +561,7 @@ describe('filesystem-walker', () => {
       const files = await walkRepositoryPaths(sizeDir);
       const paths = files.map((f) => f.path.replace(/\\/g, '/'));
       expect(paths).toContain(BIG_FILE);
+      expect(paths).not.toContain(BIG_DECLARATION);
     });
 
     it('falls back to default and warns once on invalid GITNEXUS_MAX_FILE_SIZE', async () => {
