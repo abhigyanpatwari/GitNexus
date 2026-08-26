@@ -25,6 +25,8 @@ describe('Group types', () => {
         topics: true,
         shared_libs: true,
         embedding_fallback: true,
+        includes: true,
+        workspace_deps: true,
       },
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };
@@ -93,6 +95,8 @@ describe('Group types', () => {
         topics: true,
         shared_libs: true,
         embedding_fallback: true,
+        includes: true,
+        workspace_deps: true,
       },
       matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
     };

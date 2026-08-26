@@ -229,6 +229,9 @@ describe('shouldIgnorePath', () => {
       'apps/client/src/shared/env/getAppEnv.ts',
       'packages/ai/src/generated/bundle.ts',
       'apps/client/src/vite-env.d.ts',
+      'Generated/client.cs',
+      'Env/settings.ts',
+      'ENV/config.ts',
       'lib/utils.py',
       'cmd/server/main.go',
       'src/main.rs',
@@ -242,7 +245,7 @@ describe('shouldIgnorePath', () => {
       expect(shouldIgnorePath(filePath)).toBe(false);
     });
 
-    it.each(['env/lib/python3.12/site-packages/pkg/module.py', 'generated/client.ts'])(
+    it.each(['env/pyvenv.cfg', 'env/settings.py', 'generated/client.ts'])(
       'prunes ambiguous artifact directories only at the repository root: %s',
       (filePath) => {
         expect(shouldIgnorePath(filePath)).toBe(true);
@@ -258,6 +261,7 @@ describe('isHardcodedIgnoredDirectory', () => {
     expect(isHardcodedIgnoredDirectory('dist')).toBe(true);
     expect(isHardcodedIgnoredDirectory('monaco-workers')).toBe(true);
     expect(isHardcodedIgnoredDirectory('__pycache__')).toBe(true);
+    expect(isHardcodedIgnoredDirectory('dist-packages')).toBe(true);
   });
 
   it('returns false for source directories', () => {
@@ -318,6 +322,33 @@ describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771
     const filter = await createIgnoreFilter(tmpDir);
     expect(filter.ignored(mkPath('__tests__/foo.test.ts'))).toBe(true);
     expect(filter.childrenIgnored(mkPath('__tests__'))).toBe(true);
+  });
+
+  it('prunes exact-case root artifacts while allowing nested source directories', async () => {
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(mkPath('generated'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('env'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('packages/api/generated'))).toBe(false);
+    expect(filter.childrenIgnored(mkPath('Generated'))).toBe(false);
+    expect(filter.childrenIgnored(mkPath('Env'))).toBe(false);
+  });
+
+  it('prunes a nested env directory only when pyvenv.cfg identifies a virtual environment', async () => {
+    await fs.mkdir(path.join(tmpDir, 'backend', 'env'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'backend', 'env', 'pyvenv.cfg'), 'home = python\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(mkPath('backend/env'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('services/api/env'))).toBe(false);
+  });
+
+  it('`!env/` negation unlocks the root artifact directory', async () => {
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!env/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(mkPath('env'))).toBe(false);
+    expect(filter.ignored(mkPath('env/settings.py'))).toBe(false);
   });
 
   it('`!__tests__/` negation unlocks the directory and its descendants', async () => {

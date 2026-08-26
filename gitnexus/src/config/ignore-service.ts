@@ -1,4 +1,5 @@
 import ignore, { type Ignore } from 'ignore';
+import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
@@ -32,13 +33,14 @@ const DEFAULT_IGNORE_LIST = new Set([
   'venv',
   '.venv',
   '.env',
-  // Bare `env/` is also a common application-source directory. The
-  // virtual-environment spellings above remain excluded; repositories can
-  // ignore any generated env directory through their normal ignore rules.
+  // Bare `env/` can be application source or a Python virtual environment.
+  // Path-aware rules below prune it at the root and wherever pyvenv.cfg marks
+  // a virtual environment, while preserving ordinary nested source folders.
   '__pycache__',
   '.pytest_cache',
   '.mypy_cache',
   'site-packages',
+  'dist-packages',
   '.tox',
   'eggs',
   '.eggs',
@@ -113,6 +115,9 @@ const DEFAULT_IGNORE_LIST = new Set([
 // repository root. Nested directories with these names are frequently source
 // modules (for example apps/web/src/env or packages/api/generated).
 const ROOT_ARTIFACT_DIRECTORIES = new Set(['env', 'generated']);
+
+const isRootArtifactDirectory = (relativePath: string, name: string): boolean =>
+  !relativePath.includes('/') && ROOT_ARTIFACT_DIRECTORIES.has(name);
 
 const IGNORED_EXTENSIONS = new Set([
   // Images
@@ -298,7 +303,7 @@ export const shouldIgnorePath = (filePath: string): boolean => {
   const fileName = parts[parts.length - 1];
   const fileNameLower = fileName.toLowerCase();
 
-  if (parts.length > 0 && ROOT_ARTIFACT_DIRECTORIES.has(parts[0].toLowerCase())) {
+  if (parts.length > 0 && isRootArtifactDirectory(parts[0], parts[0])) {
     return true;
   }
 
@@ -363,7 +368,9 @@ export const isHardcodedIgnoredDirectoryAtPath = (
   if (isHardcodedIgnoredDirectory(name)) return true;
 
   const relative = nodePath.relative(repoRoot, directoryPath).replace(/\\/g, '/');
-  return !relative.includes('/') && ROOT_ARTIFACT_DIRECTORIES.has(name.toLowerCase());
+  if (isRootArtifactDirectory(relative, name)) return true;
+
+  return name === 'env' && existsSync(nodePath.join(directoryPath, 'pyvenv.cfg'));
 };
 
 /**
@@ -518,11 +525,8 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // last-match-wins: `!__tests__/` + `__tests__/generated/` still
       // blocks descent into `__tests__/generated/`.
       if (ig && rel && hasExplicitUnignore(ig, rel) && !ig.ignores(rel + '/')) return false;
-      // Hardcoded list: block descent into well-known noise directories.
-      if (DEFAULT_IGNORE_LIST.has(p.name)) return true;
-      // Keep conventional root-level artifact trees pruned without suppressing
-      // same-named source modules deeper in a workspace.
-      if (rel && !rel.includes('/') && ROOT_ARTIFACT_DIRECTORIES.has(p.name.toLowerCase())) {
+      // Hardcoded and path-aware rules prune whole trees before glob walks them.
+      if (rel && isHardcodedIgnoredDirectoryAtPath(repoPath, nodePath.join(repoPath, rel))) {
         return true;
       }
       // Check against .gitignore / .gitnexusignore patterns.

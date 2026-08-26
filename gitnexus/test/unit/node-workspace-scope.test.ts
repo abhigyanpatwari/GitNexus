@@ -96,7 +96,7 @@ describe('workspace boundary', () => {
         name: 'root',
         workspaces: ['generated/*', 'packages/*/generated'],
       }),
-      'generated/output/package.json': pkg('@repo/root-artifact'),
+      'generated/apiclient/package.json': pkg('@repo/root-artifact'),
       'packages/api/generated/package.json': pkg('@repo/generated-source'),
     });
 
