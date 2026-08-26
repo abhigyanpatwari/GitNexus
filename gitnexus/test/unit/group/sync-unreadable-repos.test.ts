@@ -221,6 +221,31 @@ const PRIOR_REGISTRY = {
 const totalFailureWarning = (cap: ReturnType<typeof _captureLogger>) =>
   cap.records().find((r) => r.level === 40 && Array.isArray(r.unreadableRepos));
 
+/**
+ * Read a file's bytes and its stat through ONE open handle.
+ *
+ * `stat(path)` followed by `readFile(path)` is two independent path
+ * resolutions with a window between them — a real check-then-use race, and one
+ * CodeQL flags as `js/file-system-race`. It also makes the assertion weaker
+ * than it reads: the two calls can land on different inodes, so "the bytes and
+ * the mtime are both unchanged" would not actually be a statement about one
+ * file. Since these tests exist to prove a specific file was left alone, that
+ * distinction is the whole point rather than a technicality.
+ *
+ * One handle, both answers, no second lookup.
+ */
+const snapshotFile = async (
+  filePath: string,
+): Promise<{ text: string; size: number; mtimeMs: number }> => {
+  const handle = await fsp.open(filePath, 'r');
+  try {
+    const [bytes, stat] = await Promise.all([handle.readFile(), handle.stat()]);
+    return { text: bytes.toString('utf8'), size: stat.size, mtimeMs: stat.mtimeMs };
+  } finally {
+    await handle.close();
+  }
+};
+
 describe('syncGroup with an unreadable index', () => {
   let groupDir: string;
 
@@ -647,15 +672,14 @@ describe('the preserve path and the bridge metadata beside it', () => {
     // that rebuilt it would be the single write capable of losing them.
     await seedPriorRegistry();
     await seedMatchingPair();
-    const before = await fsp.readFile(dbPath);
-    const beforeStat = await fsp.stat(dbPath);
+    const before = await snapshotFile(dbPath);
 
     await runTotalFailureSync();
 
-    expect(await fsp.readFile(dbPath)).toEqual(before);
-    const afterStat = await fsp.stat(dbPath);
-    expect(afterStat.size).toBe(beforeStat.size);
-    expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+    const after = await snapshotFile(dbPath);
+    expect(after.text).toBe(before.text);
+    expect(after.size).toBe(before.size);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
   });
 
   it('keeps a stamped pair that already failed the check failing, with its stamp untouched', async () => {
@@ -1076,15 +1100,15 @@ describe('a total-failure sync that reaches the group lock second', () => {
       missingRepos: [],
       unreadableRepos: [],
     });
-    const metaBefore = fs.readFileSync(metaPath, 'utf8');
-    const metaStatBefore = fs.statSync(metaPath);
+    const metaBefore = await snapshotFile(metaPath);
     seedPriorRegistry();
     whileWaitingForTheGroupLock = winnerWritesTheRegistry;
 
     await runTotalFailureSync();
 
-    expect(fs.readFileSync(metaPath, 'utf8')).toBe(metaBefore);
-    expect(fs.statSync(metaPath).mtimeMs).toBe(metaStatBefore.mtimeMs);
+    const metaAfter = await snapshotFile(metaPath);
+    expect(metaAfter.text).toBe(metaBefore.text);
+    expect(metaAfter.mtimeMs).toBe(metaBefore.mtimeMs);
     const meta = await readBridgeMeta(groupDir);
     expect(meta.unreadableRepos).toEqual([]);
     expect(meta.provenanceUnknown).toBeUndefined();
