@@ -42,6 +42,21 @@ const SEED = [
   `CREATE (leaf:Function {id: 'Function:src/util.ts:formatDate', name: 'formatDate', filePath: 'src/util.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
   `CREATE (caller:Function {id: 'Function:src/page.ts:renderHeader', name: 'renderHeader', filePath: 'src/page.ts', startLine: 1, endLine: 10, isExported: true, content: '', description: ''})`,
   `MATCH (a:Function {id:'Function:src/page.ts:renderHeader'}), (b:Function {id:'Function:src/util.ts:formatDate'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.9, reason:'direct', step:0}]->(b)`,
+
+  ...[
+    ['listOrders', 'query'],
+    ['createOrder', 'mutation'],
+    ['syncOrders', 'action'],
+    ['readInternal', 'internalQuery'],
+    ['writeInternal', 'internalMutation'],
+    ['runInternal', 'internalAction'],
+  ].map(
+    ([name, factory]) =>
+      `CREATE (:Const {id: 'Const:src/convex.ts:${name}', name: '${name}', filePath: 'src/convex.ts', startLine: 1, endLine: 3, content: '', description: '', convexEndpointFactory: '${factory}'})`,
+  ),
+  `CREATE (:Const {id: 'Const:src/negative.ts:localQuery', name: 'localQuery', filePath: 'src/negative.ts', startLine: 1, endLine: 1, content: '', description: '', convexEndpointFactory: ''})`,
+  `CREATE (:Const {id: 'Const:src/negative.ts:nestedQuery', name: 'nestedQuery', filePath: 'src/negative.ts', startLine: 2, endLine: 2, content: '', description: '', convexEndpointFactory: ''})`,
+  `CREATE (:Const {id: 'Const:src/negative.ts:memberQuery', name: 'memberQuery', filePath: 'src/negative.ts', startLine: 3, endLine: 3, content: '', description: '', convexEndpointFactory: ''})`,
 ];
 
 withTestLbugDB(
@@ -100,6 +115,40 @@ withTestLbugDB(
       // The real caller is still reported — the flag is additive, not lossy.
       expect(result.impactedCount).toBeGreaterThanOrEqual(1);
     });
+
+    it.each([
+      ['listOrders', 'query'],
+      ['createOrder', 'mutation'],
+      ['syncOrders', 'action'],
+      ['readInternal', 'internalQuery'],
+      ['writeInternal', 'internalMutation'],
+      ['runInternal', 'internalAction'],
+    ])('marks Convex %s/%s runtime dispatch as a lower bound', async (target, factory) => {
+      const result = await backend.callTool('impact', {
+        target,
+        file_path: 'src/convex.ts',
+        direction: 'upstream',
+      });
+
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.boundaries.join(' ')).toContain(`Convex ${factory}`);
+      expect(result.boundaries.join(' ')).toContain('anyApi');
+      expect(result.causes.dispatchBoundary).toBe(0);
+    });
+
+    it.each(['localQuery', 'nestedQuery', 'memberQuery'])(
+      'keeps non-wrapper control %s exact',
+      async (target) => {
+        const result = await backend.callTool('impact', {
+          target,
+          file_path: 'src/negative.ts',
+          direction: 'upstream',
+        });
+
+        expect(result.epistemic).toBe('exact');
+        expect(result.boundaries).toBeUndefined();
+      },
+    );
 
     it('context() carries the same epistemic signal', async () => {
       const result = await backend.callTool('context', {
