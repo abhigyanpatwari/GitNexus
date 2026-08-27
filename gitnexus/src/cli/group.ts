@@ -270,17 +270,22 @@ export function registerGroupCommands(program: Command): void {
           manifest: 0,
           wildcard: 0,
         };
-        // `?? 0` rather than `+= 1`: a legacy registry can carry a matchType that
-        // is no longer in the union ('bm25'/'embedding' were removed), and
-        // `undefined + 1` would print `NaN cross-links` in an operator-facing
-        // summary. Counting the unknown stage under its own name keeps the
-        // stage lines reconciling with the total below, which is the point.
-        for (const link of result.crossLinks) {
-          STAGE_COUNTS[link.matchType] = (STAGE_COUNTS[link.matchType] ?? 0) + 1;
-        }
+        for (const link of result.crossLinks) STAGE_COUNTS[link.matchType] += 1;
+        // A stage the sync was told to skip is reported as skipped, not as a
+        // zero count. The two are different facts — "ran, matched nothing" and
+        // "never ran" — and printing both as `0` is the same conflation this
+        // block replaced. Driven by what the sync did (`suppressedMatchStages`)
+        // rather than by what the caller asked for, so it stays correct on the
+        // outcomes where the run ended without writing a registry.
+        const suppressed = new Set<MatchType>(result.suppressedMatchStages);
         for (const [stage, count] of Object.entries(STAGE_COUNTS)) {
+          const label = `${stage}:`.padEnd(10);
+          if (suppressed.has(stage as MatchType)) {
+            console.log(`  ${label} skipped (--exact-only)`);
+            continue;
+          }
           const confidence = stage === 'exact' ? ' (confidence 1.0)' : '';
-          console.log(`  ${`${stage}:`.padEnd(10)} ${count} cross-links${confidence}`);
+          console.log(`  ${label} ${count} cross-links${confidence}`);
         }
         console.log(`  ${'unmatched:'.padEnd(10)} ${result.unmatched.length} contracts`);
         // Driven by what actually happened to the file. This line used to be

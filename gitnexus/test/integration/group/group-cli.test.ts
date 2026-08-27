@@ -476,6 +476,69 @@ describe('group sync says what it did to contracts.json', () => {
     expect(fs.existsSync(path.join(groupDir, 'contracts.json'))).toBe(true);
   });
 
+  /**
+   * The per-stage `Matching:` block. It used to print `Matching cascade:` and
+   * count `exact` alone, while the `Wrote contracts.json (…)` line beneath it
+   * reported every cross-link — so for any group with manifest or wildcard
+   * links the two numbers disagreed with nothing on screen explaining why.
+   *
+   * A manifest fixture is enough to pin both halves. The stage counts have to
+   * sum to the printed total, and the skipped rendering does not depend on a
+   * stage having matched anything: `--exact-only` records the suppression
+   * whatever the fixture contains.
+   */
+  const writeManifestGroup = (name: string): void => {
+    writeGroupYaml(
+      home,
+      name,
+      { 'app/backend': `${name}-backend`, 'app/frontend': `${name}-frontend` },
+      `
+  - from: app/frontend
+    to: app/backend
+    type: custom
+    contract: rotateSigningKey
+    role: consumer`,
+    );
+    fs.writeFileSync(path.join(home, 'registry.json'), '[]', 'utf8');
+  };
+
+  it('prints a count for every matching stage, and they sum to the written total', () => {
+    writeManifestGroup('stages');
+
+    const r = runGroupIn(home, ['sync', 'stages']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('exact:     0 cross-links (confidence 1.0)');
+    expect(r.stdout).toContain('manifest:  1 cross-links');
+    expect(r.stdout).toContain('wildcard:  0 cross-links');
+    // The reconciliation this block exists for: 0 + 1 + 0 is the total below.
+    expect(r.stdout).toContain('Wrote contracts.json (2 contracts, 1 cross-links)');
+  });
+
+  it('names a stage it was told to skip as skipped, not as zero', () => {
+    writeManifestGroup('skipped');
+
+    const r = runGroupIn(home, ['sync', 'skipped', '--exact-only']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('wildcard:  skipped (--exact-only)');
+    // "ran and matched nothing" must not be printable for a stage that never ran.
+    expect(r.stdout).not.toContain('wildcard:  0 cross-links');
+    // Manifest links are unaffected by the flag, so the total still says so.
+    expect(r.stdout).toContain('manifest:  1 cross-links');
+  });
+
+  // control: the skipped rendering tracks the flag, not the fixture. Without
+  // this, printing `skipped` unconditionally would pass the case above.
+  it('control: the same group without the flag reports the stage as zero', () => {
+    writeManifestGroup('unskipped');
+
+    const r = runGroupIn(home, ['sync', 'unskipped']);
+
+    expect(r.stdout).toContain('wildcard:  0 cross-links');
+    expect(r.stdout).not.toContain('skipped (--exact-only)');
+  });
+
   it('says the previous contracts.json was KEPT when no repo could be read', () => {
     // "Did NOT write contracts.json" was false here: this path REWRITES the
     // file, keeping the previous sync's contracts and replacing only the two
