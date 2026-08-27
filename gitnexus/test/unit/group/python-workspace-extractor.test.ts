@@ -52,6 +52,31 @@ describe('PythonWorkspaceExtractor', () => {
     });
   });
 
+  it('does not emit contracts from a nested Python virtual environment', async () => {
+    await writeFile(
+      'provider/pyproject.toml',
+      '[project]\nname = "provider"\nversion = "0.1.0"\ndependencies = []\n',
+    );
+    await writeFile('provider/provider/__init__.py', 'class SecretClient: pass\n');
+
+    await writeFile(
+      'consumer/pyproject.toml',
+      '[project]\nname = "consumer"\nversion = "0.1.0"\ndependencies = ["provider"]\n',
+    );
+    await writeFile('consumer/backend/env/pyvenv.cfg', 'home = python\n');
+    await writeFile('consumer/backend/env/leaked.py', 'from provider import SecretClient\n');
+
+    const repos = { provider: 'provider', consumer: 'consumer' };
+    const repoPaths = new Map([
+      ['provider', path.join(tmpDir, 'provider')],
+      ['consumer', path.join(tmpDir, 'consumer')],
+    ]);
+
+    const result = await extractPythonWorkspaceLinks(repos, repoPaths);
+
+    expect(result.links).toHaveLength(0);
+  });
+
   it('discovers imports via setup.py', async () => {
     await writeFile(
       'core/setup.py',

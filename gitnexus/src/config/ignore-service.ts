@@ -1,4 +1,5 @@
 import ignore, { type Ignore } from 'ignore';
+import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
@@ -31,12 +32,15 @@ const DEFAULT_IGNORE_LIST = new Set([
   // 'packages' removed - commonly used for monorepo source code (lerna, pnpm, yarn workspaces)
   'venv',
   '.venv',
-  'env',
   '.env',
+  // Bare `env/` can be application source or a Python virtual environment.
+  // Path-aware rules below prune it at the root and wherever pyvenv.cfg marks
+  // a virtual environment, while preserving ordinary nested source folders.
   '__pycache__',
   '.pytest_cache',
   '.mypy_cache',
   'site-packages',
+  'dist-packages',
   '.tox',
   'eggs',
   '.eggs',
@@ -92,8 +96,9 @@ const DEFAULT_IGNORE_LIST = new Set([
 
   // Generated/Compiled
   '.generated',
-  'generated',
   'auto-generated',
+  // Bare `generated/` can contain tracked source-of-truth code. Build output
+  // remains covered by .gitignore/.gitnexusignore and the unambiguous names.
   'monaco-workers', // Monaco editor web-worker bundles generated for browser runtime
   '.terraform',
   '.serverless',
@@ -136,6 +141,13 @@ function hasIgnoredPathFragment(normalizedPath: string): boolean {
       normalizedPath.endsWith(`/${fragment}`),
   );
 }
+// Ambiguous names that conventionally denote generated artifacts only at the
+// repository root. Nested directories with these names are frequently source
+// modules (for example apps/web/src/env or packages/api/generated).
+const ROOT_ARTIFACT_DIRECTORIES = new Set(['env', 'generated']);
+
+const isRootArtifactDirectory = (relativePath: string, name: string): boolean =>
+  !relativePath.includes('/') && ROOT_ARTIFACT_DIRECTORIES.has(name);
 
 const IGNORED_EXTENSIONS = new Set([
   // Images
@@ -321,6 +333,10 @@ export const shouldIgnorePath = (filePath: string): boolean => {
   const fileName = parts[parts.length - 1];
   const fileNameLower = fileName.toLowerCase();
 
+  if (parts.length > 0 && isRootArtifactDirectory(parts[0], parts[0])) {
+    return true;
+  }
+
   // Laravel compiles Blade templates into generated PHP cache files under
   // storage/framework/views.  Source templates live in resources/views and are
   // handled separately; compiled cache should not become source-of-truth. Keep
@@ -365,10 +381,8 @@ export const shouldIgnorePath = (filePath: string): boolean => {
   if (
     fileNameLower.includes('.bundle.') ||
     fileNameLower.includes('.chunk.') ||
-    fileNameLower.includes('.generated.') ||
-    fileNameLower.endsWith('.d.ts')
+    fileNameLower.includes('.generated.')
   ) {
-    // TypeScript declaration files
     return true;
   }
 
@@ -378,6 +392,20 @@ export const shouldIgnorePath = (filePath: string): boolean => {
 /** Check if a directory name is in the hardcoded ignore list */
 export const isHardcodedIgnoredDirectory = (name: string): boolean => {
   return DEFAULT_IGNORE_LIST.has(name);
+};
+
+/** Apply directory ignore rules that depend on repository-relative depth. */
+export const isHardcodedIgnoredDirectoryAtPath = (
+  repoRoot: string,
+  directoryPath: string,
+): boolean => {
+  const name = nodePath.basename(directoryPath);
+  if (isHardcodedIgnoredDirectory(name)) return true;
+
+  const relative = nodePath.relative(repoRoot, directoryPath).replace(/\\/g, '/');
+  if (isRootArtifactDirectory(relative, name)) return true;
+
+  return name === 'env' && existsSync(nodePath.join(directoryPath, 'pyvenv.cfg'));
 };
 
 /**
@@ -532,8 +560,10 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // last-match-wins: `!__tests__/` + `__tests__/generated/` still
       // blocks descent into `__tests__/generated/`.
       if (ig && rel && hasExplicitUnignore(ig, rel) && !ig.ignores(rel + '/')) return false;
-      // Hardcoded list: block descent into well-known noise directories.
-      if (DEFAULT_IGNORE_LIST.has(p.name)) return true;
+      // Hardcoded and path-aware rules prune whole trees before glob walks them.
+      if (rel && isHardcodedIgnoredDirectoryAtPath(repoPath, nodePath.join(repoPath, rel))) {
+        return true;
+      }
       // Check against .gitignore / .gitnexusignore patterns.
       // Since childrenIgnored is only called for directories, always test with
       // a trailing slash. This ensures directory-only negation patterns (e.g.
