@@ -373,7 +373,12 @@ async function loadContractRegistryResilient(
 function recordedMatchStages(value: unknown): MatchType[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const known: MatchType[] = ['exact', 'manifest', 'wildcard'];
-  return value.filter((v): v is MatchType => known.includes(v as MatchType));
+  // All-or-nothing, exactly like `recordedRepoList`. Filtering would be worse
+  // than useless here: a stale `['bm25']` would survive as `[]`, which on this
+  // field MEANS "measured, nothing was suppressed" — a confident clean answer
+  // manufactured from a value we could not read, on the one field that exists
+  // to stop that conflation. An unreadable list is "not recorded".
+  return value.every((v): v is MatchType => known.includes(v as MatchType)) ? value : undefined;
 }
 
 /**
@@ -452,6 +457,8 @@ export class GroupService {
     // this method is the real validation boundary.
     const exactOnly = validateBooleanParam('exactOnly', params.exactOnly);
     if ('error' in exactOnly) return exactOnly;
+    const verbose = validateBooleanParam('verbose', params.verbose);
+    if ('error' in verbose) return verbose;
     const retired = rejectRetiredSyncParams(params);
     if (retired) return retired;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
@@ -475,7 +482,7 @@ export class GroupService {
       result = await syncGroup(config, {
         groupDir,
         exactOnly: exactOnly.value,
-        verbose: Boolean(params.verbose),
+        verbose: verbose.value,
       });
     } catch (err) {
       // Fails closed (R9): this sync could not be protected against a concurrent

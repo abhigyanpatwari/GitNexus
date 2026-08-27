@@ -13,6 +13,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { syncGroup } from '../../../src/core/group/sync.js';
+import { makeWildcardPair } from './fixtures.js';
 import type { GroupConfig, StoredContract } from '../../../src/core/group/types.js';
 
 describe('syncGroup exactOnly gates the wildcard stage', () => {
@@ -34,36 +35,7 @@ describe('syncGroup exactOnly gates the wildcard stage', () => {
     matching: {},
   };
 
-  /**
-   * A method-level thrift provider and a service-wildcard consumer: the one
-   * shape `runWildcardMatch` fires on (a `thrift::`/`grpc::` contract id ending
-   * in `/*` in the consumer role). `runExactMatch` deliberately skips wildcard
-   * consumers, so this pair produces a cross-link through the wildcard stage or
-   * through no stage at all.
-   */
-  const provider: StoredContract = {
-    contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
-    type: 'thrift',
-    role: 'provider',
-    symbolUid: 'uid-provider-place-order',
-    symbolRef: { filePath: 'src/provider.ts', name: 'OrderService.PlaceOrder' },
-    symbolName: 'OrderService.PlaceOrder',
-    confidence: 0.9,
-    meta: {},
-    repo: 'app/provider',
-  };
-
-  const consumer: StoredContract = {
-    contractId: 'thrift::OrderService/*',
-    type: 'thrift',
-    role: 'consumer',
-    symbolUid: 'uid-consumer-order-service',
-    symbolRef: { filePath: 'src/consumer.ts', name: 'OrderClient' },
-    symbolName: 'OrderClient',
-    confidence: 0.8,
-    meta: {},
-    repo: 'app/consumer',
-  };
+  const { provider, consumer } = makeWildcardPair();
 
   it('runs the wildcard stage when exactOnly is not set', async () => {
     const result = await syncGroup(config, {

@@ -338,6 +338,15 @@ describe('group_sync rejects malformed and retired parameters', () => {
     },
   );
 
+  // The tool description promises "PARAMETERS ARE VALIDATED", so the other
+  // boolean it reads has to mean it too.
+  it('rejects a non-boolean verbose and runs no sync', async () => {
+    const payload = await new GroupService(port).groupSync({ name: GROUP, verbose: 'false' });
+
+    expect(payload).toEqual({ error: 'Invalid "verbose": expected true or false, got "false".' });
+    expect(syncGroupMock).not.toHaveBeenCalled();
+  });
+
   it.each([['skipEmbeddings'], ['allowStale']])(
     'rejects the retired %s parameter by name and runs no sync',
     async (retired) => {

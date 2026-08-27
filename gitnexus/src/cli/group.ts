@@ -280,10 +280,10 @@ export function registerGroupCommands(program: Command): void {
         // block replaced. Driven by what the sync did (`suppressedMatchStages`)
         // rather than by what the caller asked for, so it stays correct on the
         // outcomes where the run ended without writing a registry.
-        const suppressed = new Set<MatchType>(result.suppressedMatchStages);
-        for (const [stage, count] of Object.entries(STAGE_COUNTS)) {
+        for (const stage of Object.keys(STAGE_COUNTS) as MatchType[]) {
+          const count = STAGE_COUNTS[stage];
           const label = `${stage}:`.padEnd(10);
-          if (suppressed.has(stage as MatchType)) {
+          if (result.suppressedMatchStages.includes(stage)) {
             console.log(`  ${label} skipped (--exact-only)`);
             continue;
           }
@@ -510,7 +510,14 @@ export function registerGroupCommands(program: Command): void {
           return;
         }
 
-        const { contracts, crossLinks, truncated, unreadableRepos, missingRepos } = raw as {
+        const {
+          contracts,
+          crossLinks,
+          truncated,
+          unreadableRepos,
+          missingRepos,
+          suppressedMatchStages,
+        } = raw as {
           contracts: Array<{
             role: string;
             contractId: string;
@@ -525,6 +532,7 @@ export function registerGroupCommands(program: Command): void {
             contractId: string;
           }>;
           truncated?: boolean;
+          suppressedMatchStages?: string[];
           unreadableRepos?: string[];
           missingRepos?: string[];
         };
@@ -546,6 +554,18 @@ export function registerGroupCommands(program: Command): void {
           for (const l of crossLinks) {
             console.log(
               `  ${l.from.repo} -> ${l.to.repo}  [${l.matchType}, conf=${l.confidence}]  ${l.contractId}`,
+            );
+          }
+          // Separate from `truncated` below, and deliberately so: that one means
+          // the sync could not read something and the remedy is to fix the repo.
+          // This one means the sync was ASKED to skip a stage, and the remedy is
+          // to re-run without the flag. A listing narrowed on purpose is still
+          // narrowed, and without this the human view showed nothing at all.
+          if (suppressedMatchStages && suppressedMatchStages.length > 0) {
+            console.log(
+              `\n⚠️ This listing is a lower bound: the last sync skipped ${suppressedMatchStages.join(', ')} matching` +
+                `\n   (--exact-only), so cross-links that stage would have found are absent.` +
+                `\n   Re-run \`gitnexus group sync\` without --exact-only for the complete set.`,
             );
           }
           if (truncated) {

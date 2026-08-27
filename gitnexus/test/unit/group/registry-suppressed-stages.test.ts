@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { syncGroup } from '../../../src/core/group/sync.js';
+import { makeWildcardPair } from './fixtures.js';
 import type {
   GroupConfig,
   StoredContract,
@@ -49,30 +50,7 @@ const config: GroupConfig = {
   },
 };
 
-/** The one shape `runWildcardMatch` fires on: a thrift service wildcard consumer. */
-const provider: StoredContract = {
-  contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
-  type: 'thrift',
-  role: 'provider',
-  symbolUid: 'uid-provider',
-  symbolRef: { filePath: 'src/provider.ts', name: 'OrderService.PlaceOrder' },
-  symbolName: 'OrderService.PlaceOrder',
-  confidence: 0.9,
-  meta: {},
-  repo: 'app/provider',
-};
-
-const consumer: StoredContract = {
-  contractId: 'thrift::OrderService/*',
-  type: 'thrift',
-  role: 'consumer',
-  symbolUid: 'uid-consumer',
-  symbolRef: { filePath: 'src/consumer.ts', name: 'callOrderService' },
-  symbolName: 'callOrderService',
-  confidence: 0.9,
-  meta: {},
-  repo: 'app/consumer',
-};
+const { provider, consumer } = makeWildcardPair();
 
 let groupDir: string;
 

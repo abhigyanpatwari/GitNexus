@@ -871,6 +871,7 @@ READ THE RESULT: \`missingRepos\` are configured repos with no entry in the regi
           description:
             'Skip the wildcard service-match stage; cross-link only on exact contract-id match. Manifest links still apply.',
         },
+        verbose: { type: 'boolean', description: 'Log each cross-link as it is matched' },
       },
       required: ['name'],
     },
