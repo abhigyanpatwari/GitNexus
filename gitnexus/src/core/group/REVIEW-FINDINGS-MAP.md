@@ -1,4 +1,8 @@
-# Review findings → commits (PR #3012)
+# Review findings → commits
+
+One section per reviewed PR, newest last.
+
+## PR #3012
 
 Every finding raised in review of this PR, and the commit that closes it. The
 Definition of Done claims each finding has exactly one commit and that reverting
@@ -105,3 +109,49 @@ Recorded because each was a claim in the plan that the code contradicted.
   text, and it works locally — but GitHub resolves the attribute from the base
   side, which does not carry it. `sync.ts` renders as binary in this PR's web
   view and will render as text for every PR after this one merges.
+
+
+## PR #3020
+
+Ten findings from the multi-engine review of this PR (five reviewer lenses plus
+an independent cross-model pass; six independently validated).
+
+### Revert contract
+
+Same dependency-aware contract as above, with two departures stated plainly
+rather than claimed away:
+
+| Set                | Commits                       | Why coupled                                                                                     |
+| ------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------- |
+| Suppressed-stage marker | `2c8a266d5` ← `abda0d041` | The renderer and its CLI test read `suppressedMatchStages`; reverting the field alone does not build. |
+
+`abda0d041` closes three findings (4, 5, 6), not one: they are the same code
+block — a false comment, an ambiguous line, and the test that pins both.
+Reverting it reintroduces all three. Splitting them would have produced a commit
+whose test was red.
+
+### Findings
+
+| #   | Finding                                                                        | Commit      |
+| --- | ------------------------------------------------------------------------------ | ----------- |
+| 1   | `matching.max_candidates_per_step` is dead config and the PR body claims it works | `9d05ea2de` |
+| 2   | An exact-only sync persists a narrowed registry with no completeness marker    | `2c8a266d5` |
+| 3   | MCP `group_sync` accepts and silently ignores removed parameters, unlike the CLI | `fd21d2de7` |
+| 4   | The `?? 0` fallback's comment describes a code path that cannot occur          | `abda0d041` |
+| 5   | The new per-stage `Matching:` report has no test coverage                       | `abda0d041` |
+| 6   | `--exact-only` prints `wildcard: 0` for a stage that never ran                  | `abda0d041` |
+| 7   | `detect.shared_libs` is the one DetectConfig key with no extractor              | `9d05ea2de` |
+| 8   | The string `"false"` suppresses wildcard links via `Boolean()` coercion         | `fd21d2de7` |
+| 9   | CLI `--exact-only` help omits that manifest links still emit                    | `fadf832ba` |
+| 10  | `group_sync` tool description undersells non-HTTP contract extraction           | `fadf832ba` |
+
+### Not closed here
+
+Finding 1 has two halves. The dead key is removed; the **PR description still
+claims it is read and working** and must be corrected when the PR is updated —
+that surface is outside this branch.
+
+Deliberately deferred, with reasons, in the plan's Scope Boundaries: threading
+the marker into `BridgeMeta` so `group_impact` and cross-repo `trace` stop
+reporting completeness over a narrowed graph; a repo-wide unknown-parameter
+layer for every MCP tool; folding completeness into `group status`.
