@@ -893,7 +893,9 @@ export async function runGroupImpact(
         ? 'timeout'
         : runtimeTruncated
           ? 'partial'
-          : ((bridge.truncated ? bridge.truncationReason : undefined) ?? 'incomplete-sync'),
+          : bridge.truncated
+            ? bridge.truncationReason
+            : 'incomplete-sync',
     ),
     truncatedRepos: [...new Set([...truncatedRepos, ...bridge.incompleteRepos])],
     summary: {

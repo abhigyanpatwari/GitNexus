@@ -100,20 +100,6 @@ export type CrossRepoCompleteness = TruncationFields & {
 };
 
 /**
- * The ONE computation of "is this cross-repo answer complete?" (KTD10).
- *
- * Three surfaces can return a partial cross-repo answer — impact, trace, and
- * the contract listing — and each used to decide for itself, in its own
- * vocabulary, which is how two of them ended up saying it in prose only. The
- * answer is the same structured triple `GroupImpactResult` already carries, so
- * an agent reading any of them learns "complete" vs "floor" the same way.
- *
- * `truncationFields` derives `riskEpistemic` from `truncated` mechanically, and
- * is reused here rather than re-implemented for the same reason it exists: the
- * marker that says "this is a floor, not a verdict" may never drift away from
- * the flag that says the answer was cut short (#2787).
- */
-/**
  * Read a persisted `suppressedMatchStages` list.
  *
  * Sibling of `recordedRepoList` and here for the same stated reason: it had
@@ -130,6 +116,20 @@ export function recordedMatchStages(value: unknown): MatchType[] | undefined {
   return value.every((v): v is MatchType => known.includes(v as MatchType)) ? value : undefined;
 }
 
+/**
+ * The ONE computation of "is this cross-repo answer complete?" (KTD10).
+ *
+ * Three surfaces can return a partial cross-repo answer — impact, trace, and
+ * the contract listing — and each used to decide for itself, in its own
+ * vocabulary, which is how two of them ended up saying it in prose only. The
+ * answer is the same structured triple `GroupImpactResult` already carries, so
+ * an agent reading any of them learns "complete" vs "floor" the same way.
+ *
+ * `truncationFields` derives `riskEpistemic` from `truncated` mechanically, and
+ * is reused here rather than re-implemented for the same reason it exists: the
+ * marker that says "this is a floor, not a verdict" may never drift away from
+ * the flag that says the answer was cut short (#2787).
+ */
 export function crossRepoCompleteness(input: CrossRepoCompletenessInput): CrossRepoCompleteness {
   const incompleteRepos = [
     ...new Set([...(input.unreadableRepos ?? []), ...(input.missingRepos ?? [])]),

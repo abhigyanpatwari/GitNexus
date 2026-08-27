@@ -656,7 +656,15 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
-  await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(meta, null, 2));
+  // Strip the reader-only fields HERE rather than at each writer. `readBridgeMeta`
+  // sets both on what it returns, so any caller that reads-modifies-writes would
+  // round-trip them to disk — and `pairedWithDatabase` is the poisonous one:
+  // persisted, it tells every future reader the pair was verified when nothing
+  // verified it. That rule used to live in the body of the only such caller,
+  // which held exactly as long as there was one. There are now three writers and
+  // two of them read first. Enforced at the boundary, no writer can get it wrong.
+  const { repoListsUnreadable: _reader1, pairedWithDatabase: _reader2, ...persisted } = meta;
+  await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(persisted, null, 2));
 }
 
 /**
@@ -938,10 +946,8 @@ export async function refreshPreservedBridgeMeta(
   const refreshed: BridgeMeta = { ...existing, ...diagnostics };
   // NEVER PERSISTED (see `BridgeMeta`): both are things a READER computes ABOUT
   // a file, and this is the first code in the repo that reads metadata and
-  // writes it back. `pairedWithDatabase` is the poisonous one — persisted, it
-  // would tell every future reader that the pair had been verified.
-  delete refreshed.repoListsUnreadable;
-  delete refreshed.pairedWithDatabase;
+  // writes it back. The strip itself now lives in `writeBridgeMeta`, so every
+  // writer inherits it rather than each remembering.
 
   if (paired) {
     const stat = await fsp.stat(dbPath).catch(() => null);

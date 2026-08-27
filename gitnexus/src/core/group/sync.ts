@@ -816,16 +816,16 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // withdraws the claim without touching the database — the previous
           // graph stays queryable, it just stops being called complete.
           const withdrawn = await markBridgeProvenanceUnknown(groupDir);
+          const provenanceNote = withdrawn
+            ? 'Its metadata has been marked provenance-unknown, so those answers now report as ' +
+              'a lower bound rather than as complete.'
+            : 'Its metadata could NOT be marked provenance-unknown, so those answers may still ' +
+              'report as complete despite describing an older sync.';
           logger.warn(
             { err: msg, groupDir, bridgeProvenanceWithdrawn: withdrawn },
             '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
               'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
-              "the previous sync's contracts. " +
-              (withdrawn
-                ? 'Its metadata has been marked provenance-unknown, so those answers now ' +
-                  'report as a lower bound rather than as complete. '
-                : 'Its metadata could NOT be marked provenance-unknown, so those answers may ' +
-                  'still report as complete despite describing an older sync. ') +
+              `the previous sync's contracts. ${provenanceNote} ` +
               'Re-run `gitnexus group sync` to retry.',
           );
         }

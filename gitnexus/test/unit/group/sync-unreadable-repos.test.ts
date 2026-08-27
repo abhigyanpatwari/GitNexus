@@ -978,18 +978,39 @@ describe('the warning after a failed bridge write', () => {
     // reports the new registry — two public surfaces, contradictory claims,
     // out of one sync. Marking provenance unknown withdraws the completeness
     // claim without deleting a graph still useful as a floor.
-    await writeBridgeMeta(groupDir, {
-      version: 1,
-      generatedAt: '2026-01-01T00:00:00.000Z',
-      missingRepos: [],
-      unreadableRepos: [],
-    });
+    // `unreadableRepos` is deliberately UNREADABLE here, not merely empty: that
+    // is what makes `readBridgeMeta` set the reader-only `repoListsUnreadable`
+    // on what it returns, so the assertion below can actually catch a
+    // read-modify-write writer round-tripping it back to disk. Seeded with a
+    // valid list the check passes whether or not the strip exists.
+    fs.writeFileSync(
+      path.join(groupDir, 'meta.json'),
+      JSON.stringify({
+        version: 1,
+        generatedAt: '2026-01-01T00:00:00.000Z',
+        missingRepos: [],
+        unreadableRepos: 'not-a-list',
+      }),
+    );
+    expect((await readBridgeMeta(groupDir)).repoListsUnreadable).toBe(true);
     expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBeUndefined();
 
     writeBridgeFailure = new Error('ENOSPC: no space left on device');
     await runSync();
 
     expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBe(true);
+
+    // ...and the withdrawal must not persist the reader-only fields.
+    // `readBridgeMeta` sets both on what it returns, so a read-modify-write
+    // writer round-trips them unless the write boundary strips them.
+    // `pairedWithDatabase` is the poisonous one: persisted, it would tell every
+    // later reader the pair was verified when nothing verified it.
+    const raw = JSON.parse(fs.readFileSync(path.join(groupDir, 'meta.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(raw).not.toHaveProperty('pairedWithDatabase');
+    expect(raw).not.toHaveProperty('repoListsUnreadable');
   });
 
   // control: a sync whose bridge write SUCCEEDS must not withdraw provenance —

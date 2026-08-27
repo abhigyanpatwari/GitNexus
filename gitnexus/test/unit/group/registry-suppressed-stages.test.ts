@@ -162,27 +162,15 @@ describe('cross-repo completeness reflects a suppressed stage', () => {
 });
 
 /**
- * The reason has to be REACHABLE, not just documented.
+ * The reason must stay a DECLARED member of the union agents branch on.
  *
- * A guard in `tools.test.ts` asserts every truncation reason is explained in
- * the impact tool description. That check passed while `runGroupImpact`
- * hardcoded its fallback and could never emit `'suppressed-stage'` — a
- * documented value no surface could produce. These pin the emitting side.
+ * That it is reachable from real code is already pinned above, by a case that
+ * drives `crossRepoCompleteness` and gets the value back. What that cannot see
+ * is the union itself shrinking: a guard in `tools.test.ts` asserts every
+ * member is documented, so dropping a member keeps that guard green while every
+ * consumer silently loses the value.
  */
 describe('the suppressed-stage reason is reachable, not just documented', () => {
-  it('is the reason when a stage was suppressed and every repo read fine', () => {
-    const out = crossRepoCompleteness({
-      unreadableRepos: [],
-      missingRepos: [],
-      suppressedMatchStages: ['wildcard'],
-      provenanceUnknown: false,
-      inScope: () => true,
-    });
-
-    expect(out.truncated).toBe(true);
-    expect(out.truncationReason).toBe('suppressed-stage');
-  });
-
   it('is a declared member of the reason union agents branch on', () => {
     // If a future change drops it from the union, the tool description guard
     // would still pass while every consumer lost the value.

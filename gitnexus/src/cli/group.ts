@@ -435,17 +435,27 @@ export function registerGroupCommands(program: Command): void {
             // same way #2787's totals did.
             const dropped = (raw as { truncatedRepos?: string[] })?.truncatedRepos ?? [];
             const reason = (raw as { truncationReason?: string })?.truncationReason;
-            // A floor caused by the flag is not a floor caused by the walk.
-            // Reported together, an operator re-runs the query or repairs a
-            // repo and gets the identical answer, because neither is the fix.
-            console.log(
-              reason === 'suppressed-stage'
-                ? '  risk is a LOWER BOUND — the last sync skipped a matching stage (--exact-only);' +
-                    ' re-run `gitnexus group sync` without it for the complete graph'
-                : dropped.length > 0
-                  ? `  risk is a LOWER BOUND — fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
-                  : '  risk is a LOWER BOUND — the local impact walk did not complete (every bridge crossing was traversed)',
-            );
+            // Keyed on the REASON, not on which incidental fact happens to be
+            // non-empty. `truncatedRepos` is populated for a structural gap too
+            // — the bridge's incomplete repos are unioned into it even when ZERO
+            // crossings were attempted — so branching on its length first
+            // reported "fan-out stopped early" for a run where nothing stopped
+            // early, and omitted the only remedy that works. Same false-cause
+            // shape the contract listing was just re-gated for, one command over.
+            const floorReason = (): string => {
+              if (reason === 'suppressed-stage') {
+                return 'the last sync skipped a matching stage (--exact-only); re-run `gitnexus group sync` without it for the complete graph';
+              }
+              if (reason === 'incomplete-sync') {
+                return dropped.length > 0
+                  ? `the last sync could not account for ${dropped.join(', ')}; their contracts are absent from every query against this bridge — re-run \`gitnexus group sync\``
+                  : 'the last sync could not say which repos it read — re-run `gitnexus group sync`';
+              }
+              return dropped.length > 0
+                ? `fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
+                : 'the local impact walk did not complete (every bridge crossing was traversed)';
+            };
+            console.log(`  risk is a LOWER BOUND — ${floorReason()}`);
           }
         }
       } finally {
