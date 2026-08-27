@@ -195,6 +195,45 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     const allFetchCalls = [...parseFetchCalls];
 
     const routeRegistry = new Map<string, RouteEntry>();
+    /**
+     * Registry keys written straight from the file list below, never through
+     * `addRoute`. `resolveRouteHandlerSymbols` walks only `extractedRoutes` and
+     * `decoratorRoutes`, so it never sees these URLs and its `claimed` set never
+     * contains them — which means a handler stamped on one of these keys was
+     * resolved for a DIFFERENT route.
+     *
+     * That is reachable, and it fabricates rather than omits (#3049). A
+     * method-agnostic route (`@All`, a Django function view, a verb-less
+     * dispatch guard) keys by URL alone via `routeNodeKey`, so it collides with
+     * a file-convention route at the same URL. It claims the key unopposed in
+     * `claim()`, then loses first-writer-wins here in `addRoute` and is dropped
+     * as a duplicate — and without this guard the surviving file-convention node
+     * would read that handler and present another application's controller
+     * method as its own. `api_impact` is documented to be run BEFORE editing a
+     * route handler, so it would answer with a handler from the wrong app.
+     *
+     * Dropping the losing route is a separate and deliberate consequence of
+     * URL-only identity; this only stops the false attribution.
+     *
+     * Membership is recorded AT the pre-seeding `set`, mirroring `claim()` in
+     * call-processor.ts, which writes `claimed` and its result map together
+     * rather than re-deriving either by rescanning. Identifying pre-seeded
+     * entries by matching `entry.source` against a list of source strings would
+     * spell them a second time, away from the sites that produce them — and a
+     * fourth pre-seeded source added later would then reopen #3049 in silence.
+     * `addRoute` deliberately does NOT record here: its routes ARE
+     * handler-resolved, so suppressing them would widen the guard into a bug of
+     * its own.
+     *
+     * Each `add` below sits inside its own `!routeRegistry.has(key)` gate, as
+     * every `routeRegistry.set` in this phase does: the map is write-once per
+     * key, so a losing candidate cannot record a key it did not claim and no
+     * later writer can take a recorded key away. Key-membership is therefore
+     * equivalent to source-matching by construction — pre-seeded routes carry no
+     * verb and `routeNodeKey(undefined, url) === url` — which is why the
+     * two-candidates-one-URL case needs no fixture to settle it.
+     */
+    const preSeededKeys = new Set<string>();
 
     // Detect Expo Router app/ roots vs Next.js app/ roots (monorepo-safe)
     const expoAppRoots = new Set<string>();
@@ -217,32 +256,33 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       }
     }
 
+    // One writer for every pre-seeded route, so recording membership cannot be
+    // forgotten. Inlining `has` / `set` / `add` at each site made the invariant
+    // a convention three call sites had to remember — and a fourth source that
+    // forgot the `add` would reopen #3049 exactly as silently as the source-set
+    // it replaced. This is the shape `claim()` in call-processor.ts uses for the
+    // same reason: one helper writes the collection and its key set together.
+    const preSeed = (url: string, entry: Omit<RouteEntry, 'url'>): boolean => {
+      if (routeRegistry.has(url)) return false;
+      routeRegistry.set(url, { ...entry, url });
+      preSeededKeys.add(url);
+      return true;
+    };
+
     for (const p of allPaths) {
       if (expoAppPaths.has(p)) {
         const expoURL = expoFileToRouteURL(p);
-        if (expoURL && !routeRegistry.has(expoURL)) {
-          routeRegistry.set(expoURL, {
-            filePath: p,
-            source: 'expo-filesystem-route',
-            url: expoURL,
-          });
+        if (expoURL && preSeed(expoURL, { filePath: p, source: 'expo-filesystem-route' })) {
           continue;
         }
       }
       const nextjsURL = nextjsFileToRouteURL(p);
-      if (nextjsURL && !routeRegistry.has(nextjsURL)) {
-        routeRegistry.set(nextjsURL, {
-          filePath: p,
-          source: 'nextjs-filesystem-route',
-          url: nextjsURL,
-        });
+      if (nextjsURL && preSeed(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' })) {
         continue;
       }
       if (p.endsWith('.php')) {
         const phpURL = phpFileToRouteURL(p);
-        if (phpURL && !routeRegistry.has(phpURL)) {
-          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route', url: phpURL });
-        }
+        if (phpURL) preSeed(phpURL, { filePath: p, source: 'php-file-route' });
       }
     }
 
@@ -311,7 +351,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         const { source: routeSource, method: routeMethod, url } = entry;
         const handlerPath = handlerPathFor(routeKey, entry);
         const content = handlerContents.get(handlerPath);
-        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
+        // A pre-seeded route can never legitimately appear in
+        // `routeHandlerSymbols`, so a key that does is a route that LOST (#3049).
+        const handlerSymbolId = preSeededKeys.has(routeKey)
+          ? undefined
+          : routeHandlerSymbols.get(routeKey);
         const analysisContent =
           entry.source === DATA_ROUTE_TABLE_SOURCE && content
             ? handlerSymbolContent(
