@@ -13,7 +13,11 @@
  *   • a CONSTANT class prefix suppresses every method route under that class,
  *     literal ones included (the prefix is not knowable here, and emitting the
  *     methods unprefixed would publish paths the application does not serve) —
- *     the rule `java.ts` already applies;
+ *     the rule `java.ts` already applies — in both the positional and the
+ *     `value =` spelling, which take different branches of
+ *     `kotlinRouteArgumentExpression`;
+ *   • an OpenFeign consumer folds a constant method path, and is suppressed by a
+ *     constant interface prefix for the same reason a provider is;
  *   • an unresolvable constant emits nothing rather than a guessed path;
  *   • without a repo context the plugin emits nothing (the documented skip
  *     floor, and the branch the 1-argument guards cannot reach);
@@ -43,8 +47,8 @@ const parseSource = (p: Parser, src: string): Parser.Tree => {
   return p.parse(src);
 };
 
-/** prepareRepo + a 3-argument scan over every file; provider contracts only. */
-function providers(files: Record<string, string>): string[] {
+/** prepareRepo + a 3-argument scan over every file; contracts of one role. */
+function contracts(files: Record<string, string>, role: 'provider' | 'consumer'): string[] {
   const ctx = plugin.prepareRepo?.({
     repoPath: '/virtual',
     files: Object.keys(files),
@@ -55,14 +59,18 @@ function providers(files: Record<string, string>): string[] {
   const out: string[] = [];
   for (const rel of Object.keys(files)) {
     for (const d of plugin.scan(parseSource(new Parser(), files[rel]), ctx, rel)) {
-      if (d.role === 'provider') out.push(`${d.method} ${d.path}`);
+      if (d.role === role) out.push(`${d.method} ${d.path}`);
     }
   }
   return out.sort();
 }
 
+const providers = (files: Record<string, string>): string[] => contracts(files, 'provider');
+const consumers = (files: Record<string, string>): string[] => contracts(files, 'consumer');
+
 const CONSTS = 'src/main/kotlin/com/example/app/api/ApiPaths.kt';
 const CONTROLLER = 'src/main/kotlin/com/example/app/web/OrderController.kt';
+const CLIENT = 'src/main/kotlin/com/example/app/client/OrderClient.kt';
 
 const CONSTS_SRC = `package com.example.app.api
 
@@ -173,6 +181,33 @@ class OrderController {
     ).toEqual([]);
   });
 
+  it('suppresses them just the same when the class prefix is a NAMED argument', () => {
+    // `@RequestMapping(value = ApiPaths.BASE)` takes the other branch of
+    // `kotlinRouteArgumentExpression` (read the key, then take `namedChild(1)`)
+    // than the positional case above. Both must reach the same verdict: a
+    // regression in the named branch would let the class escape suppression and
+    // publish every method under it unprefixed.
+    expect(
+      providers({
+        [CONSTS]: CONSTS_SRC,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+@RequestMapping(value = ApiPaths.BASE)
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+
+    @GetMapping("/literal")
+    fun literal() {}
+}
+`,
+      }),
+    ).toEqual([]);
+  });
+
   it('still applies a LITERAL class prefix to a folded method path', () => {
     expect(
       providers({
@@ -226,6 +261,60 @@ class OrderController {
 `,
     );
     expect(plugin.scan(tree).filter((d) => d.role === 'provider')).toEqual([]);
+  });
+
+  it('folds a constant method path on a @FeignClient interface', () => {
+    expect(
+      consumers({
+        [CONSTS]: CONSTS_SRC,
+        [CLIENT]: `package com.example.app.client
+
+import com.example.app.api.ApiPaths
+
+@FeignClient(name = "orders")
+interface OrderClient {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list()
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('drops a @FeignClient consumer whose interface prefix is a CONSTANT', () => {
+    // In tree-sitter-kotlin an `interface` is a `class_declaration`, so the
+    // suppression rule reaches a Feign interface too — and it must, for the same
+    // reason it reaches a controller: the prefix is not knowable here, so the
+    // alternative is publishing the remote call at `/orders` when the service is
+    // really called at `/api/v1/orders`. A dropped consumer edge is a missing
+    // fact; a wrong URL is a false edge.
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CLIENT]: `package com.example.app.client
+
+import com.example.app.api.ApiPaths
+
+@FeignClient(name = "orders")
+@RequestMapping(ApiPaths.BASE)
+interface OrderClient {
+    @GetMapping("/orders")
+    fun list()
+}
+`,
+    };
+    expect(consumers(files)).toEqual([]);
+    // Control: the identical interface with a LITERAL prefix is still detected,
+    // so the empty result above is the suppression rule and not a blind spot in
+    // Feign detection itself.
+    expect(
+      consumers({
+        ...files,
+        [CLIENT]: files[CLIENT].replace(
+          '@RequestMapping(ApiPaths.BASE)',
+          '@RequestMapping("/api/v1")',
+        ),
+      }),
+    ).toEqual(['GET /api/v1/orders']);
   });
 
   it('leaves literal routes unchanged and emits each exactly once', () => {

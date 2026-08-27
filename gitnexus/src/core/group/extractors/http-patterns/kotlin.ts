@@ -1225,6 +1225,16 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         // A constant-valued class prefix cannot be resolved here, so every route
         // under such a class is dropped rather than emitted at a wrong
         // (unprefixed) path — the rule `java.ts` applies for Java.
+        //
+        // This reaches a @FeignClient INTERFACE too, because tree-sitter-kotlin
+        // models `interface` as a `class_declaration`, and it should: Spring
+        // Cloud prepends a type-level @RequestMapping to every method of the
+        // client, so an unfoldable prefix makes the remote URL unknowable
+        // whether or not @FeignClient(path) is also present. Java diverges here
+        // only by accident of its grammar — `findEnclosingClass` skips
+        // `interface_declaration`, so `java.ts` still emits such a consumer at
+        // its unprefixed path. Aligning Java is a change to Java's behavior and
+        // belongs in its own follow-up, not in the Kotlin binding.
         if (enclosingClass && classesWithUnfoldablePrefix.has(enclosingClass.id)) continue;
         // A @(Get|...)Mapping inside a @FeignClient interface is an OpenFeign
         // consumer (a remote call), not a route this service serves.

@@ -26,6 +26,7 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
+import { MAX_FOLD_LENGTH } from '../../src/core/ingestion/route-extractors/constant-resolver.js';
 import {
   extractKotlinModuleConstants,
   foldKotlinOperands,
@@ -485,6 +486,69 @@ import com.example.app.api.ApiPaths
 `,
       });
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
+    });
+  });
+
+  describe('the fold is bounded in output, depth and time', () => {
+    /** `object Doubling { const val X<n> = <leaf>; val X<k> = X<k+1> + X<k+1> … }`. */
+    const doublingChain = (levels: number, leaf: string): string => {
+      const lines = [`    const val X${levels} = "${leaf}"`];
+      for (let i = levels - 1; i >= 0; i--) lines.push(`    val X${i} = X${i + 1} + X${i + 1}`);
+      return `package com.example.app.api\n\nobject Doubling {\n${lines.join('\n')}\n}\n`;
+    };
+    const DOUBLING_KEY = 'src/main/kotlin/com/example/app/api/Doubling.kt';
+
+    it('folds a 30-level shared-descendant DAG instead of exploring 2^30 paths', () => {
+      // Every intermediate value here is the EMPTY string, so MAX_FOLD_LENGTH
+      // never fires and only the success memo keeps this from re-folding each
+      // child once per reference — O(2^depth). The assertion is the explicit
+      // timeout: a regression does not fail this test slowly, it fails it.
+      const repo = repoOf({ [DOUBLING_KEY]: doublingChain(30, '') });
+      expect(resolveKotlinConstant(DOUBLING_KEY, 'Doubling.X0', repo)).toBe('');
+    }, 5_000);
+
+    it('caps output at MAX_FOLD_LENGTH, which the depth cap cannot bound', () => {
+      // Same shape with a one-character leaf: output doubles per level while
+      // depth only increments, so 13 levels land exactly on MAX_FOLD_LENGTH and
+      // 14 overrun it. Pinned from both sides — a chain deep enough to matter in
+      // practice (30 levels, a gigabyte of string) is the same code path.
+      const foldOf = (levels: number): string | null =>
+        resolveKotlinConstant(
+          DOUBLING_KEY,
+          'Doubling.X0',
+          repoOf({ [DOUBLING_KEY]: doublingChain(levels, 'a') }),
+        );
+      expect(foldOf(13)).toHaveLength(MAX_FOLD_LENGTH);
+      expect(foldOf(14)).toBeNull();
+    });
+
+    /** `object Link { const val X<n> = "/end"; val X<k> = X<k+1> … }`. */
+    const referenceChain = (links: number): string => {
+      const lines = [`    const val X${links} = "/end"`];
+      for (let i = links - 1; i >= 0; i--) lines.push(`    val X${i} = X${i + 1}`);
+      return `package com.example.app.api\n\nobject Link {\n${lines.join('\n')}\n}\n`;
+    };
+    const LINK_KEY = 'src/main/kotlin/com/example/app/api/Link.kt';
+
+    it('resolves a chain inside the cross-file depth cap but stops past it', () => {
+      // Each link costs one level of `resolveWithState`, so a 30-link chain
+      // resolves and a 40-link one runs into the cap. Asserted from both sides:
+      // a bare `toBeNull()` would also pass if the fold had stopped working.
+      expect(
+        resolveKotlinConstant(LINK_KEY, 'Link.X0', repoOf({ [LINK_KEY]: referenceChain(30) })),
+      ).toBe('/end');
+      expect(
+        resolveKotlinConstant(LINK_KEY, 'Link.X0', repoOf({ [LINK_KEY]: referenceChain(40) })),
+      ).toBeNull();
+    });
+
+    it('caps operand parsing on a pathologically long `+` chain', () => {
+      // `A + B + C` nests left-associatively, so an n-term concatenation is n-1
+      // levels deep and a long enough one would recurse without the parse cap.
+      const chainOf = (terms: number): string =>
+        `val X = ${Array.from({ length: terms }, (_, i) => `"/${i}"`).join(' + ')}`;
+      expect(parseKotlinConstOperands(firstInitializer(chainOf(60)))).toHaveLength(60);
+      expect(parseKotlinConstOperands(firstInitializer(chainOf(80)))).toBeNull();
     });
   });
 
