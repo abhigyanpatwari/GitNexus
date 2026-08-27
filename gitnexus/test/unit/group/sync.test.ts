@@ -27,11 +27,10 @@ describe('syncGroup', () => {
       thrift: false,
       topics: false,
       shared_libs: false,
-      embedding_fallback: false,
       includes: false,
       workspace_deps: false,
     },
-    matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    matching: { max_candidates_per_step: 3 },
   });
 
   it('returns SyncResult with contracts and cross-links', async () => {
@@ -224,11 +223,10 @@ describe('syncGroup', () => {
         thrift: false,
         topics: false,
         shared_libs: false,
-        embedding_fallback: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: { max_candidates_per_step: 3 },
     };
 
     const result = await syncGroup(config, {
@@ -679,11 +677,10 @@ service OrderService {
         thrift: false,
         topics: false,
         shared_libs: false,
-        embedding_fallback: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: { max_candidates_per_step: 3 },
     };
 
     const cap = _captureLogger();
@@ -750,11 +747,10 @@ service OrderService {
           thrift: false,
           topics: false,
           shared_libs: false,
-          embedding_fallback: false,
           includes: false,
           workspace_deps: workspaceDeps,
         },
-        matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+        matching: { max_candidates_per_step: 3 },
       };
     }
 
@@ -908,11 +904,10 @@ service OrderService {
           thrift: false,
           topics: false,
           shared_libs: false,
-          embedding_fallback: false,
           includes: false,
           workspace_deps: true,
         },
-        matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+        matching: { max_candidates_per_step: 3 },
       };
 
       const result = await syncGroup(config, {
@@ -1000,11 +995,10 @@ service OrderService {
         thrift: false,
         topics: false,
         shared_libs: false,
-        embedding_fallback: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: { max_candidates_per_step: 3 },
     };
 
     const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
@@ -1085,11 +1079,10 @@ service OrderService {
         thrift: false,
         topics: false,
         shared_libs: false,
-        embedding_fallback: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: { max_candidates_per_step: 3 },
     };
 
     const result = await syncGroup(config, {
@@ -1130,11 +1123,10 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
         thrift: false,
         topics: false,
         shared_libs: false,
-        embedding_fallback: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: { max_candidates_per_step: 3 },
     };
   };
 

@@ -93,11 +93,10 @@ const config = (): GroupConfig => ({
     thrift: false,
     topics: false,
     shared_libs: false,
-    embedding_fallback: false,
     includes: false,
     workspace_deps: false,
   },
-  matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+  matching: { max_candidates_per_step: 3 },
 });
 
 describe('syncGroup when one extractor fails partway through a repo', () => {

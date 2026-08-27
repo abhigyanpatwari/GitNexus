@@ -850,7 +850,7 @@ WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single
   },
   {
     name: 'group_sync',
-    description: `Rebuild the Contract Registry (contracts.json) for a group: extract HTTP contracts, apply manifest links, exact-match cross-links.
+    description: `Rebuild the Contract Registry (contracts.json) for a group: extract HTTP contracts, apply manifest links, then cross-link by exact contract-id match followed by wildcard service match.
 
 WHEN TO USE: After changing group.yaml or re-indexing member repos.
 
@@ -866,7 +866,11 @@ READ THE RESULT: \`missingRepos\` are configured repos with no entry in the regi
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Group name' },
-        exactOnly: { type: 'boolean', description: 'Exact match only in cascade' },
+        exactOnly: {
+          type: 'boolean',
+          description:
+            'Skip the wildcard service-match stage; cross-link only on exact contract-id match. Manifest links still apply.',
+        },
       },
       required: ['name'],
     },

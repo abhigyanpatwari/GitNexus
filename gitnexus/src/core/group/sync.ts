@@ -28,6 +28,7 @@ import { IncludeExtractor } from './extractors/include-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
 import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
+import type { WildcardMatchResult } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { getContractRegistryPath, readContractRegistry, writeContractRegistry } from './storage.js';
@@ -43,7 +44,6 @@ export interface SyncOptions {
   resolveRepoHandle?: (registryName: string, groupPath: string) => Promise<RepoHandle | null>;
   skipWrite?: boolean;
   groupDir?: string;
-  allowStale?: boolean;
   verbose?: boolean;
   exactOnly?: boolean;
 }
@@ -560,7 +560,18 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
   const providerIndex = buildProviderIndex(autoContracts, config.matching);
   const { matched, unmatched } = runExactMatch(autoContracts, providerIndex, config.matching);
-  const wildcard = runWildcardMatch(unmatched, providerIndex);
+  // `exactOnly` had the same defect this PR removes `skipEmbeddings` for: it was
+  // declared, threaded through the CLI and MCP, and never read, so `--exact-only`
+  // silently produced wildcard links anyway. It is honoured here rather than
+  // deleted because — unlike the never-built BM25/embedding stages — the stage it
+  // names does exist, so the flag describes a real choice. Contracts left
+  // unmatched by the exact pass stay unmatched, which is exactly what it promises.
+  // `remaining`, not `unmatched`: this feeds SyncResult.unmatched below, so every
+  // contract the exact pass could not place has to be reported as unmatched
+  // rather than silently dropped from the count.
+  const wildcard: WildcardMatchResult = opts?.exactOnly
+    ? { matched: [], remaining: unmatched }
+    : runWildcardMatch(unmatched, providerIndex);
 
   // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the

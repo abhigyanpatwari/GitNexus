@@ -54,9 +54,8 @@ const makeConfig = (name: string): GroupConfig => ({
     shared_libs: false,
     includes: false,
     workspace_deps: false,
-    embedding_fallback: false,
   },
-  matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+  matching: { max_candidates_per_step: 3 },
 });
 
 const parentContract: StoredContract = {

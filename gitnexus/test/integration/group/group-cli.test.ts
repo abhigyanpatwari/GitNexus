@@ -71,6 +71,41 @@ describe('group CLI', () => {
     expect(source).not.toMatch(blanketClosePattern);
   });
 
+  /**
+   * `--skip-embeddings` and `--allow-stale` were both accepted by commander and
+   * then read by nothing: the first named a BM25/embedding cascade that was
+   * never built, the second a stale-index warning that no sync path ever
+   * emitted. An operator who passed either got a silent no-op and a clean exit,
+   * which is worse than the flag not existing — so they are gone, and the CLI
+   * must now say so.
+   *
+   * `unknown option` is asserted rather than just a nonzero exit because
+   * `group sync <missing-group>` ALSO exits nonzero (GroupNotFoundError), so
+   * the exit code alone cannot tell "the flag is rejected" from "the group is
+   * not there". The control below is what makes that distinction visible.
+   */
+  it('test_sync_rejects_removed_skip_embeddings_flag', () => {
+    const r = runGroup(['sync', 'acme', '--skip-embeddings']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("unknown option '--skip-embeddings'");
+  });
+
+  it('test_sync_rejects_removed_allow_stale_flag', () => {
+    const r = runGroup(['sync', 'acme', '--allow-stale']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain("unknown option '--allow-stale'");
+  });
+
+  it('control: the surviving --exact-only flag is still parsed', () => {
+    // Without this, the two cases above would also pass against a `group sync`
+    // that rejected EVERY option. This one reaches the action handler and
+    // fails on the group instead, which is the proof that commander accepted
+    // the flag itself.
+    const r = runGroup(['sync', 'no-such-group', '--exact-only']);
+    expect(r.stderr).not.toContain('unknown option');
+    expect(`${r.stderr}\n${r.stdout}`).toContain('no-such-group');
+  });
+
   it('group impact requires --target and --repo', () => {
     const c = runGroup(['create', 'impcli']);
     expect(c.status).toBe(0);

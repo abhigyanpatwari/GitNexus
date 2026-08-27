@@ -87,6 +87,21 @@ matching:
     expect(config.repos).toEqual({ app: 'my-app' });
     expect(config.detect.http).toBe(true);
     expect(config.matching.max_candidates_per_step).toBe(3);
+
+    // Pinned behavior: PRESERVE, not strip. The parser spreads the raw block
+    // over its defaults (`{ ...DEFAULT_MATCHING, ...raw.matching }`), so a key
+    // it no longer knows about survives into the returned config.
+    //
+    // Every assertion above is satisfied by the defaults alone, so without this
+    // the test only proves "does not throw" — it would stay green under a
+    // future strict validator that silently DROPPED the operator's legacy keys.
+    // That is not a harmless drop: `group add` and `group remove` in
+    // gitnexus/src/cli/group.ts round-trip the file through `loadGroupConfig`
+    // → `yaml.dump` → write, so anything the parser discards is deleted from
+    // the operator's checked-in group.yaml the next time they add a repo.
+    expect((config.matching as unknown as Record<string, unknown>).bm25_threshold).toBe(0.7);
+    expect((config.matching as unknown as Record<string, unknown>).embedding_threshold).toBe(0.65);
+    expect((config.detect as unknown as Record<string, unknown>).embedding_fallback).toBe(true);
   });
 
   it('defaults thrift detection to true', () => {

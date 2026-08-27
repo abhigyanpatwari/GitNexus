@@ -18,4 +18,19 @@ describe('Group MCP tools', () => {
     const tool = GITNEXUS_TOOLS.find((t) => t.name === 'group_sync')!;
     expect(tool.inputSchema.required).toContain('name');
   });
+
+  it('group_sync no longer advertises skipEmbeddings, and still advertises exactOnly', () => {
+    // `skipEmbeddings` named a BM25/embedding cascade that was never built —
+    // the handler read the parameter and every value took the same code path,
+    // so the schema advertised a choice an agent could not actually make. It is
+    // gone from `SyncOptions`, the CLI and here.
+    //
+    // `exactOnly` is asserted in the same test on purpose: it is the parameter
+    // NEXT TO the deleted one, it survived, and it now does what it says (see
+    // sync-exact-only.test.ts). Pinning only the absence would stay green if a
+    // later edit removed the wrong one of the two.
+    const tool = GITNEXUS_TOOLS.find((t) => t.name === 'group_sync')!;
+    expect(tool.inputSchema.properties).not.toHaveProperty('skipEmbeddings');
+    expect(tool.inputSchema.properties.exactOnly).toMatchObject({ type: 'boolean' });
+  });
 });

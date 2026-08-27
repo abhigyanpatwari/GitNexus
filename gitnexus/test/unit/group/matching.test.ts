@@ -636,8 +636,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('exclude_links_paths prevents cross-links for configured paths', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: ['/ping'],
       exclude_links_param_only_paths: false,
@@ -659,8 +657,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('excluded providers do not appear in matched', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: ['/health'],
       exclude_links_param_only_paths: false,
@@ -679,8 +675,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('excluded contracts do not appear in unmatched', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: ['/ping'],
       exclude_links_param_only_paths: false,
@@ -700,8 +694,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('exclude_links_param_only_paths filters /{param} and /{param}/{param}', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: [],
       exclude_links_param_only_paths: true,
@@ -723,8 +715,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('mixed routes like /users/{param} are NOT excluded by param_only', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: [],
       exclude_links_param_only_paths: true,
@@ -757,8 +747,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('trailing slash on contractId still matches configured exclusion', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: ['/ping'],
       exclude_links_param_only_paths: false,
@@ -778,8 +766,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('root path exclusion ["/"] suppresses http::GET::/ contracts', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: ['/'],
       exclude_links_param_only_paths: false,
@@ -802,8 +788,6 @@ describe('buildNoisyContractFilter (via runExactMatch)', () => {
 
   it('non-HTTP contracts are never filtered', () => {
     const matchingConfig: MatchingConfig = {
-      bm25_threshold: 0.7,
-      embedding_threshold: 0.65,
       max_candidates_per_step: 3,
       exclude_links_paths: ['/ping'],
       exclude_links_param_only_paths: true,

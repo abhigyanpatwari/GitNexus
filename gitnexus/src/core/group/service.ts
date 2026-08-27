@@ -405,7 +405,6 @@ export class GroupService {
       result = await syncGroup(config, {
         groupDir,
         exactOnly: Boolean(params.exactOnly),
-        allowStale: Boolean(params.allowStale),
         verbose: Boolean(params.verbose),
       });
     } catch (err) {

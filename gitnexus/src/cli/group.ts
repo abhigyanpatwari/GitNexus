@@ -2,6 +2,7 @@
 import { createRequire } from 'node:module';
 import type { Command } from 'commander';
 import type { RegistryWriteOutcome } from '../core/group/sync.js';
+import type { MatchType } from '../core/group/types.js';
 import { logger } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -196,8 +197,7 @@ export function registerGroupCommands(program: Command): void {
   group
     .command('sync <name>')
     .description('Sync Contract Registry — extract contracts and build cross-links')
-    .option('--exact-only', 'Exact match only')
-    .option('--allow-stale', 'Skip stale index warnings')
+    .option('--exact-only', 'Skip wildcard service matching (exact contract-id match only)')
     .option('--verbose', 'Show each cross-link detail')
     .option('--json', 'JSON output')
     .action(async (name: string, opts: Record<string, boolean | undefined>) => {
@@ -215,7 +215,6 @@ export function registerGroupCommands(program: Command): void {
       try {
         result = await syncGroup(config, {
           groupDir,
-          allowStale: Boolean(opts.allowStale),
           verbose: Boolean(opts.verbose),
           exactOnly: Boolean(opts.exactOnly),
         });
@@ -255,10 +254,35 @@ export function registerGroupCommands(program: Command): void {
               `\n     Index them with \`gitnexus analyze\`, or remove them from group.yaml.`,
           );
         }
-        console.log(`\nMatching cascade:`);
-        const exactLinks = result.crossLinks.filter((l) => l.matchType === 'exact');
-        console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);
-        console.log(`  unmatched: ${result.unmatched.length} contracts`);
+        // Every stage that produced a link, not just `exact`. This used to print
+        // `Matching cascade:` and then count `exact` alone, while the `Wrote
+        // contracts.json (…)` line below reports `result.crossLinks.length` —
+        // which also includes `manifest` and `wildcard` links. For any group with
+        // those, the two numbers disagreed with nothing on screen explaining why.
+        // Summing the stages here makes them reconcile by construction.
+        console.log(`\nMatching:`);
+        // Exhaustive by construction, same idiom as OUTCOME_LINE below: adding a
+        // MatchType fails the build here instead of silently going uncounted and
+        // reopening the very mismatch this replaced. Every stage prints even at
+        // zero — a stage that is absent reads as "did not apply", not "found none".
+        const STAGE_COUNTS: Record<MatchType, number> = {
+          exact: 0,
+          manifest: 0,
+          wildcard: 0,
+        };
+        // `?? 0` rather than `+= 1`: a legacy registry can carry a matchType that
+        // is no longer in the union ('bm25'/'embedding' were removed), and
+        // `undefined + 1` would print `NaN cross-links` in an operator-facing
+        // summary. Counting the unknown stage under its own name keeps the
+        // stage lines reconciling with the total below, which is the point.
+        for (const link of result.crossLinks) {
+          STAGE_COUNTS[link.matchType] = (STAGE_COUNTS[link.matchType] ?? 0) + 1;
+        }
+        for (const [stage, count] of Object.entries(STAGE_COUNTS)) {
+          const confidence = stage === 'exact' ? ' (confidence 1.0)' : '';
+          console.log(`  ${`${stage}:`.padEnd(10)} ${count} cross-links${confidence}`);
+        }
+        console.log(`  ${'unmatched:'.padEnd(10)} ${result.unmatched.length} contracts`);
         // Driven by what actually happened to the file. This line used to be
         // unconditional, so a run that deliberately preserved the previous
         // registry still announced `Wrote contracts.json (0 contracts, 0

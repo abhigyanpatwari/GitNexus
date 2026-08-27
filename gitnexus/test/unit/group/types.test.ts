@@ -24,11 +24,10 @@ describe('Group types', () => {
         thrift: true,
         topics: true,
         shared_libs: true,
-        embedding_fallback: true,
         includes: true,
         workspace_deps: true,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: { max_candidates_per_step: 3 },
     };
     expect(config.version).toBe(1);
     expect(config.name).toBe('company');
@@ -94,11 +93,10 @@ describe('Group types', () => {
         thrift: true,
         topics: true,
         shared_libs: true,
-        embedding_fallback: true,
         includes: true,
         workspace_deps: true,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: { max_candidates_per_step: 3 },
     };
     expect(config.detect.thrift).toBe(true);
   });
