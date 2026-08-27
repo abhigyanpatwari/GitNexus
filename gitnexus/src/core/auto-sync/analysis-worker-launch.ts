@@ -4,20 +4,19 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { AnalyzeOptions, AnalyzeResult } from '../run-analyze.js';
-import type { WorkerMessage } from '../../server/analyze-worker.js';
+import type { WorkerMessage } from '../../server/analyze-worker-protocol.js';
 import { autoHeapCapMb } from '../ingestion/utils/effective-ram.js';
 
 const _require = createRequire(import.meta.url);
-const TERMINATION_GRACE_MS = 10_000;
-
 export type AutoSyncAnalysisRunner = (
   repoPath: string,
   options: AnalyzeOptions,
   timeoutMs: number,
   signal?: AbortSignal,
+  onCancellationRequested?: () => void,
 ) => Promise<Pick<AnalyzeResult, 'stats'>>;
 
-interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'kill' | 'on'> {
+interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'on'> {
   stdout?: Pick<NodeJS.ReadableStream, 'resume'> | null;
   stderr?: Pick<NodeJS.ReadableStream, 'resume'> | null;
 }
@@ -42,7 +41,7 @@ export function createAutoSyncAnalysisRunner(
   overrides: Partial<AutoSyncAnalysisLaunchDeps> = {},
 ): AutoSyncAnalysisRunner {
   const deps = { ...DEFAULT_DEPS, ...overrides };
-  return (repoPath, options, timeoutMs, signal) =>
+  return (repoPath, options, timeoutMs, signal, onCancellationRequested) =>
     new Promise<Pick<AnalyzeResult, 'stats'>>((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error('Analysis cancelled.'));
@@ -72,12 +71,10 @@ export function createAutoSyncAnalysisRunner(
       child.stderr?.resume();
 
       let terminalOutcome: WorkerMessage | undefined;
-      let terminationGrace: ReturnType<typeof setTimeout> | undefined;
-      let terminationReason: 'timeout' | 'cancelled' | undefined;
+      let terminationError: Error | undefined;
       let settled = false;
       const cleanup = () => {
         deps.clearTimeoutFn(timeout);
-        if (terminationGrace) deps.clearTimeoutFn(terminationGrace);
         signal?.removeEventListener('abort', onAbort);
       };
       const settle = (error?: Error, result?: Pick<AnalyzeResult, 'stats'>) => {
@@ -87,46 +84,41 @@ export function createAutoSyncAnalysisRunner(
         if (error) reject(error);
         else resolve(result!);
       };
-      const requestTermination = (reason: 'timeout' | 'cancelled') => {
-        if (settled || terminationReason) return;
-        terminationReason = reason;
+      const requestCancellation = (error: Error) => {
+        if (settled || terminationError) return;
+        terminationError = error;
         deps.clearTimeoutFn(timeout);
-        child.kill('SIGTERM');
-        terminationGrace = deps.setTimeoutFn(() => {
-          child.kill('SIGKILL');
-          settle(
-            new Error(
-              reason === 'timeout' ? `Analysis timed out after ${timeoutMs}ms.` : 'Analysis cancelled.',
-            ),
-          );
-        }, TERMINATION_GRACE_MS);
+        onCancellationRequested?.();
+        // IPC has the same semantics on macOS and Windows. The worker exits only
+        // after reaching a JS-visible safe point; this parent keeps ownership until then.
+        try {
+          child.send({ type: 'cancel' });
+        } catch {
+          // A closed IPC channel still has an exit/error path. Do not force-kill a
+          // worker that may be inside native code.
+        }
       };
-      const timeout = deps.setTimeoutFn(() => requestTermination('timeout'), timeoutMs);
-      const onAbort = () => requestTermination('cancelled');
+      const timeout = deps.setTimeoutFn(
+        () => requestCancellation(new Error(`Analysis timed out after ${timeoutMs}ms.`)),
+        timeoutMs,
+      );
+      const onAbort = () => requestCancellation(new Error('Analysis cancelled.'));
       signal?.addEventListener('abort', onAbort, { once: true });
 
       child.on('message', (message: WorkerMessage) => {
         // Once timeout/cancellation requested shutdown, its reason owns the
-        // result. A terminal IPC can already be queued behind SIGTERM.
-        if (message.type === 'progress' || terminalOutcome || terminationReason) return;
+        // result. A terminal IPC can already be queued behind cancellation.
+        if (message.type === 'progress' || terminalOutcome || terminationError) return;
         terminalOutcome = message;
         deps.clearTimeoutFn(timeout);
       });
       child.on('error', (error) => {
-        settle(new Error(`Auto-sync analyze worker error: ${error.message}`));
+        requestCancellation(new Error(`Auto-sync analyze worker error: ${error.message}`));
       });
       child.on('exit', (code, childSignal) => {
         if (settled) return;
-        if (terminationReason === 'timeout') {
-          settle(
-            new Error(
-              `Analysis timed out after ${timeoutMs}ms and worker exited (${childSignal ?? code ?? 'unknown'}).`,
-            ),
-          );
-          return;
-        }
-        if (terminationReason === 'cancelled') {
-          settle(new Error('Analysis cancelled.'));
+        if (terminationError) {
+          settle(terminationError);
           return;
         }
         if (terminalOutcome?.type === 'complete') {
@@ -146,8 +138,9 @@ export function createAutoSyncAnalysisRunner(
       try {
         child.send({ type: 'start', repoPath, options });
       } catch (error) {
-        child.kill('SIGKILL');
-        settle(new Error(`Failed to start auto-sync analyze worker: ${(error as Error).message}`));
+        requestCancellation(
+          new Error(`Failed to start auto-sync analyze worker: ${(error as Error).message}`),
+        );
       }
     });
 }

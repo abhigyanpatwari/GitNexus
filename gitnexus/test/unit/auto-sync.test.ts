@@ -458,6 +458,10 @@ describe('auto-sync', () => {
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/repo.git#main')).toThrow(
       'must not include query strings or fragments',
     );
+    expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/')).toThrow('path must include');
+    expect(() => validateAutoSyncRemoteUrl('git@github.com:owner//repo')).toThrow(
+      'path must include',
+    );
   });
 
   it('parses repo git timeout durations', () => {

@@ -261,7 +261,13 @@ export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
   if (!ALLOWED_REMOTE_HOSTS.has(host)) {
     throw new Error('host must be one of github.com, gitlab.com, or gitee.com');
   }
-  if (repoPath.startsWith('/') || repoPath.includes('..') || repoPath.split('/').length < 2) {
+  const pathParts = repoPath.split('/');
+  if (
+    repoPath.startsWith('/') ||
+    repoPath.includes('..') ||
+    pathParts.length < 2 ||
+    pathParts.some((part) => !part)
+  ) {
     throw new Error('path must include owner/repo without traversal');
   }
 }

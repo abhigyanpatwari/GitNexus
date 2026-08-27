@@ -57,7 +57,7 @@ export async function acquireFileLock(
         await fs.link(pendingPath, resolvedPath);
         break;
       } catch (error) {
-        if (!isLockConflict(error)) throw error;
+        if (!(await isLockConflict(error, resolvedPath))) throw error;
         if (
           await reclaimStaleLock(
             resolvedPath,
@@ -158,7 +158,14 @@ async function readOwner(lockPath: string): Promise<FileLockOwner | undefined> {
   return undefined;
 }
 
-function isLockConflict(error: unknown): boolean {
+async function isLockConflict(error: unknown, lockPath: string): Promise<boolean> {
   const code = (error as NodeJS.ErrnoException).code;
-  return code === 'EEXIST' || code === 'EPERM';
+  if (code === 'EEXIST') return true;
+  if (code !== 'EPERM') return false;
+  try {
+    await fs.access(lockPath);
+    return true;
+  } catch {
+    return false;
+  }
 }

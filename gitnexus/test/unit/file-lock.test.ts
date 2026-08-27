@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { acquireFileLock, FileLockBusyError } from '../../src/storage/file-lock.js';
 
@@ -26,6 +26,18 @@ describe('file lock', () => {
     await expect(acquireFileLock(lockPath)).rejects.toBeInstanceOf(FileLockBusyError);
 
     await release();
+  });
+
+  it('propagates hard-link EPERM when no lock exists', async () => {
+    const lockPath = await tempLockPath();
+    const error = Object.assign(new Error('hard links unavailable'), { code: 'EPERM' });
+    const link = vi.spyOn(fs, 'link').mockRejectedValueOnce(error);
+
+    try {
+      await expect(acquireFileLock(lockPath)).rejects.toBe(error);
+    } finally {
+      link.mockRestore();
+    }
   });
 
   it('releases idempotently', async () => {

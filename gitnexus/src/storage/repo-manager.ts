@@ -638,12 +638,13 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
  * `withRegistryLock` degrades to unlocked on timeout, so the write cannot rely
  * on the lock to keep two writers off one staging path (#2888).
  */
-const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
+const writeRegistry = async (entries: RegistryEntry[], attempts?: number): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
   await writeFileAtomic(
     getGlobalRegistryPath(),
     JSON.stringify(sanitizeEntries(entries), null, 2),
+    attempts,
   );
 };
 
@@ -1423,7 +1424,7 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await withRegistryLock(async () => {
         const fresh = await readRegistry();
-        await writeRegistry(fresh.filter((entry) => !pruned.has(entry.path)));
+        await writeRegistry(fresh.filter((entry) => !pruned.has(entry.path)), 1);
       });
     } catch (err) {
       // Best-effort housekeeping: callers consume the returned view, and the

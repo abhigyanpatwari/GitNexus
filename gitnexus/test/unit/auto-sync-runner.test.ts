@@ -362,8 +362,9 @@ describe('auto-sync runner', () => {
     );
   });
 
-  it('passes the watch stop signal to the isolated analysis runner', async () => {
+  it('passes watch cancellation controls to the isolated analysis runner', async () => {
     const controller = new AbortController();
+    const onAnalysisCancellationRequested = vi.fn();
     const runAnalysis = vi.fn(async () => ({ stats: { files: 1 } }) as any);
     const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
       cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
@@ -383,6 +384,7 @@ describe('auto-sync runner', () => {
       deps,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       signal: controller.signal,
+      onAnalysisCancellationRequested,
     });
 
     expect(runAnalysis).toHaveBeenCalledWith(
@@ -390,6 +392,7 @@ describe('auto-sync runner', () => {
       { branch: 'master', skipAgentsMd: true, skipSkills: true },
       1_800_000,
       controller.signal,
+      onAnalysisCancellationRequested,
     );
   });
 
@@ -956,6 +959,40 @@ describe('auto-sync runner', () => {
     );
   });
 
+  it('records a null analysis failure without masking it with a TypeError', async () => {
+    const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+      cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
+      getCurrentBranch: vi.fn(() => 'master'),
+      getCurrentCommit: vi.fn(() => 'commit-2'),
+      runAnalysis: vi.fn(async () => {
+        throw null;
+      }),
+      registerRepo: vi.fn(),
+      loadState: vi.fn(async () => ({})),
+      saveState: vi.fn(async () => {}),
+      writeCommitInfo: vi.fn(async () => {}),
+      addRepoToGroup: vi.fn(async () => false),
+      syncGroupByName: vi.fn(async () => {}),
+      getAvailableMemoryGB: vi.fn(() => 8),
+    });
+
+    await expect(
+      runAutoSyncOnce(config, {
+        deps,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        now: () => new Date('2026-06-30T00:00:00.000Z'),
+      }),
+    ).resolves.toEqual({ synced: 1, analyzed: 0, skippedAnalysis: 0, failed: 1 });
+
+    expect(deps.saveState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        '/tmp/repos/gitee.com/qts_server/qts_account|master': expect.objectContaining({
+          lastAnalyzeError: 'null',
+        }),
+      }),
+    );
+  });
+
   it('retries analysis on a new commit after consecutive failures reached the threshold', async () => {
     const errorLogger = vi.fn();
     const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
@@ -1366,7 +1403,6 @@ describe('auto-sync starter', () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
     const paths = getAutoSyncWatchPaths(tempDir);
     const stderr = { write: vi.fn() };
-    const killProcess = vi.fn();
     try {
       await fs.mkdir(path.dirname(paths.pidPath), { recursive: true });
       await fs.mkdir(paths.mutexPath);
@@ -1379,11 +1415,10 @@ describe('auto-sync starter', () => {
         stopAutoSyncWatch({
           paths,
           stderr,
-          deps: { isProcessAlive: vi.fn(() => true), killProcess, sleep: vi.fn(async () => {}) },
+          deps: { isProcessAlive: vi.fn(() => true) },
         }),
       ).resolves.toBe('refused');
 
-      expect(killProcess).not.toHaveBeenCalled();
       expect(stderr.write).toHaveBeenCalledWith(
         '[auto-sync] Watch appears to be starting with pid 12345; pid file is not ready.\n',
       );
@@ -1410,11 +1445,7 @@ describe('auto-sync starter', () => {
         stopAutoSyncWatch({
           paths,
           stderr: { write: vi.fn() },
-          deps: {
-            isProcessAlive: vi.fn(() => false),
-            killProcess: vi.fn(),
-            sleep: vi.fn(async () => {}),
-          },
+          deps: { isProcessAlive: vi.fn(() => false) },
         }),
       ).resolves.toBe('refused');
 
@@ -1440,160 +1471,35 @@ describe('auto-sync starter', () => {
     }
   });
 
-  it('reports status and signals the verified owner without deleting its files', async () => {
+  it('writes an owner-fenced stop request without deleting a live watch lease', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
     const paths = getAutoSyncWatchPaths(tempDir);
-    const killProcess = vi.fn();
-    let alive = true;
     try {
-      await writeWatchOwner(paths, 12345);
-
-      await expect(
-        readAutoSyncWatchStatus(paths, {
-          isProcessAlive: vi.fn(() => true),
-          readProcessCommand: vi.fn(() => verifiedWatchCommand),
-          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-        }),
-      ).resolves.toMatchObject({ state: 'running', pid: 12345 });
-      await expect(
-        stopAutoSyncWatch({
-          paths,
-          stderr: { write: vi.fn() },
-          pollMs: 1,
-          deps: {
-            isProcessAlive: vi.fn(() => alive),
-            readProcessCommand: vi.fn(() => verifiedWatchCommand),
-            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-            killProcess: vi.fn((pid, signal) => {
-              killProcess(pid, signal);
-              alive = false;
-            }),
-            sleep: vi.fn(async () => {}),
-          },
-        }),
-      ).resolves.toBe('stopped');
-
-      expect(killProcess).toHaveBeenCalledWith(12345, 'SIGTERM');
-      await expect(fs.readFile(paths.pidPath, 'utf-8')).resolves.toBe('12345\n');
-      await expect(fs.access(paths.ownerPath)).resolves.toBeUndefined();
-      await expect(fs.access(paths.mutexPath)).resolves.toBeUndefined();
-      expect(JSON.parse(await fs.readFile(paths.statusPath, 'utf-8'))).toMatchObject({
-        state: 'running',
-        pid: 12345,
-      });
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it('does not delete or overwrite successor ownership after the old owner exits', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
-    const paths = getAutoSyncWatchPaths(tempDir);
-    let oldOwnerAlive = true;
-    let handedOver = false;
-    try {
-      await writeWatchOwner(paths, 12345, 'old-owner');
+      const ownerId = await writeWatchOwner(paths, 12345, 'verified-owner');
 
       await expect(
         stopAutoSyncWatch({
           paths,
+          timeoutMs: 0,
           stderr: { write: vi.fn() },
-          pollMs: 1,
-          deps: {
-            isProcessAlive: vi.fn((pid) => (pid === 12345 ? oldOwnerAlive : true)),
-            readProcessCommand: vi.fn(() => verifiedWatchCommand),
-            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-            killProcess: vi.fn(),
-            sleep: vi.fn(async () => {
-              if (handedOver) return;
-              handedOver = true;
-              oldOwnerAlive = false;
-              await fs.writeFile(paths.pidPath, '54321\n');
-              await fs.writeFile(
-                paths.ownerPath,
-                `${JSON.stringify({ pid: 54321, ownerId: 'successor', processStartTime: verifiedProcessStartTime, createdAt: '2026-08-04T00:00:00.000Z' })}\n`,
-              );
-              await fs.writeFile(
-                paths.statusPath,
-                `${JSON.stringify({ state: 'running', pid: 54321, ownerId: 'successor', updatedAt: '2026-08-04T00:00:00.000Z' })}\n`,
-              );
-            }),
-          },
-        }),
-      ).resolves.toBe('stopped');
-
-      await expect(fs.readFile(paths.pidPath, 'utf-8')).resolves.toBe('54321\n');
-      expect(JSON.parse(await fs.readFile(paths.ownerPath, 'utf-8'))).toMatchObject({
-        pid: 54321,
-        ownerId: 'successor',
-      });
-      expect(JSON.parse(await fs.readFile(paths.statusPath, 'utf-8'))).toMatchObject({
-        state: 'running',
-        pid: 54321,
-        ownerId: 'successor',
-      });
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it('refuses to signal when the process command is unavailable', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
-    const paths = getAutoSyncWatchPaths(tempDir);
-    const killProcess = vi.fn();
-    try {
-      await writeWatchOwner(paths, 12345);
-
-      await expect(
-        stopAutoSyncWatch({
-          paths,
-          stderr: { write: vi.fn() },
-          pollMs: 1,
-          deps: {
-            isProcessAlive: vi.fn(() => true),
-            readProcessCommand: vi.fn(() => undefined),
-            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-            killProcess,
-            sleep: vi.fn(async () => {}),
-          },
-        }),
-      ).resolves.toBe('refused');
-      expect(killProcess).not.toHaveBeenCalled();
-      await expect(fs.readFile(paths.pidPath, 'utf-8')).resolves.toBe('12345\n');
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it('does not change owner status when stop times out', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
-    const paths = getAutoSyncWatchPaths(tempDir);
-    try {
-      await writeWatchOwner(paths, 12345);
-
-      await expect(
-        stopAutoSyncWatch({
-          paths,
-          stderr: { write: vi.fn() },
-          timeoutMs: 2,
-          pollMs: 1,
           deps: {
             isProcessAlive: vi.fn(() => true),
             readProcessCommand: vi.fn(() => verifiedWatchCommand),
             readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-            killProcess: vi.fn(),
-            sleep: vi.fn(async () => {}),
           },
         }),
       ).resolves.toBe('timeout');
 
-      await expect(
-        readAutoSyncWatchStatus(paths, {
-          isProcessAlive: vi.fn(() => true),
-          readProcessCommand: vi.fn(() => verifiedWatchCommand),
-          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-        }),
-      ).resolves.toMatchObject({ state: 'running', pid: 12345 });
+      expect(
+        JSON.parse(
+          await fs.readFile(path.join(path.dirname(paths.pidPath), `watch.stop.${ownerId}.json`), 'utf-8'),
+        ),
+      ).toMatchObject({
+        pid: 12345,
+        ownerId,
+        processStartTime: verifiedProcessStartTime,
+        requestedAt: expect.any(String),
+      });
       await expect(fs.readFile(paths.pidPath, 'utf-8')).resolves.toBe('12345\n');
       await expect(fs.access(paths.ownerPath)).resolves.toBeUndefined();
       await expect(fs.access(paths.mutexPath)).resolves.toBeUndefined();
@@ -1602,85 +1508,9 @@ describe('auto-sync starter', () => {
     }
   });
 
-  it('refuses to stop when pid status and lock ownership disagree', async () => {
+  it('refuses to request stop for a reused pid', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
     const paths = getAutoSyncWatchPaths(tempDir);
-    const killProcess = vi.fn();
-    try {
-      await fs.mkdir(path.dirname(paths.pidPath), { recursive: true });
-      await fs.writeFile(paths.pidPath, '12345\n');
-      await fs.writeFile(
-        paths.ownerPath,
-        `${JSON.stringify({ pid: 12345, ownerId: 'lock-owner', processStartTime: verifiedProcessStartTime, createdAt: '2026-06-30T00:00:00.000Z' })}\n`,
-      );
-      await fs.writeFile(
-        paths.statusPath,
-        `${JSON.stringify({ state: 'running', pid: 12345, ownerId: 'other-owner', updatedAt: '2026-06-30T00:00:00.000Z' })}\n`,
-      );
-
-      await expect(
-        stopAutoSyncWatch({
-          paths,
-          stderr: { write: vi.fn() },
-          deps: { isProcessAlive: vi.fn(() => true), killProcess, sleep: vi.fn(async () => {}) },
-        }),
-      ).resolves.toBe('refused');
-
-      expect(killProcess).not.toHaveBeenCalled();
-      await expect(
-        readAutoSyncWatchStatus(paths, { isProcessAlive: vi.fn(() => true) }),
-      ).resolves.toMatchObject({
-        state: 'error',
-        pid: 12345,
-        message: expect.stringContaining('owner'),
-      });
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it('refuses to signal a reused pid even when it is another GitNexus watch', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
-    const paths = getAutoSyncWatchPaths(tempDir);
-    const killProcess = vi.fn();
-    try {
-      await writeWatchOwner(paths, 12345);
-
-      await expect(
-        stopAutoSyncWatch({
-          paths,
-          stderr: { write: vi.fn() },
-          deps: {
-            isProcessAlive: vi.fn(() => true),
-            readProcessCommand: vi.fn(() => verifiedWatchCommand),
-            readProcessStartTime: vi.fn(() => 'Tue Aug  4 13:00:00 2026'),
-            killProcess,
-            sleep: vi.fn(async () => {}),
-          },
-        }),
-      ).resolves.toBe('refused');
-
-      expect(killProcess).not.toHaveBeenCalled();
-      await expect(
-        readAutoSyncWatchStatus(paths, {
-          isProcessAlive: vi.fn(() => true),
-          readProcessCommand: vi.fn(() => verifiedWatchCommand),
-          readProcessStartTime: vi.fn(() => 'Tue Aug  4 13:00:00 2026'),
-        }),
-      ).resolves.toMatchObject({
-        state: 'error',
-        pid: 12345,
-        message: expect.stringContaining('different process'),
-      });
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-  });
-
-  it('refuses to signal a reused pid whose command is not GitNexus watch', async () => {
-    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
-    const paths = getAutoSyncWatchPaths(tempDir);
-    const killProcess = vi.fn();
     try {
       await writeWatchOwner(paths, 12345);
 
@@ -1692,13 +1522,10 @@ describe('auto-sync starter', () => {
             isProcessAlive: vi.fn(() => true),
             readProcessCommand: vi.fn(() => 'node unrelated-service.js'),
             readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-            killProcess,
-            sleep: vi.fn(async () => {}),
           },
         }),
       ).resolves.toBe('refused');
 
-      expect(killProcess).not.toHaveBeenCalled();
       await expect(
         readAutoSyncWatchStatus(paths, {
           isProcessAlive: vi.fn(() => true),
@@ -1710,83 +1537,149 @@ describe('auto-sync starter', () => {
         pid: 12345,
         message: expect.stringContaining('not a GitNexus watch process'),
       });
+      await expect(fs.readdir(path.dirname(paths.pidPath))).resolves.not.toContainEqual(
+        expect.stringMatching(/^watch\.stop\./),
+      );
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
   });
 
-  it('restart starts only after the owner releases its mutex', async () => {
+  it('stops a watch only when its own owner-fenced request is polled', async () => {
     const previousHome = process.env.GITNEXUS_HOME;
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
     const paths = getAutoSyncWatchPaths(tempDir);
+    const callbacks: Array<() => void> = [];
     const timer = { unref: vi.fn() };
-    const setIntervalFn = vi.fn(() => timer) as unknown as typeof setInterval;
-    const clearIntervalFn = vi.fn() as unknown as typeof clearInterval;
-    const runOnce = vi.fn(async () => ({
-      synced: 0,
-      analyzed: 0,
-      skippedAnalysis: 0,
-      failed: 0,
-    }));
-    let alive = true;
-    let ownerStop: Promise<void> | undefined;
     try {
       process.env.GITNEXUS_HOME = tempDir;
       await fs.writeFile(
         path.join(tempDir, 'watch_config.yml'),
-        [
-          'sync_interval_minutes: 5',
-          'projects:',
-          '  - local_path: /tmp/repos',
-          '    branch: master',
-          '    remote_urls:',
-          '      - git@github.com:team/repo.git',
-        ].join('\n'),
+        ['sync_interval_minutes: 5', 'projects:', '  - local_path: /tmp/repos', '    branch: master', '    remote_urls:', '      - git@github.com:team/repo.git'].join('\n'),
       );
-      const ownerHandle = await startAutoSyncWatch({
+      const handle = await startAutoSyncWatch({
         paths,
-        setIntervalFn,
-        clearIntervalFn,
-        runOnce,
         keepAlive: false,
+        setIntervalFn: vi.fn((callback: () => void) => {
+          callbacks.push(callback);
+          return timer;
+        }) as unknown as typeof setInterval,
+        clearIntervalFn: vi.fn() as unknown as typeof clearInterval,
+        runOnce: vi.fn(async () => ({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 })),
         deps: { readProcessStartTime: vi.fn(() => verifiedProcessStartTime) },
       });
-      expect(ownerHandle).not.toBeNull();
+      expect(handle).not.toBeNull();
+      const owner = JSON.parse(await fs.readFile(paths.ownerPath, 'utf-8'));
+      await fs.writeFile(
+        path.join(path.dirname(paths.pidPath), `watch.stop.${owner.ownerId}.json`),
+        `${JSON.stringify({
+          pid: process.pid,
+          ownerId: owner.ownerId,
+          processStartTime: verifiedProcessStartTime,
+          requestedAt: new Date().toISOString(),
+        })}\n`,
+      );
 
-      await expect(
-        stopAutoSyncWatch({
-          paths,
-          timeoutMs: 10,
-          pollMs: 1,
-          stderr: { write: vi.fn() },
-          deps: {
-            isProcessAlive: vi.fn(() => alive),
-            readProcessCommand: vi.fn(() => verifiedWatchCommand),
-            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-            killProcess: vi.fn(() => {
-              ownerStop = ownerHandle!.stop().then(() => {
-                alive = false;
-              });
+      callbacks[0]!();
+      await vi.waitFor(async () => expect(fs.access(paths.pidPath)).rejects.toThrow());
+      await expect(fs.access(paths.ownerPath)).rejects.toThrow();
+      await expect(fs.access(paths.mutexPath)).rejects.toThrow();
+    } finally {
+      if (previousHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = previousHome;
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports cancelling until a timed-out analysis run settles', async () => {
+    const previousHome = process.env.GITNEXUS_HOME;
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
+    const paths = getAutoSyncWatchPaths(tempDir);
+    let releaseRun!: () => void;
+    let requestCancellation!: () => void;
+    try {
+      process.env.GITNEXUS_HOME = tempDir;
+      await fs.writeFile(
+        path.join(tempDir, 'watch_config.yml'),
+        ['sync_interval_minutes: 5', 'projects:', '  - local_path: /tmp/repos', '    branch: master', '    remote_urls:', '      - git@github.com:team/repo.git'].join('\n'),
+      );
+      const handle = await startAutoSyncWatch({
+        paths,
+        keepAlive: false,
+        runOnce: vi.fn(
+          (_config, options) =>
+            new Promise<any>((resolve) => {
+              requestCancellation = options.onAnalysisCancellationRequested;
+              releaseRun = () => resolve({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 });
             }),
-            sleep: vi.fn(async () => {
-              await ownerStop;
+        ),
+        deps: { readProcessStartTime: vi.fn(() => verifiedProcessStartTime) },
+      });
+      requestCancellation();
+      await vi.waitFor(async () => {
+        await expect(readAutoSyncWatchStatus(paths, {
+          isProcessAlive: vi.fn(() => true),
+          readProcessCommand: vi.fn(() => verifiedWatchCommand),
+          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+        })).resolves.toMatchObject({ state: 'cancelling' });
+      });
+
+      releaseRun();
+      await vi.waitFor(async () => {
+        await expect(readAutoSyncWatchStatus(paths, {
+          isProcessAlive: vi.fn(() => true),
+          readProcessCommand: vi.fn(() => verifiedWatchCommand),
+          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+        })).resolves.toMatchObject({ state: 'running' });
+      });
+      await handle?.stop();
+    } finally {
+      if (previousHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = previousHome;
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps watch ownership while stop waits for an active run to settle', async () => {
+    const previousHome = process.env.GITNEXUS_HOME;
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
+    const paths = getAutoSyncWatchPaths(tempDir);
+    let releaseRun!: () => void;
+    try {
+      process.env.GITNEXUS_HOME = tempDir;
+      await fs.writeFile(
+        path.join(tempDir, 'watch_config.yml'),
+        ['sync_interval_minutes: 5', 'projects:', '  - local_path: /tmp/repos', '    branch: master', '    remote_urls:', '      - git@github.com:team/repo.git'].join('\n'),
+      );
+      const handle = await startAutoSyncWatch({
+        paths,
+        keepAlive: false,
+        runOnce: vi.fn(
+          () =>
+            new Promise<any>((resolve) => {
+              releaseRun = () => resolve({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 });
             }),
-          },
-        }),
-      ).resolves.toBe('stopped');
+        ),
+        deps: { readProcessStartTime: vi.fn(() => verifiedProcessStartTime) },
+      });
+      const stopping = handle!.stop();
+
+      await vi.waitFor(async () => {
+        await expect(readAutoSyncWatchStatus(paths, {
+          isProcessAlive: vi.fn(() => true),
+          readProcessCommand: vi.fn(() => verifiedWatchCommand),
+          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+        })).resolves.toMatchObject({ state: 'stopping' });
+      });
+      await expect(fs.access(paths.pidPath)).resolves.toBeUndefined();
+      await expect(fs.access(paths.ownerPath)).resolves.toBeUndefined();
+      await expect(fs.access(paths.mutexPath)).resolves.toBeUndefined();
+
+      releaseRun();
+      await stopping;
       await expect(fs.access(paths.pidPath)).rejects.toThrow();
       await expect(fs.access(paths.ownerPath)).rejects.toThrow();
       await expect(fs.access(paths.mutexPath)).rejects.toThrow();
-
-      const successorHandle = await startAutoSyncWatch({
-        paths,
-        setIntervalFn,
-        clearIntervalFn,
-        runOnce,
-        keepAlive: false,
-      });
-      expect(successorHandle).not.toBeNull();
-      await successorHandle?.stop();
     } finally {
       if (previousHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = previousHome;

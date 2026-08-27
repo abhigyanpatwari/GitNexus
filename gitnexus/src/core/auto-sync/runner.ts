@@ -85,6 +85,7 @@ export async function runAutoSyncOnce(
     logger?: AutoSyncLogger;
     now?: () => Date;
     signal?: AbortSignal;
+    onAnalysisCancellationRequested?: () => void;
   } = {},
 ): Promise<AutoSyncRunResult> {
   const deps = { ...DEFAULT_DEPS, ...options.deps };
@@ -172,12 +173,20 @@ export async function runAutoSyncOnce(
           })
         ) {
           try {
-            const analysis = await deps.runAnalysis(
-              targetDir,
-              { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
-              config.analyzeTimeoutMs,
-              options.signal,
-            );
+            const analysis = await (options.onAnalysisCancellationRequested
+              ? deps.runAnalysis(
+                  targetDir,
+                  { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
+                  config.analyzeTimeoutMs,
+                  options.signal,
+                  options.onAnalysisCancellationRequested,
+                )
+              : deps.runAnalysis(
+                  targetDir,
+                  { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
+                  config.analyzeTimeoutMs,
+                  options.signal,
+                ));
             throwIfAborted(options.signal);
             stats = analysis.stats;
             analyzeStatus = 'success';
@@ -338,7 +347,7 @@ export async function runAutoSyncOnce(
 }
 
 function shortErrorMessage(err: unknown): string {
-  const message = (err as Error).message || String(err);
+  const message = err instanceof Error ? err.message : String(err);
   return message.replace(/\s+/g, ' ').slice(0, 240);
 }
 

@@ -26,12 +26,19 @@
 import type { AnalyzeOptions } from '../core/run-analyze.js';
 import type { AnalyzeResultIpc } from './analyze-worker-ipc.js';
 
-/** Parent → child: the single command that starts an analysis run. */
+/** Parent → child: start one analysis run. */
 export interface StartMessage {
   type: 'start';
   repoPath: string;
   options: AnalyzeOptions;
 }
+
+/** Parent → child: request safe cancellation at the next JS-visible checkpoint. */
+export interface CancelMessage {
+  type: 'cancel';
+}
+
+export type ParentMessage = StartMessage | CancelMessage;
 
 export interface ProgressMessage {
   type: 'progress';

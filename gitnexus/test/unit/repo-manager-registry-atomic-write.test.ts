@@ -171,8 +171,10 @@ describe('writeRegistry — private tmp path per transaction (#2888)', () => {
   it('keeps serving a validating read when the prune write fails', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'gone' });
     fsCtx.renameMock.mockClear();
+    // EBUSY is normally retryable, but prune persistence is best-effort and
+    // must not hold the registry lock through retry backoff.
     fsCtx.renameMock.mockImplementationOnce(() =>
-      Promise.reject(Object.assign(new Error('mock read-only home'), { code: 'EROFS' })),
+      Promise.reject(Object.assign(new Error('mock busy registry'), { code: 'EBUSY' })),
     );
 
     const cap = _captureLogger();

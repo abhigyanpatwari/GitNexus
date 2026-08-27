@@ -8,14 +8,17 @@ vi.mock('../../src/core/ingestion/utils/effective-ram.js', () => ({
 
 import { createAutoSyncAnalysisRunner } from '../../src/core/auto-sync/analysis-worker-launch.js';
 
+function createChild() {
+  return Object.assign(new EventEmitter(), {
+    send: vi.fn(),
+    stdout: { resume: vi.fn() },
+    stderr: { resume: vi.fn() },
+  });
+}
+
 describe('auto-sync analysis worker', () => {
   it('ignores progress and resolves from the terminal complete message', async () => {
-    const child = Object.assign(new EventEmitter(), {
-      send: vi.fn(),
-      kill: vi.fn(),
-      stdout: { resume: vi.fn() },
-      stderr: { resume: vi.fn() },
-    });
+    const child = createChild();
     const forkWorker = vi.fn(() => child as any);
     const run = createAutoSyncAnalysisRunner({ forkWorker });
 
@@ -24,7 +27,7 @@ describe('auto-sync analysis worker', () => {
       expect.any(String),
       expect.arrayContaining(['--max-old-space-size=512']),
     );
-    child.emit('message', { type: 'progress', phase: 'parsing', progress: 20 });
+    child.emit('message', { type: 'progress', phase: 'parsing', percent: 20, message: 'Parsing' });
     child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
     child.emit('exit', 0, null);
 
@@ -33,39 +36,46 @@ describe('auto-sync analysis worker', () => {
     expect(child.stderr.resume).toHaveBeenCalled();
   });
 
-  it('rejects immediately when the worker emits an error without exiting', async () => {
-    const child = Object.assign(new EventEmitter(), {
-      send: vi.fn(),
-      kill: vi.fn(),
-    });
+  it('requests cancellation on a worker error but waits for its safe exit', async () => {
+    const child = createChild();
     const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
-
     const result = run('/tmp/repo', { branch: 'main' }, 50);
-    child.emit('error', new Error('spawn failed'));
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
 
-    await expect(result).rejects.toThrow('Auto-sync analyze worker error: spawn failed');
+    child.emit('error', new Error('IPC disconnected'));
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(child.send).toHaveBeenLastCalledWith({ type: 'cancel' });
+
+    child.emit('exit', 1, null);
+    await expect(result).rejects.toThrow('Auto-sync analyze worker error: IPC disconnected');
   });
 
-  it('preserves a worker error after progress messages', async () => {
-    const child = Object.assign(new EventEmitter(), {
-      send: vi.fn(),
-      kill: vi.fn(),
-    });
+  it('preserves a worker terminal error', async () => {
+    const child = createChild();
     const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
 
     const result = run('/tmp/repo', { branch: 'main' }, 50);
-    child.emit('message', { type: 'progress', phase: 'parsing', progress: 20 });
+    child.emit('message', { type: 'progress', phase: 'parsing', percent: 20, message: 'Parsing' });
     child.emit('message', { type: 'error', message: 'parser crashed' });
     child.emit('exit', 1, null);
 
     await expect(result).rejects.toThrow('parser crashed');
   });
-  it('waits for timed-out worker exit before releasing the scheduled run', async () => {
-    const child = Object.assign(new EventEmitter(), {
-      send: vi.fn(),
-      kill: vi.fn(),
-    });
+
+  it('requests cancellation after timeout, reports it, and waits for exit', async () => {
+    const child = createChild();
     const timers: Array<() => void> = [];
+    const onCancellationRequested = vi.fn();
     const run = createAutoSyncAnalysisRunner({
       forkWorker: vi.fn(() => child as any),
       setTimeoutFn: vi.fn((callback: () => void) => {
@@ -75,27 +85,29 @@ describe('auto-sync analysis worker', () => {
       clearTimeoutFn: vi.fn() as any,
     });
 
-    const result = run('/tmp/repo', { branch: 'main' }, 50);
-    expect(child.send).toHaveBeenCalledWith({
-      type: 'start',
-      repoPath: '/tmp/repo',
-      options: { branch: 'main' },
-    });
+    const result = run('/tmp/repo', { branch: 'main' }, 50, undefined, onCancellationRequested);
+    timers[0]!();
 
-    timers[0]();
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
-    timers[1]();
-    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(onCancellationRequested).toHaveBeenCalledOnce();
+    expect(child.send).toHaveBeenLastCalledWith({ type: 'cancel' });
+    let settled = false;
+    void result.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
 
-    child.emit('exit', null, 'SIGKILL');
+    child.emit('exit', 0, null);
     await expect(result).rejects.toThrow('Analysis timed out after 50ms');
   });
 
-  it('keeps the timeout outcome when complete arrives after termination begins', async () => {
-    const child = Object.assign(new EventEmitter(), {
-      send: vi.fn(),
-      kill: vi.fn(),
-    });
+  it('keeps the timeout outcome when complete arrives after cancellation begins', async () => {
+    const child = createChild();
     const timers: Array<() => void> = [];
     const run = createAutoSyncAnalysisRunner({
       forkWorker: vi.fn(() => child as any),
@@ -107,66 +119,44 @@ describe('auto-sync analysis worker', () => {
     });
 
     const result = run('/tmp/repo', { branch: 'main' }, 50);
-    timers[0]();
+    timers[0]!();
     child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
     child.emit('exit', 0, null);
 
     await expect(result).rejects.toThrow('Analysis timed out after 50ms');
   });
 
-  it('clears the analysis deadline after complete before the worker exits', async () => {
-    vi.useFakeTimers();
-    try {
-      const child = Object.assign(new EventEmitter(), {
-        send: vi.fn(),
-        kill: vi.fn(),
-      });
-      const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+  it('does not send cancellation after a terminal complete message', async () => {
+    const child = createChild();
+    const timers: Array<() => void> = [];
+    const run = createAutoSyncAnalysisRunner({
+      forkWorker: vi.fn(() => child as any),
+      setTimeoutFn: vi.fn((callback: () => void) => {
+        timers.push(callback);
+        return timers.length as any;
+      }) as any,
+      clearTimeoutFn: vi.fn() as any,
+    });
 
-      const result = run('/tmp/repo', { branch: 'main' }, 50);
-      child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
-      await vi.advanceTimersByTimeAsync(50);
+    const result = run('/tmp/repo', { branch: 'main' }, 50);
+    child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
+    child.emit('exit', 0, null);
 
-      expect(child.kill).not.toHaveBeenCalled();
-      child.emit('exit', 0, null);
-      await expect(result).resolves.toEqual({ stats: { files: 3 } });
-    } finally {
-      vi.useRealTimers();
-    }
+    await expect(result).resolves.toEqual({ stats: { files: 3 } });
+    expect(child.send).toHaveBeenCalledTimes(1);
+    expect(timers).toHaveLength(1);
   });
 
-  it('keeps the cancellation outcome when complete arrives after abort', async () => {
-    const child = Object.assign(new EventEmitter(), {
-      send: vi.fn(),
-      kill: vi.fn(),
-    });
+  it('uses the same cancellation request for an aborted watch run', async () => {
+    const child = createChild();
+    const controller = new AbortController();
     const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
-    const controller = new AbortController();
 
     const result = run('/tmp/repo', { branch: 'main' }, 50, controller.signal);
     controller.abort();
-    child.emit('message', { type: 'complete', result: { stats: { files: 3 } } });
+    expect(child.send).toHaveBeenLastCalledWith({ type: 'cancel' });
+
     child.emit('exit', 0, null);
-
-    await expect(result).rejects.toThrow('Analysis cancelled');
-  });
-
-  it('asks an active worker to stop gracefully when watch is stopped', async () => {
-    const child = Object.assign(new EventEmitter(), {
-      send: vi.fn(),
-      kill: vi.fn(),
-    });
-    const run = createAutoSyncAnalysisRunner({
-      forkWorker: vi.fn(() => child as any),
-    });
-    const controller = new AbortController();
-
-    const result = run('/tmp/repo', { branch: 'main' }, 50, controller.signal);
-    controller.abort();
-
-    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
-    expect(child.kill).not.toHaveBeenCalledWith('SIGKILL');
-    child.emit('exit', null, 'SIGTERM');
     await expect(result).rejects.toThrow('Analysis cancelled');
   });
 });

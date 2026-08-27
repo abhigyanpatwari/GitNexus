@@ -13,7 +13,7 @@ export interface AutoSyncStartHandle {
   stop(): Promise<void>;
 }
 
-export type WatchStatusState = 'running' | 'stopping' | 'stopped' | 'stale' | 'error';
+export type WatchStatusState = 'running' | 'cancelling' | 'stopping' | 'stopped' | 'stale' | 'error';
 export type AutoSyncWatchStopResult = 'stopped' | 'not_running' | 'refused' | 'timeout';
 
 export interface WatchStatusRecord {
@@ -32,6 +32,15 @@ export interface WatchOwnerRecord {
   createdAt: string;
 }
 
+interface WatchStopRequestRecord {
+  pid: number;
+  ownerId: string;
+  processStartTime: string;
+  requestedAt: string;
+}
+
+const WATCH_STOP_POLL_MS = 250;
+
 export interface AutoSyncWatchPaths {
   pidPath: string;
   mutexPath: string;
@@ -43,7 +52,6 @@ export interface AutoSyncWatchControlDeps {
   isProcessAlive(pid: number): boolean;
   readProcessCommand(pid: number): string | undefined;
   readProcessStartTime(pid: number): string | undefined;
-  killProcess(pid: number, signal?: NodeJS.Signals): void;
   sleep(ms: number): Promise<void>;
 }
 
@@ -112,8 +120,26 @@ export async function startAutoSyncWatch(
     });
 
     const runOnce = options.runOnce ?? runAutoSyncOnce;
+    const setIntervalFn = options.setIntervalFn ?? setInterval;
+    const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
     let activeRun: Promise<void> | undefined;
     let activeAbortController: AbortController | undefined;
+    let stopping = false;
+    let statusWrite = Promise.resolve();
+    const updateStatus = (state: WatchStatusState, message?: string) => {
+      const write = statusWrite.then(() =>
+        writeWatchStatus(paths, {
+          state,
+          pid: process.pid,
+          ownerId,
+          configPath: loaded.config.configPath,
+          message,
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+      statusWrite = write.catch(() => {});
+      return write;
+    };
     const runSafely = () => {
       if (activeRun) {
         stderr.write('[auto-sync] Previous run is still active; skipping overlapping run.\n');
@@ -122,7 +148,17 @@ export async function startAutoSyncWatch(
       const startedAt = new Date();
       stderr.write(`[auto-sync] Watch loop started at ${startedAt.toISOString()}.\n`);
       const abortController = new AbortController();
-      const run = runOnce(loaded.config, { signal: abortController.signal })
+      const run = runOnce(loaded.config, {
+        signal: abortController.signal,
+        onAnalysisCancellationRequested: () => {
+          if (!stopping) {
+            void updateStatus(
+              'cancelling',
+              'Analysis cancellation requested; waiting for the worker to reach a safe shutdown point.',
+            );
+          }
+        },
+      })
         .then((result) => {
           stderr.write(
             `[auto-sync] Watch loop finished: synced=${result.synced} analyzed=${result.analyzed} skipped=${result.skippedAnalysis} failed=${result.failed}.\n`,
@@ -131,50 +167,56 @@ export async function startAutoSyncWatch(
         .catch((err: unknown) => {
           stderr.write(`[auto-sync] Scheduled run failed: ${(err as Error).message}\n`);
           stderr.write('[auto-sync] Watch loop finished: failed.\n');
+        })
+        .finally(async () => {
+          if (activeRun === run) {
+            activeRun = undefined;
+            activeAbortController = undefined;
+          }
+          if (!stopping) await updateStatus('running');
         });
       activeRun = run;
       activeAbortController = abortController;
-      void run.finally(() => {
-        if (activeRun === run) {
-          activeRun = undefined;
-          activeAbortController = undefined;
+    };
+
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let controlTimer: ReturnType<typeof setInterval> | undefined;
+    let stopPromise: Promise<void> | undefined;
+    const stop = () =>
+      (stopPromise ??= (async () => {
+        stopping = true;
+        if (timer) clearIntervalFn(timer);
+        if (controlTimer) clearIntervalFn(controlTimer);
+        activeAbortController?.abort();
+        try {
+          await updateStatus('stopping');
+          await activeRun?.catch(() => {});
+          await updateStatus('stopped');
+        } finally {
+          await cleanupWatchFiles(paths, ownerId, releaseLock);
         }
-      });
+      })());
+    const checkStopRequest = async () => {
+      const request = await readStopRequest(stopRequestPath(paths, ownerId));
+      if (
+        request?.pid === process.pid &&
+        request.ownerId === ownerId &&
+        request.processStartTime === processStartTime
+      ) {
+        void stop().catch((error: unknown) => {
+          stderr.write(`[auto-sync] Failed to stop watch: ${(error as Error).message}\n`);
+        });
+      }
     };
 
     runSafely();
-    const intervalMs = loaded.config.syncIntervalMinutes * 60_000;
-    const setIntervalFn = options.setIntervalFn ?? setInterval;
-    const clearIntervalFn = options.clearIntervalFn ?? clearInterval;
-    const timer = setIntervalFn(runSafely, intervalMs);
-    if (options.keepAlive === false) timer.unref?.();
-    let stopPromise: Promise<void> | undefined;
-    return {
-      stop: () =>
-        (stopPromise ??= (async () => {
-          clearIntervalFn(timer);
-          activeAbortController?.abort();
-          try {
-            await writeWatchStatus(paths, {
-              state: 'stopping',
-              pid: process.pid,
-              ownerId,
-              configPath: loaded.config.configPath,
-              updatedAt: new Date().toISOString(),
-            });
-            await activeRun?.catch(() => {});
-            await writeWatchStatus(paths, {
-              state: 'stopped',
-              pid: process.pid,
-              ownerId,
-              configPath: loaded.config.configPath,
-              updatedAt: new Date().toISOString(),
-            });
-          } finally {
-            await cleanupWatchFiles(paths, ownerId, releaseLock);
-          }
-        })()),
-    };
+    controlTimer = setIntervalFn(() => void checkStopRequest(), WATCH_STOP_POLL_MS);
+    timer = setIntervalFn(runSafely, loaded.config.syncIntervalMinutes * 60_000);
+    if (options.keepAlive === false) {
+      controlTimer.unref?.();
+      timer.unref?.();
+    }
+    return { stop };
   } catch (error) {
     await cleanupWatchFiles(paths, ownerId, releaseLock).catch(() => {});
     throw error;
@@ -276,8 +318,16 @@ export async function stopAutoSyncWatch(
     return 'refused';
   }
 
-  deps.killProcess(pid, 'SIGTERM');
-  stderr.write(`[auto-sync] Stop signal sent to watch pid ${pid}.\n`);
+  await writeAtomicText(
+    stopRequestPath(paths, owner.owner.ownerId),
+    `${JSON.stringify({
+      pid,
+      ownerId: owner.owner.ownerId,
+      processStartTime: owner.owner.processStartTime,
+      requestedAt: new Date().toISOString(),
+    } satisfies WatchStopRequestRecord)}\n`,
+  );
+  stderr.write(`[auto-sync] Stop requested for watch pid ${pid}.\n`);
   const stopped = await waitForProcessExit(pid, { deps, timeoutMs, pollMs });
   if (!stopped) {
     stderr.write(`[auto-sync] Watch pid ${pid} did not exit within ${timeoutMs}ms.\n`);
@@ -317,7 +367,10 @@ export async function readAutoSyncWatchStatus(
     }
     return {
       ...stored,
-      state: stored?.state === 'stopping' ? 'stopping' : 'running',
+      state:
+        stored?.state === 'cancelling' || stored?.state === 'stopping'
+          ? stored.state
+          : 'running',
       pid,
       ownerId: owner.owner.ownerId,
       updatedAt: new Date().toISOString(),
@@ -426,6 +479,33 @@ async function readStatusFile(statusPath: string): Promise<WatchStatusRecord | u
   }
 }
 
+function stopRequestPath(paths: AutoSyncWatchPaths, ownerId: string): string {
+  return path.join(path.dirname(paths.pidPath), `watch.stop.${ownerId}.json`);
+}
+
+async function readStopRequest(filePath: string): Promise<WatchStopRequestRecord | undefined> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(filePath, 'utf-8')) as WatchStopRequestRecord;
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Number.isInteger(parsed.pid) &&
+      parsed.pid > 0 &&
+      typeof parsed.ownerId === 'string' &&
+      parsed.ownerId &&
+      typeof parsed.processStartTime === 'string' &&
+      parsed.processStartTime &&
+      typeof parsed.requestedAt === 'string' &&
+      parsed.requestedAt
+    ) {
+      return parsed;
+    }
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
+  }
+  return undefined;
+}
+
 async function writeWatchStatus(
   paths: AutoSyncWatchPaths,
   record: WatchStatusRecord,
@@ -452,6 +532,7 @@ async function cleanupWatchFiles(
       if ((await readOwnerFile(paths.ownerPath))?.ownerId === ownerId) {
         await removeIfExists(paths.ownerPath);
       }
+      await removeIfExists(stopRequestPath(paths, ownerId));
     }
   } finally {
     await releaseLock();
@@ -505,11 +586,6 @@ function resolveWatchDeps(deps: Partial<AutoSyncWatchControlDeps> = {}): AutoSyn
         }
       }),
     readProcessStartTime: deps.readProcessStartTime ?? readProcessStartTime,
-    killProcess:
-      deps.killProcess ??
-      ((pid, signal = 'SIGTERM') => {
-        process.kill(pid, signal);
-      }),
     sleep:
       deps.sleep ??
       ((ms) =>
