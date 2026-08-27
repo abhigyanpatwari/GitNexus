@@ -37,14 +37,13 @@
  * (`test/helpers/counting-file-set.ts`), and hence the same comparison asserted
  * twice, once per key.
  *
- * Two registered resolvers read `context` — PHP (`languages/php/scope-resolver.ts`
- * → `resolvePhpImportTargetInternal`) and Python
- * (`languages/python/scope-resolver.ts` → `pythonFileExportsName`). Every other
+ * Four registered resolvers read `context` — PHP and Python for declaration
+ * filtering, and Java and Kotlin for declared-package indexes. Every other
  * adapter declares three or four parameters and cannot observe a fifth. Which
  * ones those are is not a number to maintain here: the per-language
  * `minimumParsedFileReads` floor in the table IS the record, and it is what a
- * new reader has to change. Both languages that read this key memoize on it,
- * and the two memos fail differently:
+ * new reader has to change. Every language that reads this key memoizes on it,
+ * and the memos fail differently:
  *
  *   - PHP: the `filesByDirectory` memo, `perFileSet`-keyed on the `parsedFiles`
  *     array. Defeat it and every import rebuilds a `Map<dirAlias,
@@ -56,13 +55,14 @@
  *     is what proves it does not repeat. Before that memo the same call was a
  *     `parsedFiles.find` per resolving import, which is the shape #2901
  *     removed on the file-set key; this arm is why it cannot come back.
+ *   - Java and Kotlin: declared-package/module-binding indexes, each built once
+ *     from the stable `parsedFiles` identity and reused across all imports.
  *   - Every other language: `0 === 0`, recorded as a floor of 0. A new reader
  *     arrives with that floor already in place and is caught by the equality
  *     half, which needs no per-language knowledge at all.
  *
- * Out of reach from here, and stated so it is not mistaken for covered:
- * `bench/import-target/measure.mjs` calls the resolvers with THREE arguments,
- * so no timing arm in that harness enters the `context` leg either.
+ * The shared benchmark now exercises the same five-argument production call;
+ * this deterministic counter remains the stronger memo-reuse assertion.
  *
  * ## The assertion is a COMPARISON, not a constant
  *
@@ -114,14 +114,23 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
-import type { ParsedImport } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 
 import { SCOPE_RESOLVERS } from '../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import type { ScopeResolver } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
+import {
+  clearJavaPackageFacts,
+  setJavaPackageFact,
+} from '../../../src/core/ingestion/languages/java/package-facts.js';
+import {
+  clearKotlinPackageFacts,
+  setKotlinPackageFact,
+} from '../../../src/core/ingestion/languages/kotlin/package-facts.js';
 import type { ComposerConfig } from '../../../src/core/ingestion/language-config.js';
 import {
   CountingSet,
   countedParsedFiles,
+  countedParsedFilesWith,
   pythonNamedImport,
 } from '../../helpers/counting-file-set.js';
 
@@ -195,12 +204,21 @@ interface ImportTargetFixture {
    * ZERO wherever the adapter never reads `context`, and that zero is a fact
    * about the adapter rather than an exemption: the equality half still holds,
    * so a resolver that starts reading `parsedFiles` per import fails here with a
-   * floor of 0 in place. ONE for PHP and Python, which is what proves the leg
+   * floor of 0 in place. ONE for PHP, Java, Kotlin and Python, which proves the leg
    * behind `context` was entered at all — an early `return` on
    * `context === undefined` posts a perfect zero otherwise, which is precisely
    * how every arm of this file passed while measuring nothing on that channel.
    */
   readonly minimumParsedFileReads: number;
+  /**
+   * Seed whatever per-language fact store the resolver reads alongside
+   * `parsedFiles`. Java resolves an import against DECLARED packages (#2953),
+   * so without this its `hitTarget` resolves to nothing and every count below
+   * would be the count of a resolver doing nothing.
+   */
+  readonly declare?: () => void;
+  /** Optional semantic ParsedFile fixture for declaration-driven resolvers. */
+  readonly parsedFile?: (filePath: string) => ParsedFile;
 }
 
 /** The `composer.json` PSR-4 map `loadPhpComposerConfig` would have produced. */
@@ -215,6 +233,37 @@ const GO_MODULE = { modulePath: 'example.com/mod' };
  * sees at a glance which languages differ.
  */
 const IGNORES_CONTEXT = (): undefined => undefined;
+
+function kotlinParsedFile(filePath: string): ParsedFile {
+  const name = filePath.slice(filePath.lastIndexOf('/') + 1, filePath.lastIndexOf('.'));
+  const moduleScope = `module:${filePath}` as ScopeId;
+  const def: SymbolDefinition = {
+    nodeId: `Class:${filePath}:${name}`,
+    filePath,
+    type: 'Class',
+    qualifiedName: name,
+  };
+  return {
+    filePath,
+    moduleScope,
+    scopes: [
+      {
+        id: moduleScope,
+        parent: null,
+        kind: 'Module',
+        range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+        filePath,
+        bindings: new Map([[name, [{ def, origin: 'local' }]]]),
+        ownedDefs: [def],
+        imports: [],
+        typeBindings: new Map(),
+      },
+    ],
+    parsedImports: [],
+    localDefs: [def],
+    referenceSites: [],
+  };
+}
 
 /**
  * `use function Vendor\Ghost\missing;` — the one PHP import shape that reaches
@@ -296,13 +345,28 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       files: ['com/example/model/User.java', 'src/main/java/com/example/App.java'],
       fromFile: 'src/main/java/com/example/App.java',
       resolutionConfig: undefined,
-      // Four segments and no hit: the progressive-stripping loop runs to the
-      // end, which is what every JDK and third-party import does.
+      // A four-segment miss, which is what every JDK and third-party import is.
+      // Since #2953 that is a lookup miss rather than a scan: no package named
+      // `vendor<i>.ghost.deep` is declared, so there is nothing to search.
       missTarget: (i) => `vendor${i}.ghost.deep.Missing`,
       hitTarget: 'com.example.model.User',
       parsedImport: IGNORES_CONTEXT,
-      minimumScans: 1,
-      minimumParsedFileReads: 0,
+      declare: () => {
+        clearJavaPackageFacts();
+        setJavaPackageFact('com/example/model/User.java', {
+          status: 'known',
+          packageName: 'com.example.model',
+        });
+        setJavaPackageFact('src/main/java/com/example/App.java', {
+          status: 'known',
+          packageName: 'com.example',
+        });
+      },
+      // Java reads the DECLARATIONS, not the file set: the package index is
+      // built from `context.parsedFiles`, so the file-set counter stays at zero
+      // and the parsed-file counter is where this property is now measured.
+      minimumScans: 0,
+      minimumParsedFileReads: 1,
     },
   ],
   [
@@ -389,8 +453,21 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       // by a workspace-rooted exact match.
       hitTarget: 'com.example.widget.Widget',
       parsedImport: IGNORES_CONTEXT,
-      minimumScans: 1,
-      minimumParsedFileReads: 0,
+      declare: () => {
+        clearKotlinPackageFacts();
+        setKotlinPackageFact('lib/src/main/kotlin/com/example/widget/Widget.kt', {
+          status: 'known',
+          packageName: 'com.example.widget',
+        });
+        setKotlinPackageFact('common/src/main/kotlin/com/example/common/Util.kt', {
+          status: 'known',
+          packageName: 'com.example.common',
+        });
+      },
+      parsedFile: kotlinParsedFile,
+      // Kotlin reads declarations from parsedFiles, not path shape.
+      minimumScans: 0,
+      minimumParsedFileReads: 1,
     },
   ],
   [
@@ -568,8 +645,11 @@ function driveImports(
   fixture: ImportTargetFixture,
   importCount: number,
 ): ImportRun {
+  fixture.declare?.();
   const files = new CountingSet(fixture.files);
-  const workspace = countedParsedFiles(fixture.files);
+  const workspace = fixture.parsedFile
+    ? countedParsedFilesWith(fixture.files, fixture.parsedFile)
+    : countedParsedFiles(fixture.files);
   const contextFor = (targetRaw: string) => ({
     parsedFiles: workspace.parsedFiles,
     parsedImport: fixture.parsedImport(targetRaw),

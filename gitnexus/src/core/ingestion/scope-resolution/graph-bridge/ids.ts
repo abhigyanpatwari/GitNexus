@@ -22,6 +22,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { generateId } from '../../../../lib/utils.js';
 import {
   AMBIGUOUS_POSITION,
+  exactPositionKey,
   localNameKey,
   positionKey,
   qualifiedKey,
@@ -171,14 +172,6 @@ function pickCallerCallableDef(
  * qualifiers).
  */
 /**
- * Extract the 1-based declaration line from a scope-resolution def id.
- * Shape: `def:<filePath>#<line>:<col>:<...>`; `undefined` when it doesn't match.
- */
-function defStartLine(nodeId: string | undefined, filePath: string): number | undefined {
-  return definitionIdPosition(nodeId, filePath)?.line;
-}
-
-/**
  * Trailing segment of a dotted qualified name (`Outer.inner` -> `inner`),
  * with any function-local `@line:col` identity suffix stripped
  * (`run.pick@5:10` -> `pick`).
@@ -258,9 +251,34 @@ export function resolveDefGraphId(
     // AST nodes (outer wrapper vs inner callable), but the graph node's
     // `startLine` follows the initializer (#2735) so this join matches even
     // when the binding is split across lines.
-    const line = defStartLine(def.nodeId, filePath);
+    const definitionPosition = definitionIdPosition(def.nodeId, filePath);
+    const line = definitionPosition?.line;
     if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
       const simple = simpleNameOf(qn);
+      if (definitionPosition !== undefined) {
+        const exactHit = nodeLookup.get(
+          exactPositionKey(
+            filePath,
+            def.type,
+            definitionPosition.line - 1,
+            definitionPosition.column,
+          ),
+        );
+        if (exactHit !== undefined && exactHit !== AMBIGUOUS_POSITION) return exactHit;
+        if (exactHit === undefined && siblingLabel !== undefined) {
+          const siblingExactHit = nodeLookup.get(
+            exactPositionKey(
+              filePath,
+              siblingLabel,
+              definitionPosition.line - 1,
+              definitionPosition.column,
+            ),
+          );
+          if (siblingExactHit !== undefined && siblingExactHit !== AMBIGUOUS_POSITION) {
+            return siblingExactHit;
+          }
+        }
+      }
       const posHit = nodeLookup.get(positionKey(filePath, def.type, line - 1, simple));
       if (posHit !== undefined && posHit !== AMBIGUOUS_POSITION) return posHit;
       // Retry under the sibling callable label when the def's OWN label

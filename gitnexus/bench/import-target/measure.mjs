@@ -24,9 +24,9 @@
  * those two need that no other language does.
  *
  * Kotlin also has `bench/kotlin-import-target/`, and this does not replace it:
- * that bench fingerprints both file-set iteration orders and probes the
- * four-tier cascade shape by shape, which this corpus does not. What Kotlin
- * gains here is a second corpus and the arms below that its own bench predates.
+ * that bench probes declared-package correctness cases shape by shape. What
+ * Kotlin gains here is a second corpus plus shared timing, context and heap
+ * arms.
  *
  * Each of the first nine resolvers answered its lookups with a full
  * `allFilePaths` scan per import before its fix, so import resolution cost
@@ -129,10 +129,10 @@
  *   - `depth_ratio` `t_deep/t_small` at a FIXED file count with ~6x the path
  *     components. `scaling_ratio` divides the file count out, so it is
  *     scale-invariant and structurally cannot see a cost that grows with path
- *     DEPTH instead — and `buildSuffixIndex` (C#, Ruby, PHP, Java) and Kotlin's
- *     `suffixByStem` each emit one entry per component. Go, Dart and COBOL,
- *     whose indexes are depth-free (COBOL's are keyed on the basename and
- *     nothing else), sit at ~0.9-1.0; the others sit legitimately above 1.0,
+ *     DEPTH instead — and `buildSuffixIndex` (C#, Ruby, PHP, Java) emits one
+ *     entry per component. Go, Dart, Kotlin and COBOL have depth-free indexes
+ *     (COBOL's are keyed on the basename and nothing else), so they sit near
+ *     1.0; the suffix-indexed resolvers sit legitimately above 1.0,
  *     which is why the budget is per language. Python is the extreme and the
  *     reason the spread is worth a per-language number at all: its index is
  *     depth-free, but `hasRepoCandidate` and `resolveAbsoluteFromFiles` rebuild
@@ -355,13 +355,13 @@
  * measures 197.0 µs -> 9976.2 µs per import (50.6x) with every test still
  * green, and nothing here could see it.
  *
- * `resolveOne` now makes the production call. Only TWO of the seventeen arms
- * can observe it — PHP and Python are the only registered hooks that declare a
- * fifth parameter — and that is ASSERTED rather than asserted-in-a-comment: the
+ * `resolveOne` now makes the production call. Four of the seventeen arms can
+ * observe it — PHP, Java, Kotlin and Python declare a fifth parameter — and
+ * that is ASSERTED rather than asserted-in-a-comment: the
  * inventory arm at the foot of the file reads
  * `SCOPE_RESOLVERS.get(language).resolveImportTarget.length` and reconciles it
  * against `CONTEXT_LANGS` in both directions, so a language that grows a
- * context leg cannot ship with the leg unmeasured. The other fifteen are handed
+ * context leg cannot ship with the leg unmeasured. The other thirteen are handed
  * nothing and build no `ParsedFile[]` at all, so their numbers are unmoved.
  *
  * `newPass` mints the `ParsedFile[]` FIRST and derives the path set from it
@@ -385,9 +385,9 @@
  * `parsedFiles` and once without, whose two answers must DIFFER and must both
  * equal what baselines.json records. Dropping the fifth argument, dropping
  * `importedSymbolKind`, or reverting Python to `namespace` collapses the two
- * onto one value and fails — and no other arm here would: on the main corpus
- * the leg agrees with the cascade, so both languages' fingerprints are
- * UNCHANGED by this (measured, all ten).
+ * onto one value and fails. PHP and Python still agree with their fallback on
+ * the main corpus; Java and Kotlin deliberately have no context-free fallback,
+ * so their fingerprints pin the declared-package answers recorded here.
  *
  * WHAT IS STILL NOT MEASURED, narrowed rather than deleted:
  *
@@ -399,12 +399,9 @@
  *     per parsed file, O(files) with no depth term, and the count gate in
  *     import-target-index-reuse.contract.test.ts is what holds it to one build
  *     per pass;
- *   - PHP's leg is measured with NO composer.json — `resolutionConfig` is
- *     undefined here, as it always has been — so `namespaceDirectories` only
- *     ever returns the directory of an already-resolved file and the PSR-4
- *     mapping branch stays unreached, exactly as `csharp` cannot reach the
- *     csproj leg. Closing that is a second PHP arm on the `csharp_csproj`
- *     precedent, not a parameter;
+ *   - PHP runs with the Composer PSR-4 configuration every production project
+ *     supplies. Configured hits and unmatched dependency misses share one
+ *     workload, so the Composer gate cannot become an unmeasured fast path;
  *   - the `const` tail of PHP's leg (`candidateFiles.length === 1`) is a
  *     different ANSWER, not a different cost: `function` runs the identical
  *     candidate gather and `localDefs` filter and diverges only in the last two
@@ -424,9 +421,9 @@
  * a measured number rather than the "seconds are free here" the paragraph below
  * would have let it be. Timed per language with the phase instrumented, twice:
  * the heap phase goes 2.06 s -> 3.43 s (1.377 s and 1.370 s added over the two
- * runs). The nine are kotlin 0.57 s — it retains the largest index of the nine
- * and builds all three of its maps eagerly — then vue 0.18, typescript 0.17,
- * cpp 0.09, swift 0.08, dart 0.08, go 0.07, cobol 0.07, rust 0.06. End to end
+ * runs). Those figures predate #2960: Kotlin now retains a compact
+ * declared-package/module-binding index rather than three path-suffix maps.
+ * End to end
  * that is report mode 33.76 s -> 34.93 s (min of three runs each, +1.17 s,
  * consistent with the phase measurement inside run-to-run noise). `--check` was
  * 41.60 s before and reads 41.48-43.56 s after, i.e. the whole-run difference
@@ -460,9 +457,9 @@ import { resolveGoImportTarget } from '../../src/core/ingestion/languages/go/imp
 import { resolveDartImportTarget } from '../../src/core/ingestion/languages/dart/import-target.ts';
 import { resolveRubyImportTarget } from '../../src/core/ingestion/languages/ruby/import-target.ts';
 import { resolveCsharpImportTarget } from '../../src/core/ingestion/languages/csharp/import-target.ts';
-import { resolveKotlinImportTarget } from '../../src/core/ingestion/languages/kotlin/import-target.ts';
+import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.ts';
 import { resolvePhpImportTargetInternal } from '../../src/core/ingestion/languages/php/import-target.ts';
-import { resolveJavaImportTarget } from '../../src/core/ingestion/languages/java/import-target.ts';
+import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.ts';
 import { cobolScopeResolver } from '../../src/core/ingestion/languages/cobol/scope-resolver.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { resolveRustImportTarget } from '../../src/core/ingestion/languages/rust/import-target.ts';
@@ -550,13 +547,10 @@ const HEAP_LARGE = 32000;
 const HEAP_PAD = 8;
 /** The languages whose retained per-pass index carries a BUDGET — a ceiling, a
  *  floor derived from `heap_reading_bytes`, and the linear-growth ratio arm.
- *  All eight are measured the same way as the other nine (`retainedPassBytes`,
- *  one real import through the real resolver); what this list decides is which
- *  GATE a reading gets, not whether it is taken. The first five reach the shared
- *  `WorkspaceFileIndex` and retained NOTHING at BASE; `csharp_csproj` is the
- *  same corpus through the same index under the csproj context, and it is here
- *  rather than excluded as a duplicate because after #2903 its READ PATTERN,
- *  not its corpus, decides the number.
+ *  All arms are measured through `retainedPassBytes`, one real import through
+ *  the real resolver; this list decides which GATE a reading gets, not whether
+ *  it is taken. The configured C# arm stays here because its read pattern
+ *  reaches retained structures that the unconfigured arm cannot observe.
  *
  *  The remaining three are `HEAP_BOUNDED`, DERIVED from this list rather than
  *  written beside it, and they carry an upper bound and NO floor. That asymmetry
@@ -565,7 +559,7 @@ const HEAP_PAD = 8;
  *  would gate the noise. rust reads 16 B at both scales; swift's ratio is 0.888
  *  and cobol's 1.082, both outside the linearity every budgeted arm shows, so a
  *  floor and a ratio arm would be measuring the measurement. See the MEMORY
- *  section of the header for what re-measuring all seventeen found. */
+ *  section of the header for what re-measuring the full inventory found. */
 const HEAP_BUDGETED = [
   'csharp',
   'csharp_csproj',
@@ -578,20 +572,8 @@ const HEAP_BUDGETED = [
   // per-pass structure and each grows LINEARLY with the file count (ratio
   // 0.996-1.004 against a 1.25 budget over 8000 -> 32000 files), so each can
   // carry the full ceiling + floor + ratio set rather than a bound alone.
-  // kotlin's 40.82 MiB is larger than ruby's and java's, both of which were
-  // budgeted from the start, and it had no stated exclusion reason at all.
-  //
-  // Its ceiling is also the one TIGHT ceiling in this file — 1.0747x its
-  // reading where every other is 1.5x — because it is the only one gating a
-  // size REDUCTION being preserved rather than a footprint not growing.
-  // #2881 compacts `dirChildren`'s buckets, and deleting that `slice()` is
-  // invisible to every other instrument in the repository: output-identical,
-  // so no fingerprint moves; capacity has no reflective surface, so no unit
-  // assertion moves; and both heap scales grow together, so `heap_ratio_budget`
-  // divides it out. It shows up here and nowhere else, at +12.57%. See
-  // `_heap_compaction_gate` in baselines.json for the measurement, the
-  // arithmetic behind the 5.4 MB, and how to tell a lost compaction from a
-  // runner's heapUsed accounting moving under the whole file.
+  // Kotlin now retains its declared-package/module-binding index. Its measured
+  // 32000-file reading and standard 1.5x ceiling are recorded in baselines.json.
   'kotlin',
   'dart',
   'go',
@@ -613,17 +595,17 @@ const HEAP_BUDGETED = [
 
 /**
  * The arms handed the fifth `context` argument — `{ parsedFiles, parsedImport }`
- * — because their registered hook DECLARES it. Two of seventeen, and the
+ * — because their registered hook DECLARES it. Four of seventeen arms, and the
  * inventory arm at the foot of this file reconciles that claim against
  * `SCOPE_RESOLVERS` in both directions rather than trusting this line.
  *
  * These are also the only arms for which `newPass` builds a `ParsedFile[]` at
- * all. Building one for the other fifteen would cost their timed loop an
+ * all. Building one for the other thirteen would cost their timed loop an
  * O(files) allocation per pass that no resolver of theirs can even observe —
  * their hooks declare three or four parameters — so their numbers stay exactly
  * where they were.
  */
-const CONTEXT_LANGS = ['php', 'python'];
+const CONTEXT_LANGS = ['php', 'java', 'kotlin', 'python'];
 
 /**
  * Needs `node --expose-gc` to force collection for a clean delta; without it
@@ -726,6 +708,15 @@ const joinBase = (baseUrl, rest) => (baseUrl === '' ? rest : `${baseUrl}/${rest}
  */
 const tsBaseUrlFor = (pad) =>
   pad === 0 ? '' : Array.from({ length: pad }, (_, n) => `d${n}`).join('/');
+const phpComposerConfigFor = (pad) => ({
+  psr4: new Map([['App', joinBase(tsBaseUrlFor(pad), 'src/App')]]),
+  authoritativePsr4: new Set(['App']),
+});
+const renderPhpComposerConfig = (config) =>
+  [...config.psr4]
+    .map(([namespace, directory]) => `${namespace || '<root>'}=${directory || '<root>'}`)
+    .sort()
+    .join(';');
 /** Keyed by LAYOUT name, so there is no `csharp_csproj` row: `buildFiles`
  *  aliases that arm to `csharp` before this table is read. */
 const EXTENSION = {
@@ -931,7 +922,7 @@ function collideDir(lang, d, i) {
         `mod${d}/src/main/kotlin/com/example/models/inner/com/example/models`
       : `mod${d}/src/main/kotlin/com/example/models`;
   }
-  if (lang === 'php') return `svc${d}/src/Models`;
+  if (lang === 'php') return `src/App/Svc${d}/Models`;
   if (lang === 'java') {
     return d % 7 === 0
       ? `svc${d}/src/main/java/com/example/model/inner/model`
@@ -965,11 +956,10 @@ function collideDir(lang, d, i) {
  * a handful of buckets.
  *
  * `pad` prepends that many extra directory components to every path. Every
- * language's in-repo target resolves through a path SUFFIX (Go's module leg
- * against the package dir, C#'s progressive strip, Dart's `lib/<rel>`, Ruby's
- * suffix match, Kotlin's `suffixByStem`), so the padding changes path depth
- * without changing what resolves — which is what makes the `deep` arm a clean
- * depth measurement rather than a different corpus.
+ * path-based resolver keeps the same answer under that padding. Kotlin's
+ * package facts are also unchanged by it. The padding therefore changes path
+ * depth without changing what resolves, making `deep` a clean depth
+ * measurement rather than a different corpus.
  *
  * Split out from `buildRepo` so the heap arm can build 32k paths without also
  * minting 256k import tuples it would never resolve.
@@ -1048,6 +1038,12 @@ function buildFiles(lang, fileCount, pad, shape) {
                 : ext;
     files.push(`${prefix}${dir}/${stem}${suffix}`);
   }
+  // One real suffix decoy makes the PHP external gate observable: with the
+  // gate, Vendor0 stays unresolved; without it, suffix fallback resolves this
+  // path and the exact fingerprint/external-probe result changes.
+  if (layout === 'php' && files.length > 0) {
+    files[files.length - 1] = `${prefix}legacy/Vendor0/Ghost/Missing.php`;
+  }
   return files;
 }
 
@@ -1088,8 +1084,62 @@ const probeFile = (filePath, defs) => ({
   referenceSites: [],
 });
 
+const javaProbeFile = (filePath, packageName) => ({
+  ...probeFile(filePath, []),
+  captureSideChannel: {
+    kind: 'java',
+    packageFact: { status: 'known', packageName },
+    classAnnotations: [],
+  },
+});
+
+const kotlinProbeFile = (filePath, packageName, exportName) => {
+  const base = probeFile(filePath, [['Class', `${packageName}.${exportName}`]]);
+  const def = base.localDefs[0];
+  const moduleScope = `module:${filePath}`;
+  return {
+    ...base,
+    moduleScope,
+    scopes: [
+      {
+        id: moduleScope,
+        parent: null,
+        kind: 'Module',
+        range: { startLine: 1, startCol: 0, endLine: 1, endCol: 1 },
+        filePath,
+        bindings: new Map([[exportName, [{ def, origin: 'local' }]]]),
+        ownedDefs: [def],
+        imports: [],
+        typeBindings: new Map(),
+      },
+    ],
+    captureSideChannel: {
+      kind: 'kotlin',
+      companionScopes: [],
+      packageFact: { status: 'known', packageName },
+      classAnnotations: [],
+    },
+  };
+};
+
+function javaBenchmarkPackage(filePath) {
+  const uniquePackage = /\/com\/example\/(pkg\d+)(?:\/|$)/.exec(`/${filePath}`)?.[1];
+  if (uniquePackage !== undefined) return `com.example.${uniquePackage}`;
+
+  return /\/svc\d+\/.*\/com\/example\/model(?:\/|$)/.test(`/${filePath}`)
+    ? 'com.example.model'
+    : '';
+}
+
+function kotlinBenchmarkPackage(filePath) {
+  const rootedPath = '/' + filePath;
+  const uniquePackage = /\/com\/example\/(pkg\d+)(?:\/|$)/.exec(rootedPath)?.[1];
+  if (uniquePackage !== undefined) return `com.example.${uniquePackage}`;
+  return /\/com\/example\/models(?:\/|$)/.test(rootedPath) ? 'com.example.models' : '';
+}
+
 /**
- * The `ParsedFile[]` the orchestrator threads beside the path set, for the two
+ * The `ParsedFile[]` the orchestrator threads beside the path set, for the three
  * languages whose hook declares a `context` — see `CONTEXT_LANGS`.
  *
  * Two defs per file, and both are real shapes rather than padding. PHP keeps
@@ -1104,13 +1154,22 @@ const probeFile = (filePath, defs) => ({
  * The owner segment is the file's own directory name (`Ns7`, `Models`, `pkg7`),
  * which is stable across the `small`, `deep` and `collide` arms — so the `deep`
  * arm differs from `small` in path DEPTH alone, exactly as it does for the path
- * set. That matters here: `directoryAliases` emits one entry per path segment,
- * so `filesByDirectory` is O(files × depth) and the depth arm is the only one
- * that can see it.
+ * set. `filesByDirectory` is exact and linear in the file count; the shared
+ * suffix index remains the path-depth-sensitive structure this arm measures.
  */
 function buildParsedFiles(lang, files) {
   const parsedFiles = [];
   for (const filePath of files) {
+    if (lang === 'java') {
+      parsedFiles.push(javaProbeFile(filePath, javaBenchmarkPackage(filePath)));
+      continue;
+    }
+    if (lang === 'kotlin') {
+      const slash = filePath.lastIndexOf('/');
+      const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
+      parsedFiles.push(kotlinProbeFile(filePath, kotlinBenchmarkPackage(filePath), stem));
+      continue;
+    }
     const slash = filePath.lastIndexOf('/');
     const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
     const parent = slash < 0 ? '' : filePath.slice(0, slash);
@@ -1196,21 +1255,18 @@ function uniqueTarget(lang, { local, r, d, j, dirs }) {
         : `com.ghost${(r >>> 4) % 97}.deep.Missing`;
   }
   if (lang === 'php') {
-    // Backslash-separated, the way a `use` statement is actually written; the
-    // resolver normalizes them. No composer.json is threaded (the adapter's
-    // `resolutionConfig` is left undefined), so every one of these lands on
-    // `suffixResolve` — the leg that ran one `findIndex` over every file per
-    // path part per extension, ~50 of them, and measured 96.40 ms per import at
-    // 20k files before #2901.
-    return local
-      ? `App\\Ns${d}\\File${j}`
-      : (r >>> 3) % 2 === 0
-        ? [
-            'Psr\\Log\\LoggerInterface',
-            'Symfony\\Component\\Console\\Command',
-            'Doctrine\\ORM\\EntityManager',
-          ][(r >>> 4) % 3]
-        : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
+    if (local) {
+      const namespace = d % 7 === 0 ? `Ns${d}\\Sub\\Ns${d}` : `Ns${d}`;
+      const leadingSeparator = (r >>> 3) % 4 === 0 ? '\\' : '';
+      return `${leadingSeparator}App\\${namespace}\\File${j}`;
+    }
+    return (r >>> 3) % 2 === 0
+      ? [
+          'Psr\\Log\\LoggerInterface',
+          'Symfony\\Component\\Console\\Command',
+          'Doctrine\\ORM\\EntityManager',
+        ][(r >>> 4) % 3]
+      : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
   }
   if (lang === 'java') {
     // Java has NO in-repo-namespace gate (#2910 is filed for it), so a JDK
@@ -1387,15 +1443,8 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
           `package:ext${(r >>> 4) % 97}/other/mod${(r >>> 4) % 8}.dart`;
   }
   if (lang === 'kotlin') {
-    // Same wildcard share as the unique arm. This used to send the `d % 7`
-    // nested slice to `com.example.vendor${d}`, a package that exists nowhere,
-    // to mirror the unique arm's nested slice — which missed, because
-    // `dirChildren` required the parent to be the FIRST occurrence of its own
-    // name and `…/com/example/pkg${d}/inner/pkg${d}` therefore did not belong to
-    // `pkg${d}`. #2881 removed that rule, so the unique arm's nested wildcards
-    // resolve and the mirror has to as well, or this arm stops resolving as
-    // many imports as `small` — which is the invariant that makes the two
-    // timings comparable, and it is asserted below.
+    // Same wildcard share and declared-package workload as the unique arm.
+    // Directory collisions must not affect semantic package resolution.
     return local
       ? (r >>> 3) % 3 === 0
         ? `com.example.models.*`
@@ -1407,34 +1456,25 @@ function collideTarget(lang, { local, r, d, j, dirs }) {
         : `com.ghost${(r >>> 4) % 97}.deep.Missing`;
   }
   if (lang === 'php') {
-    // `Models\Mod{n}` is carried by every service, so the segment-suffix key it
-    // resolves through holds one entry no matter how many files exist: PHP
-    // answers from keyed maps and is collision-IMMUNE, which is what this arm
-    // asserts. The local spelling still always resolves, as it does on the
-    // unique layout — PHP's cascade strips leading segments, so even the
-    // nested-same-name slice is reachable by a shorter suffix.
-    return local
-      ? `App\\Models\\Mod${Math.floor(j / dirs)}`
-      : (r >>> 3) % 2 === 0
-        ? [
-            'Psr\\Log\\LoggerInterface',
-            'Symfony\\Component\\Console\\Command',
-            'Doctrine\\ORM\\EntityManager',
-          ][(r >>> 4) % 3]
-        : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
+    if (local) {
+      const leadingSeparator = (r >>> 3) % 4 === 0 ? '\\' : '';
+      return `${leadingSeparator}App\\Svc${j % dirs}\\Models\\Mod${Math.floor(j / dirs)}`;
+    }
+    return (r >>> 3) % 2 === 0
+      ? [
+          'Psr\\Log\\LoggerInterface',
+          'Symfony\\Component\\Console\\Command',
+          'Doctrine\\ORM\\EntityManager',
+        ][(r >>> 4) % 3]
+      : `Vendor${(r >>> 4) % 97}\\Ghost\\Missing`;
   }
   if (lang === 'java') {
-    // `com.svc{d}.model` matches no directory, but its LAST segment is the one
-    // every directory now ends in, so `firstFileDirectlyInPkgDir` walks the
-    // whole `model` bucket twice — at the direct match and again after the
-    // first strip — before the third strip finds `model` on its own. That walk
-    // is the non-constant term this arm exists to measure. The `d % 7` slice
-    // used to import `com.svc{d}.vendor`, which buckets to nothing, mirroring
-    // the unique arm's nested slice — which missed until #2881 and resolves
-    // now, so the mirror follows it or the same-workload invariant below breaks.
+    // Every file declares the same package despite living under different
+    // service paths. Exact and wildcard imports therefore exercise one growing
+    // declared-package bucket without relying on directory layout.
     return local
       ? (r >>> 3) % 3 === 0
-        ? `com.svc${d}.model.*`
+        ? 'com.example.model.*'
         : `com.example.model.File${j}`
       : (r >>> 3) % 2 === 0
         ? ['java.util.List', 'java.io.IOException', 'java.util.concurrent.ConcurrentHashMap'][
@@ -1568,6 +1608,9 @@ function buildRepo(lang, fileCount, pad = 0, shape = 'unique') {
       imports.push([from, mintTarget(lang, { local, r, d, j, dirs })]);
     }
   }
+  if (lang === 'php' && imports.length > 0) {
+    imports[0] = [files[0], 'Vendor0\\Ghost\\Missing'];
+  }
   return { files, imports };
 }
 
@@ -1625,9 +1668,10 @@ function newPass(lang, files, pad = 0) {
   }
   if (CONTEXT_LANGS.includes(lang)) {
     const parsedFiles = buildParsedFiles(lang, files);
+    restoreBenchmarkSideChannels(lang, parsedFiles);
     return {
       allFilePaths: new Set(parsedFiles.map((f) => f.filePath)),
-      config: undefined,
+      config: lang === 'php' ? phpComposerConfigFor(pad) : undefined,
       parsedFiles,
     };
   }
@@ -1643,7 +1687,17 @@ function newPass(lang, files, pad = 0) {
  * to prove the arm can tell the two call shapes apart.
  */
 const contextFor = (pass, parsedImport) =>
-  pass.parsedFiles === undefined ? undefined : { parsedFiles: pass.parsedFiles, parsedImport };
+  pass.parsedFiles === undefined
+    ? undefined
+    : { parsedFiles: pass.parsedFiles, parsedImport, filesSkipped: 0 };
+
+function restoreBenchmarkSideChannels(lang, parsedFiles) {
+  const resolver =
+    lang === 'java' ? javaScopeResolver : lang === 'kotlin' ? kotlinScopeResolver : undefined;
+  if (resolver === undefined) return;
+  resolver.loadResolutionConfig?.('');
+  for (const parsed of parsedFiles) resolver.applyCaptureSideChannel?.(parsed);
+}
 
 /** The timed loop. One `newPass` per pass, so every pass pays exactly one index
  *  build — see `newPass`. */
@@ -1663,9 +1717,18 @@ function resolveOne(lang, from, target, pass) {
   if (lang === 'dart') return resolveDartImportTarget(target, from, allFilePaths);
   if (lang === 'ruby') return resolveRubyImportTarget(target, from, allFilePaths);
   if (lang === 'kotlin') {
-    return resolveKotlinImportTarget(
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target },
-      { fromFile: from, allFilePaths },
+    const parsedImport = {
+      kind: 'named',
+      localName: 'X',
+      importedName: 'X',
+      targetRaw: target,
+    };
+    return kotlinScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, parsedImport),
     );
   }
   // `pass.config` is undefined for PHP, so no composer.json: the PSR-4 mapping
@@ -1698,9 +1761,18 @@ function resolveOne(lang, from, target, pass) {
     );
   }
   if (lang === 'java') {
-    return resolveJavaImportTarget(
-      { kind: 'named', localName: 'X', importedName: 'X', targetRaw: target },
-      { fromFile: from, allFilePaths },
+    const parsedImport = {
+      kind: 'named',
+      localName: 'X',
+      importedName: 'X',
+      targetRaw: target,
+    };
+    return javaScopeResolver.resolveImportTarget(
+      target,
+      from,
+      allFilePaths,
+      pass.config,
+      contextFor(pass, parsedImport),
     );
   }
   // The `ScopeResolver` hook itself — COBOL's copy index has no other export.
@@ -1971,7 +2043,9 @@ const HEAP_PROBE_TARGET = {
   // (`getFilesInDir`) before answering null — the three-map read pattern.
   csharp_csproj: 'App.Missing0',
   ruby: 'gem0/missing/thing',
-  php: 'Vendor0\\Ghost\\Missing',
+  // A mapped-but-missing class forces the Composer mapping and suffix-index
+  // read paths. The separate external probe below keeps the fast gate visible.
+  php: 'App\\HeapGhost0\\AbsentHeapProbe',
   java: 'com.google.common.vendor0.Missing',
   javascript: 'vendor0/lib/missing',
   python: 'vendor0.deep.missing',
@@ -1981,11 +2055,11 @@ const HEAP_PROBE_TARGET = {
   // budgeted ones above: a spelling `uniqueTarget` already mints for that language, and
   // one that MISSES, so the reading is the index and the cascade runs to the
   // end. Chosen from the miss family that reaches furthest into each cascade:
-  //   - `go` takes the GOPATH fallback, one `filesDirectlyInPkgDir` per path
-  //     segment, which is the leg that forces `PackageDirIndex`;
+  //   - `go` names a missing package inside GO_MODULE, which reaches the
+  //     package-directory lookup and forces `PackageDirIndex`;
   //   - `dart` is an external package, so BOTH candidate paths miss and both
   //     walk the basename bucket to completion;
-  //   - `kotlin` misses in `suffixByStem`, the map its four-tier cascade builds;
+  //   - `kotlin` misses after building its declared-package/module-binding index;
   //   - `cobol` misses in both tier maps, `swift` in `byModule`, and `rust`
   //     probes candidate paths and builds nothing — that last is the reading
   //     the exclusion rests on;
@@ -1993,7 +2067,7 @@ const HEAP_PROBE_TARGET = {
   //     `javascript` and `c` arms they are excluded as duplicates OF, so the
   //     bound compares like with like. `vue`'s is bare rather than `@/…`
   //     because the alias branch rewrites to `src/` and would resolve.
-  go: 'github.com/org/repo0/pkg/util',
+  go: 'example.com/mod/repo0/pkg/util',
   dart: 'package:ext0/src/thing.dart',
   kotlin: 'com.ghost0.deep.Missing',
   cobol: 'VENDOR0',
@@ -2039,11 +2113,24 @@ function measureHeap(lang) {
   GC();
   GC();
   const probe = HEAP_PROBE_TARGET[lang];
-  const read = (files) => retainedPassBytes(lang, files, probe);
+  const read = (files) => retainedPassBytes(lang, files, probe, lang === 'php' ? HEAP_PAD : 0);
   const small = flatten(buildFiles(lang, HEAP_SMALL, HEAP_PAD, 'unique'));
   const bytesSmall = read(small);
   const large = flatten(buildFiles(lang, HEAP_LARGE, HEAP_PAD, 'unique'));
   const bytesLarge = read(large);
+  const phpGateShape =
+    lang === 'php'
+      ? (() => {
+          const externalProbe = 'Vendor0\\Ghost\\Missing';
+          const config = phpComposerConfigFor(HEAP_PAD);
+          const pass = newPass(lang, large, HEAP_PAD);
+          return {
+            resolution_config: renderPhpComposerConfig(config),
+            external_probe: externalProbe,
+            external_result: renderResolved(resolveOne(lang, large[0], externalProbe, pass)),
+          };
+        })()
+      : {};
   return {
     files_small: HEAP_SMALL,
     files_large: HEAP_LARGE,
@@ -2053,6 +2140,7 @@ function measureHeap(lang) {
     bytes_large: bytesLarge,
     mib_large: Number((bytesLarge / 1024 / 1024).toFixed(2)),
     ratio: Number((bytesLarge / bytesSmall / (HEAP_LARGE / HEAP_SMALL)).toFixed(3)),
+    ...phpGateShape,
   };
 }
 
@@ -2061,14 +2149,14 @@ function measureHeap(lang) {
  * of files carrying ONE import whose answer DIFFERS between the production
  * five-argument call and the three-argument one this harness used to make.
  *
- * That difference is the whole arm. The main corpus cannot serve as one: there
- * the leg AGREES with the cascade for every import (measured — both languages'
- * ten fingerprints are unchanged by threading the context), which is the right
- * outcome for a corpus built to measure cost, and useless for proving the
- * context arrives. Timing cannot prove it either; a dropped context makes the
- * arms FASTER, and nothing here has a lower bound on ms.
+ * That difference is the whole arm. PHP and Python need it because their main
+ * corpus answers agree with the fallback. Java and Kotlin deliberately return
+ * null without declared-package context; this tiny positive probe isolates the
+ * adapter contract from aggregate corpus changes. Timing cannot prove any of
+ * these; a dropped context makes the arms faster, and nothing here has a lower
+ * bound on ms.
  *
- * Both are resolved THROUGH `resolveOne`, not through the resolvers directly,
+ * All probes are resolved THROUGH `resolveOne`, not through the resolvers directly,
  * because what is under test is this file's threading rather than the
  * resolvers' behaviour. The control differs in exactly one thing:
  * `pass.parsedFiles` is undefined, which `contextFor` turns into no fifth
@@ -2092,6 +2180,24 @@ const CONTEXT_PROBE = {
       probeFile('src/App/Ns0/Alpha.php', [['Class', 'App\\Ns0\\Alpha']]),
       probeFile('src/App/Ns0/Dup.php', [['Class', 'App\\Ns0\\Dup']]),
       probeFile('src/App/Ns0/Helpers.php', [['Function', 'App\\Ns0\\Dup']]),
+    ],
+  },
+  /** A declared package resolves its type only when the parsed workspace arrives. */
+  java: {
+    from: 'app/Main.java',
+    target: 'com.example.model.User',
+    parsedFiles: [
+      javaProbeFile('app/Main.java', 'app'),
+      javaProbeFile('weird/path/User.java', 'com.example.model'),
+    ],
+  },
+  /** A Kotlin export resolves from its package fact and module binding only. */
+  kotlin: {
+    from: 'app/Main.kt',
+    target: 'com.example.model.User',
+    parsedFiles: [
+      kotlinProbeFile('app/Main.kt', 'app', 'main'),
+      kotlinProbeFile('weird/path/UserSource.kt', 'com.example.model', 'User'),
     ],
   },
   /**
@@ -2127,10 +2233,13 @@ const CONTEXT_PROBE = {
 function measureContext(lang) {
   const { from, target, parsedFiles } = CONTEXT_PROBE[lang];
   const allFilePaths = new Set(parsedFiles.map((f) => f.filePath));
-  const answer = (files) =>
-    renderResolved(
-      resolveOne(lang, from, target, { allFilePaths, config: undefined, parsedFiles: files }),
+  const config = lang === 'php' ? phpComposerConfigFor(0) : undefined;
+  const answer = (files) => {
+    restoreBenchmarkSideChannels(lang, files ?? []);
+    return renderResolved(
+      resolveOne(lang, from, target, { allFilePaths, config, parsedFiles: files }),
     );
+  };
   return {
     target,
     with_context: answer(parsedFiles),
@@ -2161,11 +2270,11 @@ if (CHECK && GC === null) {
 /**
  * Every arm, and the registered language each one exercises.
  *
- * This used to be a hand-written list of seventeen strings under a comment
+ * This used to be a hand-written list of language strings under a comment
  * claiming it was "every language in `SCOPE_RESOLVERS`" — a claim nothing in
  * the file could check, because the file never imported the registry. Adding a
  * resolver to `pipeline/registry.ts` is two lines, neither of which is this
- * one, so a seventeenth registered language would have shipped ungated and
+ * one, so a newly registered language would have shipped ungated and
  * printed PASS. That is not a hypothetical failure mode: JavaScript reached
  * `suffixResolve` with no index at all and measured 25 972 µs per import at
  * 8000 files (PR #2911) for exactly as long as nothing gated it.
@@ -2177,10 +2286,9 @@ if (CHECK && GC === null) {
  * uses ten files away, and the same "one row per language" table
  * `bench/cfg/measure.mjs` keeps.
  *
- * The mapping is many-to-one on purpose: `csharp` and `csharp_csproj` are two
- * arms over one registered resolver, differing only in whether `csharpConfigs`
- * is supplied, because the no-csproj arm returns before it can reach the leg
- * #2902 indexed.
+ * The mapping is many-to-one only for C#: the configured arm reaches the
+ * csproj branch that the default arm cannot observe. PHP's sole arm carries
+ * its production Composer configuration directly.
  */
 const LANG_REGISTRY = {
   go: SupportedLanguages.Go,
@@ -2266,8 +2374,9 @@ for (const lang of LANGS) {
     scaling_ratio: Number((scales.large.ms / scales.small.ms / (LARGE / SMALL)).toFixed(3)),
     // `scaling_ratio` divides the file count out, so it is scale-invariant and
     // structurally cannot see a cost that grows with path DEPTH instead — and
-    // `buildSuffixIndex` (C#, Ruby, PHP, Java, and the whole ts family) and
-    // Kotlin's `suffixByStem` all emit one entry per '/' in a path, and
+    // `buildSuffixIndex` (C#, Ruby, PHP, Java, and the whole ts family) emits
+    // one entry per '/' in a path, while Kotlin's declared-package index is
+    // depth-free, and
     // Python's ancestor walk rebuilds one prefix per component PER IMPORT.
     // Same file count, ~6x the components.
     depth_ratio: Number((scales.deep.ms / scales.small.ms).toFixed(3)),
@@ -2293,7 +2402,7 @@ for (const lang of LANGS) {
 // phase goes 2.06 s -> 3.43 s, of which kotlin alone is 0.57 s. See COST.
 for (const lang of LANGS) report[lang].heap = measureHeap(lang);
 
-// Deterministic and microseconds — it resolves six imports over two three-file
+// Deterministic and microseconds — it resolves six imports over three tiny
 // corpora — so unlike the heap arm it neither needs nor deserves isolation from
 // the timing phase. It runs last only because it reads best beside the heap arm
 // in the report.
@@ -2368,7 +2477,7 @@ const SCALE_SHAPE = {
     'one of them alone moves nothing in the others.',
 };
 /** The same, for the heap arm — the four inputs that decide what it measures.
- *  Asserted for all seventeen, budgeted tier and bounded tier alike, and it is
+ *  Asserted for all seventeen arms, budgeted tier and bounded tier alike, and it is
  *  the bounded tier that needs it most: a bound is a single comparison, so a
  *  probe swapped for one that reaches less is a bound over a smaller workload
  *  and there is no floor beside it to notice.
@@ -2384,6 +2493,13 @@ const HEAP_SHAPE = {
     'probe that stops reaching a leg, or two file counts collapsed onto one, leaves every ' +
     'ceiling, floor, bound and ratio passing over an arm that changed workload. Deterministic: ' +
     'a re-run will not change it.',
+};
+const PHP_HEAP_SHAPE = {
+  fields: [...HEAP_SHAPE.fields, 'resolution_config', 'external_probe', 'external_result'],
+  why:
+    HEAP_SHAPE.why +
+    ' PHP also pins the Composer mapping and a suffix-matchable external decoy so the mapped ' +
+    'index path and the external fast gate remain separate observable arms.',
 };
 /** The same, for the `context` arm. All three fields are exact strings, not
  *  bounds: this arm has no measurement noise at all — it resolves one import
@@ -2407,7 +2523,7 @@ const CONTEXT_SHAPE = {
  *  a fifth parameter. */
 const armShapes = (lang) => [
   ...SCALES.map((scale) => [scale, SCALE_SHAPE]),
-  ['heap', HEAP_SHAPE],
+  ['heap', lang === 'php' ? PHP_HEAP_SHAPE : HEAP_SHAPE],
   ...(CONTEXT_LANGS.includes(lang) ? [['context', CONTEXT_SHAPE]] : []),
 ];
 
@@ -2841,8 +2957,8 @@ expectNoOrphanKeys(
 // against a claim in a comment. `run.ts` passes the fifth argument to every
 // provider; which ones can OBSERVE it is decided by how many parameters each
 // hook declares, and that is a number the registry can be asked for. Today
-// exactly two answer 5 (php, python) and the other fourteen answer 3 or 4 —
-// which is why fourteen arms could ignore this whole question and their numbers
+// exactly four answer 5 (php, java, kotlin, python) and the other thirteen answer 3 or 4 —
+// which is why thirteen arms can ignore this whole question and their numbers
 // did not move when it was fixed.
 //
 // `Function.length` stops at the first defaulted or rest parameter, so a hook

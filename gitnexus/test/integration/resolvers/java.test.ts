@@ -554,6 +554,49 @@ describe('Java named import disambiguation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Declared-package resolution (#2910): external imports cannot suffix-match
+// local lookalikes, while file layout does not override package declarations.
+// ---------------------------------------------------------------------------
+
+describe('Java declared-package import resolution (#2910)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-import-package-evidence'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not emit an IMPORTS edge from java.util.List to local util/List.java', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(
+      imports.some(
+        (edge) =>
+          edge.sourceFilePath === 'app/Main.java' && edge.targetFilePath === 'util/List.java',
+      ),
+    ).toBe(false);
+  });
+
+  it('resolves a declared package even when the file path is flattened', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(
+      imports.some(
+        (edge) => edge.sourceFilePath === 'app/Main.java' && edge.targetFilePath === 'User.java',
+      ),
+    ).toBe(true);
+
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.some(
+        (edge) =>
+          edge.source === 'run' && edge.target === 'save' && edge.targetFilePath === 'User.java',
+      ),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Variadic resolution: String... doesn't get filtered by arity
 // ---------------------------------------------------------------------------
 
@@ -626,7 +669,7 @@ describe('Java variadic call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Wildcard import: `import com.example.models.*` resolves to a package file
+// Wildcard import: `import com.example.models.*` resolves every package file
 // ---------------------------------------------------------------------------
 
 describe('Java wildcard import resolution', () => {
@@ -636,15 +679,14 @@ describe('Java wildcard import resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'java-wildcard-import'), () => {});
   }, 60000);
 
-  it('parses wildcard import without errors and creates graph nodes', () => {
-    // The wildcard import (`import com.example.models.*`) exercises the
-    // directoryChild branch in resolveJavaImportTarget.  Even if no IMPORTS
-    // edge is created (nondeterministic file selection — documented flip
-    // blocker), the graph must contain valid nodes for all classes.
-    const classes = getNodesByLabel(result, 'Class');
-    expect(classes).toContain('Main');
-    expect(classes).toContain('User');
-    expect(classes).toContain('Order');
+  it('emits IMPORTS edges to every file declaring the wildcard package', () => {
+    const imports = getRelationships(result, 'IMPORTS').filter(
+      (edge) => edge.sourceFilePath === 'com/example/app/Main.java',
+    );
+    expect(imports.map((edge) => edge.targetFilePath).sort()).toEqual([
+      'com/example/models/Order.java',
+      'com/example/models/User.java',
+    ]);
   });
 
   it('resolves user.save() call via wildcard-imported User', () => {

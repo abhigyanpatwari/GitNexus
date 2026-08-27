@@ -51,6 +51,7 @@ CREATE NODE TABLE Function (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  convexEndpointFactory STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -194,7 +195,18 @@ export const NAMESPACE_SCHEMA = CODE_ELEMENT_BASE('Namespace');
 export const TRAIT_SCHEMA = CODE_ELEMENT_BASE('Trait');
 export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
 export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
-export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
+export const CONST_SCHEMA = `
+CREATE NODE TABLE \`Const\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  convexEndpointFactory STRING,
+  PRIMARY KEY (id)
+)`;
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
 export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
 export const PROPERTY_SCHEMA = `

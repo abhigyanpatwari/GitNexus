@@ -13,6 +13,8 @@ import {
   LIST_REPOS_DEFAULT_LIMIT,
   LIST_REPOS_MAX_LIMIT,
 } from '../../src/mcp/tools.js';
+import { getResourceTemplates, type ResourceTemplate } from '../../src/mcp/resources.js';
+import { GROUP_IMPACT_TRUNCATION_REASONS } from '../../src/core/group/types.js';
 
 const GROUP_TOOLS = new Set(['group_list', 'group_sync']);
 const MUTATING_TOOLS = new Set(['rename', 'group_sync']);
@@ -290,6 +292,40 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  // U27: `RegistryWriteOutcome` has four members, three of which a group_sync
+  // MCP call can actually return (`not-attempted` needs `skipWrite`/no
+  // `groupDir`, neither reachable through this tool). An agent that only knows
+  // 'written' and 'preserved' reads the third — nothing readable AND no prior
+  // registry — as "your previous contracts survived", which is a claim about a
+  // file that does not exist (R4).
+  it('group_sync description names every registry outcome reachable through the tool', () => {
+    const syncTool = GITNEXUS_TOOLS.find((t) => t.name === 'group_sync')!;
+    const d = syncTool.description;
+    expect(d).toContain('registryOutcome');
+    expect(d).toContain("'written'");
+    expect(d).toContain("'preserved'");
+    expect(d).toContain("'superseded'");
+    expect(d).toContain("'no-prior-registry'");
+    // Naming the value is not describing it: the outcome an agent has to act on
+    // differently is "there is no contracts.json on disk at all".
+    expect(d).toMatch(/no previous contracts\.json|no contracts\.json (exists|was written)/i);
+    // `not-attempted` is unreachable through this tool; documenting it would
+    // advertise an outcome no caller can observe.
+    expect(d).not.toContain('not-attempted');
+    // 'preserved' rewrites contracts.json (keeping the previous contracts and
+    // cross-links, refreshing the diagnostic lists). ITS clause may not say the
+    // file was left alone — that sent an operator reading an unchanged mtime to
+    // conclude the sync never ran. Scoped to that clause rather than the whole
+    // description, because 'superseded' genuinely does leave the file untouched
+    // and describing it accurately must not trip this.
+    const preservedClause = d.slice(d.indexOf("'preserved'"), d.indexOf("'superseded'"));
+    expect(preservedClause).not.toMatch(/did NOT write|untouched|left alone|unwritten/i);
+    // ...and the superseded clause must say exactly that, or the two collapse
+    // back into one word for two different things on disk.
+    const supersededClause = d.slice(d.indexOf("'superseded'"), d.indexOf("'no-prior-registry'"));
+    expect(supersededClause).toMatch(/untouched|not recorded/i);
+  });
+
   it('impact, query, and context expose optional service with minLength', () => {
     for (const n of ['impact', 'query', 'context'] as const) {
       const tool = GITNEXUS_TOOLS.find((t) => t.name === n)!;
@@ -392,5 +428,60 @@ describe('GITNEXUS_TOOLS', () => {
     const shapeCheckTool = GITNEXUS_TOOLS.find((t) => t.name === 'shape_check')!;
     expect(shapeCheckTool.description).toContain('api_impact');
     expect(shapeCheckTool.description).toContain('pre-change analysis');
+  });
+});
+
+// U28: a cross-repo answer that is a floor says so with `truncated` +
+// `truncationReason`, and the agent-facing surfaces have to teach that
+// vocabulary — an agent that cannot tell a retryable runtime limit from a
+// structural one retries a query that will return the same floor forever (R8).
+describe('cross-repo incompleteness vocabulary', () => {
+  const impactDescription = (): string =>
+    GITNEXUS_TOOLS.find((t) => t.name === 'impact')!.description;
+
+  const groupStatusTemplate = (): ResourceTemplate =>
+    getResourceTemplates().find((t) => t.uriTemplate === 'gitnexus://group/{name}/status')!;
+
+  it('impact description names every truncation reason the group surfaces can return', () => {
+    const d = impactDescription();
+    expect(d).toContain('truncationReason');
+    // Iterates the RUNTIME array on purpose: a hand-listed expectation here
+    // would keep passing after a fourth reason is added and left undescribed,
+    // which is the only failure this guard exists to catch.
+    for (const reason of GROUP_IMPACT_TRUNCATION_REASONS) {
+      expect(
+        d,
+        `truncationReason '${reason}' is not explained in the impact description`,
+      ).toContain(`'${reason}'`);
+    }
+  });
+
+  it("impact description gives 'incomplete-sync' a re-sync remedy, not a retry", () => {
+    const d = impactDescription();
+    // The structural cause and its remedy: the bridge is missing those repos'
+    // contracts, so the same query returns the same floor until a sync fixes it.
+    expect(d).toContain('group_sync');
+    expect(d).toMatch(/'incomplete-sync'[\s\S]{0,600}group_sync/);
+    // ...and truncated:true must no longer read as "the fan-out ran out of
+    // room": on 'incomplete-sync' zero crossings may have been attempted.
+    expect(d).toMatch(/truncated:true does NOT always mean/i);
+  });
+
+  it('group status resource description explains the absent / empty / populated tri-state', () => {
+    const d = groupStatusTemplate().description;
+    expect(d).toContain('unreadableRepos');
+    // Three states, one vocabulary (R8): absent = the sync never recorded which
+    // repos it could read, empty = it measured none, populated = it named them.
+    // Describing it as a two-state turns "unknown" into "none".
+    expect(d).toMatch(/absent/i);
+    expect(d).toMatch(/empty/i);
+    expect(d).toMatch(/populated/i);
+  });
+
+  it('group status resource description tells an absent repo from an unresolvable one', () => {
+    const d = groupStatusTemplate().description;
+    expect(d).toContain('missing');
+    expect(d).toContain('unresolvable');
+    expect(d).toContain('unresolvableReason');
   });
 });

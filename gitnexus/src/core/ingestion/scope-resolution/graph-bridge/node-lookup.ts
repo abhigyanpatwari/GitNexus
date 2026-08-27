@@ -96,6 +96,16 @@ export function positionKey(
   return `<p>:${filePath}::${label}::${startLine}::${name}`;
 }
 
+/** Exact source-position key used before the legacy line/name join. */
+export function exactPositionKey(
+  filePath: string,
+  label: NodeLabel,
+  startLine: number,
+  startColumn: number,
+): string {
+  return `<pc>:${filePath}::${label}::${startLine}:${startColumn}`;
+}
+
 /**
  * Key recording that a FUNCTION-LOCAL callable with this simple name exists in the
  * file (#2699 follow-up).
@@ -131,6 +141,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       name?: string;
       qualifiedName?: string;
       templateArguments?: readonly string[];
+      startColumn?: number;
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
@@ -139,6 +150,10 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     // ambiguous rather than letting source order decide.
     const startLine = (props as { startLine?: number }).startLine;
     if (startLine !== undefined && isPositionQualifiedLocalLabel(node.label)) {
+      if (props.startColumn !== undefined) {
+        const exactK = exactPositionKey(props.filePath, node.label, startLine, props.startColumn);
+        lookup.set(exactK, lookup.has(exactK) ? AMBIGUOUS_POSITION : node.id);
+      }
       const posK = positionKey(props.filePath, node.label, startLine, props.name);
       lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
       // A local-identity node carries `@<row>:<col>` on its last name segment. Record

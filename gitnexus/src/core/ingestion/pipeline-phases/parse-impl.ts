@@ -31,6 +31,7 @@ import {
 import {
   clearParsedFileStore,
   persistParsedFileChunk,
+  loadParsedFilesForPaths,
   getDurableParsedFileDir,
   loadDurableParsedFileIndex,
   prepareDurableParsedFileChunk,
@@ -49,6 +50,7 @@ import { createSemanticModel, type MutableSemanticModel } from '../model/index.j
 import {
   type PipelineProgress,
   getLanguageFromFilename,
+  type ParsedImport,
   SupportedLanguages,
 } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
@@ -58,7 +60,9 @@ import {
   createParserForLanguage,
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
-import { getProvider, providers } from '../languages/index.js';
+import { getProvider, getProviderForFile, providers } from '../languages/index.js';
+import { SCOPE_RESOLVERS } from '../scope-resolution/pipeline/registry.js';
+import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import type Parser from 'tree-sitter';
 import {
   createWorkerPool,
@@ -1299,8 +1303,15 @@ export async function runChunkedParseAndResolve(
         resolvedRoutes.push(dr);
         continue;
       }
+      // Provider-driven fold (#2980): languages with qualified-ref semantics
+      // (Java `ApiPaths.X` / `com.example.ApiPaths.X`) fold through their
+      // provider hook; everything else uses the shared language-agnostic
+      // operand fold. No language names in the shared layer.
+      const fold = getProviderForFile(dr.filePath)?.foldRoutePathOperands;
       const value = dr.routePathOperands
-        ? resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
+        ? fold
+          ? fold(dr.filePath, dr.routePathOperands, repoConstants)
+          : resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
         : null;
       if (value === null) {
         skipped++;
@@ -1521,12 +1532,69 @@ export async function runChunkedParseAndResolve(
     'parse-impl-return',
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
+  const routeFilePaths = new Set(allPaths);
+  const dataRouteFilePaths = new Set(
+    allDecoratorRoutes
+      .filter((route) => route.source === DATA_ROUTE_TABLE_SOURCE)
+      .map((route) => route.filePath),
+  );
+  const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
+  for (const filePath of dataRouteFilePaths) {
+    const language = getLanguageFromFilename(filePath);
+    if (language === null || routeResolutionConfigs.has(language)) continue;
+    const resolver = SCOPE_RESOLVERS.get(language);
+    routeResolutionConfigs.set(
+      language,
+      resolver?.loadResolutionConfig === undefined
+        ? undefined
+        : await resolver.loadResolutionConfig(repoPath),
+    );
+  }
+  let routeResolutionFiles = allParsedFiles;
+  const resolveRouteImportTarget = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): string | null => {
+    const language = getLanguageFromFilename(fromFile);
+    if (language === null) return null;
+    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
+      parsedImport.targetRaw ?? '',
+      fromFile,
+      routeFilePaths,
+      routeResolutionConfigs.get(language),
+      { parsedFiles: routeResolutionFiles, parsedImport },
+    );
+    if (typeof target === 'string') return target;
+    return target?.length === 1 ? target[0] : null;
+  };
+  if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
+    const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
+    for (const parsed of allParsedFiles) {
+      if (dataRouteFilePaths.has(parsed.filePath)) byPath.set(parsed.filePath, parsed);
+    }
+    routeResolutionFiles = [...byPath.values()];
+    const directTargets = new Set<string>();
+    for (const parsed of routeResolutionFiles) {
+      for (const parsedImport of parsed.parsedImports) {
+        const target = resolveRouteImportTarget(parsedImport, parsed.filePath);
+        if (target !== null) directTargets.add(target);
+      }
+    }
+    const importedFiles = await loadParsedFilesForPaths(parsedFileStorePath, directTargets);
+    for (const parsed of importedFiles.values()) byPath.set(parsed.filePath, parsed);
+    routeResolutionFiles = [...byPath.values()];
+  }
   // Part 2 (#2138): resolve each route's handler to a real symbol UID now that
   // the model is fully populated and decorator-route prefixes are finalized.
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
     allDecoratorRoutes,
+    {
+      files: routeResolutionFiles,
+      resolveImportTarget: resolveRouteImportTarget,
+      isExportedSymbol: (nodeId: string) => graph.getNode(nodeId)?.properties.isExported === true,
+    },
   );
   return {
     exportedTypeMap,
