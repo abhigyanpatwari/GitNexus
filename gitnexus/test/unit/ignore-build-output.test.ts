@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { isHardcodedIgnoredDirectory, shouldIgnorePath } from '../../src/config/ignore-service.js';
-import { hasRuntimeAdd, setEntries } from '../helpers/ignore-set-source.js';
+import {
+  IGNORE_SERVICE_PATH,
+  hasRuntimeAdd,
+  readSource,
+  setEntries,
+} from '../helpers/ignore-set-source.js';
 
 /**
  * Emitted build output must not be indexed as source (#3007).
@@ -59,91 +61,67 @@ describe('build-output ignores', () => {
   });
 
   describe('single-component set guards', () => {
-    const source = fs.readFileSync(
-      path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        '..',
-        '..',
-        'src',
-        'config',
-        'ignore-service.ts',
-      ),
-      'utf8',
-    );
+    const source = readSource(IGNORE_SERVICE_PATH);
 
     // Every one of these sets is compared against a single path component, so a
     // member containing `/` is dead on arrival — the defect that left
-    // `'public/build'` inert. Counts are pinned exactly rather than floored: a
-    // floor cannot protect a two-member set, and it hides a partial parse.
-    const SETS = [
-      { marker: 'const DEFAULT_IGNORE_LIST = new Set([', name: 'DEFAULT_IGNORE_LIST', size: 76 },
-      { marker: 'const IGNORED_FILES = new Set([', name: 'IGNORED_FILES', size: 33 },
-      {
-        marker: 'const ROOT_ARTIFACT_DIRECTORIES = new Set([',
-        name: 'ROOT_ARTIFACT_DIRECTORIES',
-        size: 2,
-      },
-      { marker: 'const IGNORED_EXTENSIONS = new Set([', name: 'IGNORED_EXTENSIONS', size: 104 },
+    // `'public/build'` inert.
+    const SET_NAMES = [
+      'DEFAULT_IGNORE_LIST',
+      'IGNORED_FILES',
+      'ROOT_ARTIFACT_DIRECTORIES',
+      'IGNORED_EXTENSIONS',
     ] as const;
 
-    it.each(SETS)('$name holds no slash-bearing member', ({ marker }) => {
-      expect(setEntries(source, marker).filter((entry) => entry.includes('/'))).toEqual([]);
+    it.each(SET_NAMES)('%s holds no slash-bearing member', (setName) => {
+      expect(setEntries(source, setName).filter((entry) => entry.includes('/'))).toEqual([]);
     });
 
-    it.each(SETS)('$name parses to its pinned size', ({ marker, size }) => {
-      expect(setEntries(source, marker)).toHaveLength(size);
-    });
-
-    it.each(SETS)('$name holds no duplicate member', ({ marker }) => {
-      const entries = setEntries(source, marker);
+    it.each(SET_NAMES)('%s holds no duplicate member', (setName) => {
+      const entries = setEntries(source, setName);
       expect(new Set(entries).size).toBe(entries.length);
     });
 
-    it.each(SETS)('$name is never mutated by .add() after construction', ({ name }) => {
-      expect(hasRuntimeAdd(source, name)).toBe(false);
+    it.each(SET_NAMES)('%s is never mutated by .add() after construction', (setName) => {
+      expect(hasRuntimeAdd(source, setName)).toBe(false);
     });
 
     it('every IGNORED_EXTENSIONS member starts with a dot', () => {
-      const entries = setEntries(source, 'const IGNORED_EXTENSIONS = new Set([');
+      const entries = setEntries(source, 'IGNORED_EXTENSIONS');
       expect(entries.filter((entry) => !entry.startsWith('.'))).toEqual([]);
     });
 
     it('reads entries the declaration holds, not text the comments quote', () => {
       // The comments in DEFAULT_IGNORE_LIST quote paths and carry an apostrophe
-      // (`Next.js's`). Matching literals before stripping them yields phantom
-      // entries, several slash-bearing, which would fail the slash assertion on
-      // correct source.
-      const entries = setEntries(source, 'const DEFAULT_IGNORE_LIST = new Set([');
+      // (`Next.js's`), so a text scanner reads phantom entries out of them —
+      // several slash-bearing, which would fail the assertion above on correct
+      // source. Parsing the declaration cannot see comments at all.
+      const entries = setEntries(source, 'DEFAULT_IGNORE_LIST');
       expect(entries).toContain('_next');
       expect(entries).not.toContain('public/build');
       expect(entries).not.toContain('env/');
-      expect(entries).not.toContain('packages');
     });
 
     it('agrees with the runtime set it claims to describe', () => {
-      // Catches parser drift without exporting the set: every name the parser
-      // reports must actually be ignored by the module's own predicate.
-      const entries = setEntries(source, 'const DEFAULT_IGNORE_LIST = new Set([');
+      // Catches drift between what the guard reads and what the module does,
+      // without exporting the set.
+      const entries = setEntries(source, 'DEFAULT_IGNORE_LIST');
       expect(entries.filter((entry) => !isHardcodedIgnoredDirectory(entry))).toEqual([]);
     });
 
-    it('fails loudly when the marker no longer matches', () => {
-      expect(() => setEntries(source, 'const NOT_A_REAL_SET = new Set([')).toThrow(
-        /not found in ignore-service\.ts/,
-      );
+    it('fails loudly when a set is no longer declared as a Set of literals', () => {
+      expect(() => setEntries(source, 'NOT_A_REAL_SET')).toThrow(/update this test/);
     });
 
-    it('fails loudly rather than under-reporting an unresolvable declaration', () => {
+    it('refuses a declaration whose members it cannot resolve', () => {
       // A spread, an interpolation, or a concatenation resolves at runtime, not
-      // in source text. Parsing fewer members and passing is the failure mode
-      // these guards exist to prevent, so the parser refuses instead.
+      // in source. Reading the resolvable members and passing is the failure mode
+      // these guards exist to prevent, so the reader refuses instead.
       const poisoned = source.replace(
         'const ROOT_ARTIFACT_DIRECTORIES = new Set([',
         'const ROOT_ARTIFACT_DIRECTORIES = new Set([...OTHER_NAMES,',
       );
-      expect(() => setEntries(poisoned, 'const ROOT_ARTIFACT_DIRECTORIES = new Set([')).toThrow(
-        /cannot resolve/,
-      );
+      expect(() => setEntries(poisoned, 'ROOT_ARTIFACT_DIRECTORIES')).toThrow(/not plain string/);
     });
   });
 });

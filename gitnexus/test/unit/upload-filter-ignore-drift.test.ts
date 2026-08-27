@@ -30,32 +30,22 @@
  * directions, so re-adding `.gitnexus` to the CLI list or dropping it from the
  * web list both fail loudly.
  *
- * Structural (source-parsed) rather than value-imported: `DEFAULT_IGNORE_LIST`
- * is module-private and exporting it purely to be testable would widen a
- * production surface to satisfy a test. `EXCLUDED_DIRS` is exported, but no test
- * in this package imports across the package boundary — every cross-package
- * precedent here reads source instead — so both sides use the same parser.
+ * Both sides are read from source rather than imported. `DEFAULT_IGNORE_LIST` is
+ * module-private. `EXCLUDED_DIRS` is exported, but `upload-filter.ts` types its
+ * inputs with the DOM `File` interface, which does not resolve under this
+ * package's `lib: ["ES2022"] / types: ["node"]` — so importing it here would not
+ * typecheck.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { setEntries } from '../helpers/ignore-set-source.js';
+import {
+  IGNORE_SERVICE_PATH,
+  UPLOAD_FILTER_PATH,
+  readSource,
+  setEntries,
+} from '../helpers/ignore-set-source.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
-
-const cliSource = readFileSync(
-  path.join(REPO_ROOT, 'gitnexus', 'src', 'config', 'ignore-service.ts'),
-  'utf8',
-);
-const webSource = readFileSync(
-  path.join(REPO_ROOT, 'gitnexus-web', 'src', 'lib', 'upload-filter.ts'),
-  'utf8',
-);
-
-const cliNames = () => setEntries(cliSource, 'const DEFAULT_IGNORE_LIST = new Set([');
-const webNames = () => setEntries(webSource, 'export const EXCLUDED_DIRS = new Set([');
+const cliNames = () => setEntries(readSource(IGNORE_SERVICE_PATH), 'DEFAULT_IGNORE_LIST');
+const webNames = () => setEntries(readSource(UPLOAD_FILTER_PATH), 'EXCLUDED_DIRS');
 
 /**
  * Names the browser filter may drop that the analyzer does not list.
