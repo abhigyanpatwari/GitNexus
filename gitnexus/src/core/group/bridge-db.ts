@@ -3,9 +3,16 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
-import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
+import type {
+  BridgeHandle,
+  BridgeMeta,
+  StoredContract,
+  CrossLink,
+  RepoSnapshot,
+  MatchType,
+} from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
-import { recordedRepoList } from './completeness.js';
+import { recordedMatchStages, recordedRepoList } from './completeness.js';
 import {
   closeLbugConnection,
   openLbugConnection,
@@ -649,7 +656,15 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
-  await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(meta, null, 2));
+  // Strip the reader-only fields HERE rather than at each writer. `readBridgeMeta`
+  // sets both on what it returns, so any caller that reads-modifies-writes would
+  // round-trip them to disk — and `pairedWithDatabase` is the poisonous one:
+  // persisted, it tells every future reader the pair was verified when nothing
+  // verified it. That rule used to live in the body of the only such caller,
+  // which held exactly as long as there was one. There are now three writers and
+  // two of them read first. Enforced at the boundary, no writer can get it wrong.
+  const { repoListsUnreadable: _reader1, pairedWithDatabase: _reader2, ...persisted } = meta;
+  await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(persisted, null, 2));
 }
 
 /**
@@ -826,6 +841,10 @@ export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
   // was there and could not be read.
   if (unreadableRepos) meta.unreadableRepos = unreadableRepos;
   else delete meta.unreadableRepos;
+  // Same absent-vs-empty rule, through the one shared reader.
+  const suppressed = recordedMatchStages(raw.suppressedMatchStages);
+  if (suppressed) meta.suppressedMatchStages = suppressed;
+  else delete meta.suppressedMatchStages;
   if (repoListsUnreadable) meta.repoListsUnreadable = true;
   return meta;
 }
@@ -902,6 +921,12 @@ async function fileExists(filePath: string): Promise<boolean> {
  */
 export async function refreshPreservedBridgeMeta(
   groupDir: string,
+  // Deliberately NOT `suppressedMatchStages`. This path preserves an EARLIER
+  // sync's database, so stamping it with this run's request would claim the
+  // untouched bridge was built with a flag it never saw. The registry's own
+  // preserve write (`{ ...prior, missingRepos, unreadableRepos }`) omits it for
+  // exactly this reason, and the two artifacts have to agree about which run
+  // they describe.
   diagnostics: { missingRepos: string[]; unreadableRepos: string[] },
 ): Promise<PreservedBridgeMetaOutcome> {
   const dbPath = path.join(groupDir, 'bridge.lbug');
@@ -921,10 +946,8 @@ export async function refreshPreservedBridgeMeta(
   const refreshed: BridgeMeta = { ...existing, ...diagnostics };
   // NEVER PERSISTED (see `BridgeMeta`): both are things a READER computes ABOUT
   // a file, and this is the first code in the repo that reads metadata and
-  // writes it back. `pairedWithDatabase` is the poisonous one — persisted, it
-  // would tell every future reader that the pair had been verified.
-  delete refreshed.repoListsUnreadable;
-  delete refreshed.pairedWithDatabase;
+  // writes it back. The strip itself now lives in `writeBridgeMeta`, so every
+  // writer inherits it rather than each remembering.
 
   if (paired) {
     const stat = await fsp.stat(dbPath).catch(() => null);
@@ -942,6 +965,39 @@ export async function refreshPreservedBridgeMeta(
   refreshed.provenanceUnknown = true;
   await writeBridgeMeta(groupDir, refreshed);
   return 'provenance-unknown';
+}
+
+/**
+ * Withdraw the bridge's claim to be complete, without touching the database.
+ *
+ * The one path this exists for: `contracts.json` committed, then the bridge
+ * replacement failed. The old database is still physically usable and still
+ * answers queries, but it now describes an EARLIER sync than the canonical
+ * registry beside it — so `group_contracts` can report a narrowed or advanced
+ * contract set while `group_impact` traverses the old graph and calls its
+ * answer complete. Two public surfaces, contradictory epistemic claims, from
+ * one sync.
+ *
+ * Setting `provenanceUnknown` is the smallest thing that makes that safe:
+ * `bridgeMetaMatchesFile` gives it highest precedence and refuses to vouch for
+ * the pair, so every cross-repo answer downgrades to a floor until a sync
+ * succeeds. Deliberately NOT a re-stamp — the metadata still describes the
+ * database it was written for, and claiming otherwise is the mis-pairing the
+ * preserve path is careful to avoid. Deliberately not a delete either: the
+ * previous graph is better than nothing as long as nobody calls it complete.
+ *
+ * Best-effort by construction. It runs inside a failure handler, so a throw
+ * here would replace a reported bridge failure with an unrelated one.
+ */
+export async function markBridgeProvenanceUnknown(groupDir: string): Promise<boolean> {
+  try {
+    const existing = await readBridgeMeta(groupDir);
+    if (existing.version === 0) return false;
+    await writeBridgeMeta(groupDir, { ...existing, provenanceUnknown: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -969,6 +1025,13 @@ export interface WriteBridgeInput {
    * contract those repos own.
    */
   unreadableRepos?: string[];
+  /**
+   * Matching stages the sync was asked to skip. Recorded here for the same
+   * reason `unreadableRepos` is: a later cross-repo query reads this bridge
+   * with no access to the run that built it, and a graph narrowed by request
+   * looks exactly like a complete one.
+   */
+  suppressedMatchStages?: MatchType[];
 }
 
 /**
@@ -1322,6 +1385,9 @@ export async function writeBridgeUnlocked(
       // different claim from a bridge that never recorded the field. Omitted
       // only when the caller passed nothing to record.
       ...(input.unreadableRepos ? { unreadableRepos: input.unreadableRepos } : {}),
+      ...(input.suppressedMatchStages
+        ? { suppressedMatchStages: input.suppressedMatchStages }
+        : {}),
     });
 
     return report;
