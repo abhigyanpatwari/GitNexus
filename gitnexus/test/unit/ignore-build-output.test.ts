@@ -34,9 +34,20 @@ describe('build-output ignores', () => {
     expect(shouldIgnorePath('packages/next-auth/src/index.ts')).toBe(false);
   });
 
-  it('ignores public/build, which never matched while it sat in the name set', () => {
-    // A slash-containing member of DEFAULT_IGNORE_LIST can never equal a single
-    // path segment, so this entry matched nothing at all before #3007.
+  it('matches _next as a whole segment, not as a substring', () => {
+    // Without these, `normalizedPath.includes('_next')` would satisfy every
+    // other assertion in this file — the suite could not tell a segment rule
+    // from a substring rule, and a substring rule would eat real source.
+    expect(shouldIgnorePath('src/_nextgen/index.ts')).toBe(false);
+    expect(shouldIgnorePath('packages/my_next/src/index.ts')).toBe(false);
+    expect(shouldIgnorePath('src/prefix_next.ts')).toBe(false);
+  });
+
+  it('keeps public/build ignored after the inert name-set entry was removed', () => {
+    // NOT a regression test for new behavior — it pins that DELETING the inert
+    // `'public/build'` entry changed nothing, because bare `'build'` matches
+    // these as an ordinary segment and always did. Green on both sides of the
+    // change by design; that is the point.
     expect(shouldIgnorePath('public/build/entry.client.js')).toBe(true);
     expect(shouldIgnorePath('apps/web/public/build/manifest.js')).toBe(true);
   });
@@ -47,8 +58,9 @@ describe('build-output ignores', () => {
   });
 
   it('keeps the name set free of slashes so a fragment cannot silently die', () => {
-    // The invariant that makes the bug above impossible to reintroduce: entries
-    // needing a slash belong in DEFAULT_IGNORED_PATH_FRAGMENTS.
+    // The invariant that makes the inert entry impossible to reintroduce: this
+    // set is matched one path segment at a time, so a member containing a slash
+    // is dead on arrival and must be expressed some other way.
     const source = fs.readFileSync(
       path.resolve(
         path.dirname(fileURLToPath(import.meta.url)),

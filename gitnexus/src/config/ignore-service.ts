@@ -71,6 +71,12 @@ const DEFAULT_IGNORE_LIST = new Set([
   '.netlify',
   '.serverless',
   '_build',
+  // `'public/build'` used to sit here. This set is tested one path SEGMENT at a
+  // time, and `isHardcodedIgnoredDirectory(name)` takes a bare directory name,
+  // so a slash-containing member could never match either — it was inert. Its
+  // paths were never unignored though: bare `'build'` above already prunes
+  // `public/build/**`, so removing the entry changes no behavior (#3007). The
+  // guard test below keeps the next slash-bearing entry from dying the same way.
   '.parcel-cache',
   '.turbo',
   '.svelte-kit',
@@ -117,30 +123,6 @@ const DEFAULT_IGNORE_LIST = new Set([
   '__snapshots__',
 ]);
 
-/**
- * Multi-segment paths to ignore, matched against the whole POSIX path.
- *
- * These CANNOT live in {@link DEFAULT_IGNORE_LIST}: that set is tested one path
- * SEGMENT at a time (`parts.some(p => DEFAULT_IGNORE_LIST.has(p))`) and is also
- * exposed through `isHardcodedIgnoredDirectory(name)`, which receives a bare
- * directory name. A slash-containing member can never equal a single segment,
- * so `'public/build'` sat in that set matching nothing at all until #3007. A
- * guard test pins the invariant that the name set stays slash-free.
- */
-const DEFAULT_IGNORED_PATH_FRAGMENTS: readonly string[] = [
-  'public/build', // Remix / Laravel Mix compiled asset output
-];
-
-/** True when `normalizedPath` contains any ignored multi-segment fragment. */
-function hasIgnoredPathFragment(normalizedPath: string): boolean {
-  return DEFAULT_IGNORED_PATH_FRAGMENTS.some(
-    (fragment) =>
-      normalizedPath === fragment ||
-      normalizedPath.startsWith(`${fragment}/`) ||
-      normalizedPath.includes(`/${fragment}/`) ||
-      normalizedPath.endsWith(`/${fragment}`),
-  );
-}
 // Ambiguous names that conventionally denote generated artifacts only at the
 // repository root. Nested directories with these names are frequently source
 // modules (for example apps/web/src/env or packages/api/generated).
@@ -351,11 +333,6 @@ export const shouldIgnorePath = (filePath: string): boolean => {
     if (DEFAULT_IGNORE_LIST.has(part)) {
       return true;
     }
-  }
-
-  // Multi-segment entries cannot be matched by the per-segment loop above.
-  if (hasIgnoredPathFragment(normalizedPath)) {
-    return true;
   }
 
   // Check exact filename matches

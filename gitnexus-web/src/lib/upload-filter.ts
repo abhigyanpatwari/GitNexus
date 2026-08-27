@@ -22,6 +22,12 @@ export const EXCLUDED_DIRS = new Set([
   'build',
   'out',
   '.next',
+  // `.next` is the build CACHE, `_next` the EMITTED output — different
+  // directories. A Capacitor/Cordova shell leaves the emitted bundle at
+  // `<platform>/app/src/main/assets/public/_next/`, so without this the whole
+  // minified tree is uploaded against the server's file/byte caps only to be
+  // discarded by the analyzer's own ignore list (#3007).
+  '_next',
   '.nuxt',
   '.cache',
   'coverage',
