@@ -1573,6 +1573,15 @@ const processFileGroup = (
     }
     const provider = getProvider(language);
 
+    // Lombok synthesis owner map: class_declaration AST node id → graph node
+    // id for the classes THIS file's capture loop materialized. Keyed by AST
+    // node identity (SyntaxNode.id is a stable per-tree integer), never by
+    // simple name — simple names collide across files (the map is per-file but
+    // the capture loop's symbols share `result.symbols` with the whole batch)
+    // and among same-tailed nested classes. Filled in the capture loop below;
+    // consumed by synthesizeLombokAccessors after it (Java only).
+    const classOwnersByNodeId = new Map<number, string>();
+
     // #2687: ONE pass over `matches` yields both suppression sets — the
     // definition-name claims by rank (callable > Property > value), so the dedup
     // below cannot depend on tree-sitter's match order, and the concrete-typedef
@@ -2977,6 +2986,18 @@ const processFileGroup = (
           : {}),
       });
 
+      // Class-like definitions register their AST node id → graph node id for
+      // the Lombok synthesis pass below. The definition node IS the class
+      // declaration for these labels (see getDefinitionNodeFromCaptures), so
+      // the key is the same node findLombokClasses will walk to.
+      if (
+        isClassLikeLabel &&
+        definitionNode &&
+        provider.classExtractor?.isTypeDeclaration(definitionNode)
+      ) {
+        classOwnersByNodeId.set(definitionNode.id, nodeId);
+      }
+
       // Object-literal callables remain file definitions as well as members of
       // their exported binding. Class members still use HAS_METHOD alone.
       const isTopLevelObjectCallable =
@@ -3086,14 +3107,7 @@ const processFileGroup = (
     // methods that Lombok generates at compile time (@Data/@Getter/@Setter).
     // Java only — the synthesizer walks the AST for annotated classes.
     if (language === SupportedLanguages.Java) {
-      // Build class-name → node-ID map from symbols created in this file
-      const classNodeIds = new Map<string, string>();
-      for (const sym of result.symbols) {
-        if (sym.type === 'Class' && sym.name) {
-          classNodeIds.set(sym.name, sym.nodeId);
-        }
-      }
-      const lombok = synthesizeLombokAccessors(tree, file.path, classNodeIds);
+      const lombok = synthesizeLombokAccessors(tree, file.path, classOwnersByNodeId);
       if (lombok.symbols.length > 0) {
         for (const node of lombok.nodes) result.nodes.push(node as never);
         for (const sym of lombok.symbols) result.symbols.push(sym as never);

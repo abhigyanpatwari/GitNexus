@@ -16,12 +16,30 @@
  *  - **Public** (`visibility: 'public'`): Lombok's default access level.
  *  - **Non-static**: only instance fields get accessors.
  *  - **Skipped when a hand-written method of the same name already exists.**
- *  - **Skipped for fields explicitly suppressed** via `@Getter(AccessLevel.NONE)`.
+ *  - **Skipped for final fields' setters** (Lombok never emits those).
+ *  - **Skipped for fields explicitly suppressed** via `@Getter/@Setter(AccessLevel.NONE)`.
  *
  * Naming follows the JavaBeans convention Lombok uses:
  *  - `String name` → `getName()` / `setName(String)`
  *  - `boolean active` → `isActive()` / `setActive(boolean)`
  *  - `Boolean active` → `getActive()` (boxed → getXxx, per Lombok)
+ *
+ * ## Identity model (root-cause fix for name ambiguity)
+ *
+ * A class is identified by its class_declaration AST node, not by its simple
+ * name — simple names are ambiguous across files and among nested classes
+ * with the same tail (bot review: cross-file collision + `Outer.A` vs
+ * `Other.A` overwriting each other in a name-keyed map). The caller keys the
+ * owner map by tree-sitter node id (`SyntaxNode.id`, a stable per-tree
+ * integer), which is unique by construction for every declaration in the
+ * file, so both collisions are impossible rather than filtered out.
+ *
+ * The synthesized Method node id follows the SAME convention real methods
+ * use in parse-worker: `${filePath}:${idMethodName}#${arity}` where
+ * `idMethodName` is qualified by the IMMEDIATE enclosing class simple name
+ * only (`Outer.method`, never the full `Top.Outer.method` chain) — matching
+ * `findEnclosingClassInfo().className` + `nodeName`, which keys real Method
+ * ids for languages without `qualifiedNodeId` (Java among them).
  */
 
 import type Parser from 'tree-sitter';
@@ -33,13 +51,16 @@ interface LombokField {
   name: string;
   type: string;
   isStatic: boolean;
+  isFinal: boolean;
   /** True when @Getter(AccessLevel.NONE) suppresses the getter for this field. */
   suppressGetter: boolean;
+  /** True when @Setter(AccessLevel.NONE) suppresses the setter for this field. */
+  suppressSetter: boolean;
 }
 
 /** A class eligible for Lombok accessor synthesis. */
 interface LombokClass {
-  /** Tree-sitter node of the class_declaration. */
+  /** Tree-sitter node of the class_declaration — the class's identity. */
   node: Parser.SyntaxNode;
   /** Class simple name. */
   name: string;
@@ -175,28 +196,30 @@ function isAccessorSuppressed(
 /**
  * Parse a field declaration node to extract field name(s) and type.
  *
- * `private String name;` → [{ name: 'name', type: 'String', isStatic: false }]
- * `private final Long id = 0L;` → [{ name: 'id', type: 'Long', isStatic: false }]
+ * `private String name;` → [{ name: 'name', type: 'String', isStatic: false, isFinal: false }]
+ * `private final Long id = 0L;` → [{ name: 'id', type: 'Long', isStatic: false, isFinal: true }]
  * `private int x, y;` → [{ name: 'x', ... }, { name: 'y', ... }]
  */
 function parseFieldDeclaration(
   fieldNode: Parser.SyntaxNode,
-): { name: string; type: string; isStatic: boolean; suppressGetter: boolean }[] {
-  const results: { name: string; type: string; isStatic: boolean; suppressGetter: boolean }[] = [];
+): { name: string; type: string; isStatic: boolean; isFinal: boolean; suppressGetter: boolean; suppressSetter: boolean }[] {
+  const results: { name: string; type: string; isStatic: boolean; isFinal: boolean; suppressGetter: boolean; suppressSetter: boolean }[] = [];
 
   // Type is in the `type` field
   const typeNode = fieldNode.childForFieldName('type');
   const fieldType = typeNode?.text ?? 'Object';
 
-  // Check static — tree-sitter-java uses the keyword itself as the node type
+  // Check static/final — tree-sitter-java uses the keyword itself as the node type
   // (e.g. `static`, `final`), not a wrapper `modifier` node.
   const modifiers = fieldNode.children.find((c) => c.type === 'modifiers');
   let isStatic = false;
+  let isFinal = false;
   if (modifiers) {
     for (const mod of modifiers.children) {
       if (mod.text === 'static') {
         isStatic = true;
-        break;
+      } else if (mod.text === 'final') {
+        isFinal = true;
       }
     }
   }
@@ -219,7 +242,14 @@ function parseFieldDeclaration(
   for (const declaratorNode of declarators) {
     const nameNode = declaratorNode.childForFieldName('name');
     if (nameNode) {
-      results.push({ name: nameNode.text, type: fieldType, isStatic, suppressGetter: false });
+      results.push({
+        name: nameNode.text,
+        type: fieldType,
+        isStatic,
+        isFinal,
+        suppressGetter: false,
+        suppressSetter: false,
+      });
     }
   }
 
@@ -270,9 +300,12 @@ function findLombokClasses(root: Parser.SyntaxNode): LombokClass[] {
               for (const f of parseFieldDeclaration(child)) {
                 // Skip static fields (Lombok doesn't generate instance accessors for static fields)
                 if (f.isStatic) continue;
-                // Mark getter as suppressed if @Getter(AccessLevel.NONE) is on the field
+                // Mark accessors suppressed when @Getter/@Setter(AccessLevel.NONE) is on the field
                 if (hasGetter && isAccessorSuppressed(child, 'Getter')) {
                   f.suppressGetter = true;
+                }
+                if (hasSetter && isAccessorSuppressed(child, 'Setter')) {
+                  f.suppressSetter = true;
                 }
                 fields.push(f);
               }
@@ -310,15 +343,17 @@ function findLombokClasses(root: Parser.SyntaxNode): LombokClass[] {
  *
  * @param tree      The parsed tree-sitter Java AST.
  * @param filePath  Absolute file path.
- * @param classNodeIds  Map from class simple name → graph node ID, for the
- *                      classes that already exist in `result.nodes`. Only
- *                      classes present in this map get synthesized methods.
+ * @param classOwnersById  Map from tree-sitter node id (SyntaxNode.id) of the
+ *                         class_declaration → graph node id of that class.
+ *                         Keyed by AST node identity, so simple-name collisions
+ *                         (across files or among same-tailed nested classes)
+ *                         cannot resolve to the wrong class.
  * @returns Synthesis result, or empty if no Lombok classes found.
  */
 export function synthesizeLombokAccessors(
   tree: Parser.Tree,
   filePath: string,
-  classNodeIds: Map<string, string>,
+  classOwnersById: Map<number, string>,
 ): LombokSynthesisResult {
   const result: LombokSynthesisResult = {
     symbols: [],
@@ -329,15 +364,22 @@ export function synthesizeLombokAccessors(
   const lombokClasses = findLombokClasses(tree.rootNode);
 
   for (const cls of lombokClasses) {
-    const ownerId = classNodeIds.get(cls.name);
+    const ownerId = classOwnersById.get(cls.node.id);
     if (!ownerId) continue; // Class not in the graph — skip
+
+    // Synthesized method ids are keyed by the class's own simple name only
+    // (`Inner.method`), matching how real member ids are keyed for nested
+    // classes — `findEnclosingClassInfo().className` is the IMMEDIATE parent
+    // simple name, so a real method in `Outer.Inner` keys as `Inner.method`,
+    // never `Outer.Inner.method` (Java has no qualifiedNodeId).
+    const idMethodNamePrefix = cls.name;
 
     for (const field of cls.fields) {
       // Getter (skip if suppressed by @Getter(AccessLevel.NONE))
       if (cls.generateGetters && !field.suppressGetter) {
         const gName = getterName(field.name, field.type);
         if (!cls.existingMethods.has(gName)) {
-          const nodeId = `Method:${filePath}:${cls.name}.${gName}#0`;
+          const nodeId = `Method:${filePath}:${idMethodNamePrefix}.${gName}#0`;
           result.nodes.push({
             id: nodeId,
             label: 'Method',
@@ -383,11 +425,12 @@ export function synthesizeLombokAccessors(
         }
       }
 
-      // Setter
-      if (cls.generateSetters) {
+      // Setter — skipped when suppressed by @Setter(AccessLevel.NONE) or when
+      // the field is final (Lombok never generates setters for final fields).
+      if (cls.generateSetters && !field.suppressSetter && !field.isFinal) {
         const sName = setterName(field.name);
         if (!cls.existingMethods.has(sName)) {
-          const nodeId = `Method:${filePath}:${cls.name}.${sName}#1`;
+          const nodeId = `Method:${filePath}:${idMethodNamePrefix}.${sName}#1`;
           result.nodes.push({
             id: nodeId,
             label: 'Method',
