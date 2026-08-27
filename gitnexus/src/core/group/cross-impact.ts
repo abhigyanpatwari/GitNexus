@@ -856,6 +856,7 @@ export async function runGroupImpact(
   const bridge = crossRepoCompleteness({
     unreadableRepos: bridgePrep.meta.unreadableRepos,
     missingRepos: bridgePrep.meta.missingRepos,
+    suppressedMatchStages: bridgePrep.meta.suppressedMatchStages,
     provenanceUnknown,
     inScope: (candidate) =>
       repoInSubgroup(candidate, subgroup) || repoInSubgroup(candidate, repoPath, true),

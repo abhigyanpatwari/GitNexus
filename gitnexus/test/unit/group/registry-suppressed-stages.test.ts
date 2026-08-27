@@ -23,6 +23,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { syncGroup } from '../../../src/core/group/sync.js';
 import { makeWildcardPair } from './fixtures.js';
+import { crossRepoCompleteness } from '../../../src/core/group/completeness.js';
 import type {
   GroupConfig,
   StoredContract,
@@ -104,5 +105,57 @@ describe('a sync records the matching stages it was told to skip', () => {
     expect(registry.suppressedMatchStages).toEqual([]);
     // The distinction the tri-state exists for: a measured zero is not silence.
     expect(registry).toHaveProperty('suppressedMatchStages');
+  });
+});
+
+/**
+ * The half that matters to a later reader: does a narrowed graph still claim
+ * to be complete? `crossRepoCompleteness` is the ONE computation behind the
+ * truncation triple that `group_impact`, cross-repo `trace` and the contract
+ * listing all return, so pinning it here covers all three.
+ */
+describe('cross-repo completeness reflects a suppressed stage', () => {
+  it('reports a floor, with its own reason, when a stage was suppressed', () => {
+    const out = crossRepoCompleteness({
+      unreadableRepos: [],
+      missingRepos: [],
+      suppressedMatchStages: ['wildcard'],
+      provenanceUnknown: false,
+      inScope: () => true,
+    });
+
+    expect(out.truncated).toBe(true);
+    expect(out.truncationReason).toBe('suppressed-stage');
+    expect(out.riskEpistemic).toBe('lower-bound');
+  });
+
+  // control: without a suppressed stage the same clean input is complete.
+  // Without this, hardcoding `truncated: true` would pass the case above.
+  it('control: a clean sync with nothing suppressed is not truncated', () => {
+    const out = crossRepoCompleteness({
+      unreadableRepos: [],
+      missingRepos: [],
+      suppressedMatchStages: [],
+      provenanceUnknown: false,
+      inScope: () => true,
+    });
+
+    expect(out.truncated).toBe(false);
+    expect(out.truncationReason).toBeUndefined();
+  });
+
+  // An unreadable repo is the more serious gap and its remedy differs, so it
+  // has to win the reason slot rather than being masked by the flag.
+  it('lets an unreadable repo outrank a suppressed stage in the reason', () => {
+    const out = crossRepoCompleteness({
+      unreadableRepos: ['app/backend'],
+      missingRepos: [],
+      suppressedMatchStages: ['wildcard'],
+      provenanceUnknown: false,
+      inScope: () => true,
+    });
+
+    expect(out.truncated).toBe(true);
+    expect(out.truncationReason).toBe('incomplete-sync');
   });
 });

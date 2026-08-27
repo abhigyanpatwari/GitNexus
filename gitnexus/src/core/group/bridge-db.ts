@@ -3,7 +3,14 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
-import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
+import type {
+  BridgeHandle,
+  BridgeMeta,
+  StoredContract,
+  CrossLink,
+  RepoSnapshot,
+  MatchType,
+} from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 import { recordedRepoList } from './completeness.js';
 import {
@@ -826,6 +833,16 @@ export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
   // was there and could not be read.
   if (unreadableRepos) meta.unreadableRepos = unreadableRepos;
   else delete meta.unreadableRepos;
+  // Same absent-vs-empty rule, and all-or-nothing: an unreadable list is "not
+  // recorded", never "measured, nothing suppressed".
+  const known = ['exact', 'manifest', 'wildcard'];
+  const suppressed = Array.isArray(raw.suppressedMatchStages)
+    ? raw.suppressedMatchStages.every((v) => typeof v === 'string' && known.includes(v))
+      ? (raw.suppressedMatchStages as MatchType[])
+      : undefined
+    : undefined;
+  if (suppressed) meta.suppressedMatchStages = suppressed;
+  else delete meta.suppressedMatchStages;
   if (repoListsUnreadable) meta.repoListsUnreadable = true;
   return meta;
 }
@@ -902,7 +919,11 @@ async function fileExists(filePath: string): Promise<boolean> {
  */
 export async function refreshPreservedBridgeMeta(
   groupDir: string,
-  diagnostics: { missingRepos: string[]; unreadableRepos: string[] },
+  diagnostics: {
+    missingRepos: string[];
+    unreadableRepos: string[];
+    suppressedMatchStages?: MatchType[];
+  },
 ): Promise<PreservedBridgeMetaOutcome> {
   const dbPath = path.join(groupDir, 'bridge.lbug');
   const [metaOnDisk, dbOnDisk] = await Promise.all([
@@ -969,6 +990,13 @@ export interface WriteBridgeInput {
    * contract those repos own.
    */
   unreadableRepos?: string[];
+  /**
+   * Matching stages the sync was asked to skip. Recorded here for the same
+   * reason `unreadableRepos` is: a later cross-repo query reads this bridge
+   * with no access to the run that built it, and a graph narrowed by request
+   * looks exactly like a complete one.
+   */
+  suppressedMatchStages?: MatchType[];
 }
 
 /**
@@ -1322,6 +1350,9 @@ export async function writeBridgeUnlocked(
       // different claim from a bridge that never recorded the field. Omitted
       // only when the caller passed nothing to record.
       ...(input.unreadableRepos ? { unreadableRepos: input.unreadableRepos } : {}),
+      ...(input.suppressedMatchStages
+        ? { suppressedMatchStages: input.suppressedMatchStages }
+        : {}),
     });
 
     return report;

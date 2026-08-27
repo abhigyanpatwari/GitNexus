@@ -69,6 +69,12 @@ export interface CrossRepoCompletenessInput {
    */
   unreadableRepos?: readonly string[];
   missingRepos?: readonly string[];
+  /**
+   * Matching stages the sync was asked to skip. Absent or empty means it
+   * suppressed none; a populated list makes the answer a floor for a reason
+   * that is neither a runtime limit nor an unreadable repo.
+   */
+  suppressedMatchStages?: readonly string[];
   /** Computed by the caller; see `bridgeProvenanceUnknown` for the bridge one. */
   provenanceUnknown: boolean;
   /**
@@ -111,8 +117,17 @@ export function crossRepoCompleteness(input: CrossRepoCompletenessInput): CrossR
   const incompleteRepos = [
     ...new Set([...(input.unreadableRepos ?? []), ...(input.missingRepos ?? [])]),
   ].filter((repoPath) => input.inScope(repoPath));
+  // An unreadable or unaccounted repo outranks a suppressed stage: it is the
+  // more serious structural gap and its remedy (repair the repo, re-sync) has
+  // to be the one reported. A suppressed stage only decides the reason when
+  // the repo side is otherwise clean.
+  const suppressed = (input.suppressedMatchStages ?? []).length > 0;
+  const repoSideIncomplete = input.provenanceUnknown || incompleteRepos.length > 0;
   return {
-    ...truncationFields(input.provenanceUnknown || incompleteRepos.length > 0, 'incomplete-sync'),
+    ...truncationFields(
+      repoSideIncomplete || suppressed,
+      repoSideIncomplete ? 'incomplete-sync' : 'suppressed-stage',
+    ),
     incompleteRepos,
   };
 }

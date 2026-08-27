@@ -762,7 +762,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         // confident wrong answer, and swallowing its failure would reinstate the
         // very fail-open it closes. `writeContractRegistry` above is unguarded for
         // the same reason, into the same directory.
-        await refreshPreservedBridgeMeta(groupDir, { missingRepos, unreadableRepos });
+        await refreshPreservedBridgeMeta(groupDir, {
+          missingRepos,
+          unreadableRepos,
+          suppressedMatchStages,
+        });
       }
 
       if (!everyRepoFailed) {
@@ -792,6 +796,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             repoSnapshots,
             missingRepos,
             unreadableRepos,
+            suppressedMatchStages,
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);

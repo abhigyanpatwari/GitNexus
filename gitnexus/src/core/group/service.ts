@@ -544,6 +544,7 @@ export class GroupService {
     const { incompleteRepos: _incompleteRepos, ...truncation } = crossRepoCompleteness({
       unreadableRepos,
       missingRepos,
+      suppressedMatchStages: registry.suppressedMatchStages,
       // An unrecorded `unreadableRepos` means this listing cannot say which
       // repos the sync failed to read — so it cannot claim to be complete.
       provenanceUnknown: unreadableRepos === undefined,
@@ -888,6 +889,10 @@ export class GroupService {
       // "none" (see ContractRegistry), and a value we could not read is equally
       // unrecorded. Reporting either as an empty list is the same conflation.
       unreadableRepos: recordedRepoList(registry?.unreadableRepos),
+      // Same tri-state, same reason: `group status` is where an operator goes
+      // to ask "is this group's answer trustworthy right now", and a registry
+      // narrowed on purpose is a different answer from a complete one.
+      suppressedMatchStages: recordedMatchStages(registry?.suppressedMatchStages),
       repos: repoStatuses,
     };
   }

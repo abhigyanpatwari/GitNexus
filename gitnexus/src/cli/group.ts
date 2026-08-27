@@ -135,6 +135,7 @@ export function registerGroupCommands(program: Command): void {
           >;
           missingRepos?: string[];
           unreadableRepos?: string[];
+          suppressedMatchStages?: string[];
         };
 
         console.log('  Repo index / contracts staleness:');
@@ -188,6 +189,18 @@ export function registerGroupCommands(program: Command): void {
         }
         if ((st.missingRepos || []).length > 0) {
           console.log(`\n  Last sync missing repos: ${st.missingRepos!.join(', ')}`);
+        }
+        // Only the populated case prints. Absent means a registry that predates
+        // the field, and empty is the ordinary clean sync — neither is worth a
+        // line, whereas a narrowed registry changes how every later answer
+        // should be read.
+        const skippedStages = st.suppressedMatchStages ?? [];
+        if (skippedStages.length > 0) {
+          console.log(
+            `\n  Last sync skipped matching stages: ${skippedStages.join(', ')}` +
+              `\n     Cross-links those stages would have found are absent by request.` +
+              `\n     Re-run \`gitnexus group sync\` without --exact-only for the complete set.`,
+          );
         }
       } finally {
         await backend.dispose().catch(() => {});
