@@ -33,7 +33,11 @@ import type { WildcardMatchResult } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { getContractRegistryPath, readContractRegistry, writeContractRegistry } from './storage.js';
-import { refreshPreservedBridgeMeta, writeBridgeUnlocked } from './bridge-db.js';
+import {
+  markBridgeProvenanceUnknown,
+  refreshPreservedBridgeMeta,
+  writeBridgeUnlocked,
+} from './bridge-db.js';
 import { withGroupSyncLock } from './group-lock.js';
 import type { ContractRegistry } from './types.js';
 
@@ -805,11 +809,23 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // true is the one thing not to do — it would recreate exactly the
           // metadata/database mis-pairing the stamping on the preserve path above
           // exists to prevent.
+          // Fail the stale bridge CLOSED. contracts.json has advanced and the
+          // database has not, so the two describe different syncs; leaving the
+          // bridge vouching for itself lets `group_impact` call a superseded
+          // graph complete while `group_contracts` reports the new one. This
+          // withdraws the claim without touching the database — the previous
+          // graph stays queryable, it just stops being called complete.
+          const withdrawn = await markBridgeProvenanceUnknown(groupDir);
           logger.warn(
-            { err: msg, groupDir },
+            { err: msg, groupDir, bridgeProvenanceWithdrawn: withdrawn },
             '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
               'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
-              "the previous sync's contracts, and nothing marks them as superseded. " +
+              "the previous sync's contracts. " +
+              (withdrawn
+                ? 'Its metadata has been marked provenance-unknown, so those answers now ' +
+                  'report as a lower bound rather than as complete. '
+                : 'Its metadata could NOT be marked provenance-unknown, so those answers may ' +
+                  'still report as complete despite describing an older sync. ') +
               'Re-run `gitnexus group sync` to retry.',
           );
         }

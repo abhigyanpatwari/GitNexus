@@ -961,6 +961,39 @@ export async function refreshPreservedBridgeMeta(
   return 'provenance-unknown';
 }
 
+/**
+ * Withdraw the bridge's claim to be complete, without touching the database.
+ *
+ * The one path this exists for: `contracts.json` committed, then the bridge
+ * replacement failed. The old database is still physically usable and still
+ * answers queries, but it now describes an EARLIER sync than the canonical
+ * registry beside it — so `group_contracts` can report a narrowed or advanced
+ * contract set while `group_impact` traverses the old graph and calls its
+ * answer complete. Two public surfaces, contradictory epistemic claims, from
+ * one sync.
+ *
+ * Setting `provenanceUnknown` is the smallest thing that makes that safe:
+ * `bridgeMetaMatchesFile` gives it highest precedence and refuses to vouch for
+ * the pair, so every cross-repo answer downgrades to a floor until a sync
+ * succeeds. Deliberately NOT a re-stamp — the metadata still describes the
+ * database it was written for, and claiming otherwise is the mis-pairing the
+ * preserve path is careful to avoid. Deliberately not a delete either: the
+ * previous graph is better than nothing as long as nobody calls it complete.
+ *
+ * Best-effort by construction. It runs inside a failure handler, so a throw
+ * here would replace a reported bridge failure with an unrelated one.
+ */
+export async function markBridgeProvenanceUnknown(groupDir: string): Promise<boolean> {
+  try {
+    const existing = await readBridgeMeta(groupDir);
+    if (existing.version === 0) return false;
+    await writeBridgeMeta(groupDir, { ...existing, provenanceUnknown: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  writeBridge — atomic write-to-temp-then-rename                    */
 /* ------------------------------------------------------------------ */

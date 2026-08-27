@@ -31,6 +31,10 @@ describe('Group MCP tools', () => {
     // later edit removed the wrong one of the two.
     const tool = GITNEXUS_TOOLS.find((t) => t.name === 'group_sync')!;
     expect(tool.inputSchema.properties).not.toHaveProperty('skipEmbeddings');
+    // `verbose` gates diagnostics on the server's logger, which an MCP caller
+    // cannot observe. Advertising it would promise a knob whose effect is
+    // invisible to the only audience that reads this schema.
+    expect(tool.inputSchema.properties).not.toHaveProperty('verbose');
     expect(tool.inputSchema.properties.exactOnly).toMatchObject({ type: 'boolean' });
   });
 });

@@ -970,6 +970,36 @@ describe('the warning after a failed bridge write', () => {
   const bridgeWarning = (cap: ReturnType<typeof _captureLogger>) =>
     cap.records().find((r) => r.level === 40 && typeof r.groupDir === 'string');
 
+  it('withdraws the old bridge provenance when the registry advanced but the bridge write failed', async () => {
+    // The split-brain this guards: contracts.json commits, the bridge write
+    // then fails, and the previous database stays in place describing an
+    // EARLIER sync. Left vouching for itself, `group_impact` traverses that
+    // older graph and calls its answer complete while `group_contracts`
+    // reports the new registry — two public surfaces, contradictory claims,
+    // out of one sync. Marking provenance unknown withdraws the completeness
+    // claim without deleting a graph still useful as a floor.
+    await writeBridgeMeta(groupDir, {
+      version: 1,
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      missingRepos: [],
+      unreadableRepos: [],
+    });
+    expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBeUndefined();
+
+    writeBridgeFailure = new Error('ENOSPC: no space left on device');
+    await runSync();
+
+    expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBe(true);
+  });
+
+  // control: a sync whose bridge write SUCCEEDS must not withdraw provenance —
+  // otherwise every healthy sync would report its own answers as a floor.
+  it('control: a successful bridge write leaves provenance intact', async () => {
+    await runSync();
+
+    expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBeFalsy();
+  });
+
   it('names the registry as intact and does not promise a truncation this branch never reports', async () => {
     writeBridgeFailure = new Error('ENOSPC: no space left on device');
     const cap = _captureLogger();

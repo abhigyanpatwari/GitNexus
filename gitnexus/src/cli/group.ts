@@ -214,7 +214,7 @@ export function registerGroupCommands(program: Command): void {
       '--exact-only',
       'Skip wildcard service matching; cross-link on exact contract-id match only (manifest links still apply)',
     )
-    .option('--verbose', 'Show each cross-link detail')
+    .option('--verbose', 'Show additional sync diagnostics')
     .option('--json', 'JSON output')
     .action(async (name: string, opts: Record<string, boolean | undefined>) => {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');

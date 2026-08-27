@@ -338,13 +338,22 @@ describe('group_sync rejects malformed and retired parameters', () => {
     },
   );
 
-  // The tool description promises "PARAMETERS ARE VALIDATED", so the other
-  // boolean it reads has to mean it too.
-  it('rejects a non-boolean verbose and runs no sync', async () => {
-    const payload = await new GroupService(port).groupSync({ name: GROUP, verbose: 'false' });
+  // `verbose` is no longer part of this tool's surface: not advertised, not
+  // validated, not forwarded. A caller that still sends it is ignored rather
+  // than refused — it was never a documented parameter, so there is nothing to
+  // reject on behalf of, and the retired-name guard is reserved for parameters
+  // this tool actually withdrew.
+  it('ignores verbose entirely rather than validating or forwarding it', async () => {
+    syncGroupMock.mockResolvedValue(syncResult());
 
-    expect(payload).toEqual({ error: 'Invalid "verbose": expected true or false, got "false".' });
-    expect(syncGroupMock).not.toHaveBeenCalled();
+    const payload = (await new GroupService(port).groupSync({
+      name: GROUP,
+      verbose: 'not-a-boolean',
+    })) as Record<string, unknown>;
+
+    expect(payload.error).toBeUndefined();
+    expect(syncGroupMock).toHaveBeenCalledTimes(1);
+    expect(syncGroupMock.mock.calls[0][1]).not.toHaveProperty('verbose');
   });
 
   it.each([['skipEmbeddings'], ['allowStale']])(

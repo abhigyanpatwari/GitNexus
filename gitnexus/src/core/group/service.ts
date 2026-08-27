@@ -436,8 +436,6 @@ export class GroupService {
     // this method is the real validation boundary.
     const exactOnly = validateBooleanParam('exactOnly', params.exactOnly);
     if ('error' in exactOnly) return exactOnly;
-    const verbose = validateBooleanParam('verbose', params.verbose);
-    if ('error' in verbose) return verbose;
     const retired = rejectRetiredSyncParams(params);
     if (retired) return retired;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
@@ -461,7 +459,10 @@ export class GroupService {
       result = await syncGroup(config, {
         groupDir,
         exactOnly: exactOnly.value,
-        verbose: verbose.value,
+        // `verbose` is deliberately NOT accepted here. It gates diagnostics on
+        // the server's logger, which an MCP caller cannot observe — advertising
+        // it would be exactly the kind of knob that does not do what the caller
+        // expects. `SyncOptions.verbose` stays for the CLI, which can see them.
       });
     } catch (err) {
       // Fails closed (R9): this sync could not be protected against a concurrent

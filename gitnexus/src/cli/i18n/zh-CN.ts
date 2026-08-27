@@ -275,7 +275,7 @@ export const zhCN = {
   'help.option.group.create.force': '覆盖现有仓库组',
   'help.option.group.sync.exactOnly':
     '跳过通配符服务匹配，仅按契约 ID 精确匹配建立跨仓链接（清单声明的链接仍然生效）',
-  'help.option.group.sync.verbose': '显示每条跨仓库链接详情',
+  'help.option.group.sync.verbose': '显示额外的同步诊断信息',
   'help.option.status.json': '输出机器可读的索引和分析器来源信息',
   'help.option.json': 'JSON 输出',
   'help.option.group.impact.target': '要分析的符号或文件名',
