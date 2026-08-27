@@ -26,13 +26,11 @@ export interface DetectConfig {
   grpc: boolean;
   thrift: boolean;
   topics: boolean;
-  shared_libs: boolean;
   includes: boolean;
   workspace_deps: boolean;
 }
 
 export interface MatchingConfig {
-  max_candidates_per_step: number;
   /**
    * HTTP paths to exclude from cross-link matching. Contracts at these paths
    * are still extracted and visible in the registry, but they don't produce

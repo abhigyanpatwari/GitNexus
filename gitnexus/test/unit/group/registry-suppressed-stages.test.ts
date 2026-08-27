@@ -40,12 +40,10 @@ const config: GroupConfig = {
     grpc: false,
     thrift: false,
     topics: false,
-    shared_libs: false,
     includes: false,
     workspace_deps: false,
   },
   matching: {
-    max_candidates_per_step: 3,
     exclude_links_paths: [],
     exclude_links_param_only_paths: false,
   },

@@ -98,10 +98,8 @@ detect:
   http: true
   grpc: true
   topics: true
-  shared_libs: true
 
 matching:
-  max_candidates_per_step: 3
   # exclude_links_paths: [/ping, /health, /healthcheck]
   # exclude_links_param_only_paths: false
 `;

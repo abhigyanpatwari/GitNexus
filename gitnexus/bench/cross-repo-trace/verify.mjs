@@ -58,7 +58,6 @@ packages: {}
 detect:
   http: true
 matching:
-  max_candidates_per_step: 3
 `;
 }
 

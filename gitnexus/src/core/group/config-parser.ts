@@ -29,13 +29,11 @@ const DEFAULT_DETECT = {
   grpc: true,
   thrift: true,
   topics: true,
-  shared_libs: true,
   includes: false,
   workspace_deps: false,
 };
 
 const DEFAULT_MATCHING = {
-  max_candidates_per_step: 3,
   exclude_links_paths: [] as string[],
   exclude_links_param_only_paths: false,
 };

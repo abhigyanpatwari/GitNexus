@@ -59,7 +59,6 @@ repos:
     expect(config.links).toEqual([]);
     expect(config.packages).toEqual({});
     expect(config.detect.http).toBe(true);
-    expect(config.matching.max_candidates_per_step).toBe(3);
     expect(config.matching.exclude_links_paths).toEqual([]);
     expect(config.matching.exclude_links_param_only_paths).toBe(false);
   });
@@ -77,6 +76,7 @@ repos:
 detect:
   http: true
   embedding_fallback: true
+  shared_libs: true
 matching:
   bm25_threshold: 0.7
   embedding_threshold: 0.65
@@ -86,7 +86,6 @@ matching:
     expect(config.name).toBe('test');
     expect(config.repos).toEqual({ app: 'my-app' });
     expect(config.detect.http).toBe(true);
-    expect(config.matching.max_candidates_per_step).toBe(3);
 
     // Pinned behavior: PRESERVE, not strip. The parser spreads the raw block
     // over its defaults (`{ ...DEFAULT_MATCHING, ...raw.matching }`), so a key
@@ -102,6 +101,11 @@ matching:
     expect((config.matching as unknown as Record<string, unknown>).bm25_threshold).toBe(0.7);
     expect((config.matching as unknown as Record<string, unknown>).embedding_threshold).toBe(0.65);
     expect((config.detect as unknown as Record<string, unknown>).embedding_fallback).toBe(true);
+    // The two keys this commit removes, pinned the same way and for the same
+    // reason: an operator's group.yaml carries them today because
+    // `gitnexus group create` wrote them there.
+    expect((config.matching as unknown as Record<string, unknown>).max_candidates_per_step).toBe(3);
+    expect((config.detect as unknown as Record<string, unknown>).shared_libs).toBe(true);
   });
 
   it('defaults thrift detection to true', () => {

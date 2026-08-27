@@ -23,11 +23,10 @@ describe('Group types', () => {
         grpc: true,
         thrift: true,
         topics: true,
-        shared_libs: true,
         includes: true,
         workspace_deps: true,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
     expect(config.version).toBe(1);
     expect(config.name).toBe('company');
@@ -92,11 +91,10 @@ describe('Group types', () => {
         grpc: true,
         thrift: true,
         topics: true,
-        shared_libs: true,
         includes: true,
         workspace_deps: true,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
     expect(config.detect.thrift).toBe(true);
   });

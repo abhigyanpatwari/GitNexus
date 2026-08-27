@@ -92,11 +92,10 @@ const config = (): GroupConfig => ({
     grpc: true,
     thrift: false,
     topics: false,
-    shared_libs: false,
     includes: false,
     workspace_deps: false,
   },
-  matching: { max_candidates_per_step: 3 },
+  matching: {},
 });
 
 describe('syncGroup when one extractor fails partway through a repo', () => {

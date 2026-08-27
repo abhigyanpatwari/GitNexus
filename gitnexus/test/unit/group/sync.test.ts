@@ -26,11 +26,10 @@ describe('syncGroup', () => {
       grpc: false,
       thrift: false,
       topics: false,
-      shared_libs: false,
       includes: false,
       workspace_deps: false,
     },
-    matching: { max_candidates_per_step: 3 },
+    matching: {},
   });
 
   it('returns SyncResult with contracts and cross-links', async () => {
@@ -222,11 +221,10 @@ describe('syncGroup', () => {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const result = await syncGroup(config, {
@@ -676,11 +674,10 @@ service OrderService {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const cap = _captureLogger();
@@ -746,11 +743,10 @@ service OrderService {
           grpc: false,
           thrift: false,
           topics: false,
-          shared_libs: false,
           includes: false,
           workspace_deps: workspaceDeps,
         },
-        matching: { max_candidates_per_step: 3 },
+        matching: {},
       };
     }
 
@@ -903,11 +899,10 @@ service OrderService {
           grpc: false,
           thrift: false,
           topics: false,
-          shared_libs: false,
           includes: false,
           workspace_deps: true,
         },
-        matching: { max_candidates_per_step: 3 },
+        matching: {},
       };
 
       const result = await syncGroup(config, {
@@ -994,11 +989,10 @@ service OrderService {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
@@ -1078,11 +1072,10 @@ service OrderService {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const result = await syncGroup(config, {
@@ -1122,11 +1115,10 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
   };
 

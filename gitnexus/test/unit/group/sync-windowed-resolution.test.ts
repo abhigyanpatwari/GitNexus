@@ -213,11 +213,10 @@ describe('syncGroup windowed resolution bounds pool residency (real pool, #2189)
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { max_candidates_per_step: 3 },
+      matching: {},
     };
 
     await syncGroup(config, {

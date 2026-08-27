@@ -28,11 +28,10 @@ describe('syncGroup exactOnly gates the wildcard stage', () => {
       grpc: false,
       thrift: false,
       topics: false,
-      shared_libs: false,
       includes: false,
       workspace_deps: false,
     },
-    matching: { max_candidates_per_step: 3 },
+    matching: {},
   };
 
   /**
