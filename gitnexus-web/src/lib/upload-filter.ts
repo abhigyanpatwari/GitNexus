@@ -27,6 +27,11 @@ export const EXCLUDED_DIRS = new Set([
   // `<platform>/app/src/main/assets/public/_next/`, so without this the whole
   // minified tree is uploaded against the server's file/byte caps only to be
   // discarded by the analyzer's own ignore list (#3007).
+  //
+  // This pre-filter reads no repository ignore rules, so unlike the CLI walker
+  // a `.gitnexusignore` negation cannot recover anything dropped here. Names
+  // added below must therefore stay a subset of the analyzer's own list; see
+  // `gitnexus/test/unit/upload-filter-ignore-drift.test.ts`.
   '_next',
   '.nuxt',
   '.cache',
