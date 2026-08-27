@@ -7,11 +7,11 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type {
   BridgeHandle,
+  BridgeMeta,
   ContractType,
   CrossRepoImpact,
   GroupConfig,
   GroupImpactResult,
-  GroupImpactTruncationReason,
   MatchType,
   OutOfScopeLink,
 } from './types.js';
@@ -24,12 +24,23 @@ import {
 } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
 import {
+  bridgeMetaMatchesFile,
   closeBridgeDb,
   getCachedBridgeReadOnly,
   queryBridge,
   readBridgeMeta,
 } from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+// Re-exported so the three surfaces keep one import site for the vocabulary,
+// while the fold itself stays in a leaf module no native binding reaches.
+export {
+  truncationFields,
+  crossRepoCompleteness,
+  type TruncationFields,
+  type CrossRepoCompleteness,
+  type CrossRepoCompletenessInput,
+} from './completeness.js';
+import { truncationFields, crossRepoCompleteness } from './completeness.js';
 import { compareCodeUnits } from '../../lib/utils.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
@@ -381,23 +392,30 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
 }
 
 /**
- * Build the truncation fields every `runGroupImpact` return path shares.
+ * Is this bridge's metadata unable to say where its contents came from?
  *
- * `riskEpistemic` must follow `truncated` mechanically: it is the marker that
- * tells a caller the `risk` value is a floor rather than a verdict, and
- * `mergeRisk` can only under-report once a crossing is dropped. Attaching it at
- * each return let two of the four paths set `truncated` without it, so a
- * truncated result read as complete — deriving it in one place is what keeps
- * the invariant from drifting again (#2787).
+ * The three reads are all about a `BridgeMeta` and stay OUT of
+ * `crossRepoCompleteness` on purpose (see its doc): they are how a caller that
+ * opened a bridge computes `provenanceUnknown`, not how every caller does.
+ *
+ *   - `version === 0` — no readable meta.json at all (`readBridgeMeta` answers
+ *     that for both "absent" and "unparseable");
+ *   - `repoListsUnreadable` — a meta.json that parsed but whose repo lists are
+ *     not repo lists. A value we could not read is not a measurement of zero,
+ *     so it may not be spent as one;
+ *   - `pairedWithDatabase === false` — a meta.json that does not describe the
+ *     database sitting beside it, which is what a sync interrupted between the
+ *     swap and the metadata write leaves behind. Measured by
+ *     `ensureBridgeReady` BEFORE the database is opened and carried on the
+ *     meta; this only reads the answer (#3012).
+ *
+ * Treating any of them as complete is the fail-open the completeness channel
+ * exists to close.
  */
-function truncationFields(
-  truncated: boolean,
-  // Only read on the truncated branch, so the not-truncated call sites omit it
-  // rather than passing a reason that is thrown away.
-  reasonIfTruncated: GroupImpactTruncationReason = 'partial',
-): Pick<GroupImpactResult, 'truncated' | 'truncationReason' | 'riskEpistemic'> {
-  if (!truncated) return { truncated: false };
-  return { truncated: true, truncationReason: reasonIfTruncated, riskEpistemic: 'lower-bound' };
+export function bridgeProvenanceUnknown(meta: BridgeMeta): boolean {
+  return (
+    meta.version === 0 || meta.repoListsUnreadable === true || meta.pairedWithDatabase === false
+  );
 }
 
 function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): void {
@@ -418,7 +436,7 @@ function addCrossImpact(cross: CrossRepoImpact[], candidate: CrossRepoImpact): v
 
 export async function ensureBridgeReady(
   groupDir: string,
-): Promise<{ handle: BridgeHandle } | { error: string }> {
+): Promise<{ handle: BridgeHandle; meta: BridgeMeta } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
   if (meta.version > 0 && meta.version !== BRIDGE_SCHEMA_VERSION) {
     return {
@@ -433,6 +451,13 @@ export async function ensureBridgeReady(
       error: `No bridge.lbug in this group directory. Run gitnexus group sync (schema ${BRIDGE_SCHEMA_VERSION}).`,
     };
   }
+  // Pair the metadata to the database BEFORE opening it, and carry the answer.
+  // An unstamped pair is judged on the two files' write order, so any open that
+  // touched `bridge.lbug`'s mtime would silently convert "legacy but intact"
+  // into "provenance unknown" for every pre-stamp bridge on that platform. This
+  // ordering removes the question rather than betting on the answer.
+  meta.pairedWithDatabase = await bridgeMetaMatchesFile(groupDir, meta);
+
   // Use the cached read-only handle if available — avoids reopening the same
   // bridge.lbug in a long-lived MCP server, which fails on Windows because
   // the OS handle isn't fully released before the next open races in.
@@ -442,7 +467,7 @@ export async function ensureBridgeReady(
       error: `Could not open bridge.lbug read-only (schema ${BRIDGE_SCHEMA_VERSION}). Run gitnexus group sync.`,
     };
   }
-  return { handle };
+  return { handle, meta };
 }
 
 function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
@@ -641,6 +666,25 @@ export async function runGroupImpact(
   if ('error' in bridgePrep) return { error: bridgePrep.error };
 
   const handle = bridgePrep.handle;
+  // Repos the sync that built this bridge could not account for. Their
+  // contracts — and every cross-link touching them — are simply absent from
+  // bridge.lbug, and nothing else in this walk can notice that: the only
+  // incompleteness channel on the result is `truncationFields`, driven by
+  // fan-out state. Without folding these in, a query about a symbol whose one
+  // downstream consumer lives in an unreadable repo returns
+  // `{ cross: [], truncated: false }` — "complete: nothing depends on this" —
+  // which is a wrong answer, not an empty one, for a tool an agent uses to
+  // license a delete or a rename.
+  //
+  // The metadata read that answers it (`bridgeProvenanceUnknown`) happens
+  // INSIDE the `try` below, and the flag is initialized fail-closed here only
+  // because it outlives that block. The lease taken by `ensureBridgeReady` is
+  // released by the `finally` and nowhere else, so work done between the lease
+  // and the `try` is work whose every throw leaks a refcount the cached handle
+  // can never get back — which is how a malformed meta.json used to wedge the
+  // handle as well as crash the query. (The repo lists are folded in after the
+  // `finally`, where a throw can no longer strand the lease.)
+  let provenanceUnknown = true;
   const cross: CrossRepoImpact[] = [];
   const outOfScope: OutOfScopeLink[] = [];
   const truncatedRepos: string[] = [];
@@ -650,6 +694,8 @@ export async function runGroupImpact(
   let fanoutTimedOut = false;
 
   try {
+    provenanceUnknown = bridgeProvenanceUnknown(bridgePrep.meta);
+
     const neighbors = await resolveBridgeNeighbors(handle, {
       localRepo: repoPath,
       uids,
@@ -782,7 +828,45 @@ export async function runGroupImpact(
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
   const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
   const localPartial = Boolean((local as { partial?: boolean }).partial);
-  const truncated = truncatedRepos.length > 0 || localPartial;
+  // The bridge's own incompleteness, in the shared vocabulary, read through
+  // what this query DECLARED. The fan-out above already drops every neighbour
+  // outside `subgroup`, so an incomplete repo the query excluded could not have
+  // contributed a crossing to this answer — marking the answer a floor because
+  // of it makes the marker fire on results it does not describe, which is how a
+  // caller learns to ignore it. An unscoped query passes `subgroup: undefined`,
+  // which `repoInSubgroup` answers true for, so the intersection is the whole
+  // set and that path is byte-for-byte the old behaviour.
+  //
+  // The declared scope is the subgroup PLUS the query's own repo (`exact`
+  // reuses the one membership helper for the equality, rather than growing a
+  // second notion of it): the walk starts from `repoPath`'s contracts in the
+  // bridge, so if THAT is the repo the sync could not read there are no
+  // crossings to find for any scope, and a subgroup excluding it must not turn
+  // that vacuum into a confident "complete".
+  //
+  // Declared scope, not traversed scope: an incomplete repo's contracts are
+  // absent from the bridge by definition, so it is never in the set the walk
+  // reached — filtering on what was traversed would empty the intersection on
+  // every query and silently restore the fail-open.
+  //
+  // Sound only while `MAX_SUPPORTED_CROSS_DEPTH` is 1. At depth 2+ an
+  // out-of-scope repo can sit BETWEEN two in-scope ones, so dropping it would
+  // convert a genuine lower bound into a confident complete answer; widen this
+  // predicate in the same change that raises the depth.
+  const bridge = crossRepoCompleteness({
+    unreadableRepos: bridgePrep.meta.unreadableRepos,
+    missingRepos: bridgePrep.meta.missingRepos,
+    provenanceUnknown,
+    inScope: (candidate) =>
+      repoInSubgroup(candidate, subgroup) || repoInSubgroup(candidate, repoPath, true),
+  });
+  // One predicate, read twice below. Written out at both sites, a third runtime
+  // cause added to the flag and forgotten at the reason would label a
+  // retry-able answer `incomplete-sync` — telling the operator to re-sync for
+  // something a retry fixes. That reason-vs-flag drift is what `truncationFields`
+  // exists to prevent.
+  const runtimeTruncated = truncatedRepos.length > 0 || localPartial;
+  const truncated = runtimeTruncated || bridge.truncated;
 
   const result: GroupImpactResult = {
     local,
@@ -794,8 +878,17 @@ export async function runGroupImpact(
     // and under-reporting a blast radius is the unsafe direction (an agent told
     // LOW proceeds; told CRITICAL it stops). Marking the floor keeps the
     // warning intact while making the incompleteness legible.
-    ...truncationFields(truncated, fanoutTimedOut ? 'timeout' : 'partial'),
-    truncatedRepos: [...new Set(truncatedRepos)],
+    // Runtime limits first — they are what the caller can retry. 'incomplete-sync'
+    // is the remaining cause once nothing was merely cut short, and its remedy is
+    // a different one: re-run `gitnexus group sync`, not the query. Computed
+    // inline because `truncationFields` reads the reason ONLY on the truncated
+    // branch — naming it in a variable invited reading it on the complete path,
+    // where it would say 'incomplete-sync' about a complete result.
+    ...truncationFields(
+      truncated,
+      fanoutTimedOut ? 'timeout' : runtimeTruncated ? 'partial' : 'incomplete-sync',
+    ),
+    truncatedRepos: [...new Set([...truncatedRepos, ...bridge.incompleteRepos])],
     summary: {
       direct: localSum.direct ?? 0,
       processes_affected: localSum.processes_affected ?? 0,
