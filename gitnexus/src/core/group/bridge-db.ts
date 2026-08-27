@@ -12,7 +12,7 @@ import type {
   MatchType,
 } from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
-import { recordedRepoList } from './completeness.js';
+import { recordedMatchStages, recordedRepoList } from './completeness.js';
 import {
   closeLbugConnection,
   openLbugConnection,
@@ -833,14 +833,8 @@ export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
   // was there and could not be read.
   if (unreadableRepos) meta.unreadableRepos = unreadableRepos;
   else delete meta.unreadableRepos;
-  // Same absent-vs-empty rule, and all-or-nothing: an unreadable list is "not
-  // recorded", never "measured, nothing suppressed".
-  const known = ['exact', 'manifest', 'wildcard'];
-  const suppressed = Array.isArray(raw.suppressedMatchStages)
-    ? raw.suppressedMatchStages.every((v) => typeof v === 'string' && known.includes(v))
-      ? (raw.suppressedMatchStages as MatchType[])
-      : undefined
-    : undefined;
+  // Same absent-vs-empty rule, through the one shared reader.
+  const suppressed = recordedMatchStages(raw.suppressedMatchStages);
   if (suppressed) meta.suppressedMatchStages = suppressed;
   else delete meta.suppressedMatchStages;
   if (repoListsUnreadable) meta.repoListsUnreadable = true;
@@ -919,11 +913,13 @@ async function fileExists(filePath: string): Promise<boolean> {
  */
 export async function refreshPreservedBridgeMeta(
   groupDir: string,
-  diagnostics: {
-    missingRepos: string[];
-    unreadableRepos: string[];
-    suppressedMatchStages?: MatchType[];
-  },
+  // Deliberately NOT `suppressedMatchStages`. This path preserves an EARLIER
+  // sync's database, so stamping it with this run's request would claim the
+  // untouched bridge was built with a flag it never saw. The registry's own
+  // preserve write (`{ ...prior, missingRepos, unreadableRepos }`) omits it for
+  // exactly this reason, and the two artifacts have to agree about which run
+  // they describe.
+  diagnostics: { missingRepos: string[]; unreadableRepos: string[] },
 ): Promise<PreservedBridgeMetaOutcome> {
   const dbPath = path.join(groupDir, 'bridge.lbug');
   const [metaOnDisk, dbOnDisk] = await Promise.all([

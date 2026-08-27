@@ -879,15 +879,21 @@ export async function runGroupImpact(
     // and under-reporting a blast radius is the unsafe direction (an agent told
     // LOW proceeds; told CRITICAL it stops). Marking the floor keeps the
     // warning intact while making the incompleteness legible.
-    // Runtime limits first — they are what the caller can retry. 'incomplete-sync'
-    // is the remaining cause once nothing was merely cut short, and its remedy is
-    // a different one: re-run `gitnexus group sync`, not the query. Computed
-    // inline because `truncationFields` reads the reason ONLY on the truncated
-    // branch — naming it in a variable invited reading it on the complete path,
-    // where it would say 'incomplete-sync' about a complete result.
+    // Runtime limits first — they are what the caller can retry. Past those, the
+    // BRIDGE's own reason wins: it already distinguished an unreadable repo
+    // ('incomplete-sync', remedy: re-sync) from a stage the sync was asked to
+    // skip ('suppressed-stage', remedy: re-sync WITHOUT the flag). Hardcoding
+    // the fallback here overrode that and told every caller to repair a repo
+    // that read fine — and made the second value unreachable from this surface
+    // while the tool description promised it. `cross-trace.ts` re-spreads the
+    // bridge's fields for the same reason.
     ...truncationFields(
       truncated,
-      fanoutTimedOut ? 'timeout' : runtimeTruncated ? 'partial' : 'incomplete-sync',
+      fanoutTimedOut
+        ? 'timeout'
+        : runtimeTruncated
+          ? 'partial'
+          : ((bridge.truncated ? bridge.truncationReason : undefined) ?? 'incomplete-sync'),
     ),
     truncatedRepos: [...new Set([...truncatedRepos, ...bridge.incompleteRepos])],
     summary: {

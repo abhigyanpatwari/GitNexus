@@ -762,11 +762,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         // confident wrong answer, and swallowing its failure would reinstate the
         // very fail-open it closes. `writeContractRegistry` above is unguarded for
         // the same reason, into the same directory.
-        await refreshPreservedBridgeMeta(groupDir, {
-          missingRepos,
-          unreadableRepos,
-          suppressedMatchStages,
-        });
+        await refreshPreservedBridgeMeta(groupDir, { missingRepos, unreadableRepos });
       }
 
       if (!everyRepoFailed) {

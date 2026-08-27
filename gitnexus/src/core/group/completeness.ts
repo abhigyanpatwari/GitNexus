@@ -13,7 +13,7 @@
  * Nothing here imports anything but types. Keep it that way: the moment this
  * file gains a runtime import, every consumer pays for it again.
  */
-import type { GroupImpactTruncationReason } from './types.js';
+import type { GroupImpactTruncationReason, MatchType } from './types.js';
 
 /**
  * A union rather than `Pick<GroupImpactResult, ...>` so the two states are
@@ -113,6 +113,23 @@ export type CrossRepoCompleteness = TruncationFields & {
  * marker that says "this is a floor, not a verdict" may never drift away from
  * the flag that says the answer was cut short (#2787).
  */
+/**
+ * Read a persisted `suppressedMatchStages` list.
+ *
+ * Sibling of `recordedRepoList` and here for the same stated reason: it had
+ * lived in two files verbatim, so tightening one would silently leave the other.
+ * All-or-nothing like its sibling — a stale member (this repo has already
+ * retired `'bm25'` and `'embedding'`) makes the whole list unreadable rather
+ * than filtering down to `[]`, which on this field would mean "measured,
+ * nothing suppressed": a clean answer manufactured from a value we could not
+ * read.
+ */
+export function recordedMatchStages(value: unknown): MatchType[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const known: MatchType[] = ['exact', 'manifest', 'wildcard'];
+  return value.every((v): v is MatchType => known.includes(v as MatchType)) ? value : undefined;
+}
+
 export function crossRepoCompleteness(input: CrossRepoCompletenessInput): CrossRepoCompleteness {
   const incompleteRepos = [
     ...new Set([...(input.unreadableRepos ?? []), ...(input.missingRepos ?? [])]),

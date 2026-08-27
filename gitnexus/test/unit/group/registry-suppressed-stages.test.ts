@@ -24,6 +24,7 @@ import path from 'node:path';
 import { syncGroup } from '../../../src/core/group/sync.js';
 import { makeWildcardPair } from './fixtures.js';
 import { crossRepoCompleteness } from '../../../src/core/group/completeness.js';
+import { GROUP_IMPACT_TRUNCATION_REASONS } from '../../../src/core/group/types.js';
 import type {
   GroupConfig,
   StoredContract,
@@ -157,5 +158,34 @@ describe('cross-repo completeness reflects a suppressed stage', () => {
 
     expect(out.truncated).toBe(true);
     expect(out.truncationReason).toBe('incomplete-sync');
+  });
+});
+
+/**
+ * The reason has to be REACHABLE, not just documented.
+ *
+ * A guard in `tools.test.ts` asserts every truncation reason is explained in
+ * the impact tool description. That check passed while `runGroupImpact`
+ * hardcoded its fallback and could never emit `'suppressed-stage'` — a
+ * documented value no surface could produce. These pin the emitting side.
+ */
+describe('the suppressed-stage reason is reachable, not just documented', () => {
+  it('is the reason when a stage was suppressed and every repo read fine', () => {
+    const out = crossRepoCompleteness({
+      unreadableRepos: [],
+      missingRepos: [],
+      suppressedMatchStages: ['wildcard'],
+      provenanceUnknown: false,
+      inScope: () => true,
+    });
+
+    expect(out.truncated).toBe(true);
+    expect(out.truncationReason).toBe('suppressed-stage');
+  });
+
+  it('is a declared member of the reason union agents branch on', () => {
+    // If a future change drops it from the union, the tool description guard
+    // would still pass while every consumer lost the value.
+    expect(GROUP_IMPACT_TRUNCATION_REASONS).toContain('suppressed-stage');
   });
 });

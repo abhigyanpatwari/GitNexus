@@ -15,7 +15,7 @@ import {
   type RepoMeta,
 } from '../../storage/repo-manager.js';
 import { crossRepoCompleteness } from './completeness.js';
-import { recordedRepoList } from './completeness.js';
+import { recordedMatchStages, recordedRepoList } from './completeness.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
@@ -33,7 +33,6 @@ import type {
   CrossLink,
   GroupConfig,
   GroupContextResult,
-  MatchType,
   StoredContract,
 } from './types.js';
 
@@ -359,26 +358,6 @@ async function loadContractRegistryResilient(
   };
 
   return { ok: true, registry, skippedCorrupt };
-}
-
-/**
- * Read a persisted `suppressedMatchStages` list.
- *
- * Deliberately NOT `recordedRepoList`: that validates `string[]`, which is
- * right for repo names and one notch too weak here. This repo has already
- * retired MatchType members ('bm25', 'embedding'), so a stale value on disk is
- * a real shape — dropping non-members keeps an unknown stage name from
- * reaching a caller typed as a live one. Absence stays absence (tri-state).
- */
-function recordedMatchStages(value: unknown): MatchType[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const known: MatchType[] = ['exact', 'manifest', 'wildcard'];
-  // All-or-nothing, exactly like `recordedRepoList`. Filtering would be worse
-  // than useless here: a stale `['bm25']` would survive as `[]`, which on this
-  // field MEANS "measured, nothing was suppressed" — a confident clean answer
-  // manufactured from a value we could not read, on the one field that exists
-  // to stop that conflation. An unreadable list is "not recorded".
-  return value.every((v): v is MatchType => known.includes(v as MatchType)) ? value : undefined;
 }
 
 /**

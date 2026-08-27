@@ -329,6 +329,55 @@ describe('syncGroup with an unreadable index', () => {
     expect(onDisk.unreadableRepos).toEqual(['app/backend']);
   });
 
+  it('keeps the prior suppressedMatchStages instead of stamping this run request', async () => {
+    // The preserved registry describes an EARLIER sync. If this run's request
+    // were stamped onto it, a graph narrowed by `--exact-only` would be
+    // relabelled complete the moment a later plain sync failed to read
+    // anything — and `group_impact` reads exactly that field to decide whether
+    // its answer is a floor.
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+
+    const contractsPath = path.join(groupDir, 'contracts.json');
+    fs.writeFileSync(
+      contractsPath,
+      JSON.stringify({ ...PRIOR_REGISTRY, suppressedMatchStages: ['wildcard'] }),
+    );
+
+    // This run asks for NO suppression, and fails to read anything.
+    const result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+
+    expect(result.registryOutcome).toBe('preserved');
+    // The result describes THIS run — it really did suppress nothing.
+    expect(result.suppressedMatchStages).toEqual([]);
+
+    const onDisk = JSON.parse(fs.readFileSync(contractsPath, 'utf8')) as Record<string, unknown>;
+    // The file still describes the sync that produced its contracts.
+    expect(onDisk.suppressedMatchStages).toEqual(['wildcard']);
+  });
+
+  it('does not stamp this run request onto the preserved bridge metadata', async () => {
+    // Same property one artifact over. `bridge.lbug` is untouched on this path,
+    // so its meta.json must keep describing the sync that built it; otherwise
+    // contracts.json, meta.json and the database describe three different runs.
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+
+    fs.writeFileSync(path.join(groupDir, 'contracts.json'), JSON.stringify(PRIOR_REGISTRY));
+    await writeBridgeMeta(groupDir, {
+      version: 1,
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      missingRepos: [],
+      unreadableRepos: [],
+      suppressedMatchStages: ['wildcard'],
+    });
+
+    await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+
+    const meta = await readBridgeMeta(groupDir);
+    expect(meta.suppressedMatchStages).toEqual(['wildcard']);
+    // ...while the diagnostics describing THIS run are refreshed, as before.
+    expect(meta.unreadableRepos).toEqual(['app/backend']);
+  });
+
   it('writes nothing at all when there is no previous registry to preserve', async () => {
     initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
 

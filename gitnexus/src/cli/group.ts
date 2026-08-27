@@ -434,10 +434,17 @@ export function registerGroupCommands(program: Command): void {
             // repos — reporting it as crossings understates a fan-out cap the
             // same way #2787's totals did.
             const dropped = (raw as { truncatedRepos?: string[] })?.truncatedRepos ?? [];
+            const reason = (raw as { truncationReason?: string })?.truncationReason;
+            // A floor caused by the flag is not a floor caused by the walk.
+            // Reported together, an operator re-runs the query or repairs a
+            // repo and gets the identical answer, because neither is the fix.
             console.log(
-              dropped.length > 0
-                ? `  risk is a LOWER BOUND — fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
-                : '  risk is a LOWER BOUND — the local impact walk did not complete (every bridge crossing was traversed)',
+              reason === 'suppressed-stage'
+                ? '  risk is a LOWER BOUND — the last sync skipped a matching stage (--exact-only);' +
+                    ' re-run `gitnexus group sync` without it for the complete graph'
+                : dropped.length > 0
+                  ? `  risk is a LOWER BOUND — fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
+                  : '  risk is a LOWER BOUND — the local impact walk did not complete (every bridge crossing was traversed)',
             );
           }
         }
@@ -530,6 +537,7 @@ export function registerGroupCommands(program: Command): void {
           unreadableRepos,
           missingRepos,
           suppressedMatchStages,
+          truncationReason,
         } = raw as {
           contracts: Array<{
             role: string;
@@ -546,6 +554,7 @@ export function registerGroupCommands(program: Command): void {
           }>;
           truncated?: boolean;
           suppressedMatchStages?: string[];
+          truncationReason?: string;
           unreadableRepos?: string[];
           missingRepos?: string[];
         };
@@ -581,7 +590,15 @@ export function registerGroupCommands(program: Command): void {
                 `\n   Re-run \`gitnexus group sync\` without --exact-only for the complete set.`,
             );
           }
-          if (truncated) {
+          // Gated on the REASON, not just the flag. A suppressed stage sets
+          // `truncated` with both repo lists empty, which sent this block down
+          // its else-branch and printed "the last sync did not record which
+          // repos it could read" — a false statement, with the wrong remedy,
+          // about a sync that recorded them fine. The suppressed-stage warning
+          // above already said the true thing. When a repo gap co-occurs the
+          // reason is 'incomplete-sync' (the repo side takes precedence in
+          // `crossRepoCompleteness`), so this block still runs for it.
+          if (truncated && truncationReason !== 'suppressed-stage') {
             // Counts above are a floor, not a census. Name the repos when the
             // registry recorded them, and say so plainly when it did not — a
             // listing that cannot say what it is missing is still incomplete.
