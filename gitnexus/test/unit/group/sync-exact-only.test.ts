@@ -14,7 +14,7 @@
 import { describe, it, expect } from 'vitest';
 import { syncGroup } from '../../../src/core/group/sync.js';
 import { makeWildcardPair } from './fixtures.js';
-import type { GroupConfig, StoredContract } from '../../../src/core/group/types.js';
+import type { GroupConfig } from '../../../src/core/group/types.js';
 
 describe('syncGroup exactOnly gates the wildcard stage', () => {
   const config: GroupConfig = {
