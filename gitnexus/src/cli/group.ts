@@ -197,7 +197,10 @@ export function registerGroupCommands(program: Command): void {
   group
     .command('sync <name>')
     .description('Sync Contract Registry — extract contracts and build cross-links')
-    .option('--exact-only', 'Skip wildcard service matching (exact contract-id match only)')
+    .option(
+      '--exact-only',
+      'Skip wildcard service matching; cross-link on exact contract-id match only (manifest links still apply)',
+    )
     .option('--verbose', 'Show each cross-link detail')
     .option('--json', 'JSON output')
     .action(async (name: string, opts: Record<string, boolean | undefined>) => {

@@ -850,7 +850,7 @@ WHEN TO USE: Discover groups before group_sync. Optional "name" returns a single
   },
   {
     name: 'group_sync',
-    description: `Rebuild the Contract Registry (contracts.json) for a group: extract HTTP contracts, apply manifest links, then cross-link by exact contract-id match followed by wildcard service match.
+    description: `Rebuild the Contract Registry (contracts.json) for a group: extract contracts (HTTP, gRPC, Thrift, topics, includes), apply manifest links, then cross-link by exact contract-id match followed by wildcard service match.
 
 WHEN TO USE: After changing group.yaml or re-indexing member repos.
 
