@@ -355,6 +355,48 @@ async function loadContractRegistryResilient(
   return { ok: true, registry, skippedCorrupt };
 }
 
+/**
+ * Validate a boolean MCP parameter — reject, never coerce.
+ *
+ * `Boolean(params.x)` is the trap this exists to close: the string `"false"`
+ * is truthy, and an LLM caller emitting JSON produces that shape routinely.
+ * While `exactOnly` was inert the coercion was harmless; now that it gates a
+ * matching stage, a coerced `"false"` suppresses that stage and persists a
+ * registry with fewer cross-links than the caller asked for.
+ *
+ * Absent stays absent-as-false (the unchanged default). Anything that is not
+ * a real boolean returns a structured `{ error }`, mirroring
+ * `validateImpactMode` — the established shape for this boundary, and the one
+ * `groupSync`'s other guards already use.
+ */
+function validateBooleanParam(name: string, raw: unknown): { value: boolean } | { error: string } {
+  if (raw === undefined) return { value: false };
+  if (typeof raw === 'boolean') return { value: raw };
+  return {
+    error: `Invalid "${name}": expected true or false, got ${JSON.stringify(raw)}.`,
+  };
+}
+
+/**
+ * Refuse parameters this tool used to accept and no longer does.
+ *
+ * The CLI rejects a removed flag outright because commander errors on an
+ * unknown option. The MCP path had no equivalent, so an agent working from a
+ * cached tool schema kept sending a retired key and was told nothing — the
+ * removal took away discoverability, not acceptance. Naming the parameter is
+ * what lets the caller correct itself on the next call.
+ */
+function rejectRetiredSyncParams(params: Record<string, unknown>): { error: string } | null {
+  for (const retired of ['skipEmbeddings', 'allowStale']) {
+    if (params[retired] !== undefined) {
+      return {
+        error: `"${retired}" was removed and is no longer accepted. Drop it from the call.`,
+      };
+    }
+  }
+  return null;
+}
+
 export class GroupService {
   constructor(private readonly port: GroupToolPort) {}
 
@@ -384,6 +426,13 @@ export class GroupService {
   async groupSync(params: Record<string, unknown>): Promise<unknown> {
     const name = String(params.name ?? '').trim();
     if (!name) return { error: 'name is required' };
+    // Before anything reads the group off disk: the MCP SDK does not enforce a
+    // tool's advertised `inputSchema` and `callTool` is reachable directly, so
+    // this method is the real validation boundary.
+    const exactOnly = validateBooleanParam('exactOnly', params.exactOnly);
+    if ('error' in exactOnly) return exactOnly;
+    const retired = rejectRetiredSyncParams(params);
+    if (retired) return retired;
     const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
     let config: GroupConfig;
     try {
@@ -404,7 +453,7 @@ export class GroupService {
     try {
       result = await syncGroup(config, {
         groupDir,
-        exactOnly: Boolean(params.exactOnly),
+        exactOnly: exactOnly.value,
         verbose: Boolean(params.verbose),
       });
     } catch (err) {

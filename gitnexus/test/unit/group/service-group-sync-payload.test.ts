@@ -302,3 +302,83 @@ describe('group_contracts forwards its structured incompleteness', () => {
     });
   });
 });
+
+/**
+ * What `group_sync` REFUSES to run on.
+ *
+ * The MCP SDK does not enforce a tool's advertised `inputSchema` and
+ * `callTool` is reachable directly, so this service method is the real
+ * validation boundary. Two consequences this block pins:
+ *
+ * - `exactOnly` now gates a matching stage, so `Boolean(params.exactOnly)`
+ *   turned the string `"false"` — a common shape for an LLM caller emitting
+ *   JSON — into `true` and persisted a registry with the wildcard stage
+ *   suppressed. The opposite of what the caller asked for, written to disk.
+ * - `skipEmbeddings` and `allowStale` were retired. The CLI rejects them
+ *   outright; the MCP path accepted and silently dropped them, so an agent
+ *   working from a cached schema was told nothing.
+ *
+ * Every case asserts `syncGroupMock` was NOT called: a rejection that still
+ * runs the sync is the failure mode, and an error string alone cannot tell
+ * the two apart.
+ */
+describe('group_sync rejects malformed and retired parameters', () => {
+  it.each([['false'], ['true'], [0], [1], [null], [{}], [[]]])(
+    'rejects a non-boolean exactOnly (%j) and runs no sync',
+    async (bad) => {
+      const payload = await new GroupService(port).groupSync({ name: GROUP, exactOnly: bad });
+
+      expect(payload).toEqual({
+        error: `Invalid "exactOnly": expected true or false, got ${JSON.stringify(bad)}.`,
+      });
+      expect(syncGroupMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([['skipEmbeddings'], ['allowStale']])(
+    'rejects the retired %s parameter by name and runs no sync',
+    async (retired) => {
+      const payload = await new GroupService(port).groupSync({ name: GROUP, [retired]: true });
+
+      expect(payload).toEqual({
+        error: `"${retired}" was removed and is no longer accepted. Drop it from the call.`,
+      });
+      expect(syncGroupMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[true], [false]])(
+    'passes a real boolean exactOnly (%j) through unchanged',
+    async (ok) => {
+      syncGroupMock.mockResolvedValue(syncResult());
+
+      await new GroupService(port).groupSync({ name: GROUP, exactOnly: ok });
+
+      expect(syncGroupMock).toHaveBeenCalledTimes(1);
+      expect(syncGroupMock.mock.calls[0][1]).toMatchObject({ exactOnly: ok });
+    },
+  );
+
+  it('treats an omitted exactOnly as false', async () => {
+    syncGroupMock.mockResolvedValue(syncResult());
+
+    await new GroupService(port).groupSync({ name: GROUP });
+
+    expect(syncGroupMock.mock.calls[0][1]).toMatchObject({ exactOnly: false });
+  });
+
+  // control: the guards above reject specific shapes, not every call. Without
+  // this, deleting the whole method body and returning an error would pass.
+  it('control: a valid call with only a name still syncs', async () => {
+    syncGroupMock.mockResolvedValue(syncResult({ registryOutcome: 'written' }));
+
+    const payload = (await new GroupService(port).groupSync({ name: GROUP })) as Record<
+      string,
+      unknown
+    >;
+
+    expect(payload.error).toBeUndefined();
+    expect(payload.registryOutcome).toBe('written');
+    expect(syncGroupMock).toHaveBeenCalledTimes(1);
+  });
+});
