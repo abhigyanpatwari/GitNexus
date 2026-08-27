@@ -262,7 +262,8 @@ function registryIdentifies(entries: RegistryEntry[], registryName: string): boo
 async function loadContractRegistryResilient(
   groupDir: string,
 ): Promise<
-  { ok: true; registry: ContractRegistry; skippedCorrupt: number } | { ok: false; error: string }
+  | { ok: true; registry: ContractRegistry; skippedCorrupt: number; suppressionUnreadable: boolean }
+  | { ok: false; error: string }
 > {
   const filePath = path.join(groupDir, 'contracts.json');
   let raw: string;
@@ -328,6 +329,14 @@ async function loadContractRegistryResilient(
   // Bound once: the gate is a full array scan and the ternary below used it twice.
   const recordedUnreadable = recordedRepoList(base.unreadableRepos);
   const recordedSuppressed = recordedMatchStages(base.suppressedMatchStages);
+  // Present-but-unreadable is NOT the same as absent. `recordedMatchStages` is
+  // all-or-nothing, so garbage collapses to `undefined` — and a consumer that
+  // reads `undefined` as "nothing was suppressed" would throw that safety away
+  // and report a registry it could not parse as complete. Absent stays
+  // legitimate (a registry predating the field); only a value that was there
+  // and unreadable forces the answer to a floor.
+  const suppressionUnreadable =
+    base.suppressedMatchStages !== undefined && recordedSuppressed === undefined;
   const registry: ContractRegistry = {
     version: typeof base.version === 'number' ? base.version : 0,
     generatedAt: typeof base.generatedAt === 'string' ? base.generatedAt : '',
@@ -357,7 +366,7 @@ async function loadContractRegistryResilient(
     crossLinks,
   };
 
-  return { ok: true, registry, skippedCorrupt };
+  return { ok: true, registry, skippedCorrupt, suppressionUnreadable };
 }
 
 /**
@@ -377,9 +386,27 @@ async function loadContractRegistryResilient(
 function validateBooleanParam(name: string, raw: unknown): { value: boolean } | { error: string } {
   if (raw === undefined) return { value: false };
   if (typeof raw === 'boolean') return { value: raw };
-  return {
-    error: `Invalid "${name}": expected true or false, got ${JSON.stringify(raw)}.`,
-  };
+  return { error: `Invalid "${name}": expected true or false, got ${describeValue(raw)}.` };
+}
+
+/**
+ * Render an untrusted value for an error message, without throwing.
+ *
+ * `JSON.stringify` is the right shape here — it distinguishes the string
+ * `"false"` from the boolean, which is the whole point of the message — but it
+ * throws on a BigInt and on a cyclic object. A validator whose ERROR path can
+ * throw does not return the structured `{ error }` it promises: the caller gets
+ * a rejected promise instead of feedback it can act on, and `callTool` is
+ * reachable directly, so neither input is hypothetical.
+ */
+function describeValue(raw: unknown): string {
+  try {
+    const rendered = JSON.stringify(raw);
+    // `undefined`, a function, or a symbol serialize to `undefined`.
+    return rendered ?? String(raw);
+  } catch {
+    return typeof raw === 'bigint' ? `${raw}n` : Object.prototype.toString.call(raw);
+  }
 }
 
 /**
@@ -527,7 +554,11 @@ export class GroupService {
       suppressedMatchStages: registry.suppressedMatchStages,
       // An unrecorded `unreadableRepos` means this listing cannot say which
       // repos the sync failed to read — so it cannot claim to be complete.
-      provenanceUnknown: unreadableRepos === undefined,
+      // Either kind of unreadable provenance forces the floor: a sync that
+      // could not say which repos it read, or a suppression record that was
+      // present and could not be parsed. Reading the second as "nothing was
+      // suppressed" would report an unparseable registry as complete.
+      provenanceUnknown: unreadableRepos === undefined || loaded.suppressionUnreadable,
       // A contract LISTING declares no scope to intersect with: it is the whole
       // registry, so every configured repo is in scope by construction. The
       // `type`/`repo`/`unmatchedOnly` filters above narrow which rows are shown,

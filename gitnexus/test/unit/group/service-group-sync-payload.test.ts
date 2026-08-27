@@ -87,6 +87,15 @@ const syncResult = (overrides: Partial<SyncResult> = {}): SyncResult => ({
   ...overrides,
 });
 
+/**
+ * `syncGroupMock` is declared zero-arg, so `mock.calls` is typed as an array of
+ * the empty tuple and indexing `[1]` does not type-check. The runtime call
+ * genuinely has two arguments (config, options); this reads the second without
+ * restating a signature the rest of the suite does not need.
+ */
+const syncOptsOf = (call: number): Record<string, unknown> =>
+  (syncGroupMock.mock.calls[call] as unknown as unknown[])[1] as Record<string, unknown>;
+
 const CONTRACT = makeContract({ repo: 'app/backend' });
 const CROSS_LINK: CrossLink = {
   contractId: CONTRACT.contractId,
@@ -353,7 +362,30 @@ describe('group_sync rejects malformed and retired parameters', () => {
 
     expect(payload.error).toBeUndefined();
     expect(syncGroupMock).toHaveBeenCalledTimes(1);
-    expect(syncGroupMock.mock.calls[0][1]).not.toHaveProperty('verbose');
+    expect(syncOptsOf(0)).not.toHaveProperty('verbose');
+  });
+
+  // The error path must not throw. `JSON.stringify` — the right renderer here,
+  // because it distinguishes the string "false" from the boolean — throws on a
+  // BigInt and on a cyclic object, and `callTool` is reachable directly, so a
+  // validator that rejects instead of returning `{ error }` breaks its own
+  // contract on inputs a caller can actually send.
+  it('returns a structured error rather than throwing on an unserializable value', async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    const fromBigInt = (await new GroupService(port).groupSync({
+      name: GROUP,
+      exactOnly: 1n,
+    })) as Record<string, unknown>;
+    const fromCyclic = (await new GroupService(port).groupSync({
+      name: GROUP,
+      exactOnly: cyclic,
+    })) as Record<string, unknown>;
+
+    expect(String(fromBigInt.error)).toContain('Invalid "exactOnly"');
+    expect(String(fromCyclic.error)).toContain('Invalid "exactOnly"');
+    expect(syncGroupMock).not.toHaveBeenCalled();
   });
 
   it.each([['skipEmbeddings'], ['allowStale']])(
@@ -376,7 +408,7 @@ describe('group_sync rejects malformed and retired parameters', () => {
       await new GroupService(port).groupSync({ name: GROUP, exactOnly: ok });
 
       expect(syncGroupMock).toHaveBeenCalledTimes(1);
-      expect(syncGroupMock.mock.calls[0][1]).toMatchObject({ exactOnly: ok });
+      expect(syncOptsOf(0)).toMatchObject({ exactOnly: ok });
     },
   );
 
@@ -385,7 +417,7 @@ describe('group_sync rejects malformed and retired parameters', () => {
 
     await new GroupService(port).groupSync({ name: GROUP });
 
-    expect(syncGroupMock.mock.calls[0][1]).toMatchObject({ exactOnly: false });
+    expect(syncOptsOf(0)).toMatchObject({ exactOnly: false });
   });
 
   // control: the guards above reject specific shapes, not every call. Without

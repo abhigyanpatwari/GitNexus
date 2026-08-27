@@ -23,13 +23,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { syncGroup } from '../../../src/core/group/sync.js';
 import { makeWildcardPair } from './fixtures.js';
-import { crossRepoCompleteness } from '../../../src/core/group/completeness.js';
+import {
+  crossRepoCompleteness,
+  type CrossRepoCompleteness,
+} from '../../../src/core/group/completeness.js';
 import { GROUP_IMPACT_TRUNCATION_REASONS } from '../../../src/core/group/types.js';
-import type {
-  GroupConfig,
-  StoredContract,
-  ContractRegistry,
-} from '../../../src/core/group/types.js';
+import type { GroupConfig, ContractRegistry } from '../../../src/core/group/types.js';
 
 const config: GroupConfig = {
   version: 1,
@@ -74,6 +73,16 @@ const run = (exactOnly: boolean, opts: { write: boolean } = { write: false }) =>
 
 const readRegistry = (): ContractRegistry =>
   JSON.parse(fs.readFileSync(path.join(groupDir, 'contracts.json'), 'utf8')) as ContractRegistry;
+
+/**
+ * `CrossRepoCompleteness` is a discriminated union: `truncationReason` and
+ * `riskEpistemic` exist only on the `truncated: true` arm, so reading them off
+ * the union directly does not type-check. These read them positionally, the
+ * same way this suite reads a preserved key its type no longer carries.
+ */
+const fieldOf = (out: CrossRepoCompleteness, key: string): unknown =>
+  (out as unknown as Record<string, unknown>)[key];
+const reasonOf = (out: CrossRepoCompleteness): unknown => fieldOf(out, 'truncationReason');
 
 describe('a sync records the matching stages it was told to skip', () => {
   it('names the wildcard stage when exactOnly suppressed it', async () => {
@@ -126,8 +135,8 @@ describe('cross-repo completeness reflects a suppressed stage', () => {
     });
 
     expect(out.truncated).toBe(true);
-    expect(out.truncationReason).toBe('suppressed-stage');
-    expect(out.riskEpistemic).toBe('lower-bound');
+    expect(reasonOf(out)).toBe('suppressed-stage');
+    expect(fieldOf(out, 'riskEpistemic')).toBe('lower-bound');
   });
 
   // control: without a suppressed stage the same clean input is complete.
@@ -142,7 +151,7 @@ describe('cross-repo completeness reflects a suppressed stage', () => {
     });
 
     expect(out.truncated).toBe(false);
-    expect(out.truncationReason).toBeUndefined();
+    expect(reasonOf(out)).toBeUndefined();
   });
 
   // An unreadable repo is the more serious gap and its remedy differs, so it
@@ -157,7 +166,7 @@ describe('cross-repo completeness reflects a suppressed stage', () => {
     });
 
     expect(out.truncated).toBe(true);
-    expect(out.truncationReason).toBe('incomplete-sync');
+    expect(reasonOf(out)).toBe('incomplete-sync');
   });
 });
 
@@ -175,5 +184,44 @@ describe('the suppressed-stage reason is reachable, not just documented', () => 
     // If a future change drops it from the union, the tool description guard
     // would still pass while every consumer lost the value.
     expect(GROUP_IMPACT_TRUNCATION_REASONS).toContain('suppressed-stage');
+  });
+});
+
+/**
+ * An UNREADABLE suppression record must not read as "nothing was suppressed".
+ *
+ * `recordedMatchStages` is all-or-nothing on purpose: garbage collapses to
+ * `undefined`. A consumer that then treats `undefined` as an empty measurement
+ * throws that safety away and reports a registry it could not parse as
+ * complete. Absent stays legitimate — a registry written before the field
+ * existed has no opinion and should not be forced to a floor.
+ */
+describe('an unreadable suppression record fails closed', () => {
+  it('does not report a registry it could not parse as complete', () => {
+    const garbage = crossRepoCompleteness({
+      unreadableRepos: [],
+      missingRepos: [],
+      suppressedMatchStages: [],
+      // What `loadContractRegistryResilient` now passes when the stored value
+      // was present and could not be read.
+      provenanceUnknown: true,
+      inScope: () => true,
+    });
+
+    expect(garbage.truncated).toBe(true);
+    expect(reasonOf(garbage)).toBe('incomplete-sync');
+  });
+
+  // control: an absent record is not an unreadable one. Without this, forcing
+  // every pre-existing registry to a floor would pass the case above.
+  it('control: a clean registry with nothing recorded stays complete', () => {
+    const clean = crossRepoCompleteness({
+      unreadableRepos: [],
+      missingRepos: [],
+      provenanceUnknown: false,
+      inScope: () => true,
+    });
+
+    expect(clean.truncated).toBe(false);
   });
 });
