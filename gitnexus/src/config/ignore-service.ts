@@ -107,7 +107,6 @@ const DEFAULT_IGNORE_LIST = new Set([
   // remains covered by .gitignore/.gitnexusignore and the unambiguous names.
   'monaco-workers', // Monaco editor web-worker bundles generated for browser runtime
   '.terraform',
-  '.serverless',
 
   // Documentation (optional - might want to keep)
   // 'docs',
