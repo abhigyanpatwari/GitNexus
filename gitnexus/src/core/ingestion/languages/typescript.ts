@@ -126,10 +126,13 @@ import {
 } from './javascript/index.js';
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
+import { extractNestRoutes } from '../route-extractors/nest.js';
+import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
   ...extractDispatchGuardRoutes(...args),
   ...extractDataRouteTableRoutes(...args),
+  ...extractNestRoutes(...args),
 ];
 
 /**
@@ -418,6 +421,7 @@ export const typescriptProvider = defineLanguage({
     extractFunctionName: tsExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
+  definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createClassExtractor(typescriptClassConfig),
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
@@ -469,7 +473,7 @@ export const typescriptProvider = defineLanguage({
 
 export const javascriptProvider = defineLanguage({
   id: SupportedLanguages.JavaScript,
-  extensions: ['.js', '.jsx'],
+  extensions: ['.js', '.jsx', '.mjs', '.cjs'],
   entryPointPatterns: [/^use[A-Z]/],
   astFrameworkPatterns: [
     {
@@ -505,6 +509,7 @@ export const javascriptProvider = defineLanguage({
     extractFunctionName: tsExtractFunctionName,
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
+  definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createClassExtractor(javascriptClassConfig),
   // ── JSDoc → description (issue #2270). An exported decl is captured as the
   //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──

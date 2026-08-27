@@ -25,16 +25,29 @@
 
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import { getGroupDir } from './storage.js';
-import { ensureBridgeReady, MAX_SUPPORTED_CROSS_DEPTH } from './cross-impact.js';
+import {
+  bridgeProvenanceUnknown,
+  crossRepoCompleteness,
+  ensureBridgeReady,
+  MAX_SUPPORTED_CROSS_DEPTH,
+} from './cross-impact.js';
+import type { CrossRepoCompleteness } from './completeness.js';
+import { truncationFields } from './completeness.js';
 import { compareCodeUnits } from '../../lib/utils.js';
 import { closeBridgeDb, queryBridge } from './bridge-db.js';
+import { repoInSubgroup } from './group-path-utils.js';
 import type {
   GroupPdgFlowHop,
   GroupRepoHandle,
   GroupSymbolResolution,
   GroupToolPort,
 } from './service.js';
-import type { BridgeHandle, GroupConfig } from './types.js';
+import type {
+  BridgeHandle,
+  BridgeMeta,
+  GroupConfig,
+  GroupImpactTruncationReason,
+} from './types.js';
 
 // ── Result types (discriminated on `status`) ─────────────────────────────
 
@@ -77,7 +90,29 @@ export interface GroupTraceEndpoint {
   repo: string;
 }
 
-export interface GroupTraceOkResult {
+/**
+ * The incompleteness vocabulary, verbatim from `GroupImpactResult` (KTD10).
+ *
+ * A cross-repo trace and a cross-repo impact can both be cut short by the same
+ * two kinds of cause — a runtime limit inside this walk, or a bridge that never
+ * held part of the group — and an agent must not have to learn a second
+ * vocabulary (or parse a `notes` string) to tell "no path exists" from "we
+ * could not have seen the path". Every field here means exactly what it means
+ * on `GroupImpactResult`; `notes` stays a human-readable ADDITION to them,
+ * never the machine-readable channel.
+ */
+export interface GroupTraceCompleteness {
+  /** True when this answer is a floor rather than a verdict. */
+  truncated?: boolean;
+  /** Why, when `truncated` — runtime limit ('partial'/'timeout') before structure. */
+  truncationReason?: GroupImpactTruncationReason;
+  /** Set with `truncated`: the answer under-reports, it never over-reports. */
+  riskEpistemic?: 'lower-bound';
+  /** In-scope repos absent from the bridge; omitted when none were measured. */
+  truncatedRepos?: string[];
+}
+
+export interface GroupTraceOkResult extends GroupTraceCompleteness {
   status: 'ok';
   group: string;
   from: GroupTraceEndpoint;
@@ -89,7 +124,6 @@ export interface GroupTraceOkResult {
   edges: TraceEdge[];
   /** Present only when PDG enrichment ran for at least one segment. */
   dataFlow?: SegmentDataFlow[];
-  truncated?: boolean;
   notes: string[];
 }
 
@@ -101,23 +135,23 @@ export interface GroupTraceCandidate {
   startLine: number;
 }
 
-export interface GroupTraceNotFoundResult {
+/**
+ * `truncated: true` here means the answer is NOT authoritative — either the
+ * crossing cap (`MAX_CROSSINGS_TO_TRY`) was hit so a connecting ContractLink
+ * ranked beyond it may have been skipped, or the bridge itself never held part
+ * of the group. Both read as "unknown", not as "no path exists";
+ * `truncationReason` says which.
+ */
+export interface GroupTraceNotFoundResult extends GroupTraceCompleteness {
   status: 'not_found';
   group: string;
   role?: 'from' | 'to';
   query?: string;
-  /**
-   * True when the answer is NOT authoritative: the crossing cap
-   * (`MAX_CROSSINGS_TO_TRY`) was hit, so a connecting ContractLink ranked beyond
-   * the cap may have been skipped. A consumer should treat this as "unknown",
-   * not "no path exists".
-   */
-  truncated?: boolean;
   notes: string[];
   suggestion?: string;
 }
 
-export interface GroupTraceAmbiguousResult {
+export interface GroupTraceAmbiguousResult extends GroupTraceCompleteness {
   status: 'ambiguous';
   group: string;
   role: 'from' | 'to';
@@ -186,6 +220,54 @@ export const TRACE_NOTES = {
     'symbolUid, so the specific destination cannot be determined (file-level, not symbol-precise). ' +
     'The candidates are listed; trace from the exact calling function or pass `to_uid`.',
 } as const;
+
+/**
+ * Fold this bridge's completeness into the runtime-truncation flag a trace call
+ * site already computed, and answer in the shared vocabulary.
+ *
+ * Precedence mirrors `runGroupImpact`: a runtime limit wins the reason, because
+ * it is the cause the caller can act on (narrow the query, raise maxDepth),
+ * while `'incomplete-sync'` needs a different remedy — `gitnexus group sync` —
+ * and would otherwise mask it.
+ *
+ * Returns `{}` — not `{ truncated: false }` — when the answer is complete, so a
+ * clean trace result keeps the exact shape it has always had.
+ */
+function traceCompleteness(
+  bridge: CrossRepoCompleteness,
+  runtimeTruncated: boolean,
+): GroupTraceCompleteness {
+  const repos = bridge.incompleteRepos.length > 0 ? { truncatedRepos: bridge.incompleteRepos } : {};
+  // Through `truncationFields`, not hand-written: `riskEpistemic` must follow
+  // `truncated` mechanically, and a third writer of that pair is how the
+  // invariant drifts (#2787). The bridge branch re-spreads the helper's own
+  // output rather than naming its fields.
+  if (runtimeTruncated) return { ...truncationFields(true, 'partial'), ...repos };
+  if (!bridge.truncated) return {};
+  const { incompleteRepos: _incompleteRepos, ...fields } = bridge;
+  return { ...fields, ...repos };
+}
+
+/**
+ * The trace's declared scope for `crossRepoCompleteness`.
+ *
+ * A symbol-to-symbol trace asks about exactly two repos, so an unreadable third
+ * member cannot make its answer a floor. A DESTINATION trace declares no `to`
+ * at all — the call may land in any member — so every repo is in scope there,
+ * which is why the predicate is built per call site rather than derived from
+ * the endpoints inside the helper.
+ */
+function bridgeCompletenessFor(
+  meta: BridgeMeta,
+  inScope: (repoPath: string) => boolean,
+): CrossRepoCompleteness {
+  return crossRepoCompleteness({
+    unreadableRepos: meta.unreadableRepos,
+    missingRepos: meta.missingRepos,
+    provenanceUnknown: bridgeProvenanceUnknown(meta),
+    inScope,
+  });
+}
 
 /** Repo-relative path equality, tolerant of a leading "./" / "/" or a repo prefix. */
 function sameFile(a: string, b: string): boolean {
@@ -873,6 +955,23 @@ async function stitchCrossRepo(
   if (p.pdg) notes.push(TRACE_NOTES.pdgRequested);
 
   try {
+    // Inside the `try`, like `runGroupImpact`'s equivalent: the lease taken by
+    // `ensureBridgeReady` is released by this block's `finally` and nowhere
+    // else, so anything computed between the lease and the `try` is work whose
+    // every throw would strand a refcount the cached handle never gets back.
+    //
+    // Declared scope = the two endpoint repos. Whether either of them is a repo
+    // this bridge could not read decides whether "no ContractLink connects
+    // them" is a verdict or a floor.
+    const bridge = bridgeCompletenessFor(
+      bridgePrep.meta,
+      // `repoInSubgroup(..., exact)` rather than `===`: it normalizes separators
+      // and strips trailing slashes, which bare equality does not, so the same
+      // group.yaml spelling cannot be in scope for impact and out of scope here.
+      (repoPath) =>
+        repoInSubgroup(repoPath, fromEp.member.repoPath, true) ||
+        repoInSubgroup(repoPath, toEp.member.repoPath, true),
+    );
     const { crossings, truncated: crossingsTruncated } = await listCrossingsBetween(
       handle,
       fromEp.member.repoPath,
@@ -883,6 +982,10 @@ async function stitchCrossRepo(
       return {
         status: 'not_found',
         group: p.name,
+        // No crossings at all is exactly the answer a bridge that never held an
+        // endpoint's repo produces, so it is the one that most needs the floor
+        // marker. (Nothing was capped: there were zero rows to cap.)
+        ...traceCompleteness(bridge, false),
         notes,
         suggestion:
           'The endpoints live in different repos with no ContractLink between them. ' +
@@ -1016,6 +1119,13 @@ async function stitchCrossRepo(
         hopCount: edges.length,
         hops: [...hopsA, ...hopsB],
         edges,
+        // A found path is still an answer from this bridge: if its provenance is
+        // unknown, or an endpoint's repo never made it in, the path may be stale
+        // and it is certainly not the only one. An incompleteness channel that
+        // fires only on the empty answer teaches an agent that a non-empty one
+        // is always complete. The crossing cap is NOT folded in here — a path
+        // that connected is not a capped search — so this site passes `false`.
+        ...traceCompleteness(bridge, false),
         notes,
         ...(dataFlow.length > 0 ? { dataFlow } : {}),
       };
@@ -1028,7 +1138,7 @@ async function stitchCrossRepo(
     return {
       status: 'not_found',
       group: p.name,
-      ...(crossingsTruncated ? { truncated: true } : {}),
+      ...traceCompleteness(bridge, crossingsTruncated),
       notes,
       suggestion: crossingsTruncated
         ? `No connecting crossing among the ${MAX_CROSSINGS_TO_TRY} highest-confidence ` +
@@ -1099,6 +1209,12 @@ async function stitchToDestination(
   if (p.crossDepthClamped) notes.push(TRACE_NOTES.crossDepthClamped);
 
   try {
+    // Inside the `try` for the lease reason above `stitchCrossRepo`'s copy. A
+    // destination trace declares NO `to`: the call may land in any member, so
+    // every repo is in the query's scope and no incomplete one can be filtered
+    // out. An unreadable provider repo is precisely how "no outgoing
+    // ContractLink leaves this repo" becomes a wrong answer, not an empty one.
+    const bridge = bridgeCompletenessFor(bridgePrep.meta, () => true);
     const { crossings, truncated } = await listCrossingsFrom(handle, fromEp.member.repoPath);
     if (crossings.length === 0) {
       notes.push(TRACE_NOTES.destinationNoLink);
@@ -1107,6 +1223,8 @@ async function stitchToDestination(
         group: p.name,
         role: 'to',
         query: p.from_uid ?? p.from,
+        // Zero rows to cap, so only the bridge's own completeness can speak.
+        ...traceCompleteness(bridge, false),
         notes,
         suggestion: 'Pass a `to` symbol for a symbol-to-symbol trace, or run group_sync.',
       };
@@ -1224,7 +1342,9 @@ async function stitchToDestination(
         hopCount: edgesA.length + 1,
         hops: [...hopsA, providerHop],
         edges: [...edgesA, boundaryEdge],
-        ...(truncated ? { truncated: true } : {}),
+        // The cap already marked this result; the bridge's completeness folds
+        // into the same fields rather than beside them.
+        ...traceCompleteness(bridge, truncated),
         notes: resultNotes,
       };
     };
@@ -1240,6 +1360,8 @@ async function stitchToDestination(
         group: p.name,
         role: 'to',
         candidates: candidatesFrom(precise),
+        // The candidate LIST is what an incomplete bridge shortens here.
+        ...traceCompleteness(bridge, truncated),
         notes: [...notes, TRACE_NOTES.destinationMultiple],
       };
     }
@@ -1255,6 +1377,7 @@ async function stitchToDestination(
         group: p.name,
         role: 'to',
         candidates: candidatesFrom(fileLevel),
+        ...traceCompleteness(bridge, truncated),
         notes: [...notes, TRACE_NOTES.destinationAmbiguousFile],
       };
     }
@@ -1265,7 +1388,7 @@ async function stitchToDestination(
       group: p.name,
       role: 'to',
       query: p.from_uid ?? p.from,
-      ...(truncated ? { truncated: true } : {}),
+      ...traceCompleteness(bridge, truncated),
       notes,
       suggestion: 'Trace from the function that issues the HTTP request, or pass a `to` symbol.',
     };

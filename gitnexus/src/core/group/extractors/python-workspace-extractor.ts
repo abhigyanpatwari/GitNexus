@@ -2,7 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
-import { shouldIgnorePath, loadIgnoreRules } from '../../../config/ignore-service.js';
+import {
+  shouldIgnorePath,
+  loadIgnoreRules,
+  isHardcodedIgnoredDirectoryAtPath,
+} from '../../../config/ignore-service.js';
 
 import { logger } from '../../logger.js';
 interface PythonPackageMeta {
@@ -161,9 +165,11 @@ async function findPythonFiles(repoPath: string): Promise<string[]> {
     for (const entry of entries) {
       const childRel = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
+        const childPath = path.join(dir, entry.name);
         if (shouldIgnorePath(childRel)) continue;
+        if (isHardcodedIgnoredDirectoryAtPath(repoPath, childPath)) continue;
         if (ig && ig.ignores(childRel + '/')) continue;
-        await walk(path.join(dir, entry.name), childRel);
+        await walk(childPath, childRel);
       } else if (entry.name.endsWith('.py')) {
         if (shouldIgnorePath(childRel)) continue;
         if (ig && ig.ignores(childRel)) continue;

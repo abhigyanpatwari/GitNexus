@@ -39,12 +39,55 @@ import type { CfgVisitor } from './cfg/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
+import type {
+  ModuleConstants,
+  Operand,
+  RepoConstants,
+} from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
 export type CaptureMap = Record<string, SyntaxNode | undefined>;
+
+export interface DefinitionPropertiesContext {
+  readonly nodeLabel: NodeLabel;
+  readonly nodeName: string;
+  readonly definitionNode: SyntaxNode;
+  readonly parsedImports: readonly ParsedImport[];
+  readonly isExported: boolean;
+}
+
+export type DefinitionPropertiesExtractor = (
+  context: DefinitionPropertiesContext,
+) => Readonly<Record<string, unknown>> | undefined;
+
+/** Run optional provider enrichment without allowing one hook failure to drop
+ * the rest of the worker's language batch. */
+export function runDefinitionPropertiesExtractor(
+  extractor: DefinitionPropertiesExtractor,
+  context: DefinitionPropertiesContext,
+  onError: (error: unknown) => void,
+): Readonly<Record<string, unknown>> | undefined {
+  try {
+    return extractor(context);
+  } catch (error) {
+    onError(error);
+    return undefined;
+  }
+}
+
+/** Provider metadata is additive; graph identity and source-location fields
+ * supplied by the worker remain authoritative. */
+export function mergeCanonicalDefinitionProperties<
+  TCanonical extends Readonly<Record<string, unknown>>,
+>(
+  providerProperties: Readonly<Record<string, unknown>>,
+  canonicalProperties: TCanonical,
+): Record<string, unknown> & TCanonical {
+  return { ...providerProperties, ...canonicalProperties } as Record<string, unknown> & TCanonical;
+}
 
 // ── Strategy tag types ─────────────────────────────────────────────────────
 // NOTE: `MroStrategy` is defined in `gitnexus-shared` and re-exported above
@@ -64,6 +107,25 @@ export interface AstFrameworkPatternConfig {
  * Required fields must be explicitly set; optional fields have defaults
  * applied by defineLanguage().
  */
+/**
+ * Should the parse worker run {@link LanguageProviderConfig.extractModuleConstants}
+ * on this file?
+ *
+ * Exported so the DECISION is testable without booting a worker. It encodes the
+ * one rule that is easy to get backwards: a provider that declares no
+ * `moduleConstantHeuristic` harvests unconditionally. Writing the gate as
+ * `provider.moduleConstantHeuristic?.(content)` reads `undefined` as "skip" and
+ * silently disables the hook for every provider without a heuristic — which is
+ * exactly how Python's already-shipped harvest was turned off (#2391/#2980).
+ */
+export function shouldHarvestModuleConstants(
+  provider: Pick<LanguageProvider, 'extractModuleConstants' | 'moduleConstantHeuristic'>,
+  content: string,
+): boolean {
+  if (!provider.extractModuleConstants) return false;
+  return !provider.moduleConstantHeuristic || provider.moduleConstantHeuristic(content);
+}
+
 interface LanguageProviderConfig {
   // ── Identity ──────────────────────────────────────────────────────
   readonly id: SupportedLanguages;
@@ -252,6 +314,10 @@ interface LanguageProviderConfig {
    *  constant, and static declarations. Produces VariableInfo with type, visibility,
    *  isConst, isStatic, isMutable metadata. Default: undefined (no variable extraction). */
   readonly variableExtractor?: VariableExtractor;
+  /** Add language-owned, structured properties to a definition node. Values
+   *  cross the worker boundary and must therefore be structured-clone-safe.
+   *  Shared ingestion code treats these properties as opaque. */
+  readonly definitionPropertiesExtractor?: DefinitionPropertiesExtractor;
   /** Class/type extractor for deriving canonical qualified names for class-like symbols.
    *  Uses the same provider-driven strategy pattern as method/field extraction so
    *  namespace/package/module rules stay language-specific. */
@@ -335,6 +401,58 @@ interface LanguageProviderConfig {
     tree: Parser.Tree,
     filePath: string,
   ) => SharedSpringType[];
+
+  /**
+   * Harvest this file's module-level string constants (#2391 core, #2980 Java
+   * parity) into the language-agnostic {@link ModuleConstants} shape, so the
+   * parse phase can resolve non-literal decorator route paths cross-file.
+   *
+   * The worker calls this when BOTH hold:
+   *  - the provider declares no `moduleConstantHeuristic`, or the one it
+   *    declares matched — syntax-driven, e.g. a `static final String` field or
+   *    a constants-bearing import; NEVER a class-name pattern like
+   *    `*Constants`, which silently drops route constants living in classes
+   *    named e.g. `ApiPaths`/`Routes`, and
+   *  - the extraction yields something resolvable (a literal, an expression, or
+   *    an import binding), keeping the aggregate bounded on large repos.
+   *
+   * Default: undefined (no constant harvest; non-literal route paths of this
+   * language floor to skip).
+   */
+  readonly extractModuleConstants?: (tree: Parser.Tree) => ModuleConstants;
+
+  /**
+   * Cheap content heuristic deciding whether the worker should run
+   * {@link extractModuleConstants} on a file. Guards the harvest cost on huge
+   * repos: files that cannot contribute (no constant-bearing syntax) are not
+   * walked. Must be syntax-driven (field/import shape), not identifier
+   * pattern-matching on class names.
+   *
+   * Default: undefined — harvest EVERY file of this language. A gate is opt-in
+   * because getting it wrong silently drops routes that already resolve, and a
+   * missed gate only costs time. Declare one only where the cost bites (Java's
+   * Maven monorepos) and only after checking it against every shape
+   * {@link extractModuleConstants} accepts.
+   */
+  readonly moduleConstantHeuristic?: (content: string) => boolean;
+
+  /**
+   * Fold one file's non-literal route-path operand list
+   * (`routePathExpr`/`routePathOperands` of an `ExtractedDecoratorRoute`)
+   * against the repo-wide, file-path-keyed constant map, or null when it cannot
+   * be fully folded (skip floor — never a phantom path). Languages whose
+   * qualified refs resolve through class imports (`Outer.CONST`,
+   * `com.example.ApiPaths.USERS`) need this hook because the shared fold has no
+   * notion of qualified names; Python's bare-name refs use the shared default.
+   *
+   * Default: undefined (the parse phase falls back to the shared
+   * language-agnostic operand fold).
+   */
+  readonly foldRoutePathOperands?: (
+    filePath: string,
+    operands: readonly Operand[],
+    repo: RepoConstants,
+  ) => string | null;
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.

@@ -97,7 +97,20 @@ export interface ContractRegistry {
   version: number;
   generatedAt: string;
   repoSnapshots: Record<string, RepoSnapshot>;
+  /** Configured repos with no entry in the registry. */
   missingRepos: string[];
+  /**
+   * Configured repos that ARE registered but that this sync could not extract
+   * from — the index would not open (version skew, lock, corruption), or an
+   * extractor threw partway through. The two are one bucket because the
+   * consequence is one thing: NONE of that repo's contracts are in this
+   * registry. Distinct from `missingRepos`, which is "no entry in the
+   * registry at all" and needs a different answer from the operator.
+   *
+   * Optional so a registry written before this field existed still parses —
+   * absent means "not recorded", not "none".
+   */
+  unreadableRepos?: string[];
   contracts: StoredContract[];
   crossLinks: CrossLink[];
 }
@@ -114,8 +127,24 @@ export interface RepoHandle {
   storagePath: string;
 }
 
-/** Why local impact or fan-out stopped early (e.g. wall-clock budget exhausted). */
-export type GroupImpactTruncationReason = 'timeout' | 'partial';
+/**
+ * Why local impact or fan-out stopped early (e.g. wall-clock budget exhausted).
+ *
+ * `'timeout'` and `'partial'` are runtime limits — the same query can succeed on
+ * a retry. `'incomplete-sync'` is structural: the bridge itself was built from a
+ * sync that could not read every configured repo, so those repos' contracts are
+ * absent from every query against it until `gitnexus group sync` succeeds.
+ *
+ * A runtime array rather than a bare type union: every value here has to be
+ * explained on the agent-facing surface that returns it, and only an enumerable
+ * list lets a guard test assert that. A test that hand-lists the members passes
+ * forever once a fourth is added — which is the exact drift the guard exists to
+ * catch, so the list an agent is promised and the list the code can emit have
+ * to come from the same place.
+ */
+export const GROUP_IMPACT_TRUNCATION_REASONS = ['timeout', 'partial', 'incomplete-sync'] as const;
+
+export type GroupImpactTruncationReason = (typeof GROUP_IMPACT_TRUNCATION_REASONS)[number];
 
 export interface GroupImpactResult {
   local: unknown;
@@ -219,5 +248,110 @@ export interface BridgeHandle {
 export interface BridgeMeta {
   version: number;
   generatedAt: string;
+  /**
+   * Size and mtime of the `bridge.lbug` this metadata was written for, so a
+   * reader can tell whether the two still belong together.
+   *
+   * `writeBridge` replaces the database and writes this file as two operations;
+   * a sync that stops between them leaves the PREVIOUS sync's metadata beside a
+   * new database, and `runGroupImpact` reads completeness from that metadata.
+   * Stamping the pair is what lets `bridgeMetaMatchesFile` reject the mismatch
+   * without anything having to be deleted — deleting the old metadata up front
+   * would lose it permanently on a swap that fails with the old database still
+   * in place, which is a normal Windows outcome when a read-only handle is held.
+   *
+   * Optional: metadata written before this existed carries no stamp. Such a
+   * file is not waved through — `bridgeMetaMatchesFile` falls back to comparing
+   * the two files' modification times, since a successful write orders the
+   * database rename before the metadata write and a database NEWER than the
+   * metadata beside it therefore cannot be the one it describes.
+   *
+   * That fallback proves WRITE ORDER, not provenance, and is wrong in both
+   * directions — a non-monotonic clock can make a mis-paired set read as
+   * ordered, and any copy or restore that rewrites the database's times after
+   * the metadata's demotes an intact legacy pair to a lower bound until the
+   * next sync re-stamps it. A stamped pair never reaches that fallback, which
+   * is the reason to prefer stamping over widening the heuristic. Both
+   * directions are spelled out at `bridgeMetaMatchesFile`.
+   */
+  bridgeSize?: number;
+  bridgeMtimeMs?: number;
+  /**
+   * Reader-side only: true when `meta.json` parsed but one of its repo lists
+   * held a value that was not a list of repo paths.
+   *
+   * NEVER PERSISTED. `readBridgeMeta` sets it to describe what it found in the
+   * file; `writeBridgeMeta`'s only caller builds a fresh literal, so it cannot
+   * round-trip back to disk. It lives on this interface rather than on a
+   * reader-only subtype so that `readBridgeMeta` keeps the exact signature
+   * every caller already compiles against.
+   *
+   * The unusable value is dropped rather than normalized, so `missingRepos: []`
+   * on such a result is inert filler — this flag, not the empty list, is what
+   * says the bridge's provenance is unknown.
+   */
+  repoListsUnreadable?: boolean;
+  /**
+   * Reader-side only: did this metadata pair with the `bridge.lbug` beside it,
+   * measured BEFORE anything opened that database?
+   *
+   * NEVER PERSISTED, for the same reason as `repoListsUnreadable`.
+   *
+   * The measurement has to happen before the open, and the answer has to be
+   * carried rather than recomputed. `runGroupImpact` and `runGroupTrace` open
+   * the bridge and only then ask about provenance, so a platform where a
+   * read-only open advances the database's mtime would fail every unstamped
+   * pair the moment it was read — turning back-compat for pre-stamp bridges
+   * into a repo-wide "everything is a lower bound". Whether any given
+   * LadybugDB build and OS does that is not something a reader should have to
+   * know, and it cannot be observed on Windows, where the in-process
+   * write→read reopen this would need is a documented limitation. Ordering the
+   * check ahead of the open makes the question moot on every platform instead
+   * of true on the ones that happen to be testable.
+   */
+  pairedWithDatabase?: boolean;
+  /**
+   * PERSISTED, unlike the two fields above: the writer of this metadata could
+   * not establish that it describes the `bridge.lbug` beside it, and no reader
+   * may conclude otherwise from the files alone.
+   *
+   * Written by `refreshPreservedBridgeMeta` — the preserve path in `syncGroup`,
+   * which refreshes the diagnostic lists of a bridge it deliberately does NOT
+   * rebuild. That refresh rewrites `meta.json` ATOMICALLY, so this file's mtime
+   * becomes now while the database's stays old; and "metadata newer than the
+   * database beside it" is exactly the write order that
+   * `unstampedMetaPairsByWriteOrder` accepts. A refresh that simply carried the
+   * old fields forward would therefore convert a pair that check had been
+   * REJECTING into one it waves through — laundering unknown provenance into
+   * verified provenance, which is the fail-open this whole channel exists to
+   * close.
+   *
+   * "Just don't write a stamp" is not a substitute, and is worse: an unstamped
+   * metadata file is judged on the two file times, and the refresh has already
+   * moved them into the accepting order. The verdict has to be recorded IN the
+   * file, because the write that records it is itself what destroys the
+   * evidence a reader would otherwise use.
+   *
+   * `bridgeMetaMatchesFile` rejects on this ahead of both the stamp and the
+   * write-order heuristic, so `ensureBridgeReady` answers
+   * `pairedWithDatabase: false` and `bridgeProvenanceUnknown` reports the
+   * cross-repo answer as a lower bound. That is the ONE enforcement point; do
+   * not add a second reader for this field.
+   *
+   * Self-clearing: a successful `writeBridge` builds fresh metadata from a
+   * literal and never sets it, so the next good sync retires the marker without
+   * anything having to delete it.
+   */
+  provenanceUnknown?: boolean;
   missingRepos: string[];
+  /**
+   * Configured repos the sync that produced this bridge could not extract from
+   * (see `ContractRegistry.unreadableRepos`). Their contracts and every
+   * cross-link touching them are absent from `bridge.lbug`, so a cross-repo
+   * impact query against this bridge is a lower bound, not a verdict —
+   * `runGroupImpact` folds a non-empty value into its truncation fields for
+   * exactly that reason.
+   * Optional: a bridge written before this field existed does not record it.
+   */
+  unreadableRepos?: string[];
 }
