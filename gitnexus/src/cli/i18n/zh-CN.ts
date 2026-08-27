@@ -134,6 +134,7 @@ export const zhCN = {
   'help.command.uninstall.description':
     '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
   'help.command.analyze.description': '索引仓库（完整分析）',
+  'help.command.embeddings.sync.description': '向现有索引添加缺失的嵌入，并逐批次保存检查点以安全续跑',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',
   'help.command.mcp.description':
