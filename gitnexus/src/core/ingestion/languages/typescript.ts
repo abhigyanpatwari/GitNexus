@@ -126,11 +126,13 @@ import {
 } from './javascript/index.js';
 import { extractDispatchGuardRoutes } from '../route-extractors/dispatch-guard.js';
 import { extractDataRouteTableRoutes } from '../route-extractors/data-route-table.js';
+import { extractNestRoutes } from '../route-extractors/nest.js';
 import { extractConvexEndpointProperties } from './typescript/convex-endpoint-metadata.js';
 
 const extractJsTsRoutes = (...args: Parameters<typeof extractDispatchGuardRoutes>) => [
   ...extractDispatchGuardRoutes(...args),
   ...extractDataRouteTableRoutes(...args),
+  ...extractNestRoutes(...args),
 ];
 
 /**
