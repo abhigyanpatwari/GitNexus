@@ -111,6 +111,20 @@ export interface ContractRegistry {
    * absent means "not recorded", not "none".
    */
   unreadableRepos?: string[];
+  /**
+   * Matching stages this sync was ASKED to skip, so a later reader can tell a
+   * short cross-link list from a complete one. `--exact-only` / `exactOnly`
+   * suppresses the wildcard stage, and the registry it writes is otherwise
+   * indistinguishable from one where that stage ran and matched nothing.
+   *
+   * Same tri-state as `unreadableRepos` and for the same reason: absent means
+   * "not recorded" (written before this field existed), `[]` means "measured,
+   * nothing was suppressed", and a populated list names the stages. Distinct
+   * from `truncated` / `truncationReason`, which report limits this run hit by
+   * accident — a suppressed stage is a deliberate request, and its remedy is
+   * "re-sync without exactOnly", not "fix the unreadable repo".
+   */
+  suppressedMatchStages?: MatchType[];
   contracts: StoredContract[];
   crossLinks: CrossLink[];
 }

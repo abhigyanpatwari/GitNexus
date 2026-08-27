@@ -82,6 +82,7 @@ const syncResult = (overrides: Partial<SyncResult> = {}): SyncResult => ({
   missingRepos: [],
   unreadableRepos: [],
   repoSnapshots: {},
+  suppressedMatchStages: [],
   registryOutcome: 'written',
   ...overrides,
 });
@@ -172,6 +173,7 @@ describe('group_sync forwards what the sync learned about the repos and the file
       unmatched: 1,
       missingRepos: ['app/frontend'],
       unreadableRepos: ['app/backend'],
+      suppressedMatchStages: [],
       registryOutcome: 'preserved',
     });
   });
@@ -190,6 +192,7 @@ describe('group_sync forwards what the sync learned about the repos and the file
       unmatched: 0,
       missingRepos: [],
       unreadableRepos: [],
+      suppressedMatchStages: [],
       registryOutcome: 'written',
     });
   });

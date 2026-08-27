@@ -19,6 +19,7 @@ import type {
   StoredContract,
   CrossLink,
   GroupManifestLink,
+  MatchType,
 } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
@@ -94,6 +95,14 @@ export interface SyncResult {
    */
   unreadableRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
+  /**
+   * Matching stages this run was asked to skip. Populated on EVERY outcome,
+   * not just `written`: the sync genuinely did skip the stage whatever
+   * happened to the file afterwards, and the CLI summary renders from this
+   * rather than re-deriving it from the caller's options. Only the persisted
+   * registry stamps it conditionally — see the write below.
+   */
+  suppressedMatchStages: MatchType[];
   /**
    * What this sync did to `contracts.json`. Callers must not announce a write
    * they did not get: without this, `group sync` printed "Wrote contracts.json
@@ -572,6 +581,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   const wildcard: WildcardMatchResult = opts?.exactOnly
     ? { matched: [], remaining: unmatched }
     : runWildcardMatch(unmatched, providerIndex);
+  // Measured, not assumed: `[]` says this run suppressed nothing, which is a
+  // different statement from a registry that never recorded the field at all.
+  const suppressedMatchStages: MatchType[] = opts?.exactOnly ? ['wildcard'] : [];
 
   // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the
@@ -593,6 +605,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     // not recorded, telling the operator to re-run the sync that had just
     // succeeded. The tri-state only works if the writer commits to it.
     unreadableRepos,
+    // Stamped only on the path that writes THIS run's contracts. The preserve
+    // path below re-writes `{ ...prior }`, so a carried-forward registry keeps
+    // the marker of the sync that actually produced its contracts instead of
+    // being relabelled with this run's request.
+    suppressedMatchStages,
     contracts: allContracts,
     crossLinks,
   };
@@ -802,6 +819,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   return {
     contracts: allContracts,
     crossLinks,
+    suppressedMatchStages,
     unmatched: wildcard.remaining,
     missingRepos,
     unreadableRepos,

@@ -33,6 +33,7 @@ import type {
   CrossLink,
   GroupConfig,
   GroupContextResult,
+  MatchType,
   StoredContract,
 } from './types.js';
 
@@ -327,6 +328,7 @@ async function loadContractRegistryResilient(
 
   // Bound once: the gate is a full array scan and the ternary below used it twice.
   const recordedUnreadable = recordedRepoList(base.unreadableRepos);
+  const recordedSuppressed = recordedMatchStages(base.suppressedMatchStages);
   const registry: ContractRegistry = {
     version: typeof base.version === 'number' ? base.version : 0,
     generatedAt: typeof base.generatedAt === 'string' ? base.generatedAt : '',
@@ -348,11 +350,30 @@ async function loadContractRegistryResilient(
     // rendered as a clean result, which is the same conflation this whole
     // change removes.
     ...(recordedUnreadable ? { unreadableRepos: recordedUnreadable } : {}),
+    // Same omit-when-unrecorded rule. This reader rebuilds the envelope field
+    // by field with no spread of `base`, so a new on-disk field is dropped
+    // unless it is named here.
+    ...(recordedSuppressed ? { suppressedMatchStages: recordedSuppressed } : {}),
     contracts,
     crossLinks,
   };
 
   return { ok: true, registry, skippedCorrupt };
+}
+
+/**
+ * Read a persisted `suppressedMatchStages` list.
+ *
+ * Deliberately NOT `recordedRepoList`: that validates `string[]`, which is
+ * right for repo names and one notch too weak here. This repo has already
+ * retired MatchType members ('bm25', 'embedding'), so a stale value on disk is
+ * a real shape — dropping non-members keeps an unknown stage name from
+ * reaching a caller typed as a live one. Absence stays absence (tri-state).
+ */
+function recordedMatchStages(value: unknown): MatchType[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const known: MatchType[] = ['exact', 'manifest', 'wildcard'];
+  return value.filter((v): v is MatchType => known.includes(v as MatchType));
 }
 
 /**
@@ -470,6 +491,10 @@ export class GroupService {
       unmatched: result.unmatched.length,
       missingRepos: result.missingRepos,
       unreadableRepos: result.unreadableRepos,
+      // The agent-facing half of the skipped-stage signal. A human sees it in
+      // the CLI summary; without this an agent would have to issue a second
+      // `group_contracts` call to discover its own sync was narrowed.
+      suppressedMatchStages: result.suppressedMatchStages,
       // An agent that calls group_sync and then group_contracts a moment later
       // can otherwise see contract counts that disagree with this payload, with
       // nothing here explaining why the write was skipped.
@@ -529,6 +554,13 @@ export class GroupService {
       // convention `skippedCorrupt` follows below, and the difference between
       // "the sync measured zero unreadable repos" and "the sync never said".
       ...(unreadableRepos ? { unreadableRepos } : {}),
+      // Same omit-when-unrecorded rule, and deliberately NOT folded into the
+      // truncation triple below: that triple reports limits a run hit by
+      // accident, whose remedy is to fix the repo. A suppressed stage was
+      // asked for, and its remedy is to re-sync without that flag.
+      ...(registry.suppressedMatchStages
+        ? { suppressedMatchStages: registry.suppressedMatchStages }
+        : {}),
       // The structured triple, verbatim from the impact surface (KTD10):
       // `truncated` always, `truncationReason` + `riskEpistemic` with it.
       ...truncation,
