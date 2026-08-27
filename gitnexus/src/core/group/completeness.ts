@@ -13,7 +13,7 @@
  * Nothing here imports anything but types. Keep it that way: the moment this
  * file gains a runtime import, every consumer pays for it again.
  */
-import type { GroupImpactTruncationReason } from './types.js';
+import type { GroupImpactTruncationReason, MatchType } from './types.js';
 
 /**
  * A union rather than `Pick<GroupImpactResult, ...>` so the two states are
@@ -69,6 +69,12 @@ export interface CrossRepoCompletenessInput {
    */
   unreadableRepos?: readonly string[];
   missingRepos?: readonly string[];
+  /**
+   * Matching stages the sync was asked to skip. Absent or empty means it
+   * suppressed none; a populated list makes the answer a floor for a reason
+   * that is neither a runtime limit nor an unreadable repo.
+   */
+  suppressedMatchStages?: readonly string[];
   /** Computed by the caller; see `bridgeProvenanceUnknown` for the bridge one. */
   provenanceUnknown: boolean;
   /**
@@ -94,6 +100,23 @@ export type CrossRepoCompleteness = TruncationFields & {
 };
 
 /**
+ * Read a persisted `suppressedMatchStages` list.
+ *
+ * Sibling of `recordedRepoList` and here for the same stated reason: it had
+ * lived in two files verbatim, so tightening one would silently leave the other.
+ * All-or-nothing like its sibling — a stale member (this repo has already
+ * retired `'bm25'` and `'embedding'`) makes the whole list unreadable rather
+ * than filtering down to `[]`, which on this field would mean "measured,
+ * nothing suppressed": a clean answer manufactured from a value we could not
+ * read.
+ */
+export function recordedMatchStages(value: unknown): MatchType[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const known: MatchType[] = ['exact', 'manifest', 'wildcard'];
+  return value.every((v): v is MatchType => known.includes(v as MatchType)) ? value : undefined;
+}
+
+/**
  * The ONE computation of "is this cross-repo answer complete?" (KTD10).
  *
  * Three surfaces can return a partial cross-repo answer — impact, trace, and
@@ -111,8 +134,17 @@ export function crossRepoCompleteness(input: CrossRepoCompletenessInput): CrossR
   const incompleteRepos = [
     ...new Set([...(input.unreadableRepos ?? []), ...(input.missingRepos ?? [])]),
   ].filter((repoPath) => input.inScope(repoPath));
+  // An unreadable or unaccounted repo outranks a suppressed stage: it is the
+  // more serious structural gap and its remedy (repair the repo, re-sync) has
+  // to be the one reported. A suppressed stage only decides the reason when
+  // the repo side is otherwise clean.
+  const suppressed = (input.suppressedMatchStages ?? []).length > 0;
+  const repoSideIncomplete = input.provenanceUnknown || incompleteRepos.length > 0;
   return {
-    ...truncationFields(input.provenanceUnknown || incompleteRepos.length > 0, 'incomplete-sync'),
+    ...truncationFields(
+      repoSideIncomplete || suppressed,
+      repoSideIncomplete ? 'incomplete-sync' : 'suppressed-stage',
+    ),
     incompleteRepos,
   };
 }
