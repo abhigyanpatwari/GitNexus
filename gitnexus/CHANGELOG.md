@@ -4,6 +4,97 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+## [1.6.10] - 2026-08-27
+
+### Added
+
+- **Spring framework modeling expanded end to end** — AOP transactions, caching and security (#2783), `@Bean` factories and `@Resource` injection (#2740), profiles/conditions/auto-configuration (#2678), constructor and standard injection (#2632), bean candidate inventory (#2494), configuration-property consumers, and non-HTTP handler entry points (#2891)
+- **Receiver chains typed from AST structure across all 14 languages**, with an explicit epistemic lower bound on what the graph can claim (#2708, #2744, #2747)
+- **Java enum constant bodies modeled as first-class instances**, with JLS 13.1 anonymous-class naming (#2558)
+- **More route surfaces indexed** — Java constant-based route paths such as `@PostMapping(ApiPathConstants.X)` (#2980) and JavaScript data route tables (#2972)
+- **MCP server hardening** — repository allowlist, fail-closed read-only mode, deterministic output budgets, and normalized `impact`/`context` aliases
+- **`bunx` lane so bun-only machines can run GitNexus** (#2765)
+- **Codex support** — hooks, plugin marketplace and setup (#2328, #2369) — plus CodeBuddy and Qoder coding-agent integrations (#2368)
+- **Skills mirrored to `.agents/skills/`** when an `.agents/` directory exists
+- **One-click Render deploy** (#2804)
+- **`serve` origin/proxy configuration is validated and port-scoped** (#2820)
+- **Expanded TypeScript/JavaScript taint sink model** (#2490)
+- **Wiki generation accepts explicit HTTP LLM hosts** (#2491)
+- **Embedding request-body dimensions configurable** via `GITNEXUS_EMBEDDING_REQUEST_DIMS` (#2574)
+- **Refreshed MiniMax model and endpoint configuration** (#2780)
+- **`MAX_CALLABLE_VALUE_TARGETS` and `MAX_PROPERTY_DISPATCH_FANOUT` configurable via env** (#2725, #2726)
+- **Opt-in `analyze --self-commit`** for AGENTS.md/CLAUDE.md churn (#2640)
+- **Buffer pool sized to the graph before the database opens**, with an adaptive size hint
+- **CI review agent runs as a coordinated reviewer swarm** on Sonnet 5 with structured, linked reviews (#2570, #2572), alongside the GitNexus Engineering Tool Kit skills (#2566) and an online skill-evolution loop (#2571)
+- **Icebug community-engine prototype behind a gate** (#2376)
+
+### Fixed
+
+- **`group sync` stops claiming matching it never did** — the advertised BM25/embedding cascade was config, help text and MCP schema with no matcher behind it; the unread `matching.bm25_threshold`, `matching.embedding_threshold`, `detect.embedding_fallback` and `--skip-embeddings` surfaces are removed (#3020)
+- **Emitted Next.js build output is ignored during ingestion**, and the inert `public/build` entry is deleted (#3018)
+- **NestJS decorator routes are indexed** so `api_impact` and `route_map` stop reporting live endpoints as non-existent (#3017)
+- **Import resolution gated by real module configuration** instead of path-suffix guessing — TypeScript config (#2953, #2956), Java and Kotlin declared packages (#2955, #2990), Go module paths (#2984), PHP Composer autoload maps (#2987), Python `__init__.py` re-exports (#2864) and unaliased dotted namespace imports (#2826, #2828), and JavaScript module extensions (#3034)
+- **Interface dispatch is generic-instantiation aware** (#2912, #2939), fans out from Case 3b receivers (#2832, #2842) and from C# record interface calls (#2904), and resolves through generic-typed field receivers in every language (#2833, #2855)
+- **Go method sets modeled exactly** so interface satisfaction is decidable (#2813, #2829), out-of-repo package qualifiers resolve, and an undecided interface check is no longer reported as a decided negative (#2873, #2921)
+- **Go pointer-receiver calls resolve**, reporting the program boundary instead of hedging (#2766, #2782)
+- **Java record support** — graph nodes for `record_declaration`, component accessors, enum and record interface heritage (#2564, #2916, #2935, #2936), plus `E.CONST.method()` enum-constant receiver dispatch (#2561) and JLS binary-name identities for local classes, enums, records and interfaces (#2562, #2653)
+- **Rust module-qualified calls resolve against the module tree** (#2730, #2741), items are qualified by their enclosing `mod` chain (#2742, #2745), duplicate type names stay ambiguous in range binding (#2514, #2652), and `Box<dyn Trait>` names normalize
+- **Closure bindings are call sources in every language**, and function-local values carry their own identity (#2693, #2695, #2699, #2718)
+- **A named receiver's member never resolves lexically** (#2714), platform builtins stop resolving to unrelated same-file symbols (#2549), and inline constructor receivers are typed in every spelling (#2708, #2737)
+- **Python calls resolve through constructor-injected fields** (#2628) and module-imported classes (#2770)
+- **Package directories that repeat higher in the path resolve correctly** (#2881, #2929)
+- **`check` stops reporting erased and deferred imports as initialization cycles** (#2934)
+- **`detect_changes` no longer scales its query with the diff's hunk count** (#2915, #2930), and CR-only line-ending diffs are ignored (#2839)
+- **`group` stops reporting what could not be measured as a measurement of zero** (#3012), resolves HTTP consumers through configured clients and constant route tables (#3008), and preserves manifest-only impact crossings (#2784)
+- **`impact` and `context` are reproducible** — deterministic ordering on every capped query (#2787, #2796) — and Convex caller results are marked incomplete rather than empty (#3044)
+- **Object handler identity is preserved** during ingestion (#3046), nested source directories are discovered (#3043), and parse-node insertion is canonicalized
+- **Large-repo analyze OOM and the false worker-timeout cascade are fixed** (#2649, #2679)
+- **Single-writer lock on the index write path** (#2658, #2677), atomic index swap with read-pool staleness invalidation (#2614), and reliable large incremental writeback commits (#2409, #2425)
+- **Remote URLs are stripped of credentials before they are persisted** (#2914, #2928), and every registry write gets its own tmp path (#2888, #2920)
+- **Schema version derived from a DDL fingerprint** instead of a hand-incremented constant (#2798, #2808), and the scope-resolution relation cross product is fully declared (#2792, #2793)
+- **FTS reliability** — binary payloads stay out of the description column and an unbuildable index is confined to its own table (#2919), FTS-indexed DML is gated before the incremental writeback (#2841, #2854), analyze degrades instead of aborting on index-build failure (#2548), real LOAD errors surface and broken extension files self-heal (#2374, #2375), and Windows missing-dependency load failures are diagnosed (#2383)
+- **`VECTOR` is loaded only when needed** (#3045) and before the incremental writeback touches embedding rows (#2623, #2624)
+- **Buffer pool bounded instead of taking the native 80%-of-RAM default** (#2560), scaled by the OS page-size granule ratio (#2631, #2636), with a COPY-safe floor and actionable diagnostics for non-4K page sizes (#2424)
+- **`Napi::Error` SIGABRT on analyze eliminated** — C++ type lookups are indexed and workers terminate only at JS-safe points (#2432, #2436)
+- **Native-load failures fail closed**, including truncated-binary SIGBUS (#2441, #2651), and glibc-too-old loads are no longer misdiagnosed (#2672, #2689)
+- **Index staleness reporting fixed** — no false-stale status after analyze, with inline staleness in `query`/`context`/`impact`/`cypher` (#2655, #2668, #2683)
+- **Windows path handling** — the `\\?\` long-path prefix no longer breaks repo path matching (#2667, #2700), `parts` negation is honored (#2720), and missing-shadow errors let `serve` repo-switch recover (#2382, #2387)
+- **Embeddings survive partial failures** — unparseable 200 responses are retried (#2790, #2795), batch inserts are retry-safe (#2453), HTTP generation is resumable, resume checkpoints bind to their provider, and proxy-blocked installs self-heal (#2370, #2372)
+- **Custom HTTP embedding endpoint failures are reported as themselves**, not as Hugging Face download errors (#2385, #2386)
+- **Exact symbol content with 0-based line storage and 1-based MCP display** (#2377, #2379, #2380)
+- **`rename` reports every edit that apply writes** and reconciles its report on partial failure (#2605)
+- **Global registry transactions serialized across processes** (#2716)
+- **Swift indented conditional directives are preprocessed** so class bodies survive parsing (#2771), and Swift member-containment pairs are declared in the `CONTAINS` DDL (#2769)
+- **JavaScript `exports.foo = function () {}` CommonJS exports are indexed** (#2723, #2729), and `const X = () => {}` is no longer double-indexed as a Function plus an edgeless Const twin (#2687, #2691)
+- **JVM sibling injection is proximity-bounded** (#2732), and C#/Kotlin free calls are gated by instance ownership (#2563, #2654)
+- **Dart extension type symbols are extracted** (#2539), and declarations recover after embedded NUL bytes (#2430)
+- **CLI and hooks fail loudly on backend error payloads**, with an MCP query hint when the server owns the DB lock (#2396, #2397)
+- **Committed agent guides stop churning**, with an `--index-only` nudge (#2907, #2927), and `gitnexus-plan` artifacts publish on macOS without an interpreter (#2905, #2922)
+- **The 300-flows cap is removed for large repositories** (#2198)
+
+### Changed
+
+- **BREAKING: Node `^22.18.0 || >=24.11.0` is now the supported floor**; the `@types/uuid` stub is dropped
+- **BREAKING: the non-functional `group` matching knobs are gone** — `matching.bm25_threshold`, `matching.embedding_threshold`, `detect.embedding_fallback` in `group.yaml`, the `gitnexus group sync --skip-embeddings` flag, and the MCP `group_sync` `skipEmbeddings` argument (#3020)
+- **Structural relationships are held out of the JS heap by default** during analyze (#2680, #2685)
+- **Global ignore support** — `core.excludesFile`, `.git/info/exclude`, and a user-level global ignore file are honored (#2606)
+- **Plugin manifests sync on every version bump** (#2445), and planning output under `docs/plans` is no longer tracked
+
+### Performance
+
+- **Import resolution indexed instead of scanned** — every scanning resolver with a consolidated memo (#2911), a per-run workspace index for Go/C#/Dart/Ruby (#2898), and Kotlin import resolution (#2872)
+- **MCP server startup drops the analyze-only language-provider closure** (#2802, #2806)
+- **C++ qualified namespace members indexed once per pipeline run** (#2788, #2794)
+- **Vendored Leiden O(communities × N) copy removed**, with Icebug wired to its real API (#2337, #2692)
+- **`core.excludesFile` / `info/exclude` resolution memoized** (#2606)
+
+### Chore / Dependencies
+
+- **`@ladybugdb/core` bumped to ^0.18.3** for the rel-property IN-predicate fix (#2508, #2634)
+- **Security overrides** — `sharp` >=0.35.0 for libvips vulnerabilities (#2993) and `adm-zip` >=0.6.0 for a memory-allocation vulnerability (#2992)
+- **~130 dependency bumps** across the CLI, web app and GitHub Actions, including `@modelcontextprotocol/sdk`, LangChain, Vite, Vitest, TypeScript, React and the Docker/CodeQL action suite
+- **CI hardening** — Windows shard watchdog widened with exit diagnostics (#2449), platform-sensitive matrix sharded to fix the Windows cross-platform timeout (#2394), and CI Report no longer dies silently when the tests job fails (#2728)
+
 ## [1.6.9] - 2026-07-04
 
 ### Added

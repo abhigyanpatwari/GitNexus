@@ -112,7 +112,11 @@ export function getResourceTemplates(): ResourceTemplate[] {
         'three-state, and an ABSENT key is not an empty one: absent means the last sync never ' +
         'recorded which repos it could read (provenance unknown — treat cross-repo answers for ' +
         'this group as a floor), an empty list means the sync measured none, and a populated list ' +
-        'names the repos whose contracts are missing from the registry.',
+        'names the repos whose contracts are missing from the registry. suppressedMatchStages is ' +
+        'three-state the same way: absent is a registry predating the field, an empty list means ' +
+        'the sync skipped no matching stage, and a populated list names stages it was ASKED to ' +
+        'skip — those cross-link counts are a lower bound by request, and the remedy is to re-sync ' +
+        'without that flag rather than to repair a repo.',
       mimeType: 'text/yaml',
     },
   ];

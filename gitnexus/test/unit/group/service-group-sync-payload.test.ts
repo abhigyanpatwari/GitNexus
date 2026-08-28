@@ -82,9 +82,19 @@ const syncResult = (overrides: Partial<SyncResult> = {}): SyncResult => ({
   missingRepos: [],
   unreadableRepos: [],
   repoSnapshots: {},
+  suppressedMatchStages: [],
   registryOutcome: 'written',
   ...overrides,
 });
+
+/**
+ * `syncGroupMock` is declared zero-arg, so `mock.calls` is typed as an array of
+ * the empty tuple and indexing `[1]` does not type-check. The runtime call
+ * genuinely has two arguments (config, options); this reads the second without
+ * restating a signature the rest of the suite does not need.
+ */
+const syncOptsOf = (call: number): Record<string, unknown> =>
+  (syncGroupMock.mock.calls[call] as unknown as unknown[])[1] as Record<string, unknown>;
 
 const CONTRACT = makeContract({ repo: 'app/backend' });
 const CROSS_LINK: CrossLink = {
@@ -172,6 +182,7 @@ describe('group_sync forwards what the sync learned about the repos and the file
       unmatched: 1,
       missingRepos: ['app/frontend'],
       unreadableRepos: ['app/backend'],
+      suppressedMatchStages: [],
       registryOutcome: 'preserved',
     });
   });
@@ -190,6 +201,7 @@ describe('group_sync forwards what the sync learned about the repos and the file
       unmatched: 0,
       missingRepos: [],
       unreadableRepos: [],
+      suppressedMatchStages: [],
       registryOutcome: 'written',
     });
   });
@@ -300,5 +312,126 @@ describe('group_contracts forwards its structured incompleteness', () => {
       truncationReason: 'incomplete-sync',
       riskEpistemic: 'lower-bound',
     });
+  });
+});
+
+/**
+ * What `group_sync` REFUSES to run on.
+ *
+ * The MCP SDK does not enforce a tool's advertised `inputSchema` and
+ * `callTool` is reachable directly, so this service method is the real
+ * validation boundary. Two consequences this block pins:
+ *
+ * - `exactOnly` now gates a matching stage, so `Boolean(params.exactOnly)`
+ *   turned the string `"false"` — a common shape for an LLM caller emitting
+ *   JSON — into `true` and persisted a registry with the wildcard stage
+ *   suppressed. The opposite of what the caller asked for, written to disk.
+ * - `skipEmbeddings` and `allowStale` were retired. The CLI rejects them
+ *   outright; the MCP path accepted and silently dropped them, so an agent
+ *   working from a cached schema was told nothing.
+ *
+ * Every case asserts `syncGroupMock` was NOT called: a rejection that still
+ * runs the sync is the failure mode, and an error string alone cannot tell
+ * the two apart.
+ */
+describe('group_sync rejects malformed and retired parameters', () => {
+  it.each([['false'], ['true'], [0], [1], [null], [{}], [[]]])(
+    'rejects a non-boolean exactOnly (%j) and runs no sync',
+    async (bad) => {
+      const payload = await new GroupService(port).groupSync({ name: GROUP, exactOnly: bad });
+
+      expect(payload).toEqual({
+        error: `Invalid "exactOnly": expected true or false, got ${JSON.stringify(bad)}.`,
+      });
+      expect(syncGroupMock).not.toHaveBeenCalled();
+    },
+  );
+
+  // `verbose` is no longer part of this tool's surface: not advertised, not
+  // validated, not forwarded. A caller that still sends it is ignored rather
+  // than refused — it was never a documented parameter, so there is nothing to
+  // reject on behalf of, and the retired-name guard is reserved for parameters
+  // this tool actually withdrew.
+  it('ignores verbose entirely rather than validating or forwarding it', async () => {
+    syncGroupMock.mockResolvedValue(syncResult());
+
+    const payload = (await new GroupService(port).groupSync({
+      name: GROUP,
+      verbose: 'not-a-boolean',
+    })) as Record<string, unknown>;
+
+    expect(payload.error).toBeUndefined();
+    expect(syncGroupMock).toHaveBeenCalledTimes(1);
+    expect(syncOptsOf(0)).not.toHaveProperty('verbose');
+  });
+
+  // The error path must not throw. `JSON.stringify` — the right renderer here,
+  // because it distinguishes the string "false" from the boolean — throws on a
+  // BigInt and on a cyclic object, and `callTool` is reachable directly, so a
+  // validator that rejects instead of returning `{ error }` breaks its own
+  // contract on inputs a caller can actually send.
+  it('returns a structured error rather than throwing on an unserializable value', async () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    const fromBigInt = (await new GroupService(port).groupSync({
+      name: GROUP,
+      exactOnly: 1n,
+    })) as Record<string, unknown>;
+    const fromCyclic = (await new GroupService(port).groupSync({
+      name: GROUP,
+      exactOnly: cyclic,
+    })) as Record<string, unknown>;
+
+    expect(String(fromBigInt.error)).toContain('Invalid "exactOnly"');
+    expect(String(fromCyclic.error)).toContain('Invalid "exactOnly"');
+    expect(syncGroupMock).not.toHaveBeenCalled();
+  });
+
+  it.each([['skipEmbeddings'], ['allowStale']])(
+    'rejects the retired %s parameter by name and runs no sync',
+    async (retired) => {
+      const payload = await new GroupService(port).groupSync({ name: GROUP, [retired]: true });
+
+      expect(payload).toEqual({
+        error: `"${retired}" was removed and is no longer accepted. Drop it from the call.`,
+      });
+      expect(syncGroupMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[true], [false]])(
+    'passes a real boolean exactOnly (%j) through unchanged',
+    async (ok) => {
+      syncGroupMock.mockResolvedValue(syncResult());
+
+      await new GroupService(port).groupSync({ name: GROUP, exactOnly: ok });
+
+      expect(syncGroupMock).toHaveBeenCalledTimes(1);
+      expect(syncOptsOf(0)).toMatchObject({ exactOnly: ok });
+    },
+  );
+
+  it('treats an omitted exactOnly as false', async () => {
+    syncGroupMock.mockResolvedValue(syncResult());
+
+    await new GroupService(port).groupSync({ name: GROUP });
+
+    expect(syncOptsOf(0)).toMatchObject({ exactOnly: false });
+  });
+
+  // control: the guards above reject specific shapes, not every call. Without
+  // this, deleting the whole method body and returning an error would pass.
+  it('control: a valid call with only a name still syncs', async () => {
+    syncGroupMock.mockResolvedValue(syncResult({ registryOutcome: 'written' }));
+
+    const payload = (await new GroupService(port).groupSync({ name: GROUP })) as Record<
+      string,
+      unknown
+    >;
+
+    expect(payload.error).toBeUndefined();
+    expect(payload.registryOutcome).toBe('written');
+    expect(syncGroupMock).toHaveBeenCalledTimes(1);
   });
 });
