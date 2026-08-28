@@ -412,7 +412,7 @@ export function getAutoSyncRepoIdentity(remoteUrl: string): string {
 export async function syncGroupByName(groupName: string): Promise<void> {
   const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
   const config = await loadGroupConfig(groupDir);
-  await syncGroup(config, { groupDir, allowStale: true });
+  await syncGroup(config, { groupDir });
 }
 
 async function writeGroupConfigAtomic(filePath: string, config: unknown): Promise<void> {
