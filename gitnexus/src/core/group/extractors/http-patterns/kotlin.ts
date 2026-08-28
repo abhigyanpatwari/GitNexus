@@ -281,31 +281,19 @@ function kotlinArrayOfElements(node: Parser.SyntaxNode): Parser.SyntaxNode[] | n
 
 /**
  * What a route-annotation path argument says about the prefix it designates.
- * Three answers, and only one of them may suppress a route:
+ * Only `'unresolvable'` may suppress a route:
  *
- *  - `'literal'` — at least one element is a plain literal, so the literal
- *    prefix patterns already harvested a real path. Nothing to suppress.
- *  - `'none'` — the argument designates NO path at all. An EMPTY array is
- *    Spring's spelling for "no prefix": `@RequestMapping(arrayOf())` maps the
- *    class at the application root, so `@GetMapping("/lit")` beneath it really
- *    is served at `/lit`. "No prefix" is not "an unresolvable prefix", and
- *    conflating them dropped every route under such a class — including plain
- *    literal ones, which no constant fold was ever involved in. Measured on
- *    `@RequestMapping(arrayOf())` + `@GetMapping("/lit")`: `GET /lit` served,
- *    nothing emitted. The same conflation hit `@FeignClient(path = arrayOf())`,
- *    where it dropped `consumer GET /orders`.
- *  - `'unresolvable'` — there IS an argument, it is not empty, and no element of
- *    it resolves to a literal (`ApiPaths.BASE`, `buildPath()`,
- *    `if (…) "/a" else "/b"`, an interpolated template). Only here is the served
- *    path unknowable, and only here may the routes below be suppressed.
- *
- * The `'none'` arm is reachable through `arrayOf()` only. `@RequestMapping([])`
- * is a third spelling of the same idea, but tree-sitter-kotlin (fwcd) does not
- * parse the class that carries it as a `class_declaration` at all — the whole
- * declaration degrades to an `infix_expression`, no class-prefix pattern
- * matches, and the routes fall through unprefixed. That is measured, not
- * assumed; it is also why the empty-`[…]` case needs no arm here, since a
- * `collection_literal` never reaches this function from an annotation argument.
+ *  - `'literal'` — at least one element is a plain literal, already harvested by
+ *    the literal prefix patterns, so there is nothing to suppress.
+ *  - `'none'` — no prefix. Empty `arrayOf()` is Spring's "map at the root".
+ *    Kept distinct from `'unresolvable'` because conflating them suppressed even
+ *    plain literal routes below such a class, which no constant fold was ever
+ *    involved in. Reachable through `arrayOf()` only: tree-sitter-kotlin (fwcd)
+ *    does not parse a class carrying `@RequestMapping([])` as a
+ *    `class_declaration`, so an EMPTY `collection_literal` never reaches this
+ *    function from an annotation — a non-empty one does, and is handled below.
+ *  - `'unresolvable'` — a non-empty argument with no literal element
+ *    (`ApiPaths.BASE`, `buildPath()`, a template). Served path is unknowable.
  */
 type PathArgumentPrefix = 'literal' | 'none' | 'unresolvable';
 
@@ -323,23 +311,13 @@ function classifyPathArgument(expr: Parser.SyntaxNode): PathArgumentPrefix {
 }
 
 /**
- * The type declarations enclosing `node`, INNERMOST FIRST, by declared name.
+ * Type declarations enclosing `node`, innermost first, by declared name.
  *
- * This is the scope a bare constant reference in a route annotation is resolved
- * against (see `qualifyKotlinRefInEnclosingTypes`). Without it the fold is
- * entered with a file key and a name, and a companion member — bound unqualified
- * only inside its own class body — had to be recorded file-wide to be reachable
- * at all, so it won every bare reference in the file: measured `/companion`
- * where Kotlin serves the top-level `/top`, and `/h2` where Kotlin serves the
- * referencing class's own `/h1`.
- *
- * Both `class_declaration` (which is also how tree-sitter-kotlin models an
- * `interface`) and `object_declaration` are collected, because Kotlin binds the
- * members of both unqualified inside their bodies, and the constant map keys
- * both as `<Owner>.<NAME>`. A `companion_object` contributes no link of its own:
- * its members are keyed under the ENCLOSING class, which the walk reaches one
- * hop further up. An anonymous declaration has no `type_identifier` and is
- * skipped rather than guessed at.
+ * The scope a bare constant in a route annotation is resolved against; passed to
+ * `foldKotlinOperands`, which applies it. Collects `class_declaration` (including
+ * interfaces) and `object_declaration`. A `companion_object` adds no link of
+ * its own — members are keyed under the enclosing class one hop up. Skips
+ * unnamed types rather than guessing.
  */
 function kotlinEnclosingTypeNames(node: Parser.SyntaxNode): string[] {
   const out: string[] = [];

@@ -190,24 +190,12 @@ const KOTLIN_EXTENSIONS = ['.kt', '.kts'] as const;
 /**
  * The name a backtick-quoted Kotlin identifier denotes: `` `api` `` → `api`.
  *
- * Kotlin lets ANY identifier be quoted, and requires it when the name is a
- * keyword (`` com.example.`fun` ``). The two spellings name the same thing — the
- * quotes are lexical syntax, not part of the name — but tree-sitter-kotlin keeps
- * them in the node text, so every `simple_identifier` / `type_identifier` this
- * module turns into a map key or a lookup name is read through here first.
- *
- * Measured cost of comparing verbatim, on a file declaring
- * `` package com.example.`api` `` imported as `com.example.api.ApiPaths`:
- * {@link declaredPackage} recorded `` com.example.`api` ``,
- * {@link resolveKotlinImport} required an exact match on `com.example.api`, the
- * one real candidate was rejected, and the route was dropped. Both sides are
- * normalized because either side alone can carry the quotes — an import
- * specifier may spell `` import com.example.`api`.ApiPaths `` while the
- * declaration spells it plainly.
- *
- * Applied per DOT-SEPARATED SEGMENT, never to a whole dotted name: a quoted
- * identifier cannot contain `.` (nor a newline, nor a backtick), so splitting
- * first is exact.
+ * Quotes are spelling, not part of the name. tree-sitter-kotlin keeps them in
+ * node text, so every identifier that becomes a map key or lookup is read
+ * through here. Applied per dot-separated segment — a quoted identifier cannot
+ * contain `.`. Both the declaration side ({@link declaredPackage}) and the
+ * import side ({@link resolveKotlinImport}) are normalized, because either may
+ * carry the quotes while the other spells the same name plainly.
  */
 export function unquoteKotlinIdentifier(text: string): string {
   return text.length >= 2 && text.startsWith('`') && text.endsWith('`') ? text.slice(1, -1) : text;
@@ -637,39 +625,20 @@ function declaredPackage(root: Parser.SyntaxNode): string {
  * have, and a fabricated key outranks the genuine `import com.example.api.Paths.ORDERS`
  * that {@link computeKotlinFold} consults only after literals and expressions.
  *
- * A COMPANION member gets no bare key either, for the same reason at a smaller
- * radius: it is bound unqualified inside its enclosing class BODY and nowhere
- * else. A file-level bare key put it in the same namespace as top-level
- * declarations, and companions are recorded last, so it won every unqualified
- * reference in the file. Measured, on an app that serves `/top`:
- *
- *   const val ORDERS = "/top"
- *   class Holder { companion object { const val ORDERS = "/companion" } }
- *   @RestController class OrderController {
- *       @GetMapping(ORDERS) fun get() = "ok"      // emitted /companion
- *   }
- *
- * The unqualified binding is instead reached from the reference site, by
- * {@link qualifyKotlinRefInEnclosingTypes}, which rewrites a bare name to
- * `<EnclosingType>.<NAME>` when an enclosing type declares it — so the companion
- * wins inside its own class and loses everywhere else, which is Kotlin's rule.
+ * A COMPANION member gets no bare key either: it is bound unqualified inside
+ * its enclosing class body and nowhere else. {@link qualifyKotlinRefInEnclosingTypes}
+ * rewrites a bare name to `<EnclosingType>.<NAME>` when an enclosing type
+ * declares it, so the companion wins inside its own class and loses everywhere
+ * else.
  *
  * An initializer that names a SIBLING is resolved the same way, against its own
  * scope chain, innermost first, before the file level: inside
  * `object A { const val BASE = "/right"; const val ROUTE = BASE + "/m" }` the
  * operand `BASE` is rewritten to `A.BASE`. Collecting every declaration before
- * recording any is what makes that answer independent of declaration ORDER —
- * flattening resolved such an operand through whichever same-named sibling
- * object happened to be walked last, so moving `object B` above `object A`
- * changed the emitted route for source that had not changed at all.
+ * recording any keeps that independent of declaration order.
  *
- * A TOP-LEVEL initializer has an EMPTY scope chain, so its bare operands are
- * left bare and resolve at file level. That is now correct and was not before:
- * with a file-wide companion key, `const val ROUTE = BASE + "/m"` beside a
- * companion `BASE` folded through the companion — measured `/comp/m` where
- * Kotlin serves `/top/m`. (An earlier revision of this comment claimed sibling
- * initializers could not be affected because they "go through the scope chain";
- * an empty chain is exactly the case that claim missed.)
+ * A TOP-LEVEL initializer has an EMPTY scope chain, so its bare operands stay
+ * bare and resolve at file level — they must not pick up a companion key.
  *
  * A non-foldable rebind (`X = compute()`) DROPS X to unresolvable rather than
  * leaving a stale literal — and drops a same-named import with it whenever the
@@ -1066,7 +1035,7 @@ function foldOperands(
  * the bare name never means the companion at all, which is precisely what an
  * empty chain expresses.
  */
-export function qualifyKotlinRefInEnclosingTypes(
+function qualifyKotlinRefInEnclosingTypes(
   fileKey: string,
   name: string,
   repo: RepoConstants,
@@ -1112,16 +1081,19 @@ export function foldKotlinOperands(
   repo: RepoConstants,
   enclosingTypes: readonly string[] = [],
 ): string | null {
-  const scoped =
-    enclosingTypes.length === 0
-      ? operands
-      : operands.map((op) =>
-          op.kind === 'ref'
-            ? {
-                kind: 'ref' as const,
-                name: qualifyKotlinRefInEnclosingTypes(fileKey, op.name, repo, enclosingTypes),
-              }
-            : op,
-        );
+  // Allocation gate only — the rule itself lives in the dotted-name early
+  // return of qualifyKotlinRefInEnclosingTypes, which this must not restate.
+  const needsQualify =
+    enclosingTypes.length > 0 && operands.some((op) => op.kind === 'ref' && !op.name.includes('.'));
+  const scoped = needsQualify
+    ? operands.map((op) =>
+        op.kind === 'ref'
+          ? {
+              kind: 'ref' as const,
+              name: qualifyKotlinRefInEnclosingTypes(fileKey, op.name, repo, enclosingTypes),
+            }
+          : op,
+      )
+    : operands;
   return foldOperands(fileKey, scoped, newFoldState(repo), 0);
 }
