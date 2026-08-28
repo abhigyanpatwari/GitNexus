@@ -135,11 +135,18 @@ function parseGrokOutput(stdout: string): string {
       if (!content) {
         throw new Error('grok CLI returned empty text');
       }
-      if (record.stopReason !== undefined && record.stopReason !== null) {
-        const rawReason = String(record.stopReason);
-        if (rawReason && rawReason.toLowerCase() !== 'end_turn') {
-          throw new Error(`grok CLI stopped with stopReason=${rawReason}`);
-        }
+      // Live grok 1.0.5 with wiki spawn flags emits stopReason: "end_turn".
+      // Omitted/null/empty is not a finished page — generateLeafPage would write it.
+      const rawReason =
+        record.stopReason === undefined || record.stopReason === null
+          ? ''
+          : String(record.stopReason).trim();
+      if (rawReason.toLowerCase() !== 'end_turn') {
+        throw new Error(
+          rawReason
+            ? `grok CLI stopped with stopReason=${rawReason}`
+            : 'grok CLI JSON is missing stopReason=end_turn',
+        );
       }
       return content;
     }
