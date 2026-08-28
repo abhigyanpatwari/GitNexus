@@ -273,10 +273,9 @@ export const zhCN = {
     '同时下载 CUDA GPU 二进制文件（运行 onnxruntime-node 的 NuGet postinstall；代理后请设置 GLOBAL_AGENT_HTTPS_PROXY）',
   'help.option.embeddings.install.force': '即使嵌入组件已可解析，也强制安装到运行时目录',
   'help.option.group.create.force': '覆盖现有仓库组',
-  'help.option.group.sync.skipEmbeddings': '仅使用 exact + BM25（不使用嵌入回退）',
-  'help.option.group.sync.exactOnly': '仅精确匹配',
-  'help.option.group.sync.allowStale': '跳过过期索引警告',
-  'help.option.group.sync.verbose': '显示每条跨仓库链接详情',
+  'help.option.group.sync.exactOnly':
+    '跳过通配符服务匹配，仅按契约 ID 精确匹配建立跨仓链接（清单声明的链接仍然生效）',
+  'help.option.group.sync.verbose': '显示额外的同步诊断信息',
   'help.option.status.json': '输出机器可读的索引和分析器来源信息',
   'help.option.json': 'JSON 输出',
   'help.option.group.impact.target': '要分析的符号或文件名',

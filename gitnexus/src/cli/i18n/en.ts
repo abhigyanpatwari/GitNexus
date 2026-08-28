@@ -293,10 +293,9 @@ export const en = {
   'help.option.embeddings.install.force':
     'Install into the runtime prefix even when the stack already resolves',
   'help.option.group.create.force': 'Overwrite existing group',
-  'help.option.group.sync.skipEmbeddings': 'Exact + BM25 only (no embedding fallback)',
-  'help.option.group.sync.exactOnly': 'Exact match only',
-  'help.option.group.sync.allowStale': 'Skip stale index warnings',
-  'help.option.group.sync.verbose': 'Show each cross-link detail',
+  'help.option.group.sync.exactOnly':
+    'Skip wildcard service matching; cross-link on exact contract-id match only (manifest links still apply)',
+  'help.option.group.sync.verbose': 'Show additional sync diagnostics',
   'help.option.status.json': 'Emit machine-readable index and analyzer provenance',
   'help.option.json': 'JSON output',
   'help.option.group.impact.target': 'Symbol or file name to analyze',

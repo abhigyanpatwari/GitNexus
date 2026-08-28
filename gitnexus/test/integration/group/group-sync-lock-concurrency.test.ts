@@ -51,12 +51,10 @@ const makeConfig = (name: string): GroupConfig => ({
     grpc: false,
     thrift: false,
     topics: false,
-    shared_libs: false,
     includes: false,
     workspace_deps: false,
-    embedding_fallback: false,
   },
-  matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+  matching: {},
 });
 
 const parentContract: StoredContract = {

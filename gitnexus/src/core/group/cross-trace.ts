@@ -264,6 +264,7 @@ function bridgeCompletenessFor(
   return crossRepoCompleteness({
     unreadableRepos: meta.unreadableRepos,
     missingRepos: meta.missingRepos,
+    suppressedMatchStages: meta.suppressedMatchStages,
     provenanceUnknown: bridgeProvenanceUnknown(meta),
     inScope,
   });

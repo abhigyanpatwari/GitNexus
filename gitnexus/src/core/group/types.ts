@@ -1,5 +1,5 @@
 export type ContractType = 'http' | 'grpc' | 'thrift' | 'topic' | 'lib' | 'custom' | 'include';
-export type MatchType = 'exact' | 'manifest' | 'wildcard' | 'bm25' | 'embedding';
+export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
 export interface GroupConfig {
@@ -26,16 +26,11 @@ export interface DetectConfig {
   grpc: boolean;
   thrift: boolean;
   topics: boolean;
-  shared_libs: boolean;
-  embedding_fallback: boolean;
   includes: boolean;
   workspace_deps: boolean;
 }
 
 export interface MatchingConfig {
-  bm25_threshold: number;
-  embedding_threshold: number;
-  max_candidates_per_step: number;
   /**
    * HTTP paths to exclude from cross-link matching. Contracts at these paths
    * are still extracted and visible in the registry, but they don't produce
@@ -114,6 +109,20 @@ export interface ContractRegistry {
    * absent means "not recorded", not "none".
    */
   unreadableRepos?: string[];
+  /**
+   * Matching stages this sync was ASKED to skip, so a later reader can tell a
+   * short cross-link list from a complete one. `--exact-only` / `exactOnly`
+   * suppresses the wildcard stage, and the registry it writes is otherwise
+   * indistinguishable from one where that stage ran and matched nothing.
+   *
+   * Same tri-state as `unreadableRepos` and for the same reason: absent means
+   * "not recorded" (written before this field existed), `[]` means "measured,
+   * nothing was suppressed", and a populated list names the stages. Distinct
+   * from `truncated` / `truncationReason`, which report limits this run hit by
+   * accident — a suppressed stage is a deliberate request, and its remedy is
+   * "re-sync without exactOnly", not "fix the unreadable repo".
+   */
+  suppressedMatchStages?: MatchType[];
   contracts: StoredContract[];
   crossLinks: CrossLink[];
 }
@@ -137,6 +146,13 @@ export interface RepoHandle {
  * a retry. `'incomplete-sync'` is structural: the bridge itself was built from a
  * sync that could not read every configured repo, so those repos' contracts are
  * absent from every query against it until `gitnexus group sync` succeeds.
+ * `'suppressed-stage'` is structural too but has its own remedy: the sync was
+ * ASKED to skip a matching stage (`--exact-only`), so cross-links that stage
+ * would have found are absent by request. Retrying returns the same floor, and
+ * so does re-running the sync — the fix is to re-run it WITHOUT the flag. Kept a
+ * separate member rather than folded into `'incomplete-sync'` precisely because
+ * that remedy differs; telling an agent to repair a repo it read fine is the
+ * failure this distinction exists to prevent.
  *
  * A runtime array rather than a bare type union: every value here has to be
  * explained on the agent-facing surface that returns it, and only an enumerable
@@ -145,7 +161,12 @@ export interface RepoHandle {
  * catch, so the list an agent is promised and the list the code can emit have
  * to come from the same place.
  */
-export const GROUP_IMPACT_TRUNCATION_REASONS = ['timeout', 'partial', 'incomplete-sync'] as const;
+export const GROUP_IMPACT_TRUNCATION_REASONS = [
+  'timeout',
+  'partial',
+  'incomplete-sync',
+  'suppressed-stage',
+] as const;
 
 export type GroupImpactTruncationReason = (typeof GROUP_IMPACT_TRUNCATION_REASONS)[number];
 
@@ -357,4 +378,12 @@ export interface BridgeMeta {
    * Optional: a bridge written before this field existed does not record it.
    */
   unreadableRepos?: string[];
+  /**
+   * Matching stages the sync that built this bridge was asked to skip.
+   * PERSISTED, like `unreadableRepos` and unlike `repoListsUnreadable` — a
+   * later `group_impact` or `trace` reads this bridge with no access to the run
+   * that produced it, and a narrowed graph is otherwise indistinguishable from
+   * a complete one. Same tri-state: absent is "not recorded".
+   */
+  suppressedMatchStages?: MatchType[];
 }
