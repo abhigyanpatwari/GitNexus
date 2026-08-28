@@ -751,18 +751,17 @@ describe('Grok CLI subprocess contract', () => {
     expect(promptContents).toBe('system prompt\n\n---\n\nuser prompt');
   });
 
-  it('passes --cwd to an empty temp dir, not the repo workingDirectory', async () => {
+  it('passes --cwd to an empty temp dir, not a repo path', async () => {
     spawnSpy = vi.fn((cmd: string, args: string[], opts: { cwd?: string }) => {
-      expect(opts.cwd).not.toBe('/my/repo');
       expect(args).toContain('--cwd');
       const cwdIdx = args.indexOf('--cwd');
-      expect(args[cwdIdx + 1]).not.toBe('/my/repo');
+      expect(args[cwdIdx + 1]).toContain('gitnexus-wiki-grok-');
       expect(args[cwdIdx + 1]).toBe(opts.cwd);
       return fakeChild.child;
     });
     const { callGrokLLM } = await loadGrokClient();
 
-    await callGrokLLM('prompt', { workingDirectory: '/my/repo' });
+    await callGrokLLM('prompt', {});
   });
 
   it('appends --model only when model is set', async () => {
@@ -816,7 +815,69 @@ describe('Grok CLI subprocess contract', () => {
     spawnSpy = vi.fn(() => fakeChild.child);
     const { callGrokLLM } = await loadGrokClient();
 
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow('grok CLI returned empty text');
+  });
+
+  it('rejects incomplete stopReason even when text is present', async () => {
+    fakeChild = makeFakeChild({
+      stdout: JSON.stringify({ text: 'cut off mid-sent', stopReason: 'max_tokens' }),
+    });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow(/stopReason=max_tokens/);
+  });
+
+  it('rejects PascalCase incomplete stopReason', async () => {
+    fakeChild = makeFakeChild({
+      stdout: JSON.stringify({ text: 'partial', stopReason: 'MaxTokens' }),
+    });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow(/stopReason=MaxTokens/);
+  });
+
+  it('accepts end_turn stopReason with text', async () => {
+    fakeChild = makeFakeChild({
+      stdout: JSON.stringify({ text: 'wiki page', stopReason: 'end_turn' }),
+    });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).resolves.toEqual({ content: 'wiki page' });
+  });
+
+  it('accepts omitted stopReason when text is non-empty', async () => {
+    fakeChild = makeFakeChild({ stdout: JSON.stringify({ text: 'wiki page' }) });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).resolves.toEqual({ content: 'wiki page' });
+  });
+
+  it('rejects empty stdout with a dedicated message', async () => {
+    fakeChild = makeFakeChild({ stdout: '   ' });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
     await expect(callGrokLLM('prompt', {})).rejects.toThrow('grok CLI returned empty output');
+  });
+
+  it('rejects non-JSON stdout with an excerpt', async () => {
+    fakeChild = makeFakeChild({ stdout: 'Update available\nnot-json' });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow(/non-JSON output:.*Update available/s);
+  });
+
+  it('rejects JSON without a text field with an excerpt', async () => {
+    fakeChild = makeFakeChild({ stdout: JSON.stringify({ sessionId: 'abc' }) });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow(/no text field:.*"sessionId"/s);
   });
 
   it('removes the temp prompt file and cwd after success', async () => {

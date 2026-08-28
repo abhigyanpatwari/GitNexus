@@ -16,7 +16,6 @@ import { logger } from '../logger.js';
 
 export interface GrokConfig {
   model?: string;
-  workingDirectory?: string;
   requestTimeoutMs?: number;
 }
 
@@ -98,9 +97,14 @@ function getDetectedGrokCommand(): ResolvedCliCommand | null {
 export function resolveGrokConfig(overrides?: Partial<GrokConfig>): GrokConfig {
   return {
     model: overrides?.model,
-    workingDirectory: overrides?.workingDirectory,
     requestTimeoutMs: overrides?.requestTimeoutMs,
   };
+}
+
+function excerpt(raw: string, max = 200): string {
+  const trimmed = raw.trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max)}…`;
 }
 
 function parseGrokOutput(stdout: string): string {
@@ -113,24 +117,36 @@ function parseGrokOutput(stdout: string): string {
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    throw new Error('grok CLI returned non-JSON output');
+    throw new Error(`grok CLI returned non-JSON output: ${excerpt(trimmed)}`);
   }
 
   if (parsed && typeof parsed === 'object') {
-    const record = parsed as { type?: string; message?: string; text?: unknown };
+    const record = parsed as {
+      type?: string;
+      message?: string;
+      text?: unknown;
+      stopReason?: unknown;
+    };
     if (record.type === 'error') {
       throw new Error(record.message || 'grok CLI returned an error');
     }
     if (typeof record.text === 'string') {
       const content = record.text.trim();
       if (!content) {
-        throw new Error('grok CLI returned empty output');
+        throw new Error('grok CLI returned empty text');
+      }
+      if (record.stopReason !== undefined && record.stopReason !== null) {
+        const rawReason = String(record.stopReason);
+        if (rawReason && rawReason.toLowerCase() !== 'end_turn') {
+          throw new Error(`grok CLI stopped with stopReason=${rawReason}`);
+        }
       }
       return content;
     }
+    throw new Error(`grok CLI JSON has no text field: ${excerpt(trimmed)}`);
   }
 
-  throw new Error('grok CLI returned empty output');
+  throw new Error(`grok CLI JSON has no text field: ${excerpt(trimmed)}`);
 }
 
 /**
