@@ -11,6 +11,7 @@ export interface AutoSyncCommitStateEntry {
   lastAnalyzeStatus?: AutoSyncAnalyzeStatus;
   analyzeConsecutiveFailures?: number;
   lastAnalyzeError?: string;
+  groupSyncPending?: boolean;
   lastSyncTime: string;
 }
 
@@ -104,7 +105,8 @@ function isAutoSyncCommitStateEntry(value: unknown): value is AutoSyncCommitStat
       (typeof entry.analyzeConsecutiveFailures === 'number' &&
         Number.isInteger(entry.analyzeConsecutiveFailures) &&
         entry.analyzeConsecutiveFailures >= 0)) &&
-    (entry.lastAnalyzeError === undefined || typeof entry.lastAnalyzeError === 'string')
+    (entry.lastAnalyzeError === undefined || typeof entry.lastAnalyzeError === 'string') &&
+    (entry.groupSyncPending === undefined || typeof entry.groupSyncPending === 'boolean')
   );
 }
 

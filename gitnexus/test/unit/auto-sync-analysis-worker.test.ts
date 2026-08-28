@@ -36,28 +36,30 @@ describe('auto-sync analysis worker', () => {
     expect(child.stderr.resume).toHaveBeenCalled();
   });
 
-  it('requests cancellation on a worker error but waits for its safe exit', async () => {
+  it('rejects on a worker error even when no exit event follows', async () => {
     const child = createChild();
     const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
     const result = run('/tmp/repo', { branch: 'main' }, 50);
-    let settled = false;
-    void result.then(
-      () => {
-        settled = true;
-      },
-      () => {
-        settled = true;
-      },
-    );
 
     child.emit('error', new Error('IPC disconnected'));
 
-    await Promise.resolve();
-    expect(settled).toBe(false);
     expect(child.send).toHaveBeenLastCalledWith({ type: 'cancel' });
-
-    child.emit('exit', 1, null);
     await expect(result).rejects.toThrow('Auto-sync analyze worker error: IPC disconnected');
+  });
+
+  it('rejects when the initial worker message cannot be sent', async () => {
+    const child = createChild();
+    child.send.mockImplementationOnce(() => {
+      throw new Error('IPC channel closed');
+    });
+    const run = createAutoSyncAnalysisRunner({ forkWorker: vi.fn(() => child as any) });
+
+    const result = run('/tmp/repo', { branch: 'main' }, 50);
+
+    await expect(result).rejects.toThrow(
+      'Failed to start auto-sync analyze worker: IPC channel closed',
+    );
+    expect(child.send).toHaveBeenNthCalledWith(2, { type: 'cancel' });
   });
 
   it('preserves a worker terminal error', async () => {

@@ -95,6 +95,7 @@ export async function runAutoSyncOnce(
   const state = await deps.loadState();
   throwIfAborted(options.signal);
   const groupsToSync = new Set<string>();
+  const groupStateKeys = new Map<string, string[]>();
   const result: AutoSyncRunResult = { synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 };
   const commitInfoEntries: ProjectCommitInfoEntry[] = [];
   const actualConcurrency = resolveActualConcurrency(
@@ -153,6 +154,7 @@ export async function runAutoSyncOnce(
         let analyzedCommitId = previous?.analyzedCommitId;
         let analyzeConsecutiveFailures = previous?.analyzeConsecutiveFailures ?? 0;
         let lastAnalyzeError = previous?.lastAnalyzeError;
+        const groupSyncPending = previous?.groupSyncPending === true;
         let stats: RepoMeta['stats'] | undefined;
 
         if (previous && previous.codeCommitId !== currentCommit) {
@@ -219,6 +221,7 @@ export async function runAutoSyncOnce(
           analyzeStatus,
           analyzeConsecutiveFailures,
           lastAnalyzeError,
+          groupSyncPending,
           stats,
           stateKey,
           lastSyncTime,
@@ -265,6 +268,7 @@ export async function runAutoSyncOnce(
         indexedAt: repoResult.lastSyncTime,
         stats: repoResult.stats!,
         branch: repoResult.branch,
+        remoteUrl: repoResult.remoteUrl,
       };
       try {
         await deps.registerRepo(repoResult.targetDir, meta, {
@@ -291,6 +295,7 @@ export async function runAutoSyncOnce(
       lastAnalyzeStatus: analyzeStatus,
       analyzeConsecutiveFailures,
       lastAnalyzeError,
+      groupSyncPending: repoResult.groupSyncPending,
       lastSyncTime: repoResult.lastSyncTime,
     };
     state[repoResult.stateKey] = stateEntry;
@@ -326,23 +331,43 @@ export async function runAutoSyncOnce(
       }
       if (
         groupMembershipOk &&
-        (analyzeStatus === 'success' || (membershipAdded && analyzeStatus === 'skipped'))
+        (analyzeStatus === 'success' ||
+          (membershipAdded && analyzeStatus === 'skipped') ||
+          (analyzeStatus === 'skipped' && repoResult.groupSyncPending))
       ) {
-        groupsToSync.add(repoResult.project.groupName);
+        const groupName = repoResult.project.groupName;
+        groupsToSync.add(groupName);
+        const keys = groupStateKeys.get(groupName) ?? [];
+        keys.push(repoResult.stateKey);
+        groupStateKeys.set(groupName, keys);
       }
     }
   }
 
   await deps.saveState(state);
   await deps.writeCommitInfo(commitInfoEntries);
+  let groupStateChanged = false;
   for (const groupName of groupsToSync) {
     try {
       await deps.syncGroupByName(groupName);
+      for (const stateKey of groupStateKeys.get(groupName) ?? []) {
+        if (state[stateKey].groupSyncPending) {
+          state[stateKey].groupSyncPending = false;
+          groupStateChanged = true;
+        }
+      }
     } catch (err: unknown) {
       result.failed += 1;
+      for (const stateKey of groupStateKeys.get(groupName) ?? []) {
+        if (!state[stateKey].groupSyncPending) {
+          state[stateKey].groupSyncPending = true;
+          groupStateChanged = true;
+        }
+      }
       logger.error(`[auto-sync] Group sync failed for ${groupName}: ${(err as Error).message}`);
     }
   }
+  if (groupStateChanged) await deps.saveState(state);
   return result;
 }
 

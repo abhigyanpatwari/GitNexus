@@ -113,7 +113,9 @@ export function createAutoSyncAnalysisRunner(
         deps.clearTimeoutFn(timeout);
       });
       child.on('error', (error) => {
-        requestCancellation(new Error(`Auto-sync analyze worker error: ${error.message}`));
+        const workerError = new Error(`Auto-sync analyze worker error: ${error.message}`);
+        requestCancellation(workerError);
+        settle(workerError);
       });
       child.on('exit', (code, childSignal) => {
         if (settled) return;
@@ -138,9 +140,11 @@ export function createAutoSyncAnalysisRunner(
       try {
         child.send({ type: 'start', repoPath, options });
       } catch (error) {
-        requestCancellation(
-          new Error(`Failed to start auto-sync analyze worker: ${(error as Error).message}`),
+        const startError = new Error(
+          `Failed to start auto-sync analyze worker: ${(error as Error).message}`,
         );
+        requestCancellation(startError);
+        settle(startError);
       }
     });
 }

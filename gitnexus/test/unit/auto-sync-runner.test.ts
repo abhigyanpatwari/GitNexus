@@ -136,7 +136,11 @@ describe('auto-sync runner', () => {
     );
     expect(deps.registerRepo).toHaveBeenCalledWith(
       '/tmp/repos/gitee.com/qts_server/qts_account',
-      expect.objectContaining({ lastCommit: 'commit-2', branch: 'master' }),
+      expect.objectContaining({
+        lastCommit: 'commit-2',
+        branch: 'master',
+        remoteUrl: 'git@gitee.com:qts_server/qts_account.git',
+      }),
       { name: 'gitee.com/qts_server/qts_account' },
     );
     expect(deps.syncGroupByName).toHaveBeenCalledWith('back_end');
@@ -316,6 +320,52 @@ describe('auto-sync runner', () => {
     expect(result.skippedAnalysis).toBe(1);
     expect(deps.runAnalysis).not.toHaveBeenCalled();
     expect(deps.syncGroupByName).toHaveBeenCalledWith('back_end');
+  });
+
+  it('retries a failed group sync on the next unchanged commit without re-analysis', async () => {
+    let persistedState: any = {
+      '/tmp/repos/gitee.com/qts_server/qts_account|master': {
+        codeCommitId: 'commit-1',
+        analyzedCommitId: 'commit-1',
+        lastAnalyzeStatus: 'success',
+        groupSyncPending: true,
+        lastSyncTime: '2026-01-01T00:00:00.000Z',
+      },
+    };
+    const syncGroupByName = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('group temporarily unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+      cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
+      getCurrentBranch: vi.fn(() => 'master'),
+      getCurrentCommit: vi.fn(() => 'commit-1'),
+      runAnalysis: vi.fn(),
+      registerRepo: vi.fn(),
+      loadState: vi.fn(async () => structuredClone(persistedState)),
+      saveState: vi.fn(async (state) => {
+        persistedState = structuredClone(state);
+      }),
+      writeCommitInfo: vi.fn(async () => {}),
+      addRepoToGroup: vi.fn(async () => false),
+      syncGroupByName,
+      getAvailableMemoryGB: vi.fn(() => 8),
+    });
+    const runOptions = {
+      deps,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    };
+
+    const first = await runAutoSyncOnce(config, runOptions);
+    const second = await runAutoSyncOnce(config, runOptions);
+
+    expect(first.failed).toBe(1);
+    expect(second.failed).toBe(0);
+    expect(deps.runAnalysis).not.toHaveBeenCalled();
+    expect(syncGroupByName).toHaveBeenCalledTimes(2);
+    expect(persistedState['/tmp/repos/gitee.com/qts_server/qts_account|master'].groupSyncPending).toBe(
+      false,
+    );
   });
 
   it('uses remote identity under local_path as the clone target', async () => {
@@ -588,7 +638,15 @@ describe('auto-sync runner', () => {
         throw new Error('analysis failed');
       }),
       registerRepo: vi.fn(),
-      loadState: vi.fn(async () => ({})),
+      loadState: vi.fn(async () => ({
+        '/tmp/repos/gitee.com/qts_server/qts_account|master': {
+          codeCommitId: 'commit-1',
+          analyzedCommitId: 'commit-1',
+          lastAnalyzeStatus: 'success',
+          groupSyncPending: true,
+          lastSyncTime: '2026-06-29T00:00:00.000Z',
+        },
+      })),
       saveState: vi.fn(async () => {}),
       writeCommitInfo: vi.fn(async () => {}),
       addRepoToGroup: vi.fn(async () => true),
