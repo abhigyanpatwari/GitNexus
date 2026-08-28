@@ -229,36 +229,58 @@ function runGrok(
     const stdoutDecoder = new StringDecoder('utf8');
     const stderrDecoder = new StringDecoder('utf8');
     let settled = false;
+    let timedOut = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let killEscalate: ReturnType<typeof setTimeout> | undefined;
+    let hardDeadline: ReturnType<typeof setTimeout> | undefined;
+    const timeoutMs = config.requestTimeoutMs;
+    const timeoutError =
+      timeoutMs !== undefined && timeoutMs > 0
+        ? new Error(
+            `grok CLI timed out after ${
+              timeoutMs >= 60_000
+                ? `${Math.round(timeoutMs / 60_000)}m`
+                : `${Math.round(timeoutMs / 1_000)}s`
+            }. Increase --timeout or omit it to disable the request timeout.`,
+          )
+        : undefined;
+
+    const clearKillTimers = () => {
+      if (killTimer !== undefined) clearTimeout(killTimer);
+      if (killEscalate !== undefined) clearTimeout(killEscalate);
+      if (hardDeadline !== undefined) clearTimeout(hardDeadline);
+    };
 
     const rejectOnce = (error: Error) => {
       if (settled) return;
       settled = true;
-      if (killTimer !== undefined) clearTimeout(killTimer);
+      clearKillTimers();
       reject(error);
     };
 
     const resolveOnce = (value: string) => {
       if (settled) return;
       settled = true;
-      if (killTimer !== undefined) clearTimeout(killTimer);
+      clearKillTimers();
       resolve(value);
     };
 
-    if (config.requestTimeoutMs !== undefined && config.requestTimeoutMs > 0) {
+    const KILL_GRACE_MS = 2000;
+    if (timeoutMs !== undefined && timeoutMs > 0 && timeoutError) {
       killTimer = setTimeout(() => {
+        timedOut = true;
         killChildTree(child);
-        const duration =
-          config.requestTimeoutMs! >= 60_000
-            ? `${Math.round(config.requestTimeoutMs! / 60_000)}m`
-            : `${Math.round(config.requestTimeoutMs! / 1_000)}s`;
-        rejectOnce(
-          new Error(
-            `grok CLI timed out after ${duration}. ` +
-              'Increase --timeout or omit it to disable the request timeout.',
-          ),
-        );
-      }, config.requestTimeoutMs);
+        killEscalate = setTimeout(() => {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // Process may have already exited.
+          }
+          hardDeadline = setTimeout(() => {
+            rejectOnce(timeoutError);
+          }, KILL_GRACE_MS);
+        }, KILL_GRACE_MS);
+      }, timeoutMs);
     }
 
     child.stdout.on('data', (chunk: Buffer) => {
@@ -277,6 +299,11 @@ function runGrok(
       verboseLog(
         `Process exited with code ${code} after ${((Date.now() - startTime) / 1000).toFixed(1)}s`,
       );
+
+      if (timedOut && timeoutError) {
+        rejectOnce(timeoutError);
+        return;
+      }
 
       if (code !== 0) {
         const details = stderr.trim() || stdout.trim();

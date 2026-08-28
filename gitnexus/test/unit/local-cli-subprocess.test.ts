@@ -947,3 +947,157 @@ describe('Grok CLI subprocess contract', () => {
     }
   });
 });
+
+describe('Grok CLI timeout', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  function hangingChild() {
+    const child = new EventEmitter() as any;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = new EventEmitter() as any;
+    child.pid = 99;
+    child.kill = vi.fn();
+    child.stdin.end = vi.fn();
+    return child;
+  }
+
+  async function loadGrokWithChild(child: any, execFileSyncImpl?: (...args: any[]) => unknown) {
+    const spawnSpy = vi.fn(() => child);
+    const execFileSync =
+      execFileSyncImpl ??
+      vi.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'taskkill') return '';
+        return 'grok 1.0.5';
+      });
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('child_process', () => ({
+      execFileSync,
+      execSync: vi.fn(),
+      spawn: spawnSpy,
+    }));
+    const mod = await import('../../src/core/wiki/grok-client.js');
+    return { ...mod, spawnSpy, execFileSync };
+  }
+
+  async function waitForSpawn(spawnSpy: ReturnType<typeof vi.fn>) {
+    for (let i = 0; i < 50 && spawnSpy.mock.calls.length === 0; i++) {
+      await Promise.resolve();
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(spawnSpy).toHaveBeenCalled();
+  }
+
+  it('kills child process after requestTimeoutMs and rejects with timeout error', async () => {
+    const child = hangingChild();
+    const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child);
+    const promise = callGrokLLM('prompt', { requestTimeoutMs: 5000 });
+    await waitForSpawn(spawnSpy);
+    vi.advanceTimersByTime(5000);
+    child.emit('close', null);
+    await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
+    expect(child.kill).toHaveBeenCalled();
+  });
+
+  it('uses taskkill /T /F /PID on Windows for process-tree kill', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      const child = hangingChild();
+      child.pid = 42;
+      const execFileSync = vi.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'taskkill') return '';
+        if (cmd === 'where.exe') return 'C:\\npm\\grok.cmd\n';
+        return 'grok 1.0.5';
+      });
+      const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child, execFileSync);
+      const promise = callGrokLLM('prompt', { requestTimeoutMs: 3000 });
+      await waitForSpawn(spawnSpy);
+      vi.advanceTimersByTime(3000);
+      child.emit('close', null);
+      await expect(promise).rejects.toThrow('grok CLI timed out after 3s');
+      const taskkillCalls = execFileSync.mock.calls.filter((c: unknown[]) => c[0] === 'taskkill');
+      expect(taskkillCalls.length).toBe(1);
+      expect(taskkillCalls[0][1]).toEqual(['/T', '/F', '/PID', '42']);
+      expect(child.kill).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+
+  it('falls back to child.kill() when taskkill fails on Windows', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try {
+      const child = hangingChild();
+      child.pid = 42;
+      const execFileSync = vi.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'taskkill') throw new Error('taskkill: process not found');
+        if (cmd === 'where.exe') return 'C:\\npm\\grok.cmd\n';
+        return 'grok 1.0.5';
+      });
+      const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child, execFileSync);
+      const promise = callGrokLLM('prompt', { requestTimeoutMs: 2000 });
+      await waitForSpawn(spawnSpy);
+      vi.advanceTimersByTime(2000);
+      child.emit('close', null);
+      await expect(promise).rejects.toThrow('grok CLI timed out after 2s');
+      expect(child.kill).toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+
+  it('does not set a kill timer when requestTimeoutMs is undefined', async () => {
+    const child = hangingChild();
+    child.stdin.end = vi.fn(() => {
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from(JSON.stringify({ text: 'ok' })));
+        child.emit('close', 0);
+      });
+    });
+    const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child);
+    const promise = callGrokLLM('prompt', {});
+    await waitForSpawn(spawnSpy);
+    await expect(promise).resolves.toEqual({ content: 'ok' });
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('does not remove the temp dir until the child closes after timeout', async () => {
+    const fs = await import('fs');
+    const child = hangingChild();
+    const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child);
+    const promise = callGrokLLM('prompt', { requestTimeoutMs: 5000 });
+    await waitForSpawn(spawnSpy);
+    const cwd = (spawnSpy.mock.calls[0][2] as { cwd: string }).cwd;
+    expect(fs.existsSync(cwd)).toBe(true);
+    let state: 'pending' | 'ok' | 'err' = 'pending';
+    void promise.then(
+      () => {
+        state = 'ok';
+      },
+      () => {
+        state = 'err';
+      },
+    );
+    vi.advanceTimersByTime(5000);
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(state).toBe('pending');
+    expect(fs.existsSync(cwd)).toBe(true);
+    child.emit('close', null);
+    await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
+    expect(fs.existsSync(cwd)).toBe(false);
+  });
+});
