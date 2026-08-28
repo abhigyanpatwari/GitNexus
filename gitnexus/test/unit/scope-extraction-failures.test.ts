@@ -15,6 +15,7 @@ describe('summarizeScopeExtractionFailures', () => {
 
   it('returns undefined when no failure was recorded', () => {
     expect(summarizeScopeExtractionFailures([])).toBeUndefined();
+    expect(summarizeScopeExtractionFailures()).toBeUndefined();
   });
 
   it('clears worker failures recovered by fallback and retains final omissions', () => {

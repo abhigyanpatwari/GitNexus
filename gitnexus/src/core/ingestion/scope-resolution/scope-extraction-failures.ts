@@ -23,7 +23,7 @@ export function reconcileScopeExtractionFailures(
 }
 
 export function summarizeScopeExtractionFailures(
-  paths: readonly string[],
+  paths: readonly string[] = [],
   limit: number = SCOPE_EXTRACTION_FAILURE_PATH_LIMIT,
 ): ScopeExtractionFailureSummary | undefined {
   const unique = [...new Set(paths.filter((path) => path.length > 0))].sort();
