@@ -23,9 +23,15 @@ export function readProcessStartTime(pid: number): string | undefined {
             ],
             { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
           ).trim()
-        : execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {
+        : // `lstart` is rendered through localtime and the active locale, so the
+          // same live process yields a different string under a different TZ or
+          // LC_TIME. That string is a lock owner's identity, and a mismatch is
+          // read as PID reuse — an unpinned render lets one daemon reclaim a
+          // mutex another still holds. Pin both so the identity is absolute.
+          execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], {
             encoding: 'utf-8',
             stdio: ['ignore', 'pipe', 'ignore'],
+            env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
           }).trim();
     return startedAt || undefined;
   } catch {

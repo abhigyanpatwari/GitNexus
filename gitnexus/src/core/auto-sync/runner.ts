@@ -479,7 +479,15 @@ async function mapWithConcurrency<T, R>(
       throwIfAborted(signal);
     }
   });
-  await Promise.all(runners);
+  // Settle every runner before surfacing a failure. Promise.all rejects on the
+  // first error while siblings are still inside a clone or waiting on an
+  // analyze fork, and the caller treats that rejection as "the run is over" —
+  // it releases the watch mutex and exits, orphaning those children. Each
+  // runner already refuses new work at the abort check above, so waiting here
+  // costs nothing on the cancel path.
+  const settlements = await Promise.allSettled(runners);
+  const failure = settlements.find((s) => s.status === 'rejected');
+  if (failure) throw (failure as PromiseRejectedResult).reason;
   return results;
 }
 

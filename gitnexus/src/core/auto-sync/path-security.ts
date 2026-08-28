@@ -144,6 +144,12 @@ export async function quarantineAutoSyncPartial(
 
 async function removeExpiredQuarantineEntries(quarantineRoot: string): Promise<void> {
   const cutoff = Date.now() - QUARANTINE_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
+  // readdir and stat both resolve through a link, so a symlinked quarantine
+  // root would age-sweep and delete entries somewhere else entirely.
+  const rootStat = await fs.lstat(quarantineRoot).catch(() => undefined);
+  if (rootStat?.isSymbolicLink()) {
+    throw new Error(`Refusing symlinked auto-sync quarantine root: ${quarantineRoot}`);
+  }
   let entries;
   try {
     entries = await fs.readdir(quarantineRoot);
@@ -214,9 +220,14 @@ async function assertNoSymlinkPath(root: string): Promise<void> {
 export async function assertDirectoryOwnerAndPermissions(root: string): Promise<void> {
   const stat = await fs.stat(root);
   if (!stat.isDirectory()) throw new Error(`auto-sync clone root is not a directory: ${root}`);
-  if (process.platform === 'win32') {
-    throw new Error('auto-sync clone root ownership/ACL verification is not supported on Windows');
-  }
+  // POSIX uid/mode have no meaning on Windows, and this runs on every tick for
+  // every project, so throwing here failed 100% of repos forever while `watch
+  // status` still read `running`. Skip the ownership assertions rather than the
+  // whole feature: the caller's other guards — dangerous-root rejection
+  // (including the Windows system roots), symlink refusal, realpath containment
+  // and the GitNexus-internal-root check — all still apply, and managed git runs
+  // with `core.hooksPath` pinned to the null device.
+  if (process.platform === 'win32') return;
   if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
     throw new Error(`auto-sync clone root is owned by uid ${stat.uid}, not current process uid`);
   }

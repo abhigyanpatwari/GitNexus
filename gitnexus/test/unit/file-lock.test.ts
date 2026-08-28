@@ -96,6 +96,28 @@ describe('file lock', () => {
     await nextRelease();
   });
 
+  it('never reclaims a lock held from another host', async () => {
+    const lockPath = await tempLockPath();
+    await acquireFileLock(lockPath, {
+      pid: 111,
+      processStartTime: 'peer-start',
+      hostname: 'peer-host',
+    });
+
+    // Locally pid 111 is alive with a different start time, which is the
+    // reuse signature — but the holder is on another machine, so this kernel
+    // cannot judge it and the lock must stand.
+    await expect(
+      acquireFileLock(lockPath, {
+        pid: 222,
+        processStartTime: 'local-start',
+        hostname: 'local-host',
+        isProcessAlive: () => true,
+        readProcessStartTime: () => 'unrelated-local-start',
+      }),
+    ).rejects.toBeInstanceOf(FileLockBusyError);
+  });
+
   it('fails closed for legacy or invalid lock contents without owner metadata', async () => {
     const lockPath = await tempLockPath();
     const invalidContents = ['legacy lock', '{not json', JSON.stringify({ pid: 123 })];

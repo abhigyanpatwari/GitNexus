@@ -80,11 +80,15 @@ export async function loadAutoSyncState(
       ),
     );
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      process.stderr.write(
-        `[auto-sync] Ignoring unreadable or corrupt state file: ${statePath}. State will be rebuilt.\n`,
-      );
-    }
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    // Corrupt JSON is genuinely unrecoverable, so rebuilding is the only move.
+    // An unreadable file (EACCES, EIO, EISDIR) is different: the state is
+    // probably intact, and returning {} here would make the tick overwrite it,
+    // losing every repo's analyzed commit and failure count.
+    if (!(err instanceof SyntaxError)) throw err;
+    process.stderr.write(
+      `[auto-sync] Ignoring corrupt state file: ${statePath}. State will be rebuilt.\n`,
+    );
     return {};
   }
 }

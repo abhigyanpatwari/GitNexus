@@ -550,8 +550,18 @@ describe('auto-sync', () => {
     await expect(loadAutoSyncState(statePath)).resolves.toEqual({});
 
     expect(stderr).toHaveBeenCalledWith(
-      `[auto-sync] Ignoring unreadable or corrupt state file: ${statePath}. State will be rebuilt.\n`,
+      `[auto-sync] Ignoring corrupt state file: ${statePath}. State will be rebuilt.\n`,
     );
+  });
+
+  it('propagates an unreadable state file instead of overwriting it with empty state', async () => {
+    // A directory stands in for any non-ENOENT read failure (EACCES, EIO).
+    // Returning {} here would make the next tick persist empty state over
+    // every repo's analyzed commit and failure counters.
+    const statePath = path.join(tempDir, 'unreadable-state.json');
+    await fs.mkdir(statePath, { recursive: true });
+
+    await expect(loadAutoSyncState(statePath)).rejects.toThrow();
   });
 
   it('drops malformed state entries while preserving valid entries', async () => {

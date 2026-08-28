@@ -62,7 +62,7 @@ async function writeWatchOwner(
   await fs.writeFile(paths.pidPath, `${pid}\n`);
   await fs.writeFile(
     paths.mutexPath,
-    `${JSON.stringify({ pid, ownerId: `mutex-${ownerId}`, processStartTime: verifiedProcessStartTime })}\n`,
+    `${JSON.stringify({ pid, ownerId: `mutex-${ownerId}`, processStartTime: verifiedProcessStartTime, hostname: os.hostname() })}\n`,
   );
   await fs.writeFile(
     paths.ownerPath,
