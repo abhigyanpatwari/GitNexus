@@ -254,7 +254,7 @@ const MAX_FOLD_DEPTH = 32;
  * {@link extractKotlinModuleConstants} about which files carry constants — the
  * defect class the Java binding's shared `isJavaConstantFile` exists to prevent.
  *
- * Arms, both intended to be WIDER than the extractor (a gate may over-admit — it
+ * Arms, all intended to be WIDER than the extractor (a gate may over-admit — it
  * only costs a parse — while rejecting a file the extractor would accept costs a
  * fact):
  *  - `const val NAME [: T] =`. `const` is legal only at a file's top level or in
@@ -266,23 +266,10 @@ const MAX_FOLD_DEPTH = 32;
  *    whose only `val`s are function locals from costing a parse. It still admits
  *    a top-level `val` in a file that happens to declare an object elsewhere,
  *    which is the harmless direction.
- *
- * KNOWN GAP — the "never rejects what the extractor accepts" property does NOT
- * hold, and claiming it did was wrong. {@link extractKotlinModuleConstants}
- * calls `collectProperties(tree.rootNode, null)`, so it harvests a TOP-LEVEL
- * non-`const` `val`; a file whose only constant has that shape and declares no
- * `object` fails both arms above (`const val` absent, `object` absent) and is
- * never parsed.
- *
- * The direction is safe — the constant is simply missing from the map, so a
- * reference to it floors to skip, never to a wrong path — but the cost is not
- * nil. Measured on both sides of this change: with the declaration in the SAME
- * file as the route it still folds, because `scan` re-extracts that file's tree
- * on demand and bypasses the gate; with the declaration in its OWN file the
- * route is silently dropped. Closing the gap means admitting every file that
- * contains any `val … =`, function locals included — very nearly the whole
- * repository, in a pass whose entire purpose is to avoid parsing it. That trade
- * has not been measured, so the gap is recorded here rather than papered over.
+ *  - a `val NAME =` binding at file scope. A small lexical walk tracks braces
+ *    and parentheses while skipping comments and literals, admitting the
+ *    top-level non-`const` property the extractor harvests without turning every
+ *    function-local `val` or constructor property into an extra parse.
  *
  * Both name arms accept a BACKTICK-QUOTED identifier as well as a bare one,
  * because the extractor does: `unquoteKotlinIdentifier` strips the quoting
@@ -292,15 +279,106 @@ const MAX_FOLD_DEPTH = 32;
  * extractor, which is the one direction the arms above are meant to exclude.
  */
 const KOTLIN_NAME = String.raw`(?:\w+|\`[^\`\n]+\`)`;
-const CONST_VAL_RE = new RegExp(
-  String.raw`\bconst\s+val\s+${KOTLIN_NAME}\s*(?::[^=\n{}()]{0,60})?=`,
-);
-const OBJECT_DECL_RE = /\bobject\b/;
-const VAL_BINDING_RE = new RegExp(String.raw`\bval\s+${KOTLIN_NAME}\s*(?::[^=\n{}()]{0,60})?=`);
+const CONST_VAL_AT = new RegExp(String.raw`const\s+val\s+${KOTLIN_NAME}(?=\s|:|=|$)`, 'y');
+const VAL_DECLARATION_AT = new RegExp(String.raw`val\s+${KOTLIN_NAME}(?=\s|:|=|by\b|$)`, 'y');
+
+/** Is `source[index...]` the keyword `word`, rather than part of an identifier? */
+function keywordAt(source: string, index: number, word: string): boolean {
+  if (!source.startsWith(word, index)) return false;
+  const before = index === 0 ? '' : source[index - 1];
+  const after = source[index + word.length] ?? '';
+  return !/[\w$]/.test(before) && !/[\w$]/.test(after);
+}
+
+/** Test a sticky declaration pattern at one source offset without slicing. */
+function declarationAt(pattern: RegExp, source: string, index: number): boolean {
+  pattern.lastIndex = index;
+  return pattern.test(source);
+}
 
 export function isKotlinConstantFile(source: string): boolean {
-  if (CONST_VAL_RE.test(source)) return true;
-  return OBJECT_DECL_RE.test(source) && VAL_BINDING_RE.test(source);
+  let braces = 0;
+  let parens = 0;
+  let blockCommentDepth = 0;
+  let sawObject = false;
+
+  for (let i = 0; i < source.length; i++) {
+    if (blockCommentDepth > 0) {
+      if (source.startsWith('/*', i)) {
+        blockCommentDepth++;
+        i++;
+      } else if (source.startsWith('*/', i)) {
+        blockCommentDepth--;
+        i++;
+      }
+      continue;
+    }
+
+    if (source.startsWith('//', i)) {
+      const newline = source.indexOf('\n', i + 2);
+      if (newline < 0) break;
+      i = newline;
+      continue;
+    }
+    if (source.startsWith('/*', i)) {
+      blockCommentDepth = 1;
+      i++;
+      continue;
+    }
+
+    const quote = source[i];
+    if (source.startsWith('"""', i)) {
+      const end = source.indexOf('"""', i + 3);
+      if (end < 0) break;
+      i = end + 2;
+      continue;
+    }
+    if (quote === '"' || quote === "'") {
+      for (i++; i < source.length; i++) {
+        if (source[i] === '\\') {
+          i++;
+          continue;
+        }
+        if (source[i] === quote) break;
+      }
+      continue;
+    }
+    if (quote === '`') {
+      const end = source.indexOf('`', i + 1);
+      if (end < 0) break;
+      i = end;
+      continue;
+    }
+
+    if (quote === '{') {
+      braces++;
+      continue;
+    }
+    if (quote === '}') {
+      braces = Math.max(0, braces - 1);
+      continue;
+    }
+    if (quote === '(') {
+      parens++;
+      continue;
+    }
+    if (quote === ')') {
+      parens = Math.max(0, parens - 1);
+      continue;
+    }
+
+    if (keywordAt(source, i, 'object')) {
+      sawObject = true;
+      i += 'object'.length - 1;
+      continue;
+    }
+    if (keywordAt(source, i, 'const') && declarationAt(CONST_VAL_AT, source, i)) return true;
+    if (keywordAt(source, i, 'val') && declarationAt(VAL_DECLARATION_AT, source, i)) {
+      if (sawObject || (braces === 0 && parens === 0)) return true;
+      i += 'val'.length - 1;
+    }
+  }
+  return false;
 }
 
 /** Does `key` name the file `<asPath>.kt` / `<asPath>.kts`? */
@@ -333,6 +411,119 @@ function declaresTopLevelName(mc: ModuleConstants, name: string): boolean {
     if (key === name || key.startsWith(prefix)) return true;
   }
   return false;
+}
+
+/** Files and declaration ownership for one exact Kotlin package. */
+export interface KotlinPackageConstants {
+  readonly files: readonly string[];
+  /** Unique declaring file, or null when the package declares the name twice. */
+  readonly declarers: ReadonlyMap<string, string | null>;
+}
+
+/** One exact package-qualified declaration and its in-file lookup key. */
+interface KotlinImportTarget {
+  readonly fileKey: string;
+  readonly localName: string;
+}
+
+/**
+ * Repo-wide projections reused by every fold in one extraction run.
+ *
+ * `repo` includes importing files overlaid by `scan`; `constantKeys` and
+ * `byPackage` include only files that define a foldable or explicitly
+ * unfoldable declaration, preserving import ambiguity semantics.
+ */
+export interface KotlinConstantIndex {
+  readonly repo: RepoConstants;
+  readonly constantKeys: ReadonlySet<string>;
+  readonly byPackage: ReadonlyMap<string, KotlinPackageConstants>;
+  /** Exact FQN → unique file/local key, or null when the FQN is duplicated. */
+  readonly byFqn: ReadonlyMap<string, KotlinImportTarget | null>;
+}
+
+/** Does this file contribute declarations to Kotlin import ambiguity? */
+function contributesKotlinConstants(mc: ModuleConstants): boolean {
+  return mc.literals.size > 0 || mc.exprs.size > 0 || unfoldableDeclarationsOf(mc).size > 0;
+}
+
+/** Top-level names declared by one file (`Outer.X` contributes `Outer`). */
+function topLevelDeclarationNames(mc: ModuleConstants): Set<string> {
+  const names = new Set<string>();
+  for (const map of [mc.literals, mc.exprs]) {
+    for (const key of map.keys()) {
+      const dot = key.indexOf('.');
+      names.add(dot < 0 ? key : key.slice(0, dot));
+    }
+  }
+  for (const key of unfoldableDeclarationsOf(mc)) {
+    const dot = key.indexOf('.');
+    names.add(dot < 0 ? key : key.slice(0, dot));
+  }
+  return names;
+}
+
+/** Every declaration key recorded for a file, foldable or not. */
+function declarationKeys(mc: ModuleConstants): Set<string> {
+  return new Set([...mc.literals.keys(), ...mc.exprs.keys(), ...unfoldableDeclarationsOf(mc)]);
+}
+
+/** Build the immutable import projections once for a repo constant map. */
+export function buildKotlinConstantIndex(repo: RepoConstants): KotlinConstantIndex {
+  const constantKeys = new Set<string>();
+  const byFqn = new Map<string, KotlinImportTarget | null>();
+  const mutablePackages = new Map<
+    string,
+    { files: string[]; declarers: Map<string, string | null> }
+  >();
+
+  for (const [key, mc] of repo) {
+    if (!contributesKotlinConstants(mc)) continue;
+    constantKeys.add(key);
+    const packageName = declaredPackageOf(mc);
+    if (packageName === null) continue;
+    let bucket = mutablePackages.get(packageName);
+    if (!bucket) {
+      bucket = { files: [], declarers: new Map() };
+      mutablePackages.set(packageName, bucket);
+    }
+    bucket.files.push(key);
+    for (const name of topLevelDeclarationNames(mc)) {
+      if (!bucket.declarers.has(name)) bucket.declarers.set(name, key);
+      else if (bucket.declarers.get(name) !== key) bucket.declarers.set(name, null);
+    }
+    for (const declaration of declarationKeys(mc)) {
+      const parts = declaration.split('.');
+      // A member key `Outer.Inner.Q` proves the file declares both owner paths
+      // as well as the member itself. This lets imports of nested objects and
+      // their members retain the complete in-file lookup path.
+      for (let length = 1; length <= parts.length; length++) {
+        const localName = parts.slice(0, length).join('.');
+        const fqn = packageName === '' ? localName : `${packageName}.${localName}`;
+        const existing = byFqn.get(fqn);
+        if (existing === undefined) byFqn.set(fqn, { fileKey: key, localName });
+        else if (existing !== null && existing.fileKey !== key) byFqn.set(fqn, null);
+      }
+    }
+  }
+
+  return { repo, constantKeys, byPackage: mutablePackages, byFqn };
+}
+
+/**
+ * Add one scan-time file without rebuilding the base index when it only imports
+ * constants. A newly discovered declaration is rare and rebuilds once for that
+ * file's scan, never once per route.
+ */
+export function overlayKotlinConstantIndex(
+  index: KotlinConstantIndex,
+  fileKey: string,
+  mc: ModuleConstants,
+): KotlinConstantIndex {
+  const repo = new Map(index.repo);
+  const replacing = repo.has(fileKey);
+  repo.set(fileKey, mc);
+  if (!replacing && !contributesKotlinConstants(mc)) return { ...index, repo };
+  return buildKotlinConstantIndex(repo);
 }
 
 /**
@@ -429,6 +620,46 @@ export function resolveKotlinImport(
   }
   // Step 3 is "the sole candidate", already returned above.
   return named;
+}
+
+/** Indexed equivalent of {@link resolveKotlinImport}, with identical fallbacks. */
+export function resolveKotlinImportWithIndex(
+  rawModuleSpec: string,
+  index: KotlinConstantIndex,
+): string | null {
+  return resolveKotlinImportTarget(rawModuleSpec, index)?.fileKey ?? null;
+}
+
+/** Resolve an import to both its file and complete in-file declaration path. */
+function resolveKotlinImportTarget(
+  rawModuleSpec: string,
+  index: KotlinConstantIndex,
+): KotlinImportTarget | null {
+  const moduleSpec = unquoteKotlinDottedName(rawModuleSpec);
+  const lastDot = moduleSpec.lastIndexOf('.');
+  const packageName = lastDot < 0 ? '' : moduleSpec.slice(0, lastDot);
+  const simpleName = lastDot < 0 ? moduleSpec : moduleSpec.slice(lastDot + 1);
+  const bucket = index.byPackage.get(packageName);
+  // Preserve the top-level interpretation whenever the exact declared package
+  // exists. A parent package may legally contain nested objects whose joined
+  // path spells the same FQN; letting that projection win would make a nested
+  // decoy override the real top-level declaration.
+  if (!bucket) return index.byFqn.get(moduleSpec) ?? null;
+
+  if (bucket.declarers.has(simpleName)) {
+    const fileKey = bucket.declarers.get(simpleName);
+    return fileKey === null || fileKey === undefined ? null : { fileKey, localName: simpleName };
+  }
+  if (bucket.files.length === 1) return { fileKey: bucket.files[0], localName: simpleName };
+
+  const asPath = moduleSpec.replace(/\./g, '/');
+  let named: string | null = null;
+  for (const key of bucket.files) {
+    if (!isFileNamedAfterDeclaration(key, asPath)) continue;
+    if (named !== null) return null;
+    named = key;
+  }
+  return named === null ? null : { fileKey: named, localName: simpleName };
 }
 
 /**
@@ -886,26 +1117,24 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
  *    another — so caching it would be unsound.
  *  - `visited` is the ACTIVE resolution stack, popped on unwind, so diamonds fold
  *    instead of false-cycling while true cycles still terminate.
- *  - `constantKeys` is the candidate set import ambiguity is measured over:
- *    files with a foldable or explicitly unfoldable declaration. Measuring over
- *    every repo key would let a file that defines nothing create ambiguity, and
- *    it would rebuild the set on every qualified reference.
+ *  - `index` carries the constant-defining key set and exact-package declaration
+ *    buckets built by `prepareRepo`. A public one-shot call can still build it
+ *    lazily, while production folds reuse it across every route in the scan.
+ *    Import-only files stay out of the candidate set so they cannot manufacture
+ *    ambiguity.
  */
 interface KotlinFoldState {
-  readonly repo: RepoConstants;
-  readonly constantKeys: ReadonlySet<string>;
+  readonly index: KotlinConstantIndex;
   readonly visited: Set<string>;
   readonly memo: Map<string, string>;
 }
 
-function newFoldState(repo: RepoConstants): KotlinFoldState {
-  const constantKeys = new Set<string>();
-  for (const [key, mc] of repo) {
-    if (mc.literals.size > 0 || mc.exprs.size > 0 || unfoldableDeclarationsOf(mc).size > 0) {
-      constantKeys.add(key);
-    }
-  }
-  return { repo, constantKeys, visited: new Set(), memo: new Map() };
+function newFoldState(repo: RepoConstants, index?: KotlinConstantIndex): KotlinFoldState {
+  return {
+    index: index ?? buildKotlinConstantIndex(repo),
+    visited: new Set(),
+    memo: new Map(),
+  };
 }
 
 /**
@@ -922,8 +1151,9 @@ export function resolveKotlinConstant(
   name: string,
   repo: RepoConstants,
   depth = 0,
+  index?: KotlinConstantIndex,
 ): string | null {
-  return resolveWithState(fileKey, name, newFoldState(repo), depth);
+  return resolveWithState(fileKey, name, newFoldState(repo, index), depth);
 }
 
 function resolveWithState(
@@ -966,9 +1196,9 @@ function resolveImportedName(
 ): string | null {
   // Reading A: the specifier names the declaration itself (a top-level
   // `const val`, or a type whose file we then search).
-  const direct = resolveKotlinImport(fileKey, imp.module, state.constantKeys, state.repo);
+  const direct = resolveKotlinImportTarget(imp.module, state.index);
   if (direct !== null) {
-    const value = resolveWithState(direct, imp.originalName, state, depth);
+    const value = resolveWithState(direct.fileKey, direct.localName, state, depth);
     if (value !== null) return value;
   }
   // Reading B: the specifier names a MEMBER of the declaration one segment up
@@ -976,10 +1206,9 @@ function resolveImportedName(
   const dot = imp.module.lastIndexOf('.');
   if (dot <= 0) return null;
   const ownerSpec = imp.module.slice(0, dot);
-  const ownerName = ownerSpec.slice(ownerSpec.lastIndexOf('.') + 1);
-  const ownerFile = resolveKotlinImport(fileKey, ownerSpec, state.constantKeys, state.repo);
-  if (ownerFile === null) return null;
-  return resolveWithState(ownerFile, `${ownerName}.${imp.originalName}`, state, depth);
+  const owner = resolveKotlinImportTarget(ownerSpec, state.index);
+  if (owner === null) return null;
+  return resolveWithState(owner.fileKey, `${owner.localName}.${imp.originalName}`, state, depth);
 }
 
 function computeKotlinFold(
@@ -988,7 +1217,7 @@ function computeKotlinFold(
   state: KotlinFoldState,
   depth: number,
 ): string | null {
-  const { repo, constantKeys } = state;
+  const { repo } = state.index;
   // Qualified reference (`ApiPaths.ORDERS`): constants and imports are keyed by
   // their IN-FILE name, so a dotted name never hits directly. Split head.tail,
   // resolve the head through the importing file's type import, then look the
@@ -1004,22 +1233,21 @@ function computeKotlinFold(
     const tail = name.slice(dot + 1);
     const imp = repo.get(fileKey)?.imports.get(head);
     if (imp) {
-      const targetFile = resolveKotlinImport(fileKey, imp.module, constantKeys, repo);
-      if (targetFile === null) return null;
+      const target = resolveKotlinImportTarget(imp.module, state.index);
+      if (target === null) return null;
       // `originalName` un-aliases `import … .ApiPaths as Paths`, so the lookup
       // uses the declaring type's real name.
-      return resolveWithState(targetFile, `${imp.originalName}.${tail}`, state, depth + 1);
+      return resolveWithState(target.fileKey, `${target.localName}.${tail}`, state, depth + 1);
     }
     // Un-imported qualified name (FQN form `com.example.app.api.ApiPaths.ORDERS`):
     // try the longest dotted prefix that resolves to a file.
     const parts = name.split('.');
     for (let cut = parts.length - 2; cut >= 1; cut--) {
       const fqn = parts.slice(0, cut + 1).join('.');
-      const targetFile = resolveKotlinImport(fileKey, fqn, constantKeys, repo);
-      if (targetFile !== null) {
-        const declaring = parts[cut];
+      const target = resolveKotlinImportTarget(fqn, state.index);
+      if (target !== null) {
         const member = parts.slice(cut + 1).join('.');
-        return resolveWithState(targetFile, `${declaring}.${member}`, state, depth + 1);
+        return resolveWithState(target.fileKey, `${target.localName}.${member}`, state, depth + 1);
       }
     }
     // No import bound the head and no FQN prefix resolved — fall through. A
@@ -1149,6 +1377,7 @@ export function foldKotlinOperands(
   operands: readonly Operand[],
   repo: RepoConstants,
   enclosingTypes: readonly string[] = [],
+  index?: KotlinConstantIndex,
 ): string | null {
   // Allocation gate only: skip the map when there is nothing to qualify against
   // or no reference to qualify. It must not restate the rule — a dotted operand
@@ -1167,5 +1396,5 @@ export function foldKotlinOperands(
           : op,
       )
     : operands;
-  return foldOperands(fileKey, scoped, newFoldState(repo), 0);
+  return foldOperands(fileKey, scoped, newFoldState(repo, index), 0);
 }

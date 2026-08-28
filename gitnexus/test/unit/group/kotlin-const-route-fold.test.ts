@@ -117,6 +117,52 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
+  it('folds a standalone top-level val from another file', () => {
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+
+val ORDERS = "/api/v1/orders"
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ORDERS
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('folds a constant imported through a nested object', () => {
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+
+object Outer {
+    object Inner {
+        const val ORDERS = "/nested/orders"
+    }
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.Outer.Inner
+
+@RestController
+class OrderController {
+    @GetMapping(Inner.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /nested/orders']);
+  });
+
   it('folds a named `value =` / `path =` argument and an inline concatenation', () => {
     expect(
       providers({

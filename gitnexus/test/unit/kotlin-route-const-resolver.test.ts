@@ -28,12 +28,15 @@ import Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import { MAX_FOLD_LENGTH } from '../../src/core/ingestion/route-extractors/constant-resolver.js';
 import {
+  buildKotlinConstantIndex,
   extractKotlinModuleConstants,
   foldKotlinOperands,
   isKotlinConstantFile,
+  overlayKotlinConstantIndex,
   parseKotlinConstOperands,
   resolveKotlinConstant,
   resolveKotlinImport,
+  resolveKotlinImportWithIndex,
   type ModuleConstants,
   type RepoConstants,
 } from '../../src/core/ingestion/route-extractors/kotlin-const-resolver.js';
@@ -223,6 +226,115 @@ object Regexes {
       expect(resolveKotlinConstant(key, 'Regexes.USER', repo)).toBe(
         unquoteSpringLiteral('"/user/{id:\\\\d+}"'),
       );
+    });
+  });
+
+  describe('prepared constant index', () => {
+    it('preserves fold results while narrowing lookup to the declared package', () => {
+      const files: Record<string, string> = {
+        [CONSTS_KEY]: CONSTS_SRC,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+`,
+      };
+      for (let i = 0; i < 256; i++) {
+        files[`src/main/kotlin/com/noise/p${i}/Noise.kt`] = `package com.noise.p${i}
+
+object Noise${i} {
+    const val PATH = "/noise/${i}"
+}
+`;
+      }
+      const repo = repoOf(files);
+      const index = buildKotlinConstantIndex(repo);
+
+      expect(index.constantKeys.size).toBe(257);
+      expect(index.byPackage.get('com.example.app.api')?.files).toEqual([CONSTS_KEY]);
+      expect(resolveKotlinImportWithIndex('com.example.app.api.ApiPaths', index)).toBe(CONSTS_KEY);
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo, 0, index)).toBe(
+        resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo),
+      );
+    });
+
+    it('reuses package projections for an import-only scan overlay', () => {
+      const repo = repoOf({ [CONSTS_KEY]: CONSTS_SRC });
+      const index = buildKotlinConstantIndex(repo);
+      const controller = extractKotlinModuleConstants(
+        parse(`package com.example.app.web
+
+import com.example.app.api.ApiPaths
+`),
+      );
+      const overlaid = overlayKotlinConstantIndex(index, CONTROLLER_KEY, controller);
+
+      expect(overlaid.repo.get(CONTROLLER_KEY)).toBe(controller);
+      expect(overlaid.constantKeys).toBe(index.constantKeys);
+      expect(overlaid.byPackage).toBe(index.byPackage);
+      expect(resolveKotlinImportWithIndex('com.example.app.api.ApiPaths', overlaid)).toBe(
+        CONSTS_KEY,
+      );
+      expect(
+        resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', overlaid.repo, 0, overlaid),
+      ).toBe('/api/v1/orders');
+    });
+
+    it('keeps duplicate declarations ambiguous after an overlay', () => {
+      const repo = repoOf({ [CONSTS_KEY]: CONSTS_SRC });
+      const index = buildKotlinConstantIndex(repo);
+      const duplicateKey = 'src/test/kotlin/com/example/app/api/ApiPaths.kt';
+      const duplicate = extractKotlinModuleConstants(
+        parse(`package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/test-only"
+}
+`),
+      );
+      const overlaid = overlayKotlinConstantIndex(index, duplicateKey, duplicate);
+
+      expect(overlaid.constantKeys.size).toBe(2);
+      expect(resolveKotlinImportWithIndex('com.example.app.api.ApiPaths', overlaid)).toBeNull();
+    });
+
+    it('prefers an exact declared package over a nested path with the same FQN', () => {
+      const parentKey = 'src/main/kotlin/com/example/app/Parent.kt';
+      const childKey = 'src/main/kotlin/com/example/app/api/ApiPaths.kt';
+      const repo = repoOf({
+        [parentKey]: `package com.example.app
+
+object api {
+    object ApiPaths {
+        const val ORDERS = "/wrong"
+    }
+}
+`,
+        [childKey]: `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+`,
+      });
+      const index = buildKotlinConstantIndex(repo);
+
+      expect(resolveKotlinImportWithIndex('com.example.app.api.ApiPaths', index)).toBe(childKey);
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo, 0, index)).toBe(
+        '/right',
+      );
+      expect(
+        resolveKotlinConstant(
+          CONTROLLER_KEY,
+          'com.example.app.api.ApiPaths.ORDERS',
+          repo,
+          0,
+          index,
+        ),
+      ).toBe('/right');
     });
   });
 
@@ -810,6 +922,8 @@ class Outer {
       // declaration itself is reachable as `Outer.Inner.Q`, never `Inner.Q`.
       const key = 'src/main/kotlin/com/example/app/api/Nested.kt';
       const controllerKey = 'src/main/kotlin/com/example/app/web/Controller.kt';
+      const nestedImportKey = 'src/main/kotlin/com/example/app/web/NestedImport.kt';
+      const memberImportKey = 'src/main/kotlin/com/example/app/web/MemberImport.kt';
       const repo = repoOf({
         [key]: `package com.example.app.api
 
@@ -828,9 +942,22 @@ object Outer {
 
 import com.example.app.api.Outer
 `,
+        [nestedImportKey]: `package com.example.app.web
+
+import com.example.app.api.Outer.Inner
+`,
+        [memberImportKey]: `package com.example.app.web
+
+import com.example.app.api.Outer.Inner.Q
+`,
       });
       expect(resolveKotlinConstant(key, 'Outer.Inner.Q', repo)).toBe('/right/q');
       expect(resolveKotlinConstant(controllerKey, 'Outer.Inner.Q', repo)).toBe('/right/q');
+      expect(resolveKotlinConstant(controllerKey, 'com.example.app.api.Outer.Inner.Q', repo)).toBe(
+        '/right/q',
+      );
+      expect(resolveKotlinConstant(nestedImportKey, 'Inner.Q', repo)).toBe('/right/q');
+      expect(resolveKotlinConstant(memberImportKey, 'Q', repo)).toBe('/right/q');
       expect(resolveKotlinConstant(key, 'Inner.Q', repo)).toBeNull();
     });
 
@@ -1221,6 +1348,7 @@ object \`ApiPaths\` {
     it('admits every shape the extractor harvests', () => {
       expect(isKotlinConstantFile(CONSTS_SRC)).toBe(true);
       expect(isKotlinConstantFile('const val ORDERS = "/api/v1/orders"')).toBe(true);
+      expect(isKotlinConstantFile('val ORDERS = "/api/v1/orders"')).toBe(true);
       expect(isKotlinConstantFile('object O { val ORDERS: String = "/api/v1/orders" }')).toBe(true);
       expect(
         isKotlinConstantFile('class C { companion object { const val O = "/api/v1/orders" } }'),
@@ -1233,6 +1361,55 @@ object \`ApiPaths\` {
 
 class OrderService {
     fun list(): List<String> = emptyList()
+}
+`),
+      ).toBe(false);
+    });
+
+    it('admits top-level vals without admitting locals or constructor properties', () => {
+      expect(
+        isKotlinConstantFile(`package com.example.app.api
+
+@JvmField
+val ORDERS: String = "/api/v1/orders"
+`),
+      ).toBe(true);
+      expect(
+        isKotlinConstantFile(`val ORDERS:
+    String
+    = "/api/v1/orders"
+`),
+      ).toBe(true);
+      expect(isKotlinConstantFile('val ORDERS: String get() = "/computed"')).toBe(true);
+      expect(isKotlinConstantFile('val ORDERS by lazy { "/computed" }')).toBe(true);
+      expect(isKotlinConstantFile('val `ORDER PATH` = "/api/v1/orders"')).toBe(true);
+      expect(
+        isKotlinConstantFile(`fun route(): String {
+    val ORDERS = "/local"
+    return ORDERS
+}
+`),
+      ).toBe(false);
+      expect(isKotlinConstantFile('class Holder { val ORDERS = "/instance" }')).toBe(false);
+      expect(isKotlinConstantFile('data class Route(val path: String = "/constructor")')).toBe(
+        false,
+      );
+    });
+
+    it('ignores declaration-shaped text in comments and literals', () => {
+      expect(isKotlinConstantFile('// const val ORDERS = "/comment"')).toBe(false);
+      expect(
+        isKotlinConstantFile('/* outer /* const val ORDERS = "/nested-comment" */ end */'),
+      ).toBe(false);
+      expect(isKotlinConstantFile('val text() = "const val ORDERS = \\"/string\\""')).toBe(false);
+      expect(isKotlinConstantFile('val text() = """const val ORDERS = "/raw-string\""""')).toBe(
+        false,
+      );
+      expect(
+        isKotlinConstantFile(`fun route(): String {
+    val open = '{'
+    val close = '}'
+    return "$open$close"
 }
 `),
       ).toBe(false);

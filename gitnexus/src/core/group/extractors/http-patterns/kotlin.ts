@@ -19,12 +19,15 @@ import {
   type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
 import {
+  buildKotlinConstantIndex,
   extractKotlinModuleConstants,
   foldKotlinOperands,
   isKotlinConstantFile,
+  overlayKotlinConstantIndex,
   parseKotlinConstOperands,
   unfoldableDeclarationsOf,
   unquoteKotlinIdentifier,
+  type KotlinConstantIndex,
   type ModuleConstants,
   type RepoConstants,
 } from '../../../ingestion/route-extractors/kotlin-const-resolver.js';
@@ -1296,10 +1299,10 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     name: 'kotlin-http',
     language,
     prepareRepo(args) {
-      // Build the repo-wide Kotlin string-constant map once per extract() run
-      // (mirrors the Java plugin's pre-pass). The orchestrator hands over a bare
-      // Parser with no language bound; bind Kotlin explicitly or `parseSource`
-      // spins to its whole time budget on every file.
+      // Build the repo-wide Kotlin string-constant map and import index once per
+      // extract() run. The orchestrator hands over a bare Parser with no language
+      // bound; bind Kotlin explicitly or `parseSource` spins to its whole time
+      // budget on every file.
       try {
         args.parser.setLanguage(language);
       } catch {
@@ -1336,53 +1339,48 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           continue;
         }
       }
-      return { constants };
+      return { constants, index: buildKotlinConstantIndex(constants) };
     },
     scan(tree, repoContext, fileRel) {
       const out: HttpDetection[] = [];
-      const kotlinCtx = repoContext as { constants: RepoConstants } | undefined;
+      const kotlinCtx = repoContext as
+        | { constants: RepoConstants; index: KotlinConstantIndex }
+        | undefined;
 
       // Read side of the POSIX keying (see `normalizeRel`): the map `prepareRepo`
       // built is keyed by normalized path, so every lookup and every fold entry
       // point below uses `fileKey`, never the raw `fileRel`.
       const fileKey = fileRel === undefined ? undefined : normalizeRel(fileRel);
 
-      // Lazy per-file constants view. `prepareRepo` only indexes constant-
-      // DEFINING files, so an importing controller is absent from that map.
-      // When a route actually references a constant, extract THIS file's import
-      // table from the tree `scan` already holds (zero extra parses) and overlay
-      // it for the fold. Files whose routes are all literal — the overwhelming
-      // majority — never pay this cost.
-      let foldConstants: RepoConstants | undefined;
-      const getFoldConstants = (): RepoConstants | undefined => {
-        if (foldConstants !== undefined) return foldConstants;
-        foldConstants = kotlinCtx?.constants;
-        if (!kotlinCtx?.constants || !fileKey) return foldConstants;
-        if (kotlinCtx.constants.has(fileKey)) return foldConstants;
+      // Lazy per-file constants/index view. `prepareRepo` only indexes constant-
+      // DEFINING files, so an importing controller is absent from that map. When
+      // a route references a constant, extract THIS file's import table from the
+      // tree `scan` already holds and overlay it. Import-only overlays reuse the
+      // prepared package projections; files whose routes are all literal never
+      // pay this cost.
+      let foldIndex: KotlinConstantIndex | undefined;
+      const getFoldIndex = (): KotlinConstantIndex | undefined => {
+        if (foldIndex !== undefined) return foldIndex;
+        foldIndex = kotlinCtx?.index;
+        if (!kotlinCtx || !fileKey) return foldIndex;
+        if (kotlinCtx.constants.has(fileKey)) return foldIndex;
         try {
           const mc = extractKotlinModuleConstants(tree);
-          // Same admission test the pre-pass applies above. It used to be
-          // `imports.size > 0` alone, which dropped a file declaring a top-level
-          // non-`const` `val` and importing nothing: the gate excludes it from
-          // the pre-pass map (no `const`, no `object`), so this branch is its
-          // only chance, and an import-only test threw it away. Any import at
-          // all masked the bug, which is why a realistic controller never hit
-          // it — the failure needs a file with a top-level `val`, no `object`
-          // and no imports.
+          // Same admission test the pre-pass applies above. Keeping the complete
+          // test here also makes this overlay correct if a future gate safely
+          // excludes another declaration shape.
           if (
             mc.literals.size > 0 ||
             mc.exprs.size > 0 ||
             mc.imports.size > 0 ||
             unfoldableDeclarationsOf(mc).size > 0
           ) {
-            const merged = new Map(kotlinCtx.constants);
-            merged.set(fileKey, mc);
-            foldConstants = merged;
+            foldIndex = overlayKotlinConstantIndex(kotlinCtx.index, fileKey, mc);
           }
         } catch {
           // fold falls back to the repo-wide map (imports stay unresolved)
         }
-        return foldConstants;
+        return foldIndex;
       };
 
       // ─── Class prefixes ─────────────────────────────────────────────
@@ -1466,8 +1464,8 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         // No repo context (context-less fallback scanning) means no constant map
         // and therefore no honest answer — skip rather than guess a path.
         if (!fileKey) continue;
-        const constants = getFoldConstants();
-        if (!constants) continue;
+        const index = getFoldIndex();
+        if (!index) continue;
         const operands = parseKotlinConstOperands(expr);
         if (operands === null) continue;
         // A bare reference means whatever the ENCLOSING types bind it to before
@@ -1476,8 +1474,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         const rawPath = foldKotlinOperands(
           fileKey,
           operands,
-          constants,
+          index.repo,
           kotlinEnclosingTypeNames(methodNode),
+          index,
         );
         if (rawPath === null) continue;
         methodRoutes.push({
