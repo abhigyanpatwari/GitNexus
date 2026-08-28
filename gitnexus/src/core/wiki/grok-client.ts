@@ -11,6 +11,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import type { CallLLMOptions, LLMResponse } from './llm-client.js';
+import { resolveWindowsCliCommand, type ResolvedCliCommand } from './local-cli-client.js';
 import { logger } from '../logger.js';
 
 export interface GrokConfig {
@@ -38,7 +39,7 @@ const GROK_SANDBOX_PROFILE = 'strict';
 // over that variance without leaving a runaway session effectively uncapped.
 const GROK_MAX_TURNS = '15';
 
-let cachedGrokBin: string | null | undefined;
+let cachedGrokCommand: ResolvedCliCommand | null | undefined;
 
 function isVerbose(): boolean {
   return process.env.GITNEXUS_VERBOSE === '1';
@@ -67,10 +68,14 @@ function killChildTree(child: import('child_process').ChildProcess): void {
 
 /** Returns `'grok'` when the CLI is on PATH, else null. Cached. */
 export function detectGrokCLI(): string | null {
-  if (cachedGrokBin !== undefined) return cachedGrokBin;
+  if (cachedGrokCommand !== undefined) return cachedGrokCommand?.displayName ?? null;
+  const resolved = resolveWindowsCliCommand('grok');
   try {
-    execFileSync('grok', ['--version'], { stdio: 'ignore', windowsHide: true });
-    cachedGrokBin = 'grok';
+    execFileSync(resolved.command, [...resolved.argsPrefix, '--version'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    cachedGrokCommand = resolved;
   } catch (err: unknown) {
     const isNotFound =
       err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT';
@@ -80,9 +85,14 @@ export function detectGrokCLI(): string | null {
           'Ensure it is authenticated: run `grok --version` manually.',
       );
     }
-    cachedGrokBin = null;
+    cachedGrokCommand = null;
   }
-  return cachedGrokBin;
+  return cachedGrokCommand?.displayName ?? null;
+}
+
+function getDetectedGrokCommand(): ResolvedCliCommand | null {
+  detectGrokCLI();
+  return cachedGrokCommand ?? null;
 }
 
 export function resolveGrokConfig(overrides?: Partial<GrokConfig>): GrokConfig {
@@ -135,8 +145,8 @@ export async function callGrokLLM(
   systemPrompt?: string,
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
-  const grokBin = detectGrokCLI();
-  if (!grokBin) {
+  const grokCmd = getDetectedGrokCommand();
+  if (!grokCmd) {
     throw new Error(
       'Grok CLI not found. Install Grok Build and ensure `grok` is on PATH. Run `grok login` if unauthenticated.',
     );
@@ -170,12 +180,22 @@ export async function callGrokLLM(
       args.push('--model', config.model);
     }
 
-    verboseLog('Spawning:', grokBin, args.join(' ').replace(promptPath, '[prompt-file]'));
+    verboseLog(
+      'Spawning:',
+      grokCmd.command,
+      [...grokCmd.argsPrefix, ...args].join(' ').replace(promptPath, '[prompt-file]'),
+    );
     if (config.model) {
       verboseLog('Model:', config.model);
     }
 
-    const content = await runGrok(grokBin, args, tempDir, config, options);
+    const content = await runGrok(
+      grokCmd.command,
+      [...grokCmd.argsPrefix, ...args],
+      tempDir,
+      config,
+      options,
+    );
     return { content };
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);

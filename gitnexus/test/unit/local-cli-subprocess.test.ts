@@ -879,4 +879,71 @@ describe('Grok CLI subprocess contract', () => {
     expect(spawnOpts.env.CI).toBe('1');
     expect(spawnOpts.windowsHide).toBe(true);
   });
+
+  it('on Windows detects grok and spawns via cmd.exe /d /s /c, not a .cmd path', async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+
+    try {
+      const execFileSync = vi.fn().mockImplementation((cmd: string) => {
+        if (cmd === 'where.exe') return 'C:\\Users\\me\\AppData\\Roaming\\npm\\grok.cmd\r\n';
+        return 'grok 1.0.5';
+      });
+      vi.doMock('../../src/core/logger.js', () => ({
+        logger: { info: vi.fn(), warn: vi.fn() },
+      }));
+      vi.doMock('child_process', () => ({
+        execFileSync,
+        execSync: vi.fn(),
+        spawn: spawnSpy,
+      }));
+      const { detectGrokCLI, callGrokLLM } = await import('../../src/core/wiki/grok-client.js');
+
+      expect(detectGrokCLI()).toBe('grok');
+      await callGrokLLM('prompt', {});
+
+      const spawnCmd = spawnSpy.mock.calls[0][0] as string;
+      const spawnArgs = spawnSpy.mock.calls[0][1] as string[];
+      expect(spawnCmd.toLowerCase()).not.toMatch(/\.cmd$/);
+      expect(spawnCmd).toBe('cmd.exe');
+      expect(spawnArgs.slice(0, 4)).toEqual(['/d', '/s', '/c', 'grok']);
+      expect(spawnArgs).toContain('--prompt-file');
+      expect(spawnArgs).toContain('--sandbox');
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    }
+  });
+
+  it('on Windows uses ComSpec when set instead of cmd.exe', async () => {
+    const originalPlatform = process.platform;
+    const originalComSpec = process.env.ComSpec;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe';
+
+    try {
+      vi.doMock('../../src/core/logger.js', () => ({
+        logger: { info: vi.fn(), warn: vi.fn() },
+      }));
+      vi.doMock('child_process', () => ({
+        execFileSync: vi.fn().mockReturnValue('grok 1.0.5'),
+        execSync: vi.fn(),
+        spawn: spawnSpy,
+      }));
+      const { callGrokLLM } = await import('../../src/core/wiki/grok-client.js');
+
+      await callGrokLLM('prompt', {});
+
+      expect(spawnSpy.mock.calls[0][0]).toBe('C:\\Windows\\System32\\cmd.exe');
+      expect((spawnSpy.mock.calls[0][1] as string[]).slice(0, 4)).toEqual([
+        '/d',
+        '/s',
+        '/c',
+        'grok',
+      ]);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+      if (originalComSpec === undefined) delete process.env.ComSpec;
+      else process.env.ComSpec = originalComSpec;
+    }
+  });
 });
