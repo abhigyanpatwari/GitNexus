@@ -689,7 +689,7 @@ describe('Grok CLI subprocess contract', () => {
     expect(detectGrokCLI()).toBeNull();
   });
 
-  it('spawns grok with prompt-file, json output, max-turns 1, and a tool denylist', async () => {
+  it('spawns grok with prompt-file, json output, max-turns 5, and an empty tool allowlist', async () => {
     const { callGrokLLM } = await loadGrokClient();
 
     await callGrokLLM('user prompt', {});
@@ -698,16 +698,18 @@ describe('Grok CLI subprocess contract', () => {
     expect(args).toContain('--prompt-file');
     expect(args).toContain('--output-format');
     expect(args).toContain('json');
-    expect(args).toContain('--max-turns');
-    expect(args).toContain('1');
+    const turnsIdx = args.indexOf('--max-turns');
+    expect(turnsIdx).toBeGreaterThanOrEqual(0);
+    expect(args[turnsIdx + 1]).toBe('5');
     expect(args).toContain('--no-plan');
     expect(args).toContain('--no-subagents');
     expect(args).toContain('--disable-web-search');
-    expect(args).toContain('--disallowed-tools');
-    const denyIdx = args.indexOf('--disallowed-tools');
-    expect(args[denyIdx + 1]).toBe(
-      'search_replace,run_terminal_cmd,web_search,web_fetch,spawn_subagent',
-    );
+    // Empty allowlist (not a denylist): a denylist still lets Grok attempt
+    // unlisted tools and burn turns until --max-turns is hit.
+    expect(args).toContain('--tools');
+    const toolsIdx = args.indexOf('--tools');
+    expect(args[toolsIdx + 1]).toBe('');
+    expect(args).not.toContain('--disallowed-tools');
     expect(args).not.toContain('--yolo');
     expect(args).not.toContain('--always-approve');
     expect(args.some((arg) => arg.includes('user prompt'))).toBe(false);

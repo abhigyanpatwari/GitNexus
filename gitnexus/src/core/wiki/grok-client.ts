@@ -19,7 +19,16 @@ export interface GrokConfig {
   requestTimeoutMs?: number;
 }
 
-const GROK_DISALLOWED_TOOLS = 'search_replace,run_terminal_cmd,web_search,web_fetch,spawn_subagent';
+// A denylist (--disallowed-tools) still lets Grok attempt (and retry) any
+// built-in tool that isn't named, burning turns until --max-turns is hit
+// (verified live: denylist -> "Error: max turns reached" even at 5 turns).
+// An empty --tools allowlist removes every built-in tool up front, so Grok
+// answers directly from the prompt instead of probing for tools.
+const GROK_TOOLS_ALLOWLIST = '';
+
+// Verified live with an empty --tools allowlist: wiki generation completes
+// in ~3 turns. 5 leaves headroom without letting a stuck session run away.
+const GROK_MAX_TURNS = '5';
 
 let cachedGrokBin: string | null | undefined;
 
@@ -138,12 +147,12 @@ export async function callGrokLLM(
       '--output-format',
       'json',
       '--max-turns',
-      '1',
+      GROK_MAX_TURNS,
       '--no-plan',
       '--no-subagents',
       '--disable-web-search',
-      '--disallowed-tools',
-      GROK_DISALLOWED_TOOLS,
+      '--tools',
+      GROK_TOOLS_ALLOWLIST,
       '--cwd',
       tempDir,
     ];
