@@ -689,7 +689,7 @@ describe('Grok CLI subprocess contract', () => {
     expect(detectGrokCLI()).toBeNull();
   });
 
-  it('spawns grok with prompt-file, json output, max-turns 5, a tool denylist, and a strict sandbox', async () => {
+  it('spawns grok with prompt-file, json output, max-turns 15, a tool denylist, and a strict sandbox', async () => {
     const { callGrokLLM } = await loadGrokClient();
 
     await callGrokLLM('user prompt', {});
@@ -700,7 +700,7 @@ describe('Grok CLI subprocess contract', () => {
     expect(args).toContain('json');
     const turnsIdx = args.indexOf('--max-turns');
     expect(turnsIdx).toBeGreaterThanOrEqual(0);
-    expect(args[turnsIdx + 1]).toBe('5');
+    expect(args[turnsIdx + 1]).toBe('15');
     expect(args).toContain('--no-plan');
     expect(args).toContain('--no-subagents');
     expect(args).toContain('--disable-web-search');

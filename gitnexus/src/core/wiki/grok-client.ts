@@ -32,9 +32,11 @@ const GROK_DISALLOWED_TOOLS = 'run_terminal_cmd,search_replace,web_search,web_fe
 // dir) + system paths even if a future tool slips past the denylist.
 const GROK_SANDBOX_PROFILE = 'strict';
 
-// Verified live with the denylist + sandbox above: wiki generation completes
-// in ~3 turns. 5 leaves headroom without letting a stuck session run away.
-const GROK_MAX_TURNS = '5';
+// Verified live with the denylist + sandbox above: turn counts vary run to
+// run (observed 3-10 across identical prompts, including the large overview
+// prompt that aggregates every module's summary). 15 gives real headroom
+// over that variance without leaving a runaway session effectively uncapped.
+const GROK_MAX_TURNS = '15';
 
 let cachedGrokBin: string | null | undefined;
 
