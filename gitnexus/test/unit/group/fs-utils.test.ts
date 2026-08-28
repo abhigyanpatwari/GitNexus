@@ -2,7 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readSafe } from '../../../src/core/group/extractors/fs-utils.js';
+import { readSafe, readSafeBounded } from '../../../src/core/group/extractors/fs-utils.js';
 import { cleanupTempDir } from '../../helpers/test-db.js';
 
 const tempDirs: string[] = [];
@@ -23,7 +23,7 @@ describe('group extractor readSafe', () => {
       process.platform === 'win32' ? 'junction' : 'dir',
     );
 
-    expect(readSafe(repo, 'linked/secret.graphql')).toBeNull();
+    await expect(readSafeBounded(repo, 'linked/secret.graphql', 1024)).resolves.toBeNull();
   });
 
   it('reads a regular file within the canonical repository root', async () => {
@@ -32,6 +32,9 @@ describe('group extractor readSafe', () => {
     await fs.writeFile(path.join(repo, 'schema.graphql'), 'query Health { health }', 'utf8');
 
     expect(readSafe(repo, 'schema.graphql')).toBe('query Health { health }');
+    await expect(readSafeBounded(repo, 'schema.graphql', 1024)).resolves.toBe(
+      'query Health { health }',
+    );
   });
 
   it('rejects an oversized sparse file before reading its contents', async () => {
@@ -44,7 +47,7 @@ describe('group extractor readSafe', () => {
       await file.close();
     }
 
-    expect(readSafe(repo, 'oversized.graphql', 1024)).toBeNull();
+    await expect(readSafeBounded(repo, 'oversized.graphql', 1024)).resolves.toBeNull();
   });
 
   it.skipIf(process.platform === 'win32')(
@@ -55,7 +58,9 @@ describe('group extractor readSafe', () => {
       await fs.writeFile(path.join(repo, 'schema.graphql'), 'query Health { health }', 'utf8');
       await fs.symlink('schema.graphql', path.join(repo, 'schema-link.graphql'), 'file');
 
-      expect(readSafe(repo, 'schema-link.graphql')).toBe('query Health { health }');
+      await expect(readSafeBounded(repo, 'schema-link.graphql', 1024)).resolves.toBe(
+        'query Health { health }',
+      );
     },
   );
 
@@ -69,7 +74,7 @@ describe('group extractor readSafe', () => {
       await fs.writeFile(secret, 'query Secret { secret }', 'utf8');
       await fs.symlink(secret, path.join(repo, 'secret-link.graphql'), 'file');
 
-      expect(readSafe(repo, 'secret-link.graphql')).toBeNull();
+      await expect(readSafeBounded(repo, 'secret-link.graphql', 1024)).resolves.toBeNull();
     },
   );
 });

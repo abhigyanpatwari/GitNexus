@@ -14,7 +14,7 @@ import { logger } from '../../logger.js';
 import { ParseTimeoutError, parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
-import { readSafe } from './fs-utils.js';
+import { readSafeBounded } from './fs-utils.js';
 
 const PROVIDER_GLOB = '**/*.{ts,tsx,mts,cts}';
 const DOCUMENT_GLOB = '**/*.{graphql,gql}';
@@ -287,14 +287,14 @@ function generatedCandidates(operation: OperationDefinitionNode): string[] {
   return name ? [`${name}Document`] : [];
 }
 
-function generatedDocumentMatches(
+async function generatedDocumentMatches(
   repoPath: string,
   symbol: ResolvedSymbol,
   operationKind: GraphqlOperationKind,
   operationName: string,
   requiredFields: readonly string[],
-): boolean {
-  const source = readSafe(repoPath, symbol.filePath, MAX_GRAPHQL_SOURCE_BYTES);
+): Promise<boolean> {
+  const source = await readSafeBounded(repoPath, symbol.filePath, MAX_GRAPHQL_SOURCE_BYTES);
   if (!source) return false;
   const parser = new Parser();
   parser.setLanguage(
@@ -375,7 +375,7 @@ export class GraphqlExtractor implements ContractExtractor {
     const parser = new Parser();
     const contracts: ExtractedContract[] = [];
     for (const rel of files) {
-      const source = readSafe(repoPath, rel, MAX_GRAPHQL_SOURCE_BYTES);
+      const source = await readSafeBounded(repoPath, rel, MAX_GRAPHQL_SOURCE_BYTES);
       if (!source) continue;
       parser.setLanguage(
         rel.toLowerCase().endsWith('.tsx') ? TypeScript.tsx : TypeScript.typescript,
@@ -447,7 +447,7 @@ export class GraphqlExtractor implements ContractExtractor {
   ): Promise<ExtractedContract[]> {
     const contracts: ExtractedContract[] = [];
     for (const rel of files) {
-      const source = readSafe(repoPath, rel, MAX_GRAPHQL_SOURCE_BYTES);
+      const source = await readSafeBounded(repoPath, rel, MAX_GRAPHQL_SOURCE_BYTES);
       if (!source) continue;
       let document: DocumentNode;
       try {
@@ -482,13 +482,13 @@ export class GraphqlExtractor implements ContractExtractor {
           );
           if (
             resolved &&
-            generatedDocumentMatches(
+            (await generatedDocumentMatches(
               repoPath,
               resolved,
               definition.operation,
               operationName,
               uniqueFields,
-            )
+            ))
           ) {
             symbol = resolved;
             break;
