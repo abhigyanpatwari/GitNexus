@@ -51,9 +51,15 @@
  *     of a class `F` in package `a.b.C`. Nothing in the syntax says which, so
  *     the fold tries both readings (see `resolveImportedName`) instead of
  *     guessing from casing.
+ *  5. **Any identifier may be backtick-quoted.** `` package com.example.`api` ``
+ *     and `package com.example.api` are the SAME package to the compiler, and a
+ *     keyword segment (`` com.example.`fun` ``) can only be spelled the quoted
+ *     way. The grammar keeps the backticks in the node text, so every identifier is
+ *     read through {@link unquoteKotlinIdentifier} before it becomes a map key
+ *     or a lookup name — see that function for what a verbatim comparison cost.
  *
- * TWO PLACES THIS BINDING NO LONGER MIRRORS JAVA, both because the mirrored
- * behavior was wrong rather than merely different, and both open as a Java
+ * THREE PLACES THIS BINDING NO LONGER MIRRORS JAVA, each because the mirrored
+ * behavior was wrong rather than merely different, and each open as a Java
  * follow-up rather than fixed here:
  *
  *  * `java-const-resolver.ts` flattens nested types into one file-level
@@ -68,6 +74,13 @@
  *    language enforces. Kotlin's cannot, and inferring the package from the path
  *    lets a path-suffix twin outrank the real declaration — so
  *    {@link resolveKotlinImport} reads the declared `package` instead.
+ *  * Java's fold entry points take a file and a name, because a Java `static
+ *    final` reachable by simple name is reachable that way from anywhere in the
+ *    file. A Kotlin COMPANION member is not: it is bound unqualified only inside
+ *    its enclosing class body. {@link foldKotlinOperands} therefore also takes
+ *    the enclosing type chain of the reference site, which is what lets the
+ *    binding answer a bare reference by Kotlin's scoping rather than by "whoever
+ *    was walked last" — see {@link qualifyKotlinRefInEnclosingTypes}.
  *
  * Constant shapes this binding harvests:
  *
@@ -173,6 +186,37 @@ function declaredPackageOf(mc: ModuleConstants | undefined): string | null {
 
 /** Source extensions a Kotlin declaration can live in. */
 const KOTLIN_EXTENSIONS = ['.kt', '.kts'] as const;
+
+/**
+ * The name a backtick-quoted Kotlin identifier denotes: `` `api` `` → `api`.
+ *
+ * Kotlin lets ANY identifier be quoted, and requires it when the name is a
+ * keyword (`` com.example.`fun` ``). The two spellings name the same thing — the
+ * quotes are lexical syntax, not part of the name — but tree-sitter-kotlin keeps
+ * them in the node text, so every `simple_identifier` / `type_identifier` this
+ * module turns into a map key or a lookup name is read through here first.
+ *
+ * Measured cost of comparing verbatim, on a file declaring
+ * `` package com.example.`api` `` imported as `com.example.api.ApiPaths`:
+ * {@link declaredPackage} recorded `` com.example.`api` ``,
+ * {@link resolveKotlinImport} required an exact match on `com.example.api`, the
+ * one real candidate was rejected, and the route was dropped. Both sides are
+ * normalized because either side alone can carry the quotes — an import
+ * specifier may spell `` import com.example.`api`.ApiPaths `` while the
+ * declaration spells it plainly.
+ *
+ * Applied per DOT-SEPARATED SEGMENT, never to a whole dotted name: a quoted
+ * identifier cannot contain `.` (nor a newline, nor a backtick), so splitting
+ * first is exact.
+ */
+export function unquoteKotlinIdentifier(text: string): string {
+  return text.length >= 2 && text.startsWith('`') && text.endsWith('`') ? text.slice(1, -1) : text;
+}
+
+/** {@link unquoteKotlinIdentifier} applied to every segment of a dotted name. */
+function unquoteKotlinDottedName(text: string): string {
+  return text.includes('`') ? text.split('.').map(unquoteKotlinIdentifier).join('.') : text;
+}
 
 /**
  * Recursion ceiling for {@link parseKotlinConstOperands}, counted in `+` links.
@@ -282,7 +326,9 @@ function declaresTopLevelName(mc: ModuleConstants, name: string): boolean {
  * runs in three steps, all of them "unique or nothing":
  *
  *  0. **Declared package** — only files whose `package` header is EXACTLY the
- *     sought package can carry the declaration. This is the authority, and it
+ *     sought package can carry the declaration (compared after
+ *     {@link unquoteKotlinIdentifier}, since backtick quoting is spelling and
+ *     not identity). This is the authority, and it
  *     is checked first. Kotlin does not require a file's directory to match its
  *     package, so the reverse test — "does this path end with the package?" —
  *     answers a different question, one any decoy directory can satisfy: a file
@@ -326,10 +372,13 @@ function declaresTopLevelName(mc: ModuleConstants, name: string): boolean {
  */
 export function resolveKotlinImport(
   _importingFileKey: string,
-  moduleSpec: string,
+  rawModuleSpec: string,
   candidateKeys: ReadonlySet<string>,
   repo: RepoConstants,
 ): string | null {
+  // Normalized here as well as at extraction, so the function answers the same
+  // question however a caller spells the specifier.
+  const moduleSpec = unquoteKotlinDottedName(rawModuleSpec);
   const lastDot = moduleSpec.lastIndexOf('.');
   const packageName = lastDot < 0 ? '' : moduleSpec.slice(0, lastDot);
   const simpleName = lastDot < 0 ? moduleSpec : moduleSpec.slice(lastDot + 1);
@@ -401,14 +450,14 @@ function stringLiteralValue(node: Parser.SyntaxNode): string | null {
  * `this`, indexing, safe navigation — not a constant shape).
  */
 function flattenNavigation(node: Parser.SyntaxNode): string | null {
-  if (node.type === 'simple_identifier') return node.text;
+  if (node.type === 'simple_identifier') return unquoteKotlinIdentifier(node.text);
   if (node.type === 'navigation_expression') {
     const target = node.namedChild(0);
     const suffix = node.namedChildren.find((c) => c.type === 'navigation_suffix');
     const field = suffix?.namedChildren.find((c) => c.type === 'simple_identifier');
     if (target && field) {
       const head = flattenNavigation(target);
-      return head === null ? null : `${head}.${field.text}`;
+      return head === null ? null : `${head}.${unquoteKotlinIdentifier(field.text)}`;
     }
   }
   return null;
@@ -446,7 +495,7 @@ export function parseKotlinConstOperands(
     return value === null ? null : [{ kind: 'literal', value }];
   }
   if (node.type === 'simple_identifier') {
-    return [{ kind: 'ref', name: node.text }];
+    return [{ kind: 'ref', name: unquoteKotlinIdentifier(node.text) }];
   }
   if (node.type === 'navigation_expression') {
     const name = flattenNavigation(node);
@@ -512,13 +561,26 @@ interface KotlinConstDeclaration {
    */
   readonly scopes: readonly string[];
   /**
-   * Is the simple name a binding Kotlin actually exposes to the rest of the
-   * file? True for a top-level `val`, and for a companion member (visible
-   * unqualified throughout its enclosing class, which is where route
-   * annotations sit). FALSE for a member of a named `object`, which every
-   * caller outside that object's body must qualify.
+   * Is the simple name a FILE-LEVEL binding — one any reference in the file can
+   * use unqualified? True only for a top-level `val`. FALSE for a member of a
+   * named `object` (which every caller outside that object's body must qualify)
+   * and FALSE for a companion member, whose unqualified binding exists only
+   * inside its enclosing class body and is reached through
+   * {@link qualifyKotlinRefInEnclosingTypes} instead.
    */
-  readonly bareVisible: boolean;
+  readonly fileLevelName: boolean;
+  /**
+   * Does an unfoldable initializer here take a same-named IMPORT down with it?
+   *
+   * True wherever the declaration binds the simple name for at least some of the
+   * file — a top-level `val` (everywhere) or a companion member (inside its
+   * class). Deliberately wider than {@link fileLevelName}: a companion's shadow
+   * is scoped, but this map is not, and over-deleting an import can only cost a
+   * route, whereas under-deleting one publishes the imported value at a
+   * reference the compiler resolves to the unfoldable member. An `object` member
+   * shadows nothing and is false.
+   */
+  readonly shadowsImport: boolean;
   /** The parsed initializer, or null when it is not a foldable string. */
   readonly operands: readonly Operand[] | null;
 }
@@ -527,6 +589,10 @@ interface KotlinConstDeclaration {
  * The file's declared `package`, or `''` when it declares none (default
  * package). Shaped exactly like the import walk below: `package_header` holds
  * one `identifier` whose `simple_identifier` children are the dotted segments.
+ *
+ * Each segment is unquoted (see {@link unquoteKotlinIdentifier}), so a package
+ * declared `` com.example.`api` `` is recorded — and therefore matched — as the
+ * same package an import spells `com.example.api`.
  */
 function declaredPackage(root: Parser.SyntaxNode): string {
   const header = root.children.find((c) => c.type === 'package_header');
@@ -534,7 +600,7 @@ function declaredPackage(root: Parser.SyntaxNode): string {
   if (!identifier) return '';
   return identifier.namedChildren
     .filter((c) => c.type === 'simple_identifier')
-    .map((c) => c.text)
+    .map((c) => unquoteKotlinIdentifier(c.text))
     .join('.');
 }
 
@@ -553,15 +619,32 @@ function declaredPackage(root: Parser.SyntaxNode): string {
  * is recorded under `<DeclaringType>.<NAME>`, the spelling a qualified reference
  * uses, with a companion member keyed under its ENCLOSING CLASS (`Holder.NAME`)
  * because that is how Kotlin source refers to it — `Companion` never appears in
- * a reference. The SIMPLE name is recorded only when Kotlin really binds it:
- * for a top-level `val`, and for a companion member. A member of a named
+ * a reference. The SIMPLE name is recorded only for a TOP-LEVEL `val`, the one
+ * carrier whose bare binding really does span the file. A member of a named
  * `object` gets no bare key, because `BASE` alone does not name `A.BASE` from
  * anywhere outside `object A`'s own body. Writing one anyway (as this binding
  * and the Java one both used to) fabricates a binding the language does not
  * have, and a fabricated key outranks the genuine `import com.example.api.Paths.ORDERS`
  * that {@link computeKotlinFold} consults only after literals and expressions.
  *
- * An initializer that names a SIBLING is therefore resolved against its own
+ * A COMPANION member gets no bare key either, for the same reason at a smaller
+ * radius: it is bound unqualified inside its enclosing class BODY and nowhere
+ * else. A file-level bare key put it in the same namespace as top-level
+ * declarations, and companions are recorded last, so it won every unqualified
+ * reference in the file. Measured, on an app that serves `/top`:
+ *
+ *   const val ORDERS = "/top"
+ *   class Holder { companion object { const val ORDERS = "/companion" } }
+ *   @RestController class OrderController {
+ *       @GetMapping(ORDERS) fun get() = "ok"      // emitted /companion
+ *   }
+ *
+ * The unqualified binding is instead reached from the reference site, by
+ * {@link qualifyKotlinRefInEnclosingTypes}, which rewrites a bare name to
+ * `<EnclosingType>.<NAME>` when an enclosing type declares it — so the companion
+ * wins inside its own class and loses everywhere else, which is Kotlin's rule.
+ *
+ * An initializer that names a SIBLING is resolved the same way, against its own
  * scope chain, innermost first, before the file level: inside
  * `object A { const val BASE = "/right"; const val ROUTE = BASE + "/m" }` the
  * operand `BASE` is rewritten to `A.BASE`. Collecting every declaration before
@@ -570,20 +653,21 @@ function declaredPackage(root: Parser.SyntaxNode): string {
  * object happened to be walked last, so moving `object B` above `object A`
  * changed the emitted route for source that had not changed at all.
  *
- * KNOWN LIMIT, unchanged by the above: a companion member's bare key is
- * file-wide, so two companions in one file whose members share a name still
- * resolve last-wins for an UNQUALIFIED reference. Kotlin scopes that name to the
- * enclosing class, which this map cannot express — the fold is entered with a
- * file key and a name, and nothing tells it which class body the annotation sat
- * in. Sibling INITIALIZERS are unaffected (they go through the scope chain
- * above); only a bare reference from a route annotation can land on the wrong
- * companion, and only when two companions in the same file collide.
+ * A TOP-LEVEL initializer has an EMPTY scope chain, so its bare operands are
+ * left bare and resolve at file level. That is now correct and was not before:
+ * with a file-wide companion key, `const val ROUTE = BASE + "/m"` beside a
+ * companion `BASE` folded through the companion — measured `/comp/m` where
+ * Kotlin serves `/top/m`. (An earlier revision of this comment claimed sibling
+ * initializers could not be affected because they "go through the scope chain";
+ * an empty chain is exactly the case that claim missed.)
  *
  * A non-foldable rebind (`X = compute()`) DROPS X to unresolvable rather than
- * leaving a stale literal — and drops a same-named import with it, but only when
- * the declaration is bare-visible, since only then does it shadow the import for
- * unqualified references. An `object` member of the same name shadows nothing
- * and must leave the import alone.
+ * leaving a stale literal — and drops a same-named import with it whenever the
+ * declaration shadows that import ANYWHERE (top level, or a companion inside its
+ * class). The import map has no scopes, so a companion's shadow is applied
+ * file-wide: the conservative direction, costing a route rather than publishing
+ * the imported value at a reference the compiler binds to the unfoldable member.
+ * An `object` member shadows nothing and must leave the import alone.
  */
 export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleConstants {
   const literals = new Map<string, string>();
@@ -601,13 +685,14 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
       if (!isWildcard && identifier) {
         const segments = identifier.namedChildren
           .filter((c) => c.type === 'simple_identifier')
-          .map((c) => c.text);
+          .map((c) => unquoteKotlinIdentifier(c.text));
         if (segments.length >= 2) {
           const spec = segments.join('.');
           const originalName = segments[segments.length - 1];
-          const alias = node.children
+          const aliasNode = node.children
             .find((c) => c.type === 'import_alias')
-            ?.namedChildren.find((c) => c.type === 'type_identifier')?.text;
+            ?.namedChildren.find((c) => c.type === 'type_identifier');
+          const alias = aliasNode ? unquoteKotlinIdentifier(aliasNode.text) : undefined;
           // `module` is the specifier AS WRITTEN, complete. Kotlin does not mark
           // member imports, so the fold — not the extractor — decides whether the
           // trailing segment is a declaration or one of its members.
@@ -631,7 +716,8 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
     body: Parser.SyntaxNode,
     declaringType: string | null,
     scopes: readonly string[],
-    bareVisible: boolean,
+    fileLevelName: boolean,
+    shadowsImport: boolean,
   ): void => {
     for (const member of body.children ?? []) {
       if (member.type !== 'property_declaration') continue;
@@ -639,7 +725,7 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
       const declaration = member.children.find((c) => c.type === 'variable_declaration');
       const nameNode = declaration?.namedChildren.find((c) => c.type === 'simple_identifier');
       if (!nameNode) continue;
-      const name = nameNode.text;
+      const name = unquoteKotlinIdentifier(nameNode.text);
       if (declaringType !== null) {
         let members = membersByScope.get(declaringType);
         if (!members) membersByScope.set(declaringType, (members = new Set()));
@@ -652,7 +738,8 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
         name,
         qualified: declaringType === null ? null : `${declaringType}.${name}`,
         scopes,
-        bareVisible,
+        fileLevelName,
+        shadowsImport,
         operands: parseKotlinConstOperands(initializerOf(member)),
       });
     }
@@ -661,6 +748,12 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
   const bodyOf = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
     node.children.find((c) => c.type === 'class_body');
 
+  /** The declared name of an `object_declaration` / `class_declaration`. */
+  const typeNameOf = (node: Parser.SyntaxNode): string | null => {
+    const ident = node.children.find((c) => c.type === 'type_identifier');
+    return ident ? unquoteKotlinIdentifier(ident.text) : null;
+  };
+
   const walkDeclarations = (
     node: Parser.SyntaxNode,
     enclosingType: string | null,
@@ -668,13 +761,13 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
   ): void => {
     for (const child of node.children ?? []) {
       if (child.type === 'object_declaration') {
-        const name = child.children.find((c) => c.type === 'type_identifier')?.text ?? null;
+        const name = typeNameOf(child);
         const body = bodyOf(child);
         if (!body) continue;
         // Members are reachable only as `A.NAME`; inside the body, `NAME` alone
         // means this object's member and nothing else, hence the pushed scope.
         const inner = name === null ? scopes : [name, ...scopes];
-        collectProperties(body, name, inner, false);
+        collectProperties(body, name, inner, false, false);
         walkDeclarations(body, name, inner);
         continue;
       }
@@ -683,16 +776,18 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
         if (!body) continue;
         // Referenced through the enclosing class (`Holder.NAME`), never through
         // `Companion` — so the qualified alias is keyed on `enclosingType`. The
-        // simple name IS bound, throughout that class body.
+        // simple name is bound inside that class body only, which is a SCOPE and
+        // not a file-level key: it is reached from the reference site by
+        // `qualifyKotlinRefInEnclosingTypes`, through this same `Holder.NAME`.
         const inner = enclosingType === null ? scopes : [enclosingType, ...scopes];
-        collectProperties(body, enclosingType, inner, true);
+        collectProperties(body, enclosingType, inner, false, true);
         walkDeclarations(body, enclosingType, inner);
         continue;
       }
       if (child.type === 'class_declaration') {
         // A class/interface body's own `val`s are per-instance or abstract, so
         // only its nested objects and companion contribute constants.
-        const name = child.children.find((c) => c.type === 'type_identifier')?.text ?? null;
+        const name = typeNameOf(child);
         const body = bodyOf(child);
         if (body) walkDeclarations(body, name, scopes);
         continue;
@@ -701,13 +796,13 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
     }
   };
 
-  collectProperties(tree.rootNode, null, [], true);
+  collectProperties(tree.rootNode, null, [], true, true);
   walkDeclarations(tree.rootNode, null, []);
 
   // Pass 2b: rewrite each initializer's unqualified operands against the scope
-  // chain that encloses it, then record. Top level last-wins over nothing;
-  // top-level declarations are recorded first and a companion's bare key after,
-  // which is the order Kotlin resolves them in inside the class body.
+  // chain that encloses it, then record. Only a top-level declaration writes a
+  // bare key, so nothing here can collide across scopes; a companion's
+  // unqualified binding is applied at the reference site instead.
   const qualifyRef = (refName: string, scopes: readonly string[]): string => {
     if (refName.includes('.')) return refName; // already carries its owner
     for (const scope of scopes) {
@@ -718,7 +813,7 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
 
   for (const decl of declarations) {
     const keys: string[] = [];
-    if (decl.bareVisible) keys.push(decl.name);
+    if (decl.fileLevelName) keys.push(decl.name);
     if (decl.qualified !== null) keys.push(decl.qualified);
 
     if (decl.operands === null) {
@@ -726,8 +821,7 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
         literals.delete(key);
         exprs.delete(key);
       }
-      // Only a bare-visible declaration shadows a same-named import.
-      if (decl.bareVisible) imports.delete(decl.name);
+      if (decl.shadowsImport) imports.delete(decl.name);
       continue;
     }
 
@@ -945,8 +1039,51 @@ function foldOperands(
 }
 
 /**
+ * Rewrite one BARE reference to the enclosing type that binds it, or leave it
+ * bare when none does — the reference-site twin of the `qualifyRef` that
+ * {@link extractKotlinModuleConstants} applies to sibling initializers.
+ *
+ * `enclosingTypes` is the chain of type declarations the reference sits inside,
+ * INNERMOST FIRST (`['Inner', 'Outer']`). A companion member is keyed
+ * `<EnclosingClass>.<NAME>` and is bound unqualified exactly within that class
+ * body — including its nested types, which is why the whole chain is walked and
+ * not just the innermost link. An `object`'s own members are in scope inside its
+ * body under the same `<Owner>.<NAME>` key, so the same walk covers both.
+ *
+ * Innermost-first, and BEFORE the file-level maps the fold consults next, is
+ * Kotlin's own order: a companion member shadows a same-named top-level
+ * declaration and a same-named import throughout its class. Outside that class
+ * the bare name never means the companion at all, which is precisely what an
+ * empty chain expresses.
+ */
+export function qualifyKotlinRefInEnclosingTypes(
+  fileKey: string,
+  name: string,
+  repo: RepoConstants,
+  enclosingTypes: readonly string[],
+): string {
+  if (name.includes('.')) return name; // already carries its owner
+  const mc = repo.get(fileKey);
+  if (!mc) return name;
+  for (const type of enclosingTypes) {
+    const key = `${type}.${name}`;
+    if (mc.literals.has(key) || mc.exprs.has(key)) return key;
+  }
+  return name;
+}
+
+/**
  * Fold an inline operand list (e.g. `ApiPaths.BASE + "/orders"`) against
  * `fileKey`, or null when any piece is unresolvable (skip floor).
+ *
+ * `enclosingTypes` is the chain of type declarations the REFERENCE sits inside
+ * (innermost first), and it is applied to the entry operands only — everything
+ * deeper is either already qualified by
+ * {@link extractKotlinModuleConstants} against its own declaring scope, or lives
+ * in another file where this chain means nothing. Passing it empty answers
+ * "what does this name mean at file level", which is the right question for a
+ * reference outside any type and the only one a caller without position
+ * information can honestly ask.
  *
  * An empty result is a SUCCESS, not a skip. `const val ROOT = ""` folds to `""`,
  * which `joinPath` then resolves against the class-level prefix exactly as it
@@ -963,6 +1100,18 @@ export function foldKotlinOperands(
   fileKey: string,
   operands: readonly Operand[],
   repo: RepoConstants,
+  enclosingTypes: readonly string[] = [],
 ): string | null {
-  return foldOperands(fileKey, operands, newFoldState(repo), 0);
+  const scoped =
+    enclosingTypes.length === 0
+      ? operands
+      : operands.map((op) =>
+          op.kind === 'ref'
+            ? {
+                kind: 'ref' as const,
+                name: qualifyKotlinRefInEnclosingTypes(fileKey, op.name, repo, enclosingTypes),
+              }
+            : op,
+        );
+  return foldOperands(fileKey, scoped, newFoldState(repo), 0);
 }

@@ -592,9 +592,13 @@ const val ORDERS = "/local"
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBe('/local');
     });
 
-    it('keeps a companion member visible under its bare name', () => {
+    it('keeps a companion member visible under its bare name INSIDE its class', () => {
       // The other control: a companion's members ARE in scope unqualified
-      // throughout the enclosing class, which is where route annotations sit.
+      // throughout the enclosing class, which is where route annotations sit —
+      // but ONLY there. The binding is reached from the reference site through
+      // the enclosing type chain, not from a file-level key, so all three
+      // spellings below are asserted together: the same name answers one way
+      // inside `OrderApi` and does not answer at all outside it.
       const key = 'src/main/kotlin/com/example/app/web/OrderApi.kt';
       const repo = repoOf({
         [key]: `package com.example.app.web
@@ -606,8 +610,151 @@ class OrderApi {
 }
 `,
       });
-      expect(resolveKotlinConstant(key, 'ORDERS', repo)).toBe('/companion/orders');
+      const bare = [{ kind: 'ref', name: 'ORDERS' } as const];
+      expect(foldKotlinOperands(key, bare, repo, ['OrderApi'])).toBe('/companion/orders');
+      expect(foldKotlinOperands(key, bare, repo)).toBeNull();
       expect(resolveKotlinConstant(key, 'OrderApi.ORDERS', repo)).toBe('/companion/orders');
+    });
+
+    it('does not let a companion outrank a top-level constant outside its class', () => {
+      // Recording the companion's simple name at FILE level put it in the same
+      // namespace as the top-level declaration, and companions are recorded
+      // last, so the companion won every unqualified reference in the file —
+      // including from a class that is not its own. Kotlin binds the top-level
+      // `ORDERS` there. Both scopes are asserted from one file; either alone
+      // passes on an implementation that gets the other wrong.
+      const key = 'src/main/kotlin/com/example/app/web/Routes.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.web
+
+const val ORDERS = "/top"
+
+class Holder {
+    companion object {
+        const val ORDERS = "/companion"
+    }
+}
+
+class OrderController
+`,
+      });
+      const bare = [{ kind: 'ref', name: 'ORDERS' } as const];
+      expect(foldKotlinOperands(key, bare, repo, ['OrderController'])).toBe('/top');
+      expect(foldKotlinOperands(key, bare, repo, ['Holder'])).toBe('/companion');
+      expect(foldKotlinOperands(key, bare, repo)).toBe('/top');
+    });
+
+    it('scopes each of two colliding companions to its own class', () => {
+      // Kotlin scopes the member name to its enclosing class, so the same
+      // spelling means a different constant in each body. One file-level
+      // namespace could only answer last-wins — both reads returned `/h2`, and
+      // reordering the two classes flipped both to `/h1`. Both orders are
+      // asserted, because either alone passes on a last-wins implementation.
+      const holders = (first: 'A' | 'B'): string => {
+        const a = `class HolderA {
+    companion object {
+        const val ORDERS = "/h1"
+    }
+}`;
+        const b = `class HolderB {
+    companion object {
+        const val ORDERS = "/h2"
+    }
+}`;
+        return `package com.example.app.web\n\n${first === 'A' ? `${a}\n\n${b}` : `${b}\n\n${a}`}\n`;
+      };
+      const key = 'src/main/kotlin/com/example/app/web/Holders.kt';
+      const bare = [{ kind: 'ref', name: 'ORDERS' } as const];
+      for (const first of ['A', 'B'] as const) {
+        const repo = repoOf({ [key]: holders(first) });
+        expect(foldKotlinOperands(key, bare, repo, ['HolderA']), `${first} first`).toBe('/h1');
+        expect(foldKotlinOperands(key, bare, repo, ['HolderB']), `${first} first`).toBe('/h2');
+      }
+    });
+
+    it('folds a TOP-LEVEL initializer at file level despite a same-named companion', () => {
+      // A top-level initializer has an EMPTY scope chain, so `qualifyRef` leaves
+      // its operand bare and the file-level maps answer it. A file-wide
+      // companion key WAS one of those maps, so `ROUTE` folded to `/comp/m`
+      // where Kotlin serves `/top/m` — the case an earlier note in the resolver
+      // claimed could not arise because sibling initializers "go through the
+      // scope chain". An empty chain is exactly what that missed.
+      const key = 'src/main/kotlin/com/example/app/web/Routes.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.web
+
+const val BASE = "/top"
+const val ROUTE = BASE + "/m"
+
+class Holder {
+    companion object {
+        const val BASE = "/comp"
+    }
+}
+`,
+      });
+      expect(resolveKotlinConstant(key, 'ROUTE', repo)).toBe('/top/m');
+      // The companion's own binding is intact, reached the way Kotlin reaches it.
+      expect(resolveKotlinConstant(key, 'Holder.BASE', repo)).toBe('/comp');
+    });
+
+    it('lets a single-name import win over a companion outside that companion class', () => {
+      // The fold consults literals before imports, so a file-level companion key
+      // outranked a genuine `import …Paths.ORDERS` everywhere in the file. The
+      // import is what Kotlin binds outside `Holder`; inside `Holder`, the
+      // companion shadows it.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/app/api/Paths.kt': `package com.example.app.api
+
+object Paths {
+    const val ORDERS = "/imported"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.Paths.ORDERS
+
+class Holder {
+    companion object {
+        const val ORDERS = "/companion"
+    }
+}
+`,
+      });
+      const bare = [{ kind: 'ref', name: 'ORDERS' } as const];
+      expect(foldKotlinOperands(CONTROLLER_KEY, bare, repo)).toBe('/imported');
+      expect(foldKotlinOperands(CONTROLLER_KEY, bare, repo, ['Other'])).toBe('/imported');
+      expect(foldKotlinOperands(CONTROLLER_KEY, bare, repo, ['Holder'])).toBe('/companion');
+    });
+
+    it('reaches an enclosing class companion from a NESTED type', () => {
+      // Kotlin keeps the companion's members in scope through the nested types
+      // of its class, so the whole enclosing chain is walked, innermost first —
+      // and the inner link still wins where both declare the name.
+      const key = 'src/main/kotlin/com/example/app/web/Nested.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.web
+
+class Outer {
+    companion object {
+        const val ORDERS = "/outer"
+        const val ONLY_OUTER = "/only-outer"
+    }
+
+    class Inner {
+        companion object {
+            const val ORDERS = "/inner"
+        }
+    }
+}
+`,
+      });
+      expect(
+        foldKotlinOperands(key, [{ kind: 'ref', name: 'ORDERS' }], repo, ['Inner', 'Outer']),
+      ).toBe('/inner');
+      expect(
+        foldKotlinOperands(key, [{ kind: 'ref', name: 'ONLY_OUTER' }], repo, ['Inner', 'Outer']),
+      ).toBe('/only-outer');
     });
 
     it('resolves a nested object member through the enclosing object', () => {
@@ -859,6 +1006,99 @@ import com.example.api.ApiPaths
         ),
       );
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
+    });
+
+    it('matches a package whose segment is backtick-quoted on one side only', () => {
+      // `` package com.example.`api` `` and `package com.example.api` name the
+      // SAME package: the quotes are lexical syntax, not part of the name. The
+      // declared package was recorded with the backticks and the import required
+      // an exact string match, so the one real candidate was rejected and the
+      // route lost. All three spellings are asserted, because either side can
+      // carry the quotes — a declaration may quote a segment an import spells
+      // plainly, and an import may quote one the declaration does not.
+      const declaration = (pkg: string): string => `package ${pkg}
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`;
+      const importing = (spec: string): string => `package com.example.app.web
+
+import ${spec}
+`;
+      const CONSTS = 'src/main/kotlin/com/example/api/ApiPaths.kt';
+      for (const [declared, spec] of [
+        ['com.example.`api`', 'com.example.api.ApiPaths'],
+        ['com.example.api', 'com.example.`api`.ApiPaths'],
+        ['com.example.`api`', 'com.example.`api`.ApiPaths'],
+      ] as const) {
+        const repo = repoOf({
+          [CONSTS]: declaration(declared),
+          [CONTROLLER_KEY]: importing(spec),
+        });
+        expect(
+          resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo),
+          `${declared} <- ${spec}`,
+        ).toBe('/right');
+      }
+    });
+
+    it('still refuses a package that merely resembles the quoted one', () => {
+      // The control for the test above: unquoting compares NAMES, it does not
+      // widen the match. `com.example.other` is a different package however
+      // either side spells it, so the fold floors to skip rather than reaching
+      // for the only file it can see.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/other/ApiPaths.kt': `package com.example.\`other\`
+
+object ApiPaths {
+    const val ORDERS = "/wrong"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.api.ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
+    });
+
+    it('folds through a KEYWORD package segment, which Kotlin can only spell quoted', () => {
+      // `package com.example.fun` does not compile — the segment must be
+      // `` `fun` `` on both sides. Unquoting must not break the case that only
+      // works BECAUSE it is quoted, so this is the control for the pair above.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/fun/ApiPaths.kt': `package com.example.\`fun\`
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.\`fun\`.ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBe('/right');
+    });
+
+    it('matches a backtick-quoted declaration name and reference', () => {
+      // Quoting reaches declarations too, and the two sides need not agree:
+      // `` object `ApiPaths` `` is keyed `ApiPaths.ORDERS`, and a reference
+      // written `` `ApiPaths`.`ORDERS` `` parses to that same name.
+      const key = 'src/main/kotlin/com/example/api/ApiPaths.kt';
+      const repo = repoOf({
+        [key]: `package com.example.api
+
+object \`ApiPaths\` {
+    const val \`ORDERS\` = "/right"
+}
+`,
+      });
+      expect(resolveKotlinConstant(key, 'ApiPaths.ORDERS', repo)).toBe('/right');
+      expect(parseKotlinConstOperands(firstInitializer('val X = `ApiPaths`.`ORDERS`\n'))).toEqual([
+        { kind: 'ref', name: 'ApiPaths.ORDERS' },
+      ]);
     });
   });
 

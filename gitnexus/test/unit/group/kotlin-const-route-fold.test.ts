@@ -319,6 +319,45 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
+  it('does not treat an EMPTY class path array as an unresolvable prefix', () => {
+    // `@RequestMapping(arrayOf())` designates NO prefix — Spring maps the class
+    // at the application root — so `/literal` really is served at `/literal`.
+    // Treating it as an unresolvable prefix suppressed every route under the
+    // class, the literal one included, which no constant fold was ever involved
+    // in. The arithmetic behind that: an empty array has no elements, and "no
+    // element is a literal" is trivially true of an empty set, so the class read
+    // as unresolvable. "No prefix" is not "an unresolvable prefix".
+    expect(providers(controllerWithPrefix('arrayOf()'))).toEqual([
+      'GET /api/v1/orders',
+      'GET /literal',
+    ]);
+  });
+
+  it('still suppresses a NON-empty array whose only element is a constant', () => {
+    // The control for the test above, and the reason the empty case needs its
+    // own arm rather than a blanket "arrays never suppress": here the array DOES
+    // designate a prefix, and that prefix is unknowable.
+    expect(providers(controllerWithPrefix('arrayOf(ApiPaths.BASE)'))).toEqual([]);
+  });
+
+  it('does not treat an EMPTY @FeignClient(path) array as an unresolvable path', () => {
+    // Same distinction on the consumer side, where the governing-prefix guard is
+    // its own set: `path = arrayOf()` adds no prefix, so the remote URL is
+    // exactly the method's own path and the consumer is knowable.
+    expect(
+      consumers({
+        [CLIENT]: `package com.example.app.client
+
+@FeignClient(name = "orders", path = arrayOf())
+interface OrderClient {
+    @GetMapping("/orders")
+    fun listOrders(): String
+}
+`,
+      }),
+    ).toEqual(['GET /orders']);
+  });
+
   it('still applies a LITERAL class prefix to a folded method path', () => {
     expect(
       providers({
@@ -757,6 +796,141 @@ class OrderController {
 `,
       }),
     ).toEqual([]);
+  });
+
+  it('resolves a bare reference by the class it sits in, not by declaration order', () => {
+    // A companion member is bound unqualified inside its enclosing class BODY
+    // and nowhere else. Recorded under a file-level bare key it landed in the
+    // same namespace as top-level declarations and, because companions are
+    // walked last, won every unqualified reference in the file — so the
+    // reference in `OrderController` below, which is not `Holder`'s body,
+    // published `/companion` where the application serves `/top`.
+    //
+    // Both classes are asserted from ONE file: a fixture with only the wrong
+    // one would also pass on an implementation that simply dropped companions,
+    // and a fixture with only the right one would pass on the old file-wide key.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+const val ORDERS = "/top"
+
+class Holder {
+    companion object {
+        const val ORDERS = "/companion"
+    }
+
+    @GetMapping(ORDERS)
+    fun inside() {}
+}
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun outside() {}
+}
+`,
+      }),
+    ).toEqual(['GET /companion', 'GET /top']);
+  });
+
+  it('gives two colliding companions each their own class', () => {
+    // Kotlin scopes each companion's members to its own class, so the two
+    // references below mean different constants even though they are spelled
+    // identically. One file-level namespace could only answer last-wins: both
+    // read `/h2`, and swapping the two classes flipped both to `/h1`.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+@RestController
+class FirstController {
+    companion object {
+        const val ORDERS = "/h1"
+    }
+
+    @GetMapping(ORDERS)
+    fun list() {}
+}
+
+@RestController
+class SecondController {
+    companion object {
+        const val ORDERS = "/h2"
+    }
+
+    @GetMapping(ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /h1', 'GET /h2']);
+  });
+
+  it('folds a top-level initializer at file level even when a companion shares the name', () => {
+    // `ROUTE`'s initializer is TOP-LEVEL, so its scope chain is empty and its
+    // operand `BASE` means the top-level `BASE`. With a file-wide companion key
+    // the empty chain left the operand bare and the companion answered it,
+    // publishing `/comp/m` where the application serves `/top/m`.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+const val BASE = "/top"
+const val ROUTE = BASE + "/m"
+
+class Holder {
+    companion object {
+        const val BASE = "/comp"
+    }
+}
+
+@RestController
+class OrderController {
+    @GetMapping(ROUTE)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /top/m']);
+  });
+
+  it('folds through a package whose segment is backtick-quoted on one side only', () => {
+    // `` package com.example.app.`api` `` and `package com.example.app.api` are
+    // the same package to the compiler — the quotes are lexical syntax, not part
+    // of the name. Comparing the two verbatim rejected the one real candidate
+    // and dropped the route. Both directions are asserted because either side
+    // can carry the quotes.
+    const controller = (spec: string): string => `package com.example.app.web
+
+import ${spec}
+
+@RestController
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`;
+    const quotedDeclaration = `package com.example.app.\`api\`
+
+object ApiPaths {
+    const val ORDERS = "/api/v1/orders"
+}
+`;
+    // Declaration quoted, import plain.
+    expect(
+      providers({
+        [CONSTS]: quotedDeclaration,
+        [CONTROLLER]: controller('com.example.app.api.ApiPaths'),
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+    // Import quoted, declaration plain.
+    expect(
+      providers({
+        [CONSTS]: CONSTS_SRC,
+        [CONTROLLER]: controller('com.example.app.`api`.ApiPaths'),
+      }),
+    ).toEqual(['GET /api/v1/orders']);
   });
 
   it('leaves literal routes unchanged and emits each exactly once', () => {

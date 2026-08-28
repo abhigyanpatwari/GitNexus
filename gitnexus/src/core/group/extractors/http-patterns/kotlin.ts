@@ -23,6 +23,7 @@ import {
   foldKotlinOperands,
   isKotlinConstantFile,
   parseKotlinConstOperands,
+  unquoteKotlinIdentifier,
   type ModuleConstants,
   type RepoConstants,
 } from '../../../ingestion/route-extractors/kotlin-const-resolver.js';
@@ -60,7 +61,9 @@ import {
  * those routes unprefixed would publish paths the application does not serve.
  * A prefix that resolves only PARTLY (Kotlin's vararg spelling
  * `@RequestMapping("/lit", ApiPaths.BASE)`) still publishes its resolvable arm:
- * suppression exists to avoid wrong routes, not to discard right ones. On a
+ * suppression exists to avoid wrong routes, not to discard right ones. An EMPTY
+ * path array (`@RequestMapping(arrayOf())`) is not a prefix at all and
+ * suppresses nothing — see `classifyPathArgument`. On a
  * `@FeignClient` the same rule is applied to whichever prefix GOVERNS, in the
  * "path wins" order the URL is assembled in — `@FeignClient(path)` first, then
  * the interface's `@RequestMapping` — and to both consumer lanes, `@(Get|...)Mapping`
@@ -165,7 +168,7 @@ const arrayOfArg = (cap: string): string => `(call_expression
  * shape missing from it yields no route, which is the skip floor. The
  * unfoldable-CLASS-PREFIX analysis must not be written this way — there a shape
  * missing from the list means "emit unprefixed", a wrong route — so it inverts
- * the test instead (see `hasResolvableLiteralPathElement`).
+ * the test instead (see `classifyPathArgument`).
  */
 const FOLDABLE_PATH_EXPRESSIONS: ReadonlySet<string> = new Set([
   'simple_identifier',
@@ -277,21 +280,75 @@ function kotlinArrayOfElements(node: Parser.SyntaxNode): Parser.SyntaxNode[] | n
 }
 
 /**
- * Does this route-annotation path expression carry at least one element the
- * literal prefix patterns can resolve to a real path?
+ * What a route-annotation path argument says about the prefix it designates.
+ * Three answers, and only one of them may suppress a route:
  *
- * Accepts exactly the three shapes those patterns harvest — a bare literal, a
- * `[…]` collection element, an `arrayOf(…)` element — and only when the literal
- * is uninterpolated. Anything else (`ApiPaths.BASE`, `buildPath()`,
- * `if (…) "/a" else "/b"`, a template) is NOT resolvable, which is the whole
- * predicate the unfoldable-prefix analysis inverts.
+ *  - `'literal'` — at least one element is a plain literal, so the literal
+ *    prefix patterns already harvested a real path. Nothing to suppress.
+ *  - `'none'` — the argument designates NO path at all. An EMPTY array is
+ *    Spring's spelling for "no prefix": `@RequestMapping(arrayOf())` maps the
+ *    class at the application root, so `@GetMapping("/lit")` beneath it really
+ *    is served at `/lit`. "No prefix" is not "an unresolvable prefix", and
+ *    conflating them dropped every route under such a class — including plain
+ *    literal ones, which no constant fold was ever involved in. Measured on
+ *    `@RequestMapping(arrayOf())` + `@GetMapping("/lit")`: `GET /lit` served,
+ *    nothing emitted. The same conflation hit `@FeignClient(path = arrayOf())`,
+ *    where it dropped `consumer GET /orders`.
+ *  - `'unresolvable'` — there IS an argument, it is not empty, and no element of
+ *    it resolves to a literal (`ApiPaths.BASE`, `buildPath()`,
+ *    `if (…) "/a" else "/b"`, an interpolated template). Only here is the served
+ *    path unknowable, and only here may the routes below be suppressed.
+ *
+ * The `'none'` arm is reachable through `arrayOf()` only. `@RequestMapping([])`
+ * is a third spelling of the same idea, but tree-sitter-kotlin (fwcd) does not
+ * parse the class that carries it as a `class_declaration` at all — the whole
+ * declaration degrades to an `infix_expression`, no class-prefix pattern
+ * matches, and the routes fall through unprefixed. That is measured, not
+ * assumed; it is also why the empty-`[…]` case needs no arm here, since a
+ * `collection_literal` never reaches this function from an annotation argument.
  */
-function hasResolvableLiteralPathElement(expr: Parser.SyntaxNode): boolean {
-  if (isPlainStringLiteral(expr)) return true;
-  if (expr.type === 'collection_literal') return expr.namedChildren.some(isPlainStringLiteral);
+type PathArgumentPrefix = 'literal' | 'none' | 'unresolvable';
+
+function classifyPathArgument(expr: Parser.SyntaxNode): PathArgumentPrefix {
+  if (isPlainStringLiteral(expr)) return 'literal';
+  if (expr.type === 'collection_literal') {
+    return expr.namedChildren.some(isPlainStringLiteral) ? 'literal' : 'unresolvable';
+  }
   const elements = kotlinArrayOfElements(expr);
-  if (elements) return elements.some(isPlainStringLiteral);
-  return false;
+  if (elements) {
+    if (elements.length === 0) return 'none';
+    return elements.some(isPlainStringLiteral) ? 'literal' : 'unresolvable';
+  }
+  return 'unresolvable';
+}
+
+/**
+ * The type declarations enclosing `node`, INNERMOST FIRST, by declared name.
+ *
+ * This is the scope a bare constant reference in a route annotation is resolved
+ * against (see `qualifyKotlinRefInEnclosingTypes`). Without it the fold is
+ * entered with a file key and a name, and a companion member — bound unqualified
+ * only inside its own class body — had to be recorded file-wide to be reachable
+ * at all, so it won every bare reference in the file: measured `/companion`
+ * where Kotlin serves the top-level `/top`, and `/h2` where Kotlin serves the
+ * referencing class's own `/h1`.
+ *
+ * Both `class_declaration` (which is also how tree-sitter-kotlin models an
+ * `interface`) and `object_declaration` are collected, because Kotlin binds the
+ * members of both unqualified inside their bodies, and the constant map keys
+ * both as `<Owner>.<NAME>`. A `companion_object` contributes no link of its own:
+ * its members are keyed under the ENCLOSING class, which the walk reaches one
+ * hop further up. An anonymous declaration has no `type_identifier` and is
+ * skipped rather than guessed at.
+ */
+function kotlinEnclosingTypeNames(node: Parser.SyntaxNode): string[] {
+  const out: string[] = [];
+  for (let cur = node.parent; cur; cur = cur.parent) {
+    if (cur.type !== 'class_declaration' && cur.type !== 'object_declaration') continue;
+    const ident = cur.children.find((c) => c.type === 'type_identifier');
+    if (ident) out.push(unquoteKotlinIdentifier(ident.text));
+  }
+  return out;
 }
 
 // ─── Kotlin OkHttp builder verb-walk (parity with java-static-path.ts) ──
@@ -674,7 +731,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       if (!argNode || !classNode) continue;
       if ((resolvedPrefixes.get(classNode.id) ?? []).length > 0) continue;
       const expr = kotlinRouteArgumentExpression(argNode);
-      if (!expr || hasResolvableLiteralPathElement(expr)) continue;
+      if (!expr || classifyPathArgument(expr) !== 'unresolvable') continue;
       ids.add(classNode.id);
     }
     return ids;
@@ -701,7 +758,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       const classNode = match.captures.class;
       if (!argNode || !classNode) continue;
       const expr = kotlinFeignPathArgumentExpression(argNode);
-      if (!expr || hasResolvableLiteralPathElement(expr)) continue;
+      if (!expr || classifyPathArgument(expr) !== 'unresolvable') continue;
       ids.add(classNode.id);
     }
     return ids;
@@ -1413,7 +1470,15 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         if (!constants) continue;
         const operands = parseKotlinConstOperands(expr);
         if (operands === null) continue;
-        const rawPath = foldKotlinOperands(fileKey, operands, constants);
+        // A bare reference means whatever the ENCLOSING types bind it to before
+        // it means anything at file level — Kotlin's rule for a companion
+        // member, which is in scope unqualified only inside its own class body.
+        const rawPath = foldKotlinOperands(
+          fileKey,
+          operands,
+          constants,
+          kotlinEnclosingTypeNames(methodNode),
+        );
         if (rawPath === null) continue;
         methodRoutes.push({
           httpMethod,
