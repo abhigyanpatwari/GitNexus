@@ -1,10 +1,15 @@
 import { createRequire } from 'node:module';
-import type { GroupConfig, GroupManifestLink, ContractType, ContractRole } from './types.js';
+import type {
+  ContractRole,
+  GroupConfig,
+  GroupManifestLink,
+  ManifestContractType,
+} from './types.js';
 
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
 
-const VALID_CONTRACT_TYPES: ContractType[] = [
+const VALID_CONTRACT_TYPES: ManifestContractType[] = [
   'http',
   'grpc',
   'thrift',
@@ -67,7 +72,7 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     if (!link.to || !repoPaths.has(link.to as string)) {
       throw new Error(`links[${i}].to "${link.to}" does not match any repo path in group`);
     }
-    if (!VALID_CONTRACT_TYPES.includes(link.type as ContractType)) {
+    if (!VALID_CONTRACT_TYPES.includes(link.type as ManifestContractType)) {
       throw new Error(
         `links[${i}].type "${link.type}" is invalid. Expected: ${VALID_CONTRACT_TYPES.join(', ')}`,
       );
@@ -85,7 +90,7 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     return {
       from: link.from as string,
       to: link.to as string,
-      type: link.type as ContractType,
+      type: link.type as ManifestContractType,
       contract: String(link.contract),
       role: link.role as ContractRole,
     };

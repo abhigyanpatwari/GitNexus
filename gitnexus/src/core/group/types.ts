@@ -7,6 +7,7 @@ export type ContractType =
   | 'lib'
   | 'custom'
   | 'include';
+export type ManifestContractType = Exclude<ContractType, 'graphql'>;
 export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
@@ -24,7 +25,7 @@ export interface GroupConfig {
 export interface GroupManifestLink {
   from: string;
   to: string;
-  type: ContractType;
+  type: ManifestContractType;
   contract: string;
   role: ContractRole;
 }

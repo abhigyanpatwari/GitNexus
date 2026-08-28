@@ -16,20 +16,22 @@ export function readSafe(repoPath: string, rel: string, maxBytes?: number): stri
   const relToBase = path.relative(base, abs);
   if (relToBase.startsWith('..') || path.isAbsolute(relToBase)) return null;
   try {
-    const canonicalBase = fs.realpathSync(base);
-    const canonicalFile = fs.realpathSync(abs);
-    const canonicalRelative = path.relative(canonicalBase, canonicalFile);
-    if (canonicalRelative.startsWith('..') || path.isAbsolute(canonicalRelative)) return null;
-    const expected = fs.statSync(canonicalFile);
-    if (!expected.isFile()) return null;
-    const fd = fs.openSync(canonicalFile, 'r');
+    const nonBlocking = fs.constants.O_NONBLOCK ?? 0;
+    const fd = fs.openSync(abs, fs.constants.O_RDONLY | nonBlocking);
     try {
       const opened = fs.fstatSync(fd);
-      // Reject a path swapped between realpath/stat and open. Reading through
-      // the verified descriptor keeps the checked identity stable afterward.
-      if (!opened.isFile() || opened.dev !== expected.dev || opened.ino !== expected.ino)
-        return null;
+      if (!opened.isFile()) return null;
       if (maxBytes !== undefined && opened.size > maxBytes) return null;
+
+      const canonicalBase = fs.realpathSync(base);
+      const canonicalFile = fs.realpathSync(abs);
+      const canonicalRelative = path.relative(canonicalBase, canonicalFile);
+      if (canonicalRelative.startsWith('..') || path.isAbsolute(canonicalRelative)) return null;
+
+      // The descriptor is opened before path checks, then matched to the
+      // canonical target. A concurrent path swap cannot change what is read.
+      const current = fs.statSync(canonicalFile);
+      if (opened.dev !== current.dev || opened.ino !== current.ino) return null;
       return fs.readFileSync(fd, 'utf-8');
     } finally {
       fs.closeSync(fd);

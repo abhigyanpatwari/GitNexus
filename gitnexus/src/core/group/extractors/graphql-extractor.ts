@@ -41,13 +41,17 @@ export const RESOLVE_METHOD_QUERY = `
 MATCH (n:Method)
 WHERE n.name = $name AND n.filePath = $filePath AND n.id <> ''
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+ORDER BY n.id ASC
 LIMIT 2`;
 
+// LadybugDB returns labels(n) as a scalar string, not Neo4j's string array.
+// The real-db integration test executes this exact query and guards that dialect contract.
 export const RESOLVE_GENERATED_SYMBOL_QUERY = `
 MATCH (n)
 WHERE labels(n) IN ['Const','Variable','Function','Method','CodeElement']
   AND n.name = $name AND n.filePath <> '' AND n.id <> ''
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+ORDER BY n.id ASC
 LIMIT 2`;
 
 function rowValue(row: Record<string, unknown>, key: string, position: number): string {
