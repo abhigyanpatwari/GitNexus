@@ -8,6 +8,13 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { sanitizeMermaidMarkdown } from './mermaid-sanitizer.js';
+import {
+  hashOutputContent,
+  validateOutputManifest,
+  type OutputManifest,
+} from './document/output-manifest.js';
+import { getWikiPresentationMessages, type WikiPresentationMessages } from './profiles/locale.js';
+import type { ResolvedLanguage } from './profiles/types.js';
 
 interface ModuleTreeNode {
   name: string;
@@ -16,37 +23,181 @@ interface ModuleTreeNode {
   children?: ModuleTreeNode[];
 }
 
-/**
- * Generate the wiki HTML viewer (index.html) from existing markdown pages.
- */
-export async function generateHTMLViewer(wikiDir: string, projectName: string): Promise<string> {
-  // Load module tree
-  let moduleTree: ModuleTreeNode[] = [];
+interface ViewerData {
+  tree: ModuleTreeNode[];
+  pages: Record<string, string>;
+  meta: Record<string, unknown> | null;
+  language: ResolvedLanguage;
+  messages: WikiPresentationMessages;
+}
+
+const LEGACY_LANGUAGE: ResolvedLanguage = {
+  requestedLanguage: '',
+  resolvedLocale: 'en',
+  localeFingerprint: 'legacy',
+  localeResolverVersion: 0,
+  diagnostics: [],
+};
+
+export function sanitizeMarkdownForViewer(markdown: string): string {
+  const mermaidSafe = sanitizeMermaidMarkdown(markdown);
+  // 循环删除 HTML 注释与残留标记直至不动点：删除后相邻文本可能拼接出新的 <!--（如 <!-<!-- -->-），
+  // 且 HTML 规范中 --> 与 --!> 均为合法注释结束符，需一并匹配
+  let commentRemoved = mermaidSafe;
+  let previous: string;
+  do {
+    previous = commentRemoved;
+    commentRemoved = previous.replace(/<!--[\s\S]*?(?:-->|--!>)|<!--|--!>|-->/g, '');
+  } while (commentRemoved !== previous);
+  let inFence = false;
+  return commentRemoved
+    .split('\n')
+    .map((line) => {
+      if (/^\s*```/.test(line)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+      // 非围栏行完整转义 HTML 特殊字符，任何残余标记均失去语义（非围栏行不需要原始 HTML）
+      return line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    })
+    .join('\n');
+}
+
+async function readJson(filePath: string): Promise<unknown> {
+  return JSON.parse(await fs.readFile(filePath, 'utf8'));
+}
+
+async function readManifestData(wikiDir: string): Promise<ViewerData | null> {
+  const currentPath = path.join(wikiDir, '.state', 'current.json');
+  let currentRaw: string;
+  let current: unknown;
   try {
-    const raw = await fs.readFile(path.join(wikiDir, 'module_tree.json'), 'utf-8');
-    moduleTree = JSON.parse(raw);
+    currentRaw = await fs.readFile(currentPath, 'utf8');
+    current = JSON.parse(currentRaw);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(`Invalid wiki current pointer: ${(error as Error).message}`);
+  }
+  if (current === null || typeof current !== 'object' || Array.isArray(current)) {
+    throw new Error('Invalid wiki current pointer');
+  }
+  const pointer = current as Record<string, unknown>;
+  const unknownPointerKeys = Object.keys(pointer).filter(
+    (key) =>
+      ![
+        'schemaVersion',
+        'generationId',
+        'manifestFile',
+        'manifestHash',
+        'publishedAt',
+        'previousGenerationId',
+      ].includes(key),
+  );
+  if (
+    unknownPointerKeys.length > 0 ||
+    pointer.schemaVersion !== 1 ||
+    pointer.manifestFile !== 'manifest.json' ||
+    typeof pointer.generationId !== 'string' ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(pointer.generationId) ||
+    typeof pointer.manifestHash !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(pointer.manifestHash) ||
+    typeof pointer.publishedAt !== 'string' ||
+    (pointer.previousGenerationId !== undefined &&
+      (typeof pointer.previousGenerationId !== 'string' ||
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(pointer.previousGenerationId)))
+  ) {
+    throw new Error('Invalid wiki current pointer');
+  }
+  const generationId = pointer.generationId;
+  const generationDir = path.join(wikiDir, '.generations', generationId);
+  const manifestRaw = await fs.readFile(path.join(generationDir, 'manifest.json'), 'utf8');
+  if (hashOutputContent(manifestRaw) !== pointer.manifestHash) {
+    throw new Error('Wiki current pointer manifest hash mismatch');
+  }
+  const manifest = JSON.parse(manifestRaw) as OutputManifest;
+  validateOutputManifest(manifest);
+  if (manifest.generationId !== generationId) {
+    throw new Error('Wiki manifest generationId does not match current pointer');
+  }
+
+  const pages: Record<string, string> = {};
+  const artifacts = [manifest.entry, ...manifest.pages];
+  for (const artifact of artifacts) {
+    const content = await fs.readFile(path.join(generationDir, artifact.file), 'utf8');
+    if (hashOutputContent(content) !== artifact.contentHash) {
+      throw new Error(`Wiki artifact hash mismatch: ${artifact.file}`);
+    }
+    pages[artifact.slug] = sanitizeMarkdownForViewer(content);
+  }
+
+  const byParent = new Map<string | undefined, OutputManifest['pages']>();
+  for (const page of [...manifest.pages].sort((a, b) => a.order - b.order)) {
+    const siblings = byParent.get(page.parentId) ?? [];
+    siblings.push(page);
+    byParent.set(page.parentId, siblings);
+  }
+  const buildTree = (parentId?: string): ModuleTreeNode[] =>
+    (byParent.get(parentId) ?? []).map((page) => ({
+      name: page.label,
+      slug: page.slug,
+      files: [],
+      ...(byParent.has(page.id) ? { children: buildTree(page.id) } : {}),
+    }));
+
+  let meta: Record<string, unknown> | null = null;
+  try {
+    meta = (await readJson(path.join(generationDir, 'meta.json'))) as Record<string, unknown>;
+  } catch {
+    /* Viewer 渲染不强制要求 meta */
+  }
+  const presentationLanguage =
+    manifest.profile.id === 'default' ? LEGACY_LANGUAGE : manifest.language;
+  return {
+    tree: buildTree(),
+    pages,
+    meta,
+    language: presentationLanguage,
+    messages: getWikiPresentationMessages(presentationLanguage),
+  };
+}
+
+async function readLegacyData(wikiDir: string): Promise<ViewerData> {
+  let tree: ModuleTreeNode[] = [];
+  try {
+    tree = (await readJson(path.join(wikiDir, 'module_tree.json'))) as ModuleTreeNode[];
   } catch {
     /* will show empty nav */
   }
 
-  // Load meta
   let meta: Record<string, unknown> | null = null;
   try {
-    const raw = await fs.readFile(path.join(wikiDir, 'meta.json'), 'utf-8');
-    meta = JSON.parse(raw);
+    meta = (await readJson(path.join(wikiDir, 'meta.json'))) as Record<string, unknown>;
   } catch {
     /* no meta */
   }
 
-  // Read all markdown files into a { slug: content } map
   const pages: Record<string, string> = {};
   const dirEntries = await fs.readdir(wikiDir);
-  for (const f of dirEntries.filter((f) => f.endsWith('.md'))) {
-    const content = await fs.readFile(path.join(wikiDir, f), 'utf-8');
-    pages[f.replace(/\.md$/, '')] = sanitizeMermaidMarkdown(content);
+  for (const file of dirEntries.filter((entry) => entry.endsWith('.md'))) {
+    const content = await fs.readFile(path.join(wikiDir, file), 'utf8');
+    pages[file.replace(/\.md$/, '')] = sanitizeMarkdownForViewer(content);
   }
+  return {
+    tree,
+    pages,
+    meta,
+    language: LEGACY_LANGUAGE,
+    messages: getWikiPresentationMessages(LEGACY_LANGUAGE),
+  };
+}
 
-  const html = buildHTML(projectName, moduleTree, pages, meta);
+/**
+ * 根据已有 Markdown 页面生成 Wiki HTML Viewer（index.html）。
+ */
+export async function generateHTMLViewer(wikiDir: string, projectName: string): Promise<string> {
+  const data = (await readManifestData(wikiDir)) ?? (await readLegacyData(wikiDir));
+  const html = buildHTML(projectName, data);
   const outputPath = path.join(wikiDir, 'index.html');
   await fs.writeFile(outputPath, html, 'utf-8');
   return outputPath;
@@ -62,27 +213,26 @@ function esc(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function buildHTML(
-  projectName: string,
-  moduleTree: ModuleTreeNode[],
-  pages: Record<string, string>,
-  meta: Record<string, unknown> | null,
-): string {
+function buildHTML(projectName: string, data: ViewerData): string {
   // Embed data as JSON inside the HTML.
   // Escape </script> sequences so they don't prematurely close the <script> tag.
   const escScript = (s: string) => s.replace(/<\//g, '<\\/');
-  const pagesJSON = escScript(JSON.stringify(pages));
-  const treeJSON = escScript(JSON.stringify(moduleTree));
-  const metaJSON = escScript(JSON.stringify(meta));
+  const pagesJSON = escScript(JSON.stringify(data.pages));
+  const treeJSON = escScript(JSON.stringify(data.tree));
+  const metaJSON = escScript(JSON.stringify(data.meta));
+  const messagesJSON = escScript(JSON.stringify(data.messages));
 
   const parts: string[] = [];
 
   // ── Head ──
   parts.push('<!DOCTYPE html>');
-  parts.push('<html lang="en">');
+  parts.push(`<html lang="${data.language.resolvedLocale}">`);
   parts.push('<head>');
   parts.push('<meta charset="UTF-8">');
   parts.push('<meta name="viewport" content="width=device-width, initial-scale=1.0">');
+  parts.push(
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src https://cdn.jsdelivr.net 'nonce-gitnexus-wiki'; style-src 'unsafe-inline'; img-src https: data:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'\">",
+  );
   parts.push('<title>' + esc(projectName) + ' — Wiki</title>');
   parts.push('<script src="https://cdn.jsdelivr.net/npm/marked@11.0.0/marked.min.js"><\/script>');
   parts.push(
@@ -110,20 +260,21 @@ function buildHTML(
   parts.push('<div class="sidebar-meta" id="meta-info"></div>');
   parts.push('</div>');
   parts.push('<div id="nav-tree"></div>');
-  parts.push('<div class="sidebar-footer">Generated by GitNexus</div>');
+  parts.push(`<div class="sidebar-footer">${esc(data.messages.generatedBy)}</div>`);
   parts.push('</nav>');
 
   // Content
   parts.push('<main class="content" id="content">');
-  parts.push('<div class="empty-state"><h2>Loading…</h2></div>');
+  parts.push(`<div class="empty-state"><h2>${esc(data.messages.loading)}</h2></div>`);
   parts.push('</main>');
   parts.push('</div>');
 
   // ── Script ──
-  parts.push('<script>');
+  parts.push('<script nonce="gitnexus-wiki">');
   parts.push('var PAGES = ' + pagesJSON + ';');
   parts.push('var TREE = ' + treeJSON + ';');
   parts.push('var META = ' + metaJSON + ';');
+  parts.push('var MESSAGES = ' + messagesJSON + ';');
   parts.push(JS_APP);
   parts.push('<\/script>');
 
@@ -216,16 +367,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
 const JS_APP = `
 (function() {
   var activePage = 'overview';
+  var navigationVersion = 0;
+  var mermaidQueue = Promise.resolve();
 
   document.addEventListener('DOMContentLoaded', function() {
-    mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose' });
+    mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'strict' });
     renderMeta();
     renderNav();
     document.getElementById('menu-toggle').addEventListener('click', function() {
       document.getElementById('sidebar').classList.toggle('open');
     });
     if (location.hash && location.hash.length > 1) {
-      activePage = decodeURIComponent(location.hash.slice(1));
+      try { activePage = decodeURIComponent(location.hash.slice(1)); } catch(e) { activePage = 'overview'; }
     }
     navigateTo(activePage);
   });
@@ -245,10 +398,10 @@ const JS_APP = `
   function renderNav() {
     var container = document.getElementById('nav-tree');
     var html = '<div class="nav-section">';
-    html += '<a class="nav-item overview" data-page="overview" href="#overview">Overview</a>';
+    html += '<a class="nav-item overview" data-page="overview" href="#overview">' + escH(MESSAGES.overview) + '</a>';
     html += '</div>';
     if (TREE.length > 0) {
-      html += '<div class="nav-group-label">Modules</div>';
+      html += '<div class="nav-group-label">' + escH(MESSAGES.modules) + '</div>';
       html += buildNavTree(TREE);
     }
     container.innerHTML = html;
@@ -283,6 +436,7 @@ const JS_APP = `
   }
 
   function navigateTo(page) {
+    var currentNavigation = ++navigationVersion;
     activePage = page;
     location.hash = encodeURIComponent(page);
 
@@ -299,11 +453,23 @@ const JS_APP = `
     var md = PAGES[page];
 
     if (!md) {
-      contentEl.innerHTML = '<div class="empty-state"><h2>Page not found</h2><p>' + escH(page) + '.md does not exist.</p></div>';
+      contentEl.replaceChildren();
+      var empty = document.createElement('div');
+      empty.className = 'empty-state';
+      var heading = document.createElement('h2');
+      heading.textContent = MESSAGES.pageNotFound;
+      var detail = document.createElement('p');
+      detail.textContent = page + '.md';
+      empty.appendChild(heading);
+      empty.appendChild(detail);
+      contentEl.appendChild(empty);
       return;
     }
 
-    contentEl.innerHTML = marked.parse(md);
+    var template = document.createElement('template');
+    template.innerHTML = marked.parse(md);
+    sanitizeRenderedContent(template.content);
+    contentEl.replaceChildren(template.content.cloneNode(true));
 
     // Rewrite .md links to hash navigation
     var links = contentEl.querySelectorAll('a[href]');
@@ -318,6 +484,8 @@ const JS_APP = `
             navigateTo(s);
           });
         })(slug);
+      } else if (href && /^https:\\/\\//i.test(href)) {
+        links[i].setAttribute('rel', 'noopener noreferrer');
       }
     }
 
@@ -330,10 +498,73 @@ const JS_APP = `
       div.textContent = mermaidBlocks[i].textContent;
       pre.parentNode.replaceChild(div, pre);
     }
-    try { mermaid.run({ querySelector: '.mermaid' }); } catch(e) {}
+    mermaidQueue = mermaidQueue.then(function() {
+      if (currentNavigation !== navigationVersion) return;
+      return renderMermaidBlocks(contentEl);
+    });
 
     window.scrollTo(0, 0);
     document.getElementById('sidebar').classList.remove('open');
+  }
+
+  async function renderMermaidBlocks(root) {
+    var blocks = Array.from(root.querySelectorAll('.mermaid'));
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i];
+      var source = block.textContent || '';
+      try {
+        await mermaid.run({ nodes: [block], suppressErrors: true });
+        if (block.textContent.indexOf('Syntax error in text') !== -1) {
+          throw new Error('Mermaid syntax error');
+        }
+      } catch(e) {
+        if (typeof console !== 'undefined' && console.warn) {
+          console.warn('GitNexus Wiki Mermaid fallback:', e);
+        }
+        var pre = document.createElement('pre');
+        var code = document.createElement('code');
+        code.className = 'language-mermaid mermaid-error-source';
+        code.textContent = source;
+        pre.appendChild(code);
+        block.replaceWith(pre);
+      }
+    }
+  }
+
+  function sanitizeRenderedContent(root) {
+    var blocked = root.querySelectorAll('script,iframe,object,embed,style,link,meta,base,form,input,button,textarea,select,option,video,audio,source');
+    for (var i = 0; i < blocked.length; i++) blocked[i].remove();
+
+    var elements = root.querySelectorAll('*');
+    for (var i = 0; i < elements.length; i++) {
+      var attrs = Array.from(elements[i].attributes);
+      for (var j = 0; j < attrs.length; j++) {
+        var name = attrs[j].name.toLowerCase();
+        var value = attrs[j].value;
+        if (name.indexOf('on') === 0 || name === 'srcdoc' || name === 'style') {
+          elements[i].removeAttribute(attrs[j].name);
+        } else if ((name === 'href' || name === 'src' || name === 'xlink:href') && !isSafeUrl(value, name)) {
+          elements[i].removeAttribute(attrs[j].name);
+        }
+      }
+    }
+  }
+
+  function isSafeUrl(value, attribute) {
+    var compact = String(value || '').replace(/[\\u0000-\\u0020\\u007f]+/g, '');
+    var decoded = compact;
+    try { decoded = decodeURIComponent(compact); } catch(e) {}
+    var lower = decoded.toLowerCase();
+    if (lower.indexOf('javascript:') === 0 || lower.indexOf('vbscript:') === 0 || lower.indexOf('file:') === 0) return false;
+    if (lower.indexOf('data:') === 0) {
+      return attribute === 'src' && /^data:image\\/(png|gif|jpeg|webp);base64,/i.test(lower);
+    }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(lower)) {
+      return attribute === 'href'
+        ? /^(https?:|mailto:)/i.test(lower)
+        : /^https:/i.test(lower);
+    }
+    return true;
   }
 })();
 `;

@@ -132,6 +132,27 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  it('documents every Wiki Profile contract in every CLI copy', () => {
+    const required = [
+      '`--profile <id>`',
+      '`default`',
+      '`arc42`',
+      '`engineering-wiki`',
+      '`ieee-1016-sdd`',
+      '`iso-42010-ad`',
+      '--profile ieee-1016-sdd --lang chinese',
+      '--profile engineering-wiki --lang chinese',
+      'stable English values',
+      'falls back to English',
+      '.state/current.json',
+      'Profile coverage checks do not establish standards conformance.',
+    ];
+    for (const file of standardSkillCopies('gitnexus-cli')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
   it('documents CLI fallbacks in every impact-analysis copy', () => {
     const required = [
       'node .gitnexus/run.cjs impact <symbol> --direction upstream --repo .',

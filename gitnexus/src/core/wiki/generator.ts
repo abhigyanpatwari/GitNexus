@@ -12,6 +12,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { execSync, execFileSync } from 'child_process';
 
 import {
@@ -50,12 +51,6 @@ import {
 import {
   GROUPING_SYSTEM_PROMPT,
   GROUPING_USER_PROMPT,
-  MODULE_SYSTEM_PROMPT,
-  MODULE_USER_PROMPT,
-  PARENT_SYSTEM_PROMPT,
-  PARENT_USER_PROMPT,
-  OVERVIEW_SYSTEM_PROMPT,
-  OVERVIEW_USER_PROMPT,
   fillTemplate,
   formatFileListForGrouping,
   formatDirectoryTree,
@@ -64,6 +59,34 @@ import {
 } from './prompts.js';
 
 import { shouldIgnorePath } from '../../config/ignore-service.js';
+import { resolveLanguage } from './profiles/locale.js';
+import { resolveTemplateProfile } from './profiles/registry.js';
+import type {
+  EvidenceKind,
+  PromptSpec,
+  RegisteredTemplateProfile,
+  ResolvedLanguage,
+  SectionSpec,
+} from './profiles/types.js';
+import { EvidenceCollector, EVIDENCE_COLLECTOR_VERSION } from './document/evidence-collector.js';
+import type { EvidenceBundle, EvidenceRef } from './document/evidence.js';
+import { SectionWriter, SECTION_WRITER_VERSION } from './document/section-writer.js';
+import { assembleSectionPage } from './document/assembler.js';
+import {
+  createOutputManifest,
+  hashOutputContent,
+  validateOutputManifest,
+  type ManifestPageInput,
+} from './document/output-manifest.js';
+import { WikiPublisher } from './document/publisher.js';
+import {
+  createDocumentPlan,
+  evidenceKindsForRequirement,
+  flattenSections,
+  type DocumentPlan,
+} from './document/planner.js';
+import { MARKDOWN_RENDERER_VERSION, renderDocumentPlan } from './document/markdown-renderer.js';
+import { validateProfileCoverage, validateReviewedDocumentPlan } from './document/validator.js';
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -75,15 +98,43 @@ export interface WikiOptions {
   reviewOnly?: boolean;
   /** Output language for generated documentation (e.g. 'english', 'chinese', 'spanish') */
   lang?: string;
+  /** 预解析的文档 Profile，CLI 在任何图谱或 LLM 工作前完成解析。 */
+  profile?: RegisteredTemplateProfile;
+  /** 为所选 Profile 预解析的确定性展示区域设置。 */
+  language?: ResolvedLanguage;
 }
 
 export interface WikiMeta {
+  schemaVersion?: 2;
   fromCommit: string;
   generatedAt: string;
   model: string;
-  lang: string;
+  lang?: string;
   moduleFiles: Record<string, string[]>;
   moduleTree: ModuleTreeNode[];
+  profile?: {
+    id: string;
+    revision: number;
+    fingerprint: string;
+  };
+  generation?: {
+    generationId: string;
+    provider: string;
+    model: string;
+    requestedLanguage: string;
+    resolvedLocale: 'en' | 'zh-CN';
+    localeFallback?: { from: string; to: 'en' };
+    localeFingerprint: string;
+    localeResolverVersion: number;
+    collectorVersion: number;
+    writerVersion: number;
+    validatorVersion: number;
+    rendererVersion: number;
+    semanticsKey: string;
+    artifactKey: string;
+  };
+  outputManifest?: unknown;
+  evidenceLimitations?: string[];
 }
 
 export interface ModuleTreeNode {
@@ -91,6 +142,142 @@ export interface ModuleTreeNode {
   slug: string;
   files: string[];
   children?: ModuleTreeNode[];
+}
+
+const RESERVED_WIKI_SLUGS = new Set([
+  'overview',
+  'coverage',
+  'index',
+  'meta',
+  'manifest',
+  'module-tree',
+  'first-module-tree',
+  'document-plan',
+  'con',
+  'prn',
+  'aux',
+  'nul',
+  ...Array.from({ length: 9 }, (_, index) => `com${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `lpt${index + 1}`),
+]);
+
+function validateModuleFile(file: unknown, label: string): string {
+  if (
+    typeof file !== 'string' ||
+    file.trim() === '' ||
+    file.includes('\\') ||
+    path.isAbsolute(file) ||
+    file.split('/').includes('..') ||
+    file !== file.replace(/^\.\//, '') ||
+    /[\x00-\x1f\x7f]/.test(file)
+  ) {
+    throw new Error(`${label} must be a safe repository-relative path`);
+  }
+  return file;
+}
+
+export function validateReviewedModuleTree(
+  value: unknown,
+  knownFiles?: ReadonlySet<string>,
+): ModuleTreeNode[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Reviewed module tree must be a non-empty array');
+  }
+  const slugs = new Set<string>();
+  const assignedFiles = new Set<string>();
+  let nodeCount = 0;
+
+  const validateNodes = (nodes: unknown[], depth: number, label: string): ModuleTreeNode[] => {
+    if (depth > 8) throw new Error('Reviewed module tree exceeds the maximum depth');
+    return nodes.map((raw, index) => {
+      const nodeLabel = `${label}[${index}]`;
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error(`${nodeLabel} must be an object`);
+      }
+      const object = raw as Record<string, unknown>;
+      const unknownKeys = Object.keys(object).filter(
+        (key) => !['name', 'slug', 'files', 'children'].includes(key),
+      );
+      if (unknownKeys.length > 0) {
+        throw new Error(`${nodeLabel} contains unknown fields: ${unknownKeys.join(', ')}`);
+      }
+      nodeCount++;
+      if (nodeCount > 10_000) throw new Error('Reviewed module tree contains too many nodes');
+      if (
+        typeof object.name !== 'string' ||
+        object.name.trim() === '' ||
+        object.name.length > 200 ||
+        /[\x00-\x1f\x7f<>]/.test(object.name)
+      ) {
+        throw new Error(`${nodeLabel}.name is invalid`);
+      }
+      if (
+        typeof object.slug !== 'string' ||
+        !/^[a-z0-9](?:[a-z0-9-]{0,58}[a-z0-9])?$/.test(object.slug) ||
+        RESERVED_WIKI_SLUGS.has(object.slug)
+      ) {
+        throw new Error(`${nodeLabel}.slug is unsafe or reserved`);
+      }
+      if (slugs.has(object.slug)) throw new Error(`Duplicate module slug: ${object.slug}`);
+      slugs.add(object.slug);
+      if (!Array.isArray(object.files)) throw new Error(`${nodeLabel}.files must be an array`);
+      const files = object.files.map((file, fileIndex) =>
+        validateModuleFile(file, `${nodeLabel}.files[${fileIndex}]`),
+      );
+      for (const file of files) {
+        if (knownFiles && !knownFiles.has(file)) {
+          throw new Error(`${nodeLabel} references unknown repository file: ${file}`);
+        }
+        if (assignedFiles.has(file)) throw new Error(`Repository file is assigned twice: ${file}`);
+        assignedFiles.add(file);
+      }
+      let children: ModuleTreeNode[] | undefined;
+      if (object.children !== undefined) {
+        if (!Array.isArray(object.children) || object.children.length === 0) {
+          throw new Error(`${nodeLabel}.children must be a non-empty array when present`);
+        }
+        if (files.length > 0) {
+          throw new Error(`${nodeLabel} cannot own files and children at the same time`);
+        }
+        children = validateNodes(object.children, depth + 1, `${nodeLabel}.children`);
+      }
+      return {
+        name: object.name,
+        slug: object.slug,
+        files,
+        ...(children ? { children } : {}),
+      };
+    });
+  };
+
+  return validateNodes(value, 1, 'moduleTree');
+}
+
+export async function validateReviewedModuleTreePaths(
+  repoPath: string,
+  tree: readonly ModuleTreeNode[],
+): Promise<void> {
+  const repositoryRealPath = await fs.realpath(repoPath);
+  for (const { node } of (function flatten(nodes: readonly ModuleTreeNode[]): Array<{
+    node: ModuleTreeNode;
+  }> {
+    return nodes.flatMap((node) => [{ node }, ...(node.children ? flatten(node.children) : [])]);
+  })(tree)) {
+    for (const file of node.files) {
+      let fileRealPath: string;
+      try {
+        fileRealPath = await fs.realpath(path.resolve(repoPath, file));
+      } catch (error) {
+        throw new Error(
+          `Reviewed module tree file cannot be resolved: ${file}: ${(error as Error).message}`,
+        );
+      }
+      const relative = path.relative(repositoryRealPath, fileRealPath);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error(`Reviewed module tree file escapes the repository: ${file}`);
+      }
+    }
+  }
 }
 
 export type ProgressCallback = (phase: string, percent: number, detail?: string) => void;
@@ -107,6 +294,10 @@ export interface WikiRunResult {
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
 const GROUPING_TOKEN_BUDGET = 100_000;
 const WIKI_DIR = 'wiki';
+const COLLECTOR_VERSION = EVIDENCE_COLLECTOR_VERSION;
+const WRITER_VERSION = SECTION_WRITER_VERSION;
+const VALIDATOR_VERSION = 1;
+const RENDERER_VERSION = MARKDOWN_RENDERER_VERSION;
 
 // ─── Generator Class ──────────────────────────────────────────────────
 
@@ -119,6 +310,10 @@ export class WikiGenerator {
   private maxTokensPerModule: number;
   private concurrency: number;
   private options: WikiOptions;
+  private profile: RegisteredTemplateProfile;
+  private language: ResolvedLanguage;
+  private evidenceBundle: EvidenceBundle | null = null;
+  private readonly sectionWriter = new SectionWriter();
   private onProgress: ProgressCallback;
   private failedModules: string[] = [];
 
@@ -135,6 +330,8 @@ export class WikiGenerator {
     this.wikiDir = path.join(storagePath, WIKI_DIR);
     this.lbugPath = lbugPath;
     this.options = options;
+    this.profile = options.profile ?? resolveTemplateProfile('default');
+    this.language = options.language ?? resolveLanguage(options.lang, this.profile.profile);
     this.llmConfig = llmConfig;
     this.maxTokensPerModule = options.maxTokensPerModule ?? DEFAULT_MAX_TOKENS_PER_MODULE;
     this.concurrency = options.concurrency ?? 3;
@@ -207,7 +404,11 @@ export class WikiGenerator {
   private buildSystemPrompt(base: string): string {
     const lang = this.effectiveLang();
     if (!lang) return base;
-    return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes prose, code comments in examples, and diagram labels. Note: page titles (H1 headings) are generated separately and will remain in English.`;
+    const titleNote =
+      this.profile.profile.id === 'default'
+        ? 'Note: page titles (H1 headings) are generated separately and will remain in English.'
+        : 'Note: fixed structural titles are resolved separately by the selected Profile and locale.';
+    return `${base}\n\nIMPORTANT: Write ALL documentation content in ${lang}. This includes prose, code comments in examples, and diagram labels. ${titleNote}`;
   }
 
   /**
@@ -258,27 +459,36 @@ export class WikiGenerator {
     const currentCommit = this.getCurrentCommit();
     const forceMode = this.options.force;
 
-    // Up-to-date check (skip if --force)
-    if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
-      const currentLang = this.effectiveLang();
-      const metaLang = existingMeta.lang ?? '';
-      if (currentLang !== metaLang) {
-        const prevDisplay = metaLang || 'english (default)';
-        const nextDisplay = currentLang || 'english (default)';
-        throw new Error(
-          `Wiki was generated in ${prevDisplay}; use --force to regenerate in ${nextDisplay}.`,
-        );
-      }
-      // Still regenerate the HTML viewer in case it's missing
-      await this.ensureHTMLViewer();
-      return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
+    if (!forceMode && existingMeta) {
+      this.assertCacheCompatibility(existingMeta, currentCommit);
     }
 
-    // Force mode: delete snapshot to force full re-grouping
+    // 标准文档的 partial generation 需要继续重试失败章节，不能被同 commit 快路径吞掉。
+    const retryStandardFailures =
+      !forceMode &&
+      this.profile.profile.id !== 'default' &&
+      existingMeta?.fromCommit === currentCommit &&
+      (await this.hasRetryableStandardFailures(existingMeta));
+
+    // Up-to-date check (skip if --force or a standard generation is partial)
+    if (!forceMode && existingMeta && existingMeta.fromCommit === currentCommit) {
+      if (retryStandardFailures) {
+        this.onProgress('retry', 1, 'Retrying failed standard document sections...');
+      } else {
+        // Still regenerate the HTML viewer in case it's missing
+        await this.ensureHTMLViewer();
+        return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
+      }
+    }
+
+    // 强制模式下丢弃所有可编辑或可恢复计划，防止 Profile 或区域设置变更时
+    // 静默复用由不同生成语义创建的模块树或文档计划。
     if (forceMode) {
-      try {
-        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
-      } catch {}
+      for (const file of ['first_module_tree.json', 'module_tree.json', 'document_plan.json']) {
+        try {
+          await fs.unlink(path.join(this.wikiDir, file));
+        } catch {}
+      }
       // Delete existing module pages so they get regenerated
       const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
       for (const f of existingFiles) {
@@ -298,15 +508,6 @@ export class WikiGenerator {
     let result: WikiRunResult;
     try {
       if (!forceMode && existingMeta && existingMeta.fromCommit) {
-        const currentLang = this.effectiveLang();
-        const metaLang = existingMeta.lang ?? '';
-        if (currentLang !== metaLang) {
-          const prevDisplay = metaLang || 'english (default)';
-          const nextDisplay = currentLang || 'english (default)';
-          throw new Error(
-            `Wiki was generated in ${prevDisplay}; use --force to regenerate in ${nextDisplay}.`,
-          );
-        }
         result = await this.incrementalUpdate(existingMeta, currentCommit);
       } else {
         result = await this.fullGeneration(currentCommit);
@@ -314,6 +515,10 @@ export class WikiGenerator {
     } finally {
       releaseWikiDbPin();
       await closeWikiDb();
+    }
+
+    if (this.profile.profile.id === 'default' && !this.options.reviewOnly) {
+      await this.publishLegacyGeneration(currentCommit);
     }
 
     // Always generate the HTML viewer after wiki content changes
@@ -366,6 +571,21 @@ export class WikiGenerator {
     // If reviewOnly mode, save tree and stop for user to review/edit
     if (this.options.reviewOnly) {
       await this.saveModuleTree(moduleTree);
+      if (this.profile.profile.id !== 'default') {
+        await this.collectStructuredEvidence(currentCommit, moduleTree);
+        const reviewPlan = createDocumentPlan({
+          profile: this.profile,
+          language: this.language,
+          sourceCommit: currentCommit,
+          moduleTree,
+          evidence: this.evidenceBundle!,
+        });
+        await fs.writeFile(
+          path.join(this.wikiDir, 'document_plan.json'),
+          `${JSON.stringify(reviewPlan, null, 2)}\n`,
+          'utf8',
+        );
+      }
       this.onProgress('review', 30, 'Module tree ready for review');
       const reviewResult: WikiRunResult = {
         pagesGenerated: 0,
@@ -374,6 +594,12 @@ export class WikiGenerator {
         moduleTree,
       };
       return reviewResult;
+    }
+
+    await this.collectStructuredEvidence(currentCommit, moduleTree);
+
+    if (this.profile.profile.id !== 'default') {
+      return this.generateStandardDocument(currentCommit, moduleTree);
     }
 
     // Phase 2: Generate module pages (parallel with concurrency limit)
@@ -437,14 +663,7 @@ export class WikiGenerator {
     this.onProgress('finalize', 95, 'Saving metadata...');
     const moduleFiles = this.extractModuleFiles(moduleTree);
     await this.saveModuleTree(moduleTree);
-    await this.saveWikiMeta({
-      fromCommit: currentCommit,
-      generatedAt: new Date().toISOString(),
-      model: this.llmConfig.model,
-      lang: this.effectiveLang(),
-      moduleFiles,
-      moduleTree,
-    });
+    await this.saveWikiMeta(this.buildWikiMeta(currentCommit, moduleFiles, moduleTree));
 
     this.onProgress('done', 100, 'Wiki generation complete');
     return { pagesGenerated, mode: 'full', failedModules: [...this.failedModules] };
@@ -453,16 +672,20 @@ export class WikiGenerator {
   // ─── Phase 1: Build Module Tree ────────────────────────────────────
 
   private async buildModuleTree(files: FileWithExports[]): Promise<ModuleTreeNode[]> {
+    const knownFiles = new Set(files.map((file) => file.filePath));
     // First, check for user-edited module_tree.json (from --review workflow)
     const editablePath = path.join(this.wikiDir, 'module_tree.json');
     try {
       const edited = await fs.readFile(editablePath, 'utf-8');
       const parsed = JSON.parse(edited);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        this.onProgress('grouping', 25, 'Using edited module tree');
-        return parsed;
+      const validated = validateReviewedModuleTree(parsed, knownFiles);
+      await validateReviewedModuleTreePaths(this.repoPath, validated);
+      this.onProgress('grouping', 25, 'Using edited module tree');
+      return validated;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`Invalid reviewed module tree: ${(error as Error).message}`);
       }
-    } catch {
       // No edited tree, check for original snapshot
     }
 
@@ -471,11 +694,14 @@ export class WikiGenerator {
     try {
       const existing = await fs.readFile(snapshotPath, 'utf-8');
       const parsed = JSON.parse(existing);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        this.onProgress('grouping', 25, 'Using existing module tree (resuming)');
-        return parsed;
+      const validated = validateReviewedModuleTree(parsed, knownFiles);
+      await validateReviewedModuleTreePaths(this.repoPath, validated);
+      this.onProgress('grouping', 25, 'Using existing module tree (resuming)');
+      return validated;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw new Error(`Invalid module tree snapshot: ${(error as Error).message}`);
       }
-    } catch {
       // No snapshot, generate new
     }
 
@@ -528,11 +754,12 @@ export class WikiGenerator {
       tree.push(node);
     }
 
+    const validatedTree = validateReviewedModuleTree(tree, knownFiles);
     // Save immutable snapshot for resumability
-    await fs.writeFile(snapshotPath, JSON.stringify(tree, null, 2), 'utf-8');
+    await fs.writeFile(snapshotPath, JSON.stringify(validatedTree, null, 2), 'utf-8');
     this.onProgress('grouping', 28, `Created ${tree.length} modules`);
 
-    return tree;
+    return validatedTree;
   }
 
   /**
@@ -860,7 +1087,10 @@ export class WikiGenerator {
       getProcessesForFiles(filePaths, 5),
     ]);
 
-    const prompt = fillTemplate(MODULE_USER_PROMPT, {
+    const moduleEvidence = this.evidenceBundle?.modules[node.name];
+    const variables = this.variablesForPrompt(this.profile.profile.prompts.module, {
+      SECTION_ID: `module-${node.slug}`,
+      EVIDENCE_BUNDLE: this.formatEvidenceForPrompt(moduleEvidence),
       MODULE_NAME: node.name,
       SOURCE_CODE: finalSourceCode,
       INTRA_CALLS: formatCallEdges(intraCalls),
@@ -868,15 +1098,21 @@ export class WikiGenerator {
       INCOMING_CALLS: formatCallEdges(interCalls.incoming),
       PROCESSES: formatProcesses(processes),
     });
-
-    const response = await this.invokeLLM(
-      prompt,
-      this.buildSystemPrompt(MODULE_SYSTEM_PROMPT),
-      this.streamOpts(node.name),
-    );
+    const evidenceIds = moduleEvidence?.map((item) => item.id) ?? [];
+    const payload = await this.sectionWriter.write({
+      profileId: this.profile.profile.id,
+      sectionId: `module-${node.slug}`,
+      prompt: this.profile.profile.prompts.module,
+      variables,
+      evidenceIds,
+      invokeLLM: (prompt, systemPrompt, options) => this.invokeLLM(prompt, systemPrompt, options),
+      transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
+      llmOptions: this.streamOpts(node.name),
+      diagramPolicy: this.profile.profile.diagramPolicy,
+    });
 
     // H1 uses the English module name (stable slug source); body is LLM-translated.
-    const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
+    const pageContent = sanitizeMermaidMarkdown(assembleSectionPage(node.name, payload));
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
 
@@ -907,20 +1143,29 @@ export class WikiGenerator {
     const crossCalls = await getIntraModuleCallEdges(allChildFiles);
     const processes = await getProcessesForFiles(allChildFiles, 3);
 
-    const prompt = fillTemplate(PARENT_USER_PROMPT, {
+    const moduleEvidence = this.evidenceBundle?.modules[node.name];
+    const variables = this.variablesForPrompt(this.profile.profile.prompts.parent, {
+      SECTION_ID: `module-${node.slug}`,
+      EVIDENCE_BUNDLE: this.formatEvidenceForPrompt(moduleEvidence),
       MODULE_NAME: node.name,
       CHILDREN_DOCS: childDocs.join('\n\n'),
       CROSS_MODULE_CALLS: formatCallEdges(crossCalls),
       CROSS_PROCESSES: formatProcesses(processes),
     });
+    const evidenceIds = moduleEvidence?.map((item) => item.id) ?? [];
+    const payload = await this.sectionWriter.write({
+      profileId: this.profile.profile.id,
+      sectionId: `module-${node.slug}`,
+      prompt: this.profile.profile.prompts.parent,
+      variables,
+      evidenceIds,
+      invokeLLM: (prompt, systemPrompt, options) => this.invokeLLM(prompt, systemPrompt, options),
+      transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
+      llmOptions: this.streamOpts(node.name),
+      diagramPolicy: this.profile.profile.diagramPolicy,
+    });
 
-    const response = await this.invokeLLM(
-      prompt,
-      this.buildSystemPrompt(PARENT_SYSTEM_PROMPT),
-      this.streamOpts(node.name),
-    );
-
-    const pageContent = sanitizeMermaidMarkdown(`# ${node.name}\n\n${response.content}`);
+    const pageContent = sanitizeMermaidMarkdown(assembleSectionPage(node.name, payload));
     await fs.writeFile(path.join(this.wikiDir, `${node.slug}.md`), pageContent, 'utf-8');
   }
 
@@ -957,21 +1202,29 @@ export class WikiGenerator {
         ? moduleEdges.map((e) => `${e.from} → ${e.to} (${e.count} calls)`).join('\n')
         : 'No inter-module call edges detected';
 
-    const prompt = fillTemplate(OVERVIEW_USER_PROMPT, {
+    const variables = this.variablesForPrompt(this.profile.profile.prompts.overview, {
+      SECTION_ID: 'overview',
+      EVIDENCE_BUNDLE: this.formatEvidenceForPrompt(this.evidenceBundle?.repository),
       PROJECT_INFO: projectInfo,
       MODULE_SUMMARIES: moduleSummaries.join('\n\n'),
       MODULE_EDGES: edgesText,
       TOP_PROCESSES: formatProcesses(topProcesses),
     });
-
-    const response = await this.invokeLLM(
-      prompt,
-      this.buildSystemPrompt(OVERVIEW_SYSTEM_PROMPT),
-      this.streamOpts('Generating overview', 88),
-    );
+    const evidenceIds = this.evidenceBundle?.repository.map((item) => item.id) ?? [];
+    const payload = await this.sectionWriter.write({
+      profileId: this.profile.profile.id,
+      sectionId: 'overview',
+      prompt: this.profile.profile.prompts.overview,
+      variables,
+      evidenceIds,
+      invokeLLM: (prompt, systemPrompt, options) => this.invokeLLM(prompt, systemPrompt, options),
+      transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
+      llmOptions: this.streamOpts('Generating overview', 88),
+      diagramPolicy: this.profile.profile.diagramPolicy,
+    });
 
     const pageContent = sanitizeMermaidMarkdown(
-      `# ${path.basename(this.repoPath)} — Wiki\n\n${response.content}`,
+      assembleSectionPage(`${path.basename(this.repoPath)} — Wiki`, payload),
     );
     await fs.writeFile(path.join(this.wikiDir, 'overview.md'), pageContent, 'utf-8');
   }
@@ -982,6 +1235,9 @@ export class WikiGenerator {
     existingMeta: WikiMeta,
     currentCommit: string,
   ): Promise<WikiRunResult> {
+    if (this.profile.profile.id !== 'default') {
+      return this.incrementalStandardDocument(existingMeta, currentCommit);
+    }
     this.onProgress('incremental', 5, 'Detecting changes...');
 
     // Get changed files since last generation
@@ -997,16 +1253,23 @@ export class WikiGenerator {
 
     if (changedFiles.length === 0) {
       // No file changes but commit differs (e.g. merge commit)
-      await this.saveWikiMeta({
-        ...existingMeta,
-        fromCommit: currentCommit,
-        generatedAt: new Date().toISOString(),
-        lang: this.effectiveLang(),
-      });
+      await this.saveWikiMeta(
+        this.buildWikiMeta(
+          currentCommit,
+          existingMeta.moduleFiles,
+          existingMeta.moduleTree,
+          existingMeta,
+        ),
+      );
       return { pagesGenerated: 0, mode: 'incremental', failedModules: [] };
     }
 
     this.onProgress('incremental', 10, `${changedFiles.length} files changed`);
+
+    const deletedFiles = new Set<string>();
+    for (const file of changedFiles) {
+      if (!(await this.fileExists(path.join(this.repoPath, file)))) deletedFiles.add(file);
+    }
 
     // Determine affected modules
     const affectedModules = new Set<string>();
@@ -1018,13 +1281,25 @@ export class WikiGenerator {
         if (files.includes(fp)) {
           affectedModules.add(mod);
           found = true;
-          break;
         }
       }
-      if (!found && !shouldIgnorePath(fp)) {
+      if (!found && !deletedFiles.has(fp) && !shouldIgnorePath(fp)) {
         newFiles.push(fp);
       }
     }
+
+    const removedSlugs = this.removeDeletedFilesFromTree(existingMeta.moduleTree, deletedFiles);
+    for (const slug of removedSlugs) {
+      await fs.unlink(path.join(this.wikiDir, `${slug}.md`)).catch(() => {});
+    }
+    if (existingMeta.moduleTree.length === 0) {
+      for (const file of ['first_module_tree.json', 'module_tree.json', 'document_plan.json']) {
+        await fs.unlink(path.join(this.wikiDir, file)).catch(() => {});
+      }
+      const fullResult = await this.fullGeneration(currentCommit);
+      return { ...fullResult, mode: 'incremental' };
+    }
+    existingMeta.moduleFiles = this.extractModuleFiles(existingMeta.moduleTree);
 
     // If significant new files exist, re-run full grouping
     if (newFiles.length > 5) {
@@ -1043,10 +1318,13 @@ export class WikiGenerator {
 
     // Add new files to nearest module or "Other"
     if (newFiles.length > 0) {
-      if (!existingMeta.moduleFiles['Other']) {
-        existingMeta.moduleFiles['Other'] = [];
+      let otherNode = this.findNodeBySlug(existingMeta.moduleTree, 'other');
+      if (!otherNode) {
+        otherNode = { name: 'Other', slug: 'other', files: [] };
+        existingMeta.moduleTree.push(otherNode);
       }
-      existingMeta.moduleFiles['Other'].push(...newFiles);
+      otherNode.files = Array.from(new Set([...otherNode.files, ...newFiles])).sort();
+      existingMeta.moduleFiles['Other'] = [...otherNode.files];
       affectedModules.add('Other');
     }
 
@@ -1069,14 +1347,18 @@ export class WikiGenerator {
       }
     }
 
+    await this.collectStructuredEvidence(currentCommit, moduleTree);
+
     let incProcessed = 0;
-    pagesGenerated += await this.runParallel(affectedNodes, async (node) => {
+    const affectedLeaves = affectedNodes.filter(
+      (node) => !node.children || node.children.length === 0,
+    );
+    const affectedParents = affectedNodes.filter(
+      (node) => node.children && node.children.length > 0,
+    );
+    pagesGenerated += await this.runParallel(affectedLeaves, async (node) => {
       try {
-        if (node.children && node.children.length > 0) {
-          await this.generateParentPage(node);
-        } else {
-          await this.generateLeafPage(node);
-        }
+        await this.generateLeafPage(node);
         incProcessed++;
         const percent = 20 + Math.round((incProcessed / affectedNodes.length) * 60);
         this.onProgress(
@@ -1091,9 +1373,18 @@ export class WikiGenerator {
         return 0;
       }
     });
+    for (const node of affectedParents) {
+      try {
+        await this.generateParentPage(node);
+        pagesGenerated++;
+      } catch {
+        this.failedModules.push(node.name);
+      }
+      incProcessed++;
+    }
 
     // Regenerate overview if any pages changed
-    if (pagesGenerated > 0) {
+    if (pagesGenerated > 0 || deletedFiles.size > 0) {
       this.onProgress('incremental', 85, 'Updating overview...');
       await this.generateOverview(moduleTree);
       pagesGenerated++;
@@ -1101,19 +1392,802 @@ export class WikiGenerator {
 
     // Save updated metadata
     this.onProgress('incremental', 95, 'Saving metadata...');
-    await this.saveWikiMeta({
-      ...existingMeta,
-      fromCommit: currentCommit,
-      generatedAt: new Date().toISOString(),
-      model: this.llmConfig.model,
-      lang: this.effectiveLang(),
-    });
+    await this.saveModuleTree(moduleTree);
+    await this.saveWikiMeta(
+      this.buildWikiMeta(
+        currentCommit,
+        existingMeta.moduleFiles,
+        existingMeta.moduleTree,
+        existingMeta,
+      ),
+    );
 
     this.onProgress('done', 100, 'Incremental update complete');
     return { pagesGenerated, mode: 'incremental', failedModules: [...this.failedModules] };
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────
+
+  private variablesForPrompt(
+    prompt: PromptSpec,
+    variables: Record<string, string>,
+  ): Record<string, string> {
+    return Object.fromEntries(
+      Object.entries(variables).filter(([name]) => prompt.allowedVariables.includes(name)),
+    );
+  }
+
+  private async collectStructuredEvidence(
+    sourceCommit: string,
+    moduleTree: ModuleTreeNode[],
+  ): Promise<void> {
+    if (this.profile.profile.id === 'default') {
+      this.evidenceBundle = null;
+      return;
+    }
+    const collector = new EvidenceCollector(this.repoPath);
+    this.evidenceBundle = await collector.collect({
+      sourceCommit,
+      moduleFiles: this.extractModuleFiles(moduleTree),
+      limitations: [
+        'Runtime evidence uses public file, call, and process graph queries; PDG evidence is not collected.',
+      ],
+    });
+  }
+
+  private flattenProfileSections(sections: readonly SectionSpec[]): SectionSpec[] {
+    return sections.flatMap((section) => [
+      section,
+      ...(section.children ? this.flattenProfileSections(section.children) : []),
+    ]);
+  }
+
+  private allStructuredEvidence(): EvidenceBundle['repository'] {
+    if (!this.evidenceBundle) return [];
+    const byId = new Map(
+      [...this.evidenceBundle.repository, ...Object.values(this.evidenceBundle.modules).flat()].map(
+        (item) => [item.id, item],
+      ),
+    );
+    return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  private evidenceRecordForPrompt(item: EvidenceRef): Record<string, unknown> {
+    return {
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      summary: item.summary,
+      ...(item.filePath ? { filePath: item.filePath } : {}),
+      ...(item.symbol ? { symbol: item.symbol } : {}),
+      ...(item.relation ? { relation: item.relation } : {}),
+      ...(item.processId ? { processId: item.processId } : {}),
+      ...(item.excerpt ? { excerpt: item.excerpt } : {}),
+    };
+  }
+
+  private selectEvidenceForSection(
+    spec: SectionSpec,
+    allEvidence: EvidenceBundle['repository'],
+  ): { evidence: EvidenceRef[]; relevantCount: number; truncated: boolean } {
+    const requirementKinds = Array.from(
+      new Set(spec.evidenceRequirements.map((requirement) => requirement.kind)),
+    );
+    const buckets =
+      requirementKinds.length === 0
+        ? [[...allEvidence]]
+        : requirementKinds.map((requirementKind) => {
+            const acceptedKinds = evidenceKindsForRequirement(requirementKind);
+            return allEvidence.filter((item) => acceptedKinds.includes(item.kind));
+          });
+    const ordered: EvidenceRef[] = [];
+    const seen = new Set<string>();
+    for (let index = 0; buckets.some((bucket) => index < bucket.length); index++) {
+      for (const bucket of buckets) {
+        const item = bucket[index];
+        if (item && !seen.has(item.id)) {
+          seen.add(item.id);
+          ordered.push(item);
+        }
+      }
+    }
+
+    // 与旧模块源码预算共用同一配置，按 estimateTokens 的 chars/4 规则保留完整证据项。
+    const maxChars = Math.max(2, Math.floor(this.maxTokensPerModule) * 4);
+    const selected: EvidenceRef[] = [];
+    let usedChars = 2;
+    for (const item of ordered) {
+      const serializedLength = JSON.stringify(this.evidenceRecordForPrompt(item)).length;
+      const separatorLength = selected.length > 0 ? 1 : 0;
+      if (usedChars + separatorLength + serializedLength > maxChars) continue;
+      selected.push(item);
+      usedChars += separatorLength + serializedLength;
+    }
+    return {
+      evidence: selected,
+      relevantCount: ordered.length,
+      truncated: selected.length < ordered.length,
+    };
+  }
+
+  private async createOrLoadReviewedPlan(
+    currentCommit: string,
+    moduleTree: ModuleTreeNode[],
+  ): Promise<DocumentPlan> {
+    const freshPlan = createDocumentPlan({
+      profile: this.profile,
+      language: this.language,
+      sourceCommit: currentCommit,
+      moduleTree,
+      evidence: this.evidenceBundle!,
+    });
+    const reviewPath = path.join(this.wikiDir, 'document_plan.json');
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await fs.readFile(reviewPath, 'utf8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return freshPlan;
+      throw new Error(`Invalid reviewed DocumentPlan: ${(error as Error).message}`);
+    }
+    if (
+      raw !== null &&
+      typeof raw === 'object' &&
+      ['generated', 'partial', 'failed'].includes(String((raw as Record<string, unknown>).status))
+    ) {
+      return freshPlan;
+    }
+    const knownEvidenceIds = new Set(this.allStructuredEvidence().map((item) => item.id));
+    return validateReviewedDocumentPlan(raw, freshPlan, knownEvidenceIds);
+  }
+
+  private async writeStandardSections(plan: DocumentPlan): Promise<number> {
+    const sections = new Map(
+      flattenSections(plan.sections).map((section) => [section.id, section]),
+    );
+    const specs = new Map(
+      this.flattenProfileSections(this.profile.profile.sections).map((section) => [
+        section.id,
+        section,
+      ]),
+    );
+    const allEvidence = this.allStructuredEvidence();
+    let completed = 0;
+    let generated = 0;
+
+    for (const sectionId of plan.dependencyOrder) {
+      const section = sections.get(sectionId)!;
+      if (section.payload.mode === 'structured' && section.payload.blocks.length > 0) {
+        completed++;
+        continue;
+      }
+      const spec = specs.get(sectionId)!;
+      const prompt = spec.prompt ?? this.profile.profile.prompts.overview;
+      const selection = this.selectEvidenceForSection(spec, allEvidence);
+      const evidenceIds = selection.evidence.map((item) => item.id);
+      if (selection.truncated) {
+        section.diagnostics.push({
+          code: 'evidence-prompt-truncated',
+          message: `Prompt evidence was bounded to ${selection.evidence.length} of ${selection.relevantCount} relevant items.`,
+          severity: 'info',
+        });
+      }
+      try {
+        section.payload = await this.sectionWriter.write({
+          profileId: this.profile.profile.id,
+          sectionId,
+          prompt,
+          variables: this.variablesForPrompt(prompt, {
+            SECTION_ID: sectionId,
+            EVIDENCE_BUNDLE: this.formatEvidenceForPrompt(selection.evidence),
+          }),
+          evidenceIds,
+          invokeLLM: (userPrompt, systemPrompt, options) =>
+            this.invokeLLM(userPrompt, systemPrompt, options),
+          transformSystemPrompt: (systemPrompt) => this.buildSystemPrompt(systemPrompt),
+          llmOptions: this.streamOpts(section.title),
+          diagramPolicy: this.profile.profile.diagramPolicy,
+        });
+        generated++;
+      } catch (error) {
+        section.status = 'needs-human';
+        section.payload = {
+          mode: 'structured',
+          blocks: [
+            {
+              type: 'unknown',
+              status: 'needs-human',
+              reason:
+                this.language.resolvedLocale === 'zh-CN'
+                  ? '章节生成失败，需要人工确认。'
+                  : 'Section generation failed and requires human review.',
+              evidenceIds: [],
+            },
+          ],
+        };
+        section.diagnostics.push({
+          code: 'section-writer-failed',
+          message: (error as Error).message,
+          severity: 'error',
+        });
+        this.failedModules.push(sectionId);
+      }
+      completed++;
+      this.onProgress(
+        'sections',
+        30 + Math.round((completed / plan.dependencyOrder.length) * 55),
+        `${completed}/${plan.dependencyOrder.length} — ${section.title}`,
+      );
+    }
+    return generated;
+  }
+
+  private generationIdForPlan(sourceCommit: string, plan: DocumentPlan): string {
+    const identity = this.generationIdentity(sourceCommit);
+    return createHash('sha256')
+      .update(JSON.stringify([identity.artifactKey, plan]))
+      .digest('hex');
+  }
+
+  private async publishStandardPlan(
+    currentCommit: string,
+    moduleTree: ModuleTreeNode[],
+    plan: DocumentPlan,
+  ): Promise<void> {
+    const coverage = validateProfileCoverage(this.profile, plan, this.evidenceBundle!);
+    const generationId = this.generationIdForPlan(currentCommit, plan);
+    const identity = this.generationIdentity(currentCommit);
+    const rendered = renderDocumentPlan(
+      this.profile,
+      plan,
+      coverage,
+      generationId,
+      identity.semanticsKey,
+      this.evidenceBundle!,
+    );
+    const documentPlanJson = `${JSON.stringify(plan, null, 2)}\n`;
+    const moduleTreeJson = `${JSON.stringify(moduleTree, null, 2)}\n`;
+    rendered.manifest.supportingArtifacts = [
+      {
+        role: 'document-plan',
+        file: 'document_plan.json',
+        contentHash: hashOutputContent(documentPlanJson),
+      },
+      {
+        role: 'module-tree',
+        file: 'module_tree.json',
+        contentHash: hashOutputContent(moduleTreeJson),
+      },
+    ];
+    validateOutputManifest(rendered.manifest);
+    const meta = this.buildWikiMeta(currentCommit, this.extractModuleFiles(moduleTree), moduleTree);
+    meta.generation!.generationId = generationId;
+    meta.outputManifest = rendered.manifest;
+    meta.evidenceLimitations = [...this.evidenceBundle!.limitations];
+    const files: Record<string, string> = {
+      ...rendered.files,
+      'document_plan.json': documentPlanJson,
+      'module_tree.json': moduleTreeJson,
+      'meta.json': `${JSON.stringify(meta, null, 2)}\n`,
+    };
+    const publication = await new WikiPublisher().publish({
+      wikiDir: this.wikiDir,
+      manifest: rendered.manifest,
+      files,
+      mirrorFiles: Object.keys(files),
+    });
+    if (publication.mirrorFailures.length > 0) {
+      this.failedModules.push(...publication.mirrorFailures.map((file) => `legacy-mirror:${file}`));
+    }
+  }
+
+  private async generateStandardDocument(
+    currentCommit: string,
+    moduleTree: ModuleTreeNode[],
+  ): Promise<WikiRunResult> {
+    const plan = await this.createOrLoadReviewedPlan(currentCommit, moduleTree);
+    await this.writeStandardSections(plan);
+    plan.status = this.failedModules.length > 0 ? 'partial' : 'generated';
+    await this.publishStandardPlan(currentCommit, moduleTree, plan);
+    this.onProgress('done', 100, 'Standard document generation complete');
+    return {
+      pagesGenerated: flattenSections(plan.sections).length,
+      mode: 'full',
+      failedModules: [...this.failedModules],
+    };
+  }
+
+  private changedEvidenceKinds(changedFiles: readonly string[]): Set<EvidenceKind> {
+    const result = new Set<EvidenceKind>();
+    for (const file of changedFiles) {
+      const normalized = file.toLowerCase();
+      if (
+        /(^|\/)(__tests__|test|tests|spec|specs)(\/|$)/.test(normalized) ||
+        /\.(test|spec)\.[^.]+$/.test(normalized)
+      ) {
+        result.add('test');
+      } else if (
+        /(^|\/)(docs?|wiki)(\/|$)/.test(normalized) ||
+        /(^|\/)(readme|changelog|contributing|architecture)(\.|$)/.test(normalized) ||
+        /\.(md|mdx|adoc|rst)$/.test(normalized)
+      ) {
+        result.add('documentation');
+      } else if (
+        /(^|\/)(config|configs)(\/|$)/.test(normalized) ||
+        /\.(json|ya?ml|toml|ini|properties)$/.test(normalized) ||
+        /(^|\/)(dockerfile|compose.*\.ya?ml)$/.test(normalized)
+      ) {
+        result.add('config');
+      } else {
+        result.add('source');
+        result.add('call-graph');
+        result.add('external-call-graph');
+        result.add('process');
+      }
+    }
+    return result;
+  }
+
+  private removeDeletedFilesFromTree(
+    tree: ModuleTreeNode[],
+    deletedFiles: ReadonlySet<string>,
+  ): string[] {
+    if (deletedFiles.size === 0) return [];
+    const removedSlugs: string[] = [];
+    const prune = (nodes: ModuleTreeNode[]): ModuleTreeNode[] =>
+      nodes.filter((node) => {
+        if (node.children && node.children.length > 0) {
+          node.children = prune(node.children);
+          if (node.children.length === 0) {
+            removedSlugs.push(node.slug);
+            return false;
+          }
+          return true;
+        }
+        const before = node.files.length;
+        node.files = node.files.filter((file) => !deletedFiles.has(file));
+        if (before > 0 && node.files.length === 0) {
+          removedSlugs.push(node.slug);
+          return false;
+        }
+        return true;
+      });
+    tree.splice(0, tree.length, ...prune(tree));
+    return removedSlugs;
+  }
+
+  private copyUnaffectedSectionPayloads(
+    nextPlan: DocumentPlan,
+    previousPlan: DocumentPlan,
+    affectedKinds: ReadonlySet<EvidenceKind>,
+    knownEvidenceIds: ReadonlySet<string>,
+  ): void {
+    const specs = new Map(
+      this.flattenProfileSections(this.profile.profile.sections).map((section) => [
+        section.id,
+        section,
+      ]),
+    );
+    const previous = new Map(
+      flattenSections(previousPlan.sections).map((section) => [section.id, section]),
+    );
+    for (const section of flattenSections(nextPlan.sections)) {
+      const spec = specs.get(section.id)!;
+      const affected = spec.evidenceRequirements.some((requirement) =>
+        affectedKinds.has(requirement.kind),
+      );
+      const oldSection = previous.get(section.id);
+      const writerFailed = oldSection?.diagnostics.some(
+        (diagnostic) => diagnostic.code === 'section-writer-failed',
+      );
+      if (
+        affected ||
+        !oldSection ||
+        oldSection.payload.mode !== 'structured' ||
+        oldSection.payload.blocks.length === 0 ||
+        writerFailed
+      )
+        continue;
+      const evidenceIds = oldSection.payload.blocks.flatMap((block) => {
+        if (block.type === 'claim') return block.claim.evidenceIds;
+        if (block.type === 'table') return block.rows.flatMap((row) => row.evidenceIds);
+        return block.evidenceIds;
+      });
+      if (evidenceIds.some((id) => !knownEvidenceIds.has(id))) continue;
+      section.payload = structuredClone(oldSection.payload);
+      section.status = oldSection.status;
+      section.diagnostics = [...oldSection.diagnostics];
+    }
+  }
+
+  private async loadPreviousStandardPlan(
+    existingMeta: WikiMeta,
+    expected: DocumentPlan,
+    knownEvidenceIds: ReadonlySet<string>,
+  ): Promise<DocumentPlan | null> {
+    const generationId = existingMeta.generation?.generationId;
+    if (!generationId || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(generationId)) return null;
+    try {
+      const generationDir = path.join(this.wikiDir, '.generations', generationId);
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(generationDir, 'manifest.json'), 'utf8'),
+      );
+      validateOutputManifest(manifest);
+      if (manifest.generationId !== generationId) return null;
+      const documentPlanArtifact = manifest.supportingArtifacts?.find(
+        (artifact: { role: string }) => artifact.role === 'document-plan',
+      );
+      if (!documentPlanArtifact) return null;
+      const rawPlan = await fs.readFile(path.join(generationDir, 'document_plan.json'), 'utf8');
+      // 用恒定时间比较校验 document_plan.json 的内容哈希,避免非常量时间比较泄露期望值
+      const planHash = hashOutputContent(rawPlan);
+      const expectedHash = documentPlanArtifact.contentHash;
+      if (
+        planHash.length !== expectedHash.length ||
+        !timingSafeEqual(Buffer.from(planHash), Buffer.from(expectedHash))
+      ) {
+        return null;
+      }
+      const raw = JSON.parse(rawPlan) as Record<string, unknown>;
+      const oldExpected: DocumentPlan = {
+        ...expected,
+        sourceCommit: existingMeta.fromCommit,
+      };
+      return validateReviewedDocumentPlan(
+        { ...raw, status: 'reviewed' },
+        oldExpected,
+        knownEvidenceIds,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      return null;
+    }
+  }
+
+  private async hasRetryableStandardFailures(existingMeta: WikiMeta): Promise<boolean> {
+    const generationId = existingMeta.generation?.generationId;
+    if (!generationId || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(generationId)) return false;
+    try {
+      const raw = JSON.parse(
+        await fs.readFile(
+          path.join(this.wikiDir, '.generations', generationId, 'document_plan.json'),
+          'utf8',
+        ),
+      ) as DocumentPlan;
+      return flattenSections(raw.sections).some((section) =>
+        section.diagnostics.some((diagnostic) => diagnostic.code === 'section-writer-failed'),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private async incrementalStandardDocument(
+    existingMeta: WikiMeta,
+    currentCommit: string,
+  ): Promise<WikiRunResult> {
+    this.onProgress('incremental', 5, 'Detecting standard document changes...');
+    const changedFiles = this.getChangedFiles(existingMeta.fromCommit, currentCommit);
+    if (changedFiles === null || changedFiles.length > 5) {
+      for (const file of ['first_module_tree.json', 'module_tree.json', 'document_plan.json']) {
+        await fs.unlink(path.join(this.wikiDir, file)).catch(() => {});
+      }
+      const result = await this.fullGeneration(currentCommit);
+      return { ...result, mode: 'incremental' };
+    }
+
+    const moduleTree = structuredClone(existingMeta.moduleTree);
+    const moduleFiles = this.extractModuleFiles(moduleTree);
+    const deletedFiles = new Set<string>();
+    for (const file of changedFiles) {
+      if (!(await this.fileExists(path.join(this.repoPath, file)))) deletedFiles.add(file);
+    }
+    this.removeDeletedFilesFromTree(moduleTree, deletedFiles);
+    if (moduleTree.length === 0) {
+      for (const file of ['first_module_tree.json', 'module_tree.json', 'document_plan.json']) {
+        await fs.unlink(path.join(this.wikiDir, file)).catch(() => {});
+      }
+      const result = await this.fullGeneration(currentCommit);
+      return { ...result, mode: 'incremental' };
+    }
+    const newFiles = changedFiles.filter(
+      (file) =>
+        !deletedFiles.has(file) &&
+        !Object.values(moduleFiles).some((files) => files.includes(file)) &&
+        !shouldIgnorePath(file),
+    );
+    if (newFiles.length > 0) {
+      let other = this.findNodeBySlug(moduleTree, 'other');
+      if (!other) {
+        other = { name: 'Other', slug: 'other', files: [] };
+        moduleTree.push(other);
+      }
+      other.files = Array.from(new Set([...other.files, ...newFiles])).sort();
+    }
+    validateReviewedModuleTree(moduleTree);
+    await this.collectStructuredEvidence(currentCommit, moduleTree);
+    const nextPlan = createDocumentPlan({
+      profile: this.profile,
+      language: this.language,
+      sourceCommit: currentCommit,
+      moduleTree,
+      evidence: this.evidenceBundle!,
+    });
+    const knownEvidenceIds = new Set(this.allStructuredEvidence().map((item) => item.id));
+    const previousPlan = await this.loadPreviousStandardPlan(
+      existingMeta,
+      nextPlan,
+      knownEvidenceIds,
+    );
+    if (previousPlan) {
+      this.copyUnaffectedSectionPayloads(
+        nextPlan,
+        previousPlan,
+        this.changedEvidenceKinds(changedFiles),
+        knownEvidenceIds,
+      );
+    }
+    const generated = await this.writeStandardSections(nextPlan);
+    nextPlan.status = this.failedModules.length > 0 ? 'partial' : 'generated';
+    await this.publishStandardPlan(currentCommit, moduleTree, nextPlan);
+    return {
+      pagesGenerated: generated,
+      mode: 'incremental',
+      failedModules: [...this.failedModules],
+    };
+  }
+
+  private flattenLegacyPages(
+    tree: readonly ModuleTreeNode[],
+    parentId?: string,
+  ): Array<{ node: ModuleTreeNode; parentId?: string }> {
+    return tree.flatMap((node) => [
+      { node, ...(parentId ? { parentId } : {}) },
+      ...(node.children ? this.flattenLegacyPages(node.children, `module-${node.slug}`) : []),
+    ]);
+  }
+
+  private async publishLegacyGeneration(currentCommit: string): Promise<void> {
+    const existingMeta = await this.loadWikiMeta();
+    if (!existingMeta) throw new Error('Legacy wiki metadata is missing before publication');
+    const overview = await fs.readFile(path.join(this.wikiDir, 'overview.md'), 'utf8');
+    const candidates = this.flattenLegacyPages(existingMeta.moduleTree);
+    const available = new Set<string>();
+    const contents = new Map<string, string>();
+    for (const { node } of candidates) {
+      try {
+        contents.set(
+          node.slug,
+          await fs.readFile(path.join(this.wikiDir, `${node.slug}.md`), 'utf8'),
+        );
+        available.add(`module-${node.slug}`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    const pages: ManifestPageInput[] = [];
+    for (const { node, parentId } of candidates) {
+      const content = contents.get(node.slug);
+      if (content === undefined) continue;
+      pages.push({
+        id: `module-${node.slug}`,
+        slug: node.slug,
+        label: node.name,
+        file: `${node.slug}.md`,
+        ...(parentId && available.has(parentId) ? { parentId } : {}),
+        order: pages.length,
+        status: 'verified',
+        content,
+      });
+    }
+    const coverage = `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        profile: {
+          id: this.profile.profile.id,
+          revision: this.profile.profile.revision,
+          fingerprint: this.profile.fingerprint,
+        },
+        language: this.language,
+        status: 'legacy',
+        conclusion:
+          this.language.resolvedLocale === 'zh-CN'
+            ? 'default Profile 仅提供章节级追踪；未进行标准符合性评估。'
+            : 'The default Profile provides section-level traceability only; standards conformance not assessed.',
+        standardsConformanceAssessed: false,
+      },
+      null,
+      2,
+    )}\n`;
+    const identity = this.generationIdentity(currentCommit);
+    const generationId = hashOutputContent(
+      JSON.stringify([
+        identity.artifactKey,
+        overview,
+        pages.map((page) => [page.file, page.content]),
+        coverage,
+      ]),
+    );
+    const manifest = createOutputManifest({
+      generationId,
+      profile: {
+        id: this.profile.profile.id,
+        revision: this.profile.profile.revision,
+        fingerprint: this.profile.fingerprint,
+      },
+      language: this.language,
+      sourceCommit: currentCommit,
+      generationSemanticsKey: identity.semanticsKey,
+      entry: {
+        slug: 'overview',
+        label: 'Overview',
+        file: 'overview.md',
+        content: overview,
+      },
+      pages,
+      coverage: { file: 'coverage.json', content: coverage },
+      supportingArtifacts: [
+        {
+          role: 'module-tree',
+          file: 'module_tree.json',
+          content: `${JSON.stringify(existingMeta.moduleTree, null, 2)}\n`,
+        },
+      ],
+    });
+    const meta = this.buildWikiMeta(
+      currentCommit,
+      existingMeta.moduleFiles,
+      existingMeta.moduleTree,
+      existingMeta,
+    );
+    meta.generation!.generationId = generationId;
+    meta.outputManifest = manifest;
+    const files: Record<string, string> = {
+      'overview.md': overview,
+      ...Object.fromEntries(pages.map((page) => [page.file, page.content])),
+      'coverage.json': coverage,
+      'module_tree.json': `${JSON.stringify(existingMeta.moduleTree, null, 2)}\n`,
+      'meta.json': `${JSON.stringify(meta, null, 2)}\n`,
+    };
+    const publication = await new WikiPublisher().publish({
+      wikiDir: this.wikiDir,
+      manifest,
+      files,
+      mirrorFiles: Object.keys(files).filter((file) => file !== 'coverage.json'),
+    });
+    if (publication.mirrorFailures.length > 0) {
+      this.failedModules.push(...publication.mirrorFailures.map((file) => `legacy-mirror:${file}`));
+    }
+  }
+
+  private formatEvidenceForPrompt(evidence: EvidenceBundle['repository'] | undefined): string {
+    if (!evidence || evidence.length === 0) return '[]';
+    return JSON.stringify(evidence.map((item) => this.evidenceRecordForPrompt(item)));
+  }
+
+  private generationIdentity(sourceCommit: string): {
+    semanticsKey: string;
+    artifactKey: string;
+  } {
+    const semanticsKey = createHash('sha256')
+      .update(
+        JSON.stringify([
+          this.profile.fingerprint,
+          this.language.requestedLanguage,
+          this.language.resolvedLocale,
+          this.language.localeFingerprint,
+          this.language.localeResolverVersion,
+          this.llmConfig.provider,
+          this.llmConfig.model,
+          COLLECTOR_VERSION,
+          WRITER_VERSION,
+          VALIDATOR_VERSION,
+          RENDERER_VERSION,
+        ]),
+      )
+      .digest('hex');
+    const artifactKey = createHash('sha256')
+      .update(JSON.stringify([sourceCommit, semanticsKey]))
+      .digest('hex');
+    return { semanticsKey, artifactKey };
+  }
+
+  private assertCacheCompatibility(existingMeta: WikiMeta, currentCommit: string): void {
+    const currentLang = this.effectiveLang();
+    const metaLang = existingMeta.lang ?? '';
+    if (currentLang !== metaLang) {
+      const prevDisplay = metaLang || 'english (default)';
+      const nextDisplay = currentLang || 'english (default)';
+      throw new Error(
+        `Wiki was generated in ${prevDisplay}; use --force to regenerate in ${nextDisplay}.`,
+      );
+    }
+
+    const isLegacy = existingMeta.schemaVersion !== 2 || !existingMeta.generation;
+    if (isLegacy) {
+      if (this.profile.profile.id !== 'default') {
+        throw new Error(
+          `Legacy wiki metadata can only be reused by the default profile; use --force to regenerate with ${this.profile.profile.id}.`,
+        );
+      }
+      return;
+    }
+
+    const structuredIdentityMatches =
+      existingMeta.profile?.id === this.profile.profile.id &&
+      existingMeta.profile.revision === this.profile.profile.revision &&
+      existingMeta.profile.fingerprint === this.profile.fingerprint &&
+      existingMeta.generation.provider === this.llmConfig.provider &&
+      existingMeta.generation.model === this.llmConfig.model &&
+      existingMeta.generation.requestedLanguage === this.language.requestedLanguage &&
+      existingMeta.generation.resolvedLocale === this.language.resolvedLocale &&
+      existingMeta.generation.localeFingerprint === this.language.localeFingerprint &&
+      existingMeta.generation.localeResolverVersion === this.language.localeResolverVersion &&
+      existingMeta.generation.collectorVersion === COLLECTOR_VERSION &&
+      existingMeta.generation.writerVersion === WRITER_VERSION &&
+      existingMeta.generation.validatorVersion === VALIDATOR_VERSION &&
+      existingMeta.generation.rendererVersion === RENDERER_VERSION;
+    if (!structuredIdentityMatches) {
+      throw new Error('Wiki generation settings changed; use --force to regenerate all pages.');
+    }
+
+    const identity = this.generationIdentity(currentCommit);
+    if (existingMeta.generation.semanticsKey !== identity.semanticsKey) {
+      throw new Error('Wiki generation settings changed; use --force to regenerate all pages.');
+    }
+    if (
+      existingMeta.fromCommit === currentCommit &&
+      existingMeta.generation.artifactKey !== identity.artifactKey
+    ) {
+      throw new Error(
+        'Wiki artifact identity is inconsistent; use --force to regenerate all pages.',
+      );
+    }
+  }
+
+  private buildWikiMeta(
+    sourceCommit: string,
+    moduleFiles: Record<string, string[]>,
+    moduleTree: ModuleTreeNode[],
+    previous?: WikiMeta,
+  ): WikiMeta {
+    const identity = this.generationIdentity(sourceCommit);
+    return {
+      schemaVersion: 2,
+      fromCommit: sourceCommit,
+      generatedAt: new Date().toISOString(),
+      model: this.llmConfig.model,
+      lang: this.effectiveLang(),
+      moduleFiles,
+      moduleTree,
+      profile: {
+        id: this.profile.profile.id,
+        revision: this.profile.profile.revision,
+        fingerprint: this.profile.fingerprint,
+      },
+      generation: {
+        generationId: identity.artifactKey,
+        provider: this.llmConfig.provider,
+        model: this.llmConfig.model,
+        requestedLanguage: this.language.requestedLanguage,
+        resolvedLocale: this.language.resolvedLocale,
+        ...(this.language.fallbackFrom
+          ? { localeFallback: { from: this.language.fallbackFrom, to: 'en' as const } }
+          : {}),
+        localeFingerprint: this.language.localeFingerprint,
+        localeResolverVersion: this.language.localeResolverVersion,
+        collectorVersion: COLLECTOR_VERSION,
+        writerVersion: WRITER_VERSION,
+        validatorVersion: VALIDATOR_VERSION,
+        rendererVersion: RENDERER_VERSION,
+        semanticsKey: identity.semanticsKey,
+        artifactKey: identity.artifactKey,
+      },
+      ...(previous?.outputManifest !== undefined
+        ? { outputManifest: previous.outputManifest }
+        : {}),
+      evidenceLimitations: previous?.evidenceLimitations ?? [],
+    };
+  }
 
   private getCurrentCommit(): string {
     try {
@@ -1398,9 +2472,10 @@ export class WikiGenerator {
   }
 
   private async saveModuleTree(tree: ModuleTreeNode[]): Promise<void> {
+    const validated = validateReviewedModuleTree(tree);
     await fs.writeFile(
       path.join(this.wikiDir, 'module_tree.json'),
-      JSON.stringify(tree, null, 2),
+      JSON.stringify(validated, null, 2),
       'utf-8',
     );
   }

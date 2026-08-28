@@ -94,4 +94,35 @@ describe('sanitizeMermaidMarkdown', () => {
     expect(sanitized).toContain('const label = "A\\nB";');
     expect(sanitized).toContain('A -->|"doc()"| file_name_ts["file.name.ts"]');
   });
+
+  it('splits semicolon-delimited flowcharts into Mermaid 11 compatible lines', () => {
+    const diagram =
+      'graph TD; A[CLI 清理命令] --> B[仓库管理器]; B --> C[元数据加载]; C --> D[文件读取];';
+
+    expect(sanitizeMermaidDiagram(diagram)).toBe(
+      [
+        'graph TD',
+        'A[CLI 清理命令] --> B[仓库管理器]',
+        'B --> C[元数据加载]',
+        'C --> D[文件读取]',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('does not split semicolons inside flowchart labels', () => {
+    const diagram = 'graph TD; A[load;validate] -->|read;write| B[done];';
+
+    expect(sanitizeMermaidDiagram(diagram)).toBe(
+      ['graph TD', 'A[load;validate] -->|read;write| B[done]', ''].join('\n'),
+    );
+  });
+
+  it('带 %% 注释前导的 flowchart 被正确归一化', () => {
+    const diagram = '%% This is a comment\ngraph TD\nA-->B;C-->D;';
+
+    expect(sanitizeMermaidDiagram(diagram)).toBe(
+      ['%% This is a comment', 'graph TD', 'A-->B', 'C-->D', ''].join('\n'),
+    );
+  });
 });
