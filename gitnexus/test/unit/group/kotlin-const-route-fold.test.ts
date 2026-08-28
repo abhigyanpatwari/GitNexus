@@ -10,14 +10,26 @@
  * Asserted:
  *   • the four reference forms fold to the right provider contract — qualified
  *     access, fully-qualified name, single-name import, `+`-concatenation;
- *   • a CONSTANT class prefix suppresses every method route under that class,
- *     literal ones included (the prefix is not knowable here, and emitting the
- *     methods unprefixed would publish paths the application does not serve) —
- *     the rule `java.ts` already applies — in both the positional and the
- *     `value =` spelling, which take different branches of
- *     `kotlinRouteArgumentExpression`;
- *   • an OpenFeign consumer folds a constant method path, and is suppressed by a
- *     constant interface prefix for the same reason a provider is;
+ *   • a class prefix that resolves to NO literal suppresses every method route
+ *     under that class, literal ones included (the prefix is not knowable here,
+ *     and emitting the methods unprefixed would publish paths the application
+ *     does not serve) — the rule `java.ts` already applies. Pinned across every
+ *     spelling that reaches the suppression, because the analysis inverts a
+ *     literalness test rather than listing node types: a bare constant, both
+ *     argument spellings, `[…]`, `arrayOf(…)`, a call, an `if`, and an
+ *     interpolated string;
+ *   • a prefix that resolves only PARTLY still publishes its resolvable arm —
+ *     Kotlin's vararg `@RequestMapping("/lit", ApiPaths.BASE)` keeps `/lit`,
+ *     because suppression exists to avoid wrong routes, not to discard right
+ *     ones;
+ *   • a `@RequestMapping` with no path argument at all is not a prefix and does
+ *     not suppress anything;
+ *   • an OpenFeign consumer folds a constant method path, and both consumer
+ *     lanes (`@(Get|…)Mapping` and `@RequestLine`) are suppressed by an
+ *     unresolvable governing prefix for the same reason a provider is —
+ *     resolved in "path wins" order, so a literal `@FeignClient(path)` rescues
+ *     an interface whose `@RequestMapping` is a constant, and an unresolvable
+ *     `path` is fatal on its own;
  *   • an unresolvable constant emits nothing rather than a guessed path;
  *   • without a repo context the plugin emits nothing (the documented skip
  *     floor, and the branch the 1-argument guards cannot reach);
@@ -208,6 +220,99 @@ class OrderController {
     ).toEqual([]);
   });
 
+  /**
+   * A controller carrying `prefix` as its class-level `@RequestMapping`, with
+   * one constant-valued and one literal route under it. `decls` holds any
+   * top-level declaration the prefix expression refers to.
+   */
+  const controllerWithPrefix = (prefix: string, decls = ''): Record<string, string> => ({
+    [CONSTS]: CONSTS_SRC,
+    [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+${decls}
+@RestController
+@RequestMapping(${prefix})
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+
+    @GetMapping("/literal")
+    fun literal() {}
+}
+`,
+  });
+
+  // Every prefix spelling that resolves to no literal, and so must suppress.
+  // This is a table rather than one representative case on purpose: the two
+  // tests above pin a BARE constant, which any node-type allow-list would also
+  // catch. These are the shapes such a list forgets — and forgetting one does
+  // not degrade to "no route", it publishes every method of the class at its
+  // UNPREFIXED path, which the application does not serve. The `if` and the
+  // interpolated string are the two that need no constant map at all to go
+  // wrong, and the `[…]` / `arrayOf(…)` pair matters because the literal
+  // prefix patterns DO reach inside both — so a naive "is it a literal
+  // container?" test would pass them straight through.
+  it.each([
+    ['a collection literal holding a constant', '[ApiPaths.BASE]', ''],
+    ['an arrayOf(…) holding a constant', 'arrayOf(ApiPaths.BASE)', ''],
+    ['a named collection literal holding a constant', 'value = [ApiPaths.BASE]', ''],
+    ['a function call', 'buildPath()', '\nfun buildPath(): String = ApiPaths.BASE\n'],
+    ['an interpolated string', '"${ApiPaths.BASE}"', ''],
+    ['an if expression', 'if (USE_V2) "/api/v2" else "/api/v1"', '\nconst val USE_V2 = false\n'],
+  ])('suppresses every method route under a class prefix that is %s', (_label, prefix, decls) => {
+    expect(providers(controllerWithPrefix(prefix, decls))).toEqual([]);
+  });
+
+  it('keeps both routes when that same class prefix is a plain literal', () => {
+    // The control for the table above: same two methods, same helper, a prefix
+    // the extractor can resolve. Without it an empty result there would be
+    // indistinguishable from the fixture failing to produce routes at all.
+    expect(providers(controllerWithPrefix('"/api"'))).toEqual([
+      'GET /api/api/v1/orders',
+      'GET /api/literal',
+    ]);
+  });
+
+  it('keeps the resolvable arm of a PARTLY resolvable class prefix', () => {
+    // Kotlin's vararg spelling. `/lit` is a real prefix the application really
+    // serves, so the routes under it are derivable and must survive; only the
+    // `ApiPaths.BASE` arm is missing from the result, exactly as it was before
+    // constant folding existed. Marking the class unfoldable here would trade a
+    // wrong route for a missing one, which is not the bargain suppression makes.
+    expect(providers(controllerWithPrefix('"/lit", ApiPaths.BASE'))).toEqual([
+      'GET /lit/api/v1/orders',
+      'GET /lit/literal',
+    ]);
+    // Same shape spelled as one collection argument.
+    expect(providers(controllerWithPrefix('["/lit", ApiPaths.BASE]'))).toEqual([
+      'GET /lit/api/v1/orders',
+      'GET /lit/literal',
+    ]);
+  });
+
+  it('does not treat a @RequestMapping without a path argument as a prefix', () => {
+    // `produces` is not a path, so this class has no prefix — not an
+    // unresolvable one. Suppressing here would drop routes that are correct and
+    // complete as written.
+    expect(
+      providers({
+        [CONSTS]: CONSTS_SRC,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+@RequestMapping(produces = [MediaType.APPLICATION_JSON_VALUE])
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
   it('still applies a LITERAL class prefix to a folded method path', () => {
     expect(
       providers({
@@ -315,6 +420,116 @@ interface OrderClient {
         ),
       }),
     ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('drops a @FeignClient consumer whose `path` argument is a CONSTANT', () => {
+    // `path` is the Feign client's own prefix and is never a `@RequestMapping`,
+    // so the class-prefix analysis cannot see it. Left unchecked, this interface
+    // falls through to the no-prefix fallback and publishes a remote call to
+    // `/api/v1/orders` as a call to `/orders` — a consumer edge pointing at a
+    // route no service serves.
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CLIENT]: `package com.example.app.client
+
+import com.example.app.api.ApiPaths
+
+@FeignClient(name = "orders", path = ApiPaths.BASE)
+interface OrderClient {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list()
+}
+`,
+    };
+    expect(consumers(files)).toEqual([]);
+    // Control: the same interface with a LITERAL `path` is still detected.
+    expect(
+      consumers({
+        ...files,
+        [CLIENT]: files[CLIENT].replace('path = ApiPaths.BASE', 'path = "/svc"'),
+      }),
+    ).toEqual(['GET /svc/api/v1/orders']);
+  });
+
+  it('lets a literal @FeignClient(path) outrank a CONSTANT @RequestMapping', () => {
+    // `path` wins over `@RequestMapping` when the URL is assembled, so it has to
+    // win when resolvability is judged too — otherwise an interface whose real
+    // prefix is perfectly knowable loses its consumer to a `@RequestMapping`
+    // that never governed it.
+    expect(
+      consumers({
+        [CONSTS]: CONSTS_SRC,
+        [CLIENT]: `package com.example.app.client
+
+import com.example.app.api.ApiPaths
+
+@FeignClient(name = "orders", path = "/svc")
+@RequestMapping(ApiPaths.BASE)
+interface OrderClient {
+    @GetMapping("/orders")
+    fun list()
+}
+`,
+      }),
+    ).toEqual(['GET /svc/orders']);
+  });
+
+  it('drops a @RequestLine consumer under an unresolvable interface prefix', () => {
+    // `@RequestLine` carries its own verb and path but is still prefixed by the
+    // interface, and it resolves through the same "path wins" fallback chain as
+    // the `@(Get|…)Mapping` lane — so an unresolvable governing prefix leaves
+    // the remote URL just as unknowable here.
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CLIENT]: `package com.example.app.client
+
+import com.example.app.api.ApiPaths
+
+@FeignClient(name = "orders")
+@RequestMapping(ApiPaths.BASE)
+interface OrderClient {
+    @RequestLine("GET /list")
+    fun list()
+}
+`,
+    };
+    expect(consumers(files)).toEqual([]);
+    // Control: a literal interface prefix still yields the prefixed consumer.
+    expect(
+      consumers({
+        ...files,
+        [CLIENT]: files[CLIENT].replace(
+          '@RequestMapping(ApiPaths.BASE)',
+          '@RequestMapping("/lit")',
+        ),
+      }),
+    ).toEqual(['GET /lit/list']);
+  });
+
+  it('judges @RequestLine and @(Get|…)Mapping alike on ONE interface', () => {
+    // Both lanes read the same prefix through the same fallback chain, so they
+    // must reach the same verdict on it. A guard on only one of them lets the
+    // interface suppress one route and publish the other under the very same
+    // unresolvable prefix — a self-inconsistency visible in a single scan.
+    expect(
+      consumers({
+        [CONSTS]: CONSTS_SRC,
+        [CLIENT]: `package com.example.app.client
+
+import com.example.app.api.ApiPaths
+
+@FeignClient(name = "orders")
+@RequestMapping(ApiPaths.BASE)
+interface OrderClient {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list()
+
+    @RequestLine("GET /list")
+    fun listLegacy()
+}
+`,
+      }),
+    ).toEqual([]);
   });
 
   it('leaves literal routes unchanged and emits each exactly once', () => {
