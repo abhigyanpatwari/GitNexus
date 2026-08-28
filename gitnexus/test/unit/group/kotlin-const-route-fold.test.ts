@@ -761,6 +761,30 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
+  it('resolves a bare companion constant inside a nested class', () => {
+    // Declaration extraction and reference-site qualification must agree on
+    // the full owner path. `ORDERS` here means `Outer.Inner.ORDERS`, not the
+    // nonexistent top-level `Inner.ORDERS`.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+@RestController
+class Outer {
+    class Inner {
+        companion object {
+            const val ORDERS = "/nested/orders"
+        }
+
+        @GetMapping(ORDERS)
+        fun list() {}
+    }
+}
+`,
+      }),
+    ).toEqual(['GET /nested/orders']);
+  });
+
   it('folds through the file that declares the package, not one whose path imitates it', () => {
     // The decoy's PATH ends with the imported FQN, but it declares
     // `package x.com.example.app.api` — a different declaration. Choosing the

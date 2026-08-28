@@ -793,18 +793,23 @@ class Outer {
 `,
       });
       expect(
-        foldKotlinOperands(key, [{ kind: 'ref', name: 'ORDERS' }], repo, ['Inner', 'Outer']),
+        foldKotlinOperands(key, [{ kind: 'ref', name: 'ORDERS' }], repo, ['Outer.Inner', 'Outer']),
       ).toBe('/inner');
       expect(
-        foldKotlinOperands(key, [{ kind: 'ref', name: 'ONLY_OUTER' }], repo, ['Inner', 'Outer']),
+        foldKotlinOperands(key, [{ kind: 'ref', name: 'ONLY_OUTER' }], repo, [
+          'Outer.Inner',
+          'Outer',
+        ]),
       ).toBe('/only-outer');
     });
 
-    it('resolves a nested object member through the enclosing object', () => {
+    it('keys a nested object by its full enclosing type path', () => {
       // `Inner`'s initializer names `P`, which `Inner` does not declare and
       // `Outer` does; the scope chain is walked innermost-first, so it means
-      // `Outer.P` — not the same-named member of the unrelated `Other`.
+      // `Outer.P` — not the same-named member of the unrelated `Other`. The
+      // declaration itself is reachable as `Outer.Inner.Q`, never `Inner.Q`.
       const key = 'src/main/kotlin/com/example/app/api/Nested.kt';
+      const controllerKey = 'src/main/kotlin/com/example/app/web/Controller.kt';
       const repo = repoOf({
         [key]: `package com.example.app.api
 
@@ -819,8 +824,14 @@ object Outer {
     }
 }
 `,
+        [controllerKey]: `package com.example.app.web
+
+import com.example.app.api.Outer
+`,
       });
-      expect(resolveKotlinConstant(key, 'Inner.Q', repo)).toBe('/right/q');
+      expect(resolveKotlinConstant(key, 'Outer.Inner.Q', repo)).toBe('/right/q');
+      expect(resolveKotlinConstant(controllerKey, 'Outer.Inner.Q', repo)).toBe('/right/q');
+      expect(resolveKotlinConstant(key, 'Inner.Q', repo)).toBeNull();
     });
 
     it('does not fall through to a file-level constant for an unfoldable sibling', () => {

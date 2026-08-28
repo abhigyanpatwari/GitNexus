@@ -574,11 +574,12 @@ function initializerOf(property: Parser.SyntaxNode): Parser.SyntaxNode | null {
 interface KotlinConstDeclaration {
   /** The declaration's simple name. */
   readonly name: string;
-  /** `<DeclaringType>.<NAME>`, or null for a top-level declaration. */
+  /** `<Qualified.DeclaringType>.<NAME>`, or null for a top-level declaration. */
   readonly qualified: string | null;
   /**
    * The qualified-key prefixes in LEXICAL scope for this declaration's
-   * initializer, innermost first (`['Inner', 'Outer']`). Empty at file level.
+   * initializer, innermost first (`['Outer.Inner', 'Outer']`). Empty at file
+   * level.
    */
   readonly scopes: readonly string[];
   /**
@@ -757,6 +758,16 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
     return ident ? unquoteKotlinIdentifier(ident.text) : null;
   };
 
+  /** Append one simple type name to its enclosing qualified type path. */
+  const nestedTypeName = (enclosingType: string | null, name: string | null): string | null => {
+    if (name === null) return enclosingType;
+    return enclosingType === null ? name : `${enclosingType}.${name}`;
+  };
+
+  /** Prepend a qualified scope unless it is already the innermost scope. */
+  const withScope = (scope: string | null, scopes: readonly string[]): readonly string[] =>
+    scope === null || scopes[0] === scope ? scopes : [scope, ...scopes];
+
   const walkDeclarations = (
     node: Parser.SyntaxNode,
     enclosingType: string | null,
@@ -767,11 +778,13 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
         const name = typeNameOf(child);
         const body = bodyOf(child);
         if (!body) continue;
-        // Members are reachable only as `A.NAME`; inside the body, `NAME` alone
-        // means this object's member and nothing else, hence the pushed scope.
-        const inner = name === null ? scopes : [name, ...scopes];
-        collectProperties(body, name, inner, false, false);
-        walkDeclarations(body, name, inner);
+        // Carry the full path: a nested object member is `Outer.Inner.NAME`, not
+        // `Inner.NAME`. Inside the body a bare name searches that qualified
+        // scope first, then each enclosing type.
+        const declaredType = nestedTypeName(enclosingType, name);
+        const inner = withScope(declaredType, scopes);
+        collectProperties(body, declaredType, inner, false, false);
+        walkDeclarations(body, declaredType, inner);
         continue;
       }
       if (child.type === 'companion_object') {
@@ -782,7 +795,7 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
         // simple name is bound inside that class body only, which is a SCOPE and
         // not a file-level key: it is reached from the reference site by
         // `qualifyKotlinRefInEnclosingTypes`, through this same `Holder.NAME`.
-        const inner = enclosingType === null ? scopes : [enclosingType, ...scopes];
+        const inner = withScope(enclosingType, scopes);
         collectProperties(body, enclosingType, inner, false, true);
         walkDeclarations(body, enclosingType, inner);
         continue;
@@ -792,7 +805,8 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
         // only its nested objects and companion contribute constants.
         const name = typeNameOf(child);
         const body = bodyOf(child);
-        if (body) walkDeclarations(body, name, scopes);
+        const declaredType = nestedTypeName(enclosingType, name);
+        if (body) walkDeclarations(body, declaredType, withScope(declaredType, scopes));
         continue;
       }
       walkDeclarations(child, enclosingType, scopes);
@@ -1056,12 +1070,13 @@ function foldOperands(
  * bare when none does — the reference-site twin of the `qualifyRef` that
  * {@link extractKotlinModuleConstants} applies to sibling initializers.
  *
- * `enclosingTypes` is the chain of type declarations the reference sits inside,
- * INNERMOST FIRST (`['Inner', 'Outer']`). A companion member is keyed
- * `<EnclosingClass>.<NAME>` and is bound unqualified exactly within that class
- * body — including its nested types, which is why the whole chain is walked and
- * not just the innermost link. An `object`'s own members are in scope inside its
- * body under the same `<Owner>.<NAME>` key, so the same walk covers both.
+ * `enclosingTypes` is the chain of qualified type paths the reference sits
+ * inside, INNERMOST FIRST (`['Outer.Inner', 'Outer']`). A companion member is
+ * keyed `<EnclosingClass>.<NAME>` and is bound unqualified exactly within that
+ * class body — including its nested types, which is why the whole chain is
+ * walked and not just the innermost link. An `object`'s own members are in scope
+ * inside its body under the same `<Owner>.<NAME>` key, so the same walk covers
+ * both.
  *
  * Innermost-first, and BEFORE the file-level maps the fold consults next, is
  * Kotlin's own order: a companion member shadows a same-named top-level

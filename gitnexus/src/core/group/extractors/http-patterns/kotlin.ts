@@ -313,22 +313,24 @@ function classifyPathArgument(expr: Parser.SyntaxNode): PathArgumentPrefix {
 }
 
 /**
- * Type declarations enclosing `node`, innermost first, by declared name.
+ * Type declarations enclosing `node`, innermost first, by qualified type path.
  *
  * The scope a bare constant in a route annotation is resolved against; passed to
  * `foldKotlinOperands`, which applies it. Collects `class_declaration` (including
  * interfaces) and `object_declaration`. A `companion_object` adds no link of
- * its own — members are keyed under the enclosing class one hop up. Skips
- * unnamed types rather than guessing.
+ * its own — members are keyed under the enclosing class one hop up. For a node
+ * inside `Outer.Inner`, returns `['Outer.Inner', 'Outer']`, matching the keys
+ * produced by `extractKotlinModuleConstants`. Skips unnamed types rather than
+ * guessing.
  */
 function kotlinEnclosingTypeNames(node: Parser.SyntaxNode): string[] {
-  const out: string[] = [];
+  const simpleNames: string[] = [];
   for (let cur = node.parent; cur; cur = cur.parent) {
     if (cur.type !== 'class_declaration' && cur.type !== 'object_declaration') continue;
     const ident = cur.children.find((c) => c.type === 'type_identifier');
-    if (ident) out.push(unquoteKotlinIdentifier(ident.text));
+    if (ident) simpleNames.push(unquoteKotlinIdentifier(ident.text));
   }
-  return out;
+  return simpleNames.map((_, index) => simpleNames.slice(index).reverse().join('.'));
 }
 
 // ─── Kotlin OkHttp builder verb-walk (parity with java-static-path.ts) ──
