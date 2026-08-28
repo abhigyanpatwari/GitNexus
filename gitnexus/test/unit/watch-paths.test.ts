@@ -24,7 +24,7 @@ afterEach(async () => {
 });
 
 describe('watch path selection', () => {
-  it('accepts supported source and analyzer configuration paths', () => {
+  it('accepts every scanner-admitted file instead of maintaining a second allow-list', () => {
     expect(isRelevantWatchPath('src/service.ts')).toBe(true);
     expect(isRelevantWatchPath('server/app.py')).toBe(true);
     expect(isRelevantWatchPath('backend/project.csproj')).toBe(true);
@@ -44,9 +44,13 @@ describe('watch path selection', () => {
       ),
     ).toBe(true);
     expect(isRelevantWatchPath('src/main/resources/META-INF/spring.factories')).toBe(true);
-    expect(isRelevantWatchPath('nested/.gitnexusrc')).toBe(false);
-    expect(isRelevantWatchPath('nested/.gitignore')).toBe(false);
-    expect(isRelevantWatchPath('assets/logo.png')).toBe(false);
+    expect(isRelevantWatchPath('tsconfig.base.json')).toBe(true);
+    expect(isRelevantWatchPath('packages/api/tsconfig.build.json')).toBe(true);
+    expect(isRelevantWatchPath('schema.sql')).toBe(true);
+    expect(isRelevantWatchPath('Dockerfile')).toBe(true);
+    expect(isRelevantWatchPath('assets/logo.png')).toBe(true);
+    expect(isRelevantWatchPath('../outside.ts')).toBe(false);
+    expect(isRelevantWatchPath('C:\\outside.ts')).toBe(false);
   });
 
   it('honors hardcoded, gitignore, and explicit-unignore rules', async () => {
@@ -99,7 +103,7 @@ describe('watch path selection', () => {
     }
   });
 
-  it('rejects analyze settings whose semantics watch mode cannot preserve', async () => {
+  it('ignores unsupported repository defaults but rejects explicit unsupported CLI flags', async () => {
     await fs.writeFile(path.join(repoPath, '.gitnexusrc'), JSON.stringify({ embeddings: true }));
     await expect(
       resolveWatchOptions(
@@ -111,7 +115,33 @@ describe('watch path selection', () => {
           verbose: undefined,
         },
       ),
+    ).resolves.toMatchObject({ skipAgentsMd: true, skipSkills: true });
+
+    await expect(
+      resolveWatchOptions(
+        repoPath,
+        { embeddings: true },
+        {
+          maxFileSize: undefined,
+          workerTimeout: undefined,
+          verbose: undefined,
+        },
+      ),
     ).rejects.toThrow('analyze --watch does not support --embeddings');
+  });
+
+  it('rejects a watch file-size threshold above the parser ceiling', async () => {
+    await expect(
+      resolveWatchOptions(
+        repoPath,
+        { maxFileSize: '32769' },
+        {
+          maxFileSize: undefined,
+          workerTimeout: undefined,
+          verbose: undefined,
+        },
+      ),
+    ).rejects.toThrow('maxFileSize must not exceed 32768');
   });
 
   it.skipIf(process.platform === 'win32')(

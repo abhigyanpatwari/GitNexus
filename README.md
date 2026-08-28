@@ -397,16 +397,27 @@ gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks 
 
 You can also query the graph directly from the terminal — `gitnexus query`, `context`, `impact`, `trace`, `cypher`, `detect-changes`, and `check` mirror the MCP tools of the same names, and `gitnexus doctor` prints runtime platform capabilities.
 
-`gitnexus analyze --watch` runs one initial analysis, then debounces relevant
-working-tree changes into serialized incremental refreshes. Events arriving
-during a refresh are queued. Invalid `.gitnexusrc` or ignore-file reloads pause
-ordinary refreshes until the control file is fixed. Stop the watcher with
-Ctrl+C.
+`gitnexus analyze --watch` requires a Git repository. It runs one initial
+analysis, then debounces scanner-admitted working-tree changes for 300 ms by
+default and applies serialized incremental refreshes. Events arriving during a
+refresh remain queued, and retryable failures retain the same batch with bounded
+backoff. Invalid `.gitnexusrc` or ignore-file reloads pause ordinary refreshes
+until the control file is fixed. Stop the watcher with Ctrl+C.
 
-POSIX uses copy-and-swap publication when the live index has no orphan
-sidecars; Windows and sidecar fallback runs update in place and stop after a
-failed refresh so a partially updated graph is not kept in service. The mode
-does not pull remotes or hot-reload an already-running MCP process.
+Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
+`--max-file-size`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
+`--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
+embedding flags, `--skills`, `--self-commit`, `--index-only`, and `--skip-git`
+are rejected. Unsupported defaults from `.gitnexusrc` are ignored by watch
+refreshes rather than making an otherwise valid repository unwatchable.
+
+POSIX requests clone-first copy-and-swap publication when the live index has no
+orphan sidecars. Windows and sidecar fallback runs update in place: failures
+known to occur before writes are retried, while a failure that may have mutated
+the live index stops the watcher. Watch mode does not pull remotes. Running MCP
+and `serve` processes reopen a newly published index automatically; MCP observes
+the replacement on its next tool call, typically within five seconds, so no
+restart is required.
 
 <details>
 <summary><strong>Authenticated <code>eval-server</code> binding</strong></summary>

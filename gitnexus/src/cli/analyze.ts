@@ -363,6 +363,7 @@ interface RespawnExit {
   stdout?: string;
   stderr?: string;
   message?: string;
+  forwardedSignal?: NodeJS.Signals;
 }
 
 const appendOutputTail = (tail: string, chunk: unknown): string => {
@@ -395,17 +396,28 @@ const runRespawnedAnalyze = (
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const finish = (exit: RespawnExit): void => {
-      if (settled) return;
-      settled = true;
-      resolve(exit);
-    };
-
+    let forwardedSignal: NodeJS.Signals | undefined;
     const child = spawn(process.execPath, [...args], {
       stdio: ['inherit', 'pipe', 'pipe'],
       windowsHide: true,
       env,
     });
+    const forwardSignal = (signal: NodeJS.Signals): void => {
+      forwardedSignal ??= signal;
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    };
+    const forwardSigint = () => forwardSignal('SIGINT');
+    const forwardSigterm = () => forwardSignal('SIGTERM');
+    const finish = (exit: RespawnExit): void => {
+      if (settled) return;
+      settled = true;
+      process.removeListener('SIGINT', forwardSigint);
+      process.removeListener('SIGTERM', forwardSigterm);
+      resolve({ ...exit, forwardedSignal });
+    };
+
+    process.once('SIGINT', forwardSigint);
+    process.once('SIGTERM', forwardSigterm);
 
     child.stdout?.on('data', (chunk) => {
       stdout = appendOutputTail(stdout, chunk);
@@ -590,6 +602,10 @@ export async function ensureHeap(): Promise<boolean> {
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  if (childExit.forwardedSignal !== undefined) {
+    process.exitCode = 0;
+    return true;
+  }
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
       cliError(

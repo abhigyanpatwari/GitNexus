@@ -72,7 +72,7 @@ describe('WatchRefreshQueue', () => {
     expect(batches).toEqual([['src/a.ts'], ['src/b.ts', 'src/c.ts']]);
   });
 
-  it('continues after a failed refresh', async () => {
+  it('retries a failed refresh without dropping its batch', async () => {
     vi.useFakeTimers();
     const errors: string[][] = [];
     const successful: string[][] = [];
@@ -89,13 +89,65 @@ describe('WatchRefreshQueue', () => {
 
     queue.enqueue('src/a.ts');
     await vi.advanceTimersByTimeAsync(10);
-    await queue.waitForIdle();
-    queue.enqueue('src/b.ts');
-    await vi.advanceTimersByTimeAsync(10);
+    expect(errors).toEqual([['src/a.ts']]);
+    expect(successful).toEqual([]);
+    await vi.advanceTimersByTimeAsync(250);
     await queue.waitForIdle();
 
     expect(errors).toEqual([['src/a.ts']]);
-    expect(successful).toEqual([['src/b.ts']]);
+    expect(successful).toEqual([['src/a.ts']]);
+  });
+
+  it('parks pre-ready events until the initial refresh completes', async () => {
+    vi.useFakeTimers();
+    const batches: string[][] = [];
+    const queue = new WatchRefreshQueue(
+      async (paths) => batches.push([...paths]),
+      () => {},
+      50,
+      { holdEventsUntilInitialRefresh: true },
+    );
+
+    queue.enqueue('src/during-walk.ts');
+    await vi.advanceTimersByTimeAsync(80);
+    expect(batches).toEqual([]);
+
+    await queue.runInitial();
+    expect(batches).toEqual([[]]);
+    await vi.advanceTimersByTimeAsync(50);
+    await queue.waitForIdle();
+    expect(batches).toEqual([[], ['src/during-walk.ts']]);
+  });
+
+  it('backs off repeated failures instead of spinning at the debounce interval', async () => {
+    vi.useFakeTimers();
+    let attempts = 0;
+    const queue = new WatchRefreshQueue(
+      async () => {
+        attempts++;
+        if (attempts < 4) throw new Error('still unavailable');
+      },
+      () => {},
+      10,
+      { retryBaseDelayMs: 100, retryMaxDelayMs: 400 },
+    );
+
+    queue.enqueue('src/a.ts');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(199);
+    expect(attempts).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toBe(3);
+    await vi.advanceTimersByTimeAsync(399);
+    expect(attempts).toBe(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await queue.waitForIdle();
+    expect(attempts).toBe(4);
   });
 
   it('contains a throwing error reporter for a detached refresh', async () => {
@@ -113,6 +165,7 @@ describe('WatchRefreshQueue', () => {
     queue.enqueue('src/a.ts');
     await vi.advanceTimersByTimeAsync(10);
 
+    await queue.close();
     await expect(queue.waitForIdle()).resolves.toBeUndefined();
   });
 

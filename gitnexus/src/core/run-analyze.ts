@@ -13,6 +13,7 @@ import { detectGraphWriteCollapse, type GraphWriteCollapseVerdict } from './inde
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
@@ -1968,10 +1969,10 @@ async function runFullAnalysisInner(
     process.platform === 'win32' &&
     options.pdg !== true &&
     process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
-  // Incremental atomicity copies the whole index into the temp before mutating
-  // it, which negates incremental's speed premise — so it is opt-in
-  // (GITNEXUS_ATOMIC_INCREMENTAL=1) pending a benchmark. Full rebuilds always
-  // swap where the platform allows.
+  // Incremental atomicity stages the whole index before mutation. It remains
+  // opt-in for ordinary analyze runs; watch mode requests it for failure
+  // preservation. The copy requests a filesystem clone and records its actual
+  // duration, while Node falls back to a normal copy where reflinks are absent.
   const wantAtomicIncremental =
     isIncremental &&
     !!hashDiff &&
@@ -2026,10 +2027,15 @@ async function runFullAnalysisInner(
     if (atomicIncremental) {
       // Stage the live index into the temp so the in-place delete/writeback
       // below mutates the COPY, and the end-of-run swap publishes it atomically.
-      // Clear any stale temp first (a crashed run), then copy the (consolidated,
-      // single-file) live index. Whole-file copy — hence opt-in.
+      // Clear any stale temp first (a crashed run), then clone/copy the
+      // consolidated single-file live index.
       await wipeLbugDbFiles(buildPath);
-      await fs.copyFile(lbugPath, buildPath);
+      const copyStartedAt = Date.now();
+      await fs.copyFile(lbugPath, buildPath, fsConstants.COPYFILE_FICLONE);
+      log(
+        `atomic-incremental: staged ${lbugPath} in ${Date.now() - copyStartedAt}ms ` +
+          '(copy-on-write requested; filesystem fallback is allowed)',
+      );
     }
   } else {
     // Full rebuild path: wipe DB files first.

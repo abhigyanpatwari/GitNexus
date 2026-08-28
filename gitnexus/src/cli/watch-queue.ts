@@ -6,6 +6,9 @@ export const WATCH_FULL_REFRESH_PATH = '*';
 export interface WatchRefreshQueueOptions {
   readonly maxWaitMs?: number;
   readonly maxPendingPaths?: number;
+  readonly retryBaseDelayMs?: number;
+  readonly retryMaxDelayMs?: number;
+  readonly holdEventsUntilInitialRefresh?: boolean;
   readonly isPriorityPath?: (filePath: string) => boolean;
 }
 
@@ -16,18 +19,28 @@ export class WatchRefreshQueue {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private active: Promise<void> | undefined;
   private closed = false;
+  private initialPending = false;
   private firstPendingAt: number | undefined;
   private overflowed = false;
+  private consecutiveFailures = 0;
 
   constructor(
     private readonly refresh: WatchRefresh,
     private readonly onError: WatchRefreshError,
     private readonly debounceMs: number,
     private readonly options: WatchRefreshQueueOptions = {},
-  ) {}
+  ) {
+    this.initialPending = options.holdEventsUntilInitialRefresh === true;
+  }
 
   enqueue(filePath: string): void {
     if (this.closed) return;
+    this.addPendingPath(filePath);
+    this.firstPendingAt ??= Date.now();
+    if (!this.initialPending && this.active === undefined) this.schedule();
+  }
+
+  private addPendingPath(filePath: string): void {
     const maxPendingPaths = this.options.maxPendingPaths ?? 1_000;
     const priority = this.options.isPriorityPath?.(filePath) === true;
     if (this.pending.has(filePath)) {
@@ -46,15 +59,19 @@ export class WatchRefreshQueue {
         }
       }
     }
-    this.firstPendingAt ??= Date.now();
-    if (this.active === undefined) this.schedule();
   }
 
   /** Run the initial refresh while still queueing events that arrive during it. */
   async runInitial(): Promise<void> {
     if (this.closed) return;
     if (this.active !== undefined) throw new Error('Watch refresh is already running');
-    await this.runBatch([], true);
+    try {
+      await this.runBatch([], true);
+    } finally {
+      this.initialPending = false;
+      if (!this.closed && this.pending.size > 0) this.schedule();
+      else this.resolveIdleWaiters();
+    }
   }
 
   async waitForIdle(): Promise<void> {
@@ -69,6 +86,7 @@ export class WatchRefreshQueue {
     this.pending.clear();
     this.firstPendingAt = undefined;
     this.overflowed = false;
+    this.consecutiveFailures = 0;
     // A refresh rejection is already surfaced through `onError` (or through
     // runInitial). Closing from that handler can race the runBatch `finally`,
     // so consume the same rejection here instead of reporting it twice.
@@ -76,11 +94,11 @@ export class WatchRefreshQueue {
     this.resolveIdleWaiters();
   }
 
-  private schedule(): void {
+  private schedule(retryDelayMs?: number): void {
     if (this.timer !== undefined) clearTimeout(this.timer);
     const maxWaitMs = this.options.maxWaitMs ?? Math.max(this.debounceMs, 2_000);
     const elapsed = this.firstPendingAt === undefined ? 0 : Date.now() - this.firstPendingAt;
-    const delay = Math.max(0, Math.min(this.debounceMs, maxWaitMs - elapsed));
+    const delay = retryDelayMs ?? Math.max(0, Math.min(this.debounceMs, maxWaitMs - elapsed));
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.drain();
@@ -102,8 +120,10 @@ export class WatchRefreshQueue {
   private async runBatch(paths: readonly string[], propagateError: boolean): Promise<void> {
     const work = this.refresh(paths);
     this.active = work;
+    let retryDelayMs: number | undefined;
     try {
       await work;
+      this.consecutiveFailures = 0;
     } catch (error) {
       if (propagateError) throw error;
       try {
@@ -112,9 +132,21 @@ export class WatchRefreshQueue {
         // Refresh failures are already handled here; a reporter must not
         // reject the detached drain promise and become an unhandled rejection.
       }
+      if (!this.closed) {
+        if (paths.includes(WATCH_FULL_REFRESH_PATH)) this.overflowed = true;
+        for (const filePath of paths) {
+          if (filePath !== WATCH_FULL_REFRESH_PATH) this.addPendingPath(filePath);
+        }
+        this.firstPendingAt = Date.now();
+        this.consecutiveFailures++;
+        const base = this.options.retryBaseDelayMs ?? Math.max(250, this.debounceMs);
+        const maximum = this.options.retryMaxDelayMs ?? 30_000;
+        retryDelayMs = Math.min(maximum, base * 2 ** (this.consecutiveFailures - 1));
+      }
     } finally {
       if (this.active === work) this.active = undefined;
-      if (!this.closed && this.pending.size > 0) this.schedule();
+      if (!this.closed && !this.initialPending && this.pending.size > 0)
+        this.schedule(retryDelayMs);
       else this.resolveIdleWaiters();
     }
   }

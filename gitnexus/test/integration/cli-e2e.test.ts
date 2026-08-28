@@ -1056,6 +1056,12 @@ describe('CLI end-to-end', () => {
       expect(result.stdout).toContain('--workers');
     });
 
+    it('rejects --debounce without --watch', () => {
+      const result = runCliRaw(['analyze', '--debounce', '25'], MINI_REPO);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('--debounce requires --watch');
+    });
+
     it('runs production analyze --watch with exact telemetry and transactional config reloads', async () => {
       const repo = makeMiniRepoCopy('watch-repo', 'gn-watch-cli-');
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-watch-cli-home-'));

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fsSync from 'node:fs';
 import fs from 'fs/promises';
 import path from 'path';
@@ -60,6 +61,35 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
       stat.mockRestore();
     }
   });
+
+  it('rejects a hardlinked repository config', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-hardlink-'));
+    try {
+      const target = path.join(outside, 'config.json');
+      await fs.writeFile(target, JSON.stringify({ workers: '8' }));
+      await fs.link(target, path.join(dir, GITNEXUS_RC_FILENAME));
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/hard link/);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a FIFO before opening it for reading',
+    async () => {
+      const fifo = path.join(dir, GITNEXUS_RC_FILENAME);
+      execFileSync('mkfifo', [fifo]);
+
+      await expect(
+        Promise.race([
+          readRepoControlFile(dir, GITNEXUS_RC_FILENAME),
+          new Promise<never>((_resolve, reject) =>
+            setTimeout(() => reject(new Error('FIFO read did not fail promptly')), 500),
+          ),
+        ]),
+      ).rejects.toThrow(/regular file/);
+    },
+  );
 
   it.skipIf(process.platform === 'win32')(
     'rejects a final-file symlink for repository config',

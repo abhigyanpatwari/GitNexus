@@ -17,6 +17,13 @@ export async function readRepoControlFile(
 
   try {
     const canonicalRoot = fs.realpathSync(requestedRoot);
+    const beforeOpen = fs.lstatSync(requested);
+    if (beforeOpen.isSymbolicLink()) throw new Error(`${filename} must not be a symbolic link`);
+    if (!beforeOpen.isFile()) throw new Error(`${filename} must be a regular file`);
+    if (beforeOpen.nlink !== 1) throw new Error(`${filename} must not be a hard link`);
+    if (beforeOpen.size > MAX_REPO_CONTROL_FILE_BYTES) {
+      throw new Error(`${filename} exceeds ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
+    }
     return await new Promise<string>((resolve, reject) => {
       const stream = fs.createReadStream(requested, {
         flags: 'r',
@@ -45,13 +52,19 @@ export async function readRepoControlFile(
         try {
           const opened = fs.fstatSync(fd);
           if (!opened.isFile()) throw new Error(`${filename} must be a regular file`);
+          if (opened.nlink !== 1) throw new Error(`${filename} must not be a hard link`);
           if (opened.size > MAX_REPO_CONTROL_FILE_BYTES) {
             throw new Error(`${filename} exceeds ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
           }
 
           const entry = fs.lstatSync(requested);
           if (entry.isSymbolicLink()) throw new Error(`${filename} must not be a symbolic link`);
-          if (!entry.isFile() || entry.dev !== opened.dev || entry.ino !== opened.ino) {
+          if (
+            !entry.isFile() ||
+            entry.nlink !== 1 ||
+            entry.dev !== opened.dev ||
+            entry.ino !== opened.ino
+          ) {
             throw new Error(`${filename} moved or was replaced while being opened`);
           }
           const canonicalFile = fs.realpathSync(requested);
@@ -60,7 +73,11 @@ export async function readRepoControlFile(
             throw new Error(`${filename} resolves outside the repository root`);
           }
           const canonical = fs.statSync(canonicalFile);
-          if (canonical.dev !== opened.dev || canonical.ino !== opened.ino) {
+          if (
+            canonical.nlink !== 1 ||
+            canonical.dev !== opened.dev ||
+            canonical.ino !== opened.ino
+          ) {
             throw new Error(`${filename} moved or was replaced while being opened`);
           }
 

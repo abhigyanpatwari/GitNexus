@@ -121,6 +121,7 @@ describe('watch filesystem integration', () => {
     failNext = true;
     await fs.writeFile(path.join(repo, 'fails.ts'), 'export const fail = 1;', 'utf8');
     await waitFor(() => errors.length === 1);
+    await waitFor(() => successful.flat().includes('fails.ts'));
     await fs.writeFile(path.join(repo, 'retry.ts'), 'export const retry = 1;', 'utf8');
     await waitFor(() => successful.flat().includes('retry.ts'));
 
@@ -169,6 +170,7 @@ describe('watch filesystem integration', () => {
 
     await fs.writeFile(path.join(repo, '.gitignore'), 'x'.repeat(1024 * 1024 + 1), 'utf8');
     await waitFor(() => errors.flat().includes('.gitignore'));
+    await waitFor(() => errors.length >= 2);
     await fs.writeFile(path.join(repo, 'other.ts'), 'export const other = 1;', 'utf8');
     await waitFor(() => errors.flat().includes('other.ts'));
     expect(batches.flat()).not.toContain('other.ts');

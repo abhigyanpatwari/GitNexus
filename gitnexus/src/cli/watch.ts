@@ -1,11 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { watch, type FSWatcher } from 'chokidar';
-import { getLanguageFromFilename } from 'gitnexus-shared';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
-import { isTemplateRouteCandidate } from '../core/ingestion/pipeline-phases/routes.js';
-import { classifySpringAutoConfigurationMetadata } from '../core/ingestion/pipeline-phases/spring-auto-configuration.js';
-import { classifySpringConfigFile } from '../core/ingestion/pipeline-phases/spring-config.js';
 import {
   analyzeFailureMayHaveMutatedLiveIndex,
   runFullAnalysis,
@@ -13,6 +9,7 @@ import {
   type AnalyzeResult,
 } from '../core/run-analyze.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
+import { IndexLockTimeoutError } from '../storage/index-lock.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import {
   loadAnalyzeConfigStrict,
@@ -29,41 +26,20 @@ import {
 } from './watch-queue.js';
 
 const DEFAULT_DEBOUNCE_MS = 300;
-const WATCH_CONFIG_NAMES = new Set([
-  'package.json',
-  'tsconfig.json',
-  'jsconfig.json',
-  'pyproject.toml',
-  'go.mod',
-  'Cargo.toml',
-  'pom.xml',
-  'build.gradle',
-  'build.gradle.kts',
-  'settings.gradle',
-  'settings.gradle.kts',
-  'composer.json',
-  'Gemfile',
-  'pubspec.yaml',
-]);
-const WATCH_CONFIG_SUFFIXES = ['.csproj', '.fsproj', '.vbproj', '.sln', '.vcxproj'];
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const MAX_FILE_SIZE_KB = 32 * 1024;
+const TRANSIENT_WATCH_ERROR_CODES = new Set(['EACCES', 'ENOENT', 'ENOTDIR', 'EPERM']);
 
 export type WatchCliOptions = AnalyzeOptions;
 
 export function isRelevantWatchPath(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/').replace(/^\.\/+/, '');
-  const base = path.posix.basename(normalized);
-  const lower = normalized.toLowerCase();
   return (
-    isIgnoreControlPath(normalized) ||
-    isConfigControlPath(normalized) ||
-    getLanguageFromFilename(normalized) !== null ||
-    lower.endsWith('.md') ||
-    lower.endsWith('.mdx') ||
-    isTemplateRouteCandidate(normalized) ||
-    classifySpringConfigFile(normalized) !== null ||
-    classifySpringAutoConfigurationMetadata(normalized) !== null ||
-    WATCH_CONFIG_NAMES.has(base) ||
-    WATCH_CONFIG_SUFFIXES.some((suffix) => base.endsWith(suffix))
+    normalized.length > 0 &&
+    normalized !== '.' &&
+    !normalized.startsWith('../') &&
+    !path.posix.isAbsolute(normalized) &&
+    !path.win32.isAbsolute(filePath)
   );
 }
 
@@ -93,11 +69,18 @@ function setEnvironment(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-function positiveInteger(value: string | undefined, flag: string): number | undefined {
+function positiveInteger(
+  value: string | undefined,
+  flag: string,
+  maximum?: number,
+): number | undefined {
   if (value === undefined) return undefined;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1)
     throw new Error(`${flag} must be a positive integer`);
+  if (maximum !== undefined && parsed > maximum) {
+    throw new Error(`${flag} must not exceed ${maximum}`);
+  }
   return parsed;
 }
 
@@ -108,23 +91,23 @@ export async function resolveWatchOptions(
 ): Promise<CoreAnalyzeOptions> {
   const merged = mergeAnalyzeOptions(cli, await loadAnalyzeConfigStrict(repoPath));
   const unsupported = [
-    ['--force', merged.force],
-    ['--repair-fts', merged.repairFts],
-    ['--embeddings', merged.embeddings],
-    ['--drop-embeddings', merged.dropEmbeddings],
-    ['--skills', merged.skills],
-    ['--self-commit', merged.selfCommit],
-    ['--index-only', merged.indexOnly],
-    ['--skip-git', merged.skipGit],
-    ['walCheckpointThreshold', merged.walCheckpointThreshold],
-    ['embeddingThreads', merged.embeddingThreads],
-    ['embeddingBatchSize', merged.embeddingBatchSize],
-    ['embeddingSubBatchSize', merged.embeddingSubBatchSize],
-    ['embeddingDevice', merged.embeddingDevice],
-    ['embeddingBaseUrl', merged.embeddingBaseUrl],
-    ['embeddingModel', merged.embeddingModel],
-    ['--embedding-auth-token', merged.embeddingAuthToken],
-    ['--embedding-dims', merged.embeddingDims],
+    ['--force', cli.force],
+    ['--repair-fts', cli.repairFts],
+    ['--embeddings', cli.embeddings],
+    ['--drop-embeddings', cli.dropEmbeddings],
+    ['--skills', cli.skills],
+    ['--self-commit', cli.selfCommit],
+    ['--index-only', cli.indexOnly],
+    ['--skip-git', cli.skipGit],
+    ['walCheckpointThreshold', cli.walCheckpointThreshold],
+    ['embeddingThreads', cli.embeddingThreads],
+    ['embeddingBatchSize', cli.embeddingBatchSize],
+    ['embeddingSubBatchSize', cli.embeddingSubBatchSize],
+    ['embeddingDevice', cli.embeddingDevice],
+    ['embeddingBaseUrl', cli.embeddingBaseUrl],
+    ['embeddingModel', cli.embeddingModel],
+    ['--embedding-auth-token', cli.embeddingAuthToken],
+    ['--embedding-dims', cli.embeddingDims],
   ].filter(([, value]) => value !== undefined && value !== false);
   if (unsupported.length > 0) {
     throw new Error(
@@ -135,9 +118,12 @@ export async function resolveWatchOptions(
     merged.branch === undefined ? undefined : validateBranchName(merged.branch, '--branch');
   const workerPoolSize = positiveInteger(merged.workers, '--workers');
   const workerTimeoutSeconds = positiveInteger(merged.workerTimeout, 'workerTimeout');
-  positiveInteger(merged.maxFileSize, 'maxFileSize');
+  const maxFileSize = positiveInteger(merged.maxFileSize, 'maxFileSize', MAX_FILE_SIZE_KB);
 
-  setEnvironment('GITNEXUS_MAX_FILE_SIZE', merged.maxFileSize ?? baseline.maxFileSize);
+  setEnvironment(
+    'GITNEXUS_MAX_FILE_SIZE',
+    maxFileSize === undefined ? baseline.maxFileSize : String(maxFileSize),
+  );
   if (workerTimeoutSeconds !== undefined) {
     process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS = String(workerTimeoutSeconds * 1000);
   } else {
@@ -163,6 +149,7 @@ function refreshSummary(
   result: AnalyzeResult,
   observedPaths: readonly string[],
   durationMs: number,
+  lastSuccessfulRefreshAt: string,
 ): string {
   const measured = result.incrementalStats;
   const changed = measured?.changedFiles ?? (result.alreadyUpToDate ? 0 : observedPaths.length);
@@ -176,7 +163,7 @@ function refreshSummary(
   return (
     `Refresh complete: ${changed} changed, ${reparsed} re-parsed, ` +
     `${dependents} affected dependent(s), ${durationMs}ms, ${mode}; ` +
-    `last success ${new Date().toISOString()}`
+    `last success ${lastSuccessfulRefreshAt}`
   );
 }
 
@@ -219,20 +206,25 @@ export async function startWatchFileLoop(
   let ignoreControlValid = true;
   const queue = new WatchRefreshQueue(
     async (paths) => {
-      if (paths.some(isIgnoreControlPath)) {
+      if (paths.some(isIgnoreControlPath) || !ignoreControlValid) {
+        const retryingInvalidControls = !ignoreControlValid;
         try {
           ignorePath = await createWatchIgnorePredicate(repoPath);
           ignoreControlValid = true;
           watcher.add(repoPath);
         } catch (error) {
           ignoreControlValid = false;
-          throw new WatchControlReloadError(error);
+          throw new WatchControlReloadError(
+            retryingInvalidControls
+              ? new Error(
+                  'Ignore controls remain invalid; fix them before indexing more changes.',
+                  {
+                    cause: error,
+                  },
+                )
+              : error,
+          );
         }
-      }
-      if (!ignoreControlValid) {
-        throw new WatchControlReloadError(
-          new Error('Ignore controls remain invalid; fix them before indexing more changes.'),
-        );
       }
       await refresh(paths);
     },
@@ -241,6 +233,7 @@ export async function startWatchFileLoop(
     {
       maxWaitMs: Math.max(2_000, debounceMs * 10),
       maxPendingPaths: 1_000,
+      holdEventsUntilInitialRefresh: true,
       isPriorityPath: (filePath) => isIgnoreControlPath(filePath) || isConfigControlPath(filePath),
     },
   );
@@ -275,7 +268,7 @@ export async function startWatchFileLoop(
     // analyzer-owned path is replaced. Re-arm the root and force one bounded
     // catch-up refresh so a missed event cannot leave the graph stale. Other
     // watcher errors may mean coverage was lost and remain fatal.
-    if (process.platform === 'win32' && (error as NodeJS.ErrnoException).code === 'EPERM') {
+    if (TRANSIENT_WATCH_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? '')) {
       watcher.add(repoPath);
       queue.enqueue(WATCH_FULL_REFRESH_PATH);
       return;
@@ -320,111 +313,140 @@ export async function watchCommandWithRunnerIdentity(
     workerTimeout: process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS,
     verbose: process.env.GITNEXUS_VERBOSE,
   };
-
-  let debounceMs: number;
-  let analyzeOptions: CoreAnalyzeOptions;
   try {
-    debounceMs =
-      positiveInteger(cliOptions.debounce ?? String(DEFAULT_DEBOUNCE_MS), '--debounce') ??
-      DEFAULT_DEBOUNCE_MS;
-    analyzeOptions = await resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
-  } catch (error) {
-    cliError(`  ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-    return;
-  }
-
-  let loop: WatchFileLoop;
-  let stopWatching: (() => void) | undefined;
-  let fatalRefreshError: unknown;
-  let configControlValid = true;
-  try {
-    loop = await startWatchFileLoop(
-      repoPath,
-      debounceMs,
-      async (paths) => {
-        if (paths.some(isConfigControlPath)) {
-          try {
-            analyzeOptions = await resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
-            configControlValid = true;
-          } catch (error) {
-            configControlValid = false;
-            throw new WatchControlReloadError(error);
-          }
-        }
-        if (!configControlValid) {
-          throw new WatchControlReloadError(
-            new Error('Configuration remains invalid; fix .gitnexusrc before indexing changes.'),
-          );
-        }
-        const startedAt = Date.now();
-        const result = await runFullAnalysis(
-          repoPath,
-          analyzeOptions,
-          {
-            onProgress: () => {},
-            onLog: cliOptions.verbose ? (message) => cliInfo(`  ${message}`) : undefined,
-          },
-          runnerIdentityAtBootstrap,
-        );
-        if (paths.length === 0) {
-          cliInfo(
-            result.alreadyUpToDate
-              ? `Watching ${repoPath}; index is up to date.`
-              : `Watching ${repoPath}; initial index ready in ${Date.now() - startedAt}ms.`,
-          );
-        } else {
-          cliInfo(refreshSummary(result, paths, Date.now() - startedAt));
-        }
-      },
-      (error, paths) => {
-        const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
-        if (
-          paths.length > 0 &&
-          (analyzeOptions.atomicIncremental === false ||
-            analyzeFailureMayHaveMutatedLiveIndex(error)) &&
-          !(error instanceof WatchControlReloadError)
-        ) {
-          fatalRefreshError = error;
-          cliError(
-            `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-              'Watch mode is stopping because this platform updates the live index in place.',
-          );
-          stopWatching?.();
-          return;
-        }
-        cliWarn(
-          `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-            'Watching continues; the next change will retry.',
-        );
-      },
-      (error) => {
-        fatalRefreshError = error;
-        cliError(
-          `Watcher failed: ${error instanceof Error ? error.message : String(error)}. ` +
-            'Watch mode is stopping.',
-        );
-        stopWatching?.();
-      },
-    );
-  } catch (error) {
-    cliError(
-      `  Unable to start watcher: ${error instanceof Error ? error.message : String(error)}`,
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  await new Promise<void>((resolve) => {
-    stopWatching = resolve;
-    if (fatalRefreshError !== undefined) {
-      resolve();
+    let debounceMs: number;
+    let analyzeOptions: CoreAnalyzeOptions;
+    try {
+      debounceMs =
+        positiveInteger(
+          cliOptions.debounce ?? String(DEFAULT_DEBOUNCE_MS),
+          '--debounce',
+          MAX_TIMER_DELAY_MS,
+        ) ?? DEFAULT_DEBOUNCE_MS;
+      analyzeOptions = await resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
+    } catch (error) {
+      cliError(`  ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
       return;
     }
-    const stop = () => resolve();
+
+    let stopWatching!: () => void;
+    const stopped = new Promise<void>((resolve) => {
+      stopWatching = resolve;
+    });
+    const stop = () => stopWatching();
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
-  });
-  await loop.close();
-  if (fatalRefreshError !== undefined) process.exitCode = 1;
+    try {
+      let loop: WatchFileLoop;
+      let fatalRefreshError: unknown;
+      let configControlValid = true;
+      let lastSuccessfulRefreshAt: string | undefined;
+      try {
+        loop = await startWatchFileLoop(
+          repoPath,
+          debounceMs,
+          async (paths) => {
+            if (paths.some(isConfigControlPath) || !configControlValid) {
+              const retryingInvalidConfig = !configControlValid;
+              try {
+                analyzeOptions = await resolveWatchOptions(
+                  repoPath,
+                  cliOptions,
+                  baselineEnvironment,
+                );
+                configControlValid = true;
+              } catch (error) {
+                configControlValid = false;
+                throw new WatchControlReloadError(
+                  retryingInvalidConfig
+                    ? new Error(
+                        'Configuration remains invalid; fix it before indexing more changes.',
+                        {
+                          cause: error,
+                        },
+                      )
+                    : error,
+                );
+              }
+            }
+            const startedAt = Date.now();
+            const result = await runFullAnalysis(
+              repoPath,
+              analyzeOptions,
+              {
+                onProgress: () => {},
+                onLog:
+                  process.env.GITNEXUS_VERBOSE === '1'
+                    ? (message) => cliInfo(`  ${message}`)
+                    : undefined,
+              },
+              runnerIdentityAtBootstrap,
+            );
+            lastSuccessfulRefreshAt = new Date().toISOString();
+            if (paths.length === 0) {
+              cliInfo(
+                result.alreadyUpToDate
+                  ? `Watching ${repoPath}; index is up to date.`
+                  : `Watching ${repoPath}; initial index ready in ${Date.now() - startedAt}ms.`,
+              );
+            } else {
+              cliInfo(
+                refreshSummary(result, paths, Date.now() - startedAt, lastSuccessfulRefreshAt),
+              );
+            }
+          },
+          (error, paths) => {
+            const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
+            const failedBeforeWrite = error instanceof IndexLockTimeoutError;
+            if (
+              paths.length > 0 &&
+              !failedBeforeWrite &&
+              (analyzeOptions.atomicIncremental === false ||
+                analyzeFailureMayHaveMutatedLiveIndex(error)) &&
+              !(error instanceof WatchControlReloadError)
+            ) {
+              fatalRefreshError = error;
+              cliError(
+                `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
+                  'Watch mode is stopping because the live index may have been updated in place.',
+              );
+              stopWatching();
+              return;
+            }
+            const lastSuccess = lastSuccessfulRefreshAt ?? 'none yet';
+            cliWarn(
+              `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
+                `Retry scheduled; last success ${lastSuccess}.`,
+            );
+          },
+          (error) => {
+            fatalRefreshError = error;
+            cliError(
+              `Watcher failed: ${error instanceof Error ? error.message : String(error)}. ` +
+                'Watch mode is stopping.',
+            );
+            stopWatching();
+          },
+        );
+      } catch (error) {
+        cliError(
+          `  Unable to start watcher: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      await stopped;
+      await loop.close();
+      if (fatalRefreshError !== undefined) process.exitCode = 1;
+    } finally {
+      process.removeListener('SIGINT', stop);
+      process.removeListener('SIGTERM', stop);
+    }
+  } finally {
+    setEnvironment('GITNEXUS_MAX_FILE_SIZE', baselineEnvironment.maxFileSize);
+    setEnvironment('GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS', baselineEnvironment.workerTimeout);
+    setEnvironment('GITNEXUS_VERBOSE', baselineEnvironment.verbose);
+  }
 }

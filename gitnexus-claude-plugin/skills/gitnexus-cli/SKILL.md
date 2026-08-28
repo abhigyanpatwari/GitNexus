@@ -21,12 +21,16 @@ Run from the project root. This parses all source files, builds the knowledge gr
 
 | Flag | Effect |
 |------|--------|
+| `--watch` | Keep a Git repository index current with serialized refreshes |
+| `--debounce <ms>` | Watch quiet period before refresh (default: 300 ms) |
 | `--force` | Force full re-index even if up to date |
 | `--embeddings` | Enable embedding generation for semantic search (off by default) |
 | `--drop-embeddings` | Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` preserves them. |
 | `--pdg` | Build the program-dependence layers used by `explain` and `pdg_query` (taint, CDG, and REACHING_DEF). |
 
 **When to run:** First time in a project, after major code changes, or when `gitnexus://repo/{name}/context` reports the index is stale.
+
+Use `node .gitnexus/run.cjs analyze --watch` for a long-lived local Git repository. It performs an initial analysis, queues scanner-admitted file changes, and retries intact failed batches with bounded backoff. It never pulls remotes. Running MCP and `serve` processes reopen the published index automatically; MCP observes replacement on its next tool call, typically within five seconds.
 
 ### status — Check index freshness
 
@@ -84,5 +88,5 @@ Lists all repositories registered in `~/.gitnexus/registry.json`. The MCP `list_
 ## Troubleshooting
 
 - **"Not inside a git repository"**: Run from a directory inside a git repo
-- **Index is stale after re-analyzing**: Restart Claude Code to reload the MCP server
+- **Index is stale after re-analyzing**: Wait for the next MCP tool call to reopen the published index; this normally takes no more than five seconds
 - **Embeddings slow**: Omit `--embeddings` (it's off by default) or set `OPENAI_API_KEY` for faster API-based embedding

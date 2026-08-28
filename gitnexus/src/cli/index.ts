@@ -58,7 +58,7 @@ program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
   .option('--watch', 'Keep the index current with serialized incremental refreshes')
-  .option('--debounce <ms>', 'Watch quiet period before refreshing (milliseconds)', '300')
+  .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
   .option(
@@ -164,6 +164,11 @@ program
   )
   .addHelpText('after', () => t('help.analyze.environment'))
   .hook('preAction', (thisCommand: Command) => {
+    const analyzeOpts = thisCommand.opts();
+    if (analyzeOpts['debounce'] !== undefined && analyzeOpts['watch'] !== true) {
+      process.stderr.write('\n  --debounce requires --watch\n\n');
+      process.exit(1);
+    }
     // ONLY GITNEXUS_EMBEDDING_DIMS must be set here: schema.ts reads it at
     // module-load time during the lazy import('./analyze.js') below (via the
     // static chain analyze.ts → run-analyze.ts → schema.ts), so deferring to
@@ -171,7 +176,7 @@ program
     // lazily at runtime (readConfig), so analyzeCommandImpl is their sole
     // setter — keeping them out of this hook means they fall under the impl's
     // env snapshot/restore and don't leak across in-process invocations.
-    const dimsOpt = thisCommand.opts()['embeddingDims'];
+    const dimsOpt = analyzeOpts['embeddingDims'];
     if (dimsOpt !== undefined) {
       // Validate + normalize BEFORE writing the env var: schema.ts throws on a
       // bad value at module-load, which — on the synchronous program.parse()
