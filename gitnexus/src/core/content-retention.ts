@@ -40,21 +40,12 @@ export const contentRetentionMismatch = (
   meta: Pick<RepoMeta, 'contentRetention' | 'contentRetentionSchemaVersion' | 'ftsProfile'>,
   requested: ContentRetention,
 ): boolean => {
-  const recorded = contentRetentionFromMeta(meta);
-  if (recorded !== requested) return true;
-  if (
-    meta.contentRetentionSchemaVersion !== undefined &&
-    meta.contentRetentionSchemaVersion !== 1
-  ) {
-    return true;
-  }
-  if (
-    meta.ftsProfile !== undefined &&
+  if (meta.contentRetention === undefined) return requested !== 'full';
+  return (
+    meta.contentRetention !== requested ||
+    meta.contentRetentionSchemaVersion !== 1 ||
     meta.ftsProfile !== ftsProfileForContentRetention(requested)
-  ) {
-    return true;
-  }
-  return false;
+  );
 };
 
 /** Remove text that the active index profile is not allowed to persist. */

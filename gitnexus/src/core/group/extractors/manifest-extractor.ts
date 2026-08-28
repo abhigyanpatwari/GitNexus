@@ -11,7 +11,7 @@ export interface ManifestExtractResult {
 // #2325 integration test can run the EXACT production query against a real
 // LadybugDB — a hand-copied query string in the test would silently drift
 // from this allowlist. Uses the `labels(n) IN [...]` allowlist form rather
-// than a `MATCH (n:A|B)` disjunction: this 21-label list contains the
+// than a `MATCH (n:A|B)` disjunction: this 23-label list contains the
 // reserved-keyword labels `Macro` and `Union`, and LadybugDB's parser rejects
 // a disjunction that names a reserved keyword (#2325) — which the resolver's
 // try/catch then swallowed. `labels(n) IN` has no such collision.

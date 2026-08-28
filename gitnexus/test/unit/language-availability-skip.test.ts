@@ -26,6 +26,7 @@ vi.mock('../../src/core/tree-sitter/parser-loader.js', async (importOriginal) =>
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { SupportedLanguages } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import * as parserLoader from '../../src/core/tree-sitter/parser-loader.js';
@@ -63,6 +64,21 @@ describe('native parser availability — unavailable language is skipped, not cr
     );
   };
 
+  const runWithObjectiveCHeader = () => {
+    const rel = 'App.h';
+    fs.writeFileSync(path.join(repoDir, rel), '@interface App : NSObject\n@end\n');
+    const scanned = [{ path: rel, size: fs.statSync(path.join(repoDir, rel)).size }];
+    return runChunkedParseAndResolve(
+      createKnowledgeGraph(),
+      scanned,
+      [rel],
+      1,
+      repoDir,
+      Date.now(),
+      () => {},
+    );
+  };
+
   it('skips the Swift file without crashing (and without spawning a pool) when its parser is unavailable', async () => {
     vi.mocked(parserLoader.isLanguageAvailable).mockReturnValue(false);
     // The only file is filtered out before dispatch, so the parse phase
@@ -85,5 +101,15 @@ describe('native parser availability — unavailable language is skipped, not cr
           r.msg.includes('swift parser not available'),
       );
     expect(warned).toBe(true);
+  });
+
+  it('admits a content-classified Objective-C header when only C++ is unavailable', async () => {
+    vi.mocked(parserLoader.isLanguageAvailable).mockImplementation(
+      (language) => language === SupportedLanguages.ObjectiveC,
+    );
+
+    const result = await runWithObjectiveCHeader();
+
+    expect(result.usedWorkerPool).toBe(true);
   });
 });

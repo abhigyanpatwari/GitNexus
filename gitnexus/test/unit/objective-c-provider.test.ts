@@ -184,6 +184,36 @@ int (*callback)(int value);
     );
   });
 
+  it('resolves a property declared after its caller in a class extension', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@interface LaterOwner
+@end
+@implementation LaterOwner
+- (void)run {
+  [self.helper performWork];
+}
+@end
+@interface LaterOwner (Private)
+@property (nonatomic, strong) Worker *helper;
+@end
+`),
+      'LaterOwner.m',
+    );
+
+    expect(facts.messages).toContainEqual(
+      expect.objectContaining({
+        receiverText: 'self.helper',
+        selector: 'performWork',
+        receiverKind: 'property',
+        receiverType: { kind: 'class', name: 'Worker', raw: 'Worker' },
+      }),
+    );
+    expect(facts.unresolvedMessages).not.toContainEqual(
+      expect.objectContaining({ receiverText: 'self.helper' }),
+    );
+  });
+
   it('resolves extensionless local imports to Objective-C source/header files', () => {
     expect(
       objectiveCScopeResolver.resolveImportTarget(

@@ -695,6 +695,37 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     byName.set(name, typeInfo);
   };
 
+  const collectContainerMemberTypes = (
+    containerNode: Parser.SyntaxNode,
+    container: ObjCContainerFact,
+  ): void => {
+    for (const inner of directNamedChildren(containerNode)) {
+      if (inner.type === 'property_declaration') {
+        const prop = propertyInfo(inner);
+        if (prop === null) continue;
+        addMemberType(container.qualifiedName, prop.name, prop.type);
+        if (container.hostClass !== undefined) {
+          addMemberType(objcClassQualifiedName(container.hostClass), prop.name, prop.type);
+        }
+      } else if (inner.type === 'instance_variables') {
+        walkNamedTree(inner, (ivarNode) => {
+          if (ivarNode.type !== 'instance_variable') return;
+          const ivar = declarationNameAndType(ivarNode);
+          if (ivar === null) return;
+          addMemberType(container.qualifiedName, ivar.name, ivar.type);
+          if (container.hostClass !== undefined) {
+            addMemberType(objcClassQualifiedName(container.hostClass), ivar.name, ivar.type);
+          }
+        });
+      }
+    }
+  };
+
+  for (const child of directNamedChildren(tree.rootNode)) {
+    const container = parseContainer(child, filePath);
+    if (container !== null) collectContainerMemberTypes(child, container);
+  }
+
   for (const child of directNamedChildren(tree.rootNode)) {
     if (child.type === 'preproc_include') {
       const rawNode = directNamedChildren(child).find(
@@ -827,10 +858,6 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
             startLine,
             endLine,
           });
-          addMemberType(container.qualifiedName, prop.name, prop.type);
-          if (container.hostClass !== undefined) {
-            addMemberType(objcClassQualifiedName(container.hostClass), prop.name, prop.type);
-          }
         } else if (inner.type === 'instance_variables') {
           walkNamedTree(inner, (ivarNode) => {
             if (ivarNode.type !== 'instance_variable') return;
@@ -853,10 +880,6 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
               startLine,
               endLine,
             });
-            addMemberType(container.qualifiedName, ivar.name, ivar.type);
-            if (container.hostClass !== undefined) {
-              addMemberType(objcClassQualifiedName(container.hostClass), ivar.name, ivar.type);
-            }
           });
         } else if (inner.type === 'implementation_definition') {
           const methodNode = directNamedChildren(inner).find((n) => n.type === 'method_definition');

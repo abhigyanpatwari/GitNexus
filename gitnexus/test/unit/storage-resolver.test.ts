@@ -68,6 +68,19 @@ describe('storage resolver', () => {
     expect(resolveStoragePath(repo)).toBe(registered);
   });
 
+  it('ignores malformed registry rows and falls back to the local layout', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
+    const home = await makeTempDir('gitnexus-storage-resolver-home-');
+    delete process.env.GITNEXUS_STORAGE_PATH;
+    process.env.GITNEXUS_HOME = home;
+    await fs.writeFile(
+      path.join(home, 'registry.json'),
+      JSON.stringify([null, 1, [], { path: repo, storagePath: 1 }]),
+    );
+
+    expect(resolveStoragePath(repo)).toBe(defaultStoragePath(repo));
+  });
+
   it.each(['', 'relative/index', `bad\0index`])(
     'rejects invalid configured storage path %j',
     (value) => {

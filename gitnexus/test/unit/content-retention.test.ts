@@ -99,6 +99,8 @@ describe('content retention profiles', () => {
     expect(contentRetentionFromMeta({})).toBe('full');
     expect(contentRetentionMismatch({}, 'full')).toBe(false);
     expect(contentRetentionMismatch({}, 'symbol')).toBe(true);
+    expect(contentRetentionMismatch({ contentRetention: 'full' }, 'full')).toBe(true);
+    expect(contentRetentionMismatch({ contentRetention: 'symbol' }, 'symbol')).toBe(true);
     expect(
       contentRetentionMismatch(
         {
@@ -115,6 +117,15 @@ describe('content retention profiles', () => {
           contentRetention: 'symbol',
           contentRetentionSchemaVersion: 2,
           ftsProfile: 'symbol-no-file-content',
+        },
+        'symbol',
+      ),
+    ).toBe(true);
+    expect(
+      contentRetentionMismatch(
+        {
+          contentRetention: 'symbol',
+          contentRetentionSchemaVersion: 1,
         },
         'symbol',
       ),

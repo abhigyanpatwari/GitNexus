@@ -49,7 +49,7 @@ const configuredStoragePath = (): string | undefined => {
 };
 
 const registeredStoragePath = (repoPath: string): string | undefined => {
-  let entries: RegistryStorageEntry[];
+  let entries: unknown[];
   try {
     const data = JSON.parse(fs.readFileSync(registryPath(), 'utf-8'));
     if (!Array.isArray(data)) return undefined;
@@ -60,10 +60,14 @@ const registeredStoragePath = (repoPath: string): string | undefined => {
 
   const resolvedRepoPath = path.resolve(repoPath);
   for (const entry of entries) {
-    if (typeof entry.path !== 'string' || typeof entry.storagePath !== 'string') continue;
-    if (!samePath(path.resolve(entry.path), resolvedRepoPath)) continue;
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const registryEntry = entry as RegistryStorageEntry;
+    if (typeof registryEntry.path !== 'string' || typeof registryEntry.storagePath !== 'string') {
+      continue;
+    }
+    if (!samePath(path.resolve(registryEntry.path), resolvedRepoPath)) continue;
     try {
-      return validateConfiguredStoragePath(entry.storagePath);
+      return validateConfiguredStoragePath(registryEntry.storagePath);
     } catch {
       return undefined;
     }
