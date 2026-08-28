@@ -88,8 +88,17 @@ function pay($method) {
   });
 
   it('ignores an unrelated constructor whose class name does not end in "Request"', () => {
+    // $resourcePath IS resolvable here (unlike an earlier version of this
+    // test) — the class-name filter must be the reason this produces no
+    // detection, not an incidental miss elsewhere in the pipeline. Without
+    // a resolvable path, this test would pass even with the class-name
+    // filter deleted.
     const src = `<?php
-$response = new Response($this->host . $resourcePath);
+function make($method) {
+    $resourcePath = '/payments/pay';
+    $response = new Response($method, $this->host . $resourcePath);
+    return $response;
+}
 `;
     expect(consumers(src)).toHaveLength(0);
   });
@@ -229,5 +238,74 @@ function pay($order) {
     const found = consumers(src);
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({ method: 'POST', path: '/payments/pay' });
+  });
+
+  it('does not use a stale literal shadowed by a reassignment inside a preceding if block', () => {
+    // Regression: the backward scan only inspected direct expression_statement
+    // siblings, so `$resourcePath = '/new';` nested inside an `if` right
+    // before the call was invisible, and the OLDER `/old` (outside the `if`)
+    // was returned instead — an unconditional wrong answer whenever that
+    // branch runs, not a miss.
+    const src = `<?php
+function pay($method, $cond) {
+    $resourcePath = '/old-and-wrong';
+    if ($cond) {
+        $resourcePath = '/new';
+    }
+    $request = new Request($method, $this->host . $resourcePath);
+    return $request;
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('does not resolve a variable across an anonymous-function boundary it was not use()-captured into', () => {
+    // Regression: level-by-level widening climbed straight from the
+    // closure's body to the enclosing method's body without checking PHP's
+    // actual capture rule (closures capture NOTHING unless listed in
+    // `use (...)`), resolving a variable the closure can't actually see —
+    // real PHP would throw "Undefined variable" here, not build this path.
+    const src = `<?php
+function pay($method) {
+    $resourcePath = '/payments/pay';
+    $build = function () use ($method) {
+        // $resourcePath is NOT captured — undefined inside this closure.
+        return new Request($method, $this->host . $resourcePath);
+    };
+    return $build();
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('DOES resolve a variable across an anonymous-function boundary it WAS use()-captured into', () => {
+    const src = `<?php
+function pay($method) {
+    $resourcePath = '/payments/pay';
+    $build = function () use ($method, $resourcePath) {
+        return new Request($method, $this->host . $resourcePath);
+    };
+    return $build();
+}
+`;
+    const found = consumers(src);
+    expect(found).toHaveLength(1);
+    expect(found[0].path).toBe('/payments/pay');
+  });
+
+  it('does not fall back to the host when the concatenation ends in a string literal, not a variable', () => {
+    // Regression: lastConcatVariable fell through to the LEFT operand when
+    // the right one wasn't a variable, so `$host . '/users'` resolved to
+    // $host instead of recognizing the trailing literal isn't a variable at
+    // all — if $host happened to be an HTTP URL locally, that URL would be
+    // emitted as the path instead of a miss.
+    const src = `<?php
+function pay($method) {
+    $host = 'https://api.example.com';
+    $request = new Request($method, $host . '/users');
+    return $request;
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
   });
 });
