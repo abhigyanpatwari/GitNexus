@@ -316,7 +316,7 @@ export async function watchCommandWithRunnerIdentity(
   inputPath?: string,
   cliOptions: WatchCliOptions = {},
 ): Promise<void> {
-  if (await ensureHeap()) return;
+  if (await ensureHeap({ cleanForwardedTermination: true })) return;
 
   const requestedRepoPath = inputPath ? path.resolve(inputPath) : getGitRoot(process.cwd());
   if (requestedRepoPath === null || !hasGitDir(requestedRepoPath)) {

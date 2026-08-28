@@ -560,7 +560,19 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *    tooling), not a deliberate per-run choice: warn and respawn with the
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify. */
-export async function ensureHeap(): Promise<boolean> {
+export function forwardedSignalExitCode(
+  signal: NodeJS.Signals,
+  cleanTermination: boolean,
+): number {
+  if (cleanTermination) return 0;
+  if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGTERM') return 143;
+  return 1;
+}
+
+export async function ensureHeap(
+  options: { cleanForwardedTermination?: boolean } = {},
+): Promise<boolean> {
   // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
   // override and the default v8-limit respawn — and is honored SILENTLY:
   // the operator already made the call, and stderr-sensitive consumers
@@ -603,7 +615,10 @@ export async function ensureHeap(): Promise<boolean> {
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
   if (childExit.forwardedSignal !== undefined) {
-    process.exitCode = 0;
+    process.exitCode = forwardedSignalExitCode(
+      childExit.forwardedSignal,
+      options.cleanForwardedTermination === true,
+    );
     return true;
   }
   if (childExit.status !== 0 || childExit.signal) {
