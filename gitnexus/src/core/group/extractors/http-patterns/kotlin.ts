@@ -23,6 +23,7 @@ import {
   foldKotlinOperands,
   isKotlinConstantFile,
   parseKotlinConstOperands,
+  unfoldableDeclarationsOf,
   unquoteKotlinIdentifier,
   type ModuleConstants,
   type RepoConstants,
@@ -285,13 +286,12 @@ function kotlinArrayOfElements(node: Parser.SyntaxNode): Parser.SyntaxNode[] | n
  *
  *  - `'literal'` — at least one element is a plain literal, already harvested by
  *    the literal prefix patterns, so there is nothing to suppress.
- *  - `'none'` — no prefix. Empty `arrayOf()` is Spring's "map at the root".
+ *  - `'none'` — no prefix. Empty `arrayOf()` or `[]` is Spring's "map at the root".
  *    Kept distinct from `'unresolvable'` because conflating them suppressed even
  *    plain literal routes below such a class, which no constant fold was ever
- *    involved in. Reachable through `arrayOf()` only: tree-sitter-kotlin (fwcd)
- *    does not parse a class carrying `@RequestMapping([])` as a
- *    `class_declaration`, so an EMPTY `collection_literal` never reaches this
- *    function from an annotation — a non-empty one does, and is handled below.
+ *    involved in. tree-sitter-kotlin (fwcd) represents empty `[]` with a
+ *    zero-width recovery child; filtering it is required for route interfaces,
+ *    which do parse as `class_declaration`.
  *  - `'unresolvable'` — a non-empty argument with no literal element
  *    (`ApiPaths.BASE`, `buildPath()`, a template). Served path is unknowable.
  */
@@ -300,7 +300,9 @@ type PathArgumentPrefix = 'literal' | 'none' | 'unresolvable';
 function classifyPathArgument(expr: Parser.SyntaxNode): PathArgumentPrefix {
   if (isPlainStringLiteral(expr)) return 'literal';
   if (expr.type === 'collection_literal') {
-    return expr.namedChildren.some(isPlainStringLiteral) ? 'literal' : 'unresolvable';
+    const elements = expr.namedChildren.filter((child) => child.text.length > 0);
+    if (elements.length === 0) return 'none';
+    return elements.some(isPlainStringLiteral) ? 'literal' : 'unresolvable';
   }
   const elements = kotlinArrayOfElements(expr);
   if (elements) {
@@ -1317,7 +1319,12 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           const tree = args.parseSource(args.parser, src);
           if (!tree) continue;
           const mc = extractKotlinModuleConstants(tree);
-          if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
+          if (
+            mc.literals.size > 0 ||
+            mc.exprs.size > 0 ||
+            mc.imports.size > 0 ||
+            unfoldableDeclarationsOf(mc).size > 0
+          ) {
             // POSIX key (see `normalizeRel`); `readFile` above got the raw `rel`.
             constants.set(normalizeRel(rel), mc);
           }
@@ -1360,7 +1367,12 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           // all masked the bug, which is why a realistic controller never hit
           // it — the failure needs a file with a top-level `val`, no `object`
           // and no imports.
-          if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
+          if (
+            mc.literals.size > 0 ||
+            mc.exprs.size > 0 ||
+            mc.imports.size > 0 ||
+            unfoldableDeclarationsOf(mc).size > 0
+          ) {
             const merged = new Map(kotlinCtx.constants);
             merged.set(fileKey, mc);
             foldConstants = merged;

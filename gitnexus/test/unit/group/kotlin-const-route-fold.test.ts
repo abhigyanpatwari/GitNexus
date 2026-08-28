@@ -333,10 +333,43 @@ class OrderController {
     ]);
   });
 
+  it('keeps an inherited route under an EMPTY interface path array', () => {
+    const files = {
+      'src/OrderApi.kt': `package com.example.app
+
+@RequestMapping([])
+interface OrderApi {
+    @GetMapping("/orders")
+    fun list()
+}
+`,
+      'src/OrderController.kt': `package com.example.app
+
+@RestController
+class OrderController : OrderApi {
+    override fun list() {}
+}
+`,
+    };
+    const detections =
+      plugin.scanProject?.(
+        Object.entries(files).map(([filePath, source]) => ({
+          filePath,
+          tree: parseSource(new Parser(), source),
+        })),
+      ) ?? [];
+    expect(
+      detections.flatMap((file) =>
+        file.detections
+          .filter((detection) => detection.role === 'provider')
+          .map((detection) => `${detection.method} ${detection.path}`),
+      ),
+    ).toEqual(['GET /orders']);
+  });
+
   it('still suppresses a NON-empty array whose only element is a constant', () => {
-    // The control for the test above, and the reason the empty case needs its
-    // own arm rather than a blanket "arrays never suppress": here the array DOES
-    // designate a prefix, and that prefix is unknowable.
+    // The control for the empty `arrayOf()` case: an array that DOES designate
+    // a prefix still suppresses when that prefix is unknowable.
     expect(providers(controllerWithPrefix('arrayOf(ApiPaths.BASE)'))).toEqual([]);
   });
 
@@ -798,6 +831,35 @@ class OrderController {
     ).toEqual([]);
   });
 
+  it('keeps an unfoldable production twin in duplicate-FQN detection', () => {
+    expect(
+      providers({
+        'src/main/kotlin/generated/RoutePaths.kt': `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = ("/production")
+}
+`,
+        'src/test/kotlin/com/example/app/api/ApiPaths.kt': `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/test-only"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual([]);
+  });
+
   it('resolves a bare reference by the class it sits in, not by declaration order', () => {
     // A companion member is bound unqualified inside its enclosing class BODY
     // and nowhere else. Recorded under a file-level bare key it landed in the
@@ -832,6 +894,33 @@ class OrderController {
 `,
       }),
     ).toEqual(['GET /companion', 'GET /top']);
+  });
+
+  it('does not publish a top-level route for an unfoldable companion binding', () => {
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+const val ORDERS = "/top"
+
+@RestController
+class Holder {
+    companion object {
+        const val ORDERS = ("/companion")
+    }
+
+    @GetMapping(ORDERS)
+    fun inside() {}
+}
+
+@RestController
+class OtherController {
+    @GetMapping(ORDERS)
+    fun outside() {}
+}
+`,
+      }),
+    ).toEqual(['GET /top']);
   });
 
   it('gives two colliding companions each their own class', () => {

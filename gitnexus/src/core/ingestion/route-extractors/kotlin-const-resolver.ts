@@ -164,14 +164,19 @@ export type {
  * bindings to fill it in; adding an optional one would put a Kotlin-shaped hole
  * in a type whose whole point is language neutrality.
  *
- * Read it through {@link declaredPackageOf}, never by field access: a
+ * Read the metadata through {@link declaredPackageOf} and
+ * {@link unfoldableDeclarationsOf}, never by field access: a
  * {@link RepoConstants} is typed over the agnostic shape, so an entry that some
  * other producer put there carries no package and must be REJECTED as a
- * candidate rather than silently treated as the default package.
+ * candidate rather than silently treated as the default package. Missing
+ * unfoldable-declaration metadata instead means "none known", preserving the
+ * agnostic entry's existing behavior.
  */
 export interface KotlinModuleConstants extends ModuleConstants {
   /** The file's declared `package`, or `''` for the default package. */
   readonly packageName: string;
+  /** Declaration keys whose initializer cannot be folded. */
+  readonly unfoldableDeclarations: ReadonlySet<string>;
 }
 
 /**
@@ -182,6 +187,17 @@ export interface KotlinModuleConstants extends ModuleConstants {
 function declaredPackageOf(mc: ModuleConstants | undefined): string | null {
   const declared = (mc as KotlinModuleConstants | undefined)?.packageName;
   return typeof declared === 'string' ? declared : null;
+}
+
+const NO_UNFOLDABLE_DECLARATIONS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Kotlin declaration keys known to exist but not fold, or an empty set when
+ * `mc` came from another language binding.
+ */
+export function unfoldableDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
+  const declarations = (mc as KotlinModuleConstants | undefined)?.unfoldableDeclarations;
+  return declarations instanceof Set ? declarations : NO_UNFOLDABLE_DECLARATIONS;
 }
 
 /** Source extensions a Kotlin declaration can live in. */
@@ -301,16 +317,20 @@ function isFileNamedAfterDeclaration(key: string, asPath: string): boolean {
  * `object`/companion carrier whose members are keyed `name.<MEMBER>`, or a
  * top-level constant keyed `name` outright?
  *
- * Used only to detect a DUPLICATED fully-qualified name, so both directions of
- * imprecision are bounded. A false positive (the bare key belongs to a companion
- * rather than a top-level `val`) can only add a skip; a false negative falls
- * back to the path tie-breaks below, i.e. to the behavior this test refines.
+ * A true result is strong enough to select a unique declaring file before path
+ * fallbacks: the tested key set is a superset of every local key the fold may
+ * subsequently read for that imported name. Two matching files are therefore
+ * ambiguous; one is authoritative. A miss falls back to the conservative path
+ * heuristics below, whose result is still verified by the actual map lookup.
  */
 function declaresTopLevelName(mc: ModuleConstants, name: string): boolean {
   const prefix = `${name}.`;
   for (const map of [mc.literals, mc.exprs]) {
     if (map.has(name)) return true;
     for (const key of map.keys()) if (key.startsWith(prefix)) return true;
+  }
+  for (const key of unfoldableDeclarationsOf(mc)) {
+    if (key === name || key.startsWith(prefix)) return true;
   }
   return false;
 }
@@ -335,20 +355,22 @@ function declaresTopLevelName(mc: ModuleConstants, name: string): boolean {
  *     path-suffix test also lets a root-level `package data` be impersonated by
  *     `…/com/example/data/`. An entry with no recorded package is rejected, not
  *     assumed to be the default package.
- *  1. **Duplicated declaration** — when two of those files declare the sought
- *     name, the FQN itself is duplicated in the repository and names no single
- *     declaration. Return null. This is the general form of the same-FQN check
- *     step 2 could only make for files that happen to follow the file-name
- *     convention, and it is what stops a `src/test/…` copy of a production
- *     constant from being folded into a production route.
- *  2. **File named after the declaration** — among the package-matching files,
- *     the one ending `com/example/app/api/ApiPaths.kt`. Kotlin does not require
- *     this (`object ApiPaths` may live in `Constants.kt`), so it is a tie-break
- *     among already-valid candidates, never evidence on its own.
- *  3. **Sole file in the package** — when no name matches, the unique
- *     package-matching candidate. The set passed in is the constant-DEFINING
- *     files only, so this is a far tighter question than it sounds; with 2+
- *     candidates it returns null and the fold floors to skip.
+ *  1. **Declared name** — when exactly one file declares the sought name, use
+ *     it. When two do, the FQN itself is duplicated in the repository and names
+ *     no single declaration, so return null. This is the general form of the
+ *     same-FQN check step 2 could only make for files that happen to follow the
+ *     file-name convention, and it is what stops a `src/test/…` copy of a
+ *     production constant from being folded into a production route.
+ *  2. **File named after the declaration** — when declaration metadata found no
+ *     owner, try the package-matching file ending
+ *     `com/example/app/api/ApiPaths.kt`. Kotlin does not require this (`object
+ *     ApiPaths` may live in `Constants.kt`), so it is only a fallback candidate;
+ *     the subsequent map lookup must still prove that it carries the value.
+ *  3. **Sole file in the package** — when declaration metadata cannot identify
+ *     the name, use the unique package-matching candidate. The set passed in
+ *     contains files with foldable or explicitly unfoldable declarations, so
+ *     unrelated files cannot create ambiguity once step 1 identifies a unique
+ *     declarer. With 2+ unidentified candidates it returns null.
  *
  * Steps 2 and 3 can still hand back a file that does not declare the wanted name
  * (its package is right and it is the only candidate, but the name lives
@@ -394,6 +416,7 @@ export function resolveKotlinImport(
     }
   }
   if (inPackage.length === 0) return null;
+  if (declaring !== null) return declaring;
   if (inPackage.length === 1) return inPackage[0]; // steps 2 and 3 agree
 
   // Step 2: the file-name convention, as a tie-break among valid candidates.
@@ -652,6 +675,7 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
   const literals = new Map<string, string>();
   const exprs = new Map<string, readonly Operand[]>();
   const imports = new Map<string, ImportBinding>();
+  const unfoldableDeclarations = new Set<string>();
 
   // Pass 1: imports.
   const walkImports = (node: Parser.SyntaxNode): void => {
@@ -799,6 +823,7 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
       for (const key of keys) {
         literals.delete(key);
         exprs.delete(key);
+        unfoldableDeclarations.add(key);
       }
       if (decl.shadowsImport) imports.delete(decl.name);
       continue;
@@ -810,6 +835,7 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
     const literalValue =
       operands.length === 1 && operands[0].kind === 'literal' ? operands[0].value : null;
     for (const key of keys) {
+      unfoldableDeclarations.delete(key);
       if (literalValue !== null) {
         literals.set(key, literalValue);
         exprs.delete(key);
@@ -820,7 +846,13 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
     }
   }
 
-  return { literals, exprs, imports, packageName: declaredPackage(tree.rootNode) };
+  return {
+    literals,
+    exprs,
+    imports,
+    packageName: declaredPackage(tree.rootNode),
+    unfoldableDeclarations,
+  };
 }
 
 /**
@@ -832,10 +864,10 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
  *    another — so caching it would be unsound.
  *  - `visited` is the ACTIVE resolution stack, popped on unwind, so diamonds fold
  *    instead of false-cycling while true cycles still terminate.
- *  - `constantKeys` is the candidate set import ambiguity is measured over: files
- *    that actually DEFINE a constant. Measuring over every repo key would let a
- *    file that defines nothing create ambiguity, and it would rebuild the set on
- *    every qualified reference.
+ *  - `constantKeys` is the candidate set import ambiguity is measured over:
+ *    files with a foldable or explicitly unfoldable declaration. Measuring over
+ *    every repo key would let a file that defines nothing create ambiguity, and
+ *    it would rebuild the set on every qualified reference.
  */
 interface KotlinFoldState {
   readonly repo: RepoConstants;
@@ -847,7 +879,9 @@ interface KotlinFoldState {
 function newFoldState(repo: RepoConstants): KotlinFoldState {
   const constantKeys = new Set<string>();
   for (const [key, mc] of repo) {
-    if (mc.literals.size > 0 || mc.exprs.size > 0) constantKeys.add(key);
+    if (mc.literals.size > 0 || mc.exprs.size > 0 || unfoldableDeclarationsOf(mc).size > 0) {
+      constantKeys.add(key);
+    }
   }
   return { repo, constantKeys, visited: new Set(), memo: new Map() };
 }
@@ -1044,9 +1078,12 @@ function qualifyKotlinRefInEnclosingTypes(
   if (name.includes('.')) return name; // already carries its owner
   const mc = repo.get(fileKey);
   if (!mc) return name;
+  const unfoldableDeclarations = unfoldableDeclarationsOf(mc);
   for (const type of enclosingTypes) {
     const key = `${type}.${name}`;
-    if (mc.literals.has(key) || mc.exprs.has(key)) return key;
+    if (mc.literals.has(key) || mc.exprs.has(key) || unfoldableDeclarations.has(key)) {
+      return key;
+    }
   }
   return name;
 }

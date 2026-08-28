@@ -256,10 +256,31 @@ import com.example.app.api.ApiPaths
       ).toBeNull();
     });
 
-    it('returns null when the package holds two constant files and no name matches', () => {
-      // Kotlin lets a file be named anything, so resolution falls back to the
-      // package directory — which only answers when exactly one candidate sits
-      // there. Two do here, so the import cannot be pinned.
+    it('keeps an unfoldable duplicate in the fully-qualified-name candidate set', () => {
+      const repo = repoOf({
+        'src/main/kotlin/generated/RoutePaths.kt': `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = ("/production")
+}
+`,
+        'src/test/kotlin/com/example/app/api/ApiPaths.kt': `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/test-only"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
+    });
+
+    it('uses the unique declaring file before package filename fallbacks', () => {
+      // An unrelated constant file in the same package is not ambiguity when
+      // exactly one candidate declares the imported type.
       const repo = repoOf({
         'src/main/kotlin/com/example/app/api/Paths.kt': `package com.example.app.api
 
@@ -270,7 +291,7 @@ object ApiPaths {
         'src/main/kotlin/com/example/app/api/More.kt': `package com.example.app.api
 
 object MorePaths {
-    const val ITEMS = "/api/v1/items"
+    const val ITEMS = ("/api/v1/items")
 }
 `,
         [CONTROLLER_KEY]: `package com.example.app.web
@@ -278,7 +299,7 @@ object MorePaths {
 import com.example.app.api.ApiPaths
 `,
       });
-      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBe('/api/v1/orders');
     });
 
     it('returns null for a wildcard import', () => {
@@ -644,6 +665,28 @@ class OrderController
       expect(foldKotlinOperands(key, bare, repo)).toBe('/top');
     });
 
+    it('does not fall through an unfoldable companion to a top-level constant', () => {
+      const key = 'src/main/kotlin/com/example/app/web/Routes.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.web
+
+const val ORDERS = "/top"
+
+class Holder {
+    companion object {
+        const val ORDERS = ("/companion")
+    }
+}
+
+class Other
+`,
+      });
+      const bare = [{ kind: 'ref', name: 'ORDERS' } as const];
+      expect(foldKotlinOperands(key, bare, repo, ['Holder'])).toBeNull();
+      expect(foldKotlinOperands(key, bare, repo, ['Other'])).toBe('/top');
+      expect(foldKotlinOperands(key, bare, repo)).toBe('/top');
+    });
+
     it('scopes each of two colliding companions to its own class', () => {
       // Kotlin scopes the member name to its enclosing class, so the same
       // spelling means a different constant in each body. One file-level
@@ -924,11 +967,9 @@ import com.example.api.ApiPaths
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
     });
 
-    it('still prefers the conventionally named file among same-package candidates', () => {
-      // Two files declare `com.example.api`; only one declares `ApiPaths`, and
-      // it is also the one the file-name convention points at. The convention
-      // survives as a tie-break among candidates that already declare the right
-      // package — it is just no longer evidence on its own.
+    it('prefers a unique declarer among same-package candidates', () => {
+      // The declaration itself is stronger evidence than either filename or
+      // package-only fallback, even when its file also follows the convention.
       const repo = repoOf({
         'src/main/kotlin/com/example/api/ApiPaths.kt': `package com.example.api
 
