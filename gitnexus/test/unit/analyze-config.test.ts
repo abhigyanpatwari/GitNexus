@@ -47,16 +47,17 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
   });
 
   it('keeps the read bounded if a control file grows after its size check', async () => {
-    await writeRc(' '.repeat(MAX_REPO_CONTROL_FILE_BYTES + 1));
+    await writeRc('{}');
     const fstatSync = fsSync.fstatSync;
     const stat = vi.spyOn(fsSync, 'fstatSync').mockImplementation((fd) => {
       const opened = fstatSync(fd);
-      Object.defineProperty(opened, 'size', { value: 0 });
+      Object.defineProperty(opened, 'size', { value: MAX_REPO_CONTROL_FILE_BYTES + 1 });
       return opened;
     });
 
     try {
       await expect(readRepoControlFile(dir, GITNEXUS_RC_FILENAME)).rejects.toThrow(/exceeds/);
+      expect(stat).toHaveBeenCalledOnce();
     } finally {
       stat.mockRestore();
     }
