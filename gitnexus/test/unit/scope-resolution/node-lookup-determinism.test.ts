@@ -20,6 +20,7 @@ interface Candidate {
   name?: string;
   qualifiedName?: string;
   startLine?: number;
+  startColumn?: number;
 }
 
 function buildLookup(candidates: readonly Candidate[]) {
@@ -34,6 +35,7 @@ function buildLookup(candidates: readonly Candidate[]) {
           qualifiedName: candidate.qualifiedName ?? 'Service.save',
           filePath: FILE,
           ...(candidate.startLine !== undefined ? { startLine: candidate.startLine } : {}),
+          ...(candidate.startColumn !== undefined ? { startColumn: candidate.startColumn } : {}),
         },
       }) satisfies ParseWorkerResult['nodes'][number],
   );
@@ -94,6 +96,73 @@ describe('parse-result graph insertion determinism', () => {
     const lookup = buildLookup([second, first]);
 
     expect(lookup.get(simpleKey(FILE, 'save'))).toBe(first.id);
+  });
+
+  it('uses exact columns to distinguish same-line owner-qualified callables', () => {
+    const first = {
+      id: `Function:${FILE}:first.handler`,
+      label: 'Function' as const,
+      name: 'handler',
+      qualifiedName: 'first.handler',
+      startLine: 4,
+      startColumn: 24,
+    };
+    const second = {
+      id: `Function:${FILE}:second.handler`,
+      label: 'Function' as const,
+      name: 'handler',
+      qualifiedName: 'second.handler',
+      startLine: 4,
+      startColumn: 73,
+    };
+    const lookup = buildLookup([second, first]);
+
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          nodeId: `def:${FILE}#5:24:Function:handler`,
+          type: 'Function',
+          qualifiedName: 'handler',
+        },
+        lookup,
+      ),
+    ).toBe(first.id);
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          nodeId: `def:${FILE}#5:73:Function:handler`,
+          type: 'Function',
+          qualifiedName: 'handler',
+        },
+        lookup,
+      ),
+    ).toBe(second.id);
+  });
+
+  it('uses exact position before parsing dotted member names as qualifiers', () => {
+    const dotted = {
+      id: `Function:${FILE}:service.q.r`,
+      label: 'Function' as const,
+      name: 'q.r',
+      qualifiedName: 'service.q.r',
+      startLine: 8,
+      startColumn: 31,
+    };
+    const lookup = buildLookup([dotted]);
+
+    expect(
+      resolveDefGraphId(
+        FILE,
+        {
+          nodeId: `def:${FILE}#9:31:Function:q.r`,
+          type: 'Function',
+          qualifiedName: 'q.r',
+        },
+        lookup,
+      ),
+    ).toBe(dotted.id);
   });
 
   it('resolves a Record definition to its Record node instead of a same-named fallback', () => {

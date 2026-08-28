@@ -1129,6 +1129,34 @@ export interface ObjectLiteralBindingInfo {
 }
 
 /**
+ * True when an object-literal member is contained by an array before reaching
+ * another callable or class boundary.
+ *
+ * An array does not provide a stable named owner for its elements, so members
+ * below one cannot use `<binding>.<member>` identity or ownership. They still
+ * need distinct graph identities, however; callers use this predicate to opt
+ * into source-position qualification while keeping ownership suppressed.
+ */
+export const isArrayContainedObjectLiteralMember = (node: SyntaxNode): boolean => {
+  let current: SyntaxNode | null = node;
+  let sawObject = false;
+
+  while (current) {
+    if (current.type === 'object') sawObject = true;
+    if (current.type === 'array' && sawObject) return true;
+    if (
+      current !== node &&
+      (FUNCTION_NODE_TYPES.has(current.type) || CLASS_CONTAINER_TYPES.has(current.type))
+    ) {
+      return false;
+    }
+    current = current.parent;
+  }
+
+  return false;
+};
+
+/**
  * Block-statement AST types that disqualify an object-literal binding from
  * carrying a HAS_METHOD edge. A `const` declared inside one of these is block-
  * scoped and cannot be imported, so attributing methods to it would create
@@ -1281,6 +1309,13 @@ export const findObjectLiteralBindingInfo = (
   while (current) {
     if (current.type === 'object') {
       objectDepth += 1;
+    }
+
+    if (current !== node && current.type === 'array') {
+      // `const handlers = [{ run() {} }]` has no `handlers.run` member.
+      // Crossing the array would mint a confident but false owner edge; keep
+      // the existing conservative under-approximation used for nested objects.
+      return null;
     }
 
     if (current.type === 'variable_declarator' && objectDepth >= 1) {

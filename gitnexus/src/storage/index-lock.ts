@@ -105,6 +105,25 @@ export interface LockRecord {
 export interface IndexLockHandle {
   /** Our own record — `invocationId` is shown to waiters as the holder id. */
   readonly record: LockRecord;
+  /**
+   * `true` ONLY on the no-op handle returned when the filesystem refused to
+   * create the lock file (see {@link LOCK_UNWRITABLE_CODES}); absent on every
+   * handle that owns a real lock. Purely descriptive — it surfaces a fact this
+   * module already had, and changes nothing about when or how a lock is taken.
+   *
+   * It exists because that degradation is otherwise INVISIBLE at the API
+   * boundary: the no-op handle is byte-identical in shape to a real one, so a
+   * caller for whom "lock-free" is not an acceptable outcome (a long, expensive
+   * critical section whose lost update destroys data — e.g. a group sync) has no
+   * way to tell it apart and fail closed. A filesystem probe is not a substitute:
+   * {@link selectBackend} returns `socket` on Linux and Windows, where this
+   * branch cannot occur at all, so a probe would refuse on the two platforms
+   * that never degrade.
+   *
+   * Additive by construction: every caller that ignores this field behaves
+   * exactly as it did before it existed.
+   */
+  readonly lockFree?: true;
   /** Idempotent; only removes the lock file if it still carries our token. */
   release(): void;
 }
@@ -317,8 +336,14 @@ export const isLockUnwritableCode = (code: string | undefined): boolean =>
   code !== undefined && LOCK_UNWRITABLE_CODES.has(code);
 
 /** A lock handle that owns nothing — returned when the filesystem refuses to
- *  create the lock file (see {@link LOCK_UNWRITABLE_CODES}). Release is a no-op. */
-const noopHandle = (record: LockRecord): IndexLockHandle => ({ record, release: () => {} });
+ *  create the lock file (see {@link LOCK_UNWRITABLE_CODES}). Release is a no-op.
+ *  Carries {@link IndexLockHandle.lockFree} so a caller that must not run
+ *  unprotected can tell this apart from a handle that owns a real lock. */
+const noopHandle = (record: LockRecord): IndexLockHandle => ({
+  record,
+  lockFree: true,
+  release: () => {},
+});
 
 /**
  * Delete orphaned build/staging artifacts left in the lock directory by a

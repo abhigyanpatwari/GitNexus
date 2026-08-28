@@ -51,6 +51,44 @@ import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
 export type CaptureMap = Record<string, SyntaxNode | undefined>;
 
+export interface DefinitionPropertiesContext {
+  readonly nodeLabel: NodeLabel;
+  readonly nodeName: string;
+  readonly definitionNode: SyntaxNode;
+  readonly parsedImports: readonly ParsedImport[];
+  readonly isExported: boolean;
+}
+
+export type DefinitionPropertiesExtractor = (
+  context: DefinitionPropertiesContext,
+) => Readonly<Record<string, unknown>> | undefined;
+
+/** Run optional provider enrichment without allowing one hook failure to drop
+ * the rest of the worker's language batch. */
+export function runDefinitionPropertiesExtractor(
+  extractor: DefinitionPropertiesExtractor,
+  context: DefinitionPropertiesContext,
+  onError: (error: unknown) => void,
+): Readonly<Record<string, unknown>> | undefined {
+  try {
+    return extractor(context);
+  } catch (error) {
+    onError(error);
+    return undefined;
+  }
+}
+
+/** Provider metadata is additive; graph identity and source-location fields
+ * supplied by the worker remain authoritative. */
+export function mergeCanonicalDefinitionProperties<
+  TCanonical extends Readonly<Record<string, unknown>>,
+>(
+  providerProperties: Readonly<Record<string, unknown>>,
+  canonicalProperties: TCanonical,
+): Record<string, unknown> & TCanonical {
+  return { ...providerProperties, ...canonicalProperties } as Record<string, unknown> & TCanonical;
+}
+
 // ── Strategy tag types ─────────────────────────────────────────────────────
 // NOTE: `MroStrategy` is defined in `gitnexus-shared` and re-exported above
 // so `core/ingestion/model/resolve.ts` can consume it without importing from
@@ -276,6 +314,10 @@ interface LanguageProviderConfig {
    *  constant, and static declarations. Produces VariableInfo with type, visibility,
    *  isConst, isStatic, isMutable metadata. Default: undefined (no variable extraction). */
   readonly variableExtractor?: VariableExtractor;
+  /** Add language-owned, structured properties to a definition node. Values
+   *  cross the worker boundary and must therefore be structured-clone-safe.
+   *  Shared ingestion code treats these properties as opaque. */
+  readonly definitionPropertiesExtractor?: DefinitionPropertiesExtractor;
   /** Class/type extractor for deriving canonical qualified names for class-like symbols.
    *  Uses the same provider-driven strategy pattern as method/field extraction so
    *  namespace/package/module rules stay language-specific. */

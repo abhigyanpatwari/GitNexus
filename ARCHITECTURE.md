@@ -174,7 +174,7 @@ converging on the routes phase's `(method, url)` registry:
 | Filesystem convention | path → URL, no parsing | Next.js `app/`, Expo, PHP |
 | Single-file framework route | `isRouteFile` + worker extraction | Laravel `routes/*.php` |
 | Cross-file framework route | `discoverRootRouteFiles` + `extractRoutes` | Django `urlpatterns` |
-| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS, **JS/TS dispatch guards and static data route tables** |
+| AST-level route in a normal file | `extractDecoratorRoutes` | Spring, FastAPI, NestJS (`@Controller` + `@Get`/`@Post`/…; URLs are controller-relative — `setGlobalPrefix` and URI versioning live in the bootstrap file and are not applied), **JS/TS dispatch guards and static data route tables** |
 
 The last row is the one whose name undersells it. A route is DECLARED by a
 decorator, but it can also be **inferred** from a raw `node:http` server's own
@@ -403,6 +403,7 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `typeConfig`           | Type annotation extraction rules                                                                                                                                                                                                                                                                                                  |
 | `mroStrategy`          | `first-wins` / `c3` / `none`                                                                                                                                                                                                                                                                                                      |
 | `descriptionExtractor` | Optional hook returning a symbol's doc-comment text as its `description`; feeds the embedding metadata header so doc-only terms are semantically searchable (issue #2270). Most languages register `createLeadingDocDescriptionExtractor` (shared, language-neutral; per-language comment/wrapper config passed at the call site) |
+| `definitionPropertiesExtractor` | Optional language-owned hook for structured, clone-safe definition metadata. Shared ingestion persists these properties opaquely; the owning provider supplies the extraction semantics. |
 
 16 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
 

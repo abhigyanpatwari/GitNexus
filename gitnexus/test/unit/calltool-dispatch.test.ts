@@ -23,6 +23,7 @@ const { lbugMocks } = vi.hoisted(() => ({
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
+    ensureVectorExtension: vi.fn().mockResolvedValue(true),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
   },
@@ -684,9 +685,8 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('falls back to the exact scan with a once-per-backend warning when the vector index query fails', async () => {
-    // The platform gate is gone (#2623 follow-up): the vector lane is always
-    // ATTEMPTED, and a runtime failure (extension unloadable, index absent) is
-    // what routes semantic search onto the exact scan.
+    // Once the lazy extension preflight succeeds, a runtime index-query failure
+    // routes semantic search onto the exact scan.
     const cap = _captureLogger();
     (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
