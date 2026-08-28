@@ -351,6 +351,32 @@ describe('chunkNode', () => {
     },
   );
 
+  it('keeps Objective-C protocol inheritance in the declaration prefix', async () => {
+    const content = ['@protocol Worker <Runnable, Observable>', '- (void)run;', '@end'].join('\n');
+    const protocolNameStart = content.indexOf('Worker');
+    const inheritanceStart = content.indexOf('<Runnable, Observable>');
+    const methodStart = content.indexOf('- (void)run;');
+    const declaration = makeFakeNode('protocol_declaration', 0, content.length, [
+      makeFakeNode('identifier', protocolNameStart, protocolNameStart + 'Worker'.length),
+      makeFakeNode(
+        'protocol_reference_list',
+        inheritanceStart,
+        inheritanceStart + '<Runnable, Observable>'.length,
+      ),
+      makeFakeNode('method_declaration', methodStart, methodStart + '- (void)run;'.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Protocol', content, 'Worker.m', 1, 3, 50, 0);
+
+    expect(result[0].text).toContain('- (void)');
+    expect(result[0].text).not.toBe('@protocol Worker <Runnable, Observable>');
+  });
+
   it('splits a function into multiple AST-aware chunks using snippet offsets', async () => {
     const content = [
       'function example() {',

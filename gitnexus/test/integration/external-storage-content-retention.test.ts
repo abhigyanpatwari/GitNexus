@@ -149,6 +149,7 @@ describe('external storage and content retention', () => {
     expect(symbolGraph.fileContent).toBeUndefined();
     expect(symbolGraph.functionContent).toContain('retentionFixture');
     expect(symbolGraph.basicBlockCount).toBe(fullGraph.basicBlockCount);
+    expect(symbolGraph.basicBlockText).toBeUndefined();
     expect(symbolDatabaseSize).toBeLessThan(fullDatabaseSize);
 
     process.env.GITNEXUS_CONTENT_RETENTION = 'none';

@@ -56,12 +56,16 @@ export const applyContentRetention = (graph: KnowledgeGraph, retention: ContentR
   if (retention === 'full') return;
 
   graph.forEachNode((node) => {
-    if (retention === 'symbol' && node.label !== 'File') return;
+    if (retention === 'symbol') {
+      if (node.label === 'File') delete node.properties.content;
+      // BasicBlocks hold statement source, not a symbol snippet.
+      if (node.label === 'BasicBlock') delete node.properties.text;
+      return;
+    }
+
     delete node.properties.content;
 
-    if (retention === 'none') {
-      delete node.properties.description;
-      if (node.label === 'BasicBlock') delete node.properties.text;
-    }
+    delete node.properties.description;
+    if (node.label === 'BasicBlock') delete node.properties.text;
   });
 };

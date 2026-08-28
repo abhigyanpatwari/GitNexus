@@ -86,6 +86,23 @@ describe('storage resolver', () => {
     expect(resolveStoragePath(linkedRepo)).toBe(registered);
   });
 
+  it.skipIf(process.platform !== 'win32')(
+    'matches a registered missing repository through a Windows extended-length path',
+    async () => {
+      const home = await makeTempDir('gitnexus-storage-resolver-home-');
+      const repo = path.join(home, 'removed-repository');
+      const registered = path.join(home, 'registered-index');
+      delete process.env.GITNEXUS_STORAGE_PATH;
+      process.env.GITNEXUS_HOME = home;
+      await fs.writeFile(
+        path.join(home, 'registry.json'),
+        JSON.stringify([{ path: repo, storagePath: registered }]),
+      );
+
+      expect(resolveStoragePath(`\\\\?\\${repo}`)).toBe(registered);
+    },
+  );
+
   it('ignores malformed registry rows and falls back to the local layout', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
     const home = await makeTempDir('gitnexus-storage-resolver-home-');

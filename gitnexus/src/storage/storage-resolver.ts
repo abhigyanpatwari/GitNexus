@@ -2,6 +2,7 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 
 export const STORAGE_PATH_ENV = 'GITNEXUS_STORAGE_PATH';
 
@@ -29,9 +30,9 @@ const samePath = (left: string, right: string): boolean =>
 const canonicalRegistryPath = (value: string): string => {
   const resolved = path.resolve(value);
   try {
-    return fs.realpathSync.native(resolved);
+    return stripWindowsLongPathPrefix(fs.realpathSync.native(resolved));
   } catch {
-    return resolved;
+    return stripWindowsLongPathPrefix(resolved);
   }
 };
 

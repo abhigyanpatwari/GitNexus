@@ -82,6 +82,7 @@ describe('content retention profiles', () => {
     expect(graph.getNode('Function:src/index.ts:run:1')?.properties.description).toBe(
       'source comment',
     );
+    expect(graph.getNode('BasicBlock:src/index.ts:run:1:0')?.properties.text).toBeUndefined();
   });
 
   it('removes every source-derived text field in the none profile', () => {

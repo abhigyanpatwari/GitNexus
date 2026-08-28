@@ -150,6 +150,8 @@ const DECLARATION_BODY_NODE_TYPES = new Set([
 
 const DIRECT_MEMBER_DECLARATION_TYPES = new Set(['protocol_declaration', 'class_interface']);
 
+const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set(['identifier', 'protocol_reference_list']);
+
 const FIELD_LIKE_MEMBER_TYPES = new Set([
   'field_definition',
   'public_field_definition',
@@ -359,7 +361,10 @@ const collectDeclarationUnits = (
   for (let i = 0; i < bodyNode.namedChildCount; i++) {
     const child = bodyNode.namedChild(i);
     if (!child) continue;
-    if (DIRECT_MEMBER_DECLARATION_TYPES.has(bodyNode.type) && child.type === 'identifier') {
+    if (
+      DIRECT_MEMBER_DECLARATION_TYPES.has(bodyNode.type) &&
+      DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)
+    ) {
       continue;
     }
     members.push({

@@ -1883,10 +1883,10 @@ async function runFullAnalysisInner(
       pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
       // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
       // (force === true) so the incremental writeback never reads back an
-      // offloaded BasicBlock layer. The `none` profile must strip BasicBlock
-      // text before persistence, so it keeps that layer in memory until the
-      // retention pass below.
-      streamPdgEmit: contentRetention !== 'none' && resolveStreamPdgEmit(options),
+      // offloaded BasicBlock layer. Non-full retention profiles must strip
+      // BasicBlock source text before persistence, so they keep that layer in
+      // memory until the retention pass below.
+      streamPdgEmit: contentRetention === 'full' && resolveStreamPdgEmit(options),
       pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
       // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
       // toggle above, for the same incremental-writeback reason.
