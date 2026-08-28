@@ -88,8 +88,10 @@ export async function resolveWatchOptions(
   repoPath: string,
   cli: WatchCliOptions,
   baseline: WatchEnvironmentBaseline,
+  reportIgnoredConfig: (names: readonly string[]) => void = () => {},
 ): Promise<CoreAnalyzeOptions> {
-  const merged = mergeAnalyzeOptions(cli, await loadAnalyzeConfigStrict(repoPath));
+  const config = (await loadAnalyzeConfigStrict(repoPath)) ?? {};
+  const merged = mergeAnalyzeOptions(cli, config);
   const unsupported = [
     ['--force', cli.force],
     ['--repair-fts', cli.repairFts],
@@ -114,6 +116,21 @@ export async function resolveWatchOptions(
       `analyze --watch does not support ${unsupported.map(([name]) => name).join(', ')}`,
     );
   }
+  reportIgnoredConfig(
+    [
+      ['embeddings', config.embeddings],
+      ['dropEmbeddings', config.dropEmbeddings],
+      ['walCheckpointThreshold', config.walCheckpointThreshold],
+      ['embeddingThreads', config.embeddingThreads],
+      ['embeddingBatchSize', config.embeddingBatchSize],
+      ['embeddingSubBatchSize', config.embeddingSubBatchSize],
+      ['embeddingDevice', config.embeddingDevice],
+      ['embeddingBaseUrl', config.embeddingBaseUrl],
+      ['embeddingModel', config.embeddingModel],
+    ]
+      .filter(([, value]) => value !== undefined && value !== false)
+      .map(([name]) => String(name)),
+  );
   const branch =
     merged.branch === undefined ? undefined : validateBranchName(merged.branch, '--branch');
   const workerPoolSize = positiveInteger(merged.workers, '--workers');
@@ -314,6 +331,15 @@ export async function watchCommandWithRunnerIdentity(
     verbose: process.env.GITNEXUS_VERBOSE,
   };
   try {
+    let ignoredConfigSignature: string | undefined;
+    const reportIgnoredConfig = (names: readonly string[]) => {
+      const signature = [...names].sort().join(',');
+      if (signature === ignoredConfigSignature) return;
+      ignoredConfigSignature = signature;
+      if (names.length > 0) {
+        cliWarn(`Watch mode ignores unsupported .gitnexusrc settings: ${names.join(', ')}.`);
+      }
+    };
     let debounceMs: number;
     let analyzeOptions: CoreAnalyzeOptions;
     try {
@@ -323,7 +349,12 @@ export async function watchCommandWithRunnerIdentity(
           '--debounce',
           MAX_TIMER_DELAY_MS,
         ) ?? DEFAULT_DEBOUNCE_MS;
-      analyzeOptions = await resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
+      analyzeOptions = await resolveWatchOptions(
+        repoPath,
+        cliOptions,
+        baselineEnvironment,
+        reportIgnoredConfig,
+      );
     } catch (error) {
       cliError(`  ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;
@@ -354,6 +385,7 @@ export async function watchCommandWithRunnerIdentity(
                   repoPath,
                   cliOptions,
                   baselineEnvironment,
+                  reportIgnoredConfig,
                 );
                 configControlValid = true;
               } catch (error) {

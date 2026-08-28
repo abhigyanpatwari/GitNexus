@@ -408,8 +408,8 @@ Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
 `--max-file-size`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
 embedding flags, `--skills`, `--self-commit`, `--index-only`, and `--skip-git`
-are rejected. Unsupported defaults from `.gitnexusrc` are ignored by watch
-refreshes rather than making an otherwise valid repository unwatchable.
+are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a
+warning rather than making an otherwise valid repository unwatchable.
 
 POSIX requests clone-first copy-and-swap publication when the live index has no
 orphan sidecars. Windows and sidecar fallback runs update in place: failures

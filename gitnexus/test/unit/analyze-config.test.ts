@@ -79,15 +79,20 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     async () => {
       const fifo = path.join(dir, GITNEXUS_RC_FILENAME);
       execFileSync('mkfifo', [fifo]);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
 
-      await expect(
-        Promise.race([
-          readRepoControlFile(dir, GITNEXUS_RC_FILENAME),
-          new Promise<never>((_resolve, reject) =>
-            setTimeout(() => reject(new Error('FIFO read did not fail promptly')), 500),
-          ),
-        ]),
-      ).rejects.toThrow(/regular file/);
+      try {
+        await expect(
+          Promise.race([
+            readRepoControlFile(dir, GITNEXUS_RC_FILENAME),
+            new Promise<never>((_resolve, reject) => {
+              timeout = setTimeout(() => reject(new Error('FIFO read did not fail promptly')), 500);
+            }),
+          ]),
+        ).rejects.toThrow(/regular file/);
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
     },
   );
 

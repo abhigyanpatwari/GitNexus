@@ -105,6 +105,7 @@ describe('watch path selection', () => {
 
   it('ignores unsupported repository defaults but rejects explicit unsupported CLI flags', async () => {
     await fs.writeFile(path.join(repoPath, '.gitnexusrc'), JSON.stringify({ embeddings: true }));
+    const ignored: string[][] = [];
     await expect(
       resolveWatchOptions(
         repoPath,
@@ -114,8 +115,10 @@ describe('watch path selection', () => {
           workerTimeout: undefined,
           verbose: undefined,
         },
+        (names) => ignored.push([...names]),
       ),
     ).resolves.toMatchObject({ skipAgentsMd: true, skipSkills: true });
+    expect(ignored).toEqual([['embeddings']]);
 
     await expect(
       resolveWatchOptions(
