@@ -88,7 +88,8 @@ function exitAfterCancellation(): void {
   void boundedCheckpointBeforeExit({
     exitCode: 0,
     onFlushError: (err: unknown) => {
-      const message = err instanceof Error ? err.message : 'Worker checkpoint failed during cancellation';
+      const message =
+        err instanceof Error ? err.message : 'Worker checkpoint failed during cancellation';
       send({ type: 'error', message });
     },
   });

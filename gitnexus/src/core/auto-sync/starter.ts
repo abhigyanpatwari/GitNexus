@@ -13,7 +13,13 @@ export interface AutoSyncStartHandle {
   stop(): Promise<void>;
 }
 
-export type WatchStatusState = 'running' | 'cancelling' | 'stopping' | 'stopped' | 'stale' | 'error';
+export type WatchStatusState =
+  | 'running'
+  | 'cancelling'
+  | 'stopping'
+  | 'stopped'
+  | 'stale'
+  | 'error';
 export type AutoSyncWatchStopResult = 'stopped' | 'not_running' | 'refused' | 'timeout';
 
 export interface WatchStatusRecord {
@@ -179,14 +185,12 @@ export async function startAutoSyncWatch(
       activeAbortController = abortController;
     };
 
-    let timer: ReturnType<typeof setInterval> | undefined;
-    let controlTimer: ReturnType<typeof setInterval> | undefined;
     let stopPromise: Promise<void> | undefined;
     const stop = () =>
       (stopPromise ??= (async () => {
         stopping = true;
-        if (timer) clearIntervalFn(timer);
-        if (controlTimer) clearIntervalFn(controlTimer);
+        clearIntervalFn(timer);
+        clearIntervalFn(controlTimer);
         activeAbortController?.abort();
         try {
           await updateStatus('stopping');
@@ -210,8 +214,8 @@ export async function startAutoSyncWatch(
     };
 
     runSafely();
-    controlTimer = setIntervalFn(() => void checkStopRequest(), WATCH_STOP_POLL_MS);
-    timer = setIntervalFn(runSafely, loaded.config.syncIntervalMinutes * 60_000);
+    const controlTimer = setIntervalFn(() => void checkStopRequest(), WATCH_STOP_POLL_MS);
+    const timer = setIntervalFn(runSafely, loaded.config.syncIntervalMinutes * 60_000);
     if (options.keepAlive === false) {
       controlTimer.unref?.();
       timer.unref?.();
@@ -368,9 +372,7 @@ export async function readAutoSyncWatchStatus(
     return {
       ...stored,
       state:
-        stored?.state === 'cancelling' || stored?.state === 'stopping'
-          ? stored.state
-          : 'running',
+        stored?.state === 'cancelling' || stored?.state === 'stopping' ? stored.state : 'running',
       pid,
       ownerId: owner.owner.ownerId,
       updatedAt: new Date().toISOString(),

@@ -355,7 +355,10 @@ describe('auto-sync', () => {
     const quarantineRoot = path.join(gitnexusHome, 'watch', 'quarantine');
     const first = path.join(tempDir, 'one', 'partial-repo');
     const second = path.join(tempDir, 'two', 'partial-repo');
-    await Promise.all([fs.mkdir(first, { recursive: true }), fs.mkdir(second, { recursive: true })]);
+    await Promise.all([
+      fs.mkdir(first, { recursive: true }),
+      fs.mkdir(second, { recursive: true }),
+    ]);
 
     const [firstDestination, secondDestination] = await Promise.all([
       quarantineAutoSyncPartial(first, quarantineRoot),

@@ -252,9 +252,7 @@ export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
   }
   const match = /^git@([^:\s/]+):([^\s]+)$/.exec(trimmed);
   if (!match) {
-    throw new Error(
-      'must use an SSH URL on github.com, gitlab.com, or gitee.com',
-    );
+    throw new Error('must use an SSH URL on github.com, gitlab.com, or gitee.com');
   }
   const host = match[1].toLowerCase();
   const repoPath = match[2];
@@ -280,11 +278,12 @@ export function validateAutoSyncBranchName(branch: string): void {
   if (branch.startsWith('-')) throw new Error('must not start with "-"');
   if (branch.includes('..')) throw new Error('must not contain ".."');
   if (branch.includes('`')) throw new Error('must not contain backticks');
-  if (branch.endsWith('/') || branch.endsWith('.'))
-    throw new Error('must not end with "/" or "."');
+  if (branch.endsWith('/') || branch.endsWith('.')) throw new Error('must not end with "/" or "."');
   if (branch.includes('//')) throw new Error('must not contain consecutive slashes');
   if (branch.includes('@{')) throw new Error('must not contain "@{"');
-  if (branch.split('/').some((component) => component.startsWith('.') || component.endsWith('.lock')))
+  if (
+    branch.split('/').some((component) => component.startsWith('.') || component.endsWith('.lock'))
+  )
     throw new Error('must not contain hidden or .lock path components');
 }
 

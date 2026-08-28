@@ -116,7 +116,10 @@ export async function quarantineAutoSyncPartial(
   await fs.mkdir(quarantineRoot, { recursive: true, mode: 0o700 });
   const base = path.basename(targetDir);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const destination = path.join(quarantineRoot, `auto-sync-${stamp}-${process.pid}-${randomUUID()}-${base}`);
+  const destination = path.join(
+    quarantineRoot,
+    `auto-sync-${stamp}-${process.pid}-${randomUUID()}-${base}`,
+  );
   try {
     await fs.rename(targetDir, destination);
   } catch (err: unknown) {

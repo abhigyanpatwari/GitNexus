@@ -363,9 +363,9 @@ describe('auto-sync runner', () => {
     expect(second.failed).toBe(0);
     expect(deps.runAnalysis).not.toHaveBeenCalled();
     expect(syncGroupByName).toHaveBeenCalledTimes(2);
-    expect(persistedState['/tmp/repos/gitee.com/qts_server/qts_account|master'].groupSyncPending).toBe(
-      false,
-    );
+    expect(
+      persistedState['/tmp/repos/gitee.com/qts_server/qts_account|master'].groupSyncPending,
+    ).toBe(false);
   });
 
   it('uses remote identity under local_path as the clone target', async () => {
@@ -1250,7 +1250,9 @@ describe('auto-sync starter', () => {
     const runOnce = vi.fn(
       () =>
         new Promise<any>((resolve) => {
-          releaseRuns.push(() => resolve({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 }));
+          releaseRuns.push(() =>
+            resolve({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 }),
+          );
         }),
     );
     let handle: Awaited<ReturnType<typeof startAutoSyncWatch>> | undefined;
@@ -1550,7 +1552,10 @@ describe('auto-sync starter', () => {
 
       expect(
         JSON.parse(
-          await fs.readFile(path.join(path.dirname(paths.pidPath), `watch.stop.${ownerId}.json`), 'utf-8'),
+          await fs.readFile(
+            path.join(path.dirname(paths.pidPath), `watch.stop.${ownerId}.json`),
+            'utf-8',
+          ),
         ),
       ).toMatchObject({
         pid: 12345,
@@ -1613,7 +1618,14 @@ describe('auto-sync starter', () => {
       process.env.GITNEXUS_HOME = tempDir;
       await fs.writeFile(
         path.join(tempDir, 'watch_config.yml'),
-        ['sync_interval_minutes: 5', 'projects:', '  - local_path: /tmp/repos', '    branch: master', '    remote_urls:', '      - git@github.com:team/repo.git'].join('\n'),
+        [
+          'sync_interval_minutes: 5',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    remote_urls:',
+          '      - git@github.com:team/repo.git',
+        ].join('\n'),
       );
       const handle = await startAutoSyncWatch({
         paths,
@@ -1659,7 +1671,14 @@ describe('auto-sync starter', () => {
       process.env.GITNEXUS_HOME = tempDir;
       await fs.writeFile(
         path.join(tempDir, 'watch_config.yml'),
-        ['sync_interval_minutes: 5', 'projects:', '  - local_path: /tmp/repos', '    branch: master', '    remote_urls:', '      - git@github.com:team/repo.git'].join('\n'),
+        [
+          'sync_interval_minutes: 5',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    remote_urls:',
+          '      - git@github.com:team/repo.git',
+        ].join('\n'),
       );
       const handle = await startAutoSyncWatch({
         paths,
@@ -1675,20 +1694,24 @@ describe('auto-sync starter', () => {
       });
       requestCancellation();
       await vi.waitFor(async () => {
-        await expect(readAutoSyncWatchStatus(paths, {
-          isProcessAlive: vi.fn(() => true),
-          readProcessCommand: vi.fn(() => verifiedWatchCommand),
-          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-        })).resolves.toMatchObject({ state: 'cancelling' });
+        await expect(
+          readAutoSyncWatchStatus(paths, {
+            isProcessAlive: vi.fn(() => true),
+            readProcessCommand: vi.fn(() => verifiedWatchCommand),
+            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+          }),
+        ).resolves.toMatchObject({ state: 'cancelling' });
       });
 
       releaseRun();
       await vi.waitFor(async () => {
-        await expect(readAutoSyncWatchStatus(paths, {
-          isProcessAlive: vi.fn(() => true),
-          readProcessCommand: vi.fn(() => verifiedWatchCommand),
-          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-        })).resolves.toMatchObject({ state: 'running' });
+        await expect(
+          readAutoSyncWatchStatus(paths, {
+            isProcessAlive: vi.fn(() => true),
+            readProcessCommand: vi.fn(() => verifiedWatchCommand),
+            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+          }),
+        ).resolves.toMatchObject({ state: 'running' });
       });
       await handle?.stop();
     } finally {
@@ -1707,7 +1730,14 @@ describe('auto-sync starter', () => {
       process.env.GITNEXUS_HOME = tempDir;
       await fs.writeFile(
         path.join(tempDir, 'watch_config.yml'),
-        ['sync_interval_minutes: 5', 'projects:', '  - local_path: /tmp/repos', '    branch: master', '    remote_urls:', '      - git@github.com:team/repo.git'].join('\n'),
+        [
+          'sync_interval_minutes: 5',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    remote_urls:',
+          '      - git@github.com:team/repo.git',
+        ].join('\n'),
       );
       const handle = await startAutoSyncWatch({
         paths,
@@ -1723,11 +1753,13 @@ describe('auto-sync starter', () => {
       const stopping = handle!.stop();
 
       await vi.waitFor(async () => {
-        await expect(readAutoSyncWatchStatus(paths, {
-          isProcessAlive: vi.fn(() => true),
-          readProcessCommand: vi.fn(() => verifiedWatchCommand),
-          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
-        })).resolves.toMatchObject({ state: 'stopping' });
+        await expect(
+          readAutoSyncWatchStatus(paths, {
+            isProcessAlive: vi.fn(() => true),
+            readProcessCommand: vi.fn(() => verifiedWatchCommand),
+            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+          }),
+        ).resolves.toMatchObject({ state: 'stopping' });
       });
       await expect(fs.access(paths.pidPath)).resolves.toBeUndefined();
       await expect(fs.access(paths.ownerPath)).resolves.toBeUndefined();

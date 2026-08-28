@@ -1542,7 +1542,10 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await withRegistryLock(async () => {
         const fresh = await readRegistry();
-        await writeRegistry(fresh.filter((entry) => !pruned.has(entry.path)), 1);
+        await writeRegistry(
+          fresh.filter((entry) => !pruned.has(entry.path)),
+          1,
+        );
       });
     } catch (err) {
       // Best-effort housekeeping: callers consume the returned view, and the
