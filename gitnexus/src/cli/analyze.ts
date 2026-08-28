@@ -560,10 +560,7 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *    tooling), not a deliberate per-run choice: warn and respawn with the
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify. */
-export function forwardedSignalExitCode(
-  signal: NodeJS.Signals,
-  cleanTermination: boolean,
-): number {
+export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
   if (cleanTermination) return 0;
   if (signal === 'SIGINT') return 130;
   if (signal === 'SIGTERM') return 143;
