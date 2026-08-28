@@ -19,8 +19,7 @@ export interface GrokConfig {
   requestTimeoutMs?: number;
 }
 
-const GROK_DISALLOWED_TOOLS =
-  'search_replace,run_terminal_cmd,web_search,web_fetch,spawn_subagent';
+const GROK_DISALLOWED_TOOLS = 'search_replace,run_terminal_cmd,web_search,web_fetch,spawn_subagent';
 
 let cachedGrokBin: string | null | undefined;
 
@@ -236,7 +235,9 @@ function runGrok(
     child.on('close', (code) => {
       stdout += stdoutDecoder.end();
       stderr += stderrDecoder.end();
-      verboseLog(`Process exited with code ${code} after ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+      verboseLog(
+        `Process exited with code ${code} after ${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+      );
 
       if (code !== 0) {
         const details = stderr.trim() || stdout.trim();
