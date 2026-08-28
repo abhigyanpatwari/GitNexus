@@ -10,6 +10,7 @@ import {
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import { createIgnoreFilter } from '../../../config/ignore-service.js';
+import { getMaxFileSizeBytes } from '../../ingestion/utils/max-file-size.js';
 import { logger } from '../../logger.js';
 import { ParseTimeoutError, parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
@@ -19,7 +20,6 @@ import { readSafeBounded } from './fs-utils.js';
 const PROVIDER_GLOB = '**/*.{ts,tsx,mts,cts}';
 const DOCUMENT_GLOB = '**/*.{graphql,gql}';
 const NEST_GRAPHQL_PACKAGE = '@nestjs/graphql';
-const MAX_GRAPHQL_SOURCE_BYTES = 1_000_000;
 const MAX_GRAPHQL_TOKENS = 100_000;
 const MAX_GRAPHQL_DEFINITIONS = 5_000;
 const MAX_GRAPHQL_OPERATIONS = 500;
@@ -37,9 +37,23 @@ interface ResolvedSymbol {
   filePath: string;
 }
 
+interface DecoratorBindings {
+  operations: Map<string, GraphqlOperationKind>;
+  resolvers: Set<string>;
+}
+
+type DecoratorFieldName =
+  | { kind: 'absent' }
+  | { kind: 'literal'; value: string }
+  | { kind: 'dynamic' };
+
+type GeneratedSymbolIndex = Map<string, Parser.SyntaxNode[]>;
+type GeneratedIndexCache = Map<string, Promise<GeneratedSymbolIndex | null>>;
+
 export const RESOLVE_METHOD_QUERY = `
-MATCH (n:Method)
-WHERE n.name = $name AND n.filePath = $filePath AND n.id <> ''
+MATCH (n)
+WHERE labels(n) IN ['Method','Function','Property','CodeElement']
+  AND n.name = $name AND n.filePath = $filePath AND n.startLine = $startLine AND n.id <> ''
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
 ORDER BY n.id ASC
 LIMIT 2`;
@@ -125,19 +139,106 @@ function withinGeneratedAstBudget(root: Parser.SyntaxNode): boolean {
   return true;
 }
 
-function generatedRootFields(selectionSet: Parser.SyntaxNode | null): Set<string> {
+function generatedRootFields(
+  selectionSet: Parser.SyntaxNode | null,
+  fragments: ReadonlyMap<string, Parser.SyntaxNode>,
+): Set<string> | null {
   const fields = new Set<string>();
-  if (!selectionSet) return fields;
-  const selections = objectPairValue(selectionSet, 'selections');
-  const array = selections ? unwrapExpression(selections) : null;
-  if (!array || array.type !== 'array') return fields;
-  for (const item of array.namedChildren) {
-    const selection = unwrapExpression(item);
-    if (literalValue(objectPairValue(selection, 'kind')) !== 'Field') continue;
-    const field = graphqlNameValue(objectPairValue(selection, 'name'));
-    if (field) fields.add(field);
+  if (!selectionSet) return null;
+  const seenFragments = new Set<string>();
+  const pending: Array<{ selectionSet: Parser.SyntaxNode; depth: number }> = [
+    { selectionSet, depth: 0 },
+  ];
+  let selectionsVisited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) break;
+    if (current.depth > MAX_GRAPHQL_TRAVERSAL_DEPTH) return null;
+    const selections = objectPairValue(current.selectionSet, 'selections');
+    const array = selections ? unwrapExpression(selections) : null;
+    if (!array || array.type !== 'array') return null;
+    for (const item of array.namedChildren) {
+      selectionsVisited++;
+      if (selectionsVisited > MAX_GRAPHQL_SELECTIONS) return null;
+      const selection = unwrapExpression(item);
+      const kind = literalValue(objectPairValue(selection, 'kind'));
+      if (kind === 'Field') {
+        const field = graphqlNameValue(objectPairValue(selection, 'name'));
+        if (field) fields.add(field);
+        continue;
+      }
+      if (kind === 'InlineFragment') {
+        const nested = objectPairValue(selection, 'selectionSet');
+        if (nested) pending.push({ selectionSet: nested, depth: current.depth + 1 });
+        continue;
+      }
+      if (kind !== 'FragmentSpread') continue;
+      const name = graphqlNameValue(objectPairValue(selection, 'name'));
+      if (!name || seenFragments.has(name)) continue;
+      const fragment = fragments.get(name);
+      if (!fragment) continue;
+      const nested = objectPairValue(fragment, 'selectionSet');
+      if (!nested) continue;
+      seenFragments.add(name);
+      pending.push({ selectionSet: nested, depth: current.depth + 1 });
+    }
   }
   return fields;
+}
+
+function parsedDocumentProof(
+  source: string,
+  operationKind: GraphqlOperationKind,
+  operationName: string,
+  requiredFields: readonly string[],
+): boolean {
+  let document: DocumentNode;
+  try {
+    document = parse(source, { noLocation: true, maxTokens: MAX_GRAPHQL_TOKENS });
+  } catch {
+    return false;
+  }
+  if (document.definitions.length > MAX_GRAPHQL_DEFINITIONS) return false;
+  const fragments = new Map<string, FragmentDefinitionNode>();
+  for (const definition of document.definitions) {
+    if (definition.kind === Kind.FRAGMENT_DEFINITION)
+      fragments.set(definition.name.value, definition);
+  }
+  for (const definition of document.definitions) {
+    if (definition.kind !== Kind.OPERATION_DEFINITION) continue;
+    if (definition.operation !== operationKind || definition.name?.value !== operationName)
+      continue;
+    const fields = rootFields(definition.selectionSet, fragments);
+    return fields !== null && requiredFields.every((field) => fields.includes(field));
+  }
+  return false;
+}
+
+function staticGraphqlSource(initializer: Parser.SyntaxNode): string | null {
+  const value = unwrapExpression(initializer);
+  if (value.type === 'string') {
+    if (value.text.startsWith('"')) {
+      try {
+        return JSON.parse(value.text) as string;
+      } catch {
+        return null;
+      }
+    }
+    return unquote(value.text);
+  }
+  if (value.type === 'template_string') return unquote(value.text);
+
+  if (value.type === 'call_expression') {
+    const template = value.namedChildren.find((child) => child.type === 'template_string');
+    return template ? unquote(template.text) : null;
+  }
+
+  if (value.type !== 'new_expression') return null;
+  const constructor = value.childForFieldName('constructor') ?? value.namedChildren[0];
+  if (!constructor || !constructor.text.endsWith('TypedDocumentString')) return null;
+  const args = value.childForFieldName('arguments');
+  const first = args?.namedChildren[0];
+  return first ? staticGraphqlSource(first) : null;
 }
 
 export function hasGeneratedDocumentProof(
@@ -147,25 +248,38 @@ export function hasGeneratedDocumentProof(
   requiredFields: readonly string[],
 ): boolean {
   if (!withinGeneratedAstBudget(initializer)) return false;
+  const staticSource = staticGraphqlSource(initializer);
+  if (staticSource !== null) {
+    return parsedDocumentProof(staticSource, operationKind, operationName, requiredFields);
+  }
   const document = unwrapExpression(initializer);
   if (literalValue(objectPairValue(document, 'kind')) !== 'Document') return false;
   const definitions = objectPairValue(document, 'definitions');
   const array = definitions ? unwrapExpression(definitions) : null;
   if (!array || array.type !== 'array') return false;
 
+  const fragments = new Map<string, Parser.SyntaxNode>();
+  for (const item of array.namedChildren) {
+    const definition = unwrapExpression(item);
+    if (literalValue(objectPairValue(definition, 'kind')) !== 'FragmentDefinition') continue;
+    const name = graphqlNameValue(objectPairValue(definition, 'name'));
+    if (name) fragments.set(name, definition);
+  }
+
   for (const item of array.namedChildren) {
     const definition = unwrapExpression(item);
     if (literalValue(objectPairValue(definition, 'kind')) !== 'OperationDefinition') continue;
     if (literalValue(objectPairValue(definition, 'operation')) !== operationKind) continue;
     if (graphqlNameValue(objectPairValue(definition, 'name')) !== operationName) continue;
-    const fields = generatedRootFields(objectPairValue(definition, 'selectionSet'));
-    if (requiredFields.every((field) => fields.has(field))) return true;
+    const fields = generatedRootFields(objectPairValue(definition, 'selectionSet'), fragments);
+    if (fields && requiredFields.every((field) => fields.has(field))) return true;
   }
   return false;
 }
 
-function importedDecoratorBindings(root: Parser.SyntaxNode): Map<string, GraphqlOperationKind> {
-  const bindings = new Map<string, GraphqlOperationKind>();
+function importedDecoratorBindings(root: Parser.SyntaxNode): DecoratorBindings {
+  const operations = new Map<string, GraphqlOperationKind>();
+  const resolvers = new Set<string>();
   for (const child of root.namedChildren) {
     if (child.type !== 'import_statement') continue;
     const source = child.childForFieldName('source');
@@ -183,11 +297,13 @@ function importedDecoratorBindings(root: Parser.SyntaxNode): Map<string, Graphql
       if (!imported || !local) continue;
       const kind = imported.toLowerCase();
       if (kind === 'query' || kind === 'mutation' || kind === 'subscription') {
-        bindings.set(local, kind);
+        operations.set(local, kind);
+      } else if (imported === 'Resolver') {
+        resolvers.add(local);
       }
     }
   }
-  return bindings;
+  return { operations, resolvers };
 }
 
 function decoratorKind(
@@ -208,40 +324,70 @@ function decoratorKind(
   return { kind, argumentsNode: expression.childForFieldName('arguments') ?? undefined };
 }
 
-function decoratorFieldName(argumentsNode: Parser.SyntaxNode | undefined): string | null {
-  if (!argumentsNode) return null;
+function decoratorFieldName(argumentsNode: Parser.SyntaxNode | undefined): DecoratorFieldName {
+  if (!argumentsNode || argumentsNode.namedChildren.length === 0) return { kind: 'absent' };
   const args = argumentsNode.namedChildren;
-  const direct =
-    args[0] && ['string', 'template_string'].includes(args[0].type) ? unquote(args[0].text) : null;
-  if (direct) return direct;
+  if (args[0] && ['string', 'template_string'].includes(args[0].type)) {
+    const direct = unquote(args[0].text);
+    return direct === null ? { kind: 'dynamic' } : { kind: 'literal', value: direct };
+  }
+
+  let sawOptions = false;
 
   for (const arg of args) {
     if (arg.type !== 'object') continue;
+    sawOptions = true;
     for (const pair of arg.namedChildren) {
+      if (pair.type === 'spread_element' || pair.type.startsWith('shorthand_property_identifier')) {
+        return { kind: 'dynamic' };
+      }
       if (pair.type !== 'pair') continue;
       const key = pair.childForFieldName('key')?.text.replace(/^['"]|['"]$/g, '');
       if (key !== 'name') continue;
       const value = pair.childForFieldName('value');
-      if (!value || !['string', 'template_string'].includes(value.type)) return null;
-      return unquote(value.text);
+      if (!value || !['string', 'template_string'].includes(value.type)) {
+        return { kind: 'dynamic' };
+      }
+      const literal = unquote(value.text);
+      return literal === null ? { kind: 'dynamic' } : { kind: 'literal', value: literal };
     }
   }
-  return null;
+  if (sawOptions || args.length === 1) return { kind: 'absent' };
+  return { kind: 'dynamic' };
 }
 
-function collectClassBodies(root: Parser.SyntaxNode): Parser.SyntaxNode[] | null {
+function topLevelResolverClassBodies(
+  root: Parser.SyntaxNode,
+  resolverBindings: ReadonlySet<string>,
+): Parser.SyntaxNode[] | null {
+  if (!withinGeneratedAstBudget(root)) return null;
   const bodies: Parser.SyntaxNode[] = [];
-  const pending: Array<{ node: Parser.SyntaxNode; depth: number }> = [{ node: root, depth: 0 }];
-  let visited = 0;
-  while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) break;
-    visited++;
-    if (visited > MAX_PROVIDER_AST_NODES || current.depth > MAX_PROVIDER_AST_DEPTH) return null;
-    if (current.node.type === 'class_body') bodies.push(current.node);
-    for (let index = current.node.namedChildren.length - 1; index >= 0; index--) {
-      pending.push({ node: current.node.namedChildren[index], depth: current.depth + 1 });
-    }
+  for (const statement of root.namedChildren) {
+    const classNode =
+      statement.type === 'class_declaration'
+        ? statement
+        : statement.type === 'export_statement'
+          ? statement.namedChildren.find((child) => child.type === 'class_declaration')
+          : undefined;
+    if (!classNode) continue;
+    const decorators = [
+      ...new Set([
+        ...statement.namedChildren.filter((child) => child.type === 'decorator'),
+        ...classNode.namedChildren.filter((child) => child.type === 'decorator'),
+      ]),
+    ];
+    const isResolver = decorators.some((decorator) => {
+      const expression = decorator.namedChildren[0];
+      if (!expression) return false;
+      const callee =
+        expression.type === 'call_expression'
+          ? expression.childForFieldName('function')
+          : expression;
+      return callee?.type === 'identifier' && resolverBindings.has(callee.text);
+    });
+    if (!isResolver) continue;
+    const body = classNode.childForFieldName('body');
+    if (body) bodies.push(body);
   }
   return bodies;
 }
@@ -293,43 +439,62 @@ async function generatedDocumentMatches(
   operationKind: GraphqlOperationKind,
   operationName: string,
   requiredFields: readonly string[],
+  cache: GeneratedIndexCache,
 ): Promise<boolean> {
-  const source = await readSafeBounded(repoPath, symbol.filePath, MAX_GRAPHQL_SOURCE_BYTES);
-  if (!source) return false;
+  const normalizedPath = symbol.filePath.replace(/\\/g, '/');
+  let pendingIndex = cache.get(normalizedPath);
+  if (!pendingIndex) {
+    pendingIndex = buildGeneratedSymbolIndex(repoPath, normalizedPath);
+    cache.set(normalizedPath, pendingIndex);
+  }
+  const index = await pendingIndex;
+  const values = index?.get(symbol.name) ?? [];
+  return values.some((value) =>
+    hasGeneratedDocumentProof(value, operationKind, operationName, requiredFields),
+  );
+}
+
+async function buildGeneratedSymbolIndex(
+  repoPath: string,
+  filePath: string,
+): Promise<GeneratedSymbolIndex | null> {
+  const source = await readSafeBounded(repoPath, filePath, getMaxFileSizeBytes());
+  if (source === null) return null;
   const parser = new Parser();
   parser.setLanguage(
-    symbol.filePath.toLowerCase().endsWith('.tsx') ? TypeScript.tsx : TypeScript.typescript,
+    filePath.toLowerCase().endsWith('.tsx') ? TypeScript.tsx : TypeScript.typescript,
   );
   let tree: Parser.Tree;
   try {
-    tree = parseSourceSafe(parser, source, undefined, undefined, symbol.filePath);
+    tree = parseSourceSafe(parser, source, undefined, undefined, filePath);
   } catch (error) {
-    if (error instanceof ParseTimeoutError) return false;
+    if (error instanceof ParseTimeoutError) return null;
     throw error;
   }
 
-  const pending: Array<{ node: Parser.SyntaxNode; depth: number }> = [
-    { node: tree.rootNode, depth: 0 },
-  ];
-  let visited = 0;
+  return indexGeneratedDeclarators(tree.rootNode);
+}
+
+export function indexGeneratedDeclarators(root: Parser.SyntaxNode): GeneratedSymbolIndex {
+  const index: GeneratedSymbolIndex = new Map();
+  const pending = [root];
   while (pending.length > 0) {
-    const current = pending.pop();
-    if (!current) break;
-    visited++;
-    if (visited > MAX_PROVIDER_AST_NODES || current.depth > MAX_PROVIDER_AST_DEPTH) return false;
-    if (
-      current.node.type === 'variable_declarator' &&
-      current.node.childForFieldName('name')?.text === symbol.name
-    ) {
-      const value = current.node.childForFieldName('value');
-      if (!value) return false;
-      return hasGeneratedDocumentProof(value, operationKind, operationName, requiredFields);
+    const node = pending.pop();
+    if (!node) break;
+    if (node.type === 'variable_declarator') {
+      const name = node.childForFieldName('name')?.text;
+      const value = node.childForFieldName('value');
+      if (name && value) {
+        const values = index.get(name) ?? [];
+        values.push(value);
+        index.set(name, values);
+      }
     }
-    for (let index = current.node.namedChildren.length - 1; index >= 0; index--) {
-      pending.push({ node: current.node.namedChildren[index], depth: current.depth + 1 });
+    for (let child = node.namedChildren.length - 1; child >= 0; child--) {
+      pending.push(node.namedChildren[child]);
     }
   }
-  return false;
+  return index;
 }
 
 function dedupe(contracts: ExtractedContract[]): ExtractedContract[] {
@@ -374,9 +539,11 @@ export class GraphqlExtractor implements ContractExtractor {
   ): Promise<ExtractedContract[]> {
     const parser = new Parser();
     const contracts: ExtractedContract[] = [];
+    const maxFileSizeBytes = getMaxFileSizeBytes();
     for (const rel of files) {
-      const source = await readSafeBounded(repoPath, rel, MAX_GRAPHQL_SOURCE_BYTES);
-      if (!source) continue;
+      if (/\.(?:spec|test)\.[cm]?tsx?$/i.test(rel)) continue;
+      const source = await readSafeBounded(repoPath, rel, maxFileSizeBytes);
+      if (source === null || !source.includes(NEST_GRAPHQL_PACKAGE)) continue;
       parser.setLanguage(
         rel.toLowerCase().endsWith('.tsx') ? TypeScript.tsx : TypeScript.typescript,
       );
@@ -388,33 +555,50 @@ export class GraphqlExtractor implements ContractExtractor {
         throw error;
       }
       const bindings = importedDecoratorBindings(tree.rootNode);
-      if (bindings.size === 0) continue;
-      const bodies = collectClassBodies(tree.rootNode);
+      if (bindings.operations.size === 0 || bindings.resolvers.size === 0) continue;
+      const bodies = topLevelResolverClassBodies(tree.rootNode, bindings.resolvers);
       if (bodies === null) continue;
       for (const body of bodies) {
         let decorators: Parser.SyntaxNode[] = [];
         for (const member of body.namedChildren) {
+          if (member.type === 'comment') continue;
           if (member.type === 'decorator') {
             decorators.push(member);
             continue;
           }
-          if (member.type !== 'method_definition') {
+          if (member.type !== 'method_definition' && member.type !== 'public_field_definition') {
             decorators = [];
             continue;
           }
+          const memberDecorators = [
+            ...new Set([
+              ...decorators,
+              ...member.namedChildren.filter((child) => child.type === 'decorator'),
+            ]),
+          ];
           const methodName = member.childForFieldName('name')?.text;
           if (!methodName) {
             decorators = [];
             continue;
           }
-          for (const decorator of decorators) {
-            const operation = decoratorKind(decorator, bindings);
+          for (const decorator of memberDecorators) {
+            const operation = decoratorKind(decorator, bindings.operations);
             if (!operation) continue;
-            const field = decoratorFieldName(operation.argumentsNode) ?? methodName;
+            const parsedField = decoratorFieldName(operation.argumentsNode);
+            if (parsedField.kind === 'dynamic') continue;
+            const field = parsedField.kind === 'literal' ? parsedField.value : methodName;
             if (!GRAPHQL_NAME.test(field)) continue;
             const filePath = rel.replace(/\\/g, '/');
             const symbol = uniqueRealSymbol(
-              await dbExecutor(RESOLVE_METHOD_QUERY, { name: methodName, filePath }),
+              await dbExecutor(RESOLVE_METHOD_QUERY, {
+                name: methodName,
+                filePath,
+                startLine:
+                  member.type === 'public_field_definition'
+                    ? (member.childForFieldName('value')?.startPosition.row ??
+                        member.startPosition.row) + 1
+                    : member.startPosition.row + 1,
+              }),
             );
             if (!symbol) continue;
             contracts.push({
@@ -446,9 +630,11 @@ export class GraphqlExtractor implements ContractExtractor {
     files: string[],
   ): Promise<ExtractedContract[]> {
     const contracts: ExtractedContract[] = [];
+    const generatedIndexCache: GeneratedIndexCache = new Map();
+    const maxFileSizeBytes = getMaxFileSizeBytes();
     for (const rel of files) {
-      const source = await readSafeBounded(repoPath, rel, MAX_GRAPHQL_SOURCE_BYTES);
-      if (!source) continue;
+      const source = await readSafeBounded(repoPath, rel, maxFileSizeBytes);
+      if (source === null) continue;
       let document: DocumentNode;
       try {
         document = parse(source, { noLocation: true, maxTokens: MAX_GRAPHQL_TOKENS });
@@ -488,6 +674,7 @@ export class GraphqlExtractor implements ContractExtractor {
               definition.operation,
               operationName,
               uniqueFields,
+              generatedIndexCache,
             ))
           ) {
             symbol = resolved;

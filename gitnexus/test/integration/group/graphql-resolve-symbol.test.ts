@@ -8,7 +8,7 @@ import type { GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
 import { withTestLbugDB } from '../../helpers/test-indexed-db.js';
 
 const SEED = [
-  `CREATE (:Method {id:'method:health', name:'health', filePath:'src/health.resolver.ts', startLine:4, endLine:4, content:'', description:''})`,
+  `CREATE (:Method {id:'method:health', name:'health', filePath:'src/health.resolver.ts', startLine:5, endLine:5, content:'', description:''})`,
   `CREATE (:Const {id:'const:health-document', name:'HealthDocument', filePath:'src/generated.ts', startLine:1, endLine:1, content:'', description:''})`,
 ];
 
@@ -33,7 +33,7 @@ withTestLbugDB(
       await fs.mkdir(path.join(consumerRoot, 'src'), { recursive: true });
       await fs.writeFile(
         path.join(providerRoot, 'src/health.resolver.ts'),
-        `import { Query } from '@nestjs/graphql';\nclass HealthResolver {\n  @Query()\n  health() { return 'ok'; }\n}`,
+        `import { Query, Resolver } from '@nestjs/graphql';\n@Resolver()\nclass HealthResolver {\n  @Query()\n  health() { return 'ok'; }\n}`,
         'utf8',
       );
       await fs.writeFile(

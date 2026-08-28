@@ -39,6 +39,9 @@ export async function readSafeBounded(
     const canonicalFile = await fs.promises.realpath(abs);
     const canonicalRelative = path.relative(canonicalBase, canonicalFile);
     if (canonicalRelative.startsWith('..') || path.isAbsolute(canonicalRelative)) return null;
+    const beforeOpen = await fs.promises.lstat(canonicalFile);
+    if (!beforeOpen.isFile() || beforeOpen.size > maxBytes) return null;
+    if (maxBytes === 0) return beforeOpen.size === 0 ? '' : null;
 
     return await new Promise<string | null>((resolve) => {
       const stream = fs.createReadStream(canonicalFile, {

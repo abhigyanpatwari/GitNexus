@@ -96,7 +96,19 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     };
   });
 
-  const detect = { ...DEFAULT_DETECT, ...((raw.detect as object) || {}) };
+  const rawDetect = raw.detect;
+  if (
+    rawDetect !== undefined &&
+    (!rawDetect || typeof rawDetect !== 'object' || Array.isArray(rawDetect))
+  ) {
+    throw new Error('detect must be a mapping of boolean flags');
+  }
+  for (const [key, value] of Object.entries((rawDetect as Record<string, unknown>) || {})) {
+    if (key in DEFAULT_DETECT && typeof value !== 'boolean') {
+      throw new Error(`detect.${key} must be true or false`);
+    }
+  }
+  const detect = { ...DEFAULT_DETECT, ...((rawDetect as object) || {}) };
   const matching = { ...DEFAULT_MATCHING, ...((raw.matching as object) || {}) };
   const packages = (raw.packages as Record<string, Record<string, string>>) || {};
 

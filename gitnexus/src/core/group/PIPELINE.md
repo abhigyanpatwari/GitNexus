@@ -72,11 +72,15 @@ Each `*-patterns/<lang>.ts` plugin owns its grammar + S-expression
 queries; the top-level orchestrator imports neither.
 
 GraphQL detection is opt-in with `detect.graphql: true`. The initial slice
-recognizes NestJS `Query`, `Mutation`, and `Subscription` decorators imported
-from `@nestjs/graphql`, plus named operation documents. Providers and consumers
-must resolve to one exact, real graph symbol; anonymous operations, ambiguous
-generated symbols, malformed documents, symlink escapes, and bounded-parser
-overflows are skipped rather than linked approximately.
+recognizes imported NestJS `Query`, `Mutation`, and `Subscription` decorators on
+top-level imported `Resolver` classes, plus named operation documents. Generated
+object documents, static `gql` templates, and `TypedDocumentString` values are
+verified against the operation and its resolved root fragments. Providers and
+consumers must resolve to one exact, real graph symbol; anonymous operations,
+dynamic decorator names, ambiguous generated symbols, malformed documents,
+symlink escapes, and bounded-parser overflows are skipped rather than linked
+approximately. `matching.exclude_links_paths` also suppresses configured GraphQL
+root fields from exact cross-linking while retaining their registry entries.
 
 ## Plugin architecture
 

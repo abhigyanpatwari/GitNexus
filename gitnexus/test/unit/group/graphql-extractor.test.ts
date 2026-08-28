@@ -1,9 +1,14 @@
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { parse } from 'graphql';
+import Parser from 'tree-sitter';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CypherExecutor } from '../../../src/core/group/contract-extractor.js';
-import { GraphqlExtractor } from '../../../src/core/group/extractors/graphql-extractor.js';
+import {
+  GraphqlExtractor,
+  indexGeneratedDeclarators,
+} from '../../../src/core/group/extractors/graphql-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 import { cleanupTempDir } from '../../helpers/test-db.js';
 
@@ -51,6 +56,7 @@ function generatedDocument(
 
 describe('GraphqlExtractor', () => {
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(tempDirs.splice(0).map((dir) => cleanupTempDir(dir)));
   });
 
@@ -120,7 +126,8 @@ export const WatchWidgetDocument = ${generatedDocument('subscription', 'WatchWid
 function Query(): MethodDecorator { return () => undefined; }
 class LocalResolver { @Query() localOnly() {} }`,
       'src/ambiguous.resolver.ts': `
-import { Query } from '@nestjs/graphql';
+import { Query, Resolver } from '@nestjs/graphql';
+@Resolver()
 class AmbiguousResolver { @Query() widget() {} }`,
       'src/anonymous.graphql': `query { widget }`,
       'src/invalid.graphql': `query Broken {`,
@@ -143,7 +150,8 @@ class AmbiguousResolver { @Query() widget() {} }`,
   it('rejects provider fields that are not GraphQL Names', async () => {
     const { root, repo } = await makeRepo({
       'src/invalid.resolver.ts': `
-import { Query } from '@nestjs/graphql';
+import { Query, Resolver } from '@nestjs/graphql';
+@Resolver()
 class InvalidResolver {
   @Query('bad::field') separator() {}
   @Query('line\\nfeed') newline() {}
@@ -165,8 +173,9 @@ class InvalidResolver {
     const nested = `${'['.repeat(300)}0${']'.repeat(300)}`;
     const { root, repo } = await makeRepo({
       'src/deep.resolver.ts': `
-import { Query } from '@nestjs/graphql';
+import { Query, Resolver } from '@nestjs/graphql';
 const nested = ${nested};
+@Resolver()
 class DeepResolver { @Query() health() {} }`,
     });
     let lookups = 0;
@@ -280,5 +289,214 @@ class DeepResolver { @Query() health() {} }`,
     expect(contracts).toEqual([]);
     expect(contracts).not.toContainEqual(expect.objectContaining({ symbolUid: 'fn:deep' }));
     expect(lookups).toBe(0);
+  });
+
+  it('keeps decorators across comments and supports decorated resolver properties', async () => {
+    const { root, repo } = await makeRepo({
+      'src/commented.resolver.ts': `
+import { Query, Mutation, Resolver } from '@nestjs/graphql';
+@Resolver()
+export class CommentedResolver {
+  @Query()
+  /** Public schema description. */
+  health() { return true; }
+
+  @Mutation()
+  // The comment is not an ownership boundary.
+  save = async () => true;
+}`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        'health@src/commented.resolver.ts': [
+          { uid: 'method:health', name: 'health', filePath: 'src/commented.resolver.ts' },
+        ],
+        'save@src/commented.resolver.ts': [
+          { uid: 'property:save', name: 'save', filePath: 'src/commented.resolver.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts.map((contract) => contract.contractId)).toEqual([
+      'graphql::query::health',
+      'graphql::mutation::save',
+    ]);
+  });
+
+  it('requires a top-level imported Resolver and skips dynamic field names', async () => {
+    const { root, repo } = await makeRepo({
+      'src/scoped.resolver.ts': `
+import { Query, Resolver } from '@nestjs/graphql';
+const FIELD = 'viewer';
+const NAMES = { viewer: FIELD };
+const name = FIELD;
+const opts = { name: FIELD };
+class Helper { @Query() helperOnly() {} }
+function factory() {
+  @Resolver()
+  class NestedResolver { @Query() nestedOnly() {} }
+  return NestedResolver;
+}
+@Resolver()
+class RealResolver {
+  @Query(() => String, { name: FIELD }) dynamicName() {}
+  @Query(() => String, { name: NAMES.viewer }) memberName() {}
+  @Query(() => String, { name }) shorthandName() {}
+  @Query(() => String, { ...opts }) spreadOptions() {}
+  @Query(() => String, { name: \`get\${FIELD}\` }) interpolatedName() {}
+  @Query(() => String, { name: 'get' + 'Widget' }) concatenatedName() {}
+  @Query(() => String) stableName() {}
+}`,
+    });
+    const lookedUp: string[] = [];
+    const run: CypherExecutor = async (_query, params = {}) => {
+      lookedUp.push(String(params.name));
+      return [
+        {
+          uid: `method:${String(params.name)}`,
+          name: String(params.name),
+          filePath: 'src/scoped.resolver.ts',
+        },
+      ];
+    };
+
+    const contracts = await new GraphqlExtractor().extract(run, root, repo);
+
+    expect(lookedUp).toEqual(['stableName']);
+    expect(contracts).toEqual([
+      expect.objectContaining({ contractId: 'graphql::query::stableName' }),
+    ]);
+  });
+
+  it('does not extract co-located spec resolvers', async () => {
+    const { root, repo } = await makeRepo({
+      'src/widget.resolver.spec.ts': `
+import { Query, Resolver } from '@nestjs/graphql';
+@Resolver()
+class MockResolver { @Query() widget() {} }`,
+    });
+    let lookups = 0;
+
+    const contracts = await new GraphqlExtractor().extract(
+      async () => {
+        lookups++;
+        return [{ uid: 'method:mock', name: 'widget', filePath: 'src/widget.resolver.spec.ts' }];
+      },
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+    expect(lookups).toBe(0);
+  });
+
+  it('indexes a generated declaration after more than 100000 earlier AST nodes', () => {
+    const filler = { type: 'identifier', namedChildren: [] } as unknown as Parser.SyntaxNode;
+    const name = { text: 'LateDocument' } as Parser.SyntaxNode;
+    const value = { type: 'object', namedChildren: [] } as unknown as Parser.SyntaxNode;
+    const declaration = {
+      type: 'variable_declarator',
+      namedChildren: [],
+      childForFieldName: (field: string) =>
+        field === 'name' ? name : field === 'value' ? value : null,
+    } as unknown as Parser.SyntaxNode;
+    const root = {
+      type: 'program',
+      namedChildren: [...Array<Parser.SyntaxNode>(100_001).fill(filler), declaration],
+    } as unknown as Parser.SyntaxNode;
+
+    expect(indexGeneratedDeclarators(root).get('LateDocument')).toEqual([value]);
+  });
+
+  it('proves generated root fields through fragment spreads and inline fragments', async () => {
+    const { root, repo } = await makeRepo({
+      'src/widgets.graphql': `
+query GetWidgets { widget ...MoreRoots ... on Query { inlineRoot } }
+fragment MoreRoots on Query { gadget }
+`,
+      'src/generated.ts': `
+export const GetWidgetsDocument = ${JSON.stringify(
+        parse(`
+query GetWidgets { widget ...MoreRoots ... on Query { inlineRoot } }
+fragment MoreRoots on Query { gadget }
+`),
+      )};`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        GetWidgetsDocument: [
+          { uid: 'const:widgets', name: 'GetWidgetsDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts.map((contract) => contract.contractId).sort()).toEqual([
+      'graphql::query::gadget',
+      'graphql::query::inlineRoot',
+      'graphql::query::widget',
+    ]);
+  });
+
+  it('accepts static gql tags and TypedDocumentString initializers', async () => {
+    const { root, repo } = await makeRepo({
+      'src/tagged.graphql': `query Tagged { tagged }`,
+      'src/string.graphql': `query StringMode { stringMode }`,
+      'src/generated.ts': `
+export const TaggedDocument = gql\`query Tagged { tagged }\`;
+export const StringModeDocument = new TypedDocumentString("query StringMode {\\n stringMode\\n}");
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        TaggedDocument: [
+          { uid: 'const:tagged', name: 'TaggedDocument', filePath: 'src/generated.ts' },
+        ],
+        StringModeDocument: [
+          { uid: 'const:string', name: 'StringModeDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts.map((contract) => contract.symbolUid).sort()).toEqual([
+      'const:string',
+      'const:tagged',
+    ]);
+  });
+
+  it('parses one generated module once and continues past a shadowed candidate', async () => {
+    const { root, repo } = await makeRepo({
+      'src/one.graphql': `query One { one }`,
+      'src/two.graphql': `query Two { two }`,
+      'src/generated.ts': `
+function shadow() { const OneDocument = { kind: 'NotADocument' }; }
+export const OneDocument = ${generatedDocument('query', 'One', ['one'])};
+export const TwoDocument = ${generatedDocument('query', 'Two', ['two'])};
+`,
+    });
+    const parseSpy = vi.spyOn(Parser.prototype, 'parse');
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        OneDocument: [{ uid: 'const:one', name: 'OneDocument', filePath: 'src/generated.ts' }],
+        TwoDocument: [{ uid: 'const:two', name: 'TwoDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts.map((contract) => contract.symbolUid).sort()).toEqual([
+      'const:one',
+      'const:two',
+    ]);
+    expect(parseSpy).toHaveBeenCalledTimes(1);
   });
 });

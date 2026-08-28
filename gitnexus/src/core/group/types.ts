@@ -42,11 +42,12 @@ export interface DetectConfig {
 
 export interface MatchingConfig {
   /**
-   * HTTP paths to exclude from cross-link matching. Contracts at these paths
+   * HTTP paths or GraphQL root fields to exclude from cross-link matching. Contracts at these paths
    * are still extracted and visible in the registry, but they don't produce
    * cross-repo links. Useful for health-check endpoints (`/ping`, `/health`)
    * that every service exposes and would otherwise create N×M false links.
-   * Trailing slashes are normalized before comparison.
+   * Trailing slashes are normalized before comparison. GraphQL fields may be
+   * written as `health` or `/health`.
    * @default []
    */
   exclude_links_paths?: string[];

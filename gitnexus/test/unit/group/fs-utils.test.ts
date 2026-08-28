@@ -50,6 +50,15 @@ describe('group extractor readSafe', () => {
     await expect(readSafeBounded(repo, 'oversized.graphql', 1024)).resolves.toBeNull();
   });
 
+  it('accepts a regular file whose size is exactly maxBytes', async () => {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-readsafe-repo-'));
+    tempDirs.push(repo);
+    await fs.writeFile(path.join(repo, 'exact.graphql'), '12345678', 'utf8');
+
+    await expect(readSafeBounded(repo, 'exact.graphql', 8)).resolves.toBe('12345678');
+    await expect(readSafeBounded(repo, 'exact.graphql', 7)).resolves.toBeNull();
+  });
+
   it.skipIf(process.platform === 'win32')(
     'reads a final-file symlink whose canonical target stays inside the repository',
     async () => {

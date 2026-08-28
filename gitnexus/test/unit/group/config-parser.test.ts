@@ -189,6 +189,19 @@ detect:
       expect(config.detect.graphql).toBe(true);
     });
 
+    it('rejects string-like detect booleans instead of silently changing behavior', () => {
+      expect(() =>
+        parseGroupConfig(
+          `version: 1\nname: test\nrepos: { app: my-app }\ndetect:\n  graphql: yes\n`,
+        ),
+      ).toThrow(/detect\.graphql must be true or false/i);
+      expect(() =>
+        parseGroupConfig(
+          `version: 1\nname: test\nrepos: { app: my-app }\ndetect:\n  http: "false"\n`,
+        ),
+      ).toThrow(/detect\.http must be true or false/i);
+    });
+
     it('rejects GraphQL manifest links until they can resolve real endpoint symbols', () => {
       const yaml = `
 version: 1
