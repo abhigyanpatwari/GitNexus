@@ -203,6 +203,8 @@ function lastConcatVariable(
     return inner ? lastConcatVariable(inner) : null;
   }
   if (node.type === 'binary_expression') {
+    const operator = node.childForFieldName('operator');
+    if (!operator || operator.text !== '.') return null; // not concatenation
     const right = node.childForFieldName('right');
     const fromRight = right ? lastConcatVariable(right) : null;
     if (fromRight) return fromRight;
@@ -255,15 +257,15 @@ function resolveLocalStringLiteral(varNode: import('tree-sitter').SyntaxNode): s
         const inner = sibling.namedChild(0);
         if (inner && inner.type === 'assignment_expression') {
           const lhs = inner.childForFieldName('left');
-          const rhs = inner.childForFieldName('right');
-          if (
-            lhs &&
-            lhs.type === 'variable_name' &&
-            lhs.text === target &&
-            rhs &&
-            rhs.type === 'string'
-          ) {
-            return phpStringText(rhs);
+          if (lhs && lhs.type === 'variable_name' && lhs.text === target) {
+            // The NEAREST assignment to this variable wins, full stop — an
+            // older literal further back is shadowed by this one even when
+            // this one isn't itself a resolvable string (`$v = f();`).
+            // Falling through past a non-literal reassignment to an earlier
+            // literal would return a value the variable never actually holds
+            // at the call site — a wrong answer, not a miss.
+            const rhs = inner.childForFieldName('right');
+            return rhs && rhs.type === 'string' ? phpStringText(rhs) : null;
           }
         }
       }
@@ -377,7 +379,13 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
       const methodArg = match.captures.methodArg;
       const pathArg = match.captures.pathArg;
       if (!classNode || !methodArg || !pathArg) continue;
-      if (lastNameSegment(classNode) !== 'Request') continue;
+      // PHP class names are case-insensitive at the language level, and
+      // `hasConsumerSignals` above matches case-insensitively (`/i`) for
+      // the same reason — this comparison must agree with it, or a valid
+      // `new request(...)` / `new \NS\REQUEST(...)` call would be waved
+      // through the parse-skip gate as a signal and then silently dropped
+      // here.
+      if (lastNameSegment(classNode).toLowerCase() !== 'request') continue;
 
       // Path: a direct string literal, or the last variable in a
       // concatenation chain (see `lastConcatVariable`) resolved to a
@@ -391,14 +399,20 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
       }
       if (path === null || !isHttpClientPath(path)) continue;
 
-      // The HTTP verb is frequently itself a parameter in generated clients
-      // (`function pay($body) { ...; new Request($method, ...); }` where
-      // `$method` is fixed by the caller, not this call site) — resolving it
-      // would need the same interprocedural reach the module docblock rules
-      // out. A literal verb is used when present; otherwise the method is
-      // reported as a wildcard, matching this project's own convention for
-      // a contract whose verb isn't pinned (see manifest links, `http::*::`).
-      const method = methodArg.type === 'string' ? phpStringText(methodArg) : null;
+      // The HTTP verb is a literal, a local variable resolved the same way
+      // as the path (see `resolveLocalStringLiteral` above), or — commonly
+      // in generated clients — a parameter of the enclosing builder method
+      // fixed by ITS caller, not by this call site. That last case needs
+      // the same interprocedural reach the module docblock rules out, so it
+      // falls through to a wildcard verb, matching this project's own
+      // convention for a contract whose verb isn't pinned (see manifest
+      // links, `http::*::`).
+      let method: string | null = null;
+      if (methodArg.type === 'string') {
+        method = phpStringText(methodArg);
+      } else if (methodArg.type === 'variable_name') {
+        method = resolveLocalStringLiteral(methodArg);
+      }
 
       out.push({
         role: 'consumer',

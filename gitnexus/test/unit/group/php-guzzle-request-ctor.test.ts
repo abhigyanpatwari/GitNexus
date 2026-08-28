@@ -10,12 +10,18 @@ const scan = (src: string) => PHP_HTTP_PLUGIN.scan(parser.parse(src));
 const consumers = (src: string) => scan(src).filter((d) => d.role === 'consumer');
 
 describe('PHP guzzle-request-ctor pattern', () => {
-  it('resolves a locally-assigned $resourcePath concatenated with a member-access host', () => {
+  it('resolves a locally-assigned $resourcePath concatenated with a member-access host, method is a real parameter', () => {
+    // $method is a FUNCTION PARAMETER here (the shape openapi-generator-php
+    // actually emits — the verb is fixed by the caller of this builder
+    // method, not assigned inside its body), not a local variable that
+    // happens to share the resolver's single-scope shape. A local
+    // `$method = 'POST';` immediately before the call would in fact resolve
+    // via the same fold as `$resourcePath` — that's a different case,
+    // covered separately below.
     const src = `<?php
 class PaymentsApi {
-    public function pay($order) {
+    public function pay($method, $order) {
         $resourcePath = '/payments/pay';
-        $method = 'POST';
         $request = new Request(
             $method,
             $this->operationHost . $resourcePath
@@ -28,7 +34,7 @@ class PaymentsApi {
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({
       framework: 'guzzle-request-ctor',
-      method: '*', // $method is itself a parameter — not a resolvable literal
+      method: '*', // $method is a parameter, not a literal at this call site
       path: '/payments/pay',
     });
   });
@@ -170,5 +176,58 @@ function pay($method) {
 }
 `;
     expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('does not resolve through an intervening non-literal reassignment (last write wins)', () => {
+    // Regression: the backward scan used to skip PAST an assignment whose
+    // RHS wasn't a string literal, landing on an older literal that the
+    // variable no longer holds at the call site — a wrong answer, not a
+    // miss. The nearest assignment must decide the outcome, full stop.
+    const src = `<?php
+function pay($method) {
+    $resourcePath = '/old-and-wrong';
+    $resourcePath = buildPath();
+    $request = new Request($method, $this->host . $resourcePath);
+    return $request;
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('does not treat a non-concatenation binary expression as a path candidate', () => {
+    // Regression: lastConcatVariable recursed into ANY binary_expression
+    // without checking the operator, so `$host ?? $resourcePath` (or `&&`,
+    // `+`, ...) was walked exactly like `.` concatenation.
+    const src = `<?php
+function pay($method) {
+    $resourcePath = '/payments/pay';
+    $request = new Request($method, $this->host ?? $resourcePath);
+    return $request;
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('matches a lowercase "request" constructor — PHP class names are case-insensitive', () => {
+    const src = `<?php
+$request = new request('GET', '/health');
+`;
+    const found = consumers(src);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ method: 'GET', path: '/health' });
+  });
+
+  it('resolves $method via the same local fold as $resourcePath when it is a local variable, not a parameter', () => {
+    const src = `<?php
+function pay($order) {
+    $resourcePath = '/payments/pay';
+    $method = 'POST';
+    $request = new Request($method, $this->host . $resourcePath);
+    return $request;
+}
+`;
+    const found = consumers(src);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ method: 'POST', path: '/payments/pay' });
   });
 });
