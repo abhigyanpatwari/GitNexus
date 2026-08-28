@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
-import { readRepoControlFileSync } from './repo-control-file.js';
+import { readRepoControlFile } from './repo-control-file.js';
 import { logger } from '../core/logger.js';
 import { getCoreExcludesFilePath, getGitInfoExcludePath } from '../storage/git.js';
 
@@ -446,7 +446,7 @@ export const loadIgnoreRules = async (
   for (const filename of filenames) {
     try {
       const content = options?.strictRepoControlFiles
-        ? readRepoControlFileSync(repoPath, filename)
+        ? await readRepoControlFile(repoPath, filename)
         : await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
       if (content === null) continue;
       ig.add(content);

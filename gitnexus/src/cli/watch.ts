@@ -14,7 +14,11 @@ import {
 } from '../core/run-analyze.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
-import { loadAnalyzeConfig, mergeAnalyzeOptions, validateBranchName } from './analyze-config.js';
+import {
+  loadAnalyzeConfigStrict,
+  mergeAnalyzeOptions,
+  validateBranchName,
+} from './analyze-config.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
@@ -97,15 +101,12 @@ function positiveInteger(value: string | undefined, flag: string): number | unde
   return parsed;
 }
 
-export function resolveWatchOptions(
+export async function resolveWatchOptions(
   repoPath: string,
   cli: WatchCliOptions,
   baseline: WatchEnvironmentBaseline,
-): CoreAnalyzeOptions {
-  const merged = mergeAnalyzeOptions(
-    cli,
-    loadAnalyzeConfig(repoPath, { strictRepoControlFile: true }),
-  );
+): Promise<CoreAnalyzeOptions> {
+  const merged = mergeAnalyzeOptions(cli, await loadAnalyzeConfigStrict(repoPath));
   const unsupported = [
     ['--force', merged.force],
     ['--repair-fts', merged.repairFts],
@@ -326,7 +327,7 @@ export async function watchCommandWithRunnerIdentity(
     debounceMs =
       positiveInteger(cliOptions.debounce ?? String(DEFAULT_DEBOUNCE_MS), '--debounce') ??
       DEFAULT_DEBOUNCE_MS;
-    analyzeOptions = resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
+    analyzeOptions = await resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
   } catch (error) {
     cliError(`  ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
@@ -344,7 +345,7 @@ export async function watchCommandWithRunnerIdentity(
       async (paths) => {
         if (paths.some(isConfigControlPath)) {
           try {
-            analyzeOptions = resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
+            analyzeOptions = await resolveWatchOptions(repoPath, cliOptions, baselineEnvironment);
             configControlValid = true;
           } catch (error) {
             configControlValid = false;

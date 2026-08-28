@@ -77,7 +77,7 @@ describe('watch path selection', () => {
         JSON.stringify({ maxFileSize: '2048', workerTimeout: '90', workers: '2' }),
       );
       const baseline = { maxFileSize: '512', workerTimeout: '30000', verbose: undefined };
-      resolveWatchOptions(repoPath, {}, baseline);
+      await resolveWatchOptions(repoPath, {}, baseline);
       expect(process.env.GITNEXUS_MAX_FILE_SIZE).toBe('2048');
       expect(process.env.GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS).toBe('90000');
 
@@ -85,7 +85,7 @@ describe('watch path selection', () => {
         path.join(repoPath, '.gitnexusrc'),
         JSON.stringify({ maxFileSize: '4096', workerTimeout: '120', workers: '0' }),
       );
-      expect(() => resolveWatchOptions(repoPath, {}, baseline)).toThrow(
+      await expect(resolveWatchOptions(repoPath, {}, baseline)).rejects.toThrow(
         '--workers must be a positive integer',
       );
       expect(process.env.GITNEXUS_MAX_FILE_SIZE).toBe('2048');
@@ -101,7 +101,7 @@ describe('watch path selection', () => {
 
   it('rejects analyze settings whose semantics watch mode cannot preserve', async () => {
     await fs.writeFile(path.join(repoPath, '.gitnexusrc'), JSON.stringify({ embeddings: true }));
-    expect(() =>
+    await expect(
       resolveWatchOptions(
         repoPath,
         {},
@@ -111,7 +111,7 @@ describe('watch path selection', () => {
           verbose: undefined,
         },
       ),
-    ).toThrow('analyze --watch does not support --embeddings');
+    ).rejects.toThrow('analyze --watch does not support --embeddings');
   });
 
   it.skipIf(process.platform === 'win32')(

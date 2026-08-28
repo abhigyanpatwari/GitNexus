@@ -5,6 +5,7 @@ import path from 'path';
 import os from 'os';
 import {
   loadAnalyzeConfig,
+  loadAnalyzeConfigStrict,
   mergeAnalyzeOptions,
   resolveDefaultBranch,
   validateBranchName,
@@ -16,7 +17,7 @@ import {
 import type { AnalyzeOptions } from '../../src/cli/analyze.js';
 import {
   MAX_REPO_CONTROL_FILE_BYTES,
-  readRepoControlFileSync,
+  readRepoControlFile,
 } from '../../src/config/repo-control-file.js';
 
 describe('analyze-config (.gitnexusrc support, #243)', () => {
@@ -41,7 +42,7 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
 
   it('rejects an oversized repository config before parsing', async () => {
     await writeRc(' '.repeat(MAX_REPO_CONTROL_FILE_BYTES + 1));
-    expect(() => loadAnalyzeConfig(dir, { strictRepoControlFile: true })).toThrow(/exceeds/);
+    await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/exceeds/);
   });
 
   it('keeps the read bounded if a control file grows after its size check', async () => {
@@ -54,7 +55,7 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     });
 
     try {
-      expect(() => readRepoControlFileSync(dir, GITNEXUS_RC_FILENAME)).toThrow(/exceeds/);
+      await expect(readRepoControlFile(dir, GITNEXUS_RC_FILENAME)).rejects.toThrow(/exceeds/);
     } finally {
       stat.mockRestore();
     }
@@ -68,9 +69,7 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
         const target = path.join(outside, 'config.json');
         await fs.writeFile(target, JSON.stringify({ workers: '8' }));
         await fs.symlink(target, path.join(dir, GITNEXUS_RC_FILENAME), 'file');
-        expect(() => loadAnalyzeConfig(dir, { strictRepoControlFile: true })).toThrow(
-          /symbolic link/,
-        );
+        await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/symbolic link/);
       } finally {
         await fs.rm(outside, { recursive: true, force: true });
       }

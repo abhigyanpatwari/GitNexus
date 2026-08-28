@@ -30,7 +30,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { readRepoControlFileSync } from '../config/repo-control-file.js';
+import { readRepoControlFile } from '../config/repo-control-file.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
@@ -369,24 +369,34 @@ const normalizeLevel = (
  * @returns the normalized config defaults, or `undefined` when no file exists
  *          (the normal case). Throws {@link GitNexusRcError} on any problem.
  */
-export function loadAnalyzeConfig(
-  repoRoot: string,
-  options?: { strictRepoControlFile?: boolean },
-): Partial<AnalyzeOptions> | undefined {
+export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | undefined {
   const filePath = path.join(repoRoot, GITNEXUS_RC_FILENAME);
   let raw: string;
   try {
-    if (options?.strictRepoControlFile) {
-      const content = readRepoControlFileSync(repoRoot, GITNEXUS_RC_FILENAME);
-      if (content === null) return undefined;
-      raw = content;
-    } else {
-      raw = fs.readFileSync(filePath, 'utf-8');
-    }
+    raw = fs.readFileSync(filePath, 'utf-8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
   }
+
+  return parseAnalyzeConfig(raw);
+}
+
+/** Load `.gitnexusrc` through the strict bounded reader used by watch mode. */
+export async function loadAnalyzeConfigStrict(
+  repoRoot: string,
+): Promise<Partial<AnalyzeOptions> | undefined> {
+  let raw: string | null;
+  try {
+    raw = await readRepoControlFile(repoRoot, GITNEXUS_RC_FILENAME);
+  } catch (err) {
+    throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
+  }
+  return raw === null ? undefined : parseAnalyzeConfig(raw);
+}
+
+function parseAnalyzeConfig(rawInput: string): Partial<AnalyzeOptions> {
+  let raw = rawInput;
 
   // Strip a leading UTF-8 BOM: Node's 'utf-8' decode keeps it, and JSON.parse
   // then fails with a confusing "Unexpected token" on an otherwise-valid file
