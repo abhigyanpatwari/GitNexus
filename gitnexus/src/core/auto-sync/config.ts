@@ -285,11 +285,13 @@ export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
     throw new Error('host must be one of github.com, gitlab.com, or gitee.com');
   }
   const pathParts = repoPath.split('/');
+  // Traversal is a whole segment, so test segments rather than the raw string:
+  // a substring test also rejects `owner/foo..bar`, which is an ordinary name
+  // and one the repository-name rule below accepts.
   if (
     repoPath.startsWith('/') ||
-    repoPath.includes('..') ||
     pathParts.length < 2 ||
-    pathParts.some((part) => !part)
+    pathParts.some((part) => !part || part === '.' || part === '..')
   ) {
     throw new Error('path must include owner/repo without traversal');
   }

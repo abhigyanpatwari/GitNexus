@@ -143,7 +143,7 @@ describe('auto-sync runner', () => {
         branch: 'master',
         remoteUrl: 'git@gitee.com:qts_server/qts_account.git',
       }),
-      { name: 'gitee.com/qts_server/qts_account' },
+      { name: 'gitee.com/qts_server/qts_account', branch: undefined },
     );
     expect(deps.syncGroupByName).toHaveBeenCalledWith('back_end');
     expect(deps.writeCommitInfo).toHaveBeenCalledWith([
@@ -154,6 +154,41 @@ describe('auto-sync runner', () => {
         status: 'success',
       }),
     ]);
+  });
+
+  it('registers into the branch slot the analyze worker placed the index in', async () => {
+    // Without this the parent always takes the primary/flat arm and relabels a
+    // pinned branch entry with whatever this tick happened to sync.
+    const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+      cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
+      getCurrentBranch: vi.fn(async () => 'master'),
+      getCurrentCommit: vi.fn(async () => 'commit-2'),
+      runAnalysis: vi.fn(async () => ({ stats: { files: 1 } }) as any),
+      registerRepo: vi.fn(async () => 'qts_account'),
+      resolveBranchPlacement: vi.fn(async () => ({ branch: 'master' })),
+      loadState: vi.fn(async () => ({})),
+      saveState: vi.fn(async () => {}),
+      writeCommitInfo: vi.fn(async () => {}),
+      addRepoToGroup: vi.fn(async () => true),
+      syncGroupByName: vi.fn(async () => {}),
+      getAvailableMemoryGB: vi.fn(() => 8),
+    });
+
+    await runAutoSyncOnce(config, {
+      deps,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      now: () => new Date('2026-06-30T00:00:00.000Z'),
+    });
+
+    expect(deps.resolveBranchPlacement).toHaveBeenCalledWith(
+      '/tmp/repos/gitee.com/qts_server/qts_account',
+      'master',
+    );
+    expect(deps.registerRepo).toHaveBeenCalledWith(
+      '/tmp/repos/gitee.com/qts_server/qts_account',
+      expect.anything(),
+      { name: 'gitee.com/qts_server/qts_account', branch: 'master' },
+    );
   });
 
   it('syncs a group when a repo is newly added to the group', async () => {

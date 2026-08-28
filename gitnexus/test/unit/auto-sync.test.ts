@@ -510,6 +510,11 @@ describe('auto-sync', () => {
     expect(() => validateAutoSyncRemoteUrl('git@example.com:owner/repo.git')).toThrow(
       'host must be',
     );
+    // Traversal is a whole segment; consecutive dots inside a name are not.
+    expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/foo..bar.git')).not.toThrow();
+    expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/../escape.git')).toThrow(
+      'traversal',
+    );
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/repo.git?ref=main')).toThrow(
       'must not include query strings or fragments',
     );

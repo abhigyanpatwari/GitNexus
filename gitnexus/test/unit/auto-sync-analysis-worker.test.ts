@@ -149,22 +149,43 @@ describe('auto-sync analysis worker', () => {
     expect(timers).toHaveLength(1);
   });
 
-  it('divides the worker heap by the number of repos analyzed in parallel', () => {
-    const child = createChild();
-    const forkWorker = vi.fn(() => child as any);
-    const run = createAutoSyncAnalysisRunner({ forkWorker });
+  it('divides the worker heap by the number of repos analyzed in parallel', async () => {
+    // Stubbed timers so neither run leaves a live timeout behind for the rest
+    // of the suite, and both promises are settled before the test returns.
+    const timers: Array<() => void> = [];
+    const forkChildren: ReturnType<typeof createChild>[] = [];
+    const forkWorker = vi.fn(() => {
+      const child = createChild();
+      forkChildren.push(child);
+      return child as any;
+    });
+    const run = createAutoSyncAnalysisRunner({
+      forkWorker,
+      setTimeoutFn: vi.fn((callback: () => void) => {
+        timers.push(callback);
+        return timers.length as any;
+      }) as any,
+      clearTimeoutFn: vi.fn() as any,
+    });
 
-    void run('/tmp/repo', { branch: 'main' }, 50, undefined, undefined, 4);
-    expect(forkWorker).toHaveBeenCalledWith(
+    const parallel = run('/tmp/repo', { branch: 'main' }, 50, undefined, undefined, 4);
+    expect(forkWorker).toHaveBeenLastCalledWith(
       expect.any(String),
       expect.arrayContaining(['--max-old-space-size=128']),
     );
 
-    void run('/tmp/repo', { branch: 'main' }, 50);
+    const solo = run('/tmp/repo', { branch: 'main' }, 50);
     expect(forkWorker).toHaveBeenLastCalledWith(
       expect.any(String),
       expect.arrayContaining(['--max-old-space-size=512']),
     );
+
+    for (const child of forkChildren) {
+      child.emit('message', { type: 'complete', result: { stats: { files: 1 } } });
+      child.emit('exit', 0, null);
+    }
+    await expect(parallel).resolves.toEqual({ stats: { files: 1 } });
+    await expect(solo).resolves.toEqual({ stats: { files: 1 } });
   });
 
   it('stops waiting for a worker that never exits after cancellation', async () => {

@@ -106,6 +106,14 @@ export function createAutoSyncAnalysisRunner(
         deps.clearTimeoutFn(graceTimer);
         signal?.removeEventListener('abort', onAbort);
       };
+      // Stop the parent owning a worker it has given up waiting for. An
+      // established IPC channel keeps this event loop alive even after unref,
+      // so both handles have to go. Never a kill: the child may be inside
+      // native work and is left to reach its own safe point.
+      const releaseChild = () => {
+        child.channel?.unref?.();
+        child.unref?.();
+      };
       const settle = (error?: Error, result?: Pick<AnalyzeResult, 'stats'>) => {
         if (settled) return;
         settled = true;
@@ -134,8 +142,7 @@ export function createAutoSyncAnalysisRunner(
         // child is deliberately left running rather than killed mid-write.
         graceTimer = deps.setTimeoutFn(() => {
           if (settled) return;
-          child.channel?.unref?.();
-          child.unref?.();
+          releaseChild();
           settle(
             new Error(
               `${error.message} The analyze worker did not exit within ${deps.cancelGraceMs}ms; ` +
@@ -161,6 +168,11 @@ export function createAutoSyncAnalysisRunner(
       child.on('error', (error) => {
         const workerError = new Error(`Auto-sync analyze worker error: ${error.message}`);
         requestCancellation(workerError);
+        // This settles immediately rather than waiting out the grace, so the
+        // grace timer that would otherwise have released the child is cleared
+        // by cleanup(). Release it here instead — an errored channel does not
+        // mean the worker stopped.
+        releaseChild();
         settle(workerError);
       });
       child.on('exit', (code, childSignal) => {
