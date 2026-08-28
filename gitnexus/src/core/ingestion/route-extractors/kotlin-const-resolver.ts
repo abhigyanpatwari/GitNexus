@@ -820,10 +820,18 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
   // chain that encloses it, then record. Only a top-level declaration writes a
   // bare key, so nothing here can collide across scopes; a companion's
   // unqualified binding is applied at the reference site instead.
+  // A PARTIALLY qualified reference is resolved here too, not just a bare one:
+  // inside `object Outer`, the initializer `Inner.Q + "/m"` names `Outer.Inner.Q`,
+  // and taking a dotted name as already complete looked up a key nothing
+  // declares. Split at the last dot and prefix the scope onto the OWNER, so the
+  // bare case (`ownerSuffix === null`) stays exactly what it was.
   const qualifyRef = (refName: string, scopes: readonly string[]): string => {
-    if (refName.includes('.')) return refName; // already carries its owner
+    const lastDot = refName.lastIndexOf('.');
+    const ownerSuffix = lastDot < 0 ? null : refName.slice(0, lastDot);
+    const member = lastDot < 0 ? refName : refName.slice(lastDot + 1);
     for (const scope of scopes) {
-      if (membersByScope.get(scope)?.has(refName)) return `${scope}.${refName}`;
+      const declaringType = ownerSuffix === null ? scope : `${scope}.${ownerSuffix}`;
+      if (membersByScope.get(declaringType)?.has(member)) return `${declaringType}.${member}`;
     }
     return refName; // file level, or unresolvable — the fold decides
   };
@@ -1090,7 +1098,16 @@ function qualifyKotlinRefInEnclosingTypes(
   repo: RepoConstants,
   enclosingTypes: readonly string[],
 ): string {
-  if (name.includes('.')) return name; // already carries its owner
+  // A dotted reference carries AN owner, not necessarily its OWN full one, so it
+  // is resolved against the enclosing scopes exactly like a bare name. Kotlin
+  // binds `Inner.Q` inside `object Outer` to `Outer.Inner.Q`, and returning it
+  // unchanged looked for a key nothing declares. Worse, when the partial owner
+  // also names a top-level declaration the unchanged form MATCHES it: with a
+  // top-level `object ApiPaths` beside a nested one, `@GetMapping(ApiPaths.ORDERS)`
+  // inside the class holding the nested object resolved to the top-level value —
+  // a path the application does not serve, where the compiler binds the nested
+  // one. The scopes are already qualified (`kotlinEnclosingTypeNames`), so
+  // prefixing them onto whatever the reference spells is the whole rule.
   const mc = repo.get(fileKey);
   if (!mc) return name;
   const unfoldableDeclarations = unfoldableDeclarationsOf(mc);
@@ -1133,10 +1150,13 @@ export function foldKotlinOperands(
   repo: RepoConstants,
   enclosingTypes: readonly string[] = [],
 ): string | null {
-  // Allocation gate only — the rule itself lives in the dotted-name early
-  // return of qualifyKotlinRefInEnclosingTypes, which this must not restate.
-  const needsQualify =
-    enclosingTypes.length > 0 && operands.some((op) => op.kind === 'ref' && !op.name.includes('.'));
+  // Allocation gate only: skip the map when there is nothing to qualify against
+  // or no reference to qualify. It must not restate the rule — a dotted operand
+  // is qualified too, so testing for a bare one here decided the result instead
+  // of merely avoiding an allocation, and did so per-OPERAND-LIST: the same
+  // `Inner.Q` folded or not depending on whether a SIBLING operand happened to
+  // be bare.
+  const needsQualify = enclosingTypes.length > 0 && operands.some((op) => op.kind === 'ref');
   const scoped = needsQualify
     ? operands.map((op) =>
         op.kind === 'ref'

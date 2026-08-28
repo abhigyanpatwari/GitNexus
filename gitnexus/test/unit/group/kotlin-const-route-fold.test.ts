@@ -1097,6 +1097,107 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
+  it('resolves a PARTIALLY qualified reference against the enclosing scopes', () => {
+    // `Inner.Q` carries an owner, but not its whole one: the key is
+    // `Outer.Inner.Q`. Treating any dotted reference as already complete looked
+    // for a key nothing declares and dropped the route.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+@RestController
+object Outer {
+    object Inner {
+        const val Q = "/orders"
+    }
+
+    @GetMapping(Inner.Q)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /orders']);
+  });
+
+  it('binds a partially qualified reference to the NESTED owner, not a top-level twin', () => {
+    // The severe half of the same defect. Kotlin binds `ApiPaths` to the nested
+    // object, so the route is `/inner`. Left unqualified, `ApiPaths.ORDERS`
+    // matched the TOP-LEVEL object instead and published `/orders` — a path the
+    // application does not serve, which is worse than the dropped route above.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+object ApiPaths {
+    const val ORDERS = "/orders"
+}
+
+@RestController
+class OrderController {
+    object ApiPaths {
+        const val ORDERS = "/inner"
+    }
+
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /inner']);
+  });
+
+  it('resolves a partially qualified reference inside an INITIALIZER too', () => {
+    // The same rule on the other side. `ROUTE = Inner.Q + "/m"` sits in
+    // `Outer`'s body, so `Inner.Q` means `Outer.Inner.Q` there. Fixing only the
+    // reference site would leave the two halves disagreeing about what a dotted
+    // name means — the asymmetry that produced the earlier defects here.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+object Outer {
+    object Inner {
+        const val Q = "/orders"
+    }
+
+    const val ROUTE = Inner.Q + "/m"
+}
+
+@RestController
+class OrderController {
+    @GetMapping(Outer.ROUTE)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /orders/m']);
+  });
+
+  it('folds a partially qualified reference regardless of its sibling operands', () => {
+    // Control for the allocation gate: it must not decide the result. Gating on
+    // "some operand is bare" made this same `Inner.Q` fold only because `SUFFIX`
+    // sits beside it, while `Inner.Q` alone did not — the same reference
+    // resolving differently by the company it keeps.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+@RestController
+object Outer {
+    object Inner {
+        const val Q = "/orders"
+    }
+
+    const val SUFFIX = "/list"
+
+    @GetMapping(Inner.Q + SUFFIX)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /orders/list']);
+  });
+
   it('leaves literal routes unchanged and emits each exactly once', () => {
     expect(
       providers({
