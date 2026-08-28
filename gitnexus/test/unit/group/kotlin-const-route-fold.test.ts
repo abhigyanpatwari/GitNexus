@@ -606,6 +606,159 @@ class OrderController {
     ).toEqual(['GET /api/', 'POST /api/']);
   });
 
+  it('serves the same route whichever of two same-named objects is declared first', () => {
+    // `A.ROUTE = BASE + "/m"` means `A.BASE`. Recording every object member
+    // under its bare name too made that operand resolve through whichever
+    // same-named sibling was walked LAST, so reordering two objects — a change
+    // Kotlin does not even see — moved the published route from `/right/m` to
+    // `/wrong/m`. Both orders are asserted; either alone passes on a last-wins
+    // implementation.
+    const controllerWith = (objects: string): string => `package com.example.app.web
+
+${objects}
+
+@RestController
+class OrderController {
+    @GetMapping(A.ROUTE)
+    fun get() {}
+}
+`;
+    const A = `object A {
+    const val BASE = "/right"
+    const val ROUTE = BASE + "/m"
+}`;
+    const B = `object B {
+    const val BASE = "/wrong"
+}`;
+    expect(providers({ [CONTROLLER]: controllerWith(`${A}\n\n${B}`) })).toEqual(['GET /right/m']);
+    expect(providers({ [CONTROLLER]: controllerWith(`${B}\n\n${A}`) })).toEqual(['GET /right/m']);
+  });
+
+  it('reads a bare route constant from the import, not from a local object member', () => {
+    // Bare `ORDERS` in this file is the IMPORT: `object Local` binds
+    // `Local.ORDERS` and nothing else. A bare key for the object member is a
+    // binding Kotlin does not have, and it outranked the import because the fold
+    // consults literals before imports — publishing a path the service does not
+    // serve.
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/api/v1/orders"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths.ORDERS
+
+object Local {
+    const val ORDERS = "/local"
+}
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('keeps a companion constant readable under its bare name', () => {
+    // The control for the test above, and the reason object members and
+    // companion members are keyed differently: a companion's members ARE in
+    // scope unqualified throughout the enclosing class, which is precisely where
+    // route annotations sit.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+@RestController
+class OrderController {
+    companion object {
+        const val ORDERS = "/api/v1/orders"
+    }
+
+    @GetMapping(ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('folds through the file that declares the package, not one whose path imitates it', () => {
+    // The decoy's PATH ends with the imported FQN, but it declares
+    // `package x.com.example.app.api` — a different declaration. Choosing the
+    // candidate by path let it win, and because it declares the same member the
+    // fold did not skip: it published `/wrong`. The declared `package` is the
+    // authority; the path is only a tie-break among files that already declare
+    // the right one.
+    expect(
+      providers({
+        'src/generated/Constants.kt': `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/api/v1/orders"
+}
+`,
+        'src/x/com/example/app/api/ApiPaths.kt': `package x.com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/wrong"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('emits nothing when a test-source copy duplicates a production constant', () => {
+    // Same package, same object, different value, and only the copy follows the
+    // `<package>/<Name>.kt` convention — so a file-name tie-break folded a
+    // test-only path into a production route. Two declarations of one
+    // fully-qualified name identify no single declaration, so the honest answer
+    // is no route: preferring the production source set would be a guess about
+    // build configuration this layer cannot see.
+    expect(
+      providers({
+        'src/main/kotlin/generated/RoutePaths.kt': `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/api/v1/orders"
+}
+`,
+        'src/test/kotlin/com/example/app/api/ApiPaths.kt': `package com.example.app.api
+
+object ApiPaths {
+    const val ORDERS = "/test-only"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual([]);
+  });
+
   it('leaves literal routes unchanged and emits each exactly once', () => {
     expect(
       providers({

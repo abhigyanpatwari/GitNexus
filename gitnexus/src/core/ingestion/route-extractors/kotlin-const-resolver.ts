@@ -39,14 +39,35 @@
  *     `const val ORDERS = "/orders"` carries no type node to check. The
  *     initializer decides: anything {@link parseKotlinConstOperands} cannot fold
  *     to a string (a number, a call, a template) drops the constant.
- *  3. **File names are free.** `object ApiPaths` may live in `Constants.kt`, so
- *     a `<package>/<Name>.kt` lookup is a convention, not a rule — see
- *     {@link resolveKotlinImport}'s second tier.
+ *  3. **File names and directories are free.** `object ApiPaths` may live in
+ *     `Constants.kt`, and a file's `package` need not match the directory it
+ *     sits in, so a `<package>/<Name>.kt` PATH lookup is a convention and not a
+ *     rule. The authority is each file's DECLARED `package`, which
+ *     {@link extractKotlinModuleConstants} records and {@link resolveKotlinImport}
+ *     requires an exact match on; the path is only a tie-break among files that
+ *     already declare the right package.
  *  4. **Member imports are unmarked.** Java spells them `import static a.b.C.F`;
  *     Kotlin writes `import a.b.C.F`, which is byte-identical to a type import
  *     of a class `F` in package `a.b.C`. Nothing in the syntax says which, so
  *     the fold tries both readings (see `resolveImportedName`) instead of
  *     guessing from casing.
+ *
+ * TWO PLACES THIS BINDING NO LONGER MIRRORS JAVA, both because the mirrored
+ * behavior was wrong rather than merely different, and both open as a Java
+ * follow-up rather than fixed here:
+ *
+ *  * `java-const-resolver.ts` flattens nested types into one file-level
+ *    namespace and argues the collision away — "qualified refs carry the class
+ *    name, so nesting only matters for same-name fields, which flatten
+ *    last-wins". The argument does not hold: the collision is one level BELOW
+ *    the qualification, in the initializer, so a fully qualified `A.ROUTE` whose
+ *    initializer names a bare sibling `BASE` still resolves through whichever
+ *    same-named sibling was walked last. {@link extractKotlinModuleConstants}
+ *    keys by Kotlin's own visibility instead.
+ *  * Java's import resolution can lean on the `<package>/<Name>.java` layout the
+ *    language enforces. Kotlin's cannot, and inferring the package from the path
+ *    lets a path-suffix twin outrank the real declaration — so
+ *    {@link resolveKotlinImport} reads the declared `package` instead.
  *
  * Constant shapes this binding harvests:
  *
@@ -70,7 +91,10 @@
  * Keying (parity with the Java and Python bindings): the repo map is keyed by
  * unique POSIX file path, and an import that cannot be pinned to exactly one
  * file returns null (skip floor), never a wrong path. A missing route is a
- * missing fact; a wrongly folded one is a false edge in the graph.
+ * missing fact; a wrongly folded one is a false edge in the graph. "Exactly one
+ * file" is decided from the DECLARED package, not from the path: a path is a
+ * repository-layout accident that any decoy directory can imitate, whereas the
+ * `package` header is the declaration the compiler itself resolves against.
  *
  * POSIX keys are a PRECONDITION this module cannot check cheaply, so it is
  * enforced at the one boundary that produces them: `http-patterns/kotlin.ts`
@@ -102,7 +126,6 @@ import { unquoteSpringLiteral } from './spring-shared.js';
 import {
   MAX_FOLD_LENGTH,
   type ImportBinding,
-  type ImportResolver,
   type ModuleConstants,
   type Operand,
   type RepoConstants,
@@ -114,6 +137,39 @@ export type {
   Operand,
   RepoConstants,
 } from './constant-resolver.js';
+
+/**
+ * What {@link extractKotlinModuleConstants} returns: the agnostic
+ * {@link ModuleConstants} plus the one piece of per-file metadata JVM import
+ * resolution cannot be honest without — the file's declared `package`.
+ *
+ * Deliberately a KOTLIN-LOCAL widening rather than a field on the shared type.
+ * `ModuleConstants` is consumed by the Java, JS and Python bindings too, and
+ * none of them needs this: Python resolves imports from the module path, and
+ * Java's `package` is already pinned by the `<package>/<Name>.java` rule the
+ * language enforces. Adding a required field there would force three unrelated
+ * bindings to fill it in; adding an optional one would put a Kotlin-shaped hole
+ * in a type whose whole point is language neutrality.
+ *
+ * Read it through {@link declaredPackageOf}, never by field access: a
+ * {@link RepoConstants} is typed over the agnostic shape, so an entry that some
+ * other producer put there carries no package and must be REJECTED as a
+ * candidate rather than silently treated as the default package.
+ */
+export interface KotlinModuleConstants extends ModuleConstants {
+  /** The file's declared `package`, or `''` for the default package. */
+  readonly packageName: string;
+}
+
+/**
+ * The declared `package` of the file `mc` describes, or null when the entry did
+ * not come from {@link extractKotlinModuleConstants} and therefore cannot be
+ * matched against an import specifier.
+ */
+function declaredPackageOf(mc: ModuleConstants | undefined): string | null {
+  const declared = (mc as KotlinModuleConstants | undefined)?.packageName;
+  return typeof declared === 'string' ? declared : null;
+}
 
 /** Source extensions a Kotlin declaration can live in. */
 const KOTLIN_EXTENSIONS = ['.kt', '.kts'] as const;
@@ -198,71 +254,112 @@ function isFileNamedAfterDeclaration(key: string, asPath: string): boolean {
   return false;
 }
 
-/** Is `key` a Kotlin file sitting DIRECTLY in the directory `<packageDir>`? */
-function isInPackageDirectory(key: string, packageDir: string): boolean {
-  const slash = key.lastIndexOf('/');
-  if (slash < 0) return false;
-  const dir = key.slice(0, slash);
-  if (dir !== packageDir && !dir.endsWith(`/${packageDir}`)) return false;
-  const fileName = key.slice(slash + 1);
-  return KOTLIN_EXTENSIONS.some((ext) => fileName.endsWith(ext));
+/**
+ * Does the file `mc` describes declare a top-level entity called `name` — an
+ * `object`/companion carrier whose members are keyed `name.<MEMBER>`, or a
+ * top-level constant keyed `name` outright?
+ *
+ * Used only to detect a DUPLICATED fully-qualified name, so both directions of
+ * imprecision are bounded. A false positive (the bare key belongs to a companion
+ * rather than a top-level `val`) can only add a skip; a false negative falls
+ * back to the path tie-breaks below, i.e. to the behavior this test refines.
+ */
+function declaresTopLevelName(mc: ModuleConstants, name: string): boolean {
+  const prefix = `${name}.`;
+  for (const map of [mc.literals, mc.exprs]) {
+    if (map.has(name)) return true;
+    for (const key of map.keys()) if (key.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 /**
- * The Kotlin {@link ImportResolver}: map a fully-qualified import specifier to
- * the unique file key it refers to, or null when it cannot be pinned to exactly
- * one file.
+ * Map a fully-qualified import specifier to the unique file key it refers to, or
+ * null when it cannot be pinned to exactly one file.
  *
- * Two tiers, tried in order, each "unique or nothing":
+ * A specifier is split at its last dot into the package it names and the
+ * declaration inside it (`com.example.app.api` + `ApiPaths`). Resolution then
+ * runs in three steps, all of them "unique or nothing":
  *
- *  1. **File named after the declaration** — `com.example.app.api.ApiPaths` →
- *     the file ending `com/example/app/api/ApiPaths.kt`. This is the JVM
- *     convention Java can rely on outright, and it is what Kotlin projects
- *     overwhelmingly do.
- *  2. **Package directory** — Kotlin does NOT require the file name to match the
- *     declaration (`object ApiPaths` may live in `Constants.kt`) or, strictly,
- *     the directory to match the package. When tier 1 finds nothing, fall back
- *     to the unique Kotlin file sitting directly in `com/example/app/api/`. The
- *     candidate set the fold passes in is the constant-DEFINING files only, so
- *     "unique file in this package" is a far tighter question than it sounds;
- *     when 2+ files in the package define constants, this returns null and the
- *     fold floors to skip.
+ *  0. **Declared package** — only files whose `package` header is EXACTLY the
+ *     sought package can carry the declaration. This is the authority, and it
+ *     is checked first. Kotlin does not require a file's directory to match its
+ *     package, so the reverse test — "does this path end with the package?" —
+ *     answers a different question, one any decoy directory can satisfy: a file
+ *     at `src/x/com/example/api/ApiPaths.kt` declaring `package x.com.example.api`
+ *     is not `com.example.api.ApiPaths` and must never be folded as it, and a
+ *     path-suffix test also lets a root-level `package data` be impersonated by
+ *     `…/com/example/data/`. An entry with no recorded package is rejected, not
+ *     assumed to be the default package.
+ *  1. **Duplicated declaration** — when two of those files declare the sought
+ *     name, the FQN itself is duplicated in the repository and names no single
+ *     declaration. Return null. This is the general form of the same-FQN check
+ *     step 2 could only make for files that happen to follow the file-name
+ *     convention, and it is what stops a `src/test/…` copy of a production
+ *     constant from being folded into a production route.
+ *  2. **File named after the declaration** — among the package-matching files,
+ *     the one ending `com/example/app/api/ApiPaths.kt`. Kotlin does not require
+ *     this (`object ApiPaths` may live in `Constants.kt`), so it is a tie-break
+ *     among already-valid candidates, never evidence on its own.
+ *  3. **Sole file in the package** — when no name matches, the unique
+ *     package-matching candidate. The set passed in is the constant-DEFINING
+ *     files only, so this is a far tighter question than it sounds; with 2+
+ *     candidates it returns null and the fold floors to skip.
  *
- * Tier 2 can hand back a file that does not declare the wanted name at all. That
- * is safe by construction: the fold then looks the name up in that file's map,
- * misses, and returns null. It cannot invent a value — the worst case is a
- * skipped route.
+ * Steps 2 and 3 can still hand back a file that does not declare the wanted name
+ * (its package is right and it is the only candidate, but the name lives
+ * elsewhere or nowhere). That remains safe by construction: the fold looks the
+ * name up in that file's map, misses, and returns null.
  *
- * A "nearest shared directory" tie-break is deliberately NOT applied when a tier
+ * A "nearest shared directory" tie-break is deliberately NOT applied when a step
  * has several candidates, for the reason the Java binding records: the JVM
  * resolves duplicate FQNs by classpath order, not directory proximity, so a test
  * fixture copy sitting closer in the tree can outrank the real dependency and
  * yield a silently wrong literal. In a resolver whose whole contract is
  * skip-or-correct, a plausible guess is the one answer that cannot be allowed.
+ *
+ * This can no longer be typed as the agnostic {@link ModuleConstants} consumer's
+ * `ImportResolver`, whose signature carries only file KEYS: deciding a candidate
+ * on its declared package needs the map those keys index. Nothing is lost — the
+ * core's own fold is not used here either (see the module header), and the
+ * alternative is a resolver that must guess from a path.
  */
-export const resolveKotlinImport: ImportResolver = (_importingFileKey, moduleSpec, repoKeys) => {
+export function resolveKotlinImport(
+  _importingFileKey: string,
+  moduleSpec: string,
+  candidateKeys: ReadonlySet<string>,
+  repo: RepoConstants,
+): string | null {
+  const lastDot = moduleSpec.lastIndexOf('.');
+  const packageName = lastDot < 0 ? '' : moduleSpec.slice(0, lastDot);
+  const simpleName = lastDot < 0 ? moduleSpec : moduleSpec.slice(lastDot + 1);
+
+  // Step 0 + step 1 in one pass over the candidates.
+  const inPackage: string[] = [];
+  let declaring: string | null = null;
+  for (const key of candidateKeys) {
+    const mc = repo.get(key);
+    if (!mc || declaredPackageOf(mc) !== packageName) continue;
+    inPackage.push(key);
+    if (declaresTopLevelName(mc, simpleName)) {
+      if (declaring !== null) return null; // 2+ files declare this FQN
+      declaring = key;
+    }
+  }
+  if (inPackage.length === 0) return null;
+  if (inPackage.length === 1) return inPackage[0]; // steps 2 and 3 agree
+
+  // Step 2: the file-name convention, as a tie-break among valid candidates.
   const asPath = moduleSpec.replace(/\./g, '/');
-
-  let hit: string | null = null;
-  for (const key of repoKeys) {
-    if (isFileNamedAfterDeclaration(key, asPath)) {
-      if (hit !== null) return null; // 2+ modules carry this FQN — unresolvable
-      hit = key;
-    }
+  let named: string | null = null;
+  for (const key of inPackage) {
+    if (!isFileNamedAfterDeclaration(key, asPath)) continue;
+    if (named !== null) return null; // 2+ files spell the convention
+    named = key;
   }
-  if (hit !== null) return hit;
-
-  const lastSlash = asPath.lastIndexOf('/');
-  if (lastSlash <= 0) return null; // no package part to fall back to
-  const packageDir = asPath.slice(0, lastSlash);
-  for (const key of repoKeys) {
-    if (isInPackageDirectory(key, packageDir)) {
-      if (hit !== null) return null; // ambiguous package — unresolvable
-      hit = key;
-    }
-  }
-  return hit;
-};
+  // Step 3 is "the sole candidate", already returned above.
+  return named;
+}
 
 /**
  * Is `node` a Kotlin string literal, and if so what value does the route layer
@@ -400,8 +497,51 @@ function initializerOf(property: Parser.SyntaxNode): Parser.SyntaxNode | null {
 }
 
 /**
- * Extract the file-level string constants and import bindings of one parsed
- * Kotlin file into the {@link ModuleConstants} shape the resolver consumes.
+ * One `val` declaration, captured before anything is written to the file's
+ * namespace so that the DECLARING SCOPE of every initializer is known regardless
+ * of the order the declarations appear in.
+ */
+interface KotlinConstDeclaration {
+  /** The declaration's simple name. */
+  readonly name: string;
+  /** `<DeclaringType>.<NAME>`, or null for a top-level declaration. */
+  readonly qualified: string | null;
+  /**
+   * The qualified-key prefixes in LEXICAL scope for this declaration's
+   * initializer, innermost first (`['Inner', 'Outer']`). Empty at file level.
+   */
+  readonly scopes: readonly string[];
+  /**
+   * Is the simple name a binding Kotlin actually exposes to the rest of the
+   * file? True for a top-level `val`, and for a companion member (visible
+   * unqualified throughout its enclosing class, which is where route
+   * annotations sit). FALSE for a member of a named `object`, which every
+   * caller outside that object's body must qualify.
+   */
+  readonly bareVisible: boolean;
+  /** The parsed initializer, or null when it is not a foldable string. */
+  readonly operands: readonly Operand[] | null;
+}
+
+/**
+ * The file's declared `package`, or `''` when it declares none (default
+ * package). Shaped exactly like the import walk below: `package_header` holds
+ * one `identifier` whose `simple_identifier` children are the dotted segments.
+ */
+function declaredPackage(root: Parser.SyntaxNode): string {
+  const header = root.children.find((c) => c.type === 'package_header');
+  const identifier = header?.children.find((c) => c.type === 'identifier');
+  if (!identifier) return '';
+  return identifier.namedChildren
+    .filter((c) => c.type === 'simple_identifier')
+    .map((c) => c.text)
+    .join('.');
+}
+
+/**
+ * Extract the declared package, file-level string constants and import bindings
+ * of one parsed Kotlin file into the {@link KotlinModuleConstants} shape the
+ * resolver consumes.
  *
  * Constants come from the three carriers Kotlin allows a caller to reach without
  * an instance: file top level, `object` members, and `companion object` members.
@@ -409,21 +549,43 @@ function initializerOf(property: Parser.SyntaxNode): Parser.SyntaxNode | null {
  * NOT collected — the Kotlin analogue of Java's `static final` requirement. `var`
  * is rejected outright.
  *
- * Every constant is recorded under its simple name AND, when it has a declaring
- * type, under `<DeclaringType>.<NAME>` — the spelling a qualified reference uses.
- * A companion member is keyed under the ENCLOSING CLASS (`Holder.NAME`), because
- * that is how Kotlin source refers to it; `Companion` never appears in a
- * reference. Nested types flatten into one file-level namespace (same as the
- * Java binding), so same-named members of sibling objects collide on the simple
- * name and resolve last-wins; their qualified spellings stay distinct.
+ * KEYS FOLLOW KOTLIN'S OWN VISIBILITY, not a flattened namespace. Every constant
+ * is recorded under `<DeclaringType>.<NAME>`, the spelling a qualified reference
+ * uses, with a companion member keyed under its ENCLOSING CLASS (`Holder.NAME`)
+ * because that is how Kotlin source refers to it — `Companion` never appears in
+ * a reference. The SIMPLE name is recorded only when Kotlin really binds it:
+ * for a top-level `val`, and for a companion member. A member of a named
+ * `object` gets no bare key, because `BASE` alone does not name `A.BASE` from
+ * anywhere outside `object A`'s own body. Writing one anyway (as this binding
+ * and the Java one both used to) fabricates a binding the language does not
+ * have, and a fabricated key outranks the genuine `import com.example.api.Paths.ORDERS`
+ * that {@link computeKotlinFold} consults only after literals and expressions.
+ *
+ * An initializer that names a SIBLING is therefore resolved against its own
+ * scope chain, innermost first, before the file level: inside
+ * `object A { const val BASE = "/right"; const val ROUTE = BASE + "/m" }` the
+ * operand `BASE` is rewritten to `A.BASE`. Collecting every declaration before
+ * recording any is what makes that answer independent of declaration ORDER —
+ * flattening resolved such an operand through whichever same-named sibling
+ * object happened to be walked last, so moving `object B` above `object A`
+ * changed the emitted route for source that had not changed at all.
+ *
+ * KNOWN LIMIT, unchanged by the above: a companion member's bare key is
+ * file-wide, so two companions in one file whose members share a name still
+ * resolve last-wins for an UNQUALIFIED reference. Kotlin scopes that name to the
+ * enclosing class, which this map cannot express — the fold is entered with a
+ * file key and a name, and nothing tells it which class body the annotation sat
+ * in. Sibling INITIALIZERS are unaffected (they go through the scope chain
+ * above); only a bare reference from a route annotation can land on the wrong
+ * companion, and only when two companions in the same file collide.
  *
  * A non-foldable rebind (`X = compute()`) DROPS X to unresolvable rather than
- * leaving a stale literal — and drops a same-named import with it, since a local
- * declaration shadows an import for unqualified references and the fold would
- * otherwise fall through to the imported value, i.e. a wrong path where the skip
- * floor is owed.
+ * leaving a stale literal — and drops a same-named import with it, but only when
+ * the declaration is bare-visible, since only then does it shadow the import for
+ * unqualified references. An `object` member of the same name shadows nothing
+ * and must leave the import alone.
  */
-export function extractKotlinModuleConstants(tree: Parser.Tree): ModuleConstants {
+export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleConstants {
   const literals = new Map<string, string>();
   const exprs = new Map<string, readonly Operand[]>();
   const imports = new Map<string, ImportBinding>();
@@ -458,23 +620,123 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): ModuleConstants
   };
   walkImports(tree.rootNode);
 
-  // Pass 2: constants.
-  const record = (name: string, operands: readonly Operand[] | null, qualified: string | null) => {
-    if (operands === null) {
-      literals.delete(name);
-      exprs.delete(name);
-      imports.delete(name);
-      if (qualified) {
-        literals.delete(qualified);
-        exprs.delete(qualified);
+  // Pass 2a: collect every declaration, writing nothing yet. Which member each
+  // unqualified operand means depends on the whole file, so no key can be
+  // written — and no operand rewritten — until the last declaration is in.
+  const declarations: KotlinConstDeclaration[] = [];
+  /** Declaring scope → the simple names it declares, foldable or not. */
+  const membersByScope = new Map<string, Set<string>>();
+
+  const collectProperties = (
+    body: Parser.SyntaxNode,
+    declaringType: string | null,
+    scopes: readonly string[],
+    bareVisible: boolean,
+  ): void => {
+    for (const member of body.children ?? []) {
+      if (member.type !== 'property_declaration') continue;
+      if (bindingKind(member) !== 'val') continue;
+      const declaration = member.children.find((c) => c.type === 'variable_declaration');
+      const nameNode = declaration?.namedChildren.find((c) => c.type === 'simple_identifier');
+      if (!nameNode) continue;
+      const name = nameNode.text;
+      if (declaringType !== null) {
+        let members = membersByScope.get(declaringType);
+        if (!members) membersByScope.set(declaringType, (members = new Set()));
+        // Recorded even when the initializer does not fold: a sibling reference
+        // to an unfoldable member must resolve to that member and then MISS,
+        // not fall through to a same-named constant at file level.
+        members.add(name);
       }
-      return;
+      declarations.push({
+        name,
+        qualified: declaringType === null ? null : `${declaringType}.${name}`,
+        scopes,
+        bareVisible,
+        operands: parseKotlinConstOperands(initializerOf(member)),
+      });
     }
+  };
+
+  const bodyOf = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
+    node.children.find((c) => c.type === 'class_body');
+
+  const walkDeclarations = (
+    node: Parser.SyntaxNode,
+    enclosingType: string | null,
+    scopes: readonly string[],
+  ): void => {
+    for (const child of node.children ?? []) {
+      if (child.type === 'object_declaration') {
+        const name = child.children.find((c) => c.type === 'type_identifier')?.text ?? null;
+        const body = bodyOf(child);
+        if (!body) continue;
+        // Members are reachable only as `A.NAME`; inside the body, `NAME` alone
+        // means this object's member and nothing else, hence the pushed scope.
+        const inner = name === null ? scopes : [name, ...scopes];
+        collectProperties(body, name, inner, false);
+        walkDeclarations(body, name, inner);
+        continue;
+      }
+      if (child.type === 'companion_object') {
+        const body = bodyOf(child);
+        if (!body) continue;
+        // Referenced through the enclosing class (`Holder.NAME`), never through
+        // `Companion` — so the qualified alias is keyed on `enclosingType`. The
+        // simple name IS bound, throughout that class body.
+        const inner = enclosingType === null ? scopes : [enclosingType, ...scopes];
+        collectProperties(body, enclosingType, inner, true);
+        walkDeclarations(body, enclosingType, inner);
+        continue;
+      }
+      if (child.type === 'class_declaration') {
+        // A class/interface body's own `val`s are per-instance or abstract, so
+        // only its nested objects and companion contribute constants.
+        const name = child.children.find((c) => c.type === 'type_identifier')?.text ?? null;
+        const body = bodyOf(child);
+        if (body) walkDeclarations(body, name, scopes);
+        continue;
+      }
+      walkDeclarations(child, enclosingType, scopes);
+    }
+  };
+
+  collectProperties(tree.rootNode, null, [], true);
+  walkDeclarations(tree.rootNode, null, []);
+
+  // Pass 2b: rewrite each initializer's unqualified operands against the scope
+  // chain that encloses it, then record. Top level last-wins over nothing;
+  // top-level declarations are recorded first and a companion's bare key after,
+  // which is the order Kotlin resolves them in inside the class body.
+  const qualifyRef = (refName: string, scopes: readonly string[]): string => {
+    if (refName.includes('.')) return refName; // already carries its owner
+    for (const scope of scopes) {
+      if (membersByScope.get(scope)?.has(refName)) return `${scope}.${refName}`;
+    }
+    return refName; // file level, or unresolvable — the fold decides
+  };
+
+  for (const decl of declarations) {
+    const keys: string[] = [];
+    if (decl.bareVisible) keys.push(decl.name);
+    if (decl.qualified !== null) keys.push(decl.qualified);
+
+    if (decl.operands === null) {
+      for (const key of keys) {
+        literals.delete(key);
+        exprs.delete(key);
+      }
+      // Only a bare-visible declaration shadows a same-named import.
+      if (decl.bareVisible) imports.delete(decl.name);
+      continue;
+    }
+
+    const operands = decl.operands.map((op) =>
+      op.kind === 'ref' ? { kind: 'ref' as const, name: qualifyRef(op.name, decl.scopes) } : op,
+    );
     const literalValue =
-      operands.length === 1 && operands[0].kind === 'literal'
-        ? (operands[0] as { value: string }).value
-        : null;
-    for (const key of qualified ? [name, qualified] : [name]) {
+      operands.length === 1 && operands[0].kind === 'literal' ? operands[0].value : null;
+    for (const key of keys) {
       if (literalValue !== null) {
         literals.set(key, literalValue);
         exprs.delete(key);
@@ -483,62 +745,9 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): ModuleConstants
         literals.delete(key);
       }
     }
-  };
+  }
 
-  const collectProperties = (body: Parser.SyntaxNode, declaringType: string | null): void => {
-    for (const member of body.children ?? []) {
-      if (member.type !== 'property_declaration') continue;
-      if (bindingKind(member) !== 'val') continue;
-      const declaration = member.children.find((c) => c.type === 'variable_declaration');
-      const nameNode = declaration?.namedChildren.find((c) => c.type === 'simple_identifier');
-      if (!nameNode) continue;
-      const name = nameNode.text;
-      record(
-        name,
-        parseKotlinConstOperands(initializerOf(member)),
-        declaringType ? `${declaringType}.${name}` : null,
-      );
-    }
-  };
-
-  const bodyOf = (node: Parser.SyntaxNode): Parser.SyntaxNode | undefined =>
-    node.children.find((c) => c.type === 'class_body');
-
-  const walkDeclarations = (node: Parser.SyntaxNode, enclosingType: string | null): void => {
-    for (const child of node.children ?? []) {
-      if (child.type === 'object_declaration') {
-        const name = child.children.find((c) => c.type === 'type_identifier')?.text ?? null;
-        const body = bodyOf(child);
-        if (!body) continue;
-        collectProperties(body, name);
-        walkDeclarations(body, name);
-        continue;
-      }
-      if (child.type === 'companion_object') {
-        const body = bodyOf(child);
-        if (!body) continue;
-        // Referenced through the enclosing class (`Holder.NAME`), never through
-        // `Companion` — so the qualified alias is keyed on `enclosingType`.
-        collectProperties(body, enclosingType);
-        walkDeclarations(body, enclosingType);
-        continue;
-      }
-      if (child.type === 'class_declaration') {
-        // A class/interface body's own `val`s are per-instance or abstract, so
-        // only its nested objects and companion contribute constants.
-        const name = child.children.find((c) => c.type === 'type_identifier')?.text ?? null;
-        const body = bodyOf(child);
-        if (body) walkDeclarations(body, name);
-        continue;
-      }
-      walkDeclarations(child, enclosingType);
-    }
-  };
-
-  collectProperties(tree.rootNode, null);
-  walkDeclarations(tree.rootNode, null);
-
-  return { literals, exprs, imports };
+  return { literals, exprs, imports, packageName: declaredPackage(tree.rootNode) };
 }
 
 /**
@@ -628,7 +837,7 @@ function resolveImportedName(
 ): string | null {
   // Reading A: the specifier names the declaration itself (a top-level
   // `const val`, or a type whose file we then search).
-  const direct = resolveKotlinImport(fileKey, imp.module, state.constantKeys);
+  const direct = resolveKotlinImport(fileKey, imp.module, state.constantKeys, state.repo);
   if (direct !== null) {
     const value = resolveWithState(direct, imp.originalName, state, depth);
     if (value !== null) return value;
@@ -639,7 +848,7 @@ function resolveImportedName(
   if (dot <= 0) return null;
   const ownerSpec = imp.module.slice(0, dot);
   const ownerName = ownerSpec.slice(ownerSpec.lastIndexOf('.') + 1);
-  const ownerFile = resolveKotlinImport(fileKey, ownerSpec, state.constantKeys);
+  const ownerFile = resolveKotlinImport(fileKey, ownerSpec, state.constantKeys, state.repo);
   if (ownerFile === null) return null;
   return resolveWithState(ownerFile, `${ownerName}.${imp.originalName}`, state, depth);
 }
@@ -666,7 +875,7 @@ function computeKotlinFold(
     const tail = name.slice(dot + 1);
     const imp = repo.get(fileKey)?.imports.get(head);
     if (imp) {
-      const targetFile = resolveKotlinImport(fileKey, imp.module, constantKeys);
+      const targetFile = resolveKotlinImport(fileKey, imp.module, constantKeys, repo);
       if (targetFile === null) return null;
       // `originalName` un-aliases `import … .ApiPaths as Paths`, so the lookup
       // uses the declaring type's real name.
@@ -677,7 +886,7 @@ function computeKotlinFold(
     const parts = name.split('.');
     for (let cut = parts.length - 2; cut >= 1; cut--) {
       const fqn = parts.slice(0, cut + 1).join('.');
-      const targetFile = resolveKotlinImport(fileKey, fqn, constantKeys);
+      const targetFile = resolveKotlinImport(fileKey, fqn, constantKeys, repo);
       if (targetFile !== null) {
         const declaring = parts[cut];
         const member = parts.slice(cut + 1).join('.');

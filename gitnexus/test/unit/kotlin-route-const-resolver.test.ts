@@ -34,6 +34,7 @@ import {
   parseKotlinConstOperands,
   resolveKotlinConstant,
   resolveKotlinImport,
+  type ModuleConstants,
   type RepoConstants,
 } from '../../src/core/ingestion/route-extractors/kotlin-const-resolver.js';
 import { unquoteSpringLiteral } from '../../src/core/ingestion/route-extractors/spring-shared.js';
@@ -242,12 +243,15 @@ import com.example.app.api.ApiPaths
       };
       const repo = repoOf(files);
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
-      // Same verdict at the resolver layer the fold delegates to.
+      // Same verdict at the resolver layer the fold delegates to. It reads the
+      // candidates' DECLARED packages, so it takes the repo map as well as the
+      // key set.
       expect(
         resolveKotlinImport(
           CONTROLLER_KEY,
           'com.example.app.api.ApiPaths',
           new Set(Object.keys(files)),
+          repo,
         ),
       ).toBeNull();
     });
@@ -507,6 +511,353 @@ object Unrelated {
 import com.example.app.api.ApiPaths
 `,
       });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
+    });
+  });
+
+  describe('member names resolve in their declaring scope, not a flat namespace', () => {
+    /** Two objects declaring `BASE`; only `A` is referenced. Order is the axis. */
+    const siblingShadow = (first: 'A' | 'B'): string => {
+      const a = `object A {
+    const val BASE = "/right"
+    const val ROUTE = BASE + "/m"
+}`;
+      const b = `object B {
+    const val BASE = "/wrong"
+}`;
+      return `package com.example.app.api\n\n${first === 'A' ? `${a}\n\n${b}` : `${b}\n\n${a}`}\n`;
+    };
+    const SIBLING_KEY = 'src/main/kotlin/com/example/app/api/Siblings.kt';
+
+    it('answers a sibling initializer identically whichever object is declared first', () => {
+      // `A.ROUTE = BASE + "/m"` means `A.BASE`, so the answer is `/right/m` in
+      // both spellings. Recording every member under its BARE name too made the
+      // operand resolve through whichever object was walked last, so moving
+      // `object B` above `object A` changed the emitted route for source that
+      // had not changed — the same file, merely reordered, served a different
+      // path. Both orders are asserted because either one alone passes on a
+      // last-wins implementation.
+      for (const first of ['A', 'B'] as const) {
+        const repo = repoOf({ [SIBLING_KEY]: siblingShadow(first) });
+        expect(resolveKotlinConstant(SIBLING_KEY, 'A.ROUTE', repo), `${first} first`).toBe(
+          '/right/m',
+        );
+        expect(resolveKotlinConstant(SIBLING_KEY, 'B.BASE', repo), `${first} first`).toBe('/wrong');
+      }
+    });
+
+    it('does not bind an `object` member to its bare name, so an import still wins', () => {
+      // `object Local { const val ORDERS }` binds `Local.ORDERS` and nothing
+      // else — bare `ORDERS` in this file is the IMPORT. A bare key for the
+      // object member is a binding Kotlin does not have, and it outranks the
+      // import because the fold consults literals before imports.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/app/api/Paths.kt': `package com.example.app.api
+
+object Paths {
+    const val ORDERS = "/imported"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.Paths.ORDERS
+
+object Local {
+    const val ORDERS = "/local-member"
+}
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBe('/imported');
+      // The qualified spelling still reaches the object member.
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'Local.ORDERS', repo)).toBe('/local-member');
+    });
+
+    it('keeps a top-level `const val` shadowing a same-named import', () => {
+      // The control for the test above: a top-level declaration IS the bare
+      // binding, so it must keep winning over the import.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/app/api/Paths.kt': `package com.example.app.api
+
+object Paths {
+    const val ORDERS = "/imported"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.Paths.ORDERS
+
+const val ORDERS = "/local"
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBe('/local');
+    });
+
+    it('keeps a companion member visible under its bare name', () => {
+      // The other control: a companion's members ARE in scope unqualified
+      // throughout the enclosing class, which is where route annotations sit.
+      const key = 'src/main/kotlin/com/example/app/web/OrderApi.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.web
+
+class OrderApi {
+    companion object {
+        const val ORDERS = "/companion/orders"
+    }
+}
+`,
+      });
+      expect(resolveKotlinConstant(key, 'ORDERS', repo)).toBe('/companion/orders');
+      expect(resolveKotlinConstant(key, 'OrderApi.ORDERS', repo)).toBe('/companion/orders');
+    });
+
+    it('resolves a nested object member through the enclosing object', () => {
+      // `Inner`'s initializer names `P`, which `Inner` does not declare and
+      // `Outer` does; the scope chain is walked innermost-first, so it means
+      // `Outer.P` — not the same-named member of the unrelated `Other`.
+      const key = 'src/main/kotlin/com/example/app/api/Nested.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.api
+
+object Other {
+    const val P = "/wrong"
+}
+
+object Outer {
+    const val P = "/right"
+    object Inner {
+        const val Q = P + "/q"
+    }
+}
+`,
+      });
+      expect(resolveKotlinConstant(key, 'Inner.Q', repo)).toBe('/right/q');
+    });
+
+    it('does not fall through to a file-level constant for an unfoldable sibling', () => {
+      // `A.R` names `A.BASE`, which does not fold. The answer is the skip floor,
+      // not the top-level `BASE` that happens to share the simple name.
+      const key = 'src/main/kotlin/com/example/app/api/Unfoldable.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.api
+
+const val BASE = "/top-level"
+
+object A {
+    val BASE = buildBase()
+    val R = BASE + "/r"
+}
+`,
+      });
+      expect(resolveKotlinConstant(key, 'A.R', repo)).toBeNull();
+      expect(resolveKotlinConstant(key, 'BASE', repo)).toBe('/top-level');
+    });
+
+    it('lets an unfoldable object member leave a same-named import alone', () => {
+      // A local declaration drops a same-named import only when it SHADOWS it.
+      // An object member shadows nothing, so dropping the import here would
+      // floor a reference the language resolves perfectly well.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/app/api/Paths.kt': `package com.example.app.api
+
+object Paths {
+    const val ORDERS = "/imported"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.Paths.ORDERS
+
+object Local {
+    val ORDERS = buildOrders()
+}
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBe('/imported');
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'Local.ORDERS', repo)).toBeNull();
+    });
+  });
+
+  describe('imports resolve on the declared package, not on the path', () => {
+    it('folds through the file that DECLARES the package, not one whose path imitates it', () => {
+      // `src/x/com/example/api/ApiPaths.kt` ends with the imported FQN but
+      // declares `package x.com.example.api`, so it is a different declaration
+      // entirely. Selecting candidates by path made it beat the real file — and
+      // because the decoy declares the same member, the fold did not skip, it
+      // published `/wrong`.
+      const repo = repoOf({
+        'src/generated/Constants.kt': `package com.example.api
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`,
+        'src/x/com/example/api/ApiPaths.kt': `package x.com.example.api
+
+object ApiPaths {
+    const val ORDERS = "/wrong"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.api.ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBe('/right');
+    });
+
+    it('does not let a deep directory impersonate a root-level package', () => {
+      // `package data` lives at the repository root, which the old
+      // package-DIRECTORY fallback could not see at all, while
+      // `src/main/kotlin/com/example/data/` matched `data` by path suffix. Both
+      // halves are gone: the declared package is the whole test.
+      const repo = repoOf({
+        'Constants.kt': `package data
+
+object Constants {
+    const val ORDERS = "/right"
+}
+`,
+        'src/main/kotlin/com/example/data/AppPaths.kt': `package com.example.data
+
+object Constants {
+    const val ORDERS = "/wrong"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import data.Constants
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'Constants.ORDERS', repo)).toBe('/right');
+    });
+
+    it('skips rather than guesses when no file declares the imported package', () => {
+      // The same import with the real declaration absent. A path-suffix match
+      // answered `/wrong` here; the honest answer is that the constant is not
+      // in this repository.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/data/AppPaths.kt': `package com.example.data
+
+object Constants {
+    const val ORDERS = "/wrong"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import data.Constants
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'Constants.ORDERS', repo)).toBeNull();
+    });
+
+    it('skips when two files declare the same fully-qualified name', () => {
+      // A test-source copy of a production constant: same package, same object,
+      // different value. Only the copy follows the `<package>/<Name>.kt`
+      // convention, so a file-name tie-break picked it and folded a test-only
+      // path into a production route. Two declarations of one FQN name no single
+      // declaration, whichever paths they sit at.
+      const repo = repoOf({
+        'src/main/kotlin/generated/RoutePaths.kt': `package com.example.api
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`,
+        'src/test/kotlin/com/example/api/ApiPaths.kt': `package com.example.api
+
+object ApiPaths {
+    const val ORDERS = "/test-only"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.api.ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
+    });
+
+    it('still prefers the conventionally named file among same-package candidates', () => {
+      // Two files declare `com.example.api`; only one declares `ApiPaths`, and
+      // it is also the one the file-name convention points at. The convention
+      // survives as a tie-break among candidates that already declare the right
+      // package — it is just no longer evidence on its own.
+      const repo = repoOf({
+        'src/main/kotlin/com/example/api/ApiPaths.kt': `package com.example.api
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`,
+        'src/main/kotlin/com/example/api/Other.kt': `package com.example.api
+
+object OtherPaths {
+    const val ITEMS = "/items"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.api.ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBe('/right');
+    });
+
+    it('reaches the sole file of a package whose name matches nothing', () => {
+      // The decoy declares a DIFFERENT package, so it is not a candidate at all
+      // and the unconventionally named `Constants.kt` is the only one left.
+      // This used to be the one shape the old resolver's safety argument
+      // covered, and it covered it by emitting nothing.
+      const repo = repoOf({
+        'src/generated/Constants.kt': `package com.example.api
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`,
+        'src/x/com/example/api/ApiPaths.kt': `package x.com.example.api
+
+object ApiPaths {
+    const val OTHER = "/other"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.api.ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBe('/right');
+    });
+
+    it('rejects a candidate carrying no recorded package', () => {
+      // `RepoConstants` is typed over the agnostic shape, so an entry some other
+      // producer put there has no `packageName`. Unknown is not "the default
+      // package": the candidate is rejected, and the fold floors to skip.
+      const key = 'src/main/kotlin/com/example/api/ApiPaths.kt';
+      const foreign = extractKotlinModuleConstants(
+        parse(`package com.example.api
+
+object ApiPaths {
+    const val ORDERS = "/right"
+}
+`),
+      );
+      const repo = new Map<string, ModuleConstants>();
+      // Stripped to the agnostic shape: same maps, no `packageName`.
+      repo.set(key, {
+        literals: foreign.literals,
+        exprs: foreign.exprs,
+        imports: foreign.imports,
+      });
+      repo.set(
+        CONTROLLER_KEY,
+        extractKotlinModuleConstants(
+          parse(`package com.example.app.web
+
+import com.example.api.ApiPaths
+`),
+        ),
+      );
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
     });
   });
