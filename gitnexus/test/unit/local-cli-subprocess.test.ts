@@ -1100,13 +1100,18 @@ describe('Grok CLI timeout', () => {
 
   it('kills child process after requestTimeoutMs and rejects with timeout error', async () => {
     const child = hangingChild();
-    const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child);
+    const { callGrokLLM, spawnSpy, execFileSync } = await loadGrokWithChild(child);
     const promise = callGrokLLM('prompt', { requestTimeoutMs: 5000 });
     await waitForSpawn(spawnSpy);
     vi.advanceTimersByTime(5000);
     child.emit('close', null);
     await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
-    expect(child.kill).toHaveBeenCalled();
+    if (process.platform === 'win32') {
+      const taskkillCalls = execFileSync.mock.calls.filter((c: unknown[]) => c[0] === 'taskkill');
+      expect(taskkillCalls.length).toBeGreaterThan(0);
+    } else {
+      expect(child.kill).toHaveBeenCalled();
+    }
   });
 
   it('uses taskkill /T /F /PID on Windows for process-tree kill', async () => {
