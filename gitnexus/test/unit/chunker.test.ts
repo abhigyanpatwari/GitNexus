@@ -4,8 +4,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { characterChunk } from '../../src/core/embeddings/character-chunk.js';
 
-const { createParserForLanguage } = vi.hoisted(() => ({
+const { createParserForLanguage, resolveLanguageKey } = vi.hoisted(() => ({
   createParserForLanguage: vi.fn(),
+  resolveLanguageKey: vi.fn((language: string, filePath?: string) =>
+    language === 'typescript' && filePath?.endsWith('.tsx') ? 'typescript:tsx' : language,
+  ),
 }));
 
 const { getLanguageFromFilename } = vi.hoisted(() => ({
@@ -17,9 +20,7 @@ const { getLanguageFromFilename } = vi.hoisted(() => ({
 vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
   createParserForLanguage,
   isLanguageAvailable: vi.fn().mockReturnValue(true),
-  resolveLanguageKey: vi.fn((language: string, filePath?: string) =>
-    language === 'typescript' && filePath?.endsWith('.tsx') ? 'typescript:tsx' : language,
-  ),
+  resolveLanguageKey,
 }));
 
 // Partial mock: `ast-utils` now resolves the LanguageProvider registry to apply
@@ -120,6 +121,28 @@ const makeDeclarationTree = (
   };
 };
 
+const makeObjectiveCDeclarationTree = (
+  nodeType: 'protocol_declaration' | 'class_interface',
+  content: string,
+  memberTexts: string[],
+) => {
+  const headerName = nodeType === 'protocol_declaration' ? 'Worker' : 'Worker (Tracing)';
+  const headerNode = makeFakeNode(
+    'identifier',
+    content.indexOf(headerName),
+    content.indexOf(headerName) + headerName.length,
+  );
+  let searchFrom = 0;
+  const memberNodes = memberTexts.map((text) => {
+    const startIndex = content.indexOf(text, searchFrom);
+    if (startIndex < 0) throw new Error(`Unable to locate member text: ${text}`);
+    searchFrom = startIndex + text.length;
+    return makeFakeNode('method_declaration', startIndex, startIndex + text.length);
+  });
+  const declNode = makeFakeNode(nodeType, 0, content.length, [headerNode, ...memberNodes]);
+  return { rootNode: makeFakeNode('program', 0, content.length, [declNode]) };
+};
+
 describe('characterChunk', () => {
   it('returns single chunk when content fits', () => {
     const result = characterChunk('short content', 1, 5, 1200, 120);
@@ -177,6 +200,10 @@ describe('characterChunk', () => {
 describe('chunkNode', () => {
   beforeEach(() => {
     createParserForLanguage.mockReset();
+    resolveLanguageKey.mockReset();
+    resolveLanguageKey.mockImplementation(
+      (language: string, filePath?: string) => `${language}:${filePath ?? ''}`,
+    );
     getLanguageFromFilename.mockImplementation((filePath: string) =>
       filePath.endsWith('.rs') ? 'rust' : 'typescript',
     );
@@ -278,6 +305,51 @@ describe('chunkNode', () => {
     expect(combinedText).toContain('address: String');
     expect(result[0].startLine).toBe(40);
   });
+
+  it.each([
+    {
+      label: 'Protocol',
+      nodeType: 'protocol_declaration' as const,
+      filePath: 'Worker.tsx',
+      content: [
+        '@protocol Worker',
+        '- (void)startWithConfiguration:(id)configuration;',
+        '- (void)stopWithCompletion:(id)completion;',
+        '- (void)reloadWithOptions:(id)options;',
+        '@end',
+      ].join('\n'),
+    },
+    {
+      label: 'Category',
+      nodeType: 'class_interface' as const,
+      filePath: 'Worker.rs',
+      content: [
+        '@interface Worker (Tracing)',
+        '- (void)startWithConfiguration:(id)configuration;',
+        '- (void)stopWithCompletion:(id)completion;',
+        '- (void)reloadWithOptions:(id)options;',
+        '@end',
+      ].join('\n'),
+    },
+  ])(
+    'chunks Objective-C $label declarations at member boundaries',
+    async ({ label, nodeType, filePath, content }) => {
+      const members = [
+        '- (void)startWithConfiguration:(id)configuration;',
+        '- (void)stopWithCompletion:(id)completion;',
+        '- (void)reloadWithOptions:(id)options;',
+      ];
+      createParserForLanguage.mockResolvedValue({
+        parse: vi.fn().mockReturnValue(makeObjectiveCDeclarationTree(nodeType, content, members)),
+      });
+
+      const result = await chunkNode(label, content, filePath, 1, 5, 90, 0);
+
+      expect(result).toHaveLength(2);
+      expect(result[0].text).toContain(members[0]);
+      expect(result.slice(1).every((chunk) => chunk.text.startsWith('- (void)'))).toBe(true);
+    },
+  );
 
   it('splits a function into multiple AST-aware chunks using snippet offsets', async () => {
     const content = [

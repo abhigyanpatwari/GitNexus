@@ -669,6 +669,23 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
   const macroNames = new Set<string>();
   const classNames = new Set<string>();
 
+  const addFunctionFact = (node: SyntaxNode): void => {
+    const info = functionInfo(node);
+    if (info === null) return;
+    const qualifiedName = objcFunctionQualifiedName(info.name);
+    const { startLine, endLine } = range(node);
+    functions.push({
+      name: info.name,
+      qualifiedName,
+      nodeId: graphNodeId('Function', qualifiedName),
+      filePath,
+      startLine,
+      endLine,
+      ...(info.returnType !== undefined ? { returnType: info.returnType } : {}),
+      parameterTypes: info.parameterTypes,
+    });
+  };
+
   walkNamedTree(tree.rootNode, (node) => {
     if (node.type !== 'preproc_def' && node.type !== 'preproc_function_def') return;
     const name = macroName(node);
@@ -882,6 +899,13 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
             });
           });
         } else if (inner.type === 'implementation_definition') {
+          const functionNode = directNamedChildren(inner).find(
+            (node) => node.type === 'function_definition',
+          );
+          if (functionNode !== undefined) {
+            addFunctionFact(functionNode);
+            continue;
+          }
           const methodNode = directNamedChildren(inner).find((n) => n.type === 'method_definition');
           if (methodNode !== undefined) {
             const selector = methodSelector(methodNode);
@@ -964,20 +988,7 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     }
 
     if (child.type === 'function_definition' || child.type === 'declaration') {
-      const info = functionInfo(child);
-      if (info === null) continue;
-      const qualifiedName = objcFunctionQualifiedName(info.name);
-      const { startLine, endLine } = range(child);
-      functions.push({
-        name: info.name,
-        qualifiedName,
-        nodeId: graphNodeId('Function', qualifiedName),
-        filePath,
-        startLine,
-        endLine,
-        ...(info.returnType !== undefined ? { returnType: info.returnType } : {}),
-        parameterTypes: info.parameterTypes,
-      });
+      addFunctionFact(child);
     }
   }
 

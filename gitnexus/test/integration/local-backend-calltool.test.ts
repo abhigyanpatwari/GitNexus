@@ -262,6 +262,44 @@ withTestLbugDB(
         }
       });
 
+      it('does not disclose lingering source text when retention metadata is invalid', async () => {
+        const storagePath = handle.tmpHandle.dbPath;
+        await saveMeta(storagePath, {
+          repoPath: '/test/repo',
+          storagePath,
+          lastCommit: 'abc123',
+          indexedAt: new Date().toISOString(),
+          contentRetention: 'invalid' as never,
+          contentRetentionSchemaVersion: 1,
+          ftsProfile: 'name-only',
+        });
+        try {
+          const query = await backend.callTool('query', { query: 'login', include_content: true });
+          const context = await backend.callTool('context', {
+            name: 'login',
+            include_content: true,
+          });
+          const login = (query.process_symbols ?? []).find(
+            (symbol: any) => symbol.id === 'func:login',
+          );
+
+          expect(query.contentAvailability).toMatchObject({
+            requested: true,
+            profile: 'none',
+            available: false,
+            scope: 'none',
+          });
+          expect(login?.content).toBeUndefined();
+          expect(context.contentAvailability).toEqual(query.contentAvailability);
+          expect(context.symbol.content).toBeUndefined();
+        } finally {
+          await Promise.all([
+            fs.rm(`${storagePath}/gitnexus.json`, { force: true }),
+            fs.rm(`${storagePath}/meta.json`, { force: true }),
+          ]);
+        }
+      });
+
       // PR #222 port: a symbol in MULTIPLE processes is what fully exercises the
       // +1 positional shift in the batched STEP_IN_PROCESS aggregation — with a
       // single process row, `row.pid ?? row[1]` succeeds whether the shift is

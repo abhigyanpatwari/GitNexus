@@ -126,6 +126,23 @@ int (*callback)(int value);
     expect(facts.functions.map((fn) => fn.name)).not.toContain('callback');
   });
 
+  it('extracts C helper functions declared inside an Objective-C implementation', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@implementation Worker
+static int helper(void) { return 1; }
+@end
+`),
+      'Worker.m',
+    );
+
+    expect(facts.functions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'helper', returnType: 'int', parameterTypes: ['void'] }),
+      ]),
+    );
+  });
+
   it('does not treat protocol-qualified parameter types as conformance', () => {
     const facts = collectObjectiveCFacts(
       parseSource(`

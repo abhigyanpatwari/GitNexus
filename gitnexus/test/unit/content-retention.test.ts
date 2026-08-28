@@ -97,6 +97,7 @@ describe('content retention profiles', () => {
 
   it('treats legacy metadata as full and forces a rebuild for changed retention metadata', () => {
     expect(contentRetentionFromMeta({})).toBe('full');
+    expect(contentRetentionFromMeta({ contentRetention: 'corrupt' } as never)).toBe('none');
     expect(contentRetentionMismatch({}, 'full')).toBe(false);
     expect(contentRetentionMismatch({}, 'symbol')).toBe(true);
     expect(contentRetentionMismatch({ contentRetention: 'full' }, 'full')).toBe(true);

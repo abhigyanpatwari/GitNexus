@@ -68,6 +68,24 @@ describe('storage resolver', () => {
     expect(resolveStoragePath(repo)).toBe(registered);
   });
 
+  it('uses a registered external slot when the repository is reached through a symlink', async () => {
+    const root = await makeTempDir('gitnexus-storage-resolver-symlink-');
+    const repo = path.join(root, 'repo');
+    const linkedRepo = path.join(root, 'repo-link');
+    const home = await makeTempDir('gitnexus-storage-resolver-home-');
+    const registered = path.join(home, 'registered-index');
+    await fs.mkdir(repo);
+    await fs.symlink(repo, linkedRepo, process.platform === 'win32' ? 'junction' : 'dir');
+    delete process.env.GITNEXUS_STORAGE_PATH;
+    process.env.GITNEXUS_HOME = home;
+    await fs.writeFile(
+      path.join(home, 'registry.json'),
+      JSON.stringify([{ path: repo, storagePath: registered }]),
+    );
+
+    expect(resolveStoragePath(linkedRepo)).toBe(registered);
+  });
+
   it('ignores malformed registry rows and falls back to the local layout', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
     const home = await makeTempDir('gitnexus-storage-resolver-home-');

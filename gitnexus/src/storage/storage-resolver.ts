@@ -25,6 +25,16 @@ const registryPath = (): string =>
 const samePath = (left: string, right: string): boolean =>
   process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 
+// Mirror registry lookup semantics without importing repo-manager and creating a cycle.
+const canonicalRegistryPath = (value: string): string => {
+  const resolved = path.resolve(value);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+};
+
 export const defaultStoragePath = (repoPath: string): string =>
   path.join(path.resolve(repoPath), '.gitnexus');
 
@@ -58,14 +68,14 @@ const registeredStoragePath = (repoPath: string): string | undefined => {
     return undefined;
   }
 
-  const resolvedRepoPath = path.resolve(repoPath);
+  const resolvedRepoPath = canonicalRegistryPath(repoPath);
   for (const entry of entries) {
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue;
     const registryEntry = entry as RegistryStorageEntry;
     if (typeof registryEntry.path !== 'string' || typeof registryEntry.storagePath !== 'string') {
       continue;
     }
-    if (!samePath(path.resolve(registryEntry.path), resolvedRepoPath)) continue;
+    if (!samePath(canonicalRegistryPath(registryEntry.path), resolvedRepoPath)) continue;
     try {
       return validateConfiguredStoragePath(registryEntry.storagePath);
     } catch {

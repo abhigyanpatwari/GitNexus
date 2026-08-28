@@ -148,6 +148,8 @@ const DECLARATION_BODY_NODE_TYPES = new Set([
   'interface_body',
 ]);
 
+const DIRECT_MEMBER_DECLARATION_TYPES = new Set(['protocol_declaration', 'class_interface']);
+
 const FIELD_LIKE_MEMBER_TYPES = new Set([
   'field_definition',
   'public_field_definition',
@@ -337,6 +339,8 @@ const getDeclarationBodyNode = (node: any): any | null => {
   const bodyNode = node.childForFieldName?.('body');
   if (bodyNode) return bodyNode;
 
+  if (DIRECT_MEMBER_DECLARATION_TYPES.has(node.type)) return node;
+
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (!child) continue;
@@ -355,6 +359,9 @@ const collectDeclarationUnits = (
   for (let i = 0; i < bodyNode.namedChildCount; i++) {
     const child = bodyNode.namedChild(i);
     if (!child) continue;
+    if (DIRECT_MEMBER_DECLARATION_TYPES.has(bodyNode.type) && child.type === 'identifier') {
+      continue;
+    }
     members.push({
       startIndex: child.startIndex,
       endIndex: child.endIndex,

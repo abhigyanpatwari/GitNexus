@@ -15,10 +15,13 @@ export const contentRetentionFromEnvironment = (): ContentRetention => {
 
 export const contentRetentionFromMeta = (
   meta: Pick<RepoMeta, 'contentRetention'> | null | undefined,
-): ContentRetention =>
-  meta?.contentRetention === 'symbol' || meta?.contentRetention === 'none'
-    ? meta.contentRetention
-    : 'full';
+): ContentRetention => {
+  const retention = meta?.contentRetention;
+  if (retention === undefined || retention === 'full') return 'full';
+  if (retention === 'symbol' || retention === 'none') return retention;
+  // Legacy metadata has no field; an explicit unknown value is corrupt and must not expose text.
+  return 'none';
+};
 
 export const ftsProfileForContentRetention = (retention: ContentRetention): FtsProfile => {
   switch (retention) {
