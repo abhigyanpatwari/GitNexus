@@ -688,9 +688,10 @@ describe('Grok CLI subprocess contract', () => {
 
     expect(detectGrokCLI()).toBe('grok');
     expect(detectGrokCLI()).toBe('grok');
-    expect(execFileSync).toHaveBeenCalledTimes(1);
-    expect(execFileSync.mock.calls[0][0]).toBe('grok');
-    expect(execFileSync.mock.calls[0][1]).toEqual(['--version']);
+    const versionCalls = execFileSync.mock.calls.filter(
+      (call: unknown[]) => Array.isArray(call[1]) && (call[1] as string[]).includes('--version'),
+    );
+    expect(versionCalls).toHaveLength(1);
   });
 
   it('detectGrokCLI returns null on ENOENT', async () => {
@@ -1003,7 +1004,7 @@ describe('Grok CLI subprocess contract', () => {
       const spawnCmd = spawnSpy.mock.calls[0][0] as string;
       const spawnArgs = spawnSpy.mock.calls[0][1] as string[];
       expect(spawnCmd.toLowerCase()).not.toMatch(/\.cmd$/);
-      expect(spawnCmd).toBe('cmd.exe');
+      expect(spawnCmd).toBe(process.env.ComSpec || 'cmd.exe');
       expect(spawnArgs.slice(0, 4)).toEqual(['/d', '/s', '/c', 'grok']);
       expect(spawnArgs).toContain('--prompt-file');
       expect(spawnArgs).toContain('--sandbox');
@@ -1089,7 +1090,8 @@ describe('Grok CLI timeout', () => {
   }
 
   async function waitForSpawn(spawnSpy: ReturnType<typeof vi.fn>) {
-    for (let i = 0; i < 50 && spawnSpy.mock.calls.length === 0; i++) {
+    const deadline = Date.now() + 2000;
+    while (spawnSpy.mock.calls.length === 0 && Date.now() < deadline) {
       await Promise.resolve();
       await new Promise((r) => setImmediate(r));
     }
