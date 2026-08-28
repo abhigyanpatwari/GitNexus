@@ -64,7 +64,7 @@ describe('watch filesystem integration', () => {
     await fs.writeFile(path.join(repo, 'README.md'), '# One', 'utf8');
     await fs.writeFile(path.join(repo, 'src.ts'), 'export const one = 1;', 'utf8');
     await fs.writeFile(path.join(repo, 'src.ts'), 'export const one = 2;', 'utf8');
-    await waitFor(() => batches.length >= 2);
+    await waitFor(() => batches.flat().includes('README.md') && batches.flat().includes('src.ts'));
 
     await fs.rename(path.join(repo, 'src.ts'), path.join(repo, 'renamed.ts'));
     await waitFor(() => batches.flat().includes('renamed.ts'));
