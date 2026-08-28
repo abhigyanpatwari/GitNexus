@@ -351,6 +351,65 @@ describe('chunkNode', () => {
     },
   );
 
+  it('expands Objective-C protocol optional and required sections', async () => {
+    const content = [
+      '@protocol Worker',
+      '@optional',
+      '- (void)first;',
+      '- (void)second;',
+      '@required',
+      '- (void)third;',
+      '- (void)fourth;',
+      '@end',
+    ].join('\n');
+    const members = [
+      '- (void)first;',
+      '- (void)second;',
+      '- (void)third;',
+      '- (void)fourth;',
+    ];
+    let searchFrom = 0;
+    const methodNodes = members.map((text) => {
+      const startIndex = content.indexOf(text, searchFrom);
+      searchFrom = startIndex + text.length;
+      return makeFakeNode('method_declaration', startIndex, startIndex + text.length);
+    });
+    const optionalStart = content.indexOf('@optional');
+    const requiredStart = content.indexOf('@required');
+    const optional = makeFakeNode(
+      'qualified_protocol_interface_declaration',
+      optionalStart,
+      methodNodes[1].endIndex,
+      methodNodes.slice(0, 2),
+    );
+    const required = makeFakeNode(
+      'qualified_protocol_interface_declaration',
+      requiredStart,
+      methodNodes[3].endIndex,
+      methodNodes.slice(2),
+    );
+    const header = makeFakeNode('identifier', content.indexOf('Worker'), content.indexOf('Worker') + 6);
+    const declaration = makeFakeNode('protocol_declaration', 0, content.length, [
+      header,
+      optional,
+      required,
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Protocol', content, 'Worker.h', 1, 8, 55, 0);
+    const combined = result.map((chunk) => chunk.text).join('\n');
+
+    expect(result.length).toBeGreaterThan(1);
+    for (const member of members) expect(combined).toContain(member);
+    expect(result.some((chunk) => chunk.text.includes(members[0]) && chunk.text.includes(members[1]))).toBe(
+      false,
+    );
+  });
+
   it('keeps Objective-C protocol inheritance in the declaration prefix', async () => {
     const content = ['@protocol Worker <Runnable, Observable>', '- (void)run;', '@end'].join('\n');
     const protocolNameStart = content.indexOf('Worker');

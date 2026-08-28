@@ -121,12 +121,17 @@ function interpretObjectiveCImport(captures: CaptureMatch): ParsedImport | null 
   if (source === undefined || source.text.trim().length === 0) return null;
   const targetRaw = source.text.trim();
   const kind = captures['@import.kind']?.text.trim();
+  const isSystemHeader = targetRaw.startsWith('<') && targetRaw.endsWith('>');
   return {
     kind: 'side-effect',
     // Scope resolution needs to distinguish a quoted header path from a bare
-    // @import module name, while the semantic graph retains the original raw
-    // import spelling in ObjCImportFact.
-    targetRaw: kind === 'module' || targetRaw.startsWith('./') ? targetRaw : `./${targetRaw}`,
+    // @import module name and an angle-bracket system header. The latter stays
+    // wrapped so the Objective-C resolver can fail closed instead of resolving
+    // a framework header to a same-named local file.
+    targetRaw:
+      isSystemHeader || kind === 'module' || targetRaw.startsWith('./')
+        ? targetRaw
+        : `./${targetRaw}`,
   };
 }
 

@@ -163,6 +163,10 @@ const FIELD_LIKE_MEMBER_TYPES = new Set([
   'enum_assignment',
 ]);
 
+const DECLARATION_MEMBER_WRAPPER_TYPES = new Set([
+  'qualified_protocol_interface_declaration',
+]);
+
 const declarationChunk = async (
   content: string,
   filePath: string,
@@ -358,21 +362,24 @@ const collectDeclarationUnits = (
 ): Array<{ startIndex: number; endIndex: number }> => {
   const members: Array<{ startIndex: number; endIndex: number; groupable: boolean }> = [];
 
-  for (let i = 0; i < bodyNode.namedChildCount; i++) {
-    const child = bodyNode.namedChild(i);
-    if (!child) continue;
-    if (
-      DIRECT_MEMBER_DECLARATION_TYPES.has(bodyNode.type) &&
-      DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)
-    ) {
-      continue;
+  const collectMembers = (node: any, skipHeaderChildren: boolean): void => {
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (!child) continue;
+      if (DECLARATION_MEMBER_WRAPPER_TYPES.has(child.type)) {
+        collectMembers(child, false);
+        continue;
+      }
+      if (skipHeaderChildren && DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)) continue;
+      members.push({
+        startIndex: child.startIndex,
+        endIndex: child.endIndex,
+        groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
+      });
     }
-    members.push({
-      startIndex: child.startIndex,
-      endIndex: child.endIndex,
-      groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
-    });
-  }
+  };
+
+  collectMembers(bodyNode, DIRECT_MEMBER_DECLARATION_TYPES.has(bodyNode.type));
 
   if (members.length === 0) return [];
 

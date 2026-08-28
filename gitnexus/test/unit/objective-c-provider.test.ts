@@ -6,8 +6,12 @@ import {
   SupportedLanguages,
 } from 'gitnexus-shared';
 import { getLanguageForFileContent } from '../../src/core/ingestion/languages/index.js';
-import { classifyObjectiveCFileContent } from '../../src/core/ingestion/languages/objective-c.js';
 import {
+  classifyObjectiveCFileContent,
+  objectiveCProvider,
+} from '../../src/core/ingestion/languages/objective-c.js';
+import {
+  buildObjectiveCScopeCaptures,
   buildObjectiveCSemanticGraph,
   collectObjectiveCFacts,
   objcCategoryQualifiedName,
@@ -251,6 +255,27 @@ static int helper(void) { return 1; }
         'Foundation',
         'src/Caller.m',
         new Set(['src/Foundation.h']),
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps angle-bracket system headers out of local import resolution', () => {
+    const tree = parseSource('#import "Local.h"\n#import <Foundation/Foundation.h>\n');
+    const facts = collectObjectiveCFacts(tree, 'src/Caller.m');
+    const captures = buildObjectiveCScopeCaptures(facts, tree.rootNode).filter(
+      (capture) => capture['@import.source'] !== undefined,
+    );
+    const parsed = captures.map((capture) => objectiveCProvider.interpretImport?.(capture));
+
+    expect(parsed.map((entry) => entry?.targetRaw)).toEqual([
+      './Local.h',
+      '<Foundation/Foundation.h>',
+    ]);
+    expect(
+      objectiveCScopeResolver.resolveImportTarget(
+        parsed[1]?.targetRaw ?? '',
+        'src/Caller.m',
+        new Set(['src/Foundation/Foundation.h']),
       ),
     ).toBeNull();
   });

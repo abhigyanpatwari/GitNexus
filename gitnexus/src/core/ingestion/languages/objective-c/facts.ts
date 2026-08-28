@@ -251,6 +251,11 @@ function stripQuotes(raw: string): string {
   return trimmed;
 }
 
+function isSystemHeaderSpelling(raw: string): boolean {
+  const trimmed = raw.trim();
+  return trimmed.startsWith('<') && trimmed.endsWith('>');
+}
+
 function cleanType(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
   const text = raw
@@ -293,6 +298,15 @@ function methodTypeText(node: SyntaxNode): string | undefined {
 
 function methodSelector(node: SyntaxNode): string {
   const children = directChildren(node);
+  const keywordDeclarators = children.filter((child) => child.type === 'keyword_declarator');
+  if (keywordDeclarators.length > 0) {
+    return keywordDeclarators
+      .map((declarator) => directIdentifiers(declarator)[0]?.text)
+      .filter((name): name is string => name !== undefined)
+      .map((name) => `${name}:`)
+      .join('');
+  }
+
   const pieces: string[] = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
@@ -329,7 +343,7 @@ function methodParameterInfo(node: SyntaxNode): {
   const parameterNames: string[] = [];
   const typeBindings = new Map<string, ObjCTypeInfo>();
   for (const child of directNamedChildren(node)) {
-    if (child.type !== 'method_parameter') continue;
+    if (child.type !== 'method_parameter' && child.type !== 'keyword_declarator') continue;
     const named = directNamedChildren(child);
     const typeNode = named.find((n) => n.type === 'method_type');
     const nameNode = [...named].reverse().find((n) => n.type === 'identifier');
@@ -1393,14 +1407,15 @@ export function buildObjectiveCScopeCaptures(
 
   for (const imp of facts.imports) {
     const anchor = captureAt('@import.statement', imp.raw, imp.startLine, imp.endLine);
+    const sourceText = isSystemHeaderSpelling(imp.raw) ? imp.raw : imp.targetRaw;
     captures.push({
       '@import.statement': anchor,
       '@import.source': {
         ...anchor,
         name: '@import.source',
-        text: imp.targetRaw,
+        text: sourceText,
       },
-      '@import.name': { ...anchor, name: '@import.name', text: imp.targetRaw },
+      '@import.name': { ...anchor, name: '@import.name', text: sourceText },
       '@import.kind': { ...anchor, name: '@import.kind', text: imp.kind },
     });
   }
