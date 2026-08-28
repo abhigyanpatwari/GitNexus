@@ -163,9 +163,7 @@ const FIELD_LIKE_MEMBER_TYPES = new Set([
   'enum_assignment',
 ]);
 
-const DECLARATION_MEMBER_WRAPPER_TYPES = new Set([
-  'qualified_protocol_interface_declaration',
-]);
+const DECLARATION_MEMBER_WRAPPER_TYPES = new Set(['qualified_protocol_interface_declaration']);
 
 const declarationChunk = async (
   content: string,
@@ -362,12 +360,17 @@ const collectDeclarationUnits = (
 ): Array<{ startIndex: number; endIndex: number }> => {
   const members: Array<{ startIndex: number; endIndex: number; groupable: boolean }> = [];
 
-  const collectMembers = (node: any, skipHeaderChildren: boolean): void => {
+  const collectMembers = (
+    node: any,
+    skipHeaderChildren: boolean,
+    includeNodePrefixOnFirstMember = false,
+  ): void => {
+    const firstMemberIndex = members.length;
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (!child) continue;
       if (DECLARATION_MEMBER_WRAPPER_TYPES.has(child.type)) {
-        collectMembers(child, false);
+        collectMembers(child, false, true);
         continue;
       }
       if (skipHeaderChildren && DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)) continue;
@@ -376,6 +379,11 @@ const collectDeclarationUnits = (
         endIndex: child.endIndex,
         groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
       });
+    }
+
+    const firstMember = members[firstMemberIndex];
+    if (includeNodePrefixOnFirstMember && firstMember) {
+      firstMember.startIndex = node.startIndex;
     }
   };
 

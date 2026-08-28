@@ -12,9 +12,10 @@ const { createParserForLanguage, resolveLanguageKey } = vi.hoisted(() => ({
 }));
 
 const { getLanguageFromFilename } = vi.hoisted(() => ({
-  getLanguageFromFilename: vi.fn((filePath: string) =>
-    filePath.endsWith('.rs') ? 'rust' : 'typescript',
-  ),
+  getLanguageFromFilename: vi.fn((filePath: string) => {
+    if (filePath.endsWith('.m') || filePath.endsWith('.mm')) return 'objective-c';
+    return filePath.endsWith('.rs') ? 'rust' : 'typescript';
+  }),
 }));
 
 vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
@@ -204,9 +205,10 @@ describe('chunkNode', () => {
     resolveLanguageKey.mockImplementation(
       (language: string, filePath?: string) => `${language}:${filePath ?? ''}`,
     );
-    getLanguageFromFilename.mockImplementation((filePath: string) =>
-      filePath.endsWith('.rs') ? 'rust' : 'typescript',
-    );
+    getLanguageFromFilename.mockImplementation((filePath: string) => {
+      if (filePath.endsWith('.m') || filePath.endsWith('.mm')) return 'objective-c';
+      return filePath.endsWith('.rs') ? 'rust' : 'typescript';
+    });
   });
 
   it('returns single chunk for short content', async () => {
@@ -310,7 +312,7 @@ describe('chunkNode', () => {
     {
       label: 'Protocol',
       nodeType: 'protocol_declaration' as const,
-      filePath: 'Worker.tsx',
+      filePath: 'Worker.m',
       content: [
         '@protocol Worker',
         '- (void)startWithConfiguration:(id)configuration;',
@@ -322,7 +324,7 @@ describe('chunkNode', () => {
     {
       label: 'Category',
       nodeType: 'class_interface' as const,
-      filePath: 'Worker.rs',
+      filePath: 'Worker.mm',
       content: [
         '@interface Worker (Tracing)',
         '- (void)startWithConfiguration:(id)configuration;',
@@ -348,12 +350,13 @@ describe('chunkNode', () => {
       expect(result).toHaveLength(2);
       expect(result[0].text).toContain(members[0]);
       expect(result.slice(1).every((chunk) => chunk.text.startsWith('- (void)'))).toBe(true);
+      expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', filePath);
     },
   );
 
   it('expands Objective-C protocol optional and required sections', async () => {
     const content = [
-      '@protocol Worker',
+      '@protocol P',
       '@optional',
       '- (void)first;',
       '- (void)second;',
@@ -362,12 +365,7 @@ describe('chunkNode', () => {
       '- (void)fourth;',
       '@end',
     ].join('\n');
-    const members = [
-      '- (void)first;',
-      '- (void)second;',
-      '- (void)third;',
-      '- (void)fourth;',
-    ];
+    const members = ['- (void)first;', '- (void)second;', '- (void)third;', '- (void)fourth;'];
     let searchFrom = 0;
     const methodNodes = members.map((text) => {
       const startIndex = content.indexOf(text, searchFrom);
@@ -388,7 +386,7 @@ describe('chunkNode', () => {
       methodNodes[3].endIndex,
       methodNodes.slice(2),
     );
-    const header = makeFakeNode('identifier', content.indexOf('Worker'), content.indexOf('Worker') + 6);
+    const header = makeFakeNode('identifier', content.indexOf('P'), content.indexOf('P') + 1);
     const declaration = makeFakeNode('protocol_declaration', 0, content.length, [
       header,
       optional,
@@ -400,14 +398,18 @@ describe('chunkNode', () => {
       }),
     });
 
-    const result = await chunkNode('Protocol', content, 'Worker.h', 1, 8, 55, 0);
+    const result = await chunkNode('Protocol', content, 'ProtocolSections.m', 1, 8, 36, 0);
     const combined = result.map((chunk) => chunk.text).join('\n');
+    const requiredChunk = result.find((chunk) => chunk.text.includes(members[2]));
 
     expect(result.length).toBeGreaterThan(1);
     for (const member of members) expect(combined).toContain(member);
-    expect(result.some((chunk) => chunk.text.includes(members[0]) && chunk.text.includes(members[1]))).toBe(
-      false,
-    );
+    expect(
+      result.some((chunk) => chunk.text.includes(members[0]) && chunk.text.includes(members[1])),
+    ).toBe(false);
+    expect(requiredChunk?.text).toContain('@required');
+    expect(requiredChunk?.text).not.toContain(members[1]);
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ProtocolSections.m');
   });
 
   it('keeps Objective-C protocol inheritance in the declaration prefix', async () => {
