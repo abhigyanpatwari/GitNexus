@@ -14,7 +14,7 @@ import {
   pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
+import { listRegisteredRepos, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
@@ -196,7 +196,12 @@ export const javascriptQuery = query({ handler: async () => null });
 
       const adapter = await import('../../src/core/lbug/lbug-adapter.js');
       await adapter.loadGraphToLbug(replay.graph, repoDir, storageDir);
-      await saveMeta(storageDir, { scopeExtractionReceipt: 1 } as any);
+      await saveMeta(storageDir, {
+        repoPath: repoDir,
+        lastCommit: 'convex-e2e',
+        indexedAt: new Date(0).toISOString(),
+        scopeExtractionReceipt: 1,
+      } satisfies RepoMeta);
     },
     poolAdapter: true,
     afterSetup: async (handle) => {

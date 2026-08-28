@@ -55,7 +55,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Scope extraction is incomplete
 
 - **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["scope-extraction-failed"]` when files were omitted, or `incompleteReasons: ["scope-extraction-unverified"]` when the index predates the completeness receipt or its metadata is unreadable. `impact`/`context` reports the same uncertainty as `epistemic: "lower-bound"`; confirmed omissions set `causes.scopeExtractionFiles > 0`.
-- **Do:** Re-run `npx gitnexus analyze --force`. If the reason persists, inspect the scope-extraction warnings and treat impact counts as floors until the affected source is supported or corrected.
+- **Do:** Re-run `npx gitnexus analyze` (`--force` for a full graph rebuild). If the reason persists, inspect the scope-extraction warnings and treat impact counts as floors until the affected source is supported or corrected.
 - **Why:** Parsing continued, but scope captures for the reported file count could not be produced even after the main-thread fallback. Calls, inheritance, imports, or accesses originating there may therefore be absent from the graph.
 
 ### Analyze reports INCOMPLETE with a collapsed graph write

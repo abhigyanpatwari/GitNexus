@@ -124,6 +124,7 @@ import {
 } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import {
   DEFERRED_IMPORT_REASON_SUFFIX,
@@ -769,15 +770,9 @@ function scopeExtractionBoundaries(
     files: 0,
   };
   if (receipt !== 1) return unknown;
-  if (summary === undefined) return { notes: [], files: 0 };
-  if (typeof summary !== 'object' || summary === null) return unknown;
-  const candidate = summary as { total?: unknown };
-  if (candidate.total === 0) return { notes: [], files: 0 };
-  const total =
-    typeof candidate.total === 'number' && Number.isInteger(candidate.total) && candidate.total > 0
-      ? candidate.total
-      : 0;
-  if (total === 0) return unknown;
+  const total = scopeExtractionFailureTotal(summary);
+  if (total === undefined) return unknown;
+  if (total === 0) return { notes: [], files: 0 };
   return {
     notes: [
       `Scope extraction failed for ${total} ${total === 1 ? 'file' : 'files'} while this index was built. ` +

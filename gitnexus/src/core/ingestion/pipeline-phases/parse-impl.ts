@@ -483,6 +483,8 @@ export async function runChunkedParseAndResolve(
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
   scopeExtractionFailures: string[];
+  /** Files excluded because their non-standalone language parser was unavailable. */
+  unavailableScopeLanguageFiles: number;
 }> {
   const model = createSemanticModel();
   const symbolTable = model.symbols;
@@ -515,6 +517,10 @@ export async function runChunkedParseAndResolve(
       );
     }
   }
+  const unavailableScopeLanguageFiles = [...skippedByLang.values()].reduce(
+    (total, count) => total + count,
+    0,
+  );
 
   // Sort parseableScanned alphabetically for stable chunk membership
   // across runs (Finding 4). Without this, filesystem-scan order can
@@ -1622,5 +1628,6 @@ export async function runChunkedParseAndResolve(
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
     scopeExtractionFailures: [...scopeExtractionFailures].sort(),
+    unavailableScopeLanguageFiles,
   };
 }

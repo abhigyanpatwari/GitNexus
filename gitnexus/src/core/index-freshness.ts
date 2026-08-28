@@ -1,5 +1,6 @@
 import { checkpointKind } from './embedding-checkpoint.js';
 import type { RepoMeta } from '../storage/repo-manager.js';
+import { scopeExtractionFailureTotal } from './ingestion/scope-resolution/scope-extraction-failures.js';
 
 export const INDEX_INCOMPLETE_REASONS = [
   'incremental-in-progress',
@@ -153,18 +154,10 @@ export function getIndexIncompleteReasons(
   if (meta?.graphWriteCollapsed) reasons.push('graph-write-collapsed');
   if (meta?.scopeExtractionReceipt !== 1) {
     reasons.push('scope-extraction-unverified');
-  } else if (meta.scopeExtractionFailures !== undefined) {
-    const summary = meta.scopeExtractionFailures as unknown;
-    if (typeof summary !== 'object' || summary === null) {
-      reasons.push('scope-extraction-unverified');
-    } else {
-      const total = (summary as { total?: unknown }).total;
-      if (typeof total === 'number' && Number.isInteger(total) && total > 0) {
-        reasons.push('scope-extraction-failed');
-      } else if (total !== 0) {
-        reasons.push('scope-extraction-unverified');
-      }
-    }
+  } else {
+    const total = scopeExtractionFailureTotal(meta.scopeExtractionFailures);
+    if (total === undefined) reasons.push('scope-extraction-unverified');
+    else if (total > 0) reasons.push('scope-extraction-failed');
   }
   if (meta?.embeddingCheckpoint) {
     // The three checkpoint kinds are not one operator-facing state. GUARDRAILS

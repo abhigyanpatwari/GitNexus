@@ -3552,7 +3552,10 @@ async function runFullAnalysisInner(
       scopeExtractionFailures: summarizeScopeExtractionFailures(
         pipelineResult.scopeExtractionFailures,
       ),
-      scopeExtractionReceipt: 1,
+      // A receipt certifies that every scope-capable source file was inspected.
+      // Optional grammars may be unavailable by design; omitting the receipt in
+      // that case makes readers report an unverified lower bound.
+      scopeExtractionReceipt: pipelineResult.unavailableScopeLanguageFiles === 0 ? 1 : undefined,
       // Carried forward ONLY when this run could not measure — `saveMeta` writes
       // a fresh object, so omitting the key deletes a prior record and turns a
       // hedged answer back into a confident one. A run that DID measure always

@@ -21,7 +21,7 @@
  * `isMissingFilesystemError`) so every existing import site keeps working
  * unchanged.
  *
- * Imports `node:fs`/`node:path` and two type-only shapes. Keep it that way: a
+ * Imports `node:fs`/`node:path` and a few type-only summary shapes. Keep it that way: a
  * value import here would land in every consumer of `storage/`.
  */
 

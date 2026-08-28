@@ -9,6 +9,15 @@ export interface ScopeExtractionFailureSummary {
 
 export const SCOPE_EXTRACTION_FAILURE_PATH_LIMIT = 25;
 
+/** Read a persisted summary without trusting its runtime JSON shape. */
+export function scopeExtractionFailureTotal(summary: unknown): number | undefined {
+  if (summary === undefined) return 0;
+  if (typeof summary !== 'object' || summary === null) return undefined;
+  const total = (summary as { total?: unknown }).total;
+  if (total === 0) return 0;
+  return typeof total === 'number' && Number.isInteger(total) && total > 0 ? total : undefined;
+}
+
 /** Replace provisional worker failures with the final fallback outcome. */
 export function reconcileScopeExtractionFailures(
   failures: Set<string>,
@@ -26,7 +35,9 @@ export function summarizeScopeExtractionFailures(
   paths: readonly string[] = [],
   limit: number = SCOPE_EXTRACTION_FAILURE_PATH_LIMIT,
 ): ScopeExtractionFailureSummary | undefined {
-  const unique = [...new Set(paths.filter((path) => path.length > 0))].sort();
+  const unique = [
+    ...new Set(paths.filter((path): path is string => typeof path === 'string' && path.length > 0)),
+  ].sort();
   if (unique.length === 0) return undefined;
   const boundedLimit =
     Number.isInteger(limit) && limit >= 0 ? limit : SCOPE_EXTRACTION_FAILURE_PATH_LIMIT;
