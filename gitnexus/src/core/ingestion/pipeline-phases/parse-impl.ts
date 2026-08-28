@@ -477,6 +477,8 @@ export async function runChunkedParseAndResolve(
    *  files. There is no sequential parser — the pool is the sole parse path
    *  whenever a chunk misses the cache. */
   usedWorkerPool: boolean;
+  /** Files dispatched to parser workers after parse-cache lookup. */
+  reparsedFileCount: number;
   /** Worker-produced ParsedFile artifacts aggregated across chunks.
    *  Threaded into scope-resolution as a re-extract cache so the warm-
    *  cache analyze run can skip the dominant `extractParsedFile` cost
@@ -775,6 +777,7 @@ export async function runChunkedParseAndResolve(
       : new Set<string>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
+  let reparsedFileCount = 0;
 
   try {
     // U1 — bounded chunk concurrency (B1 from PR #1693 review): pre-fetch
@@ -1095,6 +1098,7 @@ export async function runChunkedParseAndResolve(
         // Cache miss: dispatch to workers, capture the raw results, store
         // them under the chunk hash for the next run.
         chunkCacheMisses++;
+        reparsedFileCount += chunkFiles.length;
         if (durableParsedFileDir !== undefined && chunkHash !== null) {
           try {
             await prepareDurableParsedFileChunk(durableParsedFileDir, chunkHash);
@@ -1611,6 +1615,11 @@ export async function runChunkedParseAndResolve(
     // no pool was needed: a warm all-cache-hit run replays cached worker output
     // without spawning workers, or there were no parseable files.
     usedWorkerPool: workerPool !== undefined,
+    // Exact number of files sent through workers on parse-cache misses. A
+    // changed file can invalidate its whole content-addressed chunk, so this
+    // is intentionally measured at dispatch time rather than inferred from
+    // the git/hash diff.
+    reparsedFileCount,
     // Per-file ParsedFile artifacts produced by workers' calls to
     // `extractParsedFile`. Consumed by scope-resolution as a re-extraction
     // cache: when the file's ParsedFile is here, scope-resolution skips its own

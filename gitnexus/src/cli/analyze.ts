@@ -548,7 +548,7 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *    tooling), not a deliberate per-run choice: warn and respawn with the
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify. */
-async function ensureHeap(): Promise<boolean> {
+export async function ensureHeap(): Promise<boolean> {
   // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
   // override and the default v8-limit respawn — and is honored SILENTLY:
   // the operator already made the call, and stderr-sensitive consumers
@@ -739,6 +739,19 @@ export const analyzeCommandWithRunnerIdentity = async (
   inputPath?: string,
   options?: AnalyzeOptions,
 ): Promise<void> => analyzeCommand(inputPath, options, runnerIdentityAtBootstrap);
+
+export async function analyzeOrWatchCommandWithRunnerIdentity(
+  runnerIdentityAtBootstrap: AnalyzerRunnerIdentity,
+  inputPath?: string,
+  options: AnalyzeOptions = {},
+): Promise<void> {
+  if (options.watch) {
+    const { watchCommandWithRunnerIdentity } = await import('./watch.js');
+    await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+    return;
+  }
+  await analyzeCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+}
 
 const analyzeCommandImpl = async (
   inputPath?: string,

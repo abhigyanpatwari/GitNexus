@@ -370,9 +370,10 @@ export const runPipelineFromRepo = async (
   }
 
   // Extract final results for the PipelineResult contract
-  const { totalFiles, usedWorkerPool } = getPhaseOutput<{
+  const { totalFiles, usedWorkerPool, reparsedFileCount } = getPhaseOutput<{
     totalFiles: number;
     usedWorkerPool: boolean;
+    reparsedFileCount: number;
   }>(results, 'parse');
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
@@ -424,6 +425,7 @@ export const runPipelineFromRepo = async (
     resolutionOutcomes,
     undecidedSatisfaction,
     usedWorkerPool,
+    reparsedFileCount,
     pdgEmitManifest,
     propertyInference,
   };

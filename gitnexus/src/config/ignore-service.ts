@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
+import { readRepoControlFileSync } from './repo-control-file.js';
 import { logger } from '../core/logger.js';
 import { getCoreExcludesFilePath, getGitInfoExcludePath } from '../storage/git.js';
 
@@ -401,6 +402,8 @@ export interface IgnoreOptions {
   noGitignore?: boolean;
   /** Skip core.excludesFile and $GIT_COMMON_DIR/info/exclude. Defaults to GITNEXUS_NO_GLOBAL_IGNORE env var. */
   noGlobalIgnore?: boolean;
+  /** Fail repository-control reloads closed so long-lived watchers keep their prior predicate. */
+  strictRepoControlFiles?: boolean;
 }
 
 export const loadIgnoreRules = async (
@@ -442,18 +445,54 @@ export const loadIgnoreRules = async (
 
   for (const filename of filenames) {
     try {
-      const content = await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      const content = options?.strictRepoControlFiles
+        ? readRepoControlFileSync(repoPath, filename)
+        : await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      if (content === null) continue;
       ig.add(content);
       hasRules = true;
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        logger.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
-      }
+      if (!options?.strictRepoControlFiles && code === 'ENOENT') continue;
+      if (options?.strictRepoControlFiles) throw err;
+      logger.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
     }
   }
 
   return hasRules ? ig : null;
+};
+
+/**
+ * Build a synchronous predicate for long-lived filesystem watchers.
+ *
+ * Unlike {@link createIgnoreFilter}, callers pass ordinary absolute or
+ * repository-relative paths instead of path-scurry `Path` objects. The rule
+ * precedence deliberately mirrors the scanner: explicit negations win over
+ * hardcoded defaults unless a more-specific rule re-ignores the path.
+ */
+export const createWatchIgnorePredicate = async (
+  repoPath: string,
+  options?: IgnoreOptions,
+): Promise<(candidatePath: string, isDirectory?: boolean) => boolean> => {
+  const ig = await loadIgnoreRules(repoPath, { ...options, strictRepoControlFiles: true });
+  const repoRoot = nodePath.resolve(repoPath);
+
+  return (candidatePath: string, isDirectory = false): boolean => {
+    const absolute = nodePath.isAbsolute(candidatePath)
+      ? nodePath.resolve(candidatePath)
+      : nodePath.resolve(repoRoot, candidatePath);
+    const rel = nodePath.relative(repoRoot, absolute).replace(/\\/g, '/');
+    if (!rel) return false;
+    if (rel === '..' || rel.startsWith('../') || nodePath.isAbsolute(rel)) return true;
+
+    if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(isDirectory ? `${rel}/` : rel)) {
+      return false;
+    }
+
+    if (ig && ig.ignores(isDirectory ? `${rel}/` : rel)) return true;
+    if (isDirectory && isHardcodedIgnoredDirectoryAtPath(repoRoot, absolute)) return true;
+    return shouldIgnorePath(rel);
+  };
 };
 
 /**

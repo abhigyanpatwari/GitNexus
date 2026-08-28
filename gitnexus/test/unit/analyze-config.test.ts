@@ -13,6 +13,7 @@ import {
   DEFAULT_BRANCH_FALLBACK,
 } from '../../src/cli/analyze-config.js';
 import type { AnalyzeOptions } from '../../src/cli/analyze.js';
+import { MAX_REPO_CONTROL_FILE_BYTES } from '../../src/config/repo-control-file.js';
 
 describe('analyze-config (.gitnexusrc support, #243)', () => {
   let dir: string;
@@ -33,6 +34,28 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
   it('returns undefined when no .gitnexusrc exists (the normal case)', () => {
     expect(loadAnalyzeConfig(dir)).toBeUndefined();
   });
+
+  it('rejects an oversized repository config before parsing', async () => {
+    await writeRc(' '.repeat(MAX_REPO_CONTROL_FILE_BYTES + 1));
+    expect(() => loadAnalyzeConfig(dir, { strictRepoControlFile: true })).toThrow(/exceeds/);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a final-file symlink for repository config',
+    async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-outside-'));
+      try {
+        const target = path.join(outside, 'config.json');
+        await fs.writeFile(target, JSON.stringify({ workers: '8' }));
+        await fs.symlink(target, path.join(dir, GITNEXUS_RC_FILENAME), 'file');
+        expect(() => loadAnalyzeConfig(dir, { strictRepoControlFile: true })).toThrow(
+          /symbolic link/,
+        );
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('throws an actionable error on invalid JSON, naming the file', async () => {
     await writeRc('{ not valid json ');

@@ -470,6 +470,23 @@ export interface AnalyzeOptions {
    * Process exit reclaims the handles. Long-lived callers (MCP server, tests)
    * leave this unset so they get a real close. See `closeLbug`. */
   skipNativeCloseOnExit?: boolean;
+  /**
+   * Stage an incremental write in a copy of the live index before publishing
+   * it. Used by long-lived watch mode so a failed refresh leaves the previous
+   * graph readable. Currently supported on POSIX, where an open DB can be
+   * atomically renamed; Windows retains the established in-place path.
+   */
+  atomicIncremental?: boolean;
+}
+
+const liveIndexMutationRisks = new WeakSet<object>();
+
+/** Whether a failed incremental analyze may already have changed the live DB. */
+export function analyzeFailureMayHaveMutatedLiveIndex(error: unknown): boolean {
+  return (
+    ((typeof error === 'object' && error !== null) || typeof error === 'function') &&
+    liveIndexMutationRisks.has(error)
+  );
 }
 
 export interface AnalyzeResult {
@@ -521,6 +538,14 @@ export interface AnalyzeResult {
    * (The historical "primary" name is kept — it is public API surface.)
    */
   isPrimaryBranch?: boolean;
+  /** Measured work performed by a successful incremental refresh. */
+  incrementalStats?: {
+    changedFiles: number;
+    reparsedFiles: number;
+    affectedDependents: number;
+    deletedFiles: number;
+    writeMode: 'incremental' | 'full';
+  };
 }
 
 /**
@@ -1948,7 +1973,10 @@ async function runFullAnalysisInner(
   // (GITNEXUS_ATOMIC_INCREMENTAL=1) pending a benchmark. Full rebuilds always
   // swap where the platform allows.
   const wantAtomicIncremental =
-    isIncremental && !!hashDiff && process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1';
+    isIncremental &&
+    !!hashDiff &&
+    process.platform !== 'win32' &&
+    (options.atomicIncremental === true || process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1');
   // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
   // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
   // be copied incompletely and lose that delta. Only take the atomic path when
@@ -2085,6 +2113,7 @@ async function runFullAnalysisInner(
     // "escalated full write" (DB wiped, index destroyed) — tri-review
     // 4669518496 P1.
     let escalatedFullWrite = false;
+    let incrementalStats: AnalyzeResult['incrementalStats'];
     // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
     // SURGICAL write plan this is the exact file set whose rows
     // deleteNodesForFiles just removed — only THOSE files' cached embedding
@@ -2210,6 +2239,13 @@ async function runFullAnalysisInner(
         }
       }
       const importerExpansion = writableFiles.size - directlyChangedCount;
+      incrementalStats = {
+        changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
+        reparsedFiles: pipelineResult.reparsedFileCount,
+        affectedDependents: importerExpansion,
+        deletedFiles: hashDiff.deleted.length,
+        writeMode: 'incremental',
+      };
       await saveIncrementalDirtyState('importer-bfs', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
@@ -3799,6 +3835,12 @@ async function runFullAnalysisInner(
       ftsSkipped: !ftsReady,
       ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,
+      incrementalStats: incrementalStats
+        ? {
+            ...incrementalStats,
+            writeMode: escalatedFullWrite ? 'full' : 'incremental',
+          }
+        : undefined,
     };
   } catch (err) {
     // Ensure LadybugDB is closed even on error. Stop the driver first
@@ -3836,6 +3878,15 @@ async function runFullAnalysisInner(
       } catch {
         /* swallow — orphan reclamation must never mask the real failure */
       }
+    }
+    const liveIndexMayBeMutated = isIncremental && !!hashDiff && !useAtomicSwap;
+    if (
+      liveIndexMayBeMutated &&
+      ((typeof err === 'object' && err !== null) || typeof err === 'function')
+    ) {
+      // Preserve the original error identity/prototype: callers distinguish
+      // IndexLockTimeoutError and other domain failures with `instanceof`.
+      liveIndexMutationRisks.add(err);
     }
     throw err;
   }

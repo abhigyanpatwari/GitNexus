@@ -217,6 +217,8 @@ export const en = {
   'help.option.analyze.embeddingBatchSize': 'Number of nodes per embedding batch',
   'help.option.analyze.embeddingSubBatchSize': 'Number of chunks per embedding model call',
   'help.option.analyze.embeddingDevice': 'Embedding device: auto, cpu, dml, cuda, or wasm',
+  'help.option.analyze.watch': 'Keep the index current with serialized incremental refreshes',
+  'help.option.analyze.debounce': 'Watch quiet period before refreshing (milliseconds)',
   'help.option.index.force': 'Register even if index metadata is missing (stats will be empty)',
   'help.option.index.allowNonGit': 'Allow registering folders that are not Git repositories',
   'help.option.port': 'Port number',

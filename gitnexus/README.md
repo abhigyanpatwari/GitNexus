@@ -234,6 +234,7 @@ Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 gitnexus setup                   # Configure MCP for detected editors (one-time; use -c to select)
 gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (add --force to apply)
 gitnexus analyze [path]          # Index a repository (or update stale index)
+gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
@@ -280,6 +281,18 @@ gitnexus group query <name> <q>  # Search execution flows across all repos in a 
 gitnexus group status <name>     # Check staleness of repos in a group
 gitnexus group impact <name> --target <symbol> --repo <groupPath>  # Cross-repo blast radius
 ```
+
+`gitnexus analyze --watch` performs an initial analysis and then debounces
+relevant working-tree changes into serialized incremental refreshes. Events
+arriving during a run are queued. Invalid `.gitnexusrc` or ignore-file reloads
+pause ordinary refreshes until the control file is fixed. Tune the loop with
+`--debounce <ms>`, `--workers <n>`, `--branch <name>`, `--pdg`, and `--verbose`;
+stop it with Ctrl+C.
+
+POSIX uses copy-and-swap publication when the live index has no orphan
+sidecars. Windows and sidecar fallback runs update in place and stop after a
+failed refresh. Watch mode neither pulls remotes nor hot-reloads an existing
+MCP process.
 
 > **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 

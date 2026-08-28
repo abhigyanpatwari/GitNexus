@@ -30,6 +30,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { readRepoControlFileSync } from '../config/repo-control-file.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
@@ -368,12 +369,20 @@ const normalizeLevel = (
  * @returns the normalized config defaults, or `undefined` when no file exists
  *          (the normal case). Throws {@link GitNexusRcError} on any problem.
  */
-export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | undefined {
+export function loadAnalyzeConfig(
+  repoRoot: string,
+  options?: { strictRepoControlFile?: boolean },
+): Partial<AnalyzeOptions> | undefined {
   const filePath = path.join(repoRoot, GITNEXUS_RC_FILENAME);
-
   let raw: string;
   try {
-    raw = fs.readFileSync(filePath, 'utf-8');
+    if (options?.strictRepoControlFile) {
+      const content = readRepoControlFileSync(repoRoot, GITNEXUS_RC_FILENAME);
+      if (content === null) return undefined;
+      raw = content;
+    } else {
+      raw = fs.readFileSync(filePath, 'utf-8');
+    }
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);

@@ -726,4 +726,31 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('recreates a memoized shard directory after a long-lived process replaces it', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const firstKey = 'd'.repeat(64);
+      const secondKey = 'e'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([firstKey]),
+        storagePath: dir,
+        onDiskKeys: new Set(),
+      };
+
+      await persistParseCacheChunk(cache, firstKey, [minimalResult({ fileCount: 1 })]);
+      await rm(path.join(dir, 'parse-cache'), { recursive: true, force: true });
+
+      cache.usedKeys = new Set([secondKey]);
+      await persistParseCacheChunk(cache, secondKey, [minimalResult({ fileCount: 2 })]);
+      await saveParseCache(dir, cache);
+
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, secondKey))?.[0]?.fileCount).toBe(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

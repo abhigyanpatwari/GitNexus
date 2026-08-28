@@ -22,17 +22,28 @@ type LbugAdapter = typeof import('../../src/core/lbug/lbug-adapter.js');
 const ctx = vi.hoisted(() => ({
   loadMock: vi.fn(),
   realLoad: null as LbugAdapter['loadGraphToLbug'] | null,
+  deleteMock: vi.fn(),
+  realDelete: null as LbugAdapter['deleteNodesForFiles'] | null,
 }));
 // Delegating mock: overrides only loadGraphToLbug so a rebuild can be made to
 // fail on demand (mirrors run-analyze-adopt-failure.test.ts).
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   const actual = await importOriginal<LbugAdapter>();
   ctx.realLoad = actual.loadGraphToLbug;
+  ctx.realDelete = actual.deleteNodesForFiles;
   ctx.loadMock.mockImplementation(actual.loadGraphToLbug);
-  return { ...actual, loadGraphToLbug: ctx.loadMock };
+  ctx.deleteMock.mockImplementation(actual.deleteNodesForFiles);
+  return {
+    ...actual,
+    loadGraphToLbug: ctx.loadMock,
+    deleteNodesForFiles: ctx.deleteMock,
+  };
 });
 
-import { runFullAnalysis } from '../../src/core/run-analyze.js';
+import {
+  analyzeFailureMayHaveMutatedLiveIndex,
+  runFullAnalysis,
+} from '../../src/core/run-analyze.js';
 import { getStoragePaths } from '../../src/storage/repo-manager.js';
 import {
   initLbug as poolInit,
@@ -67,6 +78,10 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     ctx.loadMock.mockReset();
     ctx.loadMock.mockImplementation((...a: Parameters<LbugAdapter['loadGraphToLbug']>) =>
       ctx.realLoad!(...a),
+    );
+    ctx.deleteMock.mockReset();
+    ctx.deleteMock.mockImplementation((...a: Parameters<LbugAdapter['deleteNodesForFiles']>) =>
+      ctx.realDelete!(...a),
     );
   });
 
@@ -198,6 +213,76 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       if (prev === undefined) delete process.env.GITNEXUS_ATOMIC_INCREMENTAL;
       else process.env.GITNEXUS_ATOMIC_INCREMENTAL = prev;
       await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('keeps the live graph unchanged when atomic incremental writeback fails', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const repoId = 'atomic-incr-failure';
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const { lbugPath } = getStoragePaths(repo);
+      const before = await identity(lbugPath);
+
+      await fs.writeFile(
+        path.join(repo, 'a.ts'),
+        'export function greet(n: string) { return `hi ${n}`; }\nexport function caller() { return greet("x"); }\nexport function addedAfterRetry() { return 1; }\n',
+      );
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+
+      ctx.deleteMock.mockRejectedValueOnce(new Error('injected incremental write failure'));
+      const failure = await runFullAnalysis(
+        repo,
+        { atomicIncremental: true },
+        { onProgress: () => {} },
+      ).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ message: 'injected incremental write failure' });
+      expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(false);
+      expect(await identity(lbugPath)).toBe(before);
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+
+      await poolInit(repoId, lbugPath);
+      const beforeRetry = (
+        await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')
+      ).flatMap((row) => Object.values(row as Record<string, unknown>).map(String));
+      expect(beforeRetry).toContain('greet');
+      expect(beforeRetry).not.toContain('addedAfterRetry');
+      await poolClose(repoId);
+
+      await runFullAnalysis(repo, { atomicIncremental: true }, { onProgress: () => {} });
+      await poolInit(repoId, lbugPath);
+      const afterRetry = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+        (row) => Object.values(row as Record<string, unknown>).map(String),
+      );
+      expect(afterRetry).toContain('addedAfterRetry');
+    } finally {
+      await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('marks failed in-place incremental writes as potentially live-mutating', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export function changed() { return 1; }\n');
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
+
+      ctx.deleteMock.mockRejectedValueOnce(new Error('injected in-place failure'));
+      const failure = await runFullAnalysis(repo, {}, { onProgress: () => {} }).catch(
+        (error: unknown) => error,
+      );
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({ message: 'injected in-place failure' });
+      expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(true);
+    } finally {
       await cleanup();
     }
   }, 180_000);

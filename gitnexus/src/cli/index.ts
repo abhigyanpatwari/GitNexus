@@ -57,6 +57,8 @@ let dimsEnvCaptured = false;
 program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
+  .option('--watch', 'Keep the index current with serialized incremental refreshes')
+  .option('--debounce <ms>', 'Watch quiet period before refreshing (milliseconds)', '300')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
   .option(
@@ -202,7 +204,7 @@ program
     createAnalyzerLbugLazyAction(
       () => import('../core/analyzer-identity.js'),
       () => import('./analyze.js'),
-      'analyzeCommandWithRunnerIdentity',
+      'analyzeOrWatchCommandWithRunnerIdentity',
       import.meta.url,
     ),
   );

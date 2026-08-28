@@ -271,6 +271,7 @@ const NATIVE_ADDON_SMOKE = [
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is

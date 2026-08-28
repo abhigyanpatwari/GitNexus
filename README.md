@@ -384,6 +384,7 @@ Everyday commands:
 ```bash
 gitnexus setup                   # Configure MCP for detected editors (one-time; -c to select)
 gitnexus analyze [path]          # Index a repository (or update a stale index)
+gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus eval-server             # Start lightweight evaluation HTTP tools (loopback by default)
@@ -395,6 +396,17 @@ gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks 
 ```
 
 You can also query the graph directly from the terminal — `gitnexus query`, `context`, `impact`, `trace`, `cypher`, `detect-changes`, and `check` mirror the MCP tools of the same names, and `gitnexus doctor` prints runtime platform capabilities.
+
+`gitnexus analyze --watch` runs one initial analysis, then debounces relevant
+working-tree changes into serialized incremental refreshes. Events arriving
+during a refresh are queued. Invalid `.gitnexusrc` or ignore-file reloads pause
+ordinary refreshes until the control file is fixed. Stop the watcher with
+Ctrl+C.
+
+POSIX uses copy-and-swap publication when the live index has no orphan
+sidecars; Windows and sidecar fallback runs update in place and stop after a
+failed refresh so a partially updated graph is not kept in service. The mode
+does not pull remotes or hot-reload an already-running MCP process.
 
 <details>
 <summary><strong>Authenticated <code>eval-server</code> binding</strong></summary>
