@@ -933,6 +933,57 @@ object ApiPaths {
     ).toEqual(['GET /api/v1/orders']);
   });
 
+  it('folds a same-file top-level `val` even when the file imports nothing', () => {
+    // Three conditions have to line up for this to break, which is why a
+    // realistic controller never hit it: the constant is a top-level non-`const`
+    // `val` (so `isKotlinConstantFile` rejects the file and the pre-pass never
+    // indexes it), the file declares no `object` (the gate's other arm), and it
+    // imports nothing. The on-demand overlay in `scan` is the file's only
+    // remaining chance, and it used to admit the extraction only when the file
+    // had imports — throwing away the very constants the route needs.
+    expect(
+      providers({
+        [CONTROLLER]: `package com.example.app.web
+
+val PATH = "/orders"
+
+@RestController
+@RequestMapping("/api/v1")
+class OrderController {
+    @GetMapping(PATH)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('folds a backtick-quoted constant declared in its own file', () => {
+    // The gate decides whether a file is parsed into the repo map at all, so a
+    // gate that rejects backticks silently drops a constant the resolver can
+    // fold — a cross-file reference to it then floors to skip.
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+
+object ApiPaths {
+    const val \`ORDERS\` = "/api/v1/orders"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
   it('leaves literal routes unchanged and emits each exactly once', () => {
     expect(
       providers({

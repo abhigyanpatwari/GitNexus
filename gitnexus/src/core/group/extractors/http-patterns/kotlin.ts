@@ -1374,7 +1374,15 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         if (kotlinCtx.constants.has(fileKey)) return foldConstants;
         try {
           const mc = extractKotlinModuleConstants(tree);
-          if (mc.imports.size > 0) {
+          // Same admission test the pre-pass applies above. It used to be
+          // `imports.size > 0` alone, which dropped a file declaring a top-level
+          // non-`const` `val` and importing nothing: the gate excludes it from
+          // the pre-pass map (no `const`, no `object`), so this branch is its
+          // only chance, and an import-only test threw it away. Any import at
+          // all masked the bug, which is why a realistic controller never hit
+          // it — the failure needs a file with a top-level `val`, no `object`
+          // and no imports.
+          if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
             const merged = new Map(kotlinCtx.constants);
             merged.set(fileKey, mc);
             foldConstants = merged;

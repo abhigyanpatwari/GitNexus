@@ -1185,5 +1185,35 @@ class OrderService {
 `),
       ).toBe(false);
     });
+
+    it('admits a backtick-quoted name, because the extractor resolves one', () => {
+      // A gate NARROWER than the extractor costs a fact: the file is never
+      // parsed into the repo map, so a cross-file reference to the constant
+      // floors to skip. `unquoteKotlinIdentifier` strips the quoting everywhere
+      // a name becomes a key, so these declarations are ones this module folds.
+      expect(isKotlinConstantFile('const val `ORDERS` = "/api/v1/orders"')).toBe(true);
+      expect(isKotlinConstantFile('object O { val `ORDERS`: String = "/api/v1/orders" }')).toBe(
+        true,
+      );
+      expect(
+        isKotlinConstantFile('class C { companion object { const val `O` = "/orders" } }'),
+      ).toBe(true);
+    });
+
+    it('does not let the backtick arm widen into a file with no carrier', () => {
+      // The control for the arm above: accepting backticks must not turn the
+      // gate into "any file mentioning val", which is the whole repository.
+      expect(
+        isKotlinConstantFile(`package com.example.app.web
+
+class OrderService {
+    fun list(): List<String> {
+        val \`local name\` = "not a constant"
+        return listOf(\`local name\`)
+    }
+}
+`),
+      ).toBe(false);
+    });
   });
 });

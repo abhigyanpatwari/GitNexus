@@ -279,10 +279,20 @@ const MAX_FOLD_DEPTH = 32;
  * contains any `val … =`, function locals included — very nearly the whole
  * repository, in a pass whose entire purpose is to avoid parsing it. That trade
  * has not been measured, so the gap is recorded here rather than papered over.
+ *
+ * Both name arms accept a BACKTICK-QUOTED identifier as well as a bare one,
+ * because the extractor does: `unquoteKotlinIdentifier` strips the quoting
+ * everywhere a name becomes a key, so `const val \`ORDERS\` = "/orders"` is a
+ * constant this module resolves. A gate that matched only `\w+` rejected the
+ * file outright and the reference floored to skip — a gate narrower than the
+ * extractor, which is the one direction the arms above are meant to exclude.
  */
-const CONST_VAL_RE = /\bconst\s+val\s+\w+\s*(?::[^=\n{}()]{0,60})?=/;
+const KOTLIN_NAME = String.raw`(?:\w+|\`[^\`\n]+\`)`;
+const CONST_VAL_RE = new RegExp(
+  String.raw`\bconst\s+val\s+${KOTLIN_NAME}\s*(?::[^=\n{}()]{0,60})?=`,
+);
 const OBJECT_DECL_RE = /\bobject\b/;
-const VAL_BINDING_RE = /\bval\s+\w+\s*(?::[^=\n{}()]{0,60})?=/;
+const VAL_BINDING_RE = new RegExp(String.raw`\bval\s+${KOTLIN_NAME}\s*(?::[^=\n{}()]{0,60})?=`);
 
 export function isKotlinConstantFile(source: string): boolean {
   if (CONST_VAL_RE.test(source)) return true;
