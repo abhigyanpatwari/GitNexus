@@ -187,11 +187,21 @@ function lastNameSegment(node: import('tree-sitter').SyntaxNode): string {
  * ternaries, function calls, ...) are skipped without contributing a
  * candidate; this is a single lookup, not a fallback list — only one
  * variable is ever resolved per call.
+ *
+ * `parenthesized_expression` is unwrapped, not skipped: an unhandled
+ * paren on the right operand must NOT fall through to the left operand —
+ * that would silently return an earlier (wrong) variable — e.g.
+ * `$host . ($resourcePath . $suffix)` would resolve to `$host` instead of
+ * failing to find anything inside the parens.
  */
 function lastConcatVariable(
   node: import('tree-sitter').SyntaxNode,
 ): import('tree-sitter').SyntaxNode | null {
   if (node.type === 'variable_name') return node;
+  if (node.type === 'parenthesized_expression') {
+    const inner = node.namedChild(0);
+    return inner ? lastConcatVariable(inner) : null;
+  }
   if (node.type === 'binary_expression') {
     const right = node.childForFieldName('right');
     const fromRight = right ? lastConcatVariable(right) : null;
@@ -209,6 +219,15 @@ function lastConcatVariable(
  * body (or file scope, for top-level script code) looking for the nearest
  * `$var = '<literal>';` assignment.
  *
+ * "Enclosing body" is resolved level by level, not just the nearest
+ * `compound_statement` — a call site nested in `if`/`foreach`/`try` inside
+ * that function is still within the same function/method body, and a
+ * preceding assignment above that conditional must still be found. Each
+ * level searches only its own preceding siblings, then the search
+ * continues from the enclosing block itself (not descending into other
+ * branches) one level up; it stops at `program`, so it never crosses into
+ * a different function or the containing class body.
+ *
  * Deliberately conservative and bounded — no interprocedural resolution,
  * no constant/property lookups, no reassignment tracking across
  * conditionals or loops. A miss just means the endpoint stays
@@ -216,38 +235,44 @@ function lastConcatVariable(
  * module docblock flags as in-scope only for one local scope.
  */
 function resolveLocalStringLiteral(varNode: import('tree-sitter').SyntaxNode): string | null {
-  let scope: import('tree-sitter').SyntaxNode | null = varNode.parent;
-  while (scope && scope.type !== 'compound_statement' && scope.type !== 'program') {
-    scope = scope.parent;
-  }
-  if (!scope) return null;
-
-  let stmt: import('tree-sitter').SyntaxNode | null = varNode;
-  while (stmt && stmt.parent !== scope) stmt = stmt.parent;
-  if (!stmt) return null;
-
   const target = varNode.text; // includes the `$` sigil, e.g. "$resourcePath"
-  let sibling = stmt.previousNamedSibling;
-  while (sibling) {
-    if (sibling.type === 'expression_statement') {
-      const inner = sibling.namedChild(0);
-      if (inner && inner.type === 'assignment_expression') {
-        const lhs = inner.childForFieldName('left');
-        const rhs = inner.childForFieldName('right');
-        if (
-          lhs &&
-          lhs.type === 'variable_name' &&
-          lhs.text === target &&
-          rhs &&
-          rhs.type === 'string'
-        ) {
-          return phpStringText(rhs);
+  let cursor: import('tree-sitter').SyntaxNode = varNode;
+
+  for (;;) {
+    let scope: import('tree-sitter').SyntaxNode | null = cursor.parent;
+    while (scope && scope.type !== 'compound_statement' && scope.type !== 'program') {
+      scope = scope.parent;
+    }
+    if (!scope) return null;
+
+    let stmt: import('tree-sitter').SyntaxNode | null = cursor;
+    while (stmt && stmt.parent !== scope) stmt = stmt.parent;
+    if (!stmt) return null;
+
+    let sibling = stmt.previousNamedSibling;
+    while (sibling) {
+      if (sibling.type === 'expression_statement') {
+        const inner = sibling.namedChild(0);
+        if (inner && inner.type === 'assignment_expression') {
+          const lhs = inner.childForFieldName('left');
+          const rhs = inner.childForFieldName('right');
+          if (
+            lhs &&
+            lhs.type === 'variable_name' &&
+            lhs.text === target &&
+            rhs &&
+            rhs.type === 'string'
+          ) {
+            return phpStringText(rhs);
+          }
         }
       }
+      sibling = sibling.previousNamedSibling;
     }
-    sibling = sibling.previousNamedSibling;
+
+    if (scope.type === 'program') return null;
+    cursor = scope; // one block up: search resumes from this block's own position
   }
-  return null;
 }
 
 export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
@@ -381,6 +406,11 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: method ? method.toUpperCase() : '*',
         path,
         name: null,
+        // Line of the path ARGUMENT, not the `new Request(` call — same
+        // choice the other three consumer patterns in this file make, but
+        // this is the one pattern where the two routinely differ (generated
+        // clients wrap the call across multiple lines). Line-span
+        // containment still resolves to the right symbol either way.
         line: pathArg.startPosition.row + 1,
         confidence: 0.6,
       });

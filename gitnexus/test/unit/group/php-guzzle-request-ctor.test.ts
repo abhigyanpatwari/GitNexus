@@ -112,4 +112,63 @@ function pay($method) {
     expect(found).toHaveLength(1);
     expect(found[0].path).toBe('/payments/pay');
   });
+
+  it('looks INSIDE a parenthesized right operand instead of falling back to the left one', () => {
+    // Regression: an earlier version of lastConcatVariable treated an
+    // unhandled `parenthesized_expression` as "no variable here" and fell
+    // through to the LEFT operand — silently returning $host instead of
+    // failing to find anything inside the parens.
+    const src = `<?php
+function pay($method) {
+    $host = 'https://api.example.com';
+    $resourcePath = '/payments/pay';
+    $suffix = '?x=1';
+    $request = new Request($method, $host . ($resourcePath . $suffix));
+    return $request;
+}
+`;
+    // $suffix (the real last variable) resolves to a non-path literal, so
+    // this must find NOTHING — never mistake $host for the path.
+    expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('resolves an assignment made in an ENCLOSING block within the same function (if/try nesting)', () => {
+    // Regression: resolveLocalStringLiteral stopped at the nearest
+    // compound_statement (the `if` block), not the enclosing function body,
+    // so an assignment made just above the `if` — in the same function —
+    // was invisible to a `new Request(...)` call nested inside it.
+    const src = `<?php
+function pay($method, $order) {
+    $resourcePath = '/payments/pay';
+    if ($order->isValid()) {
+        $request = new Request($method, $this->host . $resourcePath);
+        return $request;
+    }
+    return null;
+}
+`;
+    const found = consumers(src);
+    expect(found).toHaveLength(1);
+    expect(found[0].path).toBe('/payments/pay');
+  });
+
+  it('still does not cross into a sibling function even when searching level by level', () => {
+    // The level-by-level widening must stop at `program` / the enclosing
+    // function boundary — it must not walk into a DIFFERENT function's body
+    // just because that function is a preceding sibling statement.
+    const src = `<?php
+function setup() {
+    if (true) {
+        $resourcePath = '/payments/pay';
+    }
+}
+function pay($method) {
+    if (true) {
+        $request = new Request($method, $this->host . $resourcePath);
+        return $request;
+    }
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
+  });
 });
