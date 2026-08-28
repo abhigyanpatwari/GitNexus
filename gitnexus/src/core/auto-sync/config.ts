@@ -30,6 +30,9 @@ const MAX_REPO_GIT_TIMEOUT_MS = 3_600_000;
 // rather than imported: git-clone.ts already imports from this module, so the
 // reverse edge would be a cycle.
 const REMOTE_REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+// Same charset for a namespace segment: GitLab subgroups allow exactly these,
+// and excluding separators is what stops a segment smuggling in traversal.
+const REMOTE_PATH_SEGMENT_PATTERN = REMOTE_REPO_NAME_PATTERN;
 
 export interface AutoSyncProjectConfig {
   localPath: string;
@@ -285,13 +288,18 @@ export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
     throw new Error('host must be one of github.com, gitlab.com, or gitee.com');
   }
   const pathParts = repoPath.split('/');
-  // Traversal is a whole segment, so test segments rather than the raw string:
-  // a substring test also rejects `owner/foo..bar`, which is an ordinary name
-  // and one the repository-name rule below accepts.
+  // Every segment becomes a directory component: the namespace segments build
+  // the clone path and the last one names the repo. So each is held to the same
+  // charset, which is what keeps a separator out of a segment — on Windows
+  // `..\..\outside` is traversal even though the segment is not literally `..`,
+  // and testing the raw string for `..` instead would reject an ordinary
+  // `foo..bar`. Traversal is a whole segment; a separator is a character.
+  const namespaceParts = pathParts.slice(0, -1);
   if (
     repoPath.startsWith('/') ||
     pathParts.length < 2 ||
-    pathParts.some((part) => !part || part === '.' || part === '..')
+    pathParts.some((part) => !part || part === '.' || part === '..') ||
+    namespaceParts.some((part) => !REMOTE_PATH_SEGMENT_PATTERN.test(part))
   ) {
     throw new Error('path must include owner/repo without traversal');
   }

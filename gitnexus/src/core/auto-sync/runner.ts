@@ -280,7 +280,9 @@ export async function runAutoSyncOnce(
         );
         await deps.registerRepo(repoResult.targetDir, meta, {
           name: getAutoSyncRepoIdentity(repoResult.remoteUrl),
-          branch: placement.branch,
+          // Omitted rather than passed as undefined, so a primary index is
+          // registered with the same option shape it had before this branch.
+          ...(placement.branch ? { branch: placement.branch } : {}),
         });
         result.analyzed += 1;
       } catch (err: unknown) {

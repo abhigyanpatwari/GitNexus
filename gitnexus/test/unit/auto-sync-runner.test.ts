@@ -143,7 +143,7 @@ describe('auto-sync runner', () => {
         branch: 'master',
         remoteUrl: 'git@gitee.com:qts_server/qts_account.git',
       }),
-      { name: 'gitee.com/qts_server/qts_account', branch: undefined },
+      { name: 'gitee.com/qts_server/qts_account' },
     );
     expect(deps.syncGroupByName).toHaveBeenCalledWith('back_end');
     expect(deps.writeCommitInfo).toHaveBeenCalledWith([

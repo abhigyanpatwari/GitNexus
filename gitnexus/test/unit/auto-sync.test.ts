@@ -515,6 +515,14 @@ describe('auto-sync', () => {
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/../escape.git')).toThrow(
       'traversal',
     );
+    // A separator smuggled into a segment is traversal on Windows even though
+    // the segment is not literally `..`.
+    expect(() => validateAutoSyncRemoteUrl(String.raw`git@github.com:..\..\outside/repo`)).toThrow(
+      'traversal',
+    );
+    expect(() => validateAutoSyncRemoteUrl(String.raw`git@github.com:owner\..\..\x/repo`)).toThrow(
+      'traversal',
+    );
     expect(() => validateAutoSyncRemoteUrl('git@github.com:owner/repo.git?ref=main')).toThrow(
       'must not include query strings or fragments',
     );

@@ -332,7 +332,12 @@ export async function stopAutoSyncWatch(
     } satisfies WatchStopRequestRecord)}\n`,
   );
   stderr.write(`[auto-sync] Stop requested for watch pid ${pid}.\n`);
-  const stopped = await waitForProcessExit(pid, { deps, timeoutMs, pollMs });
+  const stopped = await waitForProcessExit(pid, {
+    deps,
+    timeoutMs,
+    pollMs,
+    processStartTime: owner.owner.processStartTime,
+  });
   if (!stopped) {
     stderr.write(`[auto-sync] Watch pid ${pid} did not exit within ${timeoutMs}ms.\n`);
     return 'timeout';
@@ -446,14 +451,29 @@ function getWatchProcessIdentityError(
 
 async function waitForProcessExit(
   pid: number,
-  options: { deps: AutoSyncWatchControlDeps; timeoutMs: number; pollMs: number },
+  options: {
+    deps: AutoSyncWatchControlDeps;
+    timeoutMs: number;
+    pollMs: number;
+    processStartTime?: string;
+  },
 ): Promise<boolean> {
+  // A bare liveness poll cannot tell "still running" from "exited, and the OS
+  // handed the pid to something else" — so a reused pid would keep us waiting
+  // on an unrelated process and then report the watch stopped once THAT exits.
+  // The start time identifies the process behind the number.
+  const isOriginalProcessAlive = () => {
+    if (!options.deps.isProcessAlive(pid)) return false;
+    if (!options.processStartTime) return true;
+    const startTime = options.deps.readProcessStartTime(pid);
+    return startTime === undefined || startTime === options.processStartTime;
+  };
   const deadline = Date.now() + options.timeoutMs;
   while (Date.now() < deadline) {
-    if (!options.deps.isProcessAlive(pid)) return true;
+    if (!isOriginalProcessAlive()) return true;
     await options.deps.sleep(options.pollMs);
   }
-  return !options.deps.isProcessAlive(pid);
+  return !isOriginalProcessAlive();
 }
 
 async function readPid(pidPath: string): Promise<number | undefined> {
