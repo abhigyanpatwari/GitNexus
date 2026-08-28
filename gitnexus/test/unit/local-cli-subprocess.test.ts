@@ -726,14 +726,11 @@ describe('Grok CLI subprocess contract', () => {
     expect(args).toContain('--no-plan');
     expect(args).toContain('--no-subagents');
     expect(args).toContain('--disable-web-search');
-    // Denylist naming the internal tool ID for shell (run_terminal_cmd, not
-    // "bash"): an empty --tools allowlist was verified live NOT to block it.
     expect(args).toContain('--disallowed-tools');
     const denyIdx = args.indexOf('--disallowed-tools');
     expect(args[denyIdx + 1]).toBe(
       'run_terminal_cmd,search_replace,web_search,web_fetch,spawn_subagent',
     );
-    // Kernel-enforced sandbox as defense in depth beyond the tool denylist.
     expect(args).toContain('--sandbox');
     const sandboxIdx = args.indexOf('--sandbox');
     expect(args[sandboxIdx + 1]).toBe('strict');
@@ -1220,8 +1217,6 @@ describe('Grok CLI timeout', () => {
     const cwd = (spawnSpy.mock.calls[0][2] as { cwd: string }).cwd;
     expect(fs.existsSync(cwd)).toBe(true);
 
-    // requestTimeoutMs + SIGKILL grace + hard-deadline grace. Never emit close:
-    // the child may still be using cwd as --cwd, sandbox root, and prompt-file home.
     vi.advanceTimersByTime(5000 + 2000 + 2000);
     await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
     expect(fs.existsSync(cwd)).toBe(true);

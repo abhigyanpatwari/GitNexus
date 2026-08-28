@@ -120,40 +120,40 @@ function parseGrokOutput(stdout: string): string {
     throw new Error(`grok CLI returned non-JSON output: ${excerpt(trimmed)}`);
   }
 
-  if (parsed && typeof parsed === 'object') {
-    const record = parsed as {
-      type?: string;
-      message?: string;
-      text?: unknown;
-      stopReason?: unknown;
-    };
-    if (record.type === 'error') {
-      throw new Error(record.message || 'grok CLI returned an error');
-    }
-    if (typeof record.text === 'string') {
-      const content = record.text.trim();
-      if (!content) {
-        throw new Error('grok CLI returned empty text');
-      }
-      // Live grok 1.0.5 with wiki spawn flags emits stopReason: "end_turn".
-      // Omitted/null/empty is not a finished page — generateLeafPage would write it.
-      const rawReason =
-        record.stopReason === undefined || record.stopReason === null
-          ? ''
-          : String(record.stopReason).trim();
-      if (rawReason.toLowerCase() !== 'end_turn') {
-        throw new Error(
-          rawReason
-            ? `grok CLI stopped with stopReason=${rawReason}`
-            : 'grok CLI JSON is missing stopReason=end_turn',
-        );
-      }
-      return content;
-    }
+  if (!parsed || typeof parsed !== 'object') {
     throw new Error(`grok CLI JSON has no text field: ${excerpt(trimmed)}`);
   }
 
-  throw new Error(`grok CLI JSON has no text field: ${excerpt(trimmed)}`);
+  const record = parsed as {
+    type?: string;
+    message?: string;
+    text?: unknown;
+    stopReason?: unknown;
+  };
+  if (record.type === 'error') {
+    throw new Error(record.message || 'grok CLI returned an error');
+  }
+  if (typeof record.text !== 'string') {
+    throw new Error(`grok CLI JSON has no text field: ${excerpt(trimmed)}`);
+  }
+
+  const content = record.text.trim();
+  if (!content) {
+    throw new Error('grok CLI returned empty text');
+  }
+
+  const rawReason =
+    record.stopReason === undefined || record.stopReason === null
+      ? ''
+      : String(record.stopReason).trim();
+  if (rawReason.toLowerCase() !== 'end_turn') {
+    throw new Error(
+      rawReason
+        ? `grok CLI stopped with stopReason=${rawReason}`
+        : 'grok CLI JSON is missing stopReason=end_turn',
+    );
+  }
+  return content;
 }
 
 /**
@@ -223,8 +223,7 @@ export async function callGrokLLM(
     );
     return { content };
   } finally {
-    // The temp dir is cwd, sandbox root, and prompt-file home. Do not remove it
-    // while a live child may still be using it (hard-deadline reject, no close).
+    // Skip rm while a live child may still be using cwd/sandbox/prompt-file.
     if (!childLifecycle.spawned || childLifecycle.closed) {
       await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -244,8 +243,7 @@ function runGrok(
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      // Grok reads the prompt from --prompt-file, not stdin. An unused stdin
-      // pipe can EPIPE-crash the wiki process when grok closes it.
+      // Prompt is --prompt-file; an unused stdin pipe can EPIPE the wiki process.
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env: {
@@ -348,7 +346,6 @@ function runGrok(
         }
       }
 
-      // Hard-deadline reject already left callGrokLLM's finally without rm.
       if (alreadySettled) {
         void fs.rm(cwd, { recursive: true, force: true }).catch(() => undefined);
       }
