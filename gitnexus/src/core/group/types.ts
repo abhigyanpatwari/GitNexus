@@ -1,4 +1,12 @@
-export type ContractType = 'http' | 'grpc' | 'thrift' | 'topic' | 'lib' | 'custom' | 'include';
+export type ContractType =
+  | 'http'
+  | 'graphql'
+  | 'grpc'
+  | 'thrift'
+  | 'topic'
+  | 'lib'
+  | 'custom'
+  | 'include';
 export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
@@ -23,6 +31,7 @@ export interface GroupManifestLink {
 
 export interface DetectConfig {
   http: boolean;
+  graphql: boolean;
   grpc: boolean;
   thrift: boolean;
   topics: boolean;

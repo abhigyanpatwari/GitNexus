@@ -6,6 +6,7 @@ const yaml = _require('js-yaml') as typeof import('js-yaml');
 
 const VALID_CONTRACT_TYPES: ContractType[] = [
   'http',
+  'graphql',
   'grpc',
   'thrift',
   'topic',
@@ -26,6 +27,7 @@ const VALID_ROLES: ContractRole[] = ['provider', 'consumer'];
 // repos that need cross-repo header tracking.
 const DEFAULT_DETECT = {
   http: true,
+  graphql: false,
   grpc: true,
   thrift: true,
   topics: true,

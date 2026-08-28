@@ -20,6 +20,7 @@ describe('Group types', () => {
       packages: {},
       detect: {
         http: true,
+        graphql: true,
         grpc: true,
         thrift: true,
         topics: true,
@@ -48,7 +49,7 @@ describe('Group types', () => {
   });
 
   it('ExtractedContract accepts all contract types', () => {
-    const types: ContractType[] = ['http', 'grpc', 'topic', 'lib', 'custom'];
+    const types: ContractType[] = ['http', 'graphql', 'grpc', 'topic', 'lib', 'custom'];
     types.forEach((t) => {
       const contract: ExtractedContract = {
         contractId: `${t}::test`,
@@ -88,6 +89,7 @@ describe('Group types', () => {
       packages: {},
       detect: {
         http: true,
+        graphql: true,
         grpc: true,
         thrift: true,
         topics: true,

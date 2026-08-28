@@ -45,6 +45,7 @@ describe('parseGroupConfig', () => {
     expect(config.packages['hr/common'].npm).toBe('@hr/common');
     expect(config.detect.http).toBe(true);
     expect(config.detect.grpc).toBe(false);
+    expect(config.detect.graphql).toBe(false);
   });
 
   it('applies defaults for missing optional fields', () => {
@@ -172,6 +173,20 @@ detect:
 `;
       const config = parseGroupConfig(yaml);
       expect(config.detect.includes).toBe(false);
+    });
+  });
+
+  describe('detect.graphql opt-in default', () => {
+    it('defaults GraphQL extraction to false', () => {
+      const config = parseGroupConfig(`version: 1\nname: test\nrepos: { app: my-app }\n`);
+      expect(config.detect.graphql).toBe(false);
+    });
+
+    it('honors explicit GraphQL extraction', () => {
+      const config = parseGroupConfig(
+        `version: 1\nname: test\nrepos: { app: my-app }\ndetect:\n  graphql: true\n`,
+      );
+      expect(config.detect.graphql).toBe(true);
     });
   });
 
