@@ -106,7 +106,12 @@ export class WatchRefreshQueue {
       await work;
     } catch (error) {
       if (propagateError) throw error;
-      this.onError(error, paths);
+      try {
+        await this.onError(error, paths);
+      } catch {
+        // Refresh failures are already handled here; a reporter must not
+        // reject the detached drain promise and become an unhandled rejection.
+      }
     } finally {
       if (this.active === work) this.active = undefined;
       if (!this.closed && this.pending.size > 0) this.schedule();

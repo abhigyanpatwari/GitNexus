@@ -1,4 +1,4 @@
-import * as fs from 'node:fs';
+import fs from 'node:fs';
 import * as path from 'node:path';
 
 export const MAX_REPO_CONTROL_FILE_BYTES = 1024 * 1024;
@@ -14,7 +14,8 @@ export function readRepoControlFileSync(repoRoot: string, filename: string): str
 
   let fd: number | undefined;
   try {
-    fd = fs.openSync(requested, 'r');
+    const nonBlocking = fs.constants.O_NONBLOCK ?? 0;
+    fd = fs.openSync(requested, fs.constants.O_RDONLY | nonBlocking);
     const opened = fs.fstatSync(fd);
     if (!opened.isFile()) throw new Error(`${filename} must be a regular file`);
     if (opened.size > MAX_REPO_CONTROL_FILE_BYTES) {
@@ -36,7 +37,17 @@ export function readRepoControlFileSync(repoRoot: string, filename: string): str
     if (canonical.dev !== opened.dev || canonical.ino !== opened.ino) {
       throw new Error(`${filename} moved or was replaced while being opened`);
     }
-    return fs.readFileSync(fd, 'utf8');
+    const bytes = Buffer.allocUnsafe(MAX_REPO_CONTROL_FILE_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const read = fs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (read === 0) break;
+      offset += read;
+    }
+    if (offset > MAX_REPO_CONTROL_FILE_BYTES) {
+      throw new Error(`${filename} exceeds ${MAX_REPO_CONTROL_FILE_BYTES} bytes`);
+    }
+    return bytes.toString('utf8', 0, offset);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;

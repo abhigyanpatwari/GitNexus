@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fsSync from 'node:fs';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -13,7 +14,10 @@ import {
   DEFAULT_BRANCH_FALLBACK,
 } from '../../src/cli/analyze-config.js';
 import type { AnalyzeOptions } from '../../src/cli/analyze.js';
-import { MAX_REPO_CONTROL_FILE_BYTES } from '../../src/config/repo-control-file.js';
+import {
+  MAX_REPO_CONTROL_FILE_BYTES,
+  readRepoControlFileSync,
+} from '../../src/config/repo-control-file.js';
 
 describe('analyze-config (.gitnexusrc support, #243)', () => {
   let dir: string;
@@ -38,6 +42,22 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
   it('rejects an oversized repository config before parsing', async () => {
     await writeRc(' '.repeat(MAX_REPO_CONTROL_FILE_BYTES + 1));
     expect(() => loadAnalyzeConfig(dir, { strictRepoControlFile: true })).toThrow(/exceeds/);
+  });
+
+  it('keeps the read bounded if a control file grows after its size check', async () => {
+    await writeRc(' '.repeat(MAX_REPO_CONTROL_FILE_BYTES + 1));
+    const fstatSync = fsSync.fstatSync;
+    const stat = vi.spyOn(fsSync, 'fstatSync').mockImplementation((fd) => {
+      const opened = fstatSync(fd);
+      Object.defineProperty(opened, 'size', { value: 0 });
+      return opened;
+    });
+
+    try {
+      expect(() => readRepoControlFileSync(dir, GITNEXUS_RC_FILENAME)).toThrow(/exceeds/);
+    } finally {
+      stat.mockRestore();
+    }
   });
 
   it.skipIf(process.platform === 'win32')(

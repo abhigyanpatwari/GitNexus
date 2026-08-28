@@ -98,6 +98,24 @@ describe('WatchRefreshQueue', () => {
     expect(successful).toEqual([['src/b.ts']]);
   });
 
+  it('contains a throwing error reporter for a detached refresh', async () => {
+    vi.useFakeTimers();
+    const queue = new WatchRefreshQueue(
+      async () => {
+        throw new Error('refresh failed');
+      },
+      async () => {
+        throw new Error('reporting failed');
+      },
+      10,
+    );
+
+    queue.enqueue('src/a.ts');
+    await vi.advanceTimersByTimeAsync(10);
+
+    await expect(queue.waitForIdle()).resolves.toBeUndefined();
+  });
+
   it('closes cleanly when a refresh failure triggers shutdown', async () => {
     vi.useFakeTimers();
     let closePromise: Promise<void> | undefined;
