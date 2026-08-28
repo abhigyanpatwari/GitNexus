@@ -29,6 +29,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
 
 /** The `.gitnexus` directory name, relative to a repo root. */
 export const GITNEXUS_DIR = '.gitnexus';
@@ -245,6 +246,21 @@ export interface RepoMeta {
    * this adds no runtime dependency from storage/ on core/.
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
+  /**
+   * Files omitted from scope-resolution because their provider capture or
+   * extraction step threw. The rest of each file may still be present in the
+   * graph, so this is an index-completeness signal rather than a parse failure.
+   * Absent means the successful run recorded no such omission; older indexes
+   * also read as absent until re-analyzed.
+   */
+  scopeExtractionFailures?: ScopeExtractionFailureSummary;
+  /**
+   * Completeness receipt for scope extraction in the successful run represented
+   * by this metadata. A missing or different value means completeness is
+   * unknown (legacy, malformed, or unreadable metadata), not that zero files
+   * were omitted.
+   */
+  scopeExtractionReceipt?: 1;
   /**
    * Interfaces whose structural-satisfaction check this run could not COMPLETE
    * (#2873) — not interfaces found to have no implementors.

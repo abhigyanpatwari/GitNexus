@@ -499,6 +499,12 @@ export interface ParseWorkerResult {
    * finalize-orchestrator.
    */
   parsedFiles: ParsedFile[];
+  /**
+   * Repo-relative paths whose scope-capture/extraction step threw. Optional for
+   * parse-cache compatibility; unlike transient worker telemetry this must be
+   * replayed on a cache hit so the persisted index cannot claim completeness.
+   */
+  scopeExtractionFailures?: string[];
   skippedLanguages: Record<string, number>;
   /**
    * Files whose parse output carried a value the structured-clone algorithm
@@ -1587,14 +1593,19 @@ const processFileGroup = (
     // see parsedfile-store.ts). parse-impl flushes `result.parsedFiles` to disk
     // per chunk and does NOT retain them in main-thread heap, so this no longer
     // costs ~1× the semantic model in RAM during parse.
+    let scopeExtractionFailed = false;
     const parsedFile = extractParsedFile(
       provider,
       parseContent,
       file.path,
-      reportWarning,
+      (message) => {
+        scopeExtractionFailed = true;
+        reportWarning(message);
+      },
       tree,
       scopeSourceKind,
     );
+    if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
     if (parsedFile !== undefined) {
       // Capture-time side-channel (#1983): `extractParsedFile` just ran the
       // provider's `emitScopeCaptures`, which (for C++ ADL/namespace marks,

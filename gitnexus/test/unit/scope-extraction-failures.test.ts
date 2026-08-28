@@ -1,0 +1,31 @@
+import { describe, expect, it } from 'vitest';
+import {
+  reconcileScopeExtractionFailures,
+  summarizeScopeExtractionFailures,
+} from '../../src/core/ingestion/scope-resolution/scope-extraction-failures.js';
+
+describe('summarizeScopeExtractionFailures', () => {
+  it('deduplicates, sorts, and caps paths while retaining the exact total', () => {
+    expect(summarizeScopeExtractionFailures(['z.ts', 'a.ts', 'z.ts', 'b.ts'], 2)).toEqual({
+      total: 3,
+      paths: ['a.ts', 'b.ts'],
+      truncated: true,
+    });
+  });
+
+  it('returns undefined when no failure was recorded', () => {
+    expect(summarizeScopeExtractionFailures([])).toBeUndefined();
+  });
+
+  it('clears worker failures recovered by fallback and retains final omissions', () => {
+    const failures = new Set(['recovered.ts', 'still-broken.ts', 'untouched.ts']);
+
+    reconcileScopeExtractionFailures(
+      failures,
+      ['recovered.ts', 'still-broken.ts', 'new-failure.ts'],
+      ['still-broken.ts', 'new-failure.ts'],
+    );
+
+    expect([...failures].sort()).toEqual(['new-failure.ts', 'still-broken.ts', 'untouched.ts']);
+  });
+});

@@ -80,6 +80,8 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /** Files whose scope extraction failed while legacy parsing continued. */
+  readonly scopeExtractionFailures: readonly string[];
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

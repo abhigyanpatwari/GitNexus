@@ -40,6 +40,8 @@ export interface PipelineResult {
    * affordance so regression suites can prove the pool engaged.
    */
   usedWorkerPool: boolean;
+  /** Files omitted from scope-resolution while the rest of analysis continued. */
+  scopeExtractionFailures: readonly string[];
   /**
    * Streamed PDG-emit COPY manifest (#2202). Present only when streaming/chunked
    * PDG emit was active (full rebuild + `--pdg` + enabled): the BasicBlock node

@@ -4,8 +4,8 @@ Short, copy-paste operations for **local development**, **MCP**, and **CI**. Com
 
 ## Prerequisites
 
-- **Node.js** ≥ 20 (`gitnexus-web/package.json` `engines`).  
-- **Git** (analyze requires a git repository).  
+- **Node.js** ≥ 20 (`gitnexus-web/package.json` `engines`).
+- **Git** (analyze requires a git repository).
 - From repo root, install and build the CLI package:
 
 ```bash
@@ -45,6 +45,16 @@ npx gitnexus status
 ```bash
 npx gitnexus list
 ```
+
+**Scope extraction incomplete:** `npx gitnexus status` reports
+`incompleteReasons: ["scope-extraction-failed"]` when one or more files still
+lack scope captures after the worker and fallback passes. `impact` and `context`
+then report a lower bound with `causes.scopeExtractionFiles` set to the affected
+file count. Re-run `npx gitnexus analyze --force`; if the reason remains, inspect
+the scope-extraction warnings for the unsupported or malformed source file.
+An older index or unreadable completeness record reports
+`incompleteReasons: ["scope-extraction-unverified"]`; re-analyze it before treating
+empty impact results as exact.
 
 ---
 
@@ -151,12 +161,12 @@ npx gitnexus cypher "MATCH (n) RETURN count(n) LIMIT 1" --repo MyRepo
 
 Orchestrator: `.github/workflows/ci.yml`.
 
-| Job | Typical local repro |
-|-----|---------------------|
-| **quality** | `cd gitnexus && npx tsc --noEmit` |
-| **unit-tests** | `cd gitnexus && npx vitest run test/unit` |
-| **integration** | `cd gitnexus && npx vitest run test/integration` (see workflow matrix for groups) |
-| **e2e** | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && E2E=1 npx playwright test` (requires `gitnexus serve` + `npm run dev`) |
+| Job             | Typical local repro                                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **quality**     | `cd gitnexus && npx tsc --noEmit`                                                                                                  |
+| **unit-tests**  | `cd gitnexus && npx vitest run test/unit`                                                                                          |
+| **integration** | `cd gitnexus && npx vitest run test/integration` (see workflow matrix for groups)                                                  |
+| **e2e**         | Triggered when `gitnexus-web/` changes; `cd gitnexus-web && E2E=1 npx playwright test` (requires `gitnexus serve` + `npm run dev`) |
 
 **Note:** Pushes that touch only certain markdown paths may be skipped by `paths-ignore` in CI — see workflow file for exact patterns.
 
@@ -178,6 +188,6 @@ If the error text is `"Only one write transaction at a time is allowed in the sy
 
 ## Where to dig deeper
 
-- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)  
-- Agent safety rules: [GUARDRAILS.md](GUARDRAILS.md)  
+- Architecture overview: [ARCHITECTURE.md](ARCHITECTURE.md)
+- Agent safety rules: [GUARDRAILS.md](GUARDRAILS.md)
 - Tests: [TESTING.md](TESTING.md)

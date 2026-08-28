@@ -654,6 +654,8 @@ export interface CodebaseContext {
  * number of SENTENCES, which has no relation to how much is missing.
  */
 export interface EpistemicCauses {
+  /** Files whose scope-extraction output is absent from this index. */
+  readonly scopeExtractionFiles: number;
   /**
    * Call SITES dropped at index time because the receiver's type could not be
    * established. Unit: call sites, taken from the index's
@@ -717,6 +719,7 @@ function epistemicFrom(dropped: {
   external: number;
   undecided: number;
   dispatch: number;
+  scopeExtraction: number;
 }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
@@ -730,6 +733,7 @@ function epistemicFrom(dropped: {
       ? {
           epistemic: 'exact',
           causes: {
+            scopeExtractionFiles: dropped.scopeExtraction,
             receiverTyping: 0,
             dispatchBoundary: dropped.dispatch,
             externalBoundary: dropped.external,
@@ -745,12 +749,42 @@ function epistemicFrom(dropped: {
         // prose saying `2 call sites` — a consumer branching on the number
         // would read a different magnitude than the human reading the text.
         causes: {
+          scopeExtractionFiles: dropped.scopeExtraction,
           receiverTyping: dropped.sites,
           dispatchBoundary: dropped.dispatch,
           externalBoundary: dropped.external,
           undecidedSatisfaction: dropped.undecided,
         },
       };
+}
+
+function scopeExtractionBoundaries(
+  summary: unknown,
+  receipt: unknown,
+): { notes: string[]; files: number } {
+  const unknown = {
+    notes: [
+      'Scope-extraction completeness was not recorded for this index, so actual impact may be higher.',
+    ],
+    files: 0,
+  };
+  if (receipt !== 1) return unknown;
+  if (summary === undefined) return { notes: [], files: 0 };
+  if (typeof summary !== 'object' || summary === null) return unknown;
+  const candidate = summary as { total?: unknown };
+  if (candidate.total === 0) return { notes: [], files: 0 };
+  const total =
+    typeof candidate.total === 'number' && Number.isInteger(candidate.total) && candidate.total > 0
+      ? candidate.total
+      : 0;
+  if (total === 0) return unknown;
+  return {
+    notes: [
+      `Scope extraction failed for ${total} ${total === 1 ? 'file' : 'files'} while this index was built. ` +
+        `Scope-resolution edges from ${total === 1 ? 'that file are' : 'those files are'} absent, so actual impact may be higher.`,
+    ],
+    files: total,
+  };
 }
 
 /**
@@ -6823,6 +6857,10 @@ export class LocalBackend {
       meta = undefined;
     }
     const receiverDrops = unresolvedReceiverBoundaries(meta?.unresolvedReceiverMembers, symName);
+    const scopeExtractionDrops = scopeExtractionBoundaries(
+      meta?.scopeExtractionFailures,
+      meta?.scopeExtractionReceipt,
+    );
     // #2873 — satisfaction checks the analyzer never completed. Read on the
     // same footing as the receiver drops, and BEFORE the heritage probe for the
     // same reason: this cause leaves no edge for that probe to find, so a
@@ -6860,6 +6898,7 @@ export class LocalBackend {
       ...receiverDrops,
       notes: [
         ...receiverDrops.notes,
+        ...scopeExtractionDrops.notes,
         ...undecidedDrops.notes,
         ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
       ],
@@ -6868,6 +6907,7 @@ export class LocalBackend {
       // count of omitted symbols. Keep the magnitude at zero rather than
       // inventing one from the presence of a note.
       dispatch: 0,
+      scopeExtraction: scopeExtractionDrops.files,
     };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
@@ -6954,6 +6994,7 @@ export class LocalBackend {
         epistemic: 'lower-bound',
         boundaries: [...droppedBoundaries.notes, ...boundaries],
         causes: {
+          scopeExtractionFiles: droppedBoundaries.scopeExtraction,
           receiverTyping: droppedBoundaries.sites,
           dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
           externalBoundary: droppedBoundaries.external,
