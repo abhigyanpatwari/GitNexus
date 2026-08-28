@@ -296,6 +296,28 @@ import com.example.app.api.*
       expect(foldKotlinOperands(CONSTS_KEY, [{ kind: 'ref', name: 'MISSING' }], repo)).toBeNull();
     });
 
+    it('folds to the empty string as a SUCCESS, not a skip', () => {
+      // The counterpart of the test above, and the distinction it depends on:
+      // `null` means "could not fold", `''` means "folded, and the answer is
+      // empty". `const val ROOT = ""` is Spring's spelling for "the class prefix
+      // itself", so collapsing it into null loses a route the literal
+      // `@GetMapping("")` publishes from the same class. `resolveKotlinConstant`
+      // already returned `''` here; `foldKotlinOperands` did not, which made the
+      // two entry points disagree about the same constant.
+      const key = 'src/main/kotlin/com/example/app/api/Root.kt';
+      const repo = repoOf({
+        [key]: `package com.example.app.api
+
+object ApiPaths {
+    const val ROOT = ""
+}
+`,
+      });
+      expect(resolveKotlinConstant(key, 'ApiPaths.ROOT', repo)).toBe('');
+      expect(foldKotlinOperands(key, [{ kind: 'ref', name: 'ApiPaths.ROOT' }], repo)).toBe('');
+      expect(foldKotlinOperands(key, [{ kind: 'literal', value: '' }], repo)).toBe('');
+    });
+
     it('terminates on a self-referential constant', () => {
       const key = 'src/main/kotlin/com/example/app/api/Cycle.kt';
       const repo = repoOf({

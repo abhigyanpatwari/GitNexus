@@ -31,6 +31,12 @@
  *     an interface whose `@RequestMapping` is a constant, and an unresolvable
  *     `path` is fatal on its own;
  *   • an unresolvable constant emits nothing rather than a guessed path;
+ *   • a cross-file fold survives BACKSLASHED repository keys — the shape glob
+ *     v13 hands the orchestrator on Windows, and the one every other fixture
+ *     here misses by writing POSIX string literals;
+ *   • a constant that folds to `""` publishes the class prefix, exactly as the
+ *     literal `@GetMapping("")` beside it does — an empty fold is a success,
+ *     not the skip floor;
  *   • without a repo context the plugin emits nothing (the documented skip
  *     floor, and the branch the 1-argument guards cannot reach);
  *   • literal routes are untouched and are not emitted twice.
@@ -530,6 +536,74 @@ interface OrderClient {
 `,
       }),
     ).toEqual([]);
+  });
+
+  it('folds across files when repository keys use Windows separators', () => {
+    // The orchestrator's file list comes from glob v13, which has no
+    // `posix: true` and joins with the platform separator, so on Windows both
+    // `prepareRepo({files})` and `scan(tree, ctx, rel)` see
+    // `src\main\kotlin\…`. `resolveKotlinImport` asks whether a key ends with
+    // `com/example/app/api/ApiPaths.kt` — a test no backslashed key can pass —
+    // so EVERY cross-file fold returned null on Windows and on Windows only:
+    // the pre-pass still ran and the context was still built, the feature was
+    // just silently absent. Every other fixture in this file is a POSIX string
+    // literal, which is exactly why CI stayed green.
+    //
+    // The keys are backslashed HERE rather than derived from `path.sep`, so the
+    // regression is pinned on every runner instead of only on the Windows
+    // matrix — the plugin reads keys, not the host OS, so simulating the keys
+    // simulates the whole bug.
+    const winKey = (rel: string): string => rel.replace(/\//g, '\\');
+    expect(
+      providers({
+        [winKey(CONSTS)]: CONSTS_SRC,
+        [winKey(CONTROLLER)]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+class OrderController {
+    @GetMapping(ApiPaths.ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('treats a constant that folds to "" as the class prefix itself', () => {
+    // `const val ROOT = ""` is Spring's idiom for "the collection root", and
+    // `joinPath` resolves it against the class prefix exactly as it resolves the
+    // literal `@PostMapping("")` beside it. The fold used to collapse `''` into
+    // the skip floor, so the two annotations below — the same path, written two
+    // ways — disagreed: the literal published `POST /api`, the constant
+    // published nothing. Asserting BOTH in one class is the point; a test on the
+    // constant alone would pass against any chosen convention rather than
+    // pinning the two spellings together.
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+
+object ApiPaths {
+    const val ROOT = ""
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths
+
+@RestController
+@RequestMapping("/api")
+class OrderController {
+    @GetMapping(ApiPaths.ROOT)
+    fun list() {}
+
+    @PostMapping("")
+    fun create() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/', 'POST /api/']);
   });
 
   it('leaves literal routes unchanged and emits each exactly once', () => {

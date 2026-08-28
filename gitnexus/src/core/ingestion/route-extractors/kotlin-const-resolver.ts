@@ -1,13 +1,31 @@
 /**
  * Kotlin binding for the language-agnostic constant resolver (#2391 core).
  *
- * Supplies the two Kotlin-specific pieces the shared fold in
- * `constant-resolver.ts` needs — {@link resolveKotlinImport} (import specifier →
- * file, honoring JVM package rules) and {@link extractKotlinModuleConstants}
- * (tree → {@link ModuleConstants}) — plus a pre-bound
- * {@link resolveKotlinConstant} wrapper so callers stay language-oblivious. The
- * reusable fold, the cycle guard, and the depth cap all live in the agnostic
- * core.
+ * Supplies the two Kotlin-specific pieces — {@link resolveKotlinImport} (import
+ * specifier → file, honoring JVM package rules) and
+ * {@link extractKotlinModuleConstants} (tree → {@link ModuleConstants}) — plus
+ * the folding entry points {@link resolveKotlinConstant} and
+ * {@link foldKotlinOperands}, so callers stay language-oblivious.
+ *
+ * WHAT IS ACTUALLY SHARED WITH THE AGNOSTIC CORE. One value —
+ * {@link MAX_FOLD_LENGTH} — and five types. The core's own `resolveConstant` /
+ * `resolveOperands` are NOT called: the fold state machine below (cycle guard,
+ * success memo, depth caps, operand concatenation — roughly 200 of this file's
+ * lines) is a local fork, close enough to `java-const-resolver.ts`'s already
+ * forked copy that the two read as the same code with the language name
+ * swapped.
+ *
+ * That fork is a consequence, not an oversight. The core keys its maps by
+ * SIMPLE name, and a Kotlin operand can be a QUALIFIED reference at any
+ * position (`X = ApiPaths.Y + "/tail"`); handed to the core, `ApiPaths.Y` misses
+ * every map and floors the whole chain to null — see {@link computeKotlinFold},
+ * which resolves operands through the qualified-aware walk for exactly this
+ * reason. The import chase is Kotlin-specific too: a member import is spelled
+ * identically to a type import, so {@link resolveImportedName} has to try both
+ * readings, and the core exposes no hook for that. Java forked first on the same
+ * grounds. Teaching the core qualified names, and retiring both copies against
+ * it, is the standing follow-up; until then the honest description of this file
+ * is "a second fork", not "a binding over a shared fold".
  *
  * Kotlin shares the JVM package/import model with Java, so this binding mirrors
  * `java-const-resolver.ts` in structure, naming and skip-floor discipline. The
@@ -54,6 +72,17 @@
  * file returns null (skip floor), never a wrong path. A missing route is a
  * missing fact; a wrongly folded one is a false edge in the graph.
  *
+ * POSIX keys are a PRECONDITION this module cannot check cheaply, so it is
+ * enforced at the one boundary that produces them: `http-patterns/kotlin.ts`
+ * normalizes separators on both the write side (the `prepareRepo` map keys) and
+ * the read side (`scan`'s `fileRel`). It has to, because the orchestrator's file
+ * list comes from glob v13, which has no `posix: true` and joins with the
+ * platform separator — so on Windows the keys arrive backslashed and every
+ * `<pkg>/<Name>.kt` test in {@link resolveKotlinImport} would miss, silently
+ * disabling cross-file folding on that platform alone. Normalizing INSIDE this
+ * module instead cannot work: the resolver returns the key it matched, and a
+ * normalized return value would then miss in a map that was never normalized.
+ *
  * WHERE THIS IS WIRED. Java reaches its binding from BOTH layers: the group
  * extractor (`group/extractors/http-patterns/java.ts`) and the ingestion
  * provider (`languages/java.ts`, via `extractModuleConstants` +
@@ -90,6 +119,30 @@ export type {
 const KOTLIN_EXTENSIONS = ['.kt', '.kts'] as const;
 
 /**
+ * Recursion ceiling for {@link parseKotlinConstOperands}, counted in `+` links.
+ *
+ * This bounds SYNTAX depth, not resolution: `A + B + C` nests one
+ * `additive_expression` per link, so the cap is really "how long a concatenation
+ * may one initializer be". Deliberately loose — generated route tables do
+ * concatenate a dozen fragments, and overrunning costs a skipped route, so the
+ * cap is a guard against pathological input rather than a statement about
+ * reasonable code.
+ */
+const MAX_OPERAND_PARSE_DEPTH = 64;
+
+/**
+ * Recursion ceiling for the fold, counted in REFERENCE hops (`A = B`, `B = C`).
+ *
+ * Larger than the agnostic core's own `MAX_RESOLVE_DEPTH` (8), which is
+ * module-private in `constant-resolver.ts` and therefore cannot simply be
+ * reused, and equal to the value the Java binding spells inline. It backstops
+ * the cycle guard, which terminates loops but not a long acyclic chain; the
+ * memo makes reaching it cheap. Both caps floor to null, i.e. to a skipped
+ * route.
+ */
+const MAX_FOLD_DEPTH = 32;
+
+/**
  * Cheap content gate: can this Kotlin file DEFINE a string constant that a route
  * annotation might reference?
  *
@@ -97,8 +150,9 @@ const KOTLIN_EXTENSIONS = ['.kt', '.kts'] as const;
  * {@link extractKotlinModuleConstants} about which files carry constants — the
  * defect class the Java binding's shared `isJavaConstantFile` exists to prevent.
  *
- * Arms, both deliberately WIDER than the extractor (a gate may over-admit — it
- * only costs a parse — but must never reject a file the extractor accepts):
+ * Arms, both intended to be WIDER than the extractor (a gate may over-admit — it
+ * only costs a parse — while rejecting a file the extractor would accept costs a
+ * fact):
  *  - `const val NAME [: T] =`. `const` is legal only at a file's top level or in
  *    an `object`/`companion object`, i.e. exactly the carriers the extractor
  *    harvests, so this arm needs no scope check.
@@ -108,6 +162,23 @@ const KOTLIN_EXTENSIONS = ['.kt', '.kts'] as const;
  *    whose only `val`s are function locals from costing a parse. It still admits
  *    a top-level `val` in a file that happens to declare an object elsewhere,
  *    which is the harmless direction.
+ *
+ * KNOWN GAP — the "never rejects what the extractor accepts" property does NOT
+ * hold, and claiming it did was wrong. {@link extractKotlinModuleConstants}
+ * calls `collectProperties(tree.rootNode, null)`, so it harvests a TOP-LEVEL
+ * non-`const` `val`; a file whose only constant has that shape and declares no
+ * `object` fails both arms above (`const val` absent, `object` absent) and is
+ * never parsed.
+ *
+ * The direction is safe — the constant is simply missing from the map, so a
+ * reference to it floors to skip, never to a wrong path — but the cost is not
+ * nil. Measured on both sides of this change: with the declaration in the SAME
+ * file as the route it still folds, because `scan` re-extracts that file's tree
+ * on demand and bypasses the gate; with the declaration in its OWN file the
+ * route is silently dropped. Closing the gap means admitting every file that
+ * contains any `val … =`, function locals included — very nearly the whole
+ * repository, in a pass whose entire purpose is to avoid parsing it. That trade
+ * has not been measured, so the gap is recorded here rather than papered over.
  */
 const CONST_VAL_RE = /\bconst\s+val\s+\w+\s*(?::[^=\n{}()]{0,60})?=/;
 const OBJECT_DECL_RE = /\bobject\b/;
@@ -272,7 +343,7 @@ export function parseKotlinConstOperands(
   depth = 0,
 ): Operand[] | null {
   if (!node) return null;
-  if (depth > 64) return null;
+  if (depth > MAX_OPERAND_PARSE_DEPTH) return null;
   if (node.type === 'string_literal') {
     const value = stringLiteralValue(node);
     return value === null ? null : [{ kind: 'literal', value }];
@@ -523,7 +594,7 @@ function resolveWithState(
   state: KotlinFoldState,
   depth: number,
 ): string | null {
-  if (depth > 32) return null;
+  if (depth > MAX_FOLD_DEPTH) return null;
   const guard = `${fileKey}::${name}`;
   const memoized = state.memo.get(guard);
   if (memoized !== undefined) return memoized;
@@ -667,12 +738,22 @@ function foldOperands(
 /**
  * Fold an inline operand list (e.g. `ApiPaths.BASE + "/orders"`) against
  * `fileKey`, or null when any piece is unresolvable (skip floor).
+ *
+ * An empty result is a SUCCESS, not a skip. `const val ROOT = ""` folds to `""`,
+ * which `joinPath` then resolves against the class-level prefix exactly as it
+ * resolves the literal `@GetMapping("")` — both mean "the prefix itself", the
+ * Spring idiom for a collection root. Collapsing it into `null` would make a
+ * resolved-empty path indistinguishable from an unresolvable one — the skip
+ * floor is reserved for "could not fold", and nothing else in the resolver
+ * conflates the two: {@link resolveKotlinConstant} returns `''` for an empty
+ * constant, and `resolveOperands` in the shared core returns its fold
+ * unfiltered. Matches `foldJavaOperands`, so the two JVM bindings do not
+ * diverge on the same input.
  */
 export function foldKotlinOperands(
   fileKey: string,
   operands: readonly Operand[],
   repo: RepoConstants,
 ): string | null {
-  const out = foldOperands(fileKey, operands, newFoldState(repo), 0);
-  return out === '' ? null : out;
+  return foldOperands(fileKey, operands, newFoldState(repo), 0);
 }

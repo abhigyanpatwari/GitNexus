@@ -174,6 +174,31 @@ const FOLDABLE_PATH_EXPRESSIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Repo-relative path in the POSIX form the Kotlin constant map is keyed by.
+ *
+ * The orchestrator's file list comes from glob v13, which has no `posix: true`
+ * option and joins with the platform separator, so on Windows `prepareRepo`
+ * receives `src\main\kotlin\com\example\ApiPaths.kt` and `scan` receives the
+ * same for `fileRel`. `resolveKotlinImport` turns an import specifier into
+ * `com/example/ApiPaths.kt` and asks whether a key ENDS WITH it — a test no
+ * backslashed key can pass. Left unnormalized, every cross-file constant fold
+ * returns null on Windows and on Windows only: the pre-pass still runs, the
+ * context is still built, and the feature is simply, silently absent. The unit
+ * fixtures build POSIX keys by hand, so CI cannot see it.
+ *
+ * Normalizing at this boundary — write side (the map keys below) and read side
+ * (`fileRel`) — is the same fix `node.ts` (`normalizeRel`) and `python.ts`
+ * (`fileShortKey` / `fileLongKey`) already apply for the same reason, and it is
+ * the only coherent place: the resolver returns the key it matched, so
+ * normalizing inside it would hand back a value that misses in a map nobody
+ * normalized. `readFile` still receives the ORIGINAL `rel`, since the filesystem
+ * wants the platform's own spelling.
+ */
+function normalizeRel(rel: string): string {
+  return rel.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/**
  * The path expression carried by one route-annotation argument, or null when the
  * argument does not designate a path.
  *
@@ -1258,7 +1283,8 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           if (!tree) continue;
           const mc = extractKotlinModuleConstants(tree);
           if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
-            constants.set(rel, mc);
+            // POSIX key (see `normalizeRel`); `readFile` above got the raw `rel`.
+            constants.set(normalizeRel(rel), mc);
           }
         } catch {
           // Per-file resilience: one unreadable/oversized/ill-formed file must
@@ -1272,6 +1298,11 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       const out: HttpDetection[] = [];
       const kotlinCtx = repoContext as { constants: RepoConstants } | undefined;
 
+      // Read side of the POSIX keying (see `normalizeRel`): the map `prepareRepo`
+      // built is keyed by normalized path, so every lookup and every fold entry
+      // point below uses `fileKey`, never the raw `fileRel`.
+      const fileKey = fileRel === undefined ? undefined : normalizeRel(fileRel);
+
       // Lazy per-file constants view. `prepareRepo` only indexes constant-
       // DEFINING files, so an importing controller is absent from that map.
       // When a route actually references a constant, extract THIS file's import
@@ -1282,13 +1313,13 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       const getFoldConstants = (): RepoConstants | undefined => {
         if (foldConstants !== undefined) return foldConstants;
         foldConstants = kotlinCtx?.constants;
-        if (!kotlinCtx?.constants || !fileRel) return foldConstants;
-        if (kotlinCtx.constants.has(fileRel)) return foldConstants;
+        if (!kotlinCtx?.constants || !fileKey) return foldConstants;
+        if (kotlinCtx.constants.has(fileKey)) return foldConstants;
         try {
           const mc = extractKotlinModuleConstants(tree);
           if (mc.imports.size > 0) {
             const merged = new Map(kotlinCtx.constants);
-            merged.set(fileRel, mc);
+            merged.set(fileKey, mc);
             foldConstants = merged;
           }
         } catch {
@@ -1377,12 +1408,12 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         if (!expr || !FOLDABLE_PATH_EXPRESSIONS.has(expr.type)) continue;
         // No repo context (context-less fallback scanning) means no constant map
         // and therefore no honest answer — skip rather than guess a path.
-        if (!fileRel) continue;
+        if (!fileKey) continue;
         const constants = getFoldConstants();
         if (!constants) continue;
         const operands = parseKotlinConstOperands(expr);
         if (operands === null) continue;
-        const rawPath = foldKotlinOperands(fileRel, operands, constants);
+        const rawPath = foldKotlinOperands(fileKey, operands, constants);
         if (rawPath === null) continue;
         methodRoutes.push({
           httpMethod,
