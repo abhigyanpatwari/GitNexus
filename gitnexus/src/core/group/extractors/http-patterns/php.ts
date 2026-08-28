@@ -264,11 +264,19 @@ function anonymousFunctionCaptures(
  * that function is still within the same function/method body, and a
  * preceding assignment above that conditional must still be found. Each
  * level searches only its own preceding siblings, then the search
- * continues from the enclosing block itself one level up — UNLESS that
- * block is the body of an `anonymous_function` that doesn't capture
- * `$target` via `use (...)`, in which case the variable genuinely isn't
- * visible there and the search stops. It stops at `program` either way, so
- * it never crosses into a different function or the containing class body.
+ * continues from the enclosing block itself one level up, UNLESS that
+ * block IS the body of a function/method/closure:
+ *   - a regular `function_definition` or `method_declaration` boundary
+ *     always stops the search — PHP gives a function or method no access
+ *     to anything outside its own body (no automatic capture, no implicit
+ *     global), so widening past one into the containing class or
+ *     file-level scope would resolve a variable the call site could never
+ *     actually see at runtime;
+ *   - an `anonymous_function` boundary stops UNLESS `$target` is
+ *     explicitly captured via `use (...)` — closures capture nothing
+ *     automatically either.
+ * It stops at `program` regardless, for the case where the call site was
+ * at file/script scope all along.
  *
  * A preceding sibling that ISN'T a plain assignment but might reassign the
  * target somewhere inside itself (an `if`/`foreach`/`try`/`switch`, ...)
@@ -318,7 +326,18 @@ function resolveLocalStringLiteral(varNode: import('tree-sitter').SyntaxNode): s
     if (scope.type === 'program') return null;
     const enclosing = scope.parent;
     if (enclosing && enclosing.type === 'anonymous_function') {
+      // Closures capture nothing automatically — only what's use()'d.
       if (!anonymousFunctionCaptures(enclosing, target)) return null;
+    } else if (
+      enclosing &&
+      (enclosing.type === 'function_definition' || enclosing.type === 'method_declaration')
+    ) {
+      // A regular function or method boundary — NOT a closure. PHP gives
+      // these no access to anything outside their own body (no automatic
+      // capture, no implicit global): widening past one into the
+      // containing class body or file-level scope would resolve a
+      // variable the call site could never actually see at runtime.
+      return null;
     }
     cursor = scope; // one block up: search resumes from this block's own position
   }

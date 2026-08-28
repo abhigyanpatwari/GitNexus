@@ -308,4 +308,45 @@ function pay($method) {
 `;
     expect(consumers(src)).toHaveLength(0);
   });
+
+  it('does not resolve a variable from file/script scope into a class method (no implicit global in PHP)', () => {
+    // Regression: after exhausting a method's own body, widening went
+    // straight to `program` (file scope) and found the top-level literal —
+    // but PHP methods have NO access to file-level variables without an
+    // explicit `global $v;`, which this resolver deliberately never adds
+    // support for. This produced a wrong contract, not a miss.
+    const src = `<?php
+$resourcePath = '/global-and-wrong';
+
+class PaymentsApi {
+    public function pay($method) {
+        $request = new Request($method, $this->host . $resourcePath);
+        return $request;
+    }
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('does not resolve a variable from file scope into a plain top-level function either', () => {
+    const src = `<?php
+$resourcePath = '/global-and-wrong';
+
+function pay($method) {
+    $request = new Request($method, $GLOBALS['host'] . $resourcePath);
+    return $request;
+}
+`;
+    expect(consumers(src)).toHaveLength(0);
+  });
+
+  it('DOES resolve when the call site is itself at file/script scope (no function boundary to cross)', () => {
+    const src = `<?php
+$resourcePath = '/payments/pay';
+$request = new Request('GET', $host . $resourcePath);
+`;
+    const found = consumers(src);
+    expect(found).toHaveLength(1);
+    expect(found[0].path).toBe('/payments/pay');
+  });
 });
