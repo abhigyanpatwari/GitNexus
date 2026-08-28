@@ -171,6 +171,7 @@ export async function callGrokLLM(
   const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-wiki-grok-'));
   const promptPath = path.join(tempDir, 'prompt.txt');
+  const childLifecycle = { spawned: false, closed: false };
 
   try {
     await fs.writeFile(promptPath, fullPrompt, 'utf-8');
@@ -211,10 +212,15 @@ export async function callGrokLLM(
       tempDir,
       config,
       options,
+      childLifecycle,
     );
     return { content };
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    // The temp dir is cwd, sandbox root, and prompt-file home. Do not remove it
+    // while a live child may still be using it (hard-deadline reject, no close).
+    if (!childLifecycle.spawned || childLifecycle.closed) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 }
 
@@ -223,20 +229,24 @@ function runGrok(
   args: string[],
   cwd: string,
   config: GrokConfig,
-  options?: CallLLMOptions,
+  options: CallLLMOptions | undefined,
+  lifecycle: { spawned: boolean; closed: boolean },
 ): Promise<string> {
   const startTime = Date.now();
 
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
+      // Grok reads the prompt from --prompt-file, not stdin. An unused stdin
+      // pipe can EPIPE-crash the wiki process when grok closes it.
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
       env: {
         ...process.env,
         CI: '1',
       },
     });
+    lifecycle.spawned = true;
 
     verboseLog('Process spawned with PID:', child.pid);
 
@@ -310,6 +320,8 @@ function runGrok(
     });
 
     child.on('close', (code) => {
+      const alreadySettled = settled;
+      lifecycle.closed = true;
       stdout += stdoutDecoder.end();
       stderr += stderrDecoder.end();
       verboseLog(
@@ -318,25 +330,26 @@ function runGrok(
 
       if (timedOut && timeoutError) {
         rejectOnce(timeoutError);
-        return;
-      }
-
-      if (code !== 0) {
+      } else if (code !== 0) {
         const details = stderr.trim() || stdout.trim();
         rejectOnce(new Error(`grok CLI exited with code ${code}: ${details}`));
-        return;
+      } else {
+        try {
+          resolveOnce(parseGrokOutput(stdout));
+        } catch (err) {
+          rejectOnce(err instanceof Error ? err : new Error(String(err)));
+        }
       }
-      try {
-        resolveOnce(parseGrokOutput(stdout));
-      } catch (err) {
-        rejectOnce(err instanceof Error ? err : new Error(String(err)));
+
+      // Hard-deadline reject already left callGrokLLM's finally without rm.
+      if (alreadySettled) {
+        void fs.rm(cwd, { recursive: true, force: true }).catch(() => undefined);
       }
     });
 
     child.on('error', (err) => {
+      lifecycle.closed = true;
       rejectOnce(new Error(`Failed to spawn grok CLI: ${err.message}`));
     });
-
-    child.stdin.end();
   });
 }

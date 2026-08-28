@@ -14,6 +14,7 @@ function makeFakeChild(opts?: {
   stdout?: string;
   stderr?: string;
   stdinEndBehavior?: 'normal' | 'epipe';
+  closeOnSpawn?: boolean;
 }) {
   const child = new EventEmitter() as any;
   child.stdout = new EventEmitter();
@@ -23,8 +24,7 @@ function makeFakeChild(opts?: {
   child.kill = vi.fn();
 
   let stdinContent = '';
-  child.stdin.end = vi.fn((data?: string) => {
-    if (data) stdinContent += data;
+  const finish = () => {
     queueMicrotask(() => {
       if (opts?.stdinEndBehavior === 'epipe') {
         child.stdin.emit('error', new Error('write EPIPE'));
@@ -37,9 +37,14 @@ function makeFakeChild(opts?: {
       }
       child.emit('close', opts?.exitCode ?? 0);
     });
+  };
+
+  child.stdin.end = vi.fn((data?: string) => {
+    if (data) stdinContent += data;
+    if (!opts?.closeOnSpawn) finish();
   });
 
-  return { child, getStdin: () => stdinContent };
+  return { child, getStdin: () => stdinContent, complete: finish };
 }
 
 // ─── Claude CLI argv contract ─────────────────────────────────────────
@@ -630,10 +635,25 @@ describe('Grok CLI subprocess contract', () => {
   let spawnSpy: ReturnType<typeof vi.fn>;
   let fakeChild: ReturnType<typeof makeFakeChild>;
 
+  function spawnGrokChild(onSpawn?: (...args: unknown[]) => void) {
+    spawnSpy = vi.fn((...args: unknown[]) => {
+      onSpawn?.(...args);
+      fakeChild.complete();
+      return fakeChild.child;
+    });
+  }
+
+  function grokFake(
+    opts: Parameters<typeof makeFakeChild>[0] = { stdout: JSON.stringify({ text: 'wiki page' }) },
+    onSpawn?: (...args: unknown[]) => void,
+  ) {
+    fakeChild = makeFakeChild({ ...opts, closeOnSpawn: true });
+    spawnGrokChild(onSpawn);
+  }
+
   beforeEach(() => {
     vi.resetModules();
-    fakeChild = makeFakeChild({ stdout: JSON.stringify({ text: 'wiki page' }) });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    grokFake();
   });
 
   afterEach(() => {
@@ -738,11 +758,10 @@ describe('Grok CLI subprocess contract', () => {
   it('writes the concatenated prompt before spawn', async () => {
     let promptContents = '';
     const fs = await import('fs');
-    spawnSpy = vi.fn((..._spawnArgs: unknown[]) => {
+    grokFake({ stdout: JSON.stringify({ text: 'wiki page' }) }, (..._spawnArgs: unknown[]) => {
       const args = _spawnArgs[1] as string[];
       const fileIdx = args.indexOf('--prompt-file');
       promptContents = fs.readFileSync(args[fileIdx + 1], 'utf-8');
-      return fakeChild.child;
     });
     const { callGrokLLM } = await loadGrokClient();
 
@@ -752,12 +771,13 @@ describe('Grok CLI subprocess contract', () => {
   });
 
   it('passes --cwd to an empty temp dir, not a repo path', async () => {
-    spawnSpy = vi.fn((cmd: string, args: string[], opts: { cwd?: string }) => {
-      expect(args).toContain('--cwd');
-      const cwdIdx = args.indexOf('--cwd');
-      expect(args[cwdIdx + 1]).toContain('gitnexus-wiki-grok-');
-      expect(args[cwdIdx + 1]).toBe(opts.cwd);
-      return fakeChild.child;
+    grokFake({ stdout: JSON.stringify({ text: 'wiki page' }) }, (_cmd, args, opts) => {
+      const argv = args as string[];
+      const spawnOpts = opts as { cwd?: string };
+      expect(argv).toContain('--cwd');
+      const cwdIdx = argv.indexOf('--cwd');
+      expect(argv[cwdIdx + 1]).toContain('gitnexus-wiki-grok-');
+      expect(argv[cwdIdx + 1]).toBe(spawnOpts.cwd);
     });
     const { callGrokLLM } = await loadGrokClient();
 
@@ -791,8 +811,7 @@ describe('Grok CLI subprocess contract', () => {
   });
 
   it('rejects with exit code and stderr on non-zero exit', async () => {
-    fakeChild = makeFakeChild({ exitCode: 1, stderr: 'auth required' });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    grokFake({ exitCode: 1, stderr: 'auth required' });
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow(
@@ -801,80 +820,71 @@ describe('Grok CLI subprocess contract', () => {
   });
 
   it('rejects when grok returns a JSON error object', async () => {
-    fakeChild = makeFakeChild({
+    grokFake({
       stdout: JSON.stringify({ type: 'error', message: 'session failed' }),
     });
-    spawnSpy = vi.fn(() => fakeChild.child);
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow('session failed');
   });
 
   it('rejects when JSON text is empty', async () => {
-    fakeChild = makeFakeChild({ stdout: JSON.stringify({ text: '   ' }) });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    grokFake({ stdout: JSON.stringify({ text: '   ' }) });
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow('grok CLI returned empty text');
   });
 
   it('rejects incomplete stopReason even when text is present', async () => {
-    fakeChild = makeFakeChild({
+    grokFake({
       stdout: JSON.stringify({ text: 'cut off mid-sent', stopReason: 'max_tokens' }),
     });
-    spawnSpy = vi.fn(() => fakeChild.child);
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow(/stopReason=max_tokens/);
   });
 
   it('rejects PascalCase incomplete stopReason', async () => {
-    fakeChild = makeFakeChild({
+    grokFake({
       stdout: JSON.stringify({ text: 'partial', stopReason: 'MaxTokens' }),
     });
-    spawnSpy = vi.fn(() => fakeChild.child);
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow(/stopReason=MaxTokens/);
   });
 
   it('accepts end_turn stopReason with text', async () => {
-    fakeChild = makeFakeChild({
+    grokFake({
       stdout: JSON.stringify({ text: 'wiki page', stopReason: 'end_turn' }),
     });
-    spawnSpy = vi.fn(() => fakeChild.child);
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).resolves.toEqual({ content: 'wiki page' });
   });
 
   it('accepts omitted stopReason when text is non-empty', async () => {
-    fakeChild = makeFakeChild({ stdout: JSON.stringify({ text: 'wiki page' }) });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    grokFake({ stdout: JSON.stringify({ text: 'wiki page' }) });
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).resolves.toEqual({ content: 'wiki page' });
   });
 
   it('rejects empty stdout with a dedicated message', async () => {
-    fakeChild = makeFakeChild({ stdout: '   ' });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    grokFake({ stdout: '   ' });
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow('grok CLI returned empty output');
   });
 
   it('rejects non-JSON stdout with an excerpt', async () => {
-    fakeChild = makeFakeChild({ stdout: 'Update available\nnot-json' });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    grokFake({ stdout: 'Update available\nnot-json' });
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow(/non-JSON output:.*Update available/s);
   });
 
   it('rejects JSON without a text field with an excerpt', async () => {
-    fakeChild = makeFakeChild({ stdout: JSON.stringify({ sessionId: 'abc' }) });
-    spawnSpy = vi.fn(() => fakeChild.child);
+    grokFake({ stdout: JSON.stringify({ sessionId: 'abc' }) });
     const { callGrokLLM } = await loadGrokClient();
 
     await expect(callGrokLLM('prompt', {})).rejects.toThrow(/no text field:.*"sessionId"/s);
@@ -884,12 +894,12 @@ describe('Grok CLI subprocess contract', () => {
     const fs = await import('fs');
     let promptPath = '';
     let cwdPath = '';
-    spawnSpy = vi.fn((cmd: string, args: string[], opts: { cwd?: string }) => {
-      const fileIdx = args.indexOf('--prompt-file');
-      promptPath = args[fileIdx + 1];
-      cwdPath = args[args.indexOf('--cwd') + 1];
+    grokFake({ stdout: JSON.stringify({ text: 'wiki page' }) }, (_cmd, args) => {
+      const argv = args as string[];
+      const fileIdx = argv.indexOf('--prompt-file');
+      promptPath = argv[fileIdx + 1];
+      cwdPath = argv[argv.indexOf('--cwd') + 1];
       expect(fs.existsSync(promptPath)).toBe(true);
-      return fakeChild.child;
     });
     const { callGrokLLM } = await loadGrokClient();
 
@@ -901,11 +911,10 @@ describe('Grok CLI subprocess contract', () => {
 
   it('removes the temp dir after failure', async () => {
     const fs = await import('fs');
-    fakeChild = makeFakeChild({ exitCode: 1, stderr: 'nope' });
     let cwdPath = '';
-    spawnSpy = vi.fn((cmd: string, args: string[]) => {
-      cwdPath = args[args.indexOf('--cwd') + 1];
-      return fakeChild.child;
+    grokFake({ exitCode: 1, stderr: 'nope' }, (_cmd, args) => {
+      const argv = args as string[];
+      cwdPath = argv[argv.indexOf('--cwd') + 1];
     });
     const { callGrokLLM } = await loadGrokClient();
 
@@ -1121,17 +1130,26 @@ describe('Grok CLI timeout', () => {
 
   it('does not set a kill timer when requestTimeoutMs is undefined', async () => {
     const child = hangingChild();
-    child.stdin.end = vi.fn(() => {
-      queueMicrotask(() => {
-        child.stdout.emit('data', Buffer.from(JSON.stringify({ text: 'ok' })));
-        child.emit('close', 0);
-      });
-    });
     const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child);
     const promise = callGrokLLM('prompt', {});
     await waitForSpawn(spawnSpy);
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ text: 'ok' })));
+    child.emit('close', 0);
     await expect(promise).resolves.toEqual({ content: 'ok' });
     expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it('ignores grok stdin so an unused pipe cannot EPIPE', async () => {
+    const child = hangingChild();
+    const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child);
+    const promise = callGrokLLM('prompt', {});
+    await waitForSpawn(spawnSpy);
+    const spawnOpts = spawnSpy.mock.calls[0][2] as { stdio?: unknown };
+    expect(spawnOpts.stdio).toEqual(['ignore', 'pipe', 'pipe']);
+    expect(child.stdin.end).not.toHaveBeenCalled();
+    child.stdout.emit('data', Buffer.from(JSON.stringify({ text: 'ok' })));
+    child.emit('close', 0);
+    await expect(promise).resolves.toEqual({ content: 'ok' });
   });
 
   it('does not remove the temp dir until the child closes after timeout', async () => {
@@ -1160,5 +1178,21 @@ describe('Grok CLI timeout', () => {
     child.emit('close', null);
     await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
     expect(fs.existsSync(cwd)).toBe(false);
+  });
+
+  it('does not remove the temp dir when the hard deadline rejects without a close event', async () => {
+    const fs = await import('fs');
+    const child = hangingChild();
+    const { callGrokLLM, spawnSpy } = await loadGrokWithChild(child);
+    const promise = callGrokLLM('prompt', { requestTimeoutMs: 5000 });
+    await waitForSpawn(spawnSpy);
+    const cwd = (spawnSpy.mock.calls[0][2] as { cwd: string }).cwd;
+    expect(fs.existsSync(cwd)).toBe(true);
+
+    // requestTimeoutMs + SIGKILL grace + hard-deadline grace. Never emit close:
+    // the child may still be using cwd as --cwd, sandbox root, and prompt-file home.
+    vi.advanceTimersByTime(5000 + 2000 + 2000);
+    await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
+    expect(fs.existsSync(cwd)).toBe(true);
   });
 });
