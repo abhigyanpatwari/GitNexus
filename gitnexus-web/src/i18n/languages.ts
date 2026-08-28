@@ -32,7 +32,7 @@ export function normalizeSupportedLanguage(
   ) {
     return 'zh-CN';
   }
-  if (normalized === "ru" || normalized.startsWith("ru")) return "ru";
+  if (normalized === "ru" || normalized.startsWith("ru-")) return "ru";
   return null;
 }
 
