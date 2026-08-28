@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Wiki** — local Grok Build CLI provider (`gitnexus wiki --provider grok`) uses the authenticated `grok` CLI instead of an API key
+
 ## [1.6.10] - 2026-08-27
 
 ### Added

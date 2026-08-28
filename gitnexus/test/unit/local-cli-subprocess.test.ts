@@ -623,3 +623,252 @@ describe('Codex CLI flag contract snapshot', () => {
     expect(args[args.length - 1]).toBe('-');
   });
 });
+
+// ─── Grok CLI subprocess contract ─────────────────────────────────────
+
+describe('Grok CLI subprocess contract', () => {
+  let spawnSpy: ReturnType<typeof vi.fn>;
+  let fakeChild: ReturnType<typeof makeFakeChild>;
+
+  beforeEach(() => {
+    vi.resetModules();
+    fakeChild = makeFakeChild({ stdout: JSON.stringify({ text: 'wiki page' }) });
+    spawnSpy = vi.fn(() => fakeChild.child);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function loadGrokClient() {
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockReturnValue('grok 1.0.5'),
+      execSync: vi.fn().mockReturnValue('grok 1.0.5'),
+      spawn: spawnSpy,
+    }));
+    return import('../../src/core/wiki/grok-client.js');
+  }
+
+  it('detectGrokCLI returns grok when grok --version succeeds and caches the result', async () => {
+    const execFileSync = vi.fn().mockReturnValue('grok 1.0.5');
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('child_process', () => ({
+      execFileSync,
+      execSync: vi.fn(),
+      spawn: spawnSpy,
+    }));
+    const { detectGrokCLI } = await import('../../src/core/wiki/grok-client.js');
+
+    expect(detectGrokCLI()).toBe('grok');
+    expect(detectGrokCLI()).toBe('grok');
+    expect(execFileSync).toHaveBeenCalledTimes(1);
+    expect(execFileSync.mock.calls[0][0]).toBe('grok');
+    expect(execFileSync.mock.calls[0][1]).toEqual(['--version']);
+  });
+
+  it('detectGrokCLI returns null on ENOENT', async () => {
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockImplementation(() => {
+        const err = new Error('not found') as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }),
+      execSync: vi.fn(),
+      spawn: spawnSpy,
+    }));
+    const { detectGrokCLI } = await import('../../src/core/wiki/grok-client.js');
+
+    expect(detectGrokCLI()).toBeNull();
+  });
+
+  it('spawns grok with prompt-file, json output, max-turns 1, and a tool denylist', async () => {
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('user prompt', {});
+
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    expect(args).toContain('--prompt-file');
+    expect(args).toContain('--output-format');
+    expect(args).toContain('json');
+    expect(args).toContain('--max-turns');
+    expect(args).toContain('1');
+    expect(args).toContain('--no-plan');
+    expect(args).toContain('--no-subagents');
+    expect(args).toContain('--disable-web-search');
+    expect(args).toContain('--disallowed-tools');
+    const denyIdx = args.indexOf('--disallowed-tools');
+    expect(args[denyIdx + 1]).toBe(
+      'search_replace,run_terminal_cmd,web_search,web_fetch,spawn_subagent',
+    );
+    expect(args).not.toContain('--yolo');
+    expect(args).not.toContain('--always-approve');
+    expect(args.some((arg) => arg.includes('user prompt'))).toBe(false);
+  });
+
+  it('writes system + separator + user prompt to --prompt-file, not stdin', async () => {
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('user prompt', {}, 'system prompt');
+
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    const fileIdx = args.indexOf('--prompt-file');
+    const promptPath = args[fileIdx + 1];
+    // File is removed after the call; capture contents via spawn-time read.
+    // The implementation writes before spawn, so the spy can read it if we hook spawn.
+    expect(fakeChild.getStdin()).toBe('');
+    expect(promptPath).toContain('gitnexus-wiki-grok-');
+  });
+
+  it('writes the concatenated prompt before spawn', async () => {
+    let promptContents = '';
+    const fs = await import('fs');
+    spawnSpy = vi.fn((..._spawnArgs: unknown[]) => {
+      const args = _spawnArgs[1] as string[];
+      const fileIdx = args.indexOf('--prompt-file');
+      promptContents = fs.readFileSync(args[fileIdx + 1], 'utf-8');
+      return fakeChild.child;
+    });
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('user prompt', {}, 'system prompt');
+
+    expect(promptContents).toBe('system prompt\n\n---\n\nuser prompt');
+  });
+
+  it('passes --cwd to an empty temp dir, not the repo workingDirectory', async () => {
+    spawnSpy = vi.fn((cmd: string, args: string[], opts: { cwd?: string }) => {
+      expect(opts.cwd).not.toBe('/my/repo');
+      expect(args).toContain('--cwd');
+      const cwdIdx = args.indexOf('--cwd');
+      expect(args[cwdIdx + 1]).not.toBe('/my/repo');
+      expect(args[cwdIdx + 1]).toBe(opts.cwd);
+      return fakeChild.child;
+    });
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('prompt', { workingDirectory: '/my/repo' });
+  });
+
+  it('appends --model only when model is set', async () => {
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('prompt', { model: 'grok-build' });
+
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    expect(args).toContain('--model');
+    expect(args).toContain('grok-build');
+  });
+
+  it('does not include --model when model is empty', async () => {
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('prompt', {});
+
+    const args = spawnSpy.mock.calls[0][1] as string[];
+    expect(args).not.toContain('--model');
+  });
+
+  it('parses JSON text field as the LLM content', async () => {
+    const { callGrokLLM } = await loadGrokClient();
+
+    const result = await callGrokLLM('prompt', {});
+    expect(result.content).toBe('wiki page');
+  });
+
+  it('rejects with exit code and stderr on non-zero exit', async () => {
+    fakeChild = makeFakeChild({ exitCode: 1, stderr: 'auth required' });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow(
+      'grok CLI exited with code 1: auth required',
+    );
+  });
+
+  it('rejects when grok returns a JSON error object', async () => {
+    fakeChild = makeFakeChild({
+      stdout: JSON.stringify({ type: 'error', message: 'session failed' }),
+    });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow('session failed');
+  });
+
+  it('rejects when JSON text is empty', async () => {
+    fakeChild = makeFakeChild({ stdout: JSON.stringify({ text: '   ' }) });
+    spawnSpy = vi.fn(() => fakeChild.child);
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow('grok CLI returned empty output');
+  });
+
+  it('removes the temp prompt file and cwd after success', async () => {
+    const fs = await import('fs');
+    let promptPath = '';
+    let cwdPath = '';
+    spawnSpy = vi.fn((cmd: string, args: string[], opts: { cwd?: string }) => {
+      const fileIdx = args.indexOf('--prompt-file');
+      promptPath = args[fileIdx + 1];
+      cwdPath = args[args.indexOf('--cwd') + 1];
+      expect(fs.existsSync(promptPath)).toBe(true);
+      return fakeChild.child;
+    });
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('prompt', {});
+
+    expect(fs.existsSync(promptPath)).toBe(false);
+    expect(fs.existsSync(cwdPath)).toBe(false);
+  });
+
+  it('removes the temp dir after failure', async () => {
+    const fs = await import('fs');
+    fakeChild = makeFakeChild({ exitCode: 1, stderr: 'nope' });
+    let cwdPath = '';
+    spawnSpy = vi.fn((cmd: string, args: string[]) => {
+      cwdPath = args[args.indexOf('--cwd') + 1];
+      return fakeChild.child;
+    });
+    const { callGrokLLM } = await loadGrokClient();
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow(/exited with code 1/);
+    expect(fs.existsSync(cwdPath)).toBe(false);
+  });
+
+  it('throws when grok CLI is not on PATH', async () => {
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('child_process', () => ({
+      execFileSync: vi.fn().mockImplementation(() => {
+        const err = new Error('not found') as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      }),
+      execSync: vi.fn(),
+      spawn: spawnSpy,
+    }));
+    const { callGrokLLM } = await import('../../src/core/wiki/grok-client.js');
+
+    await expect(callGrokLLM('prompt', {})).rejects.toThrow(/Grok CLI not found/);
+  });
+
+  it('sets CI=1 and windowsHide=true in spawn options', async () => {
+    const { callGrokLLM } = await loadGrokClient();
+
+    await callGrokLLM('prompt', {});
+
+    const spawnOpts = spawnSpy.mock.calls[0][2];
+    expect(spawnOpts.env.CI).toBe('1');
+    expect(spawnOpts.windowsHide).toBe(true);
+  });
+});
