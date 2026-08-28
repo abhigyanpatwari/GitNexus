@@ -594,6 +594,14 @@ export function formatImpactResult(result: any): string {
     );
     for (const b of result.boundaries || []) lines.push(`    • ${b}`);
   }
+  if (result.risk) {
+    lines.push(`Risk: ${result.risk}`);
+  }
+  if (result.riskScale?.comparableAcrossKinds === false && result.riskSharedAxes) {
+    lines.push(
+      `Shared-axes risk: ${result.riskSharedAxes} (process/module axes are unavailable for this target)`,
+    );
+  }
   lines.push('');
 
   const depthLabels: Record<number, string> = {

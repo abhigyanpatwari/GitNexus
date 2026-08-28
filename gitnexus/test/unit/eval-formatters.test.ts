@@ -409,6 +409,34 @@ describe('formatImpactResult', () => {
     expect(result).toContain('caller2');
   });
 
+  it('prints the shared-axes comparison when a target has unavailable risk axes', () => {
+    const result = formatImpactResult({
+      target: { kind: 'File', name: 'crypto.ts' },
+      direction: 'upstream',
+      impactedCount: 13,
+      risk: 'MEDIUM',
+      riskSharedAxes: 'MEDIUM',
+      riskScale: {
+        comparableAcrossKinds: false,
+        unusedAxes: [
+          {
+            axis: 'processes',
+            reason: 'file-nodes-have-no-process-or-community-membership',
+          },
+          {
+            axis: 'modules',
+            reason: 'file-nodes-have-no-process-or-community-membership',
+          },
+        ],
+      },
+      byDepthCounts: { 1: 13 },
+    });
+
+    expect(result).toContain('Risk: MEDIUM');
+    expect(result).toContain('Shared-axes risk: MEDIUM');
+    expect(result).toContain('process/module axes are unavailable');
+  });
+
   it('handles zero impact', () => {
     const result = formatImpactResult({
       target: { name: 'foo' },

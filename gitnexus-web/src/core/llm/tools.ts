@@ -13,7 +13,7 @@
 
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { NODE_TABLES, REL_TYPES } from 'gitnexus-shared';
+import { NODE_TABLES, REL_TYPES, scoreImpactRisk } from 'gitnexus-shared';
 import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
 
 /**
@@ -1331,19 +1331,15 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const directCount = depth1.length;
       const processCount = affectedProcesses.length;
       const clusterCount = affectedClusters.length;
-      let risk = 'LOW';
-      if (directCount >= 30 || processCount >= 5 || clusterCount >= 5 || totalAffected >= 200) {
-        risk = 'CRITICAL';
-      } else if (
-        directCount >= 15 ||
-        processCount >= 3 ||
-        clusterCount >= 3 ||
-        totalAffected >= 100
-      ) {
-        risk = 'HIGH';
-      } else if (directCount >= 5 || totalAffected >= 30) {
-        risk = 'MEDIUM';
-      }
+      // File impact on this surface expands to symbols inside the file before
+      // enrichment, so process/cluster axes remain real and comparable here.
+      const { risk } = scoreImpactRisk({
+        direction,
+        directCount,
+        processCount,
+        moduleCount: clusterCount,
+        impactedCount: totalAffected,
+      });
 
       // ===== COMPACT TABULAR OUTPUT =====
       const lines: string[] = [
