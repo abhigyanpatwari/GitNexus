@@ -383,14 +383,10 @@ export class ManifestExtractor {
         const normalizedPath = normalizeRoutePath(rawPath);
         return method ? `http::${method}::${normalizedPath}` : `http::*::${normalizedPath}`;
       }
-      case 'graphql': {
-        const [rawKind, ...fieldParts] = contract.trim().split('::');
-        const kind = rawKind.toLowerCase();
-        const field = fieldParts.join('::').trim();
-        return ['query', 'mutation', 'subscription'].includes(kind) && field
-          ? `graphql::${kind}::${field}`
-          : `graphql::${contract.trim()}`;
-      }
+      case 'graphql':
+        throw new Error(
+          'GraphQL manifest links are unsupported; enable detect.graphql for real-symbol extraction',
+        );
       case 'grpc':
         return `grpc::${contract}`;
       case 'thrift':

@@ -188,6 +188,23 @@ detect:
       );
       expect(config.detect.graphql).toBe(true);
     });
+
+    it('rejects GraphQL manifest links until they can resolve real endpoint symbols', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  web: web-repo
+  api: api-repo
+links:
+  - from: web
+    to: api
+    type: graphql
+    contract: query::health
+    role: consumer
+`;
+      expect(() => parseGroupConfig(yaml)).toThrow(/type "graphql" is invalid/i);
+    });
   });
 
   it('parses thrift manifest links', () => {

@@ -31,7 +31,7 @@ export interface GroupManifestLink {
 
 export interface DetectConfig {
   http: boolean;
-  graphql: boolean;
+  graphql?: boolean;
   grpc: boolean;
   thrift: boolean;
   topics: boolean;

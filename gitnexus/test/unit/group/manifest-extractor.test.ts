@@ -60,23 +60,6 @@ describe('ManifestExtractor', () => {
     expect(result.crossLinks[0].to.repo).toBe('sales/crm/backend');
   });
 
-  it('canonicalizes GraphQL operation casing and surrounding whitespace', async () => {
-    const result = await extractor.extractFromManifest([
-      {
-        from: 'web',
-        to: 'api',
-        type: 'graphql',
-        contract: ' QUERY::health ',
-        role: 'consumer',
-      },
-    ]);
-
-    expect(result.contracts.map((contract) => contract.contractId)).toEqual([
-      'graphql::query::health',
-      'graphql::query::health',
-    ]);
-  });
-
   it('resolves grpc manifest provider by exact method name (no .proto fallback)', async () => {
     const links: GroupManifestLink[] = [
       {

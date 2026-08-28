@@ -43,7 +43,18 @@ withTestLbugDB(
       );
       await fs.writeFile(
         path.join(consumerRoot, 'src/generated.ts'),
-        `export const HealthDocument = { kind: 'Document', operation: 'Health', field: 'health' };`,
+        `export const HealthDocument = {
+  kind: 'Document',
+  definitions: [{
+    kind: 'OperationDefinition',
+    operation: 'query',
+    name: { kind: 'Name', value: 'Health' },
+    selectionSet: {
+      kind: 'SelectionSet',
+      selections: [{ kind: 'Field', name: { kind: 'Name', value: 'health' } }]
+    }
+  }]
+};`,
         'utf8',
       );
       const providerRepo: RepoHandle = {

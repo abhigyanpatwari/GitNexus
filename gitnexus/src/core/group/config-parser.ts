@@ -6,7 +6,6 @@ const yaml = _require('js-yaml') as typeof import('js-yaml');
 
 const VALID_CONTRACT_TYPES: ContractType[] = [
   'http',
-  'graphql',
   'grpc',
   'thrift',
   'topic',

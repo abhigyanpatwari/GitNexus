@@ -345,7 +345,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             }
           }
 
-          if (config.detect.graphql) {
+          if (config.detect.graphql === true) {
             const extracted = await graphqlEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               repoContracts.push({

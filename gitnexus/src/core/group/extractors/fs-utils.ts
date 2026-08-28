@@ -20,10 +20,16 @@ export function readSafe(repoPath: string, rel: string, maxBytes?: number): stri
     const canonicalFile = fs.realpathSync(abs);
     const canonicalRelative = path.relative(canonicalBase, canonicalFile);
     if (canonicalRelative.startsWith('..') || path.isAbsolute(canonicalRelative)) return null;
-    const noFollow = fs.constants.O_NOFOLLOW ?? 0;
-    const fd = fs.openSync(canonicalFile, fs.constants.O_RDONLY | noFollow);
+    const expected = fs.statSync(canonicalFile);
+    if (!expected.isFile()) return null;
+    const fd = fs.openSync(canonicalFile, 'r');
     try {
-      if (maxBytes !== undefined && fs.fstatSync(fd).size > maxBytes) return null;
+      const opened = fs.fstatSync(fd);
+      // Reject a path swapped between realpath/stat and open. Reading through
+      // the verified descriptor keeps the checked identity stable afterward.
+      if (!opened.isFile() || opened.dev !== expected.dev || opened.ino !== expected.ino)
+        return null;
+      if (maxBytes !== undefined && opened.size > maxBytes) return null;
       return fs.readFileSync(fd, 'utf-8');
     } finally {
       fs.closeSync(fd);

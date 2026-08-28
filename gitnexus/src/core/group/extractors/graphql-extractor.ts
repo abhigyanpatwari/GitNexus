@@ -74,39 +74,90 @@ function unquote(text: string): string | null {
   return value.includes('${') ? null : value;
 }
 
-interface LiteralTokenNode {
-  readonly text: string;
-  readonly namedChildren: readonly LiteralTokenNode[];
+function unwrapExpression(node: Parser.SyntaxNode): Parser.SyntaxNode {
+  let current = node;
+  while (
+    ['as_expression', 'satisfies_expression', 'parenthesized_expression'].includes(current.type) &&
+    current.namedChildren[0]
+  ) {
+    current = current.namedChildren[0];
+  }
+  return current;
 }
 
-export function hasRequiredLiteralTokens(
-  root: LiteralTokenNode,
-  requiredNames: readonly string[],
-  maxNodes = MAX_PROVIDER_AST_NODES,
-  initialDepth = 0,
-  maxDepth = MAX_PROVIDER_AST_DEPTH,
-): boolean {
-  const tokens = new Set<string>();
-  const pending: Array<{ node: LiteralTokenNode; depth: number }> = [
-    { node: root, depth: initialDepth },
-  ];
+function objectPairValue(node: Parser.SyntaxNode, key: string): Parser.SyntaxNode | null {
+  const object = unwrapExpression(node);
+  if (object.type !== 'object') return null;
+  for (const pair of object.namedChildren) {
+    if (pair.type !== 'pair') continue;
+    const keyNode = pair.childForFieldName('key');
+    const pairKey = keyNode ? (unquote(keyNode.text) ?? keyNode.text) : null;
+    if (pairKey === key) return pair.childForFieldName('value');
+  }
+  return null;
+}
+
+function literalValue(node: Parser.SyntaxNode | null): string | null {
+  return node ? unquote(unwrapExpression(node).text) : null;
+}
+
+function graphqlNameValue(node: Parser.SyntaxNode | null): string | null {
+  return node ? literalValue(objectPairValue(node, 'value')) : null;
+}
+
+function withinGeneratedAstBudget(root: Parser.SyntaxNode): boolean {
+  const pending: Array<{ node: Parser.SyntaxNode; depth: number }> = [{ node: root, depth: 0 }];
   let visited = 0;
   while (pending.length > 0) {
     const current = pending.pop();
     if (!current) break;
     visited++;
-    if (visited > maxNodes || current.depth > maxDepth) return false;
-    if (current.node.namedChildren.length === 0) {
-      const literal = unquote(current.node.text);
-      tokens.add(literal ?? current.node.text);
-      continue;
-    }
+    if (visited > MAX_PROVIDER_AST_NODES || current.depth > MAX_PROVIDER_AST_DEPTH) return false;
     for (let index = current.node.namedChildren.length - 1; index >= 0; index--) {
       const child = current.node.namedChildren[index];
       if (child) pending.push({ node: child, depth: current.depth + 1 });
     }
   }
-  return requiredNames.every((name) => tokens.has(name));
+  return true;
+}
+
+function generatedRootFields(selectionSet: Parser.SyntaxNode | null): Set<string> {
+  const fields = new Set<string>();
+  if (!selectionSet) return fields;
+  const selections = objectPairValue(selectionSet, 'selections');
+  const array = selections ? unwrapExpression(selections) : null;
+  if (!array || array.type !== 'array') return fields;
+  for (const item of array.namedChildren) {
+    const selection = unwrapExpression(item);
+    if (literalValue(objectPairValue(selection, 'kind')) !== 'Field') continue;
+    const field = graphqlNameValue(objectPairValue(selection, 'name'));
+    if (field) fields.add(field);
+  }
+  return fields;
+}
+
+export function hasGeneratedDocumentProof(
+  initializer: Parser.SyntaxNode,
+  operationKind: GraphqlOperationKind,
+  operationName: string,
+  requiredFields: readonly string[],
+): boolean {
+  if (!withinGeneratedAstBudget(initializer)) return false;
+  const document = unwrapExpression(initializer);
+  if (literalValue(objectPairValue(document, 'kind')) !== 'Document') return false;
+  const definitions = objectPairValue(document, 'definitions');
+  const array = definitions ? unwrapExpression(definitions) : null;
+  if (!array || array.type !== 'array') return false;
+
+  for (const item of array.namedChildren) {
+    const definition = unwrapExpression(item);
+    if (literalValue(objectPairValue(definition, 'kind')) !== 'OperationDefinition') continue;
+    if (literalValue(objectPairValue(definition, 'operation')) !== operationKind) continue;
+    if (graphqlNameValue(objectPairValue(definition, 'name')) !== operationName) continue;
+    const fields = generatedRootFields(objectPairValue(definition, 'selectionSet'));
+    if (requiredFields.every((field) => fields.has(field))) return true;
+  }
+  return false;
 }
 
 function importedDecoratorBindings(root: Parser.SyntaxNode): Map<string, GraphqlOperationKind> {
@@ -235,7 +286,9 @@ function generatedCandidates(operation: OperationDefinitionNode): string[] {
 function generatedDocumentMatches(
   repoPath: string,
   symbol: ResolvedSymbol,
-  requiredNames: readonly string[],
+  operationKind: GraphqlOperationKind,
+  operationName: string,
+  requiredFields: readonly string[],
 ): boolean {
   const source = readSafe(repoPath, symbol.filePath, MAX_GRAPHQL_SOURCE_BYTES);
   if (!source) return false;
@@ -266,12 +319,7 @@ function generatedDocumentMatches(
     ) {
       const value = current.node.childForFieldName('value');
       if (!value) return false;
-      return hasRequiredLiteralTokens(
-        value,
-        requiredNames,
-        MAX_PROVIDER_AST_NODES - visited,
-        current.depth + 1,
-      );
+      return hasGeneratedDocumentProof(value, operationKind, operationName, requiredFields);
     }
     for (let index = current.node.namedChildren.length - 1; index >= 0; index--) {
       pending.push({ node: current.node.namedChildren[index], depth: current.depth + 1 });
@@ -430,7 +478,13 @@ export class GraphqlExtractor implements ContractExtractor {
           );
           if (
             resolved &&
-            generatedDocumentMatches(repoPath, resolved, [operationName, ...uniqueFields])
+            generatedDocumentMatches(
+              repoPath,
+              resolved,
+              definition.operation,
+              operationName,
+              uniqueFields,
+            )
           ) {
             symbol = resolved;
             break;

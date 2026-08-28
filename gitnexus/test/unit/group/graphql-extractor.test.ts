@@ -3,10 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CypherExecutor } from '../../../src/core/group/contract-extractor.js';
-import {
-  GraphqlExtractor,
-  hasRequiredLiteralTokens,
-} from '../../../src/core/group/extractors/graphql-extractor.js';
+import { GraphqlExtractor } from '../../../src/core/group/extractors/graphql-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 import { cleanupTempDir } from '../../helpers/test-db.js';
 
@@ -36,6 +33,22 @@ function executor(symbols: Record<string, Array<Record<string, unknown>>>): Cyph
   };
 }
 
+function generatedDocument(
+  operation: 'query' | 'mutation' | 'subscription',
+  name: string,
+  fields: string[],
+): string {
+  const selections = fields
+    .map((field) => `{ kind: 'Field', name: { kind: 'Name', value: '${field}' } }`)
+    .join(', ');
+  return `{ kind: 'Document', definitions: [{
+    kind: 'OperationDefinition',
+    operation: '${operation}',
+    name: { kind: 'Name', value: '${name}' },
+    selectionSet: { kind: 'SelectionSet', selections: [${selections}] }
+  }] }`;
+}
+
 describe('GraphqlExtractor', () => {
   afterEach(async () => {
     await Promise.all(tempDirs.splice(0).map((dir) => cleanupTempDir(dir)));
@@ -61,9 +74,9 @@ mutation SaveWidget { saveWidget }
 subscription WatchWidget { widgetChanged }
 `,
       'src/generated.ts': `
-export const GetWidgetDocument = { operation: 'GetWidget', field: 'widget' };
-export const SaveWidgetDocument = { operation: 'SaveWidget', field: 'saveWidget' };
-export const WatchWidgetDocument = { operation: 'WatchWidget', field: 'widgetChanged' };
+export const GetWidgetDocument = ${generatedDocument('query', 'GetWidget', ['widget'])};
+export const SaveWidgetDocument = ${generatedDocument('mutation', 'SaveWidget', ['saveWidget'])};
+export const WatchWidgetDocument = ${generatedDocument('subscription', 'WatchWidget', ['widgetChanged'])};
 `,
     });
     const run = executor({
@@ -174,7 +187,7 @@ class DeepResolver { @Query() health() {} }`,
   it('uses an exact unique Document symbol when no generated hook exists', async () => {
     const { root, repo } = await makeRepo({
       'src/health.graphql': `query Health { health }`,
-      'src/generated/graphql.ts': `export const HealthDocument = { operation: 'Health', field: 'health' };`,
+      'src/generated/graphql.ts': `export const HealthDocument = ${generatedDocument('query', 'Health', ['health'])};`,
     });
 
     const contracts = await new GraphqlExtractor().extract(
@@ -197,10 +210,13 @@ class DeepResolver { @Query() health() {} }`,
     ]);
   });
 
-  it('skips a same-named Document symbol without operation provenance', async () => {
+  it('skips matching tokens that occur only in unrelated initializer metadata', async () => {
     const { root, repo } = await makeRepo({
       'src/health.graphql': `query Health { health }`,
-      'src/generated/graphql.ts': `export const HealthDocument = { operation: 'Other', field: 'unrelated' };`,
+      'src/generated/graphql.ts': `export const HealthDocument = {
+        metadata: { operation: 'Health', field: 'health' },
+        kind: 'NotADocument'
+      };`,
     });
 
     const contracts = await new GraphqlExtractor().extract(
@@ -216,24 +232,25 @@ class DeepResolver { @Query() health() {} }`,
     expect(contracts).toEqual([]);
   });
 
-  it('bounds wide generated Document initializer traversal without variadic expansion', () => {
-    const leaf = (text: string) => ({ text, namedChildren: [] as const });
-    const broad = {
-      text: '',
-      namedChildren: [
-        leaf("'Wide'"),
-        leaf("'health'"),
-        ...Array.from({ length: 99_999 }, () => leaf('0')),
-      ],
-    };
+  it('fails closed when a generated Document initializer exceeds the AST depth budget', async () => {
+    const { root, repo } = await makeRepo({
+      'src/deep.graphql': `query Deep { health }`,
+      'src/generated.ts': `export const DeepDocument = ${'('.repeat(300)}${generatedDocument(
+        'query',
+        'Deep',
+        ['health'],
+      )}${')'.repeat(300)};`,
+    });
 
-    expect(hasRequiredLiteralTokens(broad, ['Wide', 'health'])).toBe(false);
-    expect(
-      hasRequiredLiteralTokens({ text: '', namedChildren: [leaf("'Wide'"), leaf("'health'")] }, [
-        'Wide',
-        'health',
-      ]),
-    ).toBe(true);
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        DeepDocument: [{ uid: 'const:deep', name: 'DeepDocument', filePath: 'src/generated.ts' }],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
   });
 
   it('fails closed for oversized, deeply nested, and excessive-operation documents', async () => {
