@@ -689,7 +689,7 @@ describe('Grok CLI subprocess contract', () => {
     expect(detectGrokCLI()).toBeNull();
   });
 
-  it('spawns grok with prompt-file, json output, max-turns 5, and an empty tool allowlist', async () => {
+  it('spawns grok with prompt-file, json output, max-turns 5, a tool denylist, and a strict sandbox', async () => {
     const { callGrokLLM } = await loadGrokClient();
 
     await callGrokLLM('user prompt', {});
@@ -704,12 +704,18 @@ describe('Grok CLI subprocess contract', () => {
     expect(args).toContain('--no-plan');
     expect(args).toContain('--no-subagents');
     expect(args).toContain('--disable-web-search');
-    // Empty allowlist (not a denylist): a denylist still lets Grok attempt
-    // unlisted tools and burn turns until --max-turns is hit.
-    expect(args).toContain('--tools');
-    const toolsIdx = args.indexOf('--tools');
-    expect(args[toolsIdx + 1]).toBe('');
-    expect(args).not.toContain('--disallowed-tools');
+    // Denylist naming the internal tool ID for shell (run_terminal_cmd, not
+    // "bash"): an empty --tools allowlist was verified live NOT to block it.
+    expect(args).toContain('--disallowed-tools');
+    const denyIdx = args.indexOf('--disallowed-tools');
+    expect(args[denyIdx + 1]).toBe(
+      'run_terminal_cmd,search_replace,web_search,web_fetch,spawn_subagent',
+    );
+    // Kernel-enforced sandbox as defense in depth beyond the tool denylist.
+    expect(args).toContain('--sandbox');
+    const sandboxIdx = args.indexOf('--sandbox');
+    expect(args[sandboxIdx + 1]).toBe('strict');
+    expect(args).not.toContain('--tools');
     expect(args).not.toContain('--yolo');
     expect(args).not.toContain('--always-approve');
     expect(args.some((arg) => arg.includes('user prompt'))).toBe(false);

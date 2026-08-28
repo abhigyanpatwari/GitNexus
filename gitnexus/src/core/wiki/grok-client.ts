@@ -19,14 +19,20 @@ export interface GrokConfig {
   requestTimeoutMs?: number;
 }
 
-// A denylist (--disallowed-tools) still lets Grok attempt (and retry) any
-// built-in tool that isn't named, burning turns until --max-turns is hit
-// (verified live: denylist -> "Error: max turns reached" even at 5 turns).
-// An empty --tools allowlist removes every built-in tool up front, so Grok
-// answers directly from the prompt instead of probing for tools.
-const GROK_TOOLS_ALLOWLIST = '';
+// Verified live: an empty --tools allowlist does NOT disable the shell tool
+// (`run_terminal_cmd`) — Grok still ran `find` across the user's entire home
+// directory looking for project context, taking 10+ minutes per call and
+// then hitting --max-turns anyway. A denylist naming the tool explicitly is
+// what actually blocks it; internal tool IDs, not the CLI-facing names
+// (shell is `run_terminal_cmd`, not `bash`).
+const GROK_DISALLOWED_TOOLS = 'run_terminal_cmd,search_replace,web_search,web_fetch,spawn_subagent';
 
-// Verified live with an empty --tools allowlist: wiki generation completes
+// Defense in depth beyond the tool denylist: a kernel-enforced (Landlock/
+// Seatbelt) sandbox so reads/writes stay confined to --cwd (our empty temp
+// dir) + system paths even if a future tool slips past the denylist.
+const GROK_SANDBOX_PROFILE = 'strict';
+
+// Verified live with the denylist + sandbox above: wiki generation completes
 // in ~3 turns. 5 leaves headroom without letting a stuck session run away.
 const GROK_MAX_TURNS = '5';
 
@@ -151,8 +157,10 @@ export async function callGrokLLM(
       '--no-plan',
       '--no-subagents',
       '--disable-web-search',
-      '--tools',
-      GROK_TOOLS_ALLOWLIST,
+      '--disallowed-tools',
+      GROK_DISALLOWED_TOOLS,
+      '--sandbox',
+      GROK_SANDBOX_PROFILE,
       '--cwd',
       tempDir,
     ];
