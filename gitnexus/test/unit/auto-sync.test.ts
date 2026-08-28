@@ -173,6 +173,25 @@ describe('auto-sync', () => {
     ).toThrow('repo_git_timeout must not exceed 2147483647ms');
   });
 
+  it('rejects a repo_git_timeout that exceeds the interval or an hour', () => {
+    const config = (timeout: string) =>
+      [
+        'sync_interval_minutes: 10',
+        `repo_git_timeout: ${timeout}`,
+        'projects:',
+        '  - local_path: /tmp/repos',
+        '    branch: main',
+        '    remote_urls:',
+        '      - git@github.com:owner/repo.git',
+      ].join('\n');
+
+    // A bare number means seconds, so this is ~7 days, not 10 minutes.
+    expect(() => parseAutoSyncConfig(config('600000'), '/tmp/watch_config.yml')).toThrow(
+      'a bare number is interpreted as seconds',
+    );
+    expect(() => parseAutoSyncConfig(config('600000ms'), '/tmp/watch_config.yml')).not.toThrow();
+  });
+
   it('rejects analyze_timeout values above half the sync interval', async () => {
     await fs.writeFile(
       path.join(gitnexusHome, 'watch_config.yml'),
@@ -334,6 +353,37 @@ describe('auto-sync', () => {
     await expect(fs.readFile(unrelated, 'utf-8')).resolves.toBe('keep');
   });
 
+  it('keeps only the newest quarantine entries per repository', async () => {
+    const root = path.join(tempDir, 'repos');
+    const quarantineRoot = path.join(gitnexusHome, 'watch', 'quarantine');
+    await fs.mkdir(quarantineRoot, { recursive: true });
+    const uuid = '00000000-0000-4000-8000-000000000000';
+    const entryName = (stamp: string, repo: string) => `auto-sync-${stamp}-4242-${uuid}-${repo}`;
+    // Seven ticks of the same failing repo; age alone would keep them all.
+    const busy = ['01', '02', '03', '04', '05', '06', '07'].map((n) =>
+      entryName(`2026-08-2${n}T00-00-00-000Z`, 'busy-repo'),
+    );
+    const quiet = ['01', '02'].map((n) => entryName(`2026-08-2${n}T00-00-00-000Z`, 'quiet-repo'));
+    for (const name of [...busy, ...quiet]) {
+      await fs.mkdir(path.join(quarantineRoot, name), { recursive: true });
+      await fs.writeFile(path.join(quarantineRoot, `${name}.README.txt`), 'note');
+    }
+
+    await resolveConfiguredCloneRoot(root);
+
+    const survivors = await fs.readdir(quarantineRoot);
+    for (const name of busy.slice(-5)) {
+      expect(survivors).toContain(name);
+      expect(survivors).toContain(`${name}.README.txt`);
+    }
+    for (const name of busy.slice(0, 2)) {
+      expect(survivors).not.toContain(name);
+      expect(survivors).not.toContain(`${name}.README.txt`);
+    }
+    // A repo below the cap is untouched.
+    for (const name of quiet) expect(survivors).toContain(name);
+  });
+
   it('falls back to copy and remove when quarantine crosses filesystems', async () => {
     const target = path.join(tempDir, 'partial-repo');
     const quarantineRoot = path.join(gitnexusHome, 'watch', 'quarantine');
@@ -432,8 +482,13 @@ describe('auto-sync', () => {
   });
 
   it('rejects unsafe repository names without sanitizing them', () => {
+    // Rejected by the URL validator now, so the operator learns at config load
+    // rather than once per tick from inside the sync loop.
     expect(() => extractRepoNameFromRemoteUrl('git@github.com:team/repo$name.git')).toThrow(
-      'valid repository name',
+      'repository name must use only',
+    );
+    expect(() => extractRepoNameFromRemoteUrl('git@github.com:team/repo\\name.git')).toThrow(
+      'repository name must use only',
     );
     expect(() => extractRepoNameFromRemoteUrl('git@github.com:team/..')).toThrow('traversal');
   });

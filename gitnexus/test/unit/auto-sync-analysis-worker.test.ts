@@ -149,6 +149,53 @@ describe('auto-sync analysis worker', () => {
     expect(timers).toHaveLength(1);
   });
 
+  it('divides the worker heap by the number of repos analyzed in parallel', () => {
+    const child = createChild();
+    const forkWorker = vi.fn(() => child as any);
+    const run = createAutoSyncAnalysisRunner({ forkWorker });
+
+    void run('/tmp/repo', { branch: 'main' }, 50, undefined, undefined, 4);
+    expect(forkWorker).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['--max-old-space-size=128']),
+    );
+
+    void run('/tmp/repo', { branch: 'main' }, 50);
+    expect(forkWorker).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.arrayContaining(['--max-old-space-size=512']),
+    );
+  });
+
+  it('stops waiting for a worker that never exits after cancellation', async () => {
+    const child = Object.assign(createChild(), {
+      unref: vi.fn(),
+      channel: { unref: vi.fn() },
+    });
+    const timers: Array<() => void> = [];
+    const run = createAutoSyncAnalysisRunner({
+      forkWorker: vi.fn(() => child as any),
+      setTimeoutFn: vi.fn((callback: () => void) => {
+        timers.push(callback);
+        return timers.length as any;
+      }) as any,
+      clearTimeoutFn: vi.fn() as any,
+    });
+
+    const result = run('/tmp/repo', { branch: 'main' }, 50);
+    timers[0]!();
+    expect(child.send).toHaveBeenLastCalledWith({ type: 'cancel' });
+
+    // No 'exit' ever arrives — the worker is wedged past its safe point.
+    timers[1]!();
+
+    await expect(result).rejects.toThrow('did not exit within');
+    // The parent stops waiting; the child is released, never killed.
+    expect(child.channel.unref).toHaveBeenCalled();
+    expect(child.unref).toHaveBeenCalled();
+    expect(child.send).toHaveBeenCalledTimes(2);
+  });
+
   it('uses the same cancellation request for an aborted watch run', async () => {
     const child = createChild();
     const controller = new AbortController();

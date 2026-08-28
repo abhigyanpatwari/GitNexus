@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { loadGroupConfig } from '../group/config-parser.js';
 import { getDefaultGitnexusDir, getGroupDir } from '../group/storage.js';
 import { syncGroup } from '../group/sync.js';
-import { registerRepo, type RepoMeta } from '../../storage/repo-manager.js';
+import { registerRepo, resolveBranchPlacement, type RepoMeta } from '../../storage/repo-manager.js';
 import { extractRepoNameFromRemoteUrl } from './repo.js';
 import { cloneOrPull, runGit } from '../../server/git-clone.js';
 import { resolveConfiguredCloneRoot } from './path-security.js';
@@ -34,6 +34,7 @@ export interface AutoSyncRunDeps {
   getCurrentCommit: (repoPath: string, timeoutMs: number) => Promise<string>;
   runAnalysis: AutoSyncAnalysisRunner;
   registerRepo: typeof registerRepo;
+  resolveBranchPlacement: typeof resolveBranchPlacement;
   loadState: typeof loadAutoSyncState;
   saveState: typeof saveAutoSyncState;
   writeCommitInfo: typeof writeProjectCommitInfo;
@@ -69,6 +70,7 @@ const DEFAULT_DEPS: AutoSyncRunDeps = {
     (await runGit(['rev-parse', 'HEAD'], repoPath, { timeoutMs })).trim(),
   runAnalysis: runAutoSyncAnalysis,
   registerRepo,
+  resolveBranchPlacement,
   loadState: loadAutoSyncState,
   saveState: saveAutoSyncState,
   writeCommitInfo: writeProjectCommitInfo,
@@ -107,6 +109,9 @@ export async function runAutoSyncOnce(
   );
 
   const workItems = await buildWorkItems(config, deps);
+  // What will actually run at once. One repo means one worker, so the common
+  // single-project case still hands that worker the whole machine budget.
+  const analysisParallelism = Math.max(1, Math.min(actualConcurrency, workItems.length));
   const repoResults = await mapWithConcurrency(
     workItems,
     actualConcurrency,
@@ -175,20 +180,14 @@ export async function runAutoSyncOnce(
           })
         ) {
           try {
-            const analysis = await (options.onAnalysisCancellationRequested
-              ? deps.runAnalysis(
-                  targetDir,
-                  { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
-                  config.analyzeTimeoutMs,
-                  options.signal,
-                  options.onAnalysisCancellationRequested,
-                )
-              : deps.runAnalysis(
-                  targetDir,
-                  { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
-                  config.analyzeTimeoutMs,
-                  options.signal,
-                ));
+            const analysis = await deps.runAnalysis(
+              targetDir,
+              { branch: currentBranch, skipAgentsMd: true, skipSkills: true },
+              config.analyzeTimeoutMs,
+              options.signal,
+              options.onAnalysisCancellationRequested,
+              analysisParallelism,
+            );
             throwIfAborted(options.signal);
             stats = analysis.stats;
             analyzeStatus = 'success';
@@ -271,8 +270,17 @@ export async function runAutoSyncOnce(
         remoteUrl: repoResult.remoteUrl,
       };
       try {
+        // Reproduce the placement the analyze worker already made. Registering
+        // without a branch always takes the primary/flat arm, which relabels a
+        // pinned branch entry with whatever this tick happened to sync — visible
+        // on the documented branch-fallback path.
+        const placement = await deps.resolveBranchPlacement(
+          repoResult.targetDir,
+          repoResult.branch,
+        );
         await deps.registerRepo(repoResult.targetDir, meta, {
           name: getAutoSyncRepoIdentity(repoResult.remoteUrl),
+          branch: placement.branch,
         });
         result.analyzed += 1;
       } catch (err: unknown) {

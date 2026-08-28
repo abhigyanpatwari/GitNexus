@@ -595,6 +595,19 @@ export async function cloneOrPull(
           timeoutMs: options?.timeoutMs,
         },
       );
+      if (options.overwriteLocalChanges) {
+        // `checkout --force` rewrites tracked files only, so untracked sources
+        // left by an operator or an earlier branch survive and then get indexed
+        // as if they were part of the remote commit. Deliberately no `-x`/`-X`:
+        // ignored paths must survive, and `-e /.gitnexus` is belt-and-braces
+        // because `.git/info/exclude` is skipped on a read-only storage mount
+        // and a freshly cloned repo may not have been analyzed yet at all.
+        await runGitImpl(['clean', '--force', '-d', '-e', '/.gitnexus'], safeTarget, {
+          token: options?.token,
+          url,
+          timeoutMs: options?.timeoutMs,
+        });
+      }
     } else {
       await runGitImpl(['pull', '--ff-only'], safeTarget, {
         token: options?.token,

@@ -18,6 +18,19 @@ export const DEFAULT_ANALYZE_FAILURE_THRESHOLD = 3;
 const MIN_ANALYZE_FAILURE_THRESHOLD = 2;
 const ALLOWED_REMOTE_HOSTS = new Set(['github.com', 'gitlab.com', 'gitee.com']);
 
+/**
+ * A single clone/pull must fit inside one sync interval and inside an hour.
+ * This is also the guard for the unit slip the bare-number rule invites:
+ * `repo_git_timeout: 600000` means 600000 SECONDS (~7 days), which clears the
+ * Node timer ceiling and would silently disable the timeout.
+ */
+const MAX_REPO_GIT_TIMEOUT_MS = 3_600_000;
+
+// Mirrors REPO_NAME_PATTERN in server/git-clone.ts. Deliberately duplicated
+// rather than imported: git-clone.ts already imports from this module, so the
+// reverse edge would be a cycle.
+const REMOTE_REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+
 export interface AutoSyncProjectConfig {
   localPath: string;
   groupName?: string;
@@ -118,10 +131,22 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
     raw.repo_git_timeout === undefined
       ? DEFAULT_REPO_GIT_TIMEOUT_MS
       : parseDurationMs(raw.repo_git_timeout);
+  const maxRepoGitTimeoutMs =
+    Number.isInteger(interval) &&
+    interval >= MIN_SYNC_INTERVAL_MINUTES &&
+    interval <= MAX_SYNC_INTERVAL_MINUTES
+      ? Math.min(interval * 60_000, MAX_REPO_GIT_TIMEOUT_MS)
+      : undefined;
   if (!Number.isInteger(repoGitTimeoutMs) || repoGitTimeoutMs <= 0) {
     errors.push('repo_git_timeout must be a positive duration such as 10s');
   } else if (repoGitTimeoutMs > MAX_TIMER_DELAY_MS) {
     errors.push(`repo_git_timeout must not exceed ${MAX_TIMER_DELAY_MS}ms`);
+  } else if (maxRepoGitTimeoutMs !== undefined && repoGitTimeoutMs > maxRepoGitTimeoutMs) {
+    errors.push(
+      `repo_git_timeout must not exceed ${maxRepoGitTimeoutMs}ms (the lesser of 1h and ` +
+        `sync_interval_minutes); a bare number is interpreted as seconds, so use an explicit ` +
+        `unit such as 600000ms or 10m`,
+    );
   }
 
   const maxAnalyzeTimeoutMs =
@@ -267,6 +292,25 @@ export function validateAutoSyncRemoteUrl(remoteUrl: string): void {
     pathParts.some((part) => !part)
   ) {
     throw new Error('path must include owner/repo without traversal');
+  }
+  // The final segment becomes the on-disk clone directory via `extractRepoName`,
+  // whose name rules are stricter than the path check above: a backslash — or
+  // anything outside `[A-Za-z0-9._-]` — passes here and then throws once per
+  // tick inside the sync loop instead of at config load. These rules are a
+  // strict superset, so anything accepted here is accepted there.
+  const lastSegment = pathParts[pathParts.length - 1];
+  const repoName = /\.git$/i.test(lastSegment) ? lastSegment.slice(0, -4) : lastSegment;
+  if (
+    !repoName ||
+    repoName === '.' ||
+    repoName === '..' ||
+    repoName === 'unknown' ||
+    repoName.startsWith('-') ||
+    !REMOTE_REPO_NAME_PATTERN.test(repoName)
+  ) {
+    throw new Error(
+      'repository name must use only letters, digits, ".", "_", or "-" and must not be "unknown"',
+    );
   }
 }
 

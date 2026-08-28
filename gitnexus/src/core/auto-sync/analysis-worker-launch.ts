@@ -14,17 +14,29 @@ export type AutoSyncAnalysisRunner = (
   timeoutMs: number,
   signal?: AbortSignal,
   onCancellationRequested?: () => void,
+  concurrency?: number,
 ) => Promise<Pick<AnalyzeResult, 'stats'>>;
 
 interface AnalysisWorker extends Pick<ChildProcess, 'send' | 'on'> {
   stdout?: Pick<NodeJS.ReadableStream, 'resume'> | null;
   stderr?: Pick<NodeJS.ReadableStream, 'resume'> | null;
+  unref?: () => void;
+  channel?: { unref(): void } | null;
 }
+
+/**
+ * How long the parent keeps waiting after asking a worker to cancel.
+ *
+ * Must stay below `stopAutoSyncWatch`'s process-exit budget, or a worker wedged
+ * past its safe point still turns `watch stop` into a timeout.
+ */
+const AUTO_SYNC_CANCEL_GRACE_MS = 5_000;
 
 export interface AutoSyncAnalysisLaunchDeps {
   forkWorker: (workerPath: string, execArgv: string[]) => AnalysisWorker;
   setTimeoutFn: typeof setTimeout;
   clearTimeoutFn: typeof clearTimeout;
+  cancelGraceMs: number;
 }
 
 const DEFAULT_DEPS: AutoSyncAnalysisLaunchDeps = {
@@ -35,13 +47,28 @@ const DEFAULT_DEPS: AutoSyncAnalysisLaunchDeps = {
     }),
   setTimeoutFn: setTimeout,
   clearTimeoutFn: clearTimeout,
+  cancelGraceMs: AUTO_SYNC_CANCEL_GRACE_MS,
 };
+
+/**
+ * Per-worker V8 heap cap for one tick.
+ *
+ * `autoHeapCapMb()` is a whole-machine figure, so handing it to every fork
+ * over-commits memory by the parallelism factor. Admission already bounds
+ * parallelism to `floor(availableMemoryGB / 2)`, so dividing here keeps the sum
+ * of worker heaps inside the machine budget while leaving `max_concurrency`
+ * free to mean what it says. The two rules compose to a ~1.5GB per-worker floor.
+ */
+export function resolveWorkerHeapMb(concurrency = 1): number {
+  const slots = Number.isFinite(concurrency) && concurrency >= 1 ? Math.floor(concurrency) : 1;
+  return Math.max(1, Math.min(8192, Math.floor(autoHeapCapMb() / slots)));
+}
 
 export function createAutoSyncAnalysisRunner(
   overrides: Partial<AutoSyncAnalysisLaunchDeps> = {},
 ): AutoSyncAnalysisRunner {
   const deps = { ...DEFAULT_DEPS, ...overrides };
-  return (repoPath, options, timeoutMs, signal, onCancellationRequested) =>
+  return (repoPath, options, timeoutMs, signal, onCancellationRequested, concurrency) =>
     new Promise<Pick<AnalyzeResult, 'stats'>>((resolve, reject) => {
       if (signal?.aborted) {
         reject(new Error('Analysis cancelled.'));
@@ -58,7 +85,7 @@ export function createAutoSyncAnalysisRunner(
         reject(new Error(`Auto-sync analyze worker is missing: ${workerPath}`));
         return;
       }
-      const workerHeapMb = Math.min(8192, autoHeapCapMb());
+      const workerHeapMb = resolveWorkerHeapMb(concurrency);
       const execArgv = isDev
         ? [
             '--import',
@@ -73,8 +100,10 @@ export function createAutoSyncAnalysisRunner(
       let terminalOutcome: WorkerMessage | undefined;
       let terminationError: Error | undefined;
       let settled = false;
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
       const cleanup = () => {
         deps.clearTimeoutFn(timeout);
+        deps.clearTimeoutFn(graceTimer);
         signal?.removeEventListener('abort', onAbort);
       };
       const settle = (error?: Error, result?: Pick<AnalyzeResult, 'stats'>) => {
@@ -97,6 +126,23 @@ export function createAutoSyncAnalysisRunner(
           // A closed IPC channel still has an exit/error path. Do not force-kill a
           // worker that may be inside native code.
         }
+        // Bounded wait. A worker stuck past its safe point would otherwise leave
+        // this promise pending forever, wedging `activeRun` so `stop()` — and the
+        // `watch stop` waiting on this process to exit — can never finish. Settle
+        // the parent's wait and drop the IPC channel's hold on this event loop;
+        // an established channel keeps the parent alive even after unref. The
+        // child is deliberately left running rather than killed mid-write.
+        graceTimer = deps.setTimeoutFn(() => {
+          if (settled) return;
+          child.channel?.unref?.();
+          child.unref?.();
+          settle(
+            new Error(
+              `${error.message} The analyze worker did not exit within ${deps.cancelGraceMs}ms; ` +
+                'it was left running so its native work is not interrupted.',
+            ),
+          );
+        }, deps.cancelGraceMs);
       };
       const timeout = deps.setTimeoutFn(
         () => requestCancellation(new Error(`Analysis timed out after ${timeoutMs}ms.`)),

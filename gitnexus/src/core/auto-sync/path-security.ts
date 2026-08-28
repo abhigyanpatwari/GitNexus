@@ -64,6 +64,13 @@ const DANGEROUS_PARENT_ROOTS = new Set(
 );
 
 const QUARANTINE_RETENTION_DAYS = 14;
+const QUARANTINE_MAX_ENTRIES_PER_REPO = 5;
+
+// `auto-sync-<stamp>-<pid>-<uuid>-<repo basename>` — see quarantineAutoSyncPartial.
+// The UUID is the only fixed-shape field, so it anchors the grouping key, and
+// everything after it is the basename (`[A-Za-z0-9._-]` by construction).
+const QUARANTINE_ENTRY_PATTERN =
+  /^auto-sync-.+-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(.+)$/i;
 
 export interface AutoSyncCloneRoot {
   root: string;
@@ -86,7 +93,7 @@ export async function resolveConfiguredCloneRoot(localPath: string): Promise<Aut
   assertNotDangerousRoot(realRoot);
   assertNotGitNexusInternalRoot(realRoot);
   const quarantineRoot = path.join(getAutoSyncWatchDir(), 'quarantine');
-  await removeExpiredQuarantineEntries(quarantineRoot);
+  await pruneQuarantineEntries(quarantineRoot);
 
   return {
     root: realRoot,
@@ -142,7 +149,7 @@ export async function quarantineAutoSyncPartial(
   return destination;
 }
 
-async function removeExpiredQuarantineEntries(quarantineRoot: string): Promise<void> {
+async function pruneQuarantineEntries(quarantineRoot: string): Promise<void> {
   const cutoff = Date.now() - QUARANTINE_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
   // readdir and stat both resolve through a link, so a symlinked quarantine
   // root would age-sweep and delete entries somewhere else entirely.
@@ -157,16 +164,47 @@ async function removeExpiredQuarantineEntries(quarantineRoot: string): Promise<v
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw err;
   }
+  const survivors = (
+    await Promise.all(
+      entries
+        .filter((entry) => entry.startsWith('auto-sync-'))
+        .map(async (entry) => {
+          const entryPath = path.join(quarantineRoot, entry);
+          const stat = await fs.stat(entryPath).catch(() => undefined);
+          if (stat && stat.mtimeMs < cutoff) {
+            await fs.rm(entryPath, { recursive: true, force: true });
+            return undefined;
+          }
+          return entry;
+        }),
+    )
+  ).filter((entry): entry is string => entry !== undefined);
+
+  // Age alone never bounds a repo that fails on every tick: one partial clone
+  // per tick stays inside the retention window forever. Keep the newest few per
+  // repo. Entries that do not match the generated naming scheme (operator
+  // notes, names from another version) are left to the age sweep alone.
+  const byRepo = new Map<string, string[]>();
+  for (const entry of survivors) {
+    if (entry.endsWith('.README.txt')) continue;
+    const repo = QUARANTINE_ENTRY_PATTERN.exec(entry)?.[1];
+    if (!repo) continue;
+    const group = byRepo.get(repo) ?? [];
+    group.push(entry);
+    byRepo.set(repo, group);
+  }
   await Promise.all(
-    entries
-      .filter((entry) => entry.startsWith('auto-sync-'))
-      .map(async (entry) => {
-        const entryPath = path.join(quarantineRoot, entry);
-        const stat = await fs.stat(entryPath).catch(() => undefined);
-        if (stat && stat.mtimeMs < cutoff) {
-          await fs.rm(entryPath, { recursive: true, force: true });
-        }
-      }),
+    [...byRepo.values()].flatMap((group) =>
+      group
+        // The timestamp is the leading fixed-width field, so a descending
+        // string sort is newest-first.
+        .sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))
+        .slice(QUARANTINE_MAX_ENTRIES_PER_REPO)
+        .map(async (entry) => {
+          await fs.rm(path.join(quarantineRoot, entry), { recursive: true, force: true });
+          await fs.rm(path.join(quarantineRoot, `${entry}.README.txt`), { force: true });
+        }),
+    ),
   );
 }
 

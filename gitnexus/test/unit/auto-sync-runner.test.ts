@@ -133,6 +133,8 @@ describe('auto-sync runner', () => {
       { branch: 'master', skipAgentsMd: true, skipSkills: true },
       1_800_000,
       undefined,
+      undefined,
+      1,
     );
     expect(deps.registerRepo).toHaveBeenCalledWith(
       '/tmp/repos/gitee.com/qts_server/qts_account',
@@ -443,6 +445,7 @@ describe('auto-sync runner', () => {
       1_800_000,
       controller.signal,
       onAnalysisCancellationRequested,
+      1,
     );
   });
 
@@ -495,6 +498,8 @@ describe('auto-sync runner', () => {
       { branch: 'develop', skipAgentsMd: true, skipSkills: true },
       1_800_000,
       undefined,
+      undefined,
+      1,
     );
     expect(warnLogger).toHaveBeenCalledWith(
       '[auto-sync] Branch missing unavailable for git@gitee.com:qts_server/qts_account.git: remote branch not found',
