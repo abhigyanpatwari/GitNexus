@@ -57,6 +57,15 @@ const warnLargeFileSkip = (message: string): void => {
   logger.warn(message);
 };
 
+export interface WalkRepositoryOptions {
+  /**
+   * Suppress the operator-facing large-file notice. Set by read-only callers
+   * such as `status`, which reuse this scan purely to learn which files the
+   * index covers and must not emit analyze's progress commentary.
+   */
+  quiet?: boolean;
+}
+
 /**
  * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.
  * Memory: ~10MB for 100K files vs ~1GB+ with content.
@@ -64,6 +73,7 @@ const warnLargeFileSkip = (message: string): void => {
 export const walkRepositoryPaths = async (
   repoPath: string,
   onProgress?: (current: number, total: number, filePath: string) => void,
+  options: WalkRepositoryOptions = {},
 ): Promise<ScannedFile[]> => {
   const ignoreFilter = await createIgnoreFilter(repoPath);
   const maxFileSizeBytes = getMaxFileSizeBytes();
@@ -117,7 +127,7 @@ export const walkRepositoryPaths = async (
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   );
 
-  if (skippedLarge > 0) {
+  if (skippedLarge > 0 && !options.quiet) {
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;
     const isOverrideUnset = !process.env.GITNEXUS_MAX_FILE_SIZE;
     const suffix = isDefault ? ', likely generated/vendored' : '';

@@ -18,7 +18,59 @@ import {
   resolveAnalyzerRunnerIdentity,
 } from '../core/analyzer-identity.js';
 import { getIndexIncompleteReasons } from '../core/index-freshness.js';
+import { detectIndexContentDrift, type IndexContentDrift } from '../core/index-content-drift.js';
 import { t } from './i18n/index.js';
+
+/** How many drifted paths the report names before summarizing the rest. */
+const DRIFT_SAMPLE_LIMIT = 10;
+
+/**
+ * Machine-readable form of the per-file comparison. `'not-checked'` is its own
+ * value rather than a silent omission: it says the index was already stale on
+ * metadata alone, so the scan was skipped, which is not the same claim as a
+ * scan that ran and found nothing.
+ */
+const describeContentDrift = (drift: IndexContentDrift | undefined) => {
+  if (!drift) return { status: 'not-checked' as const };
+  if (drift.kind === 'current') {
+    return { status: 'current' as const, coveredFiles: drift.coveredFileCount };
+  }
+  if (drift.kind === 'unmeasurable') {
+    return { status: 'unmeasurable' as const, reason: drift.reason };
+  }
+  return {
+    status: 'drifted' as const,
+    counts: {
+      changed: drift.changed.length,
+      added: drift.added.length,
+      deleted: drift.deleted.length,
+    },
+    changed: drift.changed.slice(0, DRIFT_SAMPLE_LIMIT),
+    added: drift.added.slice(0, DRIFT_SAMPLE_LIMIT),
+    deleted: drift.deleted.slice(0, DRIFT_SAMPLE_LIMIT),
+  };
+};
+
+/** Name the files behind a `drifted` verdict so the advice is checkable. */
+const printDriftDetail = (drift: Extract<IndexContentDrift, { kind: 'drifted' }>): void => {
+  console.log(
+    t('status.indexContentDrifted', {
+      changed: drift.changed.length,
+      added: drift.added.length,
+      deleted: drift.deleted.length,
+    }),
+  );
+  const labelled: [string, readonly string[]][] = [
+    ['changed', drift.changed],
+    ['added', drift.added],
+    ['deleted', drift.deleted],
+  ];
+  for (const [label, paths] of labelled) {
+    for (const p of paths.slice(0, DRIFT_SAMPLE_LIMIT)) console.log(`  ${label}: ${p}`);
+    const remaining = paths.length - DRIFT_SAMPLE_LIMIT;
+    if (remaining > 0) console.log(t('status.indexContentMore', { count: remaining, label }));
+  }
+};
 
 export interface StatusOptions {
   json?: boolean;
@@ -85,14 +137,30 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     currentRunnerIdentity,
   );
   const incompleteReasons = getIndexIncompleteReasons(activeMeta);
-  // A matching HEAD is not enough: `analyze` re-indexes a dirty working tree,
-  // so a repo with uncommitted source changes is stale even at the same commit.
-  // Skip the check for non-git folders (currentCommit === '') to match analyze.
-  const isUpToDate =
+  const metadataIsCurrent =
     currentCommit === activeMeta.lastCommit &&
     runnerIdentityIsCurrent &&
-    incompleteReasons.length === 0 &&
-    (currentCommit === '' || !isWorkingTreeDirty(repo.repoPath));
+    incompleteReasons.length === 0;
+
+  // A matching HEAD is not enough: `analyze` re-indexes changed content at the
+  // same commit, so the files the index covers must still be compared against
+  // disk. Only worth the scan once the cheap metadata checks agree, and skipped
+  // for non-git folders (currentCommit === '') to match analyze.
+  const contentDrift: IndexContentDrift | undefined =
+    metadataIsCurrent && currentCommit !== ''
+      ? await detectIndexContentDrift(repo.repoPath, activeMeta.fileHashes)
+      : undefined;
+
+  // The repo-wide dirty flag survives only as the fallback for metadata written
+  // before `fileHashes` existed. Where the per-file comparison can run it
+  // decides, so a file the index does not cover no longer pins a byte-current
+  // index to a "stale" verdict that `analyze` is powerless to clear (#3077).
+  const contentIsCurrent =
+    contentDrift === undefined ||
+    contentDrift.kind === 'current' ||
+    (contentDrift.kind === 'unmeasurable' && !isWorkingTreeDirty(repo.repoPath));
+
+  const isUpToDate = metadataIsCurrent && contentIsCurrent;
   if (options.json) {
     console.log(
       JSON.stringify({
@@ -111,6 +179,7 @@ export const statusCommand = async (options: StatusOptions = {}) => {
           commit: currentCommit,
           runnerIdentity: currentRunnerIdentity,
         },
+        contentDrift: describeContentDrift(contentDrift),
         status: isUpToDate ? 'up-to-date' : 'stale',
       }),
     );
@@ -137,5 +206,14 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     console.log(`Index incomplete reasons: ${JSON.stringify(incompleteReasons)}`);
   }
   console.log(`${t('status.currentRunnerIdentity')}: ${JSON.stringify(currentRunnerIdentity)}`);
+  if (contentDrift?.kind === 'current') {
+    console.log(t('status.indexContentCurrent', { count: contentDrift.coveredFileCount }));
+  } else if (contentDrift?.kind === 'drifted') {
+    printDriftDetail(contentDrift);
+  } else if (contentDrift?.kind === 'unmeasurable' && !isUpToDate) {
+    // Only when it changed the answer: on a legacy index the fallback is the
+    // sole reason for the verdict, and saying so is what makes it diagnosable.
+    console.log(t('status.indexContentUnmeasurable', { reason: contentDrift.reason }));
+  }
   console.log(`${t('status.status')}: ${isUpToDate ? t('status.upToDate') : t('status.stale')}`);
 };

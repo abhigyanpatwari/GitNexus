@@ -33,6 +33,12 @@ export const en = {
   'status.workspaceIndexLabel':
     "Workspace index: last analyzed on '{{primary}}' (re-run gitnexus analyze to follow the current branch)",
   'status.status': 'Status',
+  'status.indexContentCurrent': 'Index content: matches all {{count}} covered file(s)',
+  'status.indexContentDrifted':
+    'Index content: {{changed}} changed, {{added}} added, {{deleted}} deleted',
+  'status.indexContentMore': '  ...and {{count}} more {{label}}',
+  'status.indexContentUnmeasurable':
+    'Index content: not comparable ({{reason}}); fell back to the working-tree check',
   'status.upToDate': '✅ up-to-date',
   'status.stale': '⚠️ stale (re-run gitnexus analyze)',
   'clean.deleteAll': 'This will delete GitNexus indexes for {{count}} repo(s):',

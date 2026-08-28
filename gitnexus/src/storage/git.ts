@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { logger } from '../core/logger.js';
 import { toZeroBasedLine } from '../core/ingestion/utils/line-base.js';
+import { GITNEXUS_MANAGED_PATH_EXCLUDES } from './gitnexus-managed-paths.js';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
@@ -11,35 +12,23 @@ const chompGitOutput = (value: Buffer): string => value.toString().replace(/\r?\
 
 /**
  * True when the working tree has uncommitted changes that analyze would
- * re-index, even at a matching HEAD. Excludes the paths GitNexus writes during
- * analyze (.gitnexus/, .claude/, .cursor/, AGENTS.md, CLAUDE.md, and the
- * repo-local .agents/ mirror) so its own output never counts as dirty
- * (regression vs PR #1233 behavior). The entire .agents/ tree is excluded,
- * matching the .claude/ treatment, because the skill mirror writes across
- * .agents/skills/ and deeper paths. Conservative on any git failure. Shared
- * so `analyze`'s fast-path gate and `status`'s freshness report agree on what
- * "dirty" means.
+ * re-index, even at a matching HEAD. Excludes GITNEXUS_MANAGED_PATHS so
+ * GitNexus's own analyze output never counts as dirty (regression vs PR #1233
+ * behavior); whole directory trees are excluded, not just their root entries,
+ * because the skill mirror writes across .agents/skills/ and deeper paths.
+ * Conservative on any git failure.
+ *
+ * This drives `analyze`'s up-to-date fast path. It is deliberately coarse:
+ * a false "dirty" here costs only a hash diff that finds nothing. `status`
+ * reaches for the per-file comparison in core/index-content-drift.ts instead,
+ * because there the same false positive is a verdict the user cannot clear
+ * (#3077), and falls back to this only when that comparison cannot run.
  */
 export const isWorkingTreeDirty = (repoPath: string): boolean => {
   try {
     const out = execFileSync(
       'git',
-      [
-        'status',
-        '--porcelain',
-        '--',
-        '.',
-        ':(exclude).gitnexus',
-        ':(exclude).gitnexus/**',
-        ':(exclude).claude',
-        ':(exclude).claude/**',
-        ':(exclude).cursor',
-        ':(exclude).cursor/**',
-        ':(exclude)AGENTS.md',
-        ':(exclude)CLAUDE.md',
-        ':(exclude).agents',
-        ':(exclude).agents/**',
-      ],
+      ['status', '--porcelain', '--', '.', ...GITNEXUS_MANAGED_PATH_EXCLUDES],
       {
         cwd: repoPath,
         stdio: ['ignore', 'pipe', 'ignore'],
