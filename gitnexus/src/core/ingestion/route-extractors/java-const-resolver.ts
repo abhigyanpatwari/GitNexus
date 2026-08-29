@@ -140,10 +140,16 @@ export const resolveJavaImport: ImportResolver = (_importingFileKey, moduleSpec,
   const asPath = moduleSpec.replace(/\./g, '/');
   const classFile = `${asPath}.java`;
 
+  // Compare in POSIX space: on Windows the repo keys can carry backslash
+  // separators, which would otherwise never match a '/'-joined class file
+  // (observed as 675 calls with zero hits on a backslash-keyed repo).
+  const toPosix = (p: string): string => p.replace(/\\/g, '/');
+
   // Exact package-path suffix match, unique or nothing.
   let hit: string | null = null;
   for (const key of repoKeys) {
-    if (key === classFile || key.endsWith(`/${classFile}`)) {
+    const posixKey = toPosix(key);
+    if (posixKey === classFile || posixKey.endsWith(`/${classFile}`)) {
       if (hit !== null) return null; // 2+ modules carry this FQN — unresolvable
       hit = key;
     }
@@ -268,6 +274,10 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
   const literals = new Map<string, string>();
   const exprs = new Map<string, readonly Operand[]>();
   const imports = new Map<string, ImportBinding>();
+
+  // On-demand static imports (`import static a.b.C.*`) — expanded post-map
+  // by expandJavaWildcardStaticImports below.
+  const wildcardImports: string[] = [];
 
   // Pass 1: imports (both shapes).
   const walkImports = (node: Parser.SyntaxNode): void => {
@@ -436,7 +446,12 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
   };
   walkTypes(tree.rootNode, false);
 
-  return { literals, exprs, imports: imports as Map<string, ImportBinding> };
+  return {
+    literals,
+    exprs,
+    imports: imports as Map<string, ImportBinding>,
+    wildcardImports,
+  };
 }
 
 /**
@@ -627,4 +642,40 @@ export function foldJavaOperands(
 ): string | null {
   const out = foldOperands(fileKey, operands, newFoldState(repo), 0);
   return out === '' ? null : out;
+}
+
+
+export function expandJavaWildcardStaticImports(
+  mc: ModuleConstants,
+  fileKey: string,
+  repo: RepoConstants,
+): ModuleConstants {
+  const wildcards = mc.wildcardImports;
+  if (!wildcards || wildcards.length === 0) return mc;
+  const repoKeys = new Set(repo.keys());
+  for (const fqn of wildcards) {
+    const targetKey = resolveJavaImport(fileKey, fqn, repoKeys);
+    if (targetKey === null) continue;
+    const target = repo.get(targetKey);
+    if (!target) continue;
+    // Bare member names only — `Class.FIELD` aliases stay reachable through
+    // the class-name binding below.
+    for (const name of target.literals.keys()) {
+      if (!name.includes('.') && !mc.imports.has(name)) {
+        mc.imports.set(name, { module: fqn, originalName: name });
+      }
+    }
+    for (const name of target.exprs.keys()) {
+      if (!name.includes('.') && !mc.imports.has(name)) {
+        mc.imports.set(name, { module: fqn, originalName: name });
+      }
+    }
+    // The class's own simple name binds like a plain class import, so
+    // qualified refs (`ApiPath.X` under `import static ...ApiPath.*`) fold too.
+    const classSimple = fqn.slice(fqn.lastIndexOf('.') + 1);
+    if (classSimple && !mc.imports.has(classSimple)) {
+      mc.imports.set(classSimple, { module: fqn, originalName: classSimple });
+    }
+  }
+  return mc;
 }

@@ -66,6 +66,16 @@ export interface ModuleConstants {
   readonly literals: Map<string, string>;
   readonly exprs: Map<string, readonly Operand[]>;
   readonly imports: Map<string, ImportBinding>;
+  /**
+   * On-demand (wildcard) import specifiers whose bound member names could not
+   * be enumerated at extract time — Java `import static a.b.C.*;`, Python
+   * `from m import *`. The agnostic fold never reads this (it has no way to
+   * enumerate a target module's exports); a language binding materializes the
+   * promised bindings from a repo-wide map after extraction — see
+   * `expandJavaWildcardStaticImports` in the Java binding — so they resolve
+   * through the plain `imports` path with no special cases in the fold.
+   */
+  readonly wildcardImports?: readonly string[];
 }
 
 /** Repo-wide map: unique file key (e.g. `app/constants.py`) → that file's
