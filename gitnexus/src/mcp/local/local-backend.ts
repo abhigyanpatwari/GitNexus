@@ -7819,6 +7819,8 @@ export class LocalBackend {
       processQueryFailed,
       moduleQueryFailed,
       impactedCount: impacted.length,
+      enrichmentTruncated:
+        !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
     });
     const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
       direction,

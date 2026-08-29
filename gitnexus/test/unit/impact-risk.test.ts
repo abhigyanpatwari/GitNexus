@@ -150,6 +150,24 @@ describe('scoreImpactRisk', () => {
       expect(scored.risk).toBe('UNKNOWN');
     }
   });
+
+  it('fails closed when a truncated sample leaves only a LOW or MEDIUM observed score', () => {
+    const truncatedAxes: readonly UnusedImpactRiskAxis[] = [
+      { axis: 'processes', reason: 'enrichment-truncated' },
+      { axis: 'modules', reason: 'enrichment-truncated' },
+    ];
+    const scored = scoreImpactRisk({
+      ...base,
+      direction: 'downstream',
+      directCount: 2,
+      processCount: 1,
+      moduleCount: 1,
+      impactedCount: 8,
+      unusedAxes: truncatedAxes,
+    });
+    expect(scored.risk).toBe('UNKNOWN');
+    expect(scored.riskScale.comparableAcrossKinds).toBe(false);
+  });
 });
 
 describe('unusedAxesForImpactWalk', () => {
@@ -204,5 +222,16 @@ describe('unusedAxesForImpactWalk', () => {
         impactedCount: 0,
       }),
     ).toEqual([]);
+    expect(
+      unusedAxesForImpactWalk({
+        isFileTarget: false,
+        skipEnrichment: false,
+        maxChunks: 10,
+        processQueryFailed: false,
+        moduleQueryFailed: false,
+        impactedCount: 501,
+        enrichmentTruncated: true,
+      }).map((a) => a.reason),
+    ).toEqual(['enrichment-truncated', 'enrichment-truncated']);
   });
 });

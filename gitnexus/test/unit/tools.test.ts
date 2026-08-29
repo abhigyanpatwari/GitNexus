@@ -198,6 +198,7 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.description).toContain('riskSharedAxes');
     expect(impactTool.description).toContain('Never substitute it for `risk`');
     expect(impactTool.description).toContain('IMPACT_MAX_CHUNKS=0');
+    expect(impactTool.description).toContain('sampled a subset of impacted symbols');
     expect(impactTool.description).toContain('Graph-RAG');
     expect(impactTool.description).toContain('cross-repo crossing overlay');
     expect(impactTool.description).toContain('known HIGH/CRITICAL warnings survive');

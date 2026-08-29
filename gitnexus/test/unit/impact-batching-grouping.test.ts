@@ -320,6 +320,10 @@ describe('impact: batching and grouping', () => {
     expect(Array.isArray(res.affected_modules)).toBe(true);
     const modNames = res.affected_modules.map((m: any) => m.name);
     expect(modNames).toContain('ModuleA');
+    expect(res.riskScale.comparableAcrossKinds).toBe(false);
+    expect(res.riskScale.unusedAxes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reason: 'enrichment-truncated' })]),
+    );
 
     // Cleanup env
     delete process.env.IMPACT_MAX_CHUNKS;

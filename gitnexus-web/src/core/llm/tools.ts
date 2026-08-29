@@ -1360,6 +1360,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         processQueryFailed,
         moduleQueryFailed: clusterQueryFailed,
         impactedCount: totalAffected,
+        enrichmentTruncated: enrichmentCapped,
       });
       const scored = scoreImpactRisk({
         direction,

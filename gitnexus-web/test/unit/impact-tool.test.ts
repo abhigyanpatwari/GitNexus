@@ -203,6 +203,7 @@ describe('Graph-RAG impact risk contract', () => {
     });
 
     expect(output).toContain('process/cluster enrichment is partial (first 500 symbols)');
+    expect(output).toContain('enrichment-truncated');
     expect(output).not.toContain('enrichment-budget-exhausted');
   });
 });
