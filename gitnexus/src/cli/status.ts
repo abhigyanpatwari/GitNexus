@@ -56,7 +56,9 @@ const describeContentDrift = (drift: IndexContentDrift | undefined) => {
   };
 };
 
-/** Name the files behind a `drifted` verdict so the advice is checkable. */
+/** Escape control characters in repo-relative paths before printing. */
+const formatDriftPath = (rel: string): string =>
+  /[\u0000-\u001f\u007f]/.test(rel) ? JSON.stringify(rel) : rel;
 const printDriftDetail = (drift: Extract<IndexContentDrift, { kind: 'drifted' }>): void => {
   console.log(
     t('status.indexContentDrifted', {
@@ -71,7 +73,9 @@ const printDriftDetail = (drift: Extract<IndexContentDrift, { kind: 'drifted' }>
     [t('status.driftDeleted'), drift.deleted],
   ];
   for (const [label, paths] of labelled) {
-    for (const p of paths.slice(0, DRIFT_SAMPLE_LIMIT)) console.log(`  ${label}: ${p}`);
+    for (const p of paths.slice(0, DRIFT_SAMPLE_LIMIT)) {
+      console.log(`  ${label}: ${formatDriftPath(p)}`);
+    }
     const remaining = paths.length - DRIFT_SAMPLE_LIMIT;
     if (remaining > 0) console.log(t('status.indexContentMore', { count: remaining, label }));
   }

@@ -108,9 +108,25 @@ export const detectIndexContentDrift = async (
     const scannedSet = new Set(scannedPaths);
     const recordedSet = new Set(Object.keys(recorded));
 
+    // Legacy indexes have `fileHashes` but no `indexCoverage`. A later default
+    // cap would omit a still-present hashed file and call it deleted. Recorded
+    // paths that still exist stay in the coverage set even if this walk skipped
+    // them for size.
+    const recovered = new Set<string>();
+    for (const rel of recordedSet) {
+      if (scannedSet.has(rel)) continue;
+      try {
+        await access(path.join(repoPath, rel), fsConstants.R_OK);
+        recovered.add(rel);
+        scannedSet.add(rel);
+      } catch {
+        // Missing or unreadable: stays deleted / changed below.
+      }
+    }
+
     const added = scannedPaths.filter((p) => !recordedSet.has(p)).sort();
     const deleted = [...recordedSet].filter((p) => !scannedSet.has(p)).sort();
-    const intersection = scannedPaths.filter((p) => recordedSet.has(p));
+    const intersection = [...recordedSet].filter((p) => scannedSet.has(p));
 
     const dirtyNow = listWorkingTreeDirtyPaths(repoPath);
     const dirtyAtIndex = coverage?.dirtyPaths;
@@ -119,7 +135,9 @@ export const detectIndexContentDrift = async (
     const hashCandidates =
       dirtyNowSet === null || dirtyAtIndexSet === undefined
         ? intersection
-        : intersection.filter((p) => dirtyAtIndexSet.has(p) || dirtyNowSet.has(p));
+        : intersection.filter(
+            (p) => dirtyAtIndexSet.has(p) || dirtyNowSet.has(p) || recovered.has(p),
+          );
 
     const hashCandidateSet = new Set(hashCandidates);
     const skipHash = intersection.filter((p) => !hashCandidateSet.has(p));
@@ -142,7 +160,7 @@ export const detectIndexContentDrift = async (
     changed.sort();
 
     if (changed.length === 0 && added.length === 0 && deleted.length === 0) {
-      return { kind: 'current', coveredFileCount: scannedPaths.length };
+      return { kind: 'current', coveredFileCount: scannedSet.size };
     }
     return { kind: 'drifted', changed, added, deleted };
   } catch (err) {

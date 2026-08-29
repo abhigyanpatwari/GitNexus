@@ -139,6 +139,21 @@ describe('status freshness from per-file drift (#3077)', () => {
     expect(out).toContain('changed: src/app.ts');
   });
 
+  it('escapes control characters in drifted path names', async () => {
+    (detectIndexContentDrift as any).mockResolvedValue({
+      kind: 'drifted',
+      changed: ['src/\u001b[31mevil.ts'],
+      added: [],
+      deleted: [],
+    });
+
+    await statusCommand();
+
+    const out = output();
+    expect(out).toContain(JSON.stringify('src/\u001b[31mevil.ts'));
+    expect(out).not.toContain('\u001b[31m');
+  });
+
   it('localizes overflow category labels in zh-CN', async () => {
     setCliLanguage('zh-CN');
     const changed = Array.from({ length: 12 }, (_, i) => `src/file-${i}.ts`);

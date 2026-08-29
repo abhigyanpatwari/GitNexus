@@ -219,8 +219,9 @@ describe('detectIndexContentDrift', () => {
     });
     expect(withPolicy).toMatchObject({ kind: 'current' });
 
-    const drifted = await detectIndexContentDrift(repo, recorded);
-    expect(drifted).toMatchObject({ kind: 'drifted', deleted: ['payload.js'] });
+    // No persisted policy (indexes from before `indexCoverage`): the file is
+    // still on disk and hashed, so a later default cap must not call it deleted.
+    expect(await detectIndexContentDrift(repo, recorded)).toMatchObject({ kind: 'current' });
   });
 
   it('treats a covered file that can no longer be read as changed, not current', async () => {
