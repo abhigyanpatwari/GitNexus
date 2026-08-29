@@ -13,6 +13,7 @@ import { detectGraphWriteCollapse, type GraphWriteCollapseVerdict } from './inde
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
@@ -22,6 +23,7 @@ import {
   summarizeUnresolvedReceivers,
 } from './ingestion/scope-resolution/unresolved-receivers.js';
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
+import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
@@ -470,6 +472,29 @@ export interface AnalyzeOptions {
    * Process exit reclaims the handles. Long-lived callers (MCP server, tests)
    * leave this unset so they get a real close. See `closeLbug`. */
   skipNativeCloseOnExit?: boolean;
+  /**
+   * Stage an incremental write in a copy of the live index before publishing
+   * it. Used by long-lived watch mode so a failed refresh leaves the previous
+   * graph readable. Currently supported on POSIX, where an open DB can be
+   * atomically renamed; Windows retains the established in-place path.
+   */
+  atomicIncremental?: boolean;
+}
+
+const liveIndexMutationRisks = new WeakSet<object>();
+
+function recordLiveIndexMutationRisk(error: unknown): void {
+  if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
+    liveIndexMutationRisks.add(error);
+  }
+}
+
+/** Whether a failed analyze may already have changed the live DB. */
+export function analyzeFailureMayHaveMutatedLiveIndex(error: unknown): boolean {
+  return (
+    ((typeof error === 'object' && error !== null) || typeof error === 'function') &&
+    liveIndexMutationRisks.has(error)
+  );
 }
 
 export interface AnalyzeResult {
@@ -521,6 +546,14 @@ export interface AnalyzeResult {
    * (The historical "primary" name is kept — it is public API surface.)
    */
   isPrimaryBranch?: boolean;
+  /** Measured work performed by a successful incremental refresh. */
+  incrementalStats?: {
+    changedFiles: number;
+    reparsedFiles: number;
+    affectedDependents: number;
+    deletedFiles: number;
+    writeMode: 'incremental' | 'full';
+  };
 }
 
 /**
@@ -1943,12 +1976,15 @@ async function runFullAnalysisInner(
     process.platform === 'win32' &&
     options.pdg !== true &&
     process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
-  // Incremental atomicity copies the whole index into the temp before mutating
-  // it, which negates incremental's speed premise — so it is opt-in
-  // (GITNEXUS_ATOMIC_INCREMENTAL=1) pending a benchmark. Full rebuilds always
-  // swap where the platform allows.
+  // Incremental atomicity stages the whole index before mutation. It remains
+  // opt-in for ordinary analyze runs; watch mode requests it for failure
+  // preservation. The copy requests a filesystem clone and records its actual
+  // duration, while Node falls back to a normal copy where reflinks are absent.
   const wantAtomicIncremental =
-    isIncremental && !!hashDiff && process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1';
+    isIncremental &&
+    !!hashDiff &&
+    process.platform !== 'win32' &&
+    (options.atomicIncremental === true || process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1');
   // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
   // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
   // be copied incompletely and lose that delta. Only take the atomic path when
@@ -1966,6 +2002,10 @@ async function runFullAnalysisInner(
   // valve. Nothing between here and there reads either binding except
   // `initLbug(buildPath)`, which the upgrade re-runs against the staging path.
   let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
+  // Set only at the first operation that can mutate the live graph store.
+  // Pre-write failures (config, lock, parsing, metadata, importer expansion)
+  // remain retryable even when this platform cannot use an atomic swap.
+  let liveIndexMutationStarted = false;
   // #2658: a per-run staging name (was the fixed `lbug.new`). Even under the
   // single-writer lock, a unique name means a crashed run's half-built staging
   // file can never be mistaken for — or clobber — a live run's; the lock's
@@ -1998,10 +2038,15 @@ async function runFullAnalysisInner(
     if (atomicIncremental) {
       // Stage the live index into the temp so the in-place delete/writeback
       // below mutates the COPY, and the end-of-run swap publishes it atomically.
-      // Clear any stale temp first (a crashed run), then copy the (consolidated,
-      // single-file) live index. Whole-file copy — hence opt-in.
+      // Clear any stale temp first (a crashed run), then clone/copy the
+      // consolidated single-file live index.
       await wipeLbugDbFiles(buildPath);
-      await fs.copyFile(lbugPath, buildPath);
+      const copyStartedAt = Date.now();
+      await fs.copyFile(lbugPath, buildPath, fsConstants.COPYFILE_FICLONE);
+      log(
+        `atomic-incremental: staged ${lbugPath} in ${Date.now() - copyStartedAt}ms ` +
+          '(copy-on-write requested; filesystem fallback is allowed)',
+      );
     }
   } else {
     // Full rebuild path: wipe DB files first.
@@ -2037,7 +2082,13 @@ async function runFullAnalysisInner(
     // (`buildPath` = `<lbugPath>.new`, clearing any stragglers from a crashed
     // run) and leaves the live index untouched until the end-of-run swap. On
     // Windows buildPath === lbugPath, so this is the original in-place wipe.
-    await wipeLbugDbFiles(buildPath);
+    if (buildPath === lbugPath) liveIndexMutationStarted = true;
+    try {
+      await wipeLbugDbFiles(buildPath);
+    } catch (error) {
+      if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
+      throw error;
+    }
   }
 
   // Size the buffer pool to the graph just built by the pipeline (a page cache
@@ -2060,7 +2111,12 @@ async function runFullAnalysisInner(
 
   // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
   // Windows use `buildPath === lbugPath` in place.
-  await initLbug(buildPath);
+  try {
+    await initLbug(buildPath);
+  } catch (error) {
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
+    throw error;
+  }
 
   // Manual WAL checkpoint driver (#1741): periodically drain the WAL
   // from JS so the un-retriable native auto-checkpoint almost never
@@ -2085,6 +2141,7 @@ async function runFullAnalysisInner(
     // "escalated full write" (DB wiped, index destroyed) — tri-review
     // 4669518496 P1.
     let escalatedFullWrite = false;
+    let incrementalStats: AnalyzeResult['incrementalStats'];
     // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
     // SURGICAL write plan this is the exact file set whose rows
     // deleteNodesForFiles just removed — only THOSE files' cached embedding
@@ -2210,6 +2267,13 @@ async function runFullAnalysisInner(
         }
       }
       const importerExpansion = writableFiles.size - directlyChangedCount;
+      incrementalStats = {
+        changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
+        reparsedFiles: pipelineResult.reparsedFileCount,
+        affectedDependents: importerExpansion,
+        deletedFiles: hashDiff.deleted.length,
+        writeMode: 'incremental',
+      };
       await saveIncrementalDirtyState('importer-bfs', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
@@ -2571,6 +2635,7 @@ async function runFullAnalysisInner(
         }
         await walCheckpointDriver.stop();
         await closeLbug();
+        if (buildPath === lbugPath) liveIndexMutationStarted = true;
         await wipeLbugDbFiles(buildPath);
         await initLbug(buildPath);
         walCheckpointDriver = startWalCheckpointDriver();
@@ -2596,6 +2661,7 @@ async function runFullAnalysisInner(
         // same connection, and nothing on this branch creates or drops an index
         // in between — so re-reading would only weaken the one-read invariant
         // the snapshot type exists to enforce.
+        if (buildPath === lbugPath) liveIndexMutationStarted = true;
         await dropSearchFTSIndexes(indexCatalogRows);
         // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
@@ -3548,6 +3614,13 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      scopeExtractionFailures: summarizeScopeExtractionFailures(
+        pipelineResult.scopeExtractionFailures,
+      ),
+      // A receipt certifies that every scope-capable source file was inspected.
+      // Optional grammars may be unavailable by design; omitting the receipt in
+      // that case makes readers report an unverified lower bound.
+      scopeExtractionReceipt: pipelineResult.unavailableScopeLanguageFiles === 0 ? 1 : undefined,
       // Carried forward ONLY when this run could not measure — `saveMeta` writes
       // a fresh object, so omitting the key deletes a prior record and turns a
       // hedged answer back into a confident one. A run that DID measure always
@@ -3765,6 +3838,7 @@ async function runFullAnalysisInner(
       : false;
     if (useAtomicSwap && builtDbExists) {
       await retryRename(buildPath, lbugPath);
+      liveIndexMutationStarted = true;
       // Clear any sidecars orphaned beside the replaced file. A cleanly-closed
       // prior index has none; a crashed one could, and it would be replay
       // poison next to the freshly published index. Best-effort.
@@ -3799,6 +3873,12 @@ async function runFullAnalysisInner(
       ftsSkipped: !ftsReady,
       ftsSkipReason: ftsReady ? undefined : ftsSkipReason,
       isPrimaryBranch: !placement.branch,
+      incrementalStats: incrementalStats
+        ? {
+            ...incrementalStats,
+            writeMode: escalatedFullWrite ? 'full' : 'incremental',
+          }
+        : undefined,
     };
   } catch (err) {
     // Ensure LadybugDB is closed even on error. Stop the driver first
@@ -3836,6 +3916,11 @@ async function runFullAnalysisInner(
       } catch {
         /* swallow — orphan reclamation must never mask the real failure */
       }
+    }
+    if (liveIndexMutationStarted) {
+      // Preserve the original error identity/prototype: callers distinguish
+      // IndexLockTimeoutError and other domain failures with `instanceof`.
+      recordLiveIndexMutationRisk(err);
     }
     throw err;
   }

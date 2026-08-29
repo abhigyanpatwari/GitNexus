@@ -16,15 +16,16 @@
  * container, so impact("EmailLogger", upstream) finds no direct caller — but
  * must flag that the true blast radius is higher.
  */
-import { it, expect, beforeAll, vi } from 'vitest';
+import { it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
+import { listRegisteredRepos, loadMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
   findSiblingClones: vi.fn().mockResolvedValue([]),
+  loadMeta: vi.fn().mockResolvedValue({ scopeExtractionReceipt: 1 }),
 }));
 
 const SEED = [
@@ -65,6 +66,11 @@ withTestLbugDB(
     let backend: LocalBackend;
     beforeAll(() => {
       backend = (handle as any)._backend;
+    });
+    beforeEach(() => {
+      vi.mocked(loadMeta).mockResolvedValue({
+        scopeExtractionReceipt: 1,
+      } as Awaited<ReturnType<typeof loadMeta>>);
     });
 
     it('flags impact() on a concrete impl behind an interface as lower-bound', async () => {
@@ -116,6 +122,78 @@ withTestLbugDB(
       expect(result.impactedCount).toBeGreaterThanOrEqual(1);
     });
 
+    it('marks impact as a lower bound when scope extraction omitted files', async () => {
+      vi.mocked(loadMeta).mockResolvedValueOnce({
+        scopeExtractionReceipt: 1,
+        scopeExtractionFailures: {
+          total: 2,
+          paths: ['src/broken-a.ts', 'src/broken-b.ts'],
+        },
+      } as Awaited<ReturnType<typeof loadMeta>>);
+
+      const result = await backend.callTool('impact', {
+        target: 'formatDate',
+        direction: 'upstream',
+      });
+
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.boundaries.join(' ')).toContain('Scope extraction failed for 2 files');
+      expect(result.causes).toMatchObject({ scopeExtractionFiles: 2 });
+    });
+
+    it('never renders repository-controlled failure paths in boundary prose', async () => {
+      vi.mocked(loadMeta).mockResolvedValueOnce({
+        scopeExtractionReceipt: 1,
+        scopeExtractionFailures: {
+          total: 1,
+          paths: ['src/`break`\n\u001b[31m\u202e\u200binject.ts'],
+        },
+      } as Awaited<ReturnType<typeof loadMeta>>);
+
+      const result = await backend.callTool('impact', {
+        target: 'formatDate',
+        direction: 'upstream',
+      });
+      const prose = result.boundaries.join(' ');
+
+      expect(prose).toContain('Scope extraction failed for 1 file');
+      expect(prose).not.toMatch(/[\n\u001b\u202e\u200b`]/u);
+      expect(result.causes).toMatchObject({ scopeExtractionFiles: 1 });
+    });
+
+    it.each([
+      ['missing receipt', {}],
+      ['missing metadata', null],
+      ['malformed summary', { scopeExtractionReceipt: 1, scopeExtractionFailures: 'invalid' }],
+    ])('treats %s as an unknown lower bound', async (_label, metadata) => {
+      vi.mocked(loadMeta).mockResolvedValueOnce(metadata as Awaited<ReturnType<typeof loadMeta>>);
+
+      const result = await backend.callTool('impact', {
+        target: 'formatDate',
+        direction: 'upstream',
+      });
+
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.boundaries.join(' ')).toContain(
+        'Scope-extraction completeness was not recorded',
+      );
+      expect(result.causes).toMatchObject({ scopeExtractionFiles: 0 });
+    });
+
+    it('treats a metadata read failure as an unknown lower bound', async () => {
+      vi.mocked(loadMeta).mockRejectedValueOnce(new Error('metadata unavailable'));
+
+      const result = await backend.callTool('impact', {
+        target: 'formatDate',
+        direction: 'upstream',
+      });
+
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.boundaries.join(' ')).toContain(
+        'Scope-extraction completeness was not recorded',
+      );
+    });
+
     it.each([
       ['listOrders', 'query'],
       ['createOrder', 'mutation'],
@@ -157,6 +235,26 @@ withTestLbugDB(
       });
       expect(result.status).toBe('found');
       expect(result.epistemic).toBe('lower-bound');
+    });
+
+    it('context() reports persisted scope extraction omissions as a lower bound', async () => {
+      vi.mocked(loadMeta).mockResolvedValueOnce({
+        scopeExtractionReceipt: 1,
+        scopeExtractionFailures: {
+          total: 2,
+          paths: ['src/broken-a.ts', 'src/broken-b.ts'],
+        },
+      } as Awaited<ReturnType<typeof loadMeta>>);
+
+      const result = await backend.callTool('context', {
+        name: 'formatDate',
+        file_path: 'src/util.ts',
+      });
+
+      expect(result.status).toBe('found');
+      expect(result.epistemic).toBe('lower-bound');
+      expect(result.boundaries.join(' ')).toContain('Scope extraction failed for 2 files');
+      expect(result.causes).toMatchObject({ scopeExtractionFiles: 2 });
     });
 
     it('context() on a leaf interface itself is lower-bound (#1858 review F3)', async () => {

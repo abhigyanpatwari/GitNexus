@@ -15,6 +15,10 @@
  * import cycle. `analyze.ts` re-exports the type for existing importers.
  */
 export interface AnalyzeOptions {
+  /** Keep this repository current with serialized incremental refreshes. */
+  watch?: boolean;
+  /** Watch quiet period in milliseconds. */
+  debounce?: string;
   force?: boolean;
   repairFts?: boolean;
   /**

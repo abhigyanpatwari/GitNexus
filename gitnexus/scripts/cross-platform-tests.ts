@@ -90,6 +90,7 @@ const PLATFORM_LOGIC = [
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
   'test/unit/group/bridge-db-edge.test.ts',
+  'test/unit/group/fs-utils.test.ts',
   'test/unit/onnxruntime-node-resolver.test.ts',
   // Windows cmd.exe arg-quoting + compose-and-spawn for the npm install (#2372):
   // the quoting rules and win32 single-string spawn shape are OS-sensitive, so
@@ -140,6 +141,7 @@ const LBUG_NATIVE = [
   // opens them through the pool adapter (native addon + bridge file locking).
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
+  'test/integration/group/graphql-resolve-symbol.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
@@ -232,7 +234,7 @@ const SPAWN_CLI = [
   // Cheap: measured on the Windows runner at 448 ms, 53 ms and sub-second. An
   // earlier attempt to register them still turned the matrix red — not from
   // their own cost, but because vitest sharded by file COUNT, so inserting any
-  // file re-partitioned the list and happened to cluster `cli-e2e` (361 s) with
+  // file re-partitioned the list and happened to cluster `cli-e2e` (621 s) with
   // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
   // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
   // heavy one.
@@ -271,6 +273,7 @@ const NATIVE_ADDON_SMOKE = [
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is

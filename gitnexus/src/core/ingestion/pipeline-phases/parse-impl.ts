@@ -477,11 +477,16 @@ export async function runChunkedParseAndResolve(
    *  files. There is no sequential parser — the pool is the sole parse path
    *  whenever a chunk misses the cache. */
   usedWorkerPool: boolean;
+  /** Files dispatched to parser workers after parse-cache lookup. */
+  reparsedFileCount: number;
   /** Worker-produced ParsedFile artifacts aggregated across chunks.
    *  Threaded into scope-resolution as a re-extract cache so the warm-
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  scopeExtractionFailures: string[];
+  /** Files excluded because their non-standalone language parser was unavailable. */
+  unavailableScopeLanguageFiles: number;
 }> {
   const model = createSemanticModel();
   const symbolTable = model.symbols;
@@ -514,6 +519,10 @@ export async function runChunkedParseAndResolve(
       );
     }
   }
+  const unavailableScopeLanguageFiles = [...skippedByLang.values()].reduce(
+    (total, count) => total + count,
+    0,
+  );
 
   // Sort parseableScanned alphabetically for stable chunk membership
   // across runs (Finding 4). Without this, filesystem-scan order can
@@ -743,6 +752,7 @@ export async function runChunkedParseAndResolve(
   // the second-half of the parse-cache speedup since scope-resolution's
   // re-parse otherwise dominates the warm-cache wall-clock time.
   const allParsedFiles: import('gitnexus-shared').ParsedFile[] = [];
+  const scopeExtractionFailures = new Set<string>();
 
   // Incremental parse cache (Option B): chunk-level content-addressed.
   // When the chunk's (filePath, content-hash) signature matches a prior
@@ -775,6 +785,7 @@ export async function runChunkedParseAndResolve(
       : new Set<string>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
+  let reparsedFileCount = 0;
 
   try {
     // U1 — bounded chunk concurrency (B1 from PR #1693 review): pre-fetch
@@ -844,6 +855,9 @@ export async function runChunkedParseAndResolve(
       chunkStartMs: number | null,
     ): Promise<void> => {
       if (chunkWorkerData) {
+        for (const filePath of chunkWorkerData.scopeExtractionFailures) {
+          scopeExtractionFailures.add(filePath);
+        }
         if (chunkWorkerData.parsedFiles?.length) {
           if (parsedFileStorePath) {
             await persistParsedFileChunk(
@@ -1095,6 +1109,7 @@ export async function runChunkedParseAndResolve(
         // Cache miss: dispatch to workers, capture the raw results, store
         // them under the chunk hash for the next run.
         chunkCacheMisses++;
+        reparsedFileCount += chunkFiles.length;
         if (durableParsedFileDir !== undefined && chunkHash !== null) {
           try {
             await prepareDurableParsedFileChunk(durableParsedFileDir, chunkHash);
@@ -1611,10 +1626,17 @@ export async function runChunkedParseAndResolve(
     // no pool was needed: a warm all-cache-hit run replays cached worker output
     // without spawning workers, or there were no parseable files.
     usedWorkerPool: workerPool !== undefined,
+    // Exact number of files sent through workers on parse-cache misses. A
+    // changed file can invalidate its whole content-addressed chunk, so this
+    // is intentionally measured at dispatch time rather than inferred from
+    // the git/hash diff.
+    reparsedFileCount,
     // Per-file ParsedFile artifacts produced by workers' calls to
     // `extractParsedFile`. Consumed by scope-resolution as a re-extraction
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    scopeExtractionFailures: [...scopeExtractionFailures].sort(),
+    unavailableScopeLanguageFiles,
   };
 }

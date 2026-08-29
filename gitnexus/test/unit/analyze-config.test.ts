@@ -1,9 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import fsSync from 'node:fs';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import {
   loadAnalyzeConfig,
+  loadAnalyzeConfigStrict,
   mergeAnalyzeOptions,
   resolveDefaultBranch,
   validateBranchName,
@@ -13,6 +16,10 @@ import {
   DEFAULT_BRANCH_FALLBACK,
 } from '../../src/cli/analyze-config.js';
 import type { AnalyzeOptions } from '../../src/cli/analyze.js';
+import {
+  MAX_REPO_CONTROL_FILE_BYTES,
+  readRepoControlFile,
+} from '../../src/config/repo-control-file.js';
 
 describe('analyze-config (.gitnexusrc support, #243)', () => {
   let dir: string;
@@ -33,6 +40,77 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
   it('returns undefined when no .gitnexusrc exists (the normal case)', () => {
     expect(loadAnalyzeConfig(dir)).toBeUndefined();
   });
+
+  it('rejects an oversized repository config before parsing', async () => {
+    await writeRc(' '.repeat(MAX_REPO_CONTROL_FILE_BYTES + 1));
+    await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/exceeds/);
+  });
+
+  it('keeps the read bounded if a control file grows after its size check', async () => {
+    await writeRc('{}');
+    const fstatSync = fsSync.fstatSync;
+    const stat = vi.spyOn(fsSync, 'fstatSync').mockImplementation((fd) => {
+      const opened = fstatSync(fd);
+      Object.defineProperty(opened, 'size', { value: MAX_REPO_CONTROL_FILE_BYTES + 1 });
+      return opened;
+    });
+
+    try {
+      await expect(readRepoControlFile(dir, GITNEXUS_RC_FILENAME)).rejects.toThrow(/exceeds/);
+      expect(stat).toHaveBeenCalledOnce();
+    } finally {
+      stat.mockRestore();
+    }
+  });
+
+  it('rejects a hardlinked repository config', async () => {
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-hardlink-'));
+    try {
+      const target = path.join(outside, 'config.json');
+      await fs.writeFile(target, JSON.stringify({ workers: '8' }));
+      await fs.link(target, path.join(dir, GITNEXUS_RC_FILENAME));
+      await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/hard link/);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a FIFO before opening it for reading',
+    async () => {
+      const fifo = path.join(dir, GITNEXUS_RC_FILENAME);
+      execFileSync('mkfifo', [fifo]);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+
+      try {
+        await expect(
+          Promise.race([
+            readRepoControlFile(dir, GITNEXUS_RC_FILENAME),
+            new Promise<never>((_resolve, reject) => {
+              timeout = setTimeout(() => reject(new Error('FIFO read did not fail promptly')), 500);
+            }),
+          ]),
+        ).rejects.toThrow(/regular file/);
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'rejects a final-file symlink for repository config',
+    async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-rc-outside-'));
+      try {
+        const target = path.join(outside, 'config.json');
+        await fs.writeFile(target, JSON.stringify({ workers: '8' }));
+        await fs.symlink(target, path.join(dir, GITNEXUS_RC_FILENAME), 'file');
+        await expect(loadAnalyzeConfigStrict(dir)).rejects.toThrow(/symbolic link/);
+      } finally {
+        await fs.rm(outside, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('throws an actionable error on invalid JSON, naming the file', async () => {
     await writeRc('{ not valid json ');

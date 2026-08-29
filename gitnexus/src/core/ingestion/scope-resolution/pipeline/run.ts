@@ -464,6 +464,8 @@ interface RunScopeResolutionInput {
 interface RunScopeResolutionStats {
   readonly filesProcessed: number;
   readonly filesSkipped: number;
+  /** Files still missing a ParsedFile after the main-thread fallback. */
+  readonly scopeExtractionFailedPaths: readonly string[];
   readonly importsEmitted: number;
   readonly resolve: ResolveStats;
   readonly referenceEdgesEmitted: number;
@@ -564,6 +566,7 @@ export function runScopeResolution(
 
   // ── Phase 1: extract each file → ParsedFile ────────────────────────────
   const parsedFiles: ParsedFile[] = [];
+  const scopeExtractionFailedPaths: string[] = [];
   let filesSkipped = 0;
   const treeCache = input.treeCache;
   const preExtracted = input.preExtractedParsedFiles;
@@ -587,15 +590,20 @@ export function runScopeResolution(
     }
     if (parsed === undefined) {
       const cachedTree = treeCache?.get(file.path);
+      let extractionWarned = false;
       parsed = extractParsedFile(
         provider.languageProvider,
         file.content,
         file.path,
-        onWarn,
+        (warning) => {
+          extractionWarned = true;
+          onWarn(warning);
+        },
         cachedTree,
       );
       if (parsed === undefined) {
         filesSkipped++;
+        if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
     }
@@ -643,6 +651,7 @@ export function runScopeResolution(
     return {
       filesProcessed: parsedFiles.length,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -680,6 +689,7 @@ export function runScopeResolution(
     return {
       filesProcessed: 0,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -1644,6 +1654,7 @@ export function runScopeResolution(
   return {
     filesProcessed: parsedFiles.length,
     filesSkipped,
+    scopeExtractionFailedPaths,
     importsEmitted,
     resolve: resolveStats,
     referenceEdgesEmitted:

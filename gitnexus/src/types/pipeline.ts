@@ -40,6 +40,12 @@ export interface PipelineResult {
    * affordance so regression suites can prove the pool engaged.
    */
   usedWorkerPool: boolean;
+  /** Files actually dispatched to parser workers after parse-cache lookup. */
+  reparsedFileCount: number;
+  /** Files omitted from scope-resolution while the rest of analysis continued. */
+  scopeExtractionFailures: readonly string[];
+  /** Files scope resolution could not inspect because their parser was unavailable. */
+  unavailableScopeLanguageFiles: number;
   /**
    * Streamed PDG-emit COPY manifest (#2202). Present only when streaming/chunked
    * PDG emit was active (full rebuild + `--pdg` + enabled): the BasicBlock node

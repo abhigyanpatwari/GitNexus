@@ -194,6 +194,7 @@ const reset = () => ({
   routes: [], fetchCalls: [], fetchWrapperDefs: [], decoratorRoutes: [], routerIncludes: [],
   routerImports: [], toolDefs: [], ormQueries: [], constructorBindings: [], fileScopeBindings: [],
   parsedFiles: [], skippedLanguages: {}, fileCount: 0,
+  scopeExtractionFailures: [],
 });
 let accumulated = reset();
 parentPort.on('message', (msg) => {
@@ -209,6 +210,7 @@ parentPort.on('message', (msg) => {
       accumulated.parsedFiles.push({
         filePath, moduleScope: '', scopes: [], parsedImports: [], localDefs: [], referenceSites: [],
       });
+      if (filePath.includes('broken')) accumulated.scopeExtractionFailures.push(filePath);
       accumulated.fileCount++;
     }
     parentPort.postMessage({ type: 'progress', filesProcessed: accumulated.fileCount });
@@ -293,9 +295,9 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     cache: ReturnType<typeof newCache>,
     files: { path: string; size: number }[],
     chunkByteBudget?: number,
-  ): Promise<void> => {
+  ): Promise<Awaited<ReturnType<typeof runChunkedParseAndResolve>>> => {
     const rels = files.map((f) => f.path);
-    await runChunkedParseAndResolve(
+    return runChunkedParseAndResolve(
       createKnowledgeGraph(),
       files,
       rels,
@@ -335,7 +337,7 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     const f = writeFile('src/degrade.ts', 'export function degrade() { return 1; }\n');
     prepareOverride.impl = () => Promise.reject(new Error('EACCES: simulated cache failure'));
     try {
-      await expect(run(newCache(), [f])).resolves.toBeUndefined();
+      await expect(run(newCache(), [f])).resolves.toBeDefined();
     } finally {
       prepareOverride.impl = undefined;
     }
@@ -377,6 +379,23 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     await run(warm as ReturnType<typeof newCache>, [f]);
 
     expect(fs.existsSync(markerPath)).toBe(false); // NO worker spawned on the warm hit
+  });
+
+  it('replays scope-extraction failures from a warm parse-cache hit', async () => {
+    const f = writeFile('src/broken.ts', 'export function broken() { return 1; }\n');
+    const cache = newCache();
+
+    const cold = await run(cache, [f]);
+    expect(cold.scopeExtractionFailures).toEqual([f.path]);
+    await persistCaches(cache);
+
+    const { loadParseCache } = await import('../../src/storage/parse-cache.js');
+    const warm = await loadParseCache(storageDir);
+    fs.rmSync(markerPath, { force: true });
+
+    const replayed = await run(warm as ReturnType<typeof newCache>, [f]);
+    expect(fs.existsSync(markerPath)).toBe(false);
+    expect(replayed.scopeExtractionFailures).toEqual([f.path]);
   });
 
   it('coherence gate: a parse-cache hit with NO durable shards re-dispatches the worker', async () => {

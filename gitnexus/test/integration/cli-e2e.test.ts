@@ -1048,6 +1048,198 @@ describe('CLI end-to-end', () => {
       expect(result.stdout).toMatch(/analyze|status|serve/i);
     });
 
+    it('shows the analyze watch mode and its debounce controls', () => {
+      const result = runCliRaw(['analyze', '--help'], MINI_REPO);
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('--watch');
+      expect(result.stdout).toContain('--debounce');
+      expect(result.stdout).toContain('--workers');
+    });
+
+    it('rejects --debounce without --watch', () => {
+      const result = runCliRaw(['analyze', '--debounce', '25'], MINI_REPO);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('--debounce requires --watch');
+    });
+
+    it('runs production analyze --watch with exact telemetry and transactional config reloads', async () => {
+      const repo = makeMiniRepoCopy('watch-repo', 'gn-watch-cli-');
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-watch-cli-home-'));
+      try {
+        fs.writeFileSync(
+          path.join(repo, '.gitnexusrc'),
+          JSON.stringify({ workers: '1', maxFileSize: '1' }),
+          'utf8',
+        );
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn(
+            process.execPath,
+            [...CLI_SPAWN_PREFIX, 'analyze', repo, '--watch', '--debounce', '25', '--workers', '1'],
+            {
+              cwd: repo,
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: cliEnv({ GITNEXUS_HOME: home }),
+            },
+          );
+          let stdout = '';
+          let stderr = '';
+          let transcript = '';
+          let baselineNodes: number | undefined;
+          let stage = 'ready';
+          let stageOffset = 0;
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            child.kill('SIGTERM');
+            reject(new Error(`watch CLI timed out\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+          }, 480_000);
+
+          const advance = (nextStage: string, action: () => void) => {
+            stage = nextStage;
+            stageOffset = transcript.length;
+            setTimeout(action, 200);
+          };
+
+          const writeLargeSource = (fileName: string, functionName: string) => {
+            fs.writeFileSync(
+              path.join(repo, fileName),
+              `const padding = '${'x'.repeat(1_500)}';\n` +
+                `export function ${functionName}(): number { return padding.length; }\n`,
+              'utf8',
+            );
+          };
+
+          const handleOutput = () => {
+            const output = transcript.slice(stageOffset);
+            if (stage === 'ready' && /Watching .*index (?:is up to date|ready)/.test(output)) {
+              const meta = JSON.parse(
+                fs.readFileSync(path.join(repo, '.gitnexus', 'gitnexus.json'), 'utf8'),
+              );
+              baselineNodes = meta.stats.nodes;
+              advance('proof', () => {
+                fs.writeFileSync(
+                  path.join(repo, 'watch-proof.ts'),
+                  'export function watchProof(): number { return 1; }\n',
+                  'utf8',
+                );
+              });
+              return;
+            }
+            if (stage === 'proof' && /Refresh complete: 1 changed, 8 re-parsed,/.test(output)) {
+              const meta = JSON.parse(
+                fs.readFileSync(path.join(repo, '.gitnexus', 'gitnexus.json'), 'utf8'),
+              );
+              expect(meta.stats.nodes).toBeGreaterThan(baselineNodes!);
+              advance('first-large-file', () =>
+                writeLargeSource('oversized-before.ts', 'skippedByLimit'),
+              );
+              return;
+            }
+            if (
+              stage === 'first-large-file' &&
+              output.includes('Skipped 1 large files (>1KB)') &&
+              output.includes('- oversized-before.ts') &&
+              /Refresh complete: 0 changed,/.test(output)
+            ) {
+              advance('invalid-config', () => {
+                fs.writeFileSync(
+                  path.join(repo, '.gitnexusrc'),
+                  JSON.stringify({ workers: '1', maxFileSize: '0' }),
+                  'utf8',
+                );
+              });
+              return;
+            }
+            if (
+              stage === 'invalid-config' &&
+              /Refresh failed.*maxFileSize must be a positive integer/.test(output)
+            ) {
+              advance('second-large-file', () =>
+                writeLargeSource('oversized-after-invalid.ts', 'stillSkipped'),
+              );
+              return;
+            }
+            if (
+              stage === 'second-large-file' &&
+              /Refresh failed.*Configuration remains invalid/.test(output)
+            ) {
+              advance('recovered-config', () => {
+                fs.writeFileSync(
+                  path.join(repo, '.gitnexusrc'),
+                  JSON.stringify({ workers: '1', maxFileSize: '4096' }),
+                  'utf8',
+                );
+              });
+              return;
+            }
+            if (
+              stage === 'recovered-config' &&
+              /Refresh complete: [2-9][0-9]* changed, [1-9][0-9]* re-parsed,/.test(output)
+            ) {
+              stage = 'stopping';
+              setTimeout(() => child.kill('SIGTERM'), 100);
+            }
+          };
+          child.stderr.on('data', (chunk: Buffer) => {
+            const text = chunk.toString();
+            stderr += text;
+            transcript += text;
+            handleOutput();
+          });
+          child.stdout.on('data', (chunk: Buffer) => {
+            const text = chunk.toString();
+            stdout += text;
+            transcript += text;
+            handleOutput();
+          });
+          child.once('error', (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            reject(error);
+          });
+          child.once('close', (code, signal) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            const expectedWindowsTermination =
+              process.platform === 'win32' && code === null && signal === 'SIGTERM';
+            if (code !== 0 && !expectedWindowsTermination) {
+              reject(
+                new Error(
+                  `watch CLI exited ${code ?? signal}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+                ),
+              );
+              return;
+            }
+            expect(stage).toBe('stopping');
+            expect(transcript).toContain('Refresh complete: 1 changed, 8 re-parsed,');
+            resolve();
+          });
+        });
+
+        for (const [symbol, file] of [
+          ['watchProof', 'watch-proof.ts'],
+          ['skippedByLimit', 'oversized-before.ts'],
+          ['stillSkipped', 'oversized-after-invalid.ts'],
+        ]) {
+          const result = runCliWithEnv(
+            ['context', symbol, '--file', file],
+            repo,
+            { GITNEXUS_HOME: home },
+            30_000,
+          );
+          expect(result.status).toBe(0);
+          expect(result.stdout).toContain(symbol);
+          expect(result.stdout).toContain(file);
+        }
+      } finally {
+        cleanupTempDirSync(path.dirname(repo));
+        cleanupTempDirSync(home);
+      }
+    }, 540_000);
+
     it('fails with unknown command', () => {
       const result = runCliRaw(['nonexistent'], MINI_REPO);
 
@@ -1150,6 +1342,7 @@ describe('CLI end-to-end', () => {
       expect(result.stdout).toContain('--provider <provider>');
       expect(result.stdout).toContain('claude');
       expect(result.stdout).toContain('codex');
+      expect(result.stdout).toContain('grok');
       expect(result.stdout).toContain('--review');
       expect(result.stdout).toContain('-v, --verbose');
       expect(result.stdout).toContain('--model <model>');
@@ -1224,6 +1417,14 @@ describe('CLI end-to-end', () => {
 
     it('wiki --provider codex without API key does not prompt for key in non-TTY', () => {
       const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'codex'], repoRoot, 15000);
+      if (result.status === null) return;
+
+      const combined = result.stdout + result.stderr;
+      expect(combined).not.toMatch(/API key:/);
+    });
+
+    it('wiki --provider grok without API key does not prompt for key in non-TTY', () => {
+      const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'grok'], repoRoot, 15000);
       if (result.status === null) return;
 
       const combined = result.stdout + result.stderr;
