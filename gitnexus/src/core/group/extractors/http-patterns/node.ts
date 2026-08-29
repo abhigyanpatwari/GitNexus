@@ -152,6 +152,24 @@ const AXIOS_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
   `,
 };
 
+// ─── Consumer: wrapped client X.request({ url, method }) ────────────
+// Enterprise wrapper shape: an axios instance (or anything request-like)
+// re-exported under a local name — `httpClient.request({ url, method })`
+// from `@winex-plugin/win-request`, `$http.request(...)`, `api.request(...)`.
+// The member property is `request` (not an HTTP verb), so this cannot
+// collide with the Express provider pattern (`router.get`) or the axios
+// member form (`axios.get`). Option keys are resolved programmatically,
+// same as the jQuery ajax / axios object forms.
+const REQUEST_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
+  meta: {},
+  query: `
+    (call_expression
+      function: (member_expression
+        property: (property_identifier) @fn (#eq? @fn "request"))
+      arguments: (arguments (object) @options))
+  `,
+};
+
 interface NodePatternBundle {
   express: CompiledPatterns<Record<string, never>>;
   fetchNoOptions: CompiledPatterns<Record<string, never>>;
@@ -160,6 +178,7 @@ interface NodePatternBundle {
   jqueryShorthand: CompiledPatterns<Record<string, never>>;
   jqueryAjax: CompiledPatterns<Record<string, never>>;
   axiosObject: CompiledPatterns<Record<string, never>>;
+  requestObject: CompiledPatterns<Record<string, never>>;
 }
 
 function compileBundle(language: unknown, name: string): NodePatternBundle {
@@ -177,6 +196,7 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
     jqueryShorthand: mk(JQUERY_SHORTHAND_SPEC, 'jquery-shorthand'),
     jqueryAjax: mk(JQUERY_AJAX_SPEC, 'jquery-ajax'),
     axiosObject: mk(AXIOS_OBJECT_SPEC, 'axios-object'),
+    requestObject: mk(REQUEST_OBJECT_SPEC, 'request-object'),
   };
 }
 
@@ -202,6 +222,93 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
     if (valueNode.type !== 'string' && valueNode.type !== 'template_string') continue;
     const lit = unquoteLiteral(valueNode.text);
     if (lit !== null) return lit;
+  }
+  return null;
+}
+
+/**
+ * Reduce a wrapped-client `url` value to a routable path for contract
+ * matching. Enterprise wrappers commonly interpolate a service-prefix
+ * variable into the template literal — `` `${client}/api/v1/orders` `` —
+ * where the leading `${...}` is a gateway/host binding, not part of the
+ * route (consumer-path normalization alone would keep it as a leading
+ * `{param}` segment and never match a provider). Split the template on
+ * its interpolations and keep the longest literal segment that starts
+ * with `/`; plain string urls pass through when they look like an
+ * absolute path. Returns null for values that do not reduce to one
+ * (fully-qualified hosts, bare variable names, relative fragments).
+ */
+function extractWrappedRequestPath(rawUrl: string): string | null {
+  if (!rawUrl.includes('${')) {
+    return rawUrl.startsWith('/') ? rawUrl : null;
+  }
+  let best = '';
+  for (const segment of rawUrl.split(/\$\{[^}]*\}/)) {
+    if (segment.startsWith('/') && segment.length > 1 && segment.length > best.length) {
+      best = segment;
+    }
+  }
+  return best || null;
+}
+
+/**
+ * For a standalone `decorator` node (child of class_body / program),
+ * find the related `class_declaration` node that it decorates. In
+ * tree-sitter-typescript the decorator is placed before the class
+ * declaration as a sibling (when decorating a class) or inside the
+ * class_body before a method_definition (when decorating a method);
+ * we walk the parent chain until we find the enclosing class.
+ */
+function findDecoratedClass(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  const parent = decoratorNode.parent;
+  if (!parent) return null;
+  // Case 1: decorator is a sibling of the class_declaration at program /
+  // export_statement level. Walk forward through siblings until we find
+  // the class_declaration this decorator belongs to.
+  for (let i = 0; i < parent.namedChildCount; i++) {
+    const child = parent.namedChild(i);
+    if (child && child.id === decoratorNode.id) {
+      for (let j = i + 1; j < parent.namedChildCount; j++) {
+        const next = parent.namedChild(j);
+        if (!next) continue;
+        if (next.type === 'decorator') continue; // adjacent decorators stack
+        if (next.type === 'class_declaration') return next;
+        if (next.type === 'export_statement') {
+          // `export class Foo { ... }` wraps the declaration.
+          for (let k = 0; k < next.namedChildCount; k++) {
+            const inner = next.namedChild(k);
+            if (inner?.type === 'class_declaration') return inner;
+          }
+        }
+        break;
+      }
+      break;
+    }
+  }
+  // Case 2: decorator is inside a class_body (decorating a method) —
+  // walk up to the enclosing class_declaration.
+  return findEnclosingClass(decoratorNode);
+}
+
+/**
+ * For a method-level decorator node (child of class_body before a
+ * method_definition), find the method_definition it decorates.
+ */
+function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  const parent = decoratorNode.parent;
+  if (!parent || parent.type !== 'class_body') return null;
+  for (let i = 0; i < parent.namedChildCount; i++) {
+    const child = parent.namedChild(i);
+    if (child && child.id === decoratorNode.id) {
+      for (let j = i + 1; j < parent.namedChildCount; j++) {
+        const next = parent.namedChild(j);
+        if (!next) continue;
+        if (next.type === 'decorator') continue;
+        if (next.type === 'method_definition') return next;
+        return null;
+      }
+      return null;
+    }
   }
   return null;
 }
@@ -685,6 +792,30 @@ function scanBundle(
     });
   }
 
+  // Consumer: wrapped client `X.request({ url, method })` — the shared
+  // enterprise axios-instance shape (`httpClient.request` from
+  // win-request and friends). The url goes through
+  // extractWrappedRequestPath first so `` `${client}/api/v1/x` `` emits
+  // `/api/v1/x`, which consumer-path normalization then matches against
+  // a provider for the same route. Skips calls whose `url` does not
+  // reduce to an absolute path.
+  for (const match of runCompiledPatterns(bundle.requestObject, tree)) {
+    const optionsNode = match.captures.options;
+    if (!optionsNode) continue;
+    const rawUrl = readStringProp(optionsNode, ['url']);
+    if (rawUrl === null) continue;
+    const path = extractWrappedRequestPath(rawUrl);
+    if (path === null) continue;
+    const rawMethod = readStringProp(optionsNode, ['method', 'type']);
+    const method = (rawMethod ?? 'GET').toUpperCase();
+    out.push({
+      role: 'consumer',
+      framework: 'request',
+      method,
+      path,
+      name: null,
+      line: optionsNode.startPosition.row + 1,
+      confidence: 0.65,
   for (const route of scanDataRouteTables(tree)) {
     const imported =
       route.handlerLocalName === undefined ? undefined : importMap.get(route.handlerLocalName);
