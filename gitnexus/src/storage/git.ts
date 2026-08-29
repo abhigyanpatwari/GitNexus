@@ -66,7 +66,6 @@ const parsePorcelainPaths = (porcelain: string): string[] => {
 
 const gitPathListExec = {
   stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
-  windowsHide: true,
   encoding: 'utf8' as const,
   maxBuffer: GIT_PATH_LIST_MAX_BUFFER,
 };
@@ -74,6 +73,7 @@ const gitPathListExec = {
 const listHiddenIndexPaths = (repoPath: string): string[] => {
   const out = execFileSync('git', ['ls-files', '-v', '-z', '--'], {
     cwd: repoPath,
+    windowsHide: true,
     ...gitPathListExec,
   });
   const paths: string[] = [];
@@ -107,7 +107,7 @@ export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => 
         '.',
         ...GITNEXUS_MANAGED_PATH_EXCLUDES,
       ],
-      { cwd: repoPath, ...gitPathListExec },
+      { cwd: repoPath, windowsHide: true, ...gitPathListExec },
     );
     return [
       ...new Set(
