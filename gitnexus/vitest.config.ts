@@ -64,6 +64,8 @@ export default defineConfig({
         test: {
           name: 'lbug-db',
           include: [
+            'test/integration/impact-epistemic-lower-bound.test.ts',
+            'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
             'test/integration/lbug-vector-extension.test.ts',
             'test/integration/lbug-pool.test.ts',
@@ -93,6 +95,7 @@ export default defineConfig({
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
+            'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
             'test/integration/lbug-multiwriter-deadlock.test.ts',
             'test/integration/extension-binary-real.test.ts',
@@ -136,6 +139,8 @@ export default defineConfig({
           sequence: { groupOrder: 3 },
           include: ['test/**/*.test.ts'],
           exclude: [
+            'test/integration/impact-epistemic-lower-bound.test.ts',
+            'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
             'test/integration/lbug-vector-extension.test.ts',
             'test/integration/lbug-pool.test.ts',
@@ -165,6 +170,7 @@ export default defineConfig({
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
+            'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/skills-e2e.test.ts',
             'test/integration/fts-extension-e2e.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
