@@ -799,10 +799,12 @@ describe('parsedfile-store receiverChain sanitation', () => {
       const origUnlink = nodeFsPromises.unlink.bind(nodeFsPromises);
       const origWrite = nodeFsPromises.writeFile.bind(nodeFsPromises);
       const order: string[] = [];
-      const unlinkSpy = vi.spyOn(nodeFsPromises, 'unlink').mockImplementation(async (p, ...rest) => {
-        order.push(`unlink:${path.basename(String(p))}`);
-        return origUnlink(p, ...rest);
-      });
+      const unlinkSpy = vi
+        .spyOn(nodeFsPromises, 'unlink')
+        .mockImplementation(async (p, ...rest) => {
+          order.push(`unlink:${path.basename(String(p))}`);
+          return origUnlink(p, ...rest);
+        });
       const writeSpy = vi
         .spyOn(nodeFsPromises, 'writeFile')
         .mockImplementation(async (p, data, enc) => {
