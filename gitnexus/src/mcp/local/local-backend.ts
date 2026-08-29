@@ -3826,7 +3826,10 @@ export class LocalBackend {
       // "ENDS WITH $suffix" where suffix is "/"+path) so "a.ts" does not spuriously
       // match "mylib/a.ts" — same anchoring used in detect_changes (#2915).
       const suffix = pathSuffixOf(name);
-      whereClause = `WHERE (n.id = $symName OR n.name = $symName OR n.filePath = $symName OR n.filePath ENDS WITH $suffix)`;
+      // File-path terms must be scoped to File nodes — n.filePath is shared by
+      // every symbol in the file, so an unlabeled predicate would turn
+      // "src/actions.ts" into every symbol in that file (bot review #3084 P1).
+      whereClause = `WHERE (n.id = $symName OR n.name = $symName OR (n:File AND (n.filePath = $symName OR n.filePath ENDS WITH $suffix)))`;
       queryParams.suffix = suffix;
     } else {
       whereClause = `WHERE n.name = $symName`;
