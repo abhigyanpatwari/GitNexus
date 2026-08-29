@@ -3829,8 +3829,11 @@ export class LocalBackend {
       // File-path terms must be scoped to File nodes — n.filePath is shared by
       // every symbol in the file, so an unlabeled predicate would turn
       // "src/actions.ts" into every symbol in that file (bot review #3084 P1).
-      whereClause = `WHERE (n.id = $symName OR n.name = $symName OR (n:File AND (n.filePath = $symName OR n.filePath ENDS WITH $suffix)))`;
+      // LadybugDB does not allow label tests in WHERE (n:File), so scope via
+      // id prefix — File nodes are `File:<path>`.
+      whereClause = `WHERE (n.id = $symName OR n.name = $symName OR (n.id STARTS WITH $filePrefix AND (n.filePath = $symName OR n.filePath ENDS WITH $suffix)))`;
       queryParams.suffix = suffix;
+      queryParams.filePrefix = 'File:';
     } else {
       whereClause = `WHERE n.name = $symName`;
     }
@@ -3921,7 +3924,7 @@ export class LocalBackend {
     if (rows.length === 0) return { kind: 'not_found' };
 
     // Normalise row shape across object / tuple returns from LadybugDB.
-    const normalized = rows.map((r: any) => ({
+    let normalized = rows.map((r: any) => ({
       id: (r.id ?? r[0]) as string,
       name: (r.name ?? r[1]) as string,
       type: (r.type ?? r[2] ?? '') as string,
@@ -3930,6 +3933,16 @@ export class LocalBackend {
       endLine: (r.endLine ?? r[5]) as number,
       ...(include_content ? { content: (r.content ?? r[6]) as string | undefined } : {}),
     }));
+
+    // An exact File path wins over anchored suffix candidates. Without this,
+    // `lib/a.ts` and `src/lib/a.ts` both score as File candidates and turn an
+    // otherwise unambiguous exact target into `ambiguous` (#3084 review P2).
+    if (isQualified) {
+      const exactFiles = normalized.filter(
+        (candidate) => candidate.id.startsWith('File:') && candidate.filePath === name,
+      );
+      if (exactFiles.length > 0) normalized = exactFiles;
+    }
 
     // The COUNT can never legitimately be below the page it accompanies, so a
     // value under `normalized.length` means the count leg failed or returned an
@@ -6139,6 +6152,7 @@ export class LocalBackend {
           direction: params.direction,
           suggestion,
           recoverySuggestion,
+          undetermined: true,
         });
         return pdgErr;
       }
@@ -6146,7 +6160,7 @@ export class LocalBackend {
         error: message,
         target: { name: params.target },
         direction: params.direction,
-        impactedCount: 0,
+        impactedCount: null,
         risk: 'UNKNOWN',
         suggestion,
         ...(recoverySuggestion ? { recoverySuggestion } : {}),
@@ -6241,6 +6255,7 @@ export class LocalBackend {
             `(single-repo PDG impact). Remove them or use mode:'callgraph' for cross-repo fan-out.`,
           target: crossDepthTarget,
           direction,
+          undetermined: true,
         });
         return pdgErr;
       }
@@ -6307,6 +6322,7 @@ export class LocalBackend {
             error: `Target '${missing}' not found`,
             target: notFoundTarget,
             direction,
+            undetermined: true,
           })
         : {
             error: `Target '${missing}' not found`,
