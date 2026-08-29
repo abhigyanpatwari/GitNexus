@@ -10,6 +10,7 @@
 import { resolveRubyImportInternal } from '../../import-resolvers/ruby.js';
 import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
 import { isHeritageMarker } from '../../utils/heritage-marker.js';
+import type { RubyResolutionConfig } from './resolution-config.js';
 
 export interface RubyResolveContext {
   readonly fromFile: string;
@@ -35,7 +36,7 @@ export function resolveRubyImportTarget(
   targetRaw: string,
   fromFile: string,
   allFilePaths: ReadonlySet<string>,
-  _resolutionConfig?: unknown,
+  resolutionConfig?: unknown,
 ): string | readonly string[] | null {
   if (!targetRaw) return null;
   if (isHeritageMarker(targetRaw)) return null;
@@ -52,6 +53,10 @@ export function resolveRubyImportTarget(
   }
 
   // ── require: bare/gem-style suffix matching ─────────────────────────
+  const gemNames = (resolutionConfig as RubyResolutionConfig | undefined)?.gemNames;
+  const firstSegment = targetRaw.split('/', 1)[0];
+  if (gemNames?.has(firstSegment)) return null;
+
   return resolveBare(targetRaw, allFilePaths);
 }
 
