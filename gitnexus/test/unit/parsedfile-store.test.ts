@@ -694,6 +694,21 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
+  it('removes a stale sidecar when a rewritten shard is no longer listing-safe', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-stale-'));
+    const weird = 'weird\nname.c';
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('safe.c')]);
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
+      const storeDir = getParsedFileStoreDir(dir);
+      expect(await readdir(storeDir)).toEqual(['ok.json']);
+      const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
+      expect(loaded.has(weird)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not forceGc on a small store (byte budget, not every 8 shards) (#3086)', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-gc-'));
     const gc = vi.fn();

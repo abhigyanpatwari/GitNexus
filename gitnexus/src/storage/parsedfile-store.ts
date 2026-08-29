@@ -48,7 +48,7 @@
  * file changes its chunk hash, which misses BOTH stores and re-dispatches.
  */
 
-import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
+import { promises as fs, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
@@ -205,7 +205,14 @@ const writeShardPathsSidecar = async (
   jsonPath: string,
   parsedFiles: readonly ParsedFile[],
 ): Promise<void> => {
-  if (!shardPathsSidecarSafe(parsedFiles)) return;
+  if (!shardPathsSidecarSafe(parsedFiles)) {
+    try {
+      await fs.unlink(shardPathsSidecarPath(jsonPath));
+    } catch {
+      // No prior sidecar, or unlink failed; JSON remains authoritative.
+    }
+    return;
+  }
   try {
     await fs.writeFile(
       shardPathsSidecarPath(jsonPath),
@@ -218,7 +225,14 @@ const writeShardPathsSidecar = async (
 };
 
 const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly ParsedFile[]): void => {
-  if (!shardPathsSidecarSafe(parsedFiles)) return;
+  if (!shardPathsSidecarSafe(parsedFiles)) {
+    try {
+      unlinkSync(shardPathsSidecarPath(jsonPath));
+    } catch {
+      // No prior sidecar, or unlink failed; JSON remains authoritative.
+    }
+    return;
+  }
   try {
     writeFileSync(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
   } catch {
