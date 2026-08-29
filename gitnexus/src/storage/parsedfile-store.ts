@@ -684,10 +684,11 @@ export const restoreDurableParsedFileShard = async (
   const dst = getParsedFileStoreDir(runStoragePath);
   await fs.mkdir(dst, { recursive: true });
   for (const name of shards) {
-    await fs.copyFile(path.join(src, name), path.join(dst, name));
-    const sidecar = shardPathsSidecarPath(name);
+    const srcJson = path.join(src, name);
+    const dstJson = path.join(dst, name);
+    await fs.copyFile(srcJson, dstJson);
     try {
-      await fs.copyFile(path.join(src, sidecar), path.join(dst, sidecar));
+      await fs.copyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
     } catch {
       // Pre-sidecar durable generation: load falls back to reading JSON.
     }
