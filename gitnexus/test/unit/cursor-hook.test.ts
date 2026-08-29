@@ -57,8 +57,9 @@ const CURSOR_HOOKS_JSON = path.resolve(
 );
 
 const require = createRequire(import.meta.url);
-const { parseRgGrepPattern } = require(CURSOR_HOOK) as {
+const { parseRgGrepPattern, tokenizeShellWords } = require(CURSOR_HOOK) as {
   parseRgGrepPattern: (command: string) => string | null;
+  tokenizeShellWords: (command: string) => string[];
 };
 
 // ─── Cursor-specific output parser ──────────────────────────────────
@@ -571,8 +572,29 @@ describe('Shell quoted-pattern parser', () => {
     ['rg --regexp=x --regexp=LongPattern src/', 'LongPattern'],
     ['/usr/bin/rg -- "User Service" src/', 'User Service'],
     ['rg -- -error src/', '-error'],
+    [String.raw`C:\Users\me\bin\rg.exe UserService src/`, 'UserService'],
+    ['rg.exe "validateUser" src/', 'validateUser'],
+    ['grep.cmd -e LongPattern src/', 'LongPattern'],
+    ['cd grep && rg LongPattern src/', 'LongPattern'],
+    ['npx rg "User Service" src/', 'User Service'],
+    ['npx --yes rg UserService src/', 'UserService'],
+    ['rg --max-count 100 UserService src/', 'UserService'],
+    ['grep -r UserService src/', 'UserService'],
+    ['rg --replace x UserService src/', 'UserService'],
+    ['git grep UserService src/', 'UserService'],
   ])('extracts %j from %j', (command, expected) => {
     expect(parseRgGrepPattern(command)).toBe(expected);
+  });
+
+  it.each([
+    ['rg --regexp= src/'],
+    ['rg --regexp="" src/'],
+    ['rg -e x -- LongPattern src/'],
+    ['rg -f patterns.txt src/'],
+    ['rg --file=patterns.txt src/'],
+    ['rg -eab src/'],
+  ])('extracts no pattern from %j', (command) => {
+    expect(parseRgGrepPattern(command)).toBeNull();
   });
 
   it('does not treat a path after a short explicit pattern as the pattern', () => {
@@ -581,6 +603,12 @@ describe('Shell quoted-pattern parser', () => {
 
   it('keeps single-token quoted patterns intact', () => {
     expect(parseRgGrepPattern('rg "validateUser"')).toBe('validateUser');
+  });
+
+  it('keeps backslashes in unquoted Windows paths but honours escaped spaces', () => {
+    expect(tokenizeShellWords(String.raw`C:\foo\bar`)).toEqual([String.raw`C:\foo\bar`]);
+    expect(tokenizeShellWords('User\\ Service')).toEqual(['User Service']);
+    expect(tokenizeShellWords('trailing\\')).toEqual(['trailing\\']);
   });
 });
 
