@@ -26,13 +26,14 @@ export {
 export type { MroStrategy } from './mro-strategy.js';
 
 // Impact risk scoring
-export { scoreImpactRisk } from './impact-risk.js';
+export { scoreImpactRisk, unusedAxesForImpactWalk } from './impact-risk.js';
 export type {
   ImpactRisk,
   ImpactRiskAxis,
   ImpactRiskInput,
   ImpactRiskResult,
   UnusedImpactRiskAxis,
+  UnusedImpactRiskReason,
 } from './impact-risk.js';
 
 // Pipeline progress

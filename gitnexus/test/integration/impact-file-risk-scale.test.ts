@@ -102,6 +102,24 @@ withTestLbugDB(
       });
       expect(fn.riskNote).toBeUndefined();
     });
+
+    it('marks downstream File risk incomparable on the same seed', async () => {
+      const file = await backend.callTool('impact', {
+        target: 'crypto.ts',
+        kind: 'File',
+        direction: 'downstream',
+      });
+      expect(file.target.type).toBe('File');
+      expect(file.riskScale.comparableAcrossKinds).toBe(false);
+      expect(file.riskScale.unusedAxes).toEqual(
+        expect.arrayContaining([
+          {
+            axis: 'processes',
+            reason: 'file-nodes-have-no-process-or-community-membership',
+          },
+        ]),
+      );
+    });
   },
   {
     seed: SEED,

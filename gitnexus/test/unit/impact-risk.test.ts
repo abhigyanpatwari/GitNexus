@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scoreImpactRisk, type ImpactRiskInput, type UnusedImpactRiskAxis } from 'gitnexus-shared';
+import { scoreImpactRisk, unusedAxesForImpactWalk, type ImpactRiskInput, type UnusedImpactRiskAxis } from 'gitnexus-shared';
 
 const fileUnusedAxes: readonly UnusedImpactRiskAxis[] = [
   {
@@ -90,5 +90,114 @@ describe('scoreImpactRisk', () => {
         unusedAxes: fileUnusedAxes,
       }).risk,
     ).toBe('HIGH');
+    expect(
+      scoreImpactRisk({
+        ...base,
+        directCount: 2,
+        processCount: 10,
+        moduleCount: 10,
+        unusedAxes: fileUnusedAxes,
+      }).risk,
+    ).toBe('LOW');
+  });
+
+  it('zeros unused process/module counts on the primary risk ladder', () => {
+    const skippedAxes: readonly UnusedImpactRiskAxis[] = [
+      { axis: 'processes', reason: 'enrichment-skipped' },
+      { axis: 'modules', reason: 'enrichment-skipped' },
+    ];
+    const scored = scoreImpactRisk({
+      ...base,
+      directCount: 2,
+      processCount: 4,
+      moduleCount: 4,
+      impactedCount: 15,
+      unusedAxes: skippedAxes,
+    });
+    expect(scored.risk).toBe('LOW');
+    expect(scored.riskSharedAxes).toBe('LOW');
+  });
+
+  it('preserves a warning already proved before a later enrichment failure', () => {
+    const scored = scoreImpactRisk({
+      ...base,
+      directCount: 2,
+      processCount: 5,
+      impactedCount: 5,
+      unusedAxes: [{ axis: 'processes', reason: 'enrichment-query-failed' }],
+    });
+
+    expect(scored.risk).toBe('CRITICAL');
+    expect(scored.riskSharedAxes).toBe('LOW');
+    expect(scored.riskScale.comparableAcrossKinds).toBe(false);
+  });
+
+  it('fails closed when query failure leaves only a LOW or MEDIUM observed score', () => {
+    for (const directCount of [2, 6]) {
+      const scored = scoreImpactRisk({
+        ...base,
+        direction: 'downstream',
+        directCount,
+        processCount: 0,
+        impactedCount: directCount,
+        unusedAxes: [{ axis: 'processes', reason: 'enrichment-query-failed' }],
+      });
+      expect(scored.risk).toBe('UNKNOWN');
+    }
+  });
+});
+
+describe('unusedAxesForImpactWalk', () => {
+  it('marks File, skipEnrichment, zero budget, and query failure distinctly', () => {
+    expect(
+      unusedAxesForImpactWalk({
+        isFileTarget: true,
+        skipEnrichment: false,
+        maxChunks: 10,
+        processQueryFailed: true,
+        moduleQueryFailed: true,
+        impactedCount: 1,
+      }).every((a) => a.reason === 'file-nodes-have-no-process-or-community-membership'),
+    ).toBe(true);
+    expect(
+      unusedAxesForImpactWalk({
+        isFileTarget: false,
+        skipEnrichment: true,
+        maxChunks: 0,
+        processQueryFailed: false,
+        moduleQueryFailed: false,
+        impactedCount: 1,
+      }).map((a) => a.reason),
+    ).toEqual(['enrichment-skipped', 'enrichment-skipped']);
+    expect(
+      unusedAxesForImpactWalk({
+        isFileTarget: false,
+        skipEnrichment: false,
+        maxChunks: 0,
+        processQueryFailed: false,
+        moduleQueryFailed: false,
+        impactedCount: 1,
+      }).map((a) => a.reason),
+    ).toEqual(['enrichment-budget-exhausted', 'enrichment-budget-exhausted']);
+    expect(
+      unusedAxesForImpactWalk({
+        isFileTarget: false,
+        skipEnrichment: false,
+        maxChunks: 10,
+        processQueryFailed: true,
+        moduleQueryFailed: false,
+        impactedCount: 1,
+      }),
+    ).toEqual([{ axis: 'processes', reason: 'enrichment-query-failed' }]);
+    expect(
+      unusedAxesForImpactWalk({
+        isFileTarget: false,
+        skipEnrichment: false,
+        maxChunks: 0,
+        processQueryFailed: false,
+        moduleQueryFailed: false,
+        impactedCount: 0,
+      }),
+    ).toEqual([]);
   });
 });

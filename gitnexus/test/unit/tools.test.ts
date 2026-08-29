@@ -193,6 +193,16 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.description).toContain('truncatedBy');
   });
 
+  it('documents riskSharedAxes as a compare aid, not the edit gate', () => {
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    expect(impactTool.description).toContain('riskSharedAxes');
+    expect(impactTool.description).toContain('Never substitute it for `risk`');
+    expect(impactTool.description).toContain('IMPACT_MAX_CHUNKS=0');
+    expect(impactTool.description).toContain('Graph-RAG');
+    expect(impactTool.description).toContain('cross-repo crossing overlay');
+    expect(impactTool.description).toContain('known HIGH/CRITICAL warnings survive');
+  });
+
   it.each(['query', 'context', 'impact'])(
     '%s advertises an optional positive maxTokens budget',
     (name) => {

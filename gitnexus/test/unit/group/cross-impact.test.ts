@@ -371,6 +371,35 @@ describe('cross-impact', () => {
     expect(r).not.toHaveProperty('truncationReason');
   });
 
+  it('lifts local riskSharedAxes and riskScale when there are no symbol uids to fan out', async () => {
+    const riskScale = {
+      comparableAcrossKinds: false,
+      unusedAxes: [
+        {
+          axis: 'processes' as const,
+          reason: 'file-nodes-have-no-process-or-community-membership',
+        },
+        {
+          axis: 'modules',
+          reason: 'file-nodes-have-no-process-or-community-membership',
+        },
+      ],
+    };
+    const r = await runLocalOnlyImpact(async () => ({
+      byDepth: {},
+      summary: { direct: 13, processes_affected: 0, modules_affected: 0 },
+      risk: 'MEDIUM',
+      riskSharedAxes: 'MEDIUM',
+      riskScale,
+    }));
+    expect(r).toMatchObject({
+      truncated: false,
+      risk: 'MEDIUM',
+      riskSharedAxes: 'MEDIUM',
+      riskScale,
+    });
+  });
+
   it('test_runGroupImpact_bridge_schema_mismatch_returns_error', async () => {
     const { tmpDir, groupDir, cleanup } = tmpGroup();
     vi.stubEnv('GITNEXUS_HOME', tmpDir);

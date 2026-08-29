@@ -325,6 +325,321 @@ describe('impact: batching and grouping', () => {
     delete process.env.IMPACT_MAX_CHUNKS;
   });
 
+  it('marks IMPACT_MAX_CHUNKS=0 as unused process/module axes', async () => {
+    process.env.IMPACT_MAX_CHUNKS = '0';
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-zero-budget',
+      name: 'repo-zero-budget',
+      repoPath: '/tmp/repo-zero-budget',
+      storagePath: '/tmp/repo-zero-budget/.gitnexus',
+      lbugPath: '/tmp/repo-zero-budget/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+    (backend as any).repos.set(repoHandle.id, repoHandle);
+    (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
+    executeQueryMock.mockImplementation(async () => []);
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        return [
+          {
+            id: 'node-1',
+            name: 'n1',
+            filePath: 'file-1.js',
+            relType: 'CALLS',
+            confidence: null,
+          },
+        ];
+      }
+      return [{ id: 'symX', name: 'TargetX', filePath: 'f' }];
+    });
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'TargetX',
+      direction: 'downstream',
+      maxDepth: 1,
+    } as any);
+    expect(res.riskScale.comparableAcrossKinds).toBe(false);
+    expect(res.riskScale.unusedAxes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ reason: 'enrichment-budget-exhausted' }),
+      ]),
+    );
+    delete process.env.IMPACT_MAX_CHUNKS;
+  });
+
+  it('marks swallowed process enrichment failures as unused process axes', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-enrich-fail',
+      name: 'repo-enrich-fail',
+      repoPath: '/tmp/repo-enrich-fail',
+      storagePath: '/tmp/repo-enrich-fail/.gitnexus',
+      lbugPath: '/tmp/repo-enrich-fail/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+    (backend as any).repos.set(repoHandle.id, repoHandle);
+    (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
+    executeQueryMock.mockImplementation(async () => []);
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('STEP_IN_PROCESS')) {
+        throw new Error('process chunk failed');
+      }
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        return [
+          {
+            id: 'node-1',
+            name: 'n1',
+            filePath: 'file-1.js',
+            relType: 'CALLS',
+            confidence: null,
+          },
+        ];
+      }
+      return [{ id: 'symFail', name: 'TargetFail', filePath: 'f' }];
+    });
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'TargetFail',
+      direction: 'downstream',
+      maxDepth: 1,
+    } as any);
+    expect(res.riskScale.unusedAxes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ axis: 'processes', reason: 'enrichment-query-failed' }),
+      ]),
+    );
+    expect(res.risk).toBe('UNKNOWN');
+    expect(res.partial).toBe(true);
+    expect(res.riskNote).toContain('enrichment failed');
+  });
+
+  it('marks module query failure without discarding a successful process axis', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-module-fail',
+      name: 'repo-module-fail',
+      repoPath: '/tmp/repo-module-fail',
+      storagePath: '/tmp/repo-module-fail/.gitnexus',
+      lbugPath: '/tmp/repo-module-fail/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+    (backend as any).repos.set(repoHandle.id, repoHandle);
+    (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
+    executeQueryMock.mockImplementation(async () => []);
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('MEMBER_OF')) throw new Error('module chunk failed');
+      if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
+        return [
+          {
+            pId: 'p1',
+            entryPointId: 'ep1',
+            epName: 'main',
+            epType: 'Function',
+            hits: 1,
+            minStep: 1,
+          },
+        ];
+      }
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        return [
+          {
+            id: 'node-1',
+            name: 'n1',
+            filePath: 'file-1.js',
+            relType: 'CALLS',
+            confidence: null,
+          },
+        ];
+      }
+      return [{ id: 'symModule', name: 'TargetModule', filePath: 'f' }];
+    });
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'TargetModule',
+      direction: 'downstream',
+      maxDepth: 1,
+    } as any);
+    expect(res.affected_processes).toHaveLength(1);
+    expect(res.riskScale.unusedAxes).toEqual([
+      { axis: 'modules', reason: 'enrichment-query-failed' },
+    ]);
+    expect(res.risk).toBe('UNKNOWN');
+    expect(res.partial).toBe(true);
+  });
+
+  it('keeps process risk measured when only minStep backfill fails', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-backfill-fail',
+      name: 'repo-backfill-fail',
+      repoPath: '/tmp/repo-backfill-fail',
+      storagePath: '/tmp/repo-backfill-fail/.gitnexus',
+      lbugPath: '/tmp/repo-backfill-fail/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+    (backend as any).repos.set(repoHandle.id, repoHandle);
+    (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
+    executeQueryMock.mockImplementation(async () => []);
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('MIN(r.step) AS minStep') && !query.includes('COUNT(DISTINCT s.id)')) {
+        throw new Error('minStep backfill failed');
+      }
+      if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
+        return [
+          {
+            pId: 'p1',
+            entryPointId: 'ep1',
+            epName: 'main',
+            epType: 'Function',
+            hits: 1,
+            minStep: null,
+          },
+        ];
+      }
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        return [
+          {
+            id: 'node-1',
+            name: 'n1',
+            filePath: 'file-1.js',
+            relType: 'CALLS',
+            confidence: null,
+          },
+        ];
+      }
+      if (query.includes('MEMBER_OF')) return [];
+      return [{ id: 'symBackfill', name: 'TargetBackfill', filePath: 'f' }];
+    });
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'TargetBackfill',
+      direction: 'downstream',
+      maxDepth: 1,
+    } as any);
+    expect(res.affected_processes).toHaveLength(1);
+    expect(res.riskScale.unusedAxes).toEqual([]);
+    expect(res.risk).toBe('LOW');
+    expect(res.partial).toBe(true);
+  });
+
+  it('keeps observed process warnings when a later enrichment chunk fails', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-later-process-fail',
+      name: 'repo-later-process-fail',
+      repoPath: '/tmp/repo-later-process-fail',
+      storagePath: '/tmp/repo-later-process-fail/.gitnexus',
+      lbugPath: '/tmp/repo-later-process-fail/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+    (backend as any).repos.set(repoHandle.id, repoHandle);
+    (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
+    executeQueryMock.mockImplementation(async () => []);
+    let processChunk = 0;
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('STEP_IN_PROCESS') && query.includes('COUNT(DISTINCT s.id)')) {
+        processChunk += 1;
+        if (processChunk === 2) throw new Error('later process chunk failed');
+        return Array.from({ length: 5 }, (_, index) => ({
+          pId: `p${index}`,
+          entryPointId: `ep${index}`,
+          epName: `process-${index}`,
+          epType: 'Function',
+          hits: 1,
+          minStep: 1,
+        }));
+      }
+      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+        return Array.from({ length: 150 }, (_, index) => ({
+          id: `node-${index}`,
+          name: `n${index}`,
+          filePath: `file-${index}.js`,
+          relType: 'CALLS',
+          confidence: null,
+        }));
+      }
+      if (query.includes('MEMBER_OF')) return [];
+      return [{ id: 'symLaterFail', name: 'TargetLaterFail', filePath: 'f' }];
+    });
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'TargetLaterFail',
+      direction: 'downstream',
+      maxDepth: 1,
+    } as any);
+    expect(res.affected_processes).toHaveLength(5);
+    expect(res.risk).toBe('CRITICAL');
+    expect(res.riskScale.unusedAxes).toContainEqual({
+      axis: 'processes',
+      reason: 'enrichment-query-failed',
+    });
+    expect(res.partial).toBe(true);
+  });
+
+  it('does not invent direct/indirect module classification after backfill failure', async () => {
+    const backend = new LocalBackend();
+    const repoHandle = {
+      id: 'repo-module-classification-fail',
+      name: 'repo-module-classification-fail',
+      repoPath: '/tmp/repo-module-classification-fail',
+      storagePath: '/tmp/repo-module-classification-fail/.gitnexus',
+      lbugPath: '/tmp/repo-module-classification-fail/.gitnexus/lbug',
+      indexedAt: 'now',
+      lastCommit: 'c',
+      stats: {},
+    } as any;
+    (backend as any).repos.set(repoHandle.id, repoHandle);
+    (backend as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
+    executeQueryMock.mockImplementation(async () => []);
+    executeParameterizedMock.mockImplementation(async (...args: any[]) => {
+      const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
+      if (query.includes('MEMBER_OF') && query.includes('RETURN DISTINCT c.heuristicLabel')) {
+        throw new Error('module classification failed');
+      }
+      if (query.includes('MEMBER_OF')) return [{ name: 'ModuleA', hits: 1 }];
+      if (query.includes('STEP_IN_PROCESS')) return [];
+      if (query.includes('r.type IN')) {
+        return [
+          {
+            id: 'node-1',
+            name: 'n1',
+            filePath: 'file-1.js',
+            relType: 'CALLS',
+            confidence: null,
+          },
+        ];
+      }
+      return [{ id: 'symClassify', name: 'TargetClassify', filePath: 'f' }];
+    });
+
+    const res = await (backend as any)._impactImpl(repoHandle, {
+      target: 'TargetClassify',
+      direction: 'downstream',
+      maxDepth: 1,
+    } as any);
+    expect(res.affected_modules).toEqual([
+      expect.objectContaining({ name: 'ModuleA', impact: 'classification-unavailable' }),
+    ]);
+    expect(res.riskScale.unusedAxes).toEqual([]);
+    expect(res.partial).toBe(true);
+  });
+
   it('caps implicit object-callable expansion and reports partial impact', async () => {
     const backend = new LocalBackend();
     const repoHandle = {
@@ -384,6 +699,10 @@ describe('impact: batching and grouping', () => {
     expect(traversalCall?.[2]?.frontierIds).toEqual(['owner']);
     expect(result.byDepth['1']).toHaveLength(5000);
     expect(result.partial).toBe(true);
+    expect(result.riskScale.comparableAcrossKinds).toBe(false);
+    expect(result.riskScale.unusedAxes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reason: 'enrichment-skipped' })]),
+    );
   });
 
   it('marks object impact partial when callable seeding fails', async () => {
