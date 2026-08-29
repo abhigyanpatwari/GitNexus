@@ -578,6 +578,9 @@ describe('Shell quoted-pattern parser', () => {
     ['cd grep && rg LongPattern src/', 'LongPattern'],
     ['npx rg "User Service" src/', 'User Service'],
     ['npx --yes rg UserService src/', 'UserService'],
+    ['npx --package rg grep LongPattern src/', 'LongPattern'],
+    ['rg UserService; echo done', 'UserService'],
+    ['rg UserService&& echo done', 'UserService'],
     ['rg --max-count 100 UserService src/', 'UserService'],
     ['grep -r UserService src/', 'UserService'],
     ['rg --replace x UserService src/', 'UserService'],
@@ -593,6 +596,7 @@ describe('Shell quoted-pattern parser', () => {
     ['rg -f patterns.txt src/'],
     ['rg --file=patterns.txt src/'],
     ['rg -eab src/'],
+    ['sudo echo rg UserService src/'],
   ])('extracts no pattern from %j', (command) => {
     expect(parseRgGrepPattern(command)).toBeNull();
   });
@@ -609,6 +613,20 @@ describe('Shell quoted-pattern parser', () => {
     expect(tokenizeShellWords(String.raw`C:\foo\bar`)).toEqual([String.raw`C:\foo\bar`]);
     expect(tokenizeShellWords('User\\ Service')).toEqual(['User Service']);
     expect(tokenizeShellWords('trailing\\')).toEqual(['trailing\\']);
+  });
+
+  it('splits unquoted shell operators from adjacent arguments', () => {
+    expect(tokenizeShellWords('rg UserService; echo done')).toEqual([
+      'rg',
+      'UserService',
+      ';',
+      'echo',
+      'done',
+    ]);
+    expect(tokenizeShellWords("rg 'UserService; echo done'")).toEqual([
+      'rg',
+      'UserService; echo done',
+    ]);
   });
 });
 

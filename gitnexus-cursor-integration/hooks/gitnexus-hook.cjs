@@ -141,6 +141,17 @@ function tokenizeShellWords(command) {
       if (hasToken) tokens.push(current);
       current = '';
       hasToken = false;
+    } else if (char === ';' || char === '|' || char === '&') {
+      if (hasToken) tokens.push(current);
+      current = '';
+      hasToken = false;
+      const next = command[index + 1];
+      if ((char === '|' || char === '&') && next === char) {
+        tokens.push(char + char);
+        index += 1;
+      } else {
+        tokens.push(char);
+      }
     } else {
       current += char;
       hasToken = true;
@@ -199,6 +210,17 @@ function parseRgGrepPattern(cmd) {
     'run',
     'git',
   ]);
+  const wrapperFlagsWithValues = new Set([
+    '--package',
+    '-p',
+    '--call',
+    '--prefix',
+    '--shell',
+    '--filter',
+    '--workspace',
+    '--dir',
+    '--cwd',
+  ]);
   const basename = (token) =>
     token
       .split(/[\\/]/)
@@ -225,7 +247,21 @@ function parseRgGrepPattern(cmd) {
         continue;
       }
       const commandName = basename(token);
-      if (wrappers.has(commandName)) seenWrapper = true;
+      if (wrappers.has(commandName)) {
+        seenWrapper = true;
+        previousToken = token;
+        continue;
+      }
+      if (seenWrapper && token.startsWith('-')) {
+        const flagName = token.split('=', 1)[0];
+        if (!token.includes('=') && wrapperFlagsWithValues.has(flagName)) skipNext = true;
+        previousToken = token;
+        continue;
+      }
+      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        previousToken = token;
+        continue;
+      }
       const atCommandPosition =
         previousToken === undefined ||
         connectors.has(previousToken) ||
@@ -234,6 +270,8 @@ function parseRgGrepPattern(cmd) {
       if (atCommandPosition && (commandName === 'rg' || commandName === 'grep')) {
         foundCmd = true;
         searchCommand = commandName;
+      } else if (seenWrapper) {
+        seenWrapper = false;
       }
       previousToken = token;
       continue;
