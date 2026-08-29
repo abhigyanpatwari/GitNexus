@@ -482,6 +482,19 @@ repos:
         expect(r.error).toMatch(/registry alias/i);
         expect(r.error).not.toContain('demo/web');
       }
+      const mixedCase = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'Demo-API',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in mixedCase).toBe(true);
+      if ('error' in mixedCase) {
+        expect(mixedCase.error).toContain('demo/api');
+      }
     } finally {
       vi.unstubAllEnvs();
       fs.rmSync(tmpDir, { recursive: true, force: true });

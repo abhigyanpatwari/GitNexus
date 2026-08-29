@@ -149,6 +149,40 @@ describe('syncGroup registry name identity', () => {
     expect(result.unreadableRepos).toEqual([]);
   });
 
+  it('does not treat a filesystem path yaml value as a registry hit', async () => {
+    const known = row(tmpHome.dbPath, 'backend-repo', 'backend');
+    await fs.writeFile(registryPath, JSON.stringify([known]));
+
+    const result = await syncGroup(makeConfig({ 'app/backend': known.path }), { skipWrite: true });
+
+    expect(result.missingRepos).toEqual(['app/backend']);
+    expect(result.repoSnapshots['app/backend']).toBeUndefined();
+  });
+
+  it('injected resolveRepoHandle plus workspace_deps does not throw on duplicate names', async () => {
+    const a = row(tmpHome.dbPath, 'demo-api', 'clone-a');
+    const b = row(tmpHome.dbPath, 'demo-api', 'clone-b');
+    await fs.writeFile(registryPath, JSON.stringify([a, b]));
+
+    const result = await syncGroup(
+      makeConfig(
+        { 'demo/api': 'demo-api' },
+        { detect: { http: false, graphql: false, grpc: false, thrift: false, topics: false, includes: false, workspace_deps: true } },
+      ),
+      {
+        skipWrite: true,
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: 'injected',
+          path: groupPath,
+          repoPath: a.path,
+          storagePath: a.storagePath,
+        }),
+      },
+    );
+
+    expect(result.missingRepos).toEqual([]);
+  });
+
   it('MCP groupSync returns { error } for an ambiguous registry name', async () => {
     const a = row(tmpHome.dbPath, 'demo-api', 'clone-a');
     const b = row(tmpHome.dbPath, 'demo-api', 'clone-b');

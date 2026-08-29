@@ -291,7 +291,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // Group-path → pool identity for repos that successfully initialized. Drives
   // windowed manifest resolution below (re-init + lease per window). Keyed by
   // group path because manifest links reference repos by group path.
-  const repoHandles = new Map<string, { poolId: string; lbugPath: string }>();
+  const repoHandles = new Map<string, { poolId: string; lbugPath: string; repoPath: string }>();
   // Every eviction lease this sync holds. Window loops release their own leases
   // (bounding residency); this set is the defensive outer-finally sweep —
   // release disposers are idempotent, so double-release is a safe no-op.
@@ -346,7 +346,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // resolution no longer reuses these executors — it re-inits + leases
           // each repo per window (see windowed resolution below, issue #2189).
           // Record the pool identity so windowed resolution can re-init.
-          repoHandles.set(groupPath, { poolId, lbugPath });
+          repoHandles.set(groupPath, { poolId, lbugPath, repoPath: handle.repoPath });
 
           const executor: CypherExecutor = (query, params) =>
             executeParameterized(poolId, query, params ?? {});
@@ -488,6 +488,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const repoPaths = new Map<string, string>();
       if (!registryEntries) registryEntries = await readRegistry();
       for (const [groupPath, regName] of Object.entries(config.repos)) {
+        const fromHandle = repoHandles.get(groupPath);
+        if (fromHandle) {
+          repoPaths.set(groupPath, fromHandle.repoPath);
+          continue;
+        }
         const e = findRegistryEntryByName(registryEntries, regName);
         if (e) repoPaths.set(groupPath, e.path);
       }

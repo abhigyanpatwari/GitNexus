@@ -245,7 +245,7 @@ async function resolveGroupRepo(
   const registryName = config.repos[repoPath];
   if (!registryName) {
     const matchingMemberPaths = Object.entries(config.repos)
-      .filter(([, alias]) => alias === repoPath)
+      .filter(([, alias]) => alias.toLowerCase() === repoPath.toLowerCase())
       .map(([memberPath]) => memberPath);
     if (matchingMemberPaths.length > 0) {
       return {
