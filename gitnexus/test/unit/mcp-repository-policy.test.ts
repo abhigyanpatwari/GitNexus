@@ -46,7 +46,7 @@ function createBackend(repos = REPOS) {
       repoPath: repo ?? repos[0]?.path,
       lastCommit: 'a'.repeat(40),
     })),
-    resolveRepoWithOptions: vi.fn().mockImplementation(async (repo?: string) => ({
+    selectToolRepository: vi.fn().mockImplementation(async (repo?: string) => ({
       name: repos.find((entry) => entry.path === repo)?.name ?? repo ?? repos[0]?.name,
       repoPath: repo ?? repos[0]?.path,
       lastCommit: 'a'.repeat(40),
@@ -143,6 +143,24 @@ describe('MCP repository policy', () => {
     expect(backend.callTool).not.toHaveBeenCalled();
   });
 
+  it('keeps restricted schemas explicit when a multi-repo allowlist listing shrinks', async () => {
+    const backend = createBackend();
+    const policy = await createMcpRepositoryPolicy(backend, {
+      GITNEXUS_MCP_ALLOWED_REPOS: 'Alpha,Beta',
+    });
+    const alpha = REPOS[0];
+    if (!alpha) throw new Error('Alpha fixture is required');
+    vi.mocked(backend.listRepos).mockResolvedValue([{ ...alpha }]);
+
+    await expect(policy.toolSchemaRepoRequirements(backend)).resolves.toEqual({
+      readOnlyRequiresRepo: true,
+      mutatingRequiresRepo: true,
+    });
+    await expect(
+      policy.scopeBackend(backend).callTool('query', { search_query: 'auth' }),
+    ).rejects.toThrow(/explicit repo.*multiple repositories are allowed/i);
+  });
+
   it('fails startup when the default is outside the allowlist after canonical resolution', async () => {
     const backend = createBackend();
     await expect(
@@ -204,7 +222,7 @@ describe('MCP repository policy', () => {
     const scoped = policy.scopeBackend(backend);
 
     await expect(scoped.resolveRepo('Beta')).rejects.toThrow(/not available/i);
-    await expect(scoped.resolveRepoWithOptions('Beta')).rejects.toThrow(/not available/i);
+    await expect(scoped.selectToolRepository('Beta')).rejects.toThrow(/not available/i);
     await expect(scoped.readGroupStatusResource('portfolio')).rejects.toThrow(
       /group.*unavailable/i,
     );

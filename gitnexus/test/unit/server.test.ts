@@ -34,7 +34,7 @@ function createMockBackend(overrides: Record<string, any> = {}): any {
     resolveRepo: vi
       .fn()
       .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
-    resolveRepoWithOptions: vi
+    selectToolRepository: vi
       .fn()
       .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
     getContext: vi.fn().mockReturnValue(null),
@@ -114,7 +114,7 @@ describe('createMCPServer', () => {
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },
       ]),
-      resolveRepoWithOptions: vi.fn().mockRejectedValue(new Error('Multiple repositories indexed')),
+      selectToolRepository: vi.fn().mockRejectedValue(new Error('Multiple repositories indexed')),
     });
     const server = createMCPServer(backend);
     const client = new Client({ name: 'multi-repo-client', version: '0.0.0' });
@@ -143,7 +143,7 @@ describe('createMCPServer', () => {
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },
       ]),
-      resolveRepoWithOptions: vi
+      selectToolRepository: vi
         .fn()
         .mockResolvedValue({ name: 'alpha', repoPath: '/tmp/alpha', lastCommit: 'abc' }),
     });
@@ -163,8 +163,8 @@ describe('createMCPServer', () => {
       expect(response.isError).not.toBe(true);
       expect(backend.callTool).toHaveBeenCalledWith('context', { name: 'Example' });
       expect(backend.listRepos).toHaveBeenCalledTimes(1);
-      expect(backend.resolveRepoWithOptions).toHaveBeenCalledTimes(1);
-      expect(backend.resolveRepoWithOptions).toHaveBeenCalledWith(undefined, undefined, {
+      expect(backend.selectToolRepository).toHaveBeenCalledTimes(1);
+      expect(backend.selectToolRepository).toHaveBeenCalledWith(undefined, undefined, {
         allowCwdDefault: true,
         refreshRegistry: false,
       });

@@ -187,6 +187,17 @@ export class McpRepositoryPolicy {
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
     }
 
+    // Runtime selection is based on the configured allowlist, not on which
+    // entries happen to remain visible in a later registry refresh. Keep the
+    // advertised schema aligned with repoForArgs() when that listing shrinks.
+    if (this.restricted) {
+      const requiresRepo = this.allowed.length > 1;
+      return {
+        readOnlyRequiresRepo: requiresRepo,
+        mutatingRequiresRepo: requiresRepo,
+      };
+    }
+
     // One fresh listing supplies both schema decisions. Besides keeping the
     // advertised contract internally consistent, this avoids doing two full
     // per-repo staleness fan-outs for every tools/list request.
@@ -194,15 +205,11 @@ export class McpRepositoryPolicy {
     if (visibleRepos.length <= 1) {
       return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
     }
-    if (this.restricted) {
-      return { readOnlyRequiresRepo: true, mutatingRequiresRepo: true };
-    }
-
     try {
       // listAllowedRepos() refreshed this backend immediately above. Resolve
       // against that exact cache snapshot instead of racing another registry
       // read; only read-only schemas may advertise the cwd-derived default.
-      await backend.resolveRepoWithOptions(undefined, undefined, {
+      await backend.selectToolRepository(undefined, undefined, {
         allowCwdDefault: true,
         refreshRegistry: false,
       });
@@ -269,15 +276,15 @@ export class McpRepositoryPolicy {
     return backend.resolveRepo(selected?.path, branch);
   }
 
-  private async resolveRepoWithOptions(
+  private async selectToolRepository(
     backend: LocalBackend,
     repo?: string,
     branch?: string,
-    options?: Parameters<LocalBackend['resolveRepoWithOptions']>[2],
-  ): Promise<Awaited<ReturnType<LocalBackend['resolveRepoWithOptions']>>> {
-    if (!this.configured) return backend.resolveRepoWithOptions(repo, branch, options);
+    options?: Parameters<LocalBackend['selectToolRepository']>[2],
+  ): Promise<Awaited<ReturnType<LocalBackend['selectToolRepository']>>> {
+    if (!this.configured) return backend.selectToolRepository(repo, branch, options);
     if (!this.restricted) {
-      return backend.resolveRepoWithOptions(repo ?? this.defaultRepo?.path, branch, options);
+      return backend.selectToolRepository(repo ?? this.defaultRepo?.path, branch, options);
     }
     const selected = this.repoForArgs(repo === undefined ? undefined : { repo });
     // Restricted policies never allow cwd to select outside the configured
@@ -351,12 +358,12 @@ export class McpRepositoryPolicy {
         if (property === 'resolveRepo') {
           return (repo?: string, branch?: string) => policy.resolveRepo(target, repo, branch);
         }
-        if (property === 'resolveRepoWithOptions') {
+        if (property === 'selectToolRepository') {
           return (
             repo?: string,
             branch?: string,
-            options?: Parameters<LocalBackend['resolveRepoWithOptions']>[2],
-          ) => policy.resolveRepoWithOptions(target, repo, branch, options);
+            options?: Parameters<LocalBackend['selectToolRepository']>[2],
+          ) => policy.selectToolRepository(target, repo, branch, options);
         }
         if (property === 'getContext' && policy.restricted) {
           return (repoId?: string) => {

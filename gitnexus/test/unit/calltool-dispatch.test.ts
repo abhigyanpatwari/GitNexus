@@ -420,7 +420,7 @@ describe('LocalBackend.callTool', () => {
     ['impact', { name: 'validate', symbol: 'login', direction: 'upstream' }],
     ['context', { name: 'validate', file_path: 'src/auth.ts', file: 'src/login.ts' }],
   ])('rejects conflicting %s aliases before repository resolution', async (method, params) => {
-    const resolveSpy = vi.spyOn(backend, 'resolveRepoWithOptions');
+    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
 
     const result = await backend.callTool(method, params);
 
@@ -434,7 +434,7 @@ describe('LocalBackend.callTool', () => {
     ['context', { name: 'validate', file: '   ' }],
     ['context', { name: 'validate', file: null }],
   ])('rejects invalid %s aliases before repository resolution', async (method, params) => {
-    const resolveSpy = vi.spyOn(backend, 'resolveRepoWithOptions');
+    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
 
     const result = await backend.callTool(method, params);
 
@@ -443,7 +443,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('rejects a missing impact target before repository resolution', async () => {
-    const resolveSpy = vi.spyOn(backend, 'resolveRepoWithOptions');
+    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
 
     const result = await backend.callTool('impact', { direction: 'upstream' });
 
@@ -3419,7 +3419,7 @@ describe('LocalBackend.resolveRepo', () => {
 
     try {
       await backend.init();
-      const resolved = await backend.resolveRepoWithOptions(undefined, undefined, {
+      const resolved = await backend.selectToolRepository(undefined, undefined, {
         allowCwdDefault: true,
       });
       expect(resolved.repoPath).toBe(nestedDir);
@@ -3476,7 +3476,7 @@ describe('LocalBackend.resolveRepo', () => {
 
     try {
       await backend.init();
-      const resolved = await backend.resolveRepoWithOptions(undefined, undefined, {
+      const resolved = await backend.selectToolRepository(undefined, undefined, {
         allowCwdDefault: true,
       });
       expect(resolved.repoPath).toBe(nestedDir);
@@ -3703,7 +3703,7 @@ describe('LocalBackend.resolveRepo', () => {
     try {
       await backend.init();
       await expect(
-        backend.resolveRepoWithOptions(undefined, undefined, { allowCwdDefault: true }),
+        backend.selectToolRepository(undefined, undefined, { allowCwdDefault: true }),
       ).rejects.toThrow('Multiple repositories indexed');
     } finally {
       cwdSpy.mockRestore();
@@ -5021,7 +5021,7 @@ describe('LocalBackend tool-staleness cache keying (#2655 review)', () => {
       lbugPath: `/r/.gitnexus/${path.join('branches', 'x', 'lbug')}`,
       lastCommit: 'BRANCHSHA',
     };
-    vi.spyOn(backend, 'resolveRepoWithOptions')
+    vi.spyOn(backend, 'selectToolRepository')
       .mockResolvedValueOnce(flat as any)
       .mockResolvedValueOnce(branch as any);
     // The tool itself returns a plain (staleness-carryable) object.
@@ -5076,7 +5076,7 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
   };
 
   const stubResolve = () =>
-    vi.spyOn(backend, 'resolveRepoWithOptions').mockResolvedValue(handle as any);
+    vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(handle as any);
 
   const stubStale = async () => {
     const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');

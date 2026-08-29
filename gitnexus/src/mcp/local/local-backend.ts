@@ -1721,7 +1721,7 @@ export class LocalBackend {
    * explicit miss, so long-running servers see newly indexed repositories.
    */
   async resolveRepo(repoParam?: string, branch?: string): Promise<RepoHandle> {
-    return this.resolveRepoWithOptions(repoParam, branch);
+    return this.selectToolRepository(repoParam, branch);
   }
 
   /**
@@ -1736,7 +1736,7 @@ export class LocalBackend {
    * implicit target, including a cached singleton. A caller that just obtained
    * a fresh registry snapshot may disable that refresh explicitly.
    */
-  async resolveRepoWithOptions(
+  async selectToolRepository(
     repoParam?: string,
     branch?: string,
     options: { allowCwdDefault?: boolean; refreshRegistry?: boolean } = {},
@@ -2473,7 +2473,7 @@ export class LocalBackend {
 
     // Resolve repo from optional param (re-reads registry on miss). An optional
     // `branch` param scopes the resolved handle to that branch's index (#2106).
-    const repo = await this.resolveRepoWithOptions(
+    const repo = await this.selectToolRepository(
       p.repo as string | undefined,
       p.branch as string | undefined,
       { allowCwdDefault: method !== 'rename' },
