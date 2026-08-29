@@ -46,6 +46,17 @@ npx gitnexus status
 npx gitnexus list
 ```
 
+**Scope extraction incomplete:** `npx gitnexus status` reports
+`incompleteReasons: ["scope-extraction-failed"]` when one or more files still
+lack scope captures after the worker and fallback passes. `impact` and `context`
+then report a lower bound with `causes.scopeExtractionFiles` set to the affected
+file count. Re-run `npx gitnexus analyze --force`; if the reason remains, inspect
+the scope-extraction warnings for the unsupported or malformed source file.
+Every pre-existing index remains unverified until it is analyzed once by a
+version that writes the completeness receipt. An older index or unreadable completeness record reports
+`incompleteReasons: ["scope-extraction-unverified"]`; re-analyze it before treating
+empty impact results as exact.
+
 ---
 
 ## Embeddings
