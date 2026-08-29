@@ -69,6 +69,7 @@
     "graphology": "^0.26.0",
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
+    "graphql": "^16.14.2",
     "ignore": "^7.0.5",
     "js-yaml": "^5.0.0",
     "jsonc-parser": "^3.3.1",

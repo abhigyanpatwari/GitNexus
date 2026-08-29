@@ -1,4 +1,13 @@
-export type ContractType = 'http' | 'grpc' | 'thrift' | 'topic' | 'lib' | 'custom' | 'include';
+export type ContractType =
+  | 'http'
+  | 'graphql'
+  | 'grpc'
+  | 'thrift'
+  | 'topic'
+  | 'lib'
+  | 'custom'
+  | 'include';
+export type ManifestContractType = Exclude<ContractType, 'graphql'>;
 export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
@@ -16,13 +25,14 @@ export interface GroupConfig {
 export interface GroupManifestLink {
   from: string;
   to: string;
-  type: ContractType;
+  type: ManifestContractType;
   contract: string;
   role: ContractRole;
 }
 
 export interface DetectConfig {
   http: boolean;
+  graphql?: boolean;
   grpc: boolean;
   thrift: boolean;
   topics: boolean;
@@ -32,11 +42,12 @@ export interface DetectConfig {
 
 export interface MatchingConfig {
   /**
-   * HTTP paths to exclude from cross-link matching. Contracts at these paths
+   * HTTP paths or GraphQL root fields to exclude from cross-link matching. Contracts at these paths
    * are still extracted and visible in the registry, but they don't produce
    * cross-repo links. Useful for health-check endpoints (`/ping`, `/health`)
    * that every service exposes and would otherwise create N×M false links.
-   * Trailing slashes are normalized before comparison.
+   * Trailing slashes are normalized before comparison. GraphQL fields may be
+   * written as `health` or `/health`.
    * @default []
    */
   exclude_links_paths?: string[];

@@ -1,11 +1,14 @@
 import { checkpointKind } from './embedding-checkpoint.js';
 import type { RepoMeta } from '../storage/repo-manager.js';
+import { scopeExtractionFailureTotal } from './ingestion/scope-resolution/scope-extraction-failures.js';
 
 export const INDEX_INCOMPLETE_REASONS = [
   'incremental-in-progress',
   'embedding-checkpoint-pending',
   'embedding-count-unverified',
   'graph-write-collapsed',
+  'scope-extraction-unverified',
+  'scope-extraction-failed',
 ] as const;
 
 export type IndexIncompleteReason = (typeof INDEX_INCOMPLETE_REASONS)[number];
@@ -130,7 +133,14 @@ export function detectGraphWriteCollapse(
 /** Stable machine-readable reasons an index cannot be certified complete. */
 export function getIndexIncompleteReasons(
   meta:
-    | Pick<RepoMeta, 'incrementalInProgress' | 'embeddingCheckpoint' | 'graphWriteCollapsed'>
+    | Pick<
+        RepoMeta,
+        | 'incrementalInProgress'
+        | 'embeddingCheckpoint'
+        | 'graphWriteCollapsed'
+        | 'scopeExtractionFailures'
+        | 'scopeExtractionReceipt'
+      >
     | null
     | undefined,
 ): IndexIncompleteReason[] {
@@ -142,6 +152,13 @@ export function getIndexIncompleteReasons(
   // answers from a graph missing most of its edges, which is indistinguishable
   // from a codebase that genuinely has no such relationships.
   if (meta?.graphWriteCollapsed) reasons.push('graph-write-collapsed');
+  if (meta?.scopeExtractionReceipt !== 1) {
+    reasons.push('scope-extraction-unverified');
+  } else {
+    const total = scopeExtractionFailureTotal(meta.scopeExtractionFailures);
+    if (total === undefined) reasons.push('scope-extraction-unverified');
+    else if (total > 0) reasons.push('scope-extraction-failed');
+  }
   if (meta?.embeddingCheckpoint) {
     // The three checkpoint kinds are not one operator-facing state. GUARDRAILS
     // and the runbook document `embedding-checkpoint-pending` as "N node(s)

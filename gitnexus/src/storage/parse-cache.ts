@@ -626,11 +626,11 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the re-check line below is for, and why it says AT MERGE rather than
 // when you pick the number.
 //
-// 77 is free at this merge: origin/main is 76, and the open PRs touching this
-// constant are #2840 (a stale 71) and #1616 (a stale 2). Scan with the contents
-// API at each PR head, not `gh pr diff` — that exits non-zero on an
-// inaccessible fork and prints nothing, so a grep over its output skips the PR
-// silently. #2840 was missed exactly that way this round.
+// 78 was claimed concurrently by #3060 while this branch was in review. Both
+// branches keep the same package version, so sharing 78 would replay
+// incompatible worker output without a textual merge conflict. This branch
+// therefore takes 79, the next free value above origin/main and every open PR
+// found by the contents-API scan at their exact head SHAs.
 //
 // WHY THIS IS STILL A HAND-PICKED NUMBER, when `SCHEMA_FINGERPRINT` next door
 // is a derived sha256 that cannot collide. The derivation exists and already
@@ -650,7 +650,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // `route-extractors/` and `workers/` module content — would close the missing-
 // bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 77;
+const SCHEMA_BUMP = 79;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
