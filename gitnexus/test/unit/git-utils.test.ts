@@ -965,6 +965,27 @@ describe('listWorkingTreeDirtyPaths', () => {
     }
   });
 
+  it('still reports nested lookalikes that are not GitNexus-managed', async () => {
+    const { isWorkingTreeDirty, listWorkingTreeDirtyPaths } =
+      await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    try {
+      fs.mkdirSync(path.join(repo, 'docs'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'docs', 'AGENTS.md'), 'project notes');
+      execFileSync(gitExecutable, ['add', '--', 'docs/AGENTS.md'], { cwd: repo, stdio: 'ignore' });
+      execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      fs.writeFileSync(path.join(repo, 'docs', 'AGENTS.md'), 'edited notes');
+
+      expect(isWorkingTreeDirty(repo)).toBe(true);
+      expect(listWorkingTreeDirtyPaths(repo)).toEqual(['docs/AGENTS.md']);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('returns null (not an empty list) outside a git repository', async () => {
     const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
     const dir = makeIsolatedTempDir('gn-nongit-paths-');
@@ -1037,6 +1058,35 @@ describe('listWorkingTreeDirtyPaths', () => {
         fs.writeFileSync(path.join(repo, 'hidden.ts'), 'after');
 
         expect(listWorkingTreeDirtyPaths(repo)).toContain('hidden.ts');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['--assume-unchanged', '--skip-worktree'])(
+    'omits GitNexus-managed paths hidden by git update-index %s',
+    async (flag) => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      try {
+        fs.writeFileSync(path.join(repo, 'README.md'), 'hi');
+        fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'before');
+        execFileSync(gitExecutable, ['add', '--', 'README.md', 'AGENTS.md'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', flag, '--', 'AGENTS.md'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'after');
+
+        expect(listWorkingTreeDirtyPaths(repo)).toEqual([]);
       } finally {
         fs.rmSync(repo, { recursive: true, force: true });
       }

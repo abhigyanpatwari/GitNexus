@@ -361,10 +361,10 @@ describe('isGitNexusManagedPath', () => {
     expect(isGitNexusManagedPath('docs/AGENTS.md')).toBe(false);
   });
 
-  it('emits both the bare and recursive pathspec for every managed path', () => {
-    expect(GITNEXUS_MANAGED_PATH_EXCLUDES).toContain(':(exclude)AGENTS.md');
-    expect(GITNEXUS_MANAGED_PATH_EXCLUDES).toContain(':(exclude).agents');
-    expect(GITNEXUS_MANAGED_PATH_EXCLUDES).toContain(':(exclude).agents/**');
+  it('emits root-anchored recursive pathspecs for every managed path', () => {
+    expect(GITNEXUS_MANAGED_PATH_EXCLUDES).toContain(':(exclude,glob)./AGENTS.md');
+    expect(GITNEXUS_MANAGED_PATH_EXCLUDES).toContain(':(exclude,glob)./.agents');
+    expect(GITNEXUS_MANAGED_PATH_EXCLUDES).toContain(':(exclude,glob)./.agents/**');
   });
 });
 

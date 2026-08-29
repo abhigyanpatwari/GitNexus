@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { logger } from '../core/logger.js';
 import { toZeroBasedLine } from '../core/ingestion/utils/line-base.js';
-import { GITNEXUS_MANAGED_PATH_EXCLUDES } from './gitnexus-managed-paths.js';
+import { GITNEXUS_MANAGED_PATH_EXCLUDES, isGitNexusManagedPath } from './gitnexus-managed-paths.js';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
@@ -109,7 +109,13 @@ export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => 
       ],
       { cwd: repoPath, ...gitPathListExec },
     );
-    return [...new Set([...parsePorcelainPaths(out), ...listHiddenIndexPaths(repoPath)])];
+    return [
+      ...new Set(
+        [...parsePorcelainPaths(out), ...listHiddenIndexPaths(repoPath)].filter(
+          (rel) => !isGitNexusManagedPath(rel),
+        ),
+      ),
+    ];
   } catch {
     return null;
   }

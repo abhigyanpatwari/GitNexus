@@ -30,11 +30,14 @@ export const GITNEXUS_MANAGED_PATHS = [
 
 /**
  * Git pathspecs excluding {@link GITNEXUS_MANAGED_PATHS} from a `git status`
- * run rooted at the repository. Both forms are emitted per entry: the bare
- * name for a file or the directory itself, and `/**` for its contents.
+ * run rooted at the repository. Patterns include `./` so they match only at
+ * the repo root: a slash-free `:(exclude)AGENTS.md` would also drop
+ * `docs/AGENTS.md`, which {@link isGitNexusManagedPath} does not treat as
+ * managed. Both forms are emitted per entry: the root path itself, and `/**`
+ * for directory contents.
  */
 export const GITNEXUS_MANAGED_PATH_EXCLUDES: readonly string[] = GITNEXUS_MANAGED_PATHS.flatMap(
-  (managed) => [`:(exclude)${managed}`, `:(exclude)${managed}/**`],
+  (managed) => [`:(exclude,glob)./${managed}`, `:(exclude,glob)./${managed}/**`],
 );
 
 /**
