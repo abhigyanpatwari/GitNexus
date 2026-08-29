@@ -842,6 +842,13 @@ describe('runFullAnalysis — incremental orchestration', () => {
           { onProgress: () => {} },
         );
         expect(incremental.alreadyUpToDate).toBeUndefined();
+        expect(incremental.incrementalStats).toMatchObject({
+          changedFiles: 1,
+          affectedDependents: 2,
+          deletedFiles: 0,
+          writeMode: 'incremental',
+        });
+        expect(incremental.incrementalStats?.reparsedFiles).toBe(7);
         expect(
           querySpy.mock.calls.some(
             ([query]) =>
