@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { promises as nodeFsPromises } from 'node:fs';
 import { mkdtemp, rm, readdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
@@ -632,8 +633,19 @@ describe('parsedfile-store receiverChain sanitation', () => {
         'chunk-1.json',
         'chunk-1.json.paths',
       ]);
-      const loaded = await loadParsedFilesForPaths(dir, new Set(['b.c']));
-      expect([...loaded.keys()]).toEqual(['b.c']);
+      const readSpy = vi.spyOn(nodeFsPromises, 'readFile');
+      try {
+        const loaded = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+        expect([...loaded.keys()]).toEqual(['b.c']);
+        const jsonReads = readSpy.mock.calls.filter(([p]) => {
+          const n = String(p);
+          return n.endsWith('.json') && !n.endsWith('.json.paths');
+        });
+        expect(jsonReads).toHaveLength(1);
+        expect(String(jsonReads[0][0])).toMatch(/chunk-1\.json$/);
+      } finally {
+        readSpy.mockRestore();
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -663,6 +675,20 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await writeFile(path.join(storeDir, 'ok.json.paths'), 'unrelated.c', 'utf-8');
       const loaded = await loadParsedFilesForPaths(dir, new Set(['wanted.c']));
       expect(loaded.has('wanted.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits a sidecar when a filePath contains a newline and still loads JSON', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-nl-'));
+    const weird = 'weird\nname.c';
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
+      const storeDir = getParsedFileStoreDir(dir);
+      expect(await readdir(storeDir)).toEqual(['ok.json']);
+      const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
+      expect(loaded.has(weird)).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

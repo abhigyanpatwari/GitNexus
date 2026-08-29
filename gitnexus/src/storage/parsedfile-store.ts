@@ -197,10 +197,15 @@ export const parsedFileLoadGc = {
 const encodeShardPathsSidecar = (parsedFiles: readonly ParsedFile[]): string =>
   parsedFiles.map((pf) => pf.filePath).join('\n') + (parsedFiles.length > 0 ? '\n' : '');
 
+/** NDJSON sidecars cannot encode paths that themselves contain CR/LF. */
+const shardPathsSidecarSafe = (parsedFiles: readonly ParsedFile[]): boolean =>
+  parsedFiles.every((pf) => !/[\r\n]/.test(pf.filePath));
+
 const writeShardPathsSidecar = async (
   jsonPath: string,
   parsedFiles: readonly ParsedFile[],
 ): Promise<void> => {
+  if (!shardPathsSidecarSafe(parsedFiles)) return;
   await fs.writeFile(
     shardPathsSidecarPath(jsonPath),
     encodeShardPathsSidecar(parsedFiles),
@@ -209,6 +214,7 @@ const writeShardPathsSidecar = async (
 };
 
 const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly ParsedFile[]): void => {
+  if (!shardPathsSidecarSafe(parsedFiles)) return;
   writeFileSync(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
 };
 
