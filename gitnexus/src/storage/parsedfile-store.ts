@@ -197,8 +197,15 @@ export const parsedFileLoadGc = {
 const encodeShardPathsSidecar = (parsedFiles: readonly ParsedFile[]): string =>
   parsedFiles.map((pf) => pf.filePath).join('\n') + (parsedFiles.length > 0 ? '\n' : '');
 
-const writeShardPathsSidecar = async (jsonPath: string, parsedFiles: readonly ParsedFile[]): Promise<void> => {
-  await fs.writeFile(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
+const writeShardPathsSidecar = async (
+  jsonPath: string,
+  parsedFiles: readonly ParsedFile[],
+): Promise<void> => {
+  await fs.writeFile(
+    shardPathsSidecarPath(jsonPath),
+    encodeShardPathsSidecar(parsedFiles),
+    'utf-8',
+  );
 };
 
 const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly ParsedFile[]): void => {

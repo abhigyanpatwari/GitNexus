@@ -626,7 +626,12 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('b.c')]);
       const storeDir = getParsedFileStoreDir(dir);
       const names = await readdir(storeDir);
-      expect(names.sort()).toEqual(['chunk-0.json', 'chunk-0.json.paths', 'chunk-1.json', 'chunk-1.json.paths']);
+      expect(names.sort()).toEqual([
+        'chunk-0.json',
+        'chunk-0.json.paths',
+        'chunk-1.json',
+        'chunk-1.json.paths',
+      ]);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['b.c']));
       expect([...loaded.keys()]).toEqual(['b.c']);
     } finally {
@@ -672,10 +677,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       for (let i = 0; i < 16; i++) {
         await persistParsedFileChunk(dir, `s${i}`, [makeParsedFile(`f${i}.c`)]);
       }
-      await loadParsedFilesForPaths(
-        dir,
-        new Set(Array.from({ length: 16 }, (_, i) => `f${i}.c`)),
-      );
+      await loadParsedFilesForPaths(dir, new Set(Array.from({ length: 16 }, (_, i) => `f${i}.c`)));
       expect(gc).not.toHaveBeenCalled();
     } finally {
       parsedFileLoadGc.run = prev;
