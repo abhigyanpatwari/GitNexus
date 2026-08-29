@@ -202,7 +202,7 @@ export class McpRepositoryPolicy {
       // listAllowedRepos() refreshed this backend immediately above. Resolve
       // against that exact cache snapshot instead of racing another registry
       // read; only read-only schemas may advertise the cwd-derived default.
-      await backend.resolveRepo(undefined, undefined, {
+      await backend.resolveRepoWithOptions(undefined, undefined, {
         allowCwdDefault: true,
         refreshRegistry: false,
       });
@@ -266,6 +266,22 @@ export class McpRepositoryPolicy {
     if (!this.configured) return backend.resolveRepo(repo, branch);
     if (!this.restricted) return backend.resolveRepo(repo ?? this.defaultRepo?.path, branch);
     const selected = this.repoForArgs(repo === undefined ? undefined : { repo });
+    return backend.resolveRepo(selected?.path, branch);
+  }
+
+  private async resolveRepoWithOptions(
+    backend: LocalBackend,
+    repo?: string,
+    branch?: string,
+    options?: Parameters<LocalBackend['resolveRepoWithOptions']>[2],
+  ): Promise<Awaited<ReturnType<LocalBackend['resolveRepoWithOptions']>>> {
+    if (!this.configured) return backend.resolveRepoWithOptions(repo, branch, options);
+    if (!this.restricted) {
+      return backend.resolveRepoWithOptions(repo ?? this.defaultRepo?.path, branch, options);
+    }
+    const selected = this.repoForArgs(repo === undefined ? undefined : { repo });
+    // Restricted policies never allow cwd to select outside the configured
+    // set; once policy supplies an explicit path, the public resolver is enough.
     return backend.resolveRepo(selected?.path, branch);
   }
 
@@ -334,6 +350,13 @@ export class McpRepositoryPolicy {
         if (property === 'listRepos') return () => policy.listAllowedRepos(target);
         if (property === 'resolveRepo') {
           return (repo?: string, branch?: string) => policy.resolveRepo(target, repo, branch);
+        }
+        if (property === 'resolveRepoWithOptions') {
+          return (
+            repo?: string,
+            branch?: string,
+            options?: Parameters<LocalBackend['resolveRepoWithOptions']>[2],
+          ) => policy.resolveRepoWithOptions(target, repo, branch, options);
         }
         if (property === 'getContext' && policy.restricted) {
           return (repoId?: string) => {

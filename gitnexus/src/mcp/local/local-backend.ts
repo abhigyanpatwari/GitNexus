@@ -1715,6 +1715,19 @@ export class LocalBackend {
    * Resolve which repo to use.
    * - If repoParam is given, match by name or path
    * - If only 1 repo, use it
+   * - If 0 or multiple without param, throw with helpful message
+   *
+   * Re-reads the registry before an omitted implicit target or after an
+   * explicit miss, so long-running servers see newly indexed repositories.
+   */
+  async resolveRepo(repoParam?: string, branch?: string): Promise<RepoHandle> {
+    return this.resolveRepoWithOptions(repoParam, branch);
+  }
+
+  /**
+   * Internal resolver variant for CLI/MCP tool routing and discovery.
+   * - If repoParam is given, match by name or path
+   * - If only 1 repo, use it
    * - If multiple repos exist and repoParam is omitted, callers may opt in to
    *   the registered repo containing process.cwd()
    * - If 0 repos exist, or cwd cannot disambiguate multiple repos, throw
@@ -1723,7 +1736,7 @@ export class LocalBackend {
    * implicit target, including a cached singleton. A caller that just obtained
    * a fresh registry snapshot may disable that refresh explicitly.
    */
-  async resolveRepo(
+  async resolveRepoWithOptions(
     repoParam?: string,
     branch?: string,
     options: { allowCwdDefault?: boolean; refreshRegistry?: boolean } = {},
@@ -2460,7 +2473,7 @@ export class LocalBackend {
 
     // Resolve repo from optional param (re-reads registry on miss). An optional
     // `branch` param scopes the resolved handle to that branch's index (#2106).
-    const repo = await this.resolveRepo(
+    const repo = await this.resolveRepoWithOptions(
       p.repo as string | undefined,
       p.branch as string | undefined,
       { allowCwdDefault: method !== 'rename' },

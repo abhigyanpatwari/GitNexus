@@ -46,6 +46,11 @@ function createBackend(repos = REPOS) {
       repoPath: repo ?? repos[0]?.path,
       lastCommit: 'a'.repeat(40),
     })),
+    resolveRepoWithOptions: vi.fn().mockImplementation(async (repo?: string) => ({
+      name: repos.find((entry) => entry.path === repo)?.name ?? repo ?? repos[0]?.name,
+      repoPath: repo ?? repos[0]?.path,
+      lastCommit: 'a'.repeat(40),
+    })),
     getContext: vi.fn().mockReturnValue(null),
     queryClusters: vi.fn().mockResolvedValue({ clusters: [] }),
     queryProcesses: vi.fn().mockResolvedValue({ processes: [] }),
@@ -199,6 +204,7 @@ describe('MCP repository policy', () => {
     const scoped = policy.scopeBackend(backend);
 
     await expect(scoped.resolveRepo('Beta')).rejects.toThrow(/not available/i);
+    await expect(scoped.resolveRepoWithOptions('Beta')).rejects.toThrow(/not available/i);
     await expect(scoped.readGroupStatusResource('portfolio')).rejects.toThrow(
       /group.*unavailable/i,
     );

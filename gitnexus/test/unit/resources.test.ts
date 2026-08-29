@@ -396,7 +396,7 @@ describe('readResource', () => {
     });
     const result = await readResource('gitnexus://repos', backend);
     expect(result).toContain('Multiple repos indexed');
-    expect(result).toContain('process cwd');
+    expect(result).toContain('process.cwd()');
     expect(result).toContain('unindexed nested Git checkout');
     expect(result).toContain('mutating tools without an MCP default');
     expect(result).toContain('pass repo explicitly');

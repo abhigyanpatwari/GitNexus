@@ -34,6 +34,9 @@ function createMockBackend(overrides: Record<string, any> = {}): any {
     resolveRepo: vi
       .fn()
       .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
+    resolveRepoWithOptions: vi
+      .fn()
+      .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
     getContext: vi.fn().mockReturnValue(null),
     queryClusters: vi.fn().mockResolvedValue({ clusters: [] }),
     queryProcesses: vi.fn().mockResolvedValue({ processes: [] }),
@@ -111,7 +114,7 @@ describe('createMCPServer', () => {
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },
       ]),
-      resolveRepo: vi.fn().mockRejectedValue(new Error('Multiple repositories indexed')),
+      resolveRepoWithOptions: vi.fn().mockRejectedValue(new Error('Multiple repositories indexed')),
     });
     const server = createMCPServer(backend);
     const client = new Client({ name: 'multi-repo-client', version: '0.0.0' });
@@ -140,7 +143,7 @@ describe('createMCPServer', () => {
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },
       ]),
-      resolveRepo: vi
+      resolveRepoWithOptions: vi
         .fn()
         .mockResolvedValue({ name: 'alpha', repoPath: '/tmp/alpha', lastCommit: 'abc' }),
     });
@@ -160,8 +163,8 @@ describe('createMCPServer', () => {
       expect(response.isError).not.toBe(true);
       expect(backend.callTool).toHaveBeenCalledWith('context', { name: 'Example' });
       expect(backend.listRepos).toHaveBeenCalledTimes(1);
-      expect(backend.resolveRepo).toHaveBeenCalledTimes(1);
-      expect(backend.resolveRepo).toHaveBeenCalledWith(undefined, undefined, {
+      expect(backend.resolveRepoWithOptions).toHaveBeenCalledTimes(1);
+      expect(backend.resolveRepoWithOptions).toHaveBeenCalledWith(undefined, undefined, {
         allowCwdDefault: true,
         refreshRegistry: false,
       });
