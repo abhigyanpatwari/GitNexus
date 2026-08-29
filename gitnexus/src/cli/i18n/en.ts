@@ -39,6 +39,11 @@ export const en = {
   'status.indexContentMore': '  ...and {{count}} more {{label}}',
   'status.indexContentUnmeasurable':
     'Index content: not comparable ({{reason}}); fell back to the working-tree check',
+  'status.indexContentScanFailed':
+    'Index content: coverage scan failed; treating the index as stale',
+  'status.driftChanged': 'changed',
+  'status.driftAdded': 'added',
+  'status.driftDeleted': 'deleted',
   'status.upToDate': '✅ up-to-date',
   'status.stale': '⚠️ stale (re-run gitnexus analyze)',
   'clean.deleteAll': 'This will delete GitNexus indexes for {{count}} repo(s):',

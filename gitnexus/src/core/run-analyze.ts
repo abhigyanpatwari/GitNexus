@@ -153,8 +153,11 @@ import {
   hasGitDir,
   getInferredRepoName,
   isWorkingTreeDirty,
+  listWorkingTreeDirtyPaths,
   resolveRepoIdentityRoot,
 } from '../storage/git.js';
+import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
+import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
@@ -3642,6 +3645,16 @@ async function runFullAnalysisInner(
       // absence has exactly one meaning — an index older than the field.
       embeddingDims: EMBEDDING_DIMS,
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      indexCoverage: hasGitDir(repoPath)
+        ? {
+            maxFileSizeBytes: getMaxFileSizeBytes(),
+            dirtyPaths: (
+              listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord)
+            ).filter(
+              (rel) => newFileHashesRecord[rel] !== undefined && !isGitNexusManagedPath(rel),
+            ),
+          }
+        : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted

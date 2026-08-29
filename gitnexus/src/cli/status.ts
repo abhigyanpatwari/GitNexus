@@ -48,6 +48,11 @@ const describeContentDrift = (drift: IndexContentDrift | undefined) => {
     changed: drift.changed.slice(0, DRIFT_SAMPLE_LIMIT),
     added: drift.added.slice(0, DRIFT_SAMPLE_LIMIT),
     deleted: drift.deleted.slice(0, DRIFT_SAMPLE_LIMIT),
+    truncated: {
+      changed: drift.changed.length > DRIFT_SAMPLE_LIMIT,
+      added: drift.added.length > DRIFT_SAMPLE_LIMIT,
+      deleted: drift.deleted.length > DRIFT_SAMPLE_LIMIT,
+    },
   };
 };
 
@@ -61,9 +66,9 @@ const printDriftDetail = (drift: Extract<IndexContentDrift, { kind: 'drifted' }>
     }),
   );
   const labelled: [string, readonly string[]][] = [
-    ['changed', drift.changed],
-    ['added', drift.added],
-    ['deleted', drift.deleted],
+    [t('status.driftChanged'), drift.changed],
+    [t('status.driftAdded'), drift.added],
+    [t('status.driftDeleted'), drift.deleted],
   ];
   for (const [label, paths] of labelled) {
     for (const p of paths.slice(0, DRIFT_SAMPLE_LIMIT)) console.log(`  ${label}: ${p}`);
@@ -148,7 +153,11 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   // for non-git folders (currentCommit === '') to match analyze.
   const contentDrift: IndexContentDrift | undefined =
     metadataIsCurrent && currentCommit !== ''
-      ? await detectIndexContentDrift(repo.repoPath, activeMeta.fileHashes)
+      ? await detectIndexContentDrift(
+          repo.repoPath,
+          activeMeta.fileHashes,
+          activeMeta.indexCoverage,
+        )
       : undefined;
 
   // The repo-wide dirty flag survives only as the fallback for metadata written
@@ -158,7 +167,9 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   const contentIsCurrent =
     contentDrift === undefined ||
     contentDrift.kind === 'current' ||
-    (contentDrift.kind === 'unmeasurable' && !isWorkingTreeDirty(repo.repoPath));
+    (contentDrift.kind === 'unmeasurable' &&
+      contentDrift.reason === 'no-file-hashes' &&
+      !isWorkingTreeDirty(repo.repoPath));
 
   const isUpToDate = metadataIsCurrent && contentIsCurrent;
   if (options.json) {
@@ -210,10 +221,12 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     console.log(t('status.indexContentCurrent', { count: contentDrift.coveredFileCount }));
   } else if (contentDrift?.kind === 'drifted') {
     printDriftDetail(contentDrift);
-  } else if (contentDrift?.kind === 'unmeasurable' && !isUpToDate) {
-    // Only when it changed the answer: on a legacy index the fallback is the
-    // sole reason for the verdict, and saying so is what makes it diagnosable.
-    console.log(t('status.indexContentUnmeasurable', { reason: contentDrift.reason }));
+  } else if (contentDrift?.kind === 'unmeasurable') {
+    if (contentDrift.reason === 'scan-failed') {
+      console.log(t('status.indexContentScanFailed'));
+    } else if (!isUpToDate) {
+      console.log(t('status.indexContentUnmeasurable', { reason: contentDrift.reason }));
+    }
   }
   console.log(`${t('status.status')}: ${isUpToDate ? t('status.upToDate') : t('status.stale')}`);
 };

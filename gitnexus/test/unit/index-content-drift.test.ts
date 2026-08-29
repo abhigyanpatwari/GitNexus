@@ -14,14 +14,27 @@ import { describe, it, expect, afterEach } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import { execFileSync } from 'child_process';
 
 import { detectIndexContentDrift } from '../../src/core/index-content-drift.js';
 import { walkRepositoryPaths } from '../../src/core/ingestion/filesystem-walker.js';
 import { computeFileHashes } from '../../src/storage/file-hash.js';
+import { listWorkingTreeDirtyPaths } from '../../src/storage/git.js';
 import {
   GITNEXUS_MANAGED_PATH_EXCLUDES,
   isGitNexusManagedPath,
 } from '../../src/storage/gitnexus-managed-paths.js';
+
+const gitExecutable = (() => {
+  if (process.platform !== 'win32') return 'git';
+  try {
+    return (
+      execFileSync('where.exe', ['git'], { encoding: 'utf8' }).split(/\r?\n/).find(Boolean) ?? 'git'
+    );
+  } catch {
+    return 'git';
+  }
+})();
 
 const isolatedTmpRoot = (() => {
   const root =
@@ -46,8 +59,11 @@ const makeRepo = (files: Record<string, string>): string => {
 };
 
 /** Reproduce what `analyze` records in `meta.fileHashes` for a repository. */
-const recordCoverage = async (repoPath: string): Promise<Record<string, string>> => {
-  const scanned = await walkRepositoryPaths(repoPath);
+const recordCoverage = async (
+  repoPath: string,
+  walkOptions?: Parameters<typeof walkRepositoryPaths>[2],
+): Promise<Record<string, string>> => {
+  const scanned = await walkRepositoryPaths(repoPath, undefined, walkOptions);
   const hashes = await computeFileHashes(
     repoPath,
     scanned.map((f) => f.path),
@@ -181,6 +197,152 @@ describe('detectIndexContentDrift', () => {
       reason: 'no-file-hashes',
     });
   });
+
+  it('is unmeasurable when the repository scan throws', async () => {
+    const drift = await detectIndexContentDrift('/no-such-gitnexus-drift-repo', {
+      'a.js': 'deadbeef',
+    });
+    expect(drift).toEqual({ kind: 'unmeasurable', reason: 'scan-failed' });
+  });
+
+  it('replays a recorded max-file-size so a later default cap cannot drop coverage', async () => {
+    // `.bin` is a hardcoded ignore; a large source file is what analyze would
+    // actually hash once `--max-file-size` / GITNEXUS_MAX_FILE_SIZE is raised.
+    const raisedCap = 1024 * 1024;
+    const repo = makeRepo({ 'a.js': 'export const a = 1;\n' });
+    fs.writeFileSync(path.join(repo, 'payload.js'), Buffer.alloc(700 * 1024, 1));
+    const recorded = await recordCoverage(repo, { maxFileSizeBytes: raisedCap, quiet: true });
+    expect(Object.keys(recorded)).toContain('payload.js');
+
+    const withPolicy = await detectIndexContentDrift(repo, recorded, {
+      maxFileSizeBytes: raisedCap,
+    });
+    expect(withPolicy).toMatchObject({ kind: 'current' });
+
+    const drifted = await detectIndexContentDrift(repo, recorded);
+    expect(drifted).toMatchObject({ kind: 'drifted', deleted: ['payload.js'] });
+  });
+
+  it('treats a covered file that can no longer be read as changed, not current', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) {
+      return;
+    }
+    const repo = makeRepo({ 'a.js': 'export const a = 1;\n' });
+    const recorded = await recordCoverage(repo);
+    const target = path.join(repo, 'a.js');
+    fs.chmodSync(target, 0);
+    try {
+      expect(await detectIndexContentDrift(repo, recorded)).toMatchObject({
+        kind: 'drifted',
+        changed: ['a.js'],
+      });
+    } finally {
+      fs.chmodSync(target, 0o644);
+    }
+  });
+
+  it('re-hashes a path that was dirty at index time even after Git is clean', async () => {
+    const repo = makeRepo({ 'a.js': 'export const a = 1;\n' });
+    execFileSync(gitExecutable, ['init'], { cwd: repo });
+    execFileSync(gitExecutable, ['add', '.'], { cwd: repo });
+    execFileSync(
+      gitExecutable,
+      ['-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-m', 'i'],
+      { cwd: repo },
+    );
+    fs.writeFileSync(path.join(repo, 'a.js'), 'export const a = 2;\n');
+    const recorded = await recordCoverage(repo);
+    execFileSync(gitExecutable, ['checkout', '--', 'a.js'], { cwd: repo });
+
+    const skipped = await detectIndexContentDrift(repo, recorded, {
+      maxFileSizeBytes: 512 * 1024,
+      dirtyPaths: [],
+    });
+    expect(skipped).toMatchObject({ kind: 'current' });
+
+    const restored = await detectIndexContentDrift(repo, recorded, {
+      maxFileSizeBytes: 512 * 1024,
+      dirtyPaths: ['a.js'],
+    });
+    expect(restored).toMatchObject({ kind: 'drifted', changed: ['a.js'] });
+  });
+
+  it.each(['--assume-unchanged', '--skip-worktree'])(
+    'does not let git update-index %s hide covered-file drift',
+    async (flag) => {
+      const repo = makeRepo({ 'a.js': 'export const a = 1;\n' });
+      execFileSync(gitExecutable, ['init', '-q'], { cwd: repo });
+      execFileSync(gitExecutable, ['add', '--', 'a.js'], { cwd: repo });
+      execFileSync(
+        gitExecutable,
+        ['-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+        { cwd: repo },
+      );
+      const recorded = await recordCoverage(repo);
+      execFileSync(gitExecutable, ['update-index', flag, '--', 'a.js'], { cwd: repo });
+      fs.writeFileSync(path.join(repo, 'a.js'), 'export const a = 2;\n');
+      const listed = listWorkingTreeDirtyPaths(repo);
+      expect(listed).not.toBeNull();
+      expect(listed).toContain('a.js');
+
+      expect(
+        await detectIndexContentDrift(repo, recorded, {
+          maxFileSizeBytes: 512 * 1024,
+          dirtyPaths: [],
+        }),
+      ).toMatchObject({ kind: 'drifted', changed: ['a.js'] });
+    },
+  );
+
+  it('hashes the full intersection when the Git path query fails', async () => {
+    const repo = makeRepo({ 'a.js': 'export const a = 1;\n' });
+    execFileSync(gitExecutable, ['init', '-q'], { cwd: repo });
+    execFileSync(gitExecutable, ['add', '--', 'a.js'], { cwd: repo });
+    execFileSync(
+      gitExecutable,
+      ['-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+      { cwd: repo },
+    );
+    const recorded = await recordCoverage(repo);
+    fs.writeFileSync(path.join(repo, 'a.js'), 'export const a = 2;\n');
+
+    const savedPath = process.env.PATH;
+    try {
+      process.env.PATH = '';
+      expect(listWorkingTreeDirtyPaths(repo)).toBeNull();
+      expect(
+        await detectIndexContentDrift(repo, recorded, {
+          maxFileSizeBytes: 512 * 1024,
+          dirtyPaths: [],
+        }),
+      ).toMatchObject({ kind: 'drifted', changed: ['a.js'] });
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  });
+
+  it.each(process.platform === 'win32' ? ['ä.js'] : ['ä.js', 'a -> b.js', 'line\nbreak.js'])(
+    'detects drift for porcelain-sensitive filename %j',
+    async (fileName) => {
+      const repo = makeRepo({ [fileName]: 'export const a = 1;\n' });
+      execFileSync(gitExecutable, ['init', '-q'], { cwd: repo });
+      execFileSync(gitExecutable, ['add', '--', fileName], { cwd: repo });
+      execFileSync(
+        gitExecutable,
+        ['-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+        { cwd: repo },
+      );
+      const recorded = await recordCoverage(repo);
+      fs.writeFileSync(path.join(repo, fileName), 'export const a = 2;\n');
+
+      expect(
+        await detectIndexContentDrift(repo, recorded, {
+          maxFileSizeBytes: 512 * 1024,
+          dirtyPaths: [],
+        }),
+      ).toMatchObject({ kind: 'drifted', changed: [fileName] });
+    },
+  );
 });
 
 describe('isGitNexusManagedPath', () => {

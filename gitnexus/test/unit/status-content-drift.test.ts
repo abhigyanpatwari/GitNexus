@@ -8,7 +8,7 @@
  * comparison decides when it can run, and the repo-wide dirty flag survives
  * only as the fallback for metadata written before `fileHashes` existed.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { runnerIdentity } = vi.hoisted(() => ({
   runnerIdentity: {
@@ -63,6 +63,7 @@ vi.mock('../../src/storage/git.js', () => ({
   getCurrentBranch: vi.fn().mockReturnValue('main'),
   getGitRoot: vi.fn((p: string) => p),
   isWorkingTreeDirty: vi.fn().mockReturnValue(false),
+  listWorkingTreeDirtyPaths: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock('../../src/core/index-content-drift.js', () => ({
@@ -70,6 +71,7 @@ vi.mock('../../src/core/index-content-drift.js', () => ({
 }));
 
 import { statusCommand } from '../../src/cli/status.js';
+import { setCliLanguage } from '../../src/cli/i18n/index.js';
 import { findRepo } from '../../src/storage/repo-manager.js';
 import { getCurrentCommit, isWorkingTreeDirty } from '../../src/storage/git.js';
 import { detectIndexContentDrift } from '../../src/core/index-content-drift.js';
@@ -89,6 +91,7 @@ const repoWithCoverage = {
     branch: 'main',
     runnerIdentity,
     fileHashes: { 'a.js': 'sha-a' },
+    scopeExtractionReceipt: 1 as const,
   },
 };
 
@@ -98,6 +101,11 @@ beforeEach(() => {
   (findRepo as any).mockResolvedValue(repoWithCoverage);
   (getCurrentCommit as any).mockReturnValue('headsha0');
   (isWorkingTreeDirty as any).mockReturnValue(false);
+});
+
+afterEach(() => {
+  setCliLanguage(null);
+  logSpy.mockRestore();
 });
 
 describe('status freshness from per-file drift (#3077)', () => {
@@ -128,7 +136,39 @@ describe('status freshness from per-file drift (#3077)', () => {
     const out = output();
     expect(out).not.toContain('up-to-date');
     expect(out).toContain('1 changed, 0 added, 0 deleted');
-    expect(out).toContain('src/app.ts');
+    expect(out).toContain('changed: src/app.ts');
+  });
+
+  it('localizes overflow category labels in zh-CN', async () => {
+    setCliLanguage('zh-CN');
+    const changed = Array.from({ length: 12 }, (_, i) => `src/file-${i}.ts`);
+    (detectIndexContentDrift as any).mockResolvedValue({
+      kind: 'drifted',
+      changed,
+      added: [],
+      deleted: [],
+    });
+
+    await statusCommand();
+
+    const out = output();
+    expect(out).toContain('已修改: src/file-0.ts');
+    expect(out).toContain('另有 2 个 已修改');
+    expect(out).not.toMatch(/\bchanged\b/);
+  });
+
+  it('names a failed coverage scan in human output instead of falling back', async () => {
+    (detectIndexContentDrift as any).mockResolvedValue({
+      kind: 'unmeasurable',
+      reason: 'scan-failed',
+    });
+
+    await statusCommand();
+
+    const out = output();
+    expect(out).toContain('coverage scan failed');
+    expect(out).toContain('stale');
+    expect(out).not.toContain('fell back to the working-tree check');
   });
 
   it('exposes drift counts and a capped sample in --json', async () => {
@@ -146,6 +186,11 @@ describe('status freshness from per-file drift (#3077)', () => {
     expect(parsed.status).toBe('stale');
     expect(parsed.contentDrift.counts).toEqual({ changed: 25, added: 0, deleted: 0 });
     expect(parsed.contentDrift.changed).toHaveLength(10);
+    expect(parsed.contentDrift.truncated).toEqual({
+      changed: true,
+      added: false,
+      deleted: false,
+    });
   });
 
   it('falls back to the working-tree check when coverage cannot be compared', async () => {
@@ -163,7 +208,7 @@ describe('status freshness from per-file drift (#3077)', () => {
     });
   });
 
-  it('is up-to-date on a clean tree when coverage cannot be compared', async () => {
+  it('is stale when coverage cannot be compared because the scan failed', async () => {
     (detectIndexContentDrift as any).mockResolvedValue({
       kind: 'unmeasurable',
       reason: 'scan-failed',
@@ -171,7 +216,24 @@ describe('status freshness from per-file drift (#3077)', () => {
 
     await statusCommand({ json: true });
 
-    expect(JSON.parse(output())).toMatchObject({ status: 'up-to-date' });
+    expect(JSON.parse(output())).toMatchObject({
+      status: 'stale',
+      contentDrift: { status: 'unmeasurable', reason: 'scan-failed' },
+    });
+  });
+
+  it('is up-to-date on a clean tree when hashes are missing (legacy metadata)', async () => {
+    (detectIndexContentDrift as any).mockResolvedValue({
+      kind: 'unmeasurable',
+      reason: 'no-file-hashes',
+    });
+
+    await statusCommand({ json: true });
+
+    expect(JSON.parse(output())).toMatchObject({
+      status: 'up-to-date',
+      contentDrift: { status: 'unmeasurable', reason: 'no-file-hashes' },
+    });
   });
 
   it('skips the scan when the index is already stale on metadata alone', async () => {
@@ -185,5 +247,18 @@ describe('status freshness from per-file drift (#3077)', () => {
       status: 'stale',
       contentDrift: { status: 'not-checked' },
     });
+  });
+
+  it('replays persisted indexCoverage into the drift check', async () => {
+    const coverage = { maxFileSizeBytes: 1024 * 1024, dirtyPaths: ['a.js'] };
+    (findRepo as any).mockResolvedValue({
+      ...repoWithCoverage,
+      meta: { ...repoWithCoverage.meta, indexCoverage: coverage },
+    });
+    (detectIndexContentDrift as any).mockResolvedValue({ kind: 'current', coveredFileCount: 1 });
+
+    await statusCommand({ json: true });
+
+    expect(detectIndexContentDrift).toHaveBeenCalledWith('/repo', { 'a.js': 'sha-a' }, coverage);
   });
 });

@@ -928,3 +928,160 @@ describe('isWorkingTreeDirty', () => {
     }
   });
 });
+
+describe('listWorkingTreeDirtyPaths', () => {
+  it('returns an empty list for a clean repository', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    try {
+      fs.writeFileSync(path.join(repo, 'README.md'), 'hi');
+      execFileSync(gitExecutable, ['add', '--', 'README.md'], { cwd: repo, stdio: 'ignore' });
+      execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+
+      expect(listWorkingTreeDirtyPaths(repo)).toEqual([]);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('returns dirty source paths and omits GitNexus-managed writes', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    try {
+      fs.writeFileSync(path.join(repo, 'README.md'), 'hi');
+      execSync('git add -A && git commit -q -m init', { cwd: repo, stdio: 'ignore' });
+      fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'src', 'foo.ts'), 'export const x = 1;');
+      fs.mkdirSync(path.join(repo, '.gitnexus'), { recursive: true });
+      fs.writeFileSync(path.join(repo, '.gitnexus', 'meta.json'), '{}');
+      fs.writeFileSync(path.join(repo, 'AGENTS.md'), 'x');
+
+      expect(listWorkingTreeDirtyPaths(repo)).toEqual(['src/foo.ts']);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null (not an empty list) outside a git repository', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const dir = makeIsolatedTempDir('gn-nongit-paths-');
+    try {
+      expect(listWorkingTreeDirtyPaths(dir)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves non-ASCII, newline, and arrow-shaped filenames exactly', async () => {
+    const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    const names = ['src/ä.ts'];
+    if (process.platform !== 'win32') {
+      names.push('src/a -> b.ts', 'src/line\nbreak.ts', 'src/tab\tname.ts', 'src/back\\slash.ts');
+    }
+    try {
+      for (const name of names) {
+        fs.mkdirSync(path.dirname(path.join(repo, name)), { recursive: true });
+        fs.writeFileSync(path.join(repo, name), 'before');
+      }
+      execFileSync(gitExecutable, ['add', '--', ...names], { cwd: repo, stdio: 'ignore' });
+      execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+      for (const name of names) fs.writeFileSync(path.join(repo, name), 'after');
+
+      expect(listWorkingTreeDirtyPaths(repo)?.sort()).toEqual([...names].sort());
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'returns both paths for a rename without parsing filename text',
+    async () => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      const before = 'src/before -> literal.ts';
+      const after = 'src/after -> literal.ts';
+      try {
+        fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+        fs.writeFileSync(path.join(repo, before), 'content');
+        execFileSync(gitExecutable, ['add', '--', before], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['mv', '--', before, after], { cwd: repo, stdio: 'ignore' });
+
+        expect(listWorkingTreeDirtyPaths(repo)?.sort()).toEqual([after, before].sort());
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['--assume-unchanged', '--skip-worktree'])(
+    'includes paths hidden by git update-index %s',
+    async (flag) => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      try {
+        fs.writeFileSync(path.join(repo, 'hidden.ts'), 'before');
+        execFileSync(gitExecutable, ['add', '--', 'hidden.ts'], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', flag, '--', 'hidden.ts'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        fs.writeFileSync(path.join(repo, 'hidden.ts'), 'after');
+
+        expect(listWorkingTreeDirtyPaths(repo)).toContain('hidden.ts');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'preserves exact unusual names hidden by index bits, including both bits',
+    async () => {
+      const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');
+      const repo = makeIsolatedGitRepo();
+      const names = ['ä.ts', 'a -> b.ts', 'tab\tname.ts', 'line\nbreak.ts'];
+      try {
+        for (const name of names) fs.writeFileSync(path.join(repo, name), 'before');
+        execFileSync(gitExecutable, ['add', '--', ...names], { cwd: repo, stdio: 'ignore' });
+        execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--assume-unchanged', '--', names[0]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--skip-worktree', '--', names[1]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--assume-unchanged', '--', names[2]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--skip-worktree', '--', names[2]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        execFileSync(gitExecutable, ['update-index', '--skip-worktree', '--', names[3]], {
+          cwd: repo,
+          stdio: 'ignore',
+        });
+        for (const name of names) fs.writeFileSync(path.join(repo, name), 'after');
+
+        expect(listWorkingTreeDirtyPaths(repo)?.sort()).toEqual([...names].sort());
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+});

@@ -13,16 +13,22 @@
  *
  * `meta.fileHashes` already records the exact set of files the last run
  * covered, so the question can be answered directly. This module recomputes
- * the coverage set the same way `analyze` does — the shared
- * `walkRepositoryPaths` scan, so ignore rules, dotfile handling, and the
- * large-file cap cannot drift apart — hashes it with the same helpers, and
- * diffs it against what was recorded. `status` and `analyze` therefore agree
- * on what "changed" means by construction rather than by convention.
+ * the coverage set with the same `walkRepositoryPaths` scan (ignore rules and
+ * dotfile handling stay shared) and the large-file cap recorded in
+ * `meta.indexCoverage`, hashes only the paths that can actually have changed
+ * since that run, and diffs against what was recorded.
  */
 
+import { constants as fsConstants } from 'node:fs';
+import { access } from 'node:fs/promises';
+import path from 'node:path';
 import { walkRepositoryPaths } from './ingestion/filesystem-walker.js';
-import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
+import { computeFileHashesDetailed } from '../storage/file-hash.js';
+import { listWorkingTreeDirtyPaths } from '../storage/git.js';
 import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
+import { chunk } from '../lib/utils.js';
+import { logger } from './logger.js';
+import type { RepoMeta } from '../storage/repo-meta.js';
 
 /** Why the recorded coverage set could not be compared against disk at all. */
 export type IndexContentUnmeasurableReason =
@@ -34,13 +40,37 @@ export type IndexContentUnmeasurableReason =
 /**
  * A three-way verdict. `'unmeasurable'` is kept apart from `'current'` on
  * purpose: it means the comparison never ran, which is not evidence the index
- * is fresh, and the caller falls back to the conservative working-tree check
- * rather than certifying an index nobody inspected.
+ * is fresh. Legacy metadata without hashes still falls back to the working-tree
+ * check; a failed scan must not.
  */
 export type IndexContentDrift =
   | { kind: 'current'; coveredFileCount: number }
   | { kind: 'drifted'; changed: string[]; added: string[]; deleted: string[] }
   | { kind: 'unmeasurable'; reason: IndexContentUnmeasurableReason };
+
+export type IndexCoveragePolicy = NonNullable<RepoMeta['indexCoverage']>;
+
+const HASH_BATCH = 100;
+
+const collectUnreadablePaths = async (
+  repoPath: string,
+  relPaths: readonly string[],
+): Promise<string[]> => {
+  const unreadable: string[] = [];
+  for (const batch of chunk(relPaths, HASH_BATCH)) {
+    await Promise.all(
+      batch.map(async (rel) => {
+        try {
+          await access(path.join(repoPath, rel), fsConstants.R_OK);
+        } catch {
+          unreadable.push(rel);
+        }
+      }),
+    );
+  }
+  unreadable.sort();
+  return unreadable;
+};
 
 /**
  * Compare the files recorded in `fileHashes` against the current working tree.
@@ -52,6 +82,7 @@ export type IndexContentDrift =
 export const detectIndexContentDrift = async (
   repoPath: string,
   fileHashes: Readonly<Record<string, string>> | undefined,
+  coverage?: IndexCoveragePolicy,
 ): Promise<IndexContentDrift> => {
   if (!fileHashes || Object.keys(fileHashes).length === 0) {
     return { kind: 'unmeasurable', reason: 'no-file-hashes' };
@@ -69,19 +100,53 @@ export const detectIndexContentDrift = async (
   }
 
   try {
-    const scanned = await walkRepositoryPaths(repoPath, undefined, { quiet: true });
-    const currentHashes = await computeFileHashes(
+    const scanned = await walkRepositoryPaths(repoPath, undefined, {
+      quiet: true,
+      maxFileSizeBytes: coverage?.maxFileSizeBytes,
+    });
+    const scannedPaths = scanned.map((file) => file.path).filter((p) => !isGitNexusManagedPath(p));
+    const scannedSet = new Set(scannedPaths);
+    const recordedSet = new Set(Object.keys(recorded));
+
+    const added = scannedPaths.filter((p) => !recordedSet.has(p)).sort();
+    const deleted = [...recordedSet].filter((p) => !scannedSet.has(p)).sort();
+    const intersection = scannedPaths.filter((p) => recordedSet.has(p));
+
+    const dirtyNow = listWorkingTreeDirtyPaths(repoPath);
+    const dirtyAtIndex = coverage?.dirtyPaths;
+    const dirtyNowSet = dirtyNow === null ? null : new Set(dirtyNow);
+    const dirtyAtIndexSet = dirtyAtIndex === undefined ? undefined : new Set(dirtyAtIndex);
+    const hashCandidates =
+      dirtyNowSet === null || dirtyAtIndexSet === undefined
+        ? intersection
+        : intersection.filter((p) => dirtyAtIndexSet.has(p) || dirtyNowSet.has(p));
+
+    const hashCandidateSet = new Set(hashCandidates);
+    const skipHash = intersection.filter((p) => !hashCandidateSet.has(p));
+    const unreadableFromAccess = await collectUnreadablePaths(repoPath, skipHash);
+    const unreadableSet = new Set(unreadableFromAccess);
+    const { hashes: hashed, unreadable: unreadableFromHash } = await computeFileHashesDetailed(
       repoPath,
-      scanned.map((file) => file.path).filter((rel) => !isGitNexusManagedPath(rel)),
+      hashCandidates,
     );
-    const diff = diffFileHashes(currentHashes, recorded);
-    if (diff.changed.length === 0 && diff.added.length === 0 && diff.deleted.length === 0) {
-      return { kind: 'current', coveredFileCount: currentHashes.size };
+    for (const p of unreadableFromHash) unreadableSet.add(p);
+    const changed: string[] = [];
+    for (const p of intersection) {
+      if (unreadableSet.has(p)) {
+        changed.push(p);
+        continue;
+      }
+      const currentHash = hashed.get(p) ?? recorded[p];
+      if (currentHash !== recorded[p]) changed.push(p);
     }
-    return { kind: 'drifted', changed: diff.changed, added: diff.added, deleted: diff.deleted };
-  } catch {
-    // A scan that throws has measured nothing. Reporting it as clean would
-    // manufacture exactly the false certainty this check exists to remove.
+    changed.sort();
+
+    if (changed.length === 0 && added.length === 0 && deleted.length === 0) {
+      return { kind: 'current', coveredFileCount: scannedPaths.length };
+    }
+    return { kind: 'drifted', changed, added, deleted };
+  } catch (err) {
+    logger.warn({ err, repoPath }, 'index content drift scan failed');
     return { kind: 'unmeasurable', reason: 'scan-failed' };
   }
 };

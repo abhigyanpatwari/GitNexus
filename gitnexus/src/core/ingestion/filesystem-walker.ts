@@ -64,19 +64,42 @@ export interface WalkRepositoryOptions {
    * index covers and must not emit analyze's progress commentary.
    */
   quiet?: boolean;
+  /**
+   * Override the large-file cap. `status` replays the bytes recorded at
+   * analyze time so `--max-file-size` / `GITNEXUS_MAX_FILE_SIZE` cannot
+   * silently drop a file that the index actually covers.
+   */
+  maxFileSizeBytes?: number;
 }
 
 /**
  * Phase 1: Scan repository — stat files to get paths + sizes, no content loaded.
  * Memory: ~10MB for 100K files vs ~1GB+ with content.
  */
+const assertWalkRootIsDirectory = async (repoPath: string): Promise<void> => {
+  let st;
+  try {
+    st = await fs.stat(repoPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw new Error(`walkRepositoryPaths: path does not exist: ${repoPath}`);
+    }
+    throw err;
+  }
+  if (!st.isDirectory()) {
+    throw new Error(`walkRepositoryPaths: not a directory: ${repoPath}`);
+  }
+};
+
 export const walkRepositoryPaths = async (
   repoPath: string,
   onProgress?: (current: number, total: number, filePath: string) => void,
   options: WalkRepositoryOptions = {},
 ): Promise<ScannedFile[]> => {
+  await assertWalkRootIsDirectory(repoPath);
   const ignoreFilter = await createIgnoreFilter(repoPath);
-  const maxFileSizeBytes = getMaxFileSizeBytes();
+  const maxFileSizeBytes = options.maxFileSizeBytes ?? getMaxFileSizeBytes();
 
   const filtered = await glob('**/*', {
     cwd: repoPath,
