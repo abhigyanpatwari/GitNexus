@@ -225,6 +225,16 @@ describe('generateAIContextFiles', () => {
     expect(withoutPdg).toContain('explain(');
   });
 
+  it('documents the MCP and Graph-RAG File-risk scale difference', () => {
+    const content = generateGitNexusContent('RiskScaleProject', {
+      nodes: 50,
+      edges: 100,
+      processes: 5,
+    });
+    expect(content).toContain('MCP File omits axes');
+    expect(content).toContain('Graph-RAG expands File');
+  });
+
   it('emits MD060-compatible compact tables in generated docs (#2709)', () => {
     const content = generateGitNexusContent('MarkdownProject', {
       nodes: 50,
