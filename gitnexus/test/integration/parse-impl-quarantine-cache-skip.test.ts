@@ -187,6 +187,12 @@ const FIXTURE_FILES = {
 const POISON_PATH = 'src/poison.ts';
 const DEFAULT_TEST_CHUNK_BUDGET = 2 * 1024 * 1024;
 
+const resolveTestChunkByteBudget = (): number => {
+  const env = Number(process.env.GITNEXUS_CHUNK_BYTE_BUDGET);
+  if (Number.isFinite(env) && env > 0) return env;
+  return DEFAULT_TEST_CHUNK_BUDGET;
+};
+
 const hashPacks = (
   scanned: { path: string; size: number }[],
 ): { poison: string; others: string[] } => {
@@ -196,7 +202,7 @@ const hashPacks = (
       size: file.size,
       language: 'typescript',
     })),
-    DEFAULT_TEST_CHUNK_BUDGET,
+    resolveTestChunkByteBudget(),
   );
   const hashOf = (pack: string[]) =>
     computeChunkHash(

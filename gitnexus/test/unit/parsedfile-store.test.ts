@@ -794,19 +794,25 @@ describe('parsedfile-store receiverChain sanitation', () => {
 
   it('persist still succeeds when the sidecar write fails', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-enospc-'));
-    const orig = nodeFsPromises.writeFile.bind(nodeFsPromises);
-    const spy = vi.spyOn(nodeFsPromises, 'writeFile').mockImplementation(async (p, data, enc) => {
-      if (String(p).endsWith('.paths')) {
-        throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
-      }
-      return orig(p, data, enc);
-    });
     try {
-      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('stale.c')]);
+      const orig = nodeFsPromises.writeFile.bind(nodeFsPromises);
+      const spy = vi.spyOn(nodeFsPromises, 'writeFile').mockImplementation(async (p, data, enc) => {
+        if (String(p).endsWith('.paths')) {
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        return orig(p, data, enc);
+      });
+      try {
+        await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      } finally {
+        spy.mockRestore();
+      }
+      const storeDir = getParsedFileStoreDir(dir);
+      await expect(readFile(path.join(storeDir, 'ok.json.paths'), 'utf-8')).rejects.toThrow();
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       expect(loaded.has('a.c')).toBe(true);
     } finally {
-      spy.mockRestore();
       await rm(dir, { recursive: true, force: true });
     }
   });

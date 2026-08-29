@@ -241,6 +241,11 @@ const writeShardPathsSidecar = async (
       jsonPath,
       'parsedfile-store: path sidecar write failed; JSON shard remains authoritative',
     );
+    try {
+      await fs.unlink(shardPathsSidecarPath(jsonPath));
+    } catch (unlinkErr) {
+      ignoreMissingSidecarUnlink(unlinkErr, jsonPath);
+    }
   }
 };
 
@@ -261,6 +266,11 @@ const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly Pars
       jsonPath,
       'parsedfile-store: path sidecar write failed; JSON shard remains authoritative',
     );
+    try {
+      unlinkSync(shardPathsSidecarPath(jsonPath));
+    } catch (unlinkErr) {
+      ignoreMissingSidecarUnlink(unlinkErr, jsonPath);
+    }
   }
 };
 
