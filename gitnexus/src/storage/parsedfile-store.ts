@@ -304,8 +304,13 @@ export const loadParsedFilesForPaths = async (
     const jsonName = shards[i];
     const jsonFull = path.join(dir, jsonName);
     try {
-      const sidecarRaw = await fs.readFile(shardPathsSidecarPath(jsonFull), 'utf-8');
-      if (sidecarRaw.includes('\0')) {
+      const sidecarRaw = (await fs.readFile(shardPathsSidecarPath(jsonFull), 'utf-8')).replace(
+        /\r/g,
+        '',
+      );
+      // Fail closed: truncated/garbage listings without a trailing newline or
+      // with NULs can omit wanted paths. Complete writers always end with `\n`.
+      if (sidecarRaw.includes('\0') || !sidecarRaw.endsWith('\n')) {
         throw new Error('corrupt sidecar');
       }
       const listed = sidecarRaw.split('\n').filter((line) => line.length > 0);
