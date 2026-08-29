@@ -170,6 +170,21 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  it('keeps the cross-surface risk-scale guidance in every impact-analysis copy', () => {
+    const required = [
+      '`riskSharedAxes`',
+      'MCP File walks',
+      'web Graph-RAG expands File targets',
+      'Within single-repo mode',
+      'Within group mode',
+      'overlays resolved',
+    ];
+    for (const file of standardSkillCopies('gitnexus-impact-analysis')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
   // Same shape as the UNKNOWN guard above, for the other half of the verdict:
   // `detect_changes` can come back SHORT — `partial` when a batched graph query
   // failed, `truncated` when the changed-symbol listing hit its cap — and both
@@ -331,6 +346,10 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
   const REQUIRED_FRAGMENTS = [
     'MUST treat `risk: UNKNOWN` as unresolved, not as low.',
     'never read `UNKNOWN` as an all-clear',
+    'never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning',
+    'Compare File/symbol',
+    'MCP File omits axes',
+    'Graph-RAG expands File',
   ];
 
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {

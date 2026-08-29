@@ -1,3 +1,5 @@
+import type { ImpactRisk, ImpactRiskResult } from 'gitnexus-shared';
+
 export type ContractType =
   | 'http'
   | 'graphql'
@@ -194,7 +196,17 @@ export interface GroupImpactResult {
     modules_affected: number;
     cross_repo_hits: number;
   };
-  risk: string;
+  risk: ImpactRisk;
+  /**
+   * Two-axis (direct + total) risk from the local leg, then `mergeRisk` with
+   * crossings — compare File vs symbol here, not via top-level `risk`.
+   */
+  riskSharedAxes?: ImpactRisk;
+  /**
+   * Local-leg scale metadata (File / skipped enrichment). Crossings do not
+   * invent process/module membership for File nodes.
+   */
+  riskScale?: ImpactRiskResult['riskScale'];
   /**
    * `'lower-bound'` when the fan-out was cut short, so `risk` is a FLOOR, not a
    * verdict. Same vocabulary as single-repo `impact`'s `epistemic` field.
