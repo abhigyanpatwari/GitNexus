@@ -144,6 +144,29 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
     }
   }, 180_000);
 
+  it('marks a failure after an atomic publish as potentially live-mutating', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      const failure = await runFullAnalysis(
+        repo,
+        {},
+        {
+          onProgress: (phase, percent) => {
+            if (phase === 'done' && percent === 100) {
+              throw new Error('injected post-publish failure');
+            }
+          },
+        },
+      ).catch((error: unknown) => error);
+
+      expect(failure).toMatchObject({ message: 'injected post-publish failure' });
+      expect(analyzeFailureMayHaveMutatedLiveIndex(failure)).toBe(true);
+      await expect(fs.stat(getStoragePaths(repo).lbugPath)).resolves.toBeTruthy();
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
   it('the read pool serves the freshly-swapped index after a rebuild (#1 + #2 end-to-end)', async () => {
     const { repo, cleanup } = await makeRepo();
     const repoId = 'atomic-swap-e2e';

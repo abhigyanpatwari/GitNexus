@@ -3838,6 +3838,7 @@ async function runFullAnalysisInner(
       : false;
     if (useAtomicSwap && builtDbExists) {
       await retryRename(buildPath, lbugPath);
+      liveIndexMutationStarted = true;
       // Clear any sidecars orphaned beside the replaced file. A cleanly-closed
       // prior index has none; a crashed one could, and it would be replay
       // poison next to the freshly published index. Best-effort.

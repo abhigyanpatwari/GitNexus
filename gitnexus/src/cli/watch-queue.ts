@@ -70,7 +70,7 @@ export class WatchRefreshQueue {
       await this.runBatch([], true);
     } finally {
       this.initialPending = false;
-      if (!this.closed && this.pending.size > 0) this.schedule();
+      if (!this.closed && this.hasPendingWork()) this.schedule();
       else this.resolveIdleWaiters();
     }
   }
@@ -117,7 +117,7 @@ export class WatchRefreshQueue {
   }
 
   private async drain(): Promise<void> {
-    if (this.closed || this.active !== undefined || this.pending.size === 0) return;
+    if (this.closed || this.active !== undefined || !this.hasPendingWork()) return;
     const paths = [
       ...(this.overflowed ? [WATCH_FULL_REFRESH_PATH] : []),
       ...[...this.pending].sort(),
@@ -130,7 +130,12 @@ export class WatchRefreshQueue {
   }
 
   private async runBatch(paths: readonly string[], propagateError: boolean): Promise<void> {
-    const work = this.refresh(paths);
+    let work: Promise<void>;
+    try {
+      work = this.refresh(paths);
+    } catch (error) {
+      work = Promise.reject(error);
+    }
     this.active = work;
     let retryDelayMs: number | undefined;
     try {
@@ -157,14 +162,18 @@ export class WatchRefreshQueue {
       }
     } finally {
       if (this.active === work) this.active = undefined;
-      if (!this.closed && !this.initialPending && this.pending.size > 0)
+      if (!this.closed && !this.initialPending && this.hasPendingWork())
         this.schedule(retryDelayMs);
       else this.resolveIdleWaiters();
     }
   }
 
+  private hasPendingWork(): boolean {
+    return this.overflowed || this.pending.size > 0;
+  }
+
   private isIdle(): boolean {
-    return this.active === undefined && this.timer === undefined && this.pending.size === 0;
+    return this.active === undefined && this.timer === undefined && !this.hasPendingWork();
   }
 
   private resolveIdleWaiters(): void {

@@ -200,6 +200,32 @@ describe('WatchRefreshQueue', () => {
     await expect(queue.waitForIdle()).resolves.toBeUndefined();
   });
 
+  it('contains a synchronously throwing refresh and retries its batch', async () => {
+    vi.useFakeTimers();
+    const errors: string[][] = [];
+    const successful: string[][] = [];
+    let attempts = 0;
+    const queue = new WatchRefreshQueue(
+      (paths) => {
+        attempts++;
+        if (attempts === 1) throw new Error('synchronous refresh failure');
+        successful.push([...paths]);
+        return Promise.resolve();
+      },
+      (_error, paths) => errors.push([...paths]),
+      10,
+    );
+
+    queue.enqueue('src/a.ts');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(errors).toEqual([['src/a.ts']]);
+    await vi.advanceTimersByTimeAsync(250);
+    await queue.waitForIdle();
+
+    expect(attempts).toBe(2);
+    expect(successful).toEqual([['src/a.ts']]);
+  });
+
   it('closes cleanly when a refresh failure triggers shutdown', async () => {
     vi.useFakeTimers();
     let closePromise: Promise<void> | undefined;
@@ -301,5 +327,22 @@ describe('WatchRefreshQueue', () => {
     await queue.waitForIdle();
 
     expect(batches).toEqual([['src/a.ts', 'src/b.ts']]);
+  });
+
+  it('runs a full refresh when the pending-path limit is zero', async () => {
+    vi.useFakeTimers();
+    const batches: string[][] = [];
+    const queue = new WatchRefreshQueue(
+      async (paths) => batches.push([...paths]),
+      () => {},
+      10,
+      { maxPendingPaths: 0 },
+    );
+
+    queue.enqueue('src/a.ts');
+    await vi.advanceTimersByTimeAsync(10);
+    await queue.waitForIdle();
+
+    expect(batches).toEqual([[WATCH_FULL_REFRESH_PATH]]);
   });
 });
