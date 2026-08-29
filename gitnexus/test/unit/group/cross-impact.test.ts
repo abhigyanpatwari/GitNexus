@@ -398,6 +398,54 @@ describe('cross-impact', () => {
       riskSharedAxes: 'MEDIUM',
       riskScale,
     });
+  it('test_runGroupImpact_threads_target_selectors_to_member_impact', async () => {
+    // The target_uid disambiguation loop is a three-segment chain: the MCP
+    // boundary forwards target_uid/file_path/kind, the GroupToolPort.impact
+    // contract declares them, and THIS module must thread them into the
+    // member-repo call. The first wiring attempt only touched the boundary
+    // and the port type — validateGroupImpactParams dropped the params, so
+    // port.impact never saw them and the loop silently did not work. The
+    // spy pins the full chain end to end.
+    const impact = vi.fn(async () => ({
+      byDepth: {},
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      risk: 'LOW',
+    }));
+    const r = await runLocalOnlyImpact(impact, {
+      target_uid: 'sym::uid::1',
+      file_path: 'src/service/UserApi.ts',
+      kind: 'Class',
+    });
+
+    expect(r).toMatchObject({ truncated: false });
+    expect(impact).toHaveBeenCalledTimes(1);
+    expect(impact).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        target: 'Sym',
+        target_uid: 'sym::uid::1',
+        file_path: 'src/service/UserApi.ts',
+        kind: 'Class',
+      }),
+    );
+  });
+
+  it('test_runGroupImpact_omits_target_selectors_when_absent', async () => {
+    // Companion negative: a plain name-only call must not smuggle empty
+    // selector strings through (the port treats '' as a real lookup key).
+    const impact = vi.fn(async () => ({
+      byDepth: {},
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      risk: 'LOW',
+    }));
+    await runLocalOnlyImpact(impact, { target_uid: '' });
+
+    expect(impact).toHaveBeenCalledTimes(1);
+    const passed = (impact as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls[0][1] as Record<string, unknown>;
+    expect(passed.target_uid).toBeUndefined();
+    expect(passed.file_path).toBeUndefined();
+    expect(passed.kind).toBeUndefined();
   });
 
   it('test_runGroupImpact_bridge_schema_mismatch_returns_error', async () => {

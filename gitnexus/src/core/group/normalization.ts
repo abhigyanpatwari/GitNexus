@@ -91,6 +91,46 @@ function crossLinkKey(link: CrossLink): string {
   ].join('\0');
 }
 
+/**
+ * True when a link endpoint carries no resolved graph symbol — empty
+ * `symbolUid` or a missing/empty `symbolRef`.
+ *
+ * Sync marks a cross-link `degraded: true` when this holds for the PROVIDER
+ * endpoint (`to`): the contract boundary is proven, but the empty uid can
+ * never match a Phase-1 impact symbol id, so cross-repo fan-out across the
+ * link silently yields nothing (the classic case is a provider whose handler
+ * failed to resolve, leaving `symbolName` degraded to the file name with one
+ * pseudo-symbol carrying every route in that file). Consumer-side (`from`)
+ * emptiness is deliberately NOT degraded — several extractors (topics, grpc)
+ * legitimately emit consumer contracts without a per-call symbol, and the
+ * anchor that matters for far-side fan-out is the provider's.
+ *
+ * Kept next to the endpoint merge logic because `dedupeCrossLinks` must
+ * re-derive the flag after a merge: `mergeEndpoints` backfills `symbolUid`
+ * from the losing twin, which can invalidate a flag carried in from the winner.
+ *
+ * NOT unresolved: a deterministic `manifest::<repo>::<contractId>` synthetic
+ * uid (see `manifestSymbolUid`). Manifest endpoints fall back to it precisely
+ * when the graph has no symbol for them — its empty `symbolRef.filePath` would
+ * otherwise trip the check below — yet cross-impact anchors those links by
+ * design (#2722: the crossing is preserved with `fanout_status:
+ * 'not_attempted'` instead of silently yielding cross=0). The prefix is the
+ * canonical discriminator — real indexer uids never start with `manifest::`
+ * — and `cross-impact.ts` branches on the same test. Encoding the exemption
+ * HERE (not at the sync marking call site) keeps marking and the post-merge
+ * re-derivation from drifting apart, and keeps the flag's meaning exactly what
+ * `types.ts` documents: "distinct from manifest::… synthetic UIDs".
+ */
+export function isUnresolvedEndpoint(endpoint: CrossLinkEndpoint): boolean {
+  if (endpoint.symbolUid.startsWith('manifest::')) return false;
+  return (
+    !endpoint.symbolUid ||
+    !endpoint.symbolRef ||
+    !endpoint.symbolRef.filePath ||
+    !endpoint.symbolRef.name
+  );
+}
+
 export function dedupeContracts(items: StoredContract[]): StoredContract[] {
   const deduped = new Map<string, StoredContract>();
   for (const contract of items) {
@@ -113,12 +153,19 @@ export function dedupeCrossLinks(items: CrossLink[]): CrossLink[] {
     const keepIncoming = link.confidence > existing.confidence;
     const primary = keepIncoming ? link : existing;
     const secondary = keepIncoming ? existing : link;
-    deduped.set(key, {
+    const merged: CrossLink = {
       ...primary,
       confidence: Math.max(existing.confidence, link.confidence),
       from: mergeEndpoints(primary.from, secondary.from),
       to: mergeEndpoints(primary.to, secondary.to),
-    });
+    };
+    // A `degraded` flag survives the merge only if the merged provider
+    // endpoint is STILL unresolved — mergeEndpoints backfills `to.symbolUid`
+    // from the losing twin, which would leave a stale flag on an anchored link.
+    if (merged.degraded && !isUnresolvedEndpoint(merged.to)) {
+      delete merged.degraded;
+    }
+    deduped.set(key, merged);
   }
   return [...deduped.values()];
 }

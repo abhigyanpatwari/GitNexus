@@ -2503,6 +2503,66 @@ class Unrelated {
       );
     });
 
+    // ─── Java constant-folded route paths ────────────────────────────────
+    // Route annotations whose value is a constant reference, folded through
+    // the repo-wide Java constant map built by the plugin's prepareRepo. The
+    // on-demand wildcard form (`import static ...ApiPath.*`) is materialized
+    // from the TARGET class's members only after the whole map exists, so the
+    // usage file itself is deliberately absent from that map (it carries no
+    // `static final String`) — the lazy per-file overlay in scan() owns it.
+    it('folds a wildcard static import into a full provider path (constants class + usage class)', async () => {
+      const dir = path.join(tmpDir, 'java-wildcard-static-import');
+      const constDir = path.join(
+        dir,
+        'opt-common/src/main/java/com/winning/opt/common/constants/api',
+      );
+      fs.mkdirSync(constDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(constDir, 'ApiPath.java'),
+        `package com.winning.opt.common.constants.api;
+
+public class ApiPath {
+    public static final String API_CIS_V1 = "/api/v1/cis/";
+    public static final String PATIENT_DETAIL = API_CIS_V1 + "patient/detail";
+    public static final String LAB_QUERY = "/api/v1/labtest/query";
+}
+`,
+      );
+      const ctrlDir = path.join(dir, 'opt-app/src/main/java/com/winning/opt/app/controller');
+      fs.mkdirSync(ctrlDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(ctrlDir, 'CisController.java'),
+        `package com.winning.opt.app.controller;
+
+import static com.winning.opt.common.constants.api.ApiPath.*;
+
+public class CisController {
+
+    @Win.PostMapping(PATIENT_DETAIL)
+    public String saveDetail() { return "{}"; }
+
+    @Win.GetMapping(LAB_QUERY)
+    public String labQuery() { return "[]"; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      // Both bare names come from the wildcard target; PATIENT_DETAIL is itself
+      // a composed constant (cross-file fold through the same map).
+      expect(
+        providers.find((c) => c.contractId === 'http::POST::/api/v1/cis/patient/detail'),
+      ).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/v1/labtest/query')).toBeDefined();
+      // The qualified spelling folds too — expansion also binds the class's
+      // simple name, so `ApiPath.LAB_QUERY` under the wildcard import resolves.
+      expect(providers.filter((c) => c.symbolRef.filePath.endsWith('CisController.java'))).toHaveLength(
+        2,
+      );
+    });
+
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
@@ -2803,6 +2863,364 @@ console.log(cfg);
         (c) => typeof c.meta.path === 'string' && c.meta.path.includes('/nope'),
       );
       expect(nopeConsumers).toHaveLength(0);
+    });
+
+    // ─── Wrapped client forms ────────────────────────────────────────────
+    // The enterprise wrapper family: `X.request({ url, method })` on an
+    // imported axios instance, bare `request({ url, method })` through a
+    // default import, and verb-member `httpClient.post(url, ...)`. Url
+    // semantics are owned by `normalizeConsumerPath` (leading `${...}`
+    // gateway-prefix strip + `{param}` collapse), NOT by the plugin — these
+    // pin that framework behavior through the full extract() pipeline.
+    describe('wrapped client X.request({ url, method })', () => {
+      const writeClient = (
+        dir: string,
+        body: string,
+        header = `import request from './request';\n`,
+      ): void => {
+        fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'src/api/client.ts'), `${header}\n${body}`);
+      };
+
+      it('strips a leading gateway template binding: `${svc}/api/v1/x` → /api/v1/x', async () => {
+        const dir = path.join(tmpDir, 'wrapped-leading-prefix');
+        writeClient(
+          dir,
+          `
+const svc = '/gateway';
+export function load() {
+  return request({ url: \`\${svc}/api/v1/x\`, method: 'GET' });
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(consumers.find((c) => c.contractId === 'http::GET::/api/v1/x')).toBeDefined();
+      });
+
+      it('keeps the tail through a leading binding: `${svc}/api/v1/orders/${id}` → /api/v1/orders/{param}', async () => {
+        // Pin: the leading-prefix strip must NOT truncate the url at the last
+        // `${}` boundary — the pre-framework implementation reduced this
+        // template to `/api/v1/orders` and the `{param}` tail never matched.
+        const dir = path.join(tmpDir, 'wrapped-mid-interpolation');
+        writeClient(
+          dir,
+          `
+const svc = '/gateway';
+export function load(id: string) {
+  return request({ url: \`\${svc}/api/v1/orders/\${id}\`, method: 'GET' });
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(
+          consumers.find((c) => c.contractId === 'http::GET::/api/v1/orders/{param}'),
+        ).toBeDefined();
+      });
+
+      it('collapses a trailing interpolation: `/api/v1/orders/${id}` → /api/v1/orders/{param}', async () => {
+        const dir = path.join(tmpDir, 'wrapped-tail-interpolation');
+        writeClient(
+          dir,
+          `
+export function load(id: string) {
+  return request({ url: \`/api/v1/orders/\${id}\`, method: 'POST' });
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(
+          consumers.find((c) => c.contractId === 'http::POST::/api/v1/orders/{param}'),
+        ).toBeDefined();
+      });
+
+      it('keeps {param} through an absolute-url wrapper template: `http://host/api/v1/things/${id}` → /api/v1/things/{param}', async () => {
+        // Pin: the WHATWG URL parser percent-encodes the braces our `{param}`
+        // fold writes (`{param}` → `%7Bparam%7D`). Unrestored, the contract
+        // path survives as a literal that never matches its provider.
+        const dir = path.join(tmpDir, 'wrapped-absolute-tail-interpolation');
+        writeClient(
+          dir,
+          `
+export function load(id: string) {
+  return request({ url: \`http://localhost:8100/api/v1/things/\${id}/\`, method: 'POST' });
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(
+          consumers.find((c) => c.contractId === 'http::POST::/api/v1/things/{param}'),
+        ).toBeDefined();
+        expect(
+          consumers.find((c) => c.contractId === 'http::POST::/api/v1/things/%7bparam%7d'),
+        ).toBeUndefined();
+      });
+
+      it('keeps {param} through an absolute-url fetch template (baseline fetch form)', async () => {
+        // Same defect, pre-existing fetch shape: the absolute-url branch is
+        // shared by every consumer framework, so the brace restore fixes
+        // both the wrapped form above and this baseline.
+        const dir = path.join(tmpDir, 'fetch-absolute-tail-interpolation');
+        fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src/api/fetch.ts'),
+          `
+export function load(id: string) {
+  return fetch(\`https://api.internal/api/v1/things/\${id}\`);
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(
+          consumers.find((c) => c.contractId === 'http::GET::/api/v1/things/{param}'),
+        ).toBeDefined();
+      });
+
+      it('emits a static absolute url as-is', async () => {
+        const dir = path.join(tmpDir, 'wrapped-static');
+        writeClient(
+          dir,
+          `
+export function load() {
+  return request({ url: '/api/x', method: 'GET' });
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(consumers.find((c) => c.contractId === 'http::GET::/api/x')).toBeDefined();
+      });
+
+      it('drops relative urls — static `api/x` and template `${c}api/x` alike', async () => {
+        // Both reduce to a remainder without the leading `/`: the static one
+        // is gated at scan time, the templated one at normalizeConsumerPath.
+        // Distinct paths so dedupe cannot mask a wrongful emission.
+        const dir = path.join(tmpDir, 'wrapped-relative-negative');
+        writeClient(
+          dir,
+          `
+const svc = '/gateway';
+export function a() { return request({ url: 'api/rel-static/x' }); }
+export function b() { return request({ url: \`\${svc}api/rel-template/x\` }); }
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(
+          consumers.filter((c) => String(c.meta.path ?? '').includes('rel-')),
+        ).toHaveLength(0);
+      });
+
+      it('resolves a non-literal method to the `*` wildcard', async () => {
+        // The verb is computed at runtime; `*` honestly matches a provider of
+        // ANY method on the path instead of guessing GET.
+        const dir = path.join(tmpDir, 'wrapped-method-wildcard');
+        writeClient(
+          dir,
+          `
+export function load(verb: string) {
+  return request({ url: '/api/verb', method: verb });
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(consumers.find((c) => c.contractId === 'http::*::/api/verb')).toBeDefined();
+      });
+
+      it('does not emit a consumer for Node-core http.request({ host, path })', async () => {
+        // Structurally a `.request(object)` member call, but the Node core
+        // option shape carries the route in `path`, not `url` — the consumer
+        // form requires a `url` key, so nothing is emitted.
+        const dir = path.join(tmpDir, 'wrapped-node-core-negative');
+        fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src/api/core.ts'),
+          `
+import * as http from 'http';
+export function ping() {
+  return http.request({ host: 'internal.svc', path: '/api/core-http', method: 'GET' });
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(consumers.filter((c) => String(c.meta.path ?? '').includes('core-http'))).toHaveLength(
+          0,
+        );
+      });
+
+      it('hits the bare request({ url }) form only when request is an imported binding', async () => {
+        // Default import of the wrapper → the bare call is a consumer…
+        const dir = path.join(tmpDir, 'wrapped-bare-request');
+        writeClient(
+          dir,
+          `
+export function load() {
+  return request({ url: '/api/bare', method: 'GET' });
+}
+`,
+        );
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(consumers.find((c) => c.contractId === 'http::GET::/api/bare')).toBeDefined();
+
+        // …but a LOCAL function named `request` (the wrapper's own definition
+        // file shape) has no import evidence and must not match.
+        const localDir = path.join(tmpDir, 'wrapped-bare-request-local');
+        writeClient(
+          localDir,
+          `
+function request(opts: { url: string }) { return opts; }
+export function load() {
+  return request({ url: '/api/bare-local', method: 'GET' });
+}
+`,
+          '',
+        );
+        const localContracts = await extractor.extract(null, localDir, makeRepo(localDir));
+        const localConsumers = localContracts.filter(
+          (c) => c.role === 'consumer' && String(c.meta.path ?? '').includes('bare-local'),
+        );
+        expect(localConsumers).toHaveLength(0);
+      });
+
+      it('hits httpClient.post(...) verb-member urls — literal and namespace constant table', async () => {
+        const dir = path.join(tmpDir, 'wrapped-verb-member');
+        fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+        // The wrapper module itself — the documented shape is a LOCAL module
+        // re-exporting the win-request wrapper, and the object-evidence gate
+        // resolves `./index` against the scanned file set to prove it.
+        fs.writeFileSync(
+          path.join(dir, 'src/api/index.ts'),
+          `import request from '@winex-plugin/win-request';\nexport default request;\n`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src/api/url-constants.ts'),
+          `export const GET_ORDERS = '/api/v1/orders';\n`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src/api/verb.ts'),
+          `
+import httpClient from './index';
+import * as urls from './url-constants';
+
+export function create(data: unknown) {
+  return httpClient.post('/api/v1/lit', data);
+}
+
+export function list() {
+  return httpClient.get(urls.GET_ORDERS);
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(consumers.find((c) => c.contractId === 'http::POST::/api/v1/lit')).toBeDefined();
+        expect(consumers.find((c) => c.contractId === 'http::GET::/api/v1/orders')).toBeDefined();
+      });
+
+      it('does not emit a consumer for an aliased util import with a verb-named getter', async () => {
+        // FP-B pin: `import Cache from '@/utils/cache'` is an import binding
+        // and `Cache.get('/api/v1/tenant/config')` has a '/'-rooted first
+        // arg — import-ness alone is NOT client evidence. The aliased
+        // specifier resolves to no scanned file and matches no wrapper
+        // package, so both the static and the templated getter are skipped.
+        const dir = path.join(tmpDir, 'wrapped-verb-member-util-getter');
+        fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src/api/cache-consumer.ts'),
+          `
+import Cache from '@/utils/cache';
+
+export function tenantConfig() {
+  return Cache.get('/api/v1/tenant/config');
+}
+
+export function byKey(key: string) {
+  return Cache.get(\`/api/v1/cache/\${key}\`);
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(
+          consumers.filter((c) => String(c.meta.path ?? '').includes('/api/v1/')),
+        ).toHaveLength(0);
+
+        // Positive control proving the drop is the MODULE evidence, not the
+        // getter shape: the identical call through a RELATIVE import that
+        // resolves to a scanned file (the local wrapper-module shape) emits.
+        const relDir = path.join(tmpDir, 'wrapped-verb-member-relative-ok');
+        fs.mkdirSync(path.join(relDir, 'src/api'), { recursive: true });
+        fs.writeFileSync(
+          path.join(relDir, 'src/api/client.ts'),
+          `import request from '@winex-plugin/win-request';\nexport default request;\n`,
+        );
+        fs.writeFileSync(
+          path.join(relDir, 'src/api/usage.ts'),
+          `
+import client from './client';
+
+export function tenantConfig() {
+  return client.get('/api/v1/tenant/config');
+}
+`,
+        );
+        const relContracts = await extractor.extract(null, relDir, makeRepo(relDir));
+        expect(
+          relContracts.find(
+            (c) => c.role === 'consumer' && c.contractId === 'http::GET::/api/v1/tenant/config',
+          ),
+        ).toBeDefined();
+      });
+
+      it('does not emit a consumer for router registrations under an imported router module', async () => {
+        // FP-A pin: `userRoutes.get('/api/v1/users', ...)` where userRoutes
+        // is a (resolvable!) relative import is a PROVIDER registration.
+        // Middleware arrays and the Express5/Fastify route-config object
+        // are handler shapes, not client data, so the verb-member loop must
+        // skip them instead of classifying the registration as a consumer.
+        const dir = path.join(tmpDir, 'wrapped-verb-member-router-fp');
+        fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src/routes/index.ts'),
+          `import { Router } from 'express';\nexport default Router();\n`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src/app.ts'),
+          `
+import userRoutes from './routes';
+
+const auth = (req: unknown, res: unknown, next: () => void) => next();
+const listUsers = (req: unknown, res: unknown) => res;
+
+userRoutes.get('/api/v1/users', [auth, listUsers]);
+userRoutes.get('/api/v1/users', { mergeParams: true }, listUsers);
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter(
+          (c) => c.role === 'consumer' && c.contractId === 'http::GET::/api/v1/users',
+        );
+        expect(consumers).toHaveLength(0);
+      });
     });
 
     it('extracts Python requests calls', async () => {

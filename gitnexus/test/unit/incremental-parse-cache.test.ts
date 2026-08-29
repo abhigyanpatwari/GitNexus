@@ -147,7 +147,7 @@ describe('PARSE_CACHE_VERSION', () => {
   //
   // Moved 46 -> 47 for method-level Spring `@RequestMapping` routes (#2857):
   // cached ParseWorkerResults otherwise replay the pre-fix empty route set.
-  // That PR read this branch's claim on 46 and took 47 rather than colliding —
+// That PR read this branch's claim on 46 and took 47 rather than colliding —
   // the FIFTH clash, and the first the ledger's convention actually prevented.
   // It only moved the collision up one step, though: this branch's own 47 and
   // everything above it had to be renumbered +1 at merge time. Capture sets
