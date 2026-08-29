@@ -185,11 +185,12 @@ export function createMCPServer(
     }
   });
 
-  // With multiple visible repositories and no process-wide default, make the
-  // routing requirement machine-readable. Agents then supply `repo` before the
-  // call instead of discovering the ambiguity through a failed tool response.
+  // Make the effective routing contract machine-readable. Read-only tools may
+  // use a cwd-derived default; mutating rename remains explicit unless policy
+  // supplies a single/default repository.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const requireRepo = await repositoryPolicy.requiresExplicitRepo(backend);
+    const { readOnlyRequiresRepo, mutatingRequiresRepo } =
+      await repositoryPolicy.toolSchemaRepoRequirements(backend);
     return {
       tools: GITNEXUS_TOOLS.filter(
         (tool) =>
@@ -201,7 +202,8 @@ export function createMCPServer(
           name: tool.name,
           description: tool.description,
           inputSchema:
-            requireRepo && REPO_SCOPED_TOOLS.has(tool.name)
+            (tool.name === 'rename' ? mutatingRequiresRepo : readOnlyRequiresRepo) &&
+            REPO_SCOPED_TOOLS.has(tool.name)
               ? {
                   ...tool.inputSchema,
                   required: [...new Set([...tool.inputSchema.required, 'repo'])],
