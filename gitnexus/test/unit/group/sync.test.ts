@@ -23,6 +23,7 @@ describe('syncGroup', () => {
     packages: {},
     detect: {
       http: true,
+      graphql: false,
       grpc: false,
       thrift: false,
       topics: false,
@@ -70,6 +71,33 @@ describe('syncGroup', () => {
     expect(result.crossLinks[0].matchType).toBe('exact');
     expect(result.crossLinks[0].confidence).toBe(1.0);
     expect(result.unmatched).toHaveLength(0);
+  });
+
+  it('exact-matches GraphQL root fields across repositories', async () => {
+    const config = makeConfig({ api: 'api-repo', web: 'web-repo' });
+    const contracts: StoredContract[] = [
+      {
+        ...makeContract('graphql::query::widget', 'provider', 'api'),
+        type: 'graphql',
+      },
+      {
+        ...makeContract('graphql::query::widget', 'consumer', 'web'),
+        type: 'graphql',
+      },
+    ];
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => contracts,
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toEqual([
+      expect.objectContaining({
+        type: 'graphql',
+        contractId: 'graphql::query::widget',
+        matchType: 'exact',
+      }),
+    ]);
   });
 
   it('reports missing repos', async () => {

@@ -1,10 +1,15 @@
 import { createRequire } from 'node:module';
-import type { GroupConfig, GroupManifestLink, ContractType, ContractRole } from './types.js';
+import type {
+  ContractRole,
+  GroupConfig,
+  GroupManifestLink,
+  ManifestContractType,
+} from './types.js';
 
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
 
-const VALID_CONTRACT_TYPES: ContractType[] = [
+const VALID_CONTRACT_TYPES: ManifestContractType[] = [
   'http',
   'grpc',
   'thrift',
@@ -26,6 +31,7 @@ const VALID_ROLES: ContractRole[] = ['provider', 'consumer'];
 // repos that need cross-repo header tracking.
 const DEFAULT_DETECT = {
   http: true,
+  graphql: false,
   grpc: true,
   thrift: true,
   topics: true,
@@ -66,7 +72,7 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     if (!link.to || !repoPaths.has(link.to as string)) {
       throw new Error(`links[${i}].to "${link.to}" does not match any repo path in group`);
     }
-    if (!VALID_CONTRACT_TYPES.includes(link.type as ContractType)) {
+    if (!VALID_CONTRACT_TYPES.includes(link.type as ManifestContractType)) {
       throw new Error(
         `links[${i}].type "${link.type}" is invalid. Expected: ${VALID_CONTRACT_TYPES.join(', ')}`,
       );
@@ -84,13 +90,25 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     return {
       from: link.from as string,
       to: link.to as string,
-      type: link.type as ContractType,
+      type: link.type as ManifestContractType,
       contract: String(link.contract),
       role: link.role as ContractRole,
     };
   });
 
-  const detect = { ...DEFAULT_DETECT, ...((raw.detect as object) || {}) };
+  const rawDetect = raw.detect;
+  if (
+    rawDetect !== undefined &&
+    (!rawDetect || typeof rawDetect !== 'object' || Array.isArray(rawDetect))
+  ) {
+    throw new Error('detect must be a mapping of boolean flags');
+  }
+  for (const [key, value] of Object.entries((rawDetect as Record<string, unknown>) || {})) {
+    if (key in DEFAULT_DETECT && typeof value !== 'boolean') {
+      throw new Error(`detect.${key} must be true or false`);
+    }
+  }
+  const detect = { ...DEFAULT_DETECT, ...((rawDetect as object) || {}) };
   const matching = { ...DEFAULT_MATCHING, ...((raw.matching as object) || {}) };
   const packages = (raw.packages as Record<string, Record<string, string>>) || {};
 
