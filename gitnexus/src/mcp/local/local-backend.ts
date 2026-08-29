@@ -3818,7 +3818,16 @@ export class LocalBackend {
     } else if (isQualified) {
       // Parenthesised because the kind filter below is appended with AND, which
       // binds tighter than OR.
-      whereClause = `WHERE (n.id = $symName OR n.name = $symName)`;
+      // #3074: a repo-relative file path (e.g. "supabase/functions/_shared/crypto.ts")
+      // is the most natural way to name a File and is exactly what `target.filePath`
+      // reports, but the old clause only matched `n.id` (= "File:<path>") or basename
+      // `n.name`, so the same path the graph stores never resolved. Also match the
+      // repo-relative `n.filePath` exactly and via an anchored suffix (segment-boundary
+      // "ENDS WITH $suffix" where suffix is "/"+path) so "a.ts" does not spuriously
+      // match "mylib/a.ts" — same anchoring used in detect_changes (#2915).
+      const suffix = pathSuffixOf(name);
+      whereClause = `WHERE (n.id = $symName OR n.name = $symName OR n.filePath = $symName OR n.filePath ENDS WITH $suffix)`;
+      queryParams.suffix = suffix;
     } else {
       whereClause = `WHERE n.name = $symName`;
     }
@@ -6300,7 +6309,11 @@ export class LocalBackend {
             error: `Target '${missing}' not found`,
             target: { name: target },
             direction,
-            impactedCount: 0,
+            // #3074 follow-up: do not ship a normal-shaped 0/UNKNOWN blast radius
+            // alongside the error — it reads as a real "nothing depends on this"
+            // answer. Null marks UNDETERMINED (same as the ambiguous path) so a
+            // consumer testing `impactedCount === 0` cannot misread a miss as safe.
+            impactedCount: null,
             risk: 'UNKNOWN',
           };
     }

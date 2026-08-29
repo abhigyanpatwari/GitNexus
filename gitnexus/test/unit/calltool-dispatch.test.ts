@@ -1344,7 +1344,7 @@ describe('LocalBackend.callTool', () => {
       await backend.callTool('context', { name: 'src/a.ts:collide', kind: 'Function' });
 
       const parenthesised =
-        /WHERE \(n\.id = \$symName OR n\.name = \$symName\) AND n\.id STARTS WITH \$kindPrefix/;
+        /WHERE \(n\.id = \$symName OR n\.name = \$symName.*\) AND n\.id STARTS WITH \$kindPrefix/;
       const calls = resolverCalls();
       expect(calls).toHaveLength(2);
       expect(calls.filter((c) => parenthesised.test(c.query))).toHaveLength(2);
