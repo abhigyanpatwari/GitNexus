@@ -179,7 +179,7 @@ flowchart TB
 | `group_list`     | List configured repository groups                                      |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
 
-> Per-repo tools take an optional `repo` parameter (omit it when only one repo is indexed) and an optional `branch` for indexes pinned with `gitnexus analyze --branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ### Resources for instant context
 
@@ -612,7 +612,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 GitNexus uses a **global registry** so one MCP server can serve multiple indexed repos. No per-project MCP config needed — set it up once and it works everywhere.
 
-Each `gitnexus analyze` stores the index in `.gitnexus/` inside the repo (portable, gitignored) and registers a pointer in `~/.gitnexus/registry.json`. When an AI agent starts, the MCP server reads the registry and can serve any indexed repo. LadybugDB connections are opened lazily on first query and evicted after 5 minutes of inactivity (max 5 concurrent). If only one repo is indexed, the `repo` parameter is optional on all tools — agents don't need to change anything.
+Each `gitnexus analyze` stores the index in `.gitnexus/` inside the repo (portable, gitignored) and registers a pointer in `~/.gitnexus/registry.json`. When an AI agent starts, the MCP server reads the registry and can serve any indexed repo. LadybugDB connections are opened lazily on first query and evicted after 5 minutes of inactivity (max 5 concurrent). Read-only tools can omit `repo` when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Outside those paths—and for mutating tools with multiple indexed repos and no MCP default—pass `repo` explicitly.
 
 <details>
 <summary><strong>Architecture diagram</strong></summary>
