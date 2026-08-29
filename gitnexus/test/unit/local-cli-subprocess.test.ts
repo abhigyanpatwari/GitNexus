@@ -1227,5 +1227,10 @@ describe('Grok CLI timeout', () => {
     vi.advanceTimersByTime(5000 + 2000 + 2000);
     await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
     expect(fs.existsSync(cwd)).toBe(true);
+    child.emit('close', null);
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setImmediate(r));
+    }
+    expect(fs.existsSync(cwd)).toBe(false);
   });
 });
