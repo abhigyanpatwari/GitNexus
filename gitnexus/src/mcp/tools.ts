@@ -82,6 +82,11 @@ export const PDG_QUERY_MAX_LIMIT = 200;
 // PDG direct backend callers also enforce it before running traversal.
 export const IMPACT_MAX_DEPTH = 32;
 
+const CWD_AWARE_REPO_OMISSION =
+  'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
+const MUTATING_REPO_OMISSION =
+  'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo.';
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -94,8 +99,10 @@ PAGINATION: Results are paginated so a large registry is not truncated by MCP/LL
 WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
 AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
 
-When multiple repos are indexed, you MUST specify the "repo" parameter
-on other tools (query, context, impact, etc.) to target the correct one.`,
+When multiple repos are indexed, repo-scoped read-only tools use the configured
+MCP default or the registered path containing the GitNexus process cwd, unless
+cwd has crossed into an unindexed nested Git checkout. If neither applies,
+specify the "repo" parameter explicitly.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -184,8 +191,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
         },
         repo: {
           type: 'string',
-          description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). Omit when only one indexed repo exists.',
+          description: `Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). ${CWD_AWARE_REPO_OMISSION}`,
         },
         service: {
           type: 'string',
@@ -266,7 +272,7 @@ TIPS:
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: ['statement'],
@@ -331,8 +337,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         },
         repo: {
           type: 'string',
-          description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit if only one repo is indexed.',
+          description: `Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". ${CWD_AWARE_REPO_OMISSION}`,
         },
         service: {
           type: 'string',
@@ -378,7 +383,7 @@ Returns: changed symbols, affected processes, and a risk summary.
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -417,7 +422,7 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -454,7 +459,7 @@ Handles disambiguation via context()'s payload verbatim: an ambiguous symbol_nam
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${MUTATING_REPO_OMISSION}`,
         },
       },
       required: ['new_name'],
@@ -593,8 +598,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         },
         repo: {
           type: 'string',
-          description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit if only one repo is indexed.',
+          description: `Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". ${CWD_AWARE_REPO_OMISSION}`,
         },
         service: {
           type: 'string',
@@ -690,7 +694,7 @@ Findings are deliberately NOT part of impact()'s traversal or the web schema —
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -742,7 +746,7 @@ CONTRACT CAVEATS:
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: ['mode', 'target'],
@@ -766,7 +770,7 @@ Returns: route nodes with their handlers, middleware wrapper chains (e.g., withA
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -784,7 +788,10 @@ Returns: tool nodes with their handler files and descriptions.`,
       type: 'object',
       properties: {
         tool: { type: 'string', description: 'Filter by tool name. Omit for all tools.' },
-        repo: { type: 'string', description: 'Repository name or path.' },
+        repo: {
+          type: 'string',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
       },
       required: [],
     },
@@ -807,7 +814,7 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -833,7 +840,10 @@ Response shape is keyed on how many routes match, not on the data: exactly one m
           description:
             'Optional HTTP verb — GET, POST, PUT, PATCH, DELETE, etc. — to narrow a multi-verb route or file lookup to a single method. Returns an error if no matched route uses that verb.',
         },
-        repo: { type: 'string', description: 'Repository name or path.' },
+        repo: {
+          type: 'string',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
       },
       required: [],
     },
@@ -948,8 +958,7 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
         },
         repo: {
           type: 'string',
-          description:
-            'Repository name or path, or "@groupName" / "@groupName/memberPath" for a cross-repo trace over a group. Omit if only one repo is indexed.',
+          description: `Repository name or path, or "@groupName" / "@groupName/memberPath" for a cross-repo trace over a group. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
