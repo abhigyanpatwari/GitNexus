@@ -6,6 +6,7 @@ export type UnusedImpactRiskReason =
   | 'file-nodes-have-no-process-or-community-membership'
   | 'enrichment-skipped'
   | 'enrichment-budget-exhausted'
+  | 'enrichment-truncated'
   | 'enrichment-query-failed';
 
 export interface UnusedImpactRiskAxis {
@@ -50,7 +51,20 @@ function score(
   return 'LOW';
 }
 
-function countsWithUnusedAxesZeroed(
+const UNMEASURED_REASONS: ReadonlySet<UnusedImpactRiskReason> = new Set([
+  'file-nodes-have-no-process-or-community-membership',
+  'enrichment-skipped',
+  'enrichment-budget-exhausted',
+]);
+
+function unusedPair(reason: UnusedImpactRiskReason): UnusedImpactRiskAxis[] {
+  return [
+    { axis: 'processes', reason },
+    { axis: 'modules', reason },
+  ];
+}
+
+function countsWithUnmeasuredAxesZeroed(
   input: ImpactRiskInput,
 ): Pick<
   ImpactRiskInput,
@@ -59,6 +73,7 @@ function countsWithUnusedAxesZeroed(
   let processCount = input.processCount;
   let moduleCount = input.moduleCount;
   for (const unused of input.unusedAxes ?? []) {
+    if (!UNMEASURED_REASONS.has(unused.reason)) continue;
     if (unused.axis === 'processes') processCount = 0;
     if (unused.axis === 'modules') moduleCount = 0;
   }
@@ -79,33 +94,23 @@ export function unusedAxesForImpactWalk(input: {
   processQueryFailed: boolean;
   moduleQueryFailed: boolean;
   /** When 0, a zero chunk budget is not an unused-axis event — there was nothing to enrich. */
-  impactedCount?: number;
+  impactedCount: number;
+  /** True when process/module queries ran on a strict subset of impacted symbols. */
+  enrichmentTruncated?: boolean;
 }): UnusedImpactRiskAxis[] {
   if (input.isFileTarget) {
-    return [
-      {
-        axis: 'processes',
-        reason: 'file-nodes-have-no-process-or-community-membership',
-      },
-      {
-        axis: 'modules',
-        reason: 'file-nodes-have-no-process-or-community-membership',
-      },
-    ];
+    return unusedPair('file-nodes-have-no-process-or-community-membership');
   }
   if (input.skipEnrichment) {
-    return [
-      { axis: 'processes', reason: 'enrichment-skipped' },
-      { axis: 'modules', reason: 'enrichment-skipped' },
-    ];
+    return unusedPair('enrichment-skipped');
   }
-  if (input.maxChunks === 0 && (input.impactedCount ?? 1) > 0) {
-    return [
-      { axis: 'processes', reason: 'enrichment-budget-exhausted' },
-      { axis: 'modules', reason: 'enrichment-budget-exhausted' },
-    ];
+  if (input.maxChunks === 0 && input.impactedCount > 0) {
+    return unusedPair('enrichment-budget-exhausted');
   }
   const unused: UnusedImpactRiskAxis[] = [];
+  if (input.enrichmentTruncated) {
+    unused.push(...unusedPair('enrichment-truncated'));
+  }
   if (input.processQueryFailed) {
     unused.push({ axis: 'processes', reason: 'enrichment-query-failed' });
   }
@@ -115,11 +120,28 @@ export function unusedAxesForImpactWalk(input: {
   return unused;
 }
 
+const INCOMPLETE_SAMPLE_REASONS: ReadonlySet<UnusedImpactRiskReason> = new Set([
+  'enrichment-query-failed',
+  'enrichment-truncated',
+]);
+
 export function scoreImpactRisk(input: ImpactRiskInput): ImpactRiskResult {
   const unusedAxes = input.unusedAxes ?? [];
+  const observedRisk = score(countsWithUnmeasuredAxesZeroed(input));
+  const incompleteSample = unusedAxes.some((unused) =>
+    INCOMPLETE_SAMPLE_REASONS.has(unused.reason),
+  );
+  // Failed queries and truncated samples make observed process/module counts
+  // lower bounds. Preserve any HIGH/CRITICAL warning already proved by those
+  // counts, but never emit a confident LOW/MEDIUM edit gate from an incomplete
+  // enrichment pass.
+  const risk =
+    incompleteSample && (observedRisk === 'LOW' || observedRisk === 'MEDIUM')
+      ? 'UNKNOWN'
+      : observedRisk;
 
   return {
-    risk: score(countsWithUnusedAxesZeroed(input)),
+    risk,
     riskSharedAxes: score({ ...input, processCount: 0, moduleCount: 0 }),
     riskScale: {
       comparableAcrossKinds: unusedAxes.length === 0,

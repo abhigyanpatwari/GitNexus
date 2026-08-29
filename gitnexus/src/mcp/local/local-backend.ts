@@ -9,6 +9,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
+import { scoreImpactRisk, unusedAxesForImpactWalk, type ImpactRiskResult } from 'gitnexus-shared';
 import {
   initLbug,
   executeQuery,
@@ -6429,6 +6430,8 @@ export class LocalBackend {
           let summary: {
             impactedCount: number;
             risk: string;
+            riskSharedAxes?: string;
+            riskScale?: ImpactRiskResult['riskScale'];
             riskNote?: string;
             summary?: { direct: number };
           } | null = null;
@@ -6468,6 +6471,10 @@ export class LocalBackend {
             score: Number(c.score.toFixed(2)),
             impactedCount: summary?.impactedCount ?? 0,
             risk: summary?.risk ?? 'UNKNOWN',
+            ...(summary?.riskSharedAxes !== undefined
+              ? { riskSharedAxes: summary.riskSharedAxes }
+              : {}),
+            ...(summary?.riskScale !== undefined ? { riskScale: summary.riskScale } : {}),
             direct: summary?.summary?.direct ?? 0,
             ...(summary?.riskNote !== undefined ? { riskNote: summary.riskNote } : {}),
             // Carry the explanation with the verdict. The single-symbol path
@@ -7521,6 +7528,10 @@ export class LocalBackend {
     const parsedMaxChunks = rawMaxChunks ? Number(rawMaxChunks) : Number.NaN;
     const MAX_CHUNKS =
       Number.isInteger(parsedMaxChunks) && parsedMaxChunks >= 0 ? parsedMaxChunks : 10;
+    let processQueryFailed = false;
+    let moduleQueryFailed = false;
+    let enrichmentDegraded = false;
+    let moduleClassificationFailed = false;
 
     // `skipEnrichment` (ambiguous #2129 per-candidate probes) bypasses the
     // process/module aggregation passes entirely — those probes need only the
@@ -7571,7 +7582,12 @@ export class LocalBackend {
             ORDER BY pId
           `,
             { ids },
-          ).catch(() => []);
+          ).catch((err) => {
+            processQueryFailed = true;
+            enrichmentDegraded = true;
+            logQueryError('impact:process-chunk', err);
+            return [];
+          });
 
           for (const row of rows) {
             const pId = row.pId ?? row[0];
@@ -7622,6 +7638,8 @@ export class LocalBackend {
             ep.earliest_broken_step = Math.min(ep.earliest_broken_step, minStep ?? Infinity);
           }
         } catch (e) {
+          processQueryFailed = true;
+          enrichmentDegraded = true;
           logQueryError('impact:process-chunk', e);
         }
       }
@@ -7641,7 +7659,11 @@ export class LocalBackend {
             RETURN p.id AS pid, MIN(r.step) AS minStep
           `,
             { pIds, ids: allImpactedIds },
-          ).catch(() => []);
+          ).catch((err) => {
+            enrichmentDegraded = true;
+            logQueryError('impact:process-chunk-backfill', err);
+            return [];
+          });
 
           for (const mr of missingRows) {
             const pid = mr.pid ?? mr[0];
@@ -7655,6 +7677,7 @@ export class LocalBackend {
             }
           }
         } catch (e) {
+          enrichmentDegraded = true;
           logQueryError('impact:process-chunk-backfill', e);
         }
       }
@@ -7715,7 +7738,12 @@ export class LocalBackend {
             LIMIT 20
           `,
             { ids: idsChunk },
-          ).catch(() => []);
+          ).catch((err) => {
+            moduleQueryFailed = true;
+            enrichmentDegraded = true;
+            logQueryError('impact:module-chunk', err);
+            return [];
+          });
 
           for (const r of rows) {
             const name = r.name ?? r[0] ?? null;
@@ -7724,6 +7752,8 @@ export class LocalBackend {
             moduleHitsMap.set(name, (moduleHitsMap.get(name) || 0) + hits);
           }
         } catch (e) {
+          moduleQueryFailed = true;
+          enrichmentDegraded = true;
           logQueryError('impact:module-chunk', e);
         }
       };
@@ -7749,12 +7779,19 @@ export class LocalBackend {
             RETURN DISTINCT c.heuristicLabel AS name
           `,
             { ids: idsChunk },
-          ).catch(() => []);
+          ).catch((err) => {
+            enrichmentDegraded = true;
+            moduleClassificationFailed = true;
+            logQueryError('impact:direct-module-chunk', err);
+            return [];
+          });
           for (const r of rows) {
             const name = r.name ?? r[0] ?? null;
             if (name) directModuleSet.add(name);
           }
         } catch (e) {
+          enrichmentDegraded = true;
+          moduleClassificationFailed = true;
           logQueryError('impact:direct-module-chunk', e);
         }
       };
@@ -7779,7 +7816,11 @@ export class LocalBackend {
         return {
           name,
           hits,
-          impact: directModuleNameSet.has(name) ? 'direct' : 'indirect',
+          impact: moduleClassificationFailed
+            ? 'classification-unavailable'
+            : directModuleNameSet.has(name)
+              ? 'direct'
+              : 'indirect',
         };
       });
     }
@@ -7787,40 +7828,25 @@ export class LocalBackend {
     // Risk scoring
     const processCount = affectedProcesses.length;
     const moduleCount = affectedModules.length;
-    let risk: string;
-    if (direction === 'upstream' && impacted.length === 0) {
-      // An upstream walk that resolved NO callers cannot support `LOW`. "Safe
-      // to change" is a claim ABOUT callers, and this walk found none to reason
-      // about: the symbol may be genuinely unused, or reached only through a
-      // reference class this index does not record — a property access on a
-      // plain object, or a bare-identifier read of a module-scope `Const`,
-      // neither of which mints a reference site today. Seeding `LOW` from an
-      // empty result is the same false-safe signal `anyKnownRisk` refuses to
-      // emit on the ambiguous-candidate path, and that #2687 removed by making
-      // an undetermined `impactedCount` `null` instead of `0`.
-      //
-      // Downstream is deliberately untouched: an empty downstream walk reports
-      // that this symbol resolved no callees, which is not a safety verdict.
-      risk = 'UNKNOWN';
-    } else if (
-      directCount >= 30 ||
-      processCount >= 5 ||
-      moduleCount >= 5 ||
-      impacted.length >= 200
-    ) {
-      risk = 'CRITICAL';
-    } else if (
-      directCount >= 15 ||
-      processCount >= 3 ||
-      moduleCount >= 3 ||
-      impacted.length >= 100
-    ) {
-      risk = 'HIGH';
-    } else if (directCount >= 5 || impacted.length >= 30) {
-      risk = 'MEDIUM';
-    } else {
-      risk = 'LOW';
-    }
+    const isFileTarget = symType === 'File' || String(symId).startsWith('File:');
+    const unusedAxes = unusedAxesForImpactWalk({
+      isFileTarget,
+      skipEnrichment,
+      maxChunks: MAX_CHUNKS,
+      processQueryFailed,
+      moduleQueryFailed,
+      impactedCount: impacted.length,
+      enrichmentTruncated:
+        !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
+    });
+    const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
+      direction,
+      directCount,
+      processCount,
+      moduleCount,
+      impactedCount: impacted.length,
+      unusedAxes,
+    });
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};
@@ -7840,7 +7866,7 @@ export class LocalBackend {
       target: {
         id: symId,
         name: sym.name || sym[1],
-        type: symType,
+        type: isFileTarget ? symType || 'File' : symType,
         filePath: sym.filePath || sym[2],
         ...(beanMetadata ? { bean: beanMetadata } : {}),
         ...(aopMetadata ? { aop: aopMetadata } : {}),
@@ -7848,18 +7874,27 @@ export class LocalBackend {
       direction,
       impactedCount: impacted.length,
       risk,
+      riskSharedAxes,
+      riskScale,
       ...(risk === 'UNKNOWN'
         ? {
             riskNote:
-              'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
-              'a caller reaching it through a reference class this index does not record — ' +
-              'plain-object property access, a bare-identifier read of a module-scope const — ' +
-              'produces no edge to find. Confirm with a text search before treating the ' +
-              'change as safe.',
+              processQueryFailed || moduleQueryFailed
+                ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
+                  'are lower bounds; retry impact before treating the change as safe.'
+                : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
+                  ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
+                    'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
+                    'treating the change as safe.'
+                  : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+                    'a caller reaching it through a reference class this index does not record — ' +
+                    'plain-object property access, a bare-identifier read of a module-scope const — ' +
+                    'produces no edge to find. Confirm with a text search before treating the ' +
+                    'change as safe.',
           }
         : {}),
       ...epistemic,
-      ...(!traversalComplete && { partial: true }),
+      ...((!traversalComplete || enrichmentDegraded) && { partial: true }),
       summary: {
         direct: directCount,
         processes_affected: processCount,
