@@ -8,8 +8,12 @@ import {
   getMaxResidentRepos,
 } from '../lbug/pool-adapter.js';
 import {
+  findRegistryEntryByName,
+  canonicalizePath,
+  registryPathEquals,
   readRegistry,
   readRegistryStrict,
+  RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import type {
@@ -128,9 +132,19 @@ export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry
   return base;
 }
 
+/** Operator copy for group sync — unique `--name`, not a path in yaml. */
+export function formatGroupSyncAmbiguousError(err: RegistryAmbiguousTargetError): string {
+  const listing = err.matches.map((m) => `  - ${m.path}`).join('\n');
+  return (
+    `Multiple registered repos are named "${err.target}":\n${listing}\n` +
+    `Give each clone a unique registry name with \`gitnexus analyze --name\`, then re-sync. ` +
+    `Do not put a filesystem path in group.yaml.`
+  );
+}
+
 function defaultResolveHandle(allEntries: RegistryEntry[]) {
   return async (registryName: string, groupPath: string): Promise<RepoHandle | null> => {
-    const e = allEntries.find((en) => en.name === registryName);
+    const e = findRegistryEntryByName(allEntries, registryName);
     if (!e) return null;
     const poolId = stableRepoPoolId(e, allEntries);
     return {
@@ -295,6 +309,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       registryEntries = await readRegistryStrict();
       const entries = registryEntries;
       const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
+      if (!opts?.resolveRepoHandle) {
+        for (const regName of Object.values(config.repos)) {
+          findRegistryEntryByName(entries, regName);
+        }
+      }
       const httpEx = new HttpRouteExtractor();
       const graphqlEx = new GraphqlExtractor();
       const grpcEx = new GrpcExtractor();
@@ -409,7 +428,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
               lastCommit: m.lastCommit || '',
             };
           } catch {
-            const e = entries.find((en) => en.name === regName);
+            const resolvedHandlePath = canonicalizePath(handle.repoPath);
+            const e = entries.find((en) =>
+              registryPathEquals(canonicalizePath(en.path), resolvedHandlePath),
+            );
             repoSnapshots[groupPath] = {
               indexedAt: e?.indexedAt || '',
               lastCommit: e?.lastCommit || '',
@@ -431,6 +453,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // read. The loop bounds the append by memory instead.
           for (const contract of repoContracts) autoContracts.push(contract);
         } catch (err) {
+          if (err instanceof RegistryAmbiguousTargetError) throw err;
           // This spans initLbug plus all contract extraction for the repo. The
           // error used to be discarded entirely, so the only trace of (say) a
           // storage-version mismatch was an empty contracts.json and a later
@@ -465,7 +488,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const repoPaths = new Map<string, string>();
       if (!registryEntries) registryEntries = await readRegistry();
       for (const [groupPath, regName] of Object.entries(config.repos)) {
-        const e = registryEntries.find((en) => en.name === regName);
+        const e = findRegistryEntryByName(registryEntries, regName);
         if (e) repoPaths.set(groupPath, e.path);
       }
 

@@ -28,6 +28,7 @@ import {
   adoptFlatBranchLabel,
   listRegisteredRepos,
   resolveRegistryEntry,
+  findRegistryEntryByName,
   canonicalizePath,
   registryPathEquals,
   cloneDirBelongsToEntry,
@@ -1533,6 +1534,13 @@ describe('resolveRegistryEntry (#664)', () => {
   it('name match is case-insensitive', () => {
     expect(resolveRegistryEntry(entries, 'WEBSITE')).toBe(entries[2]);
     expect(resolveRegistryEntry(entries, 'Website')).toBe(entries[2]);
+  });
+
+  it('findRegistryEntryByName is name-only: a filesystem path is a miss, not a path-tier hit', () => {
+    expect(findRegistryEntryByName(entries, pathA)).toBeUndefined();
+    expect(findRegistryEntryByName(entries, 'website')).toBe(entries[2]);
+    expect(findRegistryEntryByName(entries, 'WEBSITE')).toBe(entries[2]);
+    expect(() => findRegistryEntryByName(entries, 'app')).toThrow(RegistryAmbiguousTargetError);
   });
 
   it('path match is case-insensitive on Windows only', () => {
