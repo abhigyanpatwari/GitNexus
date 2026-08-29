@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
+import { describe, it, expect, vi } from 'vitest';
+import { mkdtemp, rm, readdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ParsedFile } from 'gitnexus-shared';
@@ -7,8 +7,12 @@ import {
   clearParsedFileStore,
   persistParsedFileChunk,
   persistParsedFileShardSync,
+  persistDurableParsedFileShardSync,
+  restoreDurableParsedFileShard,
   loadParsedFilesForPaths,
   getParsedFileStoreDir,
+  getDurableParsedFileDir,
+  parsedFileLoadGc,
 } from '../../src/storage/parsedfile-store.js';
 
 /**
@@ -610,6 +614,75 @@ describe('parsedfile-store receiverChain sanitation', () => {
       expect(loaded.referenceSites[0]).toMatchObject({ receiverChain: '2|svc|cgetUser' });
       expect(loaded.referenceSites[1]).not.toHaveProperty('receiverChain');
       expect(loaded.referenceSites[2]).toMatchObject({ receiverChain: '2|other|ffield' });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a .json.paths sidecar and skips JSON for non-intersecting shards (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [makeParsedFile('a.c')]);
+      await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('b.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      const names = await readdir(storeDir);
+      expect(names.sort()).toEqual(['chunk-0.json', 'chunk-0.json.paths', 'chunk-1.json', 'chunk-1.json.paths']);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+      expect([...loaded.keys()]).toEqual(['b.c']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a shard when its sidecar is missing or garbage (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-fb-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      await persistParsedFileChunk(dir, 'bad', [makeParsedFile('b.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await rm(path.join(storeDir, 'ok.json.paths'), { force: true });
+      await writeFile(path.join(storeDir, 'bad.json.paths'), 'not\x00valid', 'utf-8');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c']));
+      expect(loaded.has('a.c')).toBe(true);
+      expect(loaded.has('b.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not forceGc on a small store (byte budget, not every 8 shards) (#3086)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-gc-'));
+    const gc = vi.fn();
+    const prev = parsedFileLoadGc.run;
+    parsedFileLoadGc.run = gc;
+    try {
+      for (let i = 0; i < 16; i++) {
+        await persistParsedFileChunk(dir, `s${i}`, [makeParsedFile(`f${i}.c`)]);
+      }
+      await loadParsedFilesForPaths(
+        dir,
+        new Set(Array.from({ length: 16 }, (_, i) => `f${i}.c`)),
+      );
+      expect(gc).not.toHaveBeenCalled();
+    } finally {
+      parsedFileLoadGc.run = prev;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restoreDurableParsedFileShard copies sidecars and returns JSON shard count (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      const storeDir = getParsedFileStoreDir(dir);
+      expect(await readdir(storeDir)).toEqual(
+        expect.arrayContaining(['abc-w1-0.json', 'abc-w1-0.json.paths']),
+      );
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

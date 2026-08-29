@@ -2,7 +2,7 @@
  * Parse implementation — chunked parse + resolve loop.
  *
  * This is the core parsing engine of the ingestion pipeline. It reads
- * source files in byte-budget chunks (~20MB each), parses via the worker
+ * source files in stable hash-bucket packs (~2MB each by default), parses via the worker
  * pool (the sole parse path — there is no sequential fallback), and emits
  * route CALLS edges. Import,
  * call, and inheritance resolution are owned by the scope-resolution
@@ -27,6 +27,7 @@ import {
   loadParseCacheChunk,
   persistParseCacheChunk,
   PARSE_CACHE_VERSION,
+  packParseCacheChunks,
 } from '../../../storage/parse-cache.js';
 import {
   clearParsedFileStore,
@@ -214,15 +215,11 @@ export function heapPressureRemedy(heapLimitBytes: number): string {
 const DEFAULT_CHUNK_BYTE_BUDGET = 2 * 1024 * 1024;
 
 /**
- * Per-worker share of a chunk's byte budget when auto-scaling (#worker-idle).
- *
- * A chunk is a single `WorkerPool.dispatch` unit; the pool fans a chunk's files
- * into sub-batch jobs and assigns them to idle workers (`wakeIdleSlots`). When
- * the chunk budget (2 MB) was far below the 8 MB sub-batch cap, every chunk
- * produced exactly ONE job → ONE busy worker while the other N-1 sat idle. To
- * keep all workers fed, the auto chunk budget now scales as
- * `poolSize × CHUNK_BYTES_PER_WORKER`, so each dispatch carries enough work to
- * fan across the whole pool. Sequential / explicit-budget runs are unaffected.
+ * Cache-chunk byte budget. Membership must not scale with the worker pool
+ * (#3088): a larger pool used to inflate this to 16 MiB on 8 cores so a
+ * one-line edit re-parsed almost everything. Worker occupancy is handled by
+ * sub-batch sizing below (`MIN_SUB_BATCH_BYTES` vs pack size), not by
+ * coarsening cache keys.
  */
 const CHUNK_BYTES_PER_WORKER = 2 * 1024 * 1024;
 
@@ -236,14 +233,12 @@ const TARGET_JOBS_PER_WORKER = 3;
 /** Floor for a derived sub-batch so jobs don't shrink to per-file IPC churn. */
 const MIN_SUB_BATCH_BYTES = 256 * 1024;
 
-function resolveChunkByteBudget(options?: PipelineOptions, effectivePoolSize = 1): number {
+function resolveChunkByteBudget(options?: PipelineOptions, _effectivePoolSize = 1): number {
   const opt = options?.chunkByteBudget;
   if (typeof opt === 'number' && Number.isFinite(opt) && opt > 0) return opt;
   const env = Number(process.env.GITNEXUS_CHUNK_BYTE_BUDGET);
   if (Number.isFinite(env) && env > 0) return env;
-  // Auto: size each chunk so a dispatch can fan across the whole pool. A
-  // single-worker (tiny-repo) run keeps the original 2 MB invalidation floor.
-  return Math.max(DEFAULT_CHUNK_BYTE_BUDGET, effectivePoolSize * CHUNK_BYTES_PER_WORKER);
+  return DEFAULT_CHUNK_BYTE_BUDGET;
 }
 
 // ── Main parse + resolve function ──────────────────────────────────────────
@@ -594,10 +589,15 @@ export async function runChunkedParseAndResolve(
     explicitPoolSize && explicitPoolSize > 0
       ? explicitPoolSize
       : Math.min(resolveAutoPoolSize(), workProportionalCap);
+  // Cache packs: stable (language, hash(path) mod 128) buckets, then the
+  // per-call byte budget inside each bucket (#3088). Pool size is used only
+  // for worker count and sub-batch fan-out, not membership.
   const chunkByteBudget = resolveChunkByteBudget(options, effectivePoolSize);
-  // Sub-batch size so each chunk fans into ~`TARGET_JOBS_PER_WORKER` jobs per
-  // worker, giving the pool's idle-slot assignment room to load-balance. An
-  // explicit `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` operator override wins.
+  // Sub-batch size so a 2 MiB pack fans into ~TARGET_JOBS_PER_WORKER jobs
+  // per worker, floored at MIN_SUB_BATCH_BYTES (256 KiB) so an 8-worker
+  // pool still gets ~8 jobs from one pack instead of one idle-heavy job
+  // (#worker-idle). Do not derive this from pool×2 MiB while dispatching a
+  // 2 MiB pack. An explicit GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES wins.
   const subBatchEnv = Number(process.env.GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES);
   const dispatchSubBatchMaxBytes =
     Number.isFinite(subBatchEnv) && subBatchEnv > 0
@@ -622,19 +622,14 @@ export async function runChunkedParseAndResolve(
     );
   }
 
-  const chunks: string[][] = [];
-  let currentChunk: string[] = [];
-  let currentBytes = 0;
-  for (const file of parseableScanned) {
-    if (currentChunk.length > 0 && currentBytes + file.size > chunkByteBudget) {
-      chunks.push(currentChunk);
-      currentChunk = [];
-      currentBytes = 0;
-    }
-    currentChunk.push(file.path);
-    currentBytes += file.size;
-  }
-  if (currentChunk.length > 0) chunks.push(currentChunk);
+  const chunks: string[][] = packParseCacheChunks(
+    parseableScanned.map((file) => ({
+      path: file.path,
+      size: file.size,
+      language: getLanguageFromFilename(file.path) ?? 'unknown',
+    })),
+    chunkByteBudget,
+  );
 
   const numChunks = chunks.length;
 

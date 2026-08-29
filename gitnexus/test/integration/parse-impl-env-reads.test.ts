@@ -28,6 +28,7 @@ import path from 'node:path';
 
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { parseCacheBucketId } from '../../src/storage/parse-cache.js';
 
 const ORIGINAL_BUDGET = process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
 
@@ -123,12 +124,12 @@ describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
     expect(chunks).toBe(3);
   });
 
-  it('default-fallback: large built-in budget keeps the fixture in a single chunk', async () => {
-    // Both option and env unset → falls through to DEFAULT_CHUNK_BYTE_BUDGET
-    // (2 MB). The fixture totals well under that, so exactly one chunk.
+  it('default-fallback: 2 MB budget packs by bucket, not one sequential mega-chunk', async () => {
     delete process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
-    const chunks = await countChunksFromProgress(repoPath, ['a.ts', 'b.ts', 'c.ts']);
-    expect(chunks).toBe(1);
+    const files = ['a.ts', 'b.ts', 'c.ts'];
+    const expectedBuckets = new Set(files.map((f) => `typescript\0${parseCacheBucketId(f)}`));
+    const chunks = await countChunksFromProgress(repoPath, files);
+    expect(chunks).toBe(expectedBuckets.size);
   });
 
   it('per-call: two back-to-back runs with different option values observe their own values, not the previous call', async () => {
@@ -146,6 +147,7 @@ describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
       chunkByteBudget: 10 * 1024 * 1024,
     });
     expect(small).toBe(3);
-    expect(large).toBe(1);
+    const expectedBuckets = new Set(files.map((f) => `typescript\0${parseCacheBucketId(f)}`));
+    expect(large).toBe(expectedBuckets.size);
   });
 });

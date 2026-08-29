@@ -6,10 +6,12 @@
  * does is skip the tree-sitter worker dispatch when a chunk's contents
  * haven't changed since the last run.
  *
- * Granularity: chunk-level. The parse phase chunks files into ~20MB byte
- * budgets. The cache key is `sha256(joined(filePath:contentHash for each
- * file in the chunk, sorted))`. A change to a single file invalidates only
- * that file's chunk — typically 1 of ~50 chunks on a 1000-file repo.
+ * Granularity: chunk-level. Files are assigned to a stable
+ * `(language, hash(path) mod 128)` bucket, then packed to a 2 MiB (or
+ * operator) byte budget *inside* that bucket. Membership does not depend
+ * on worker count. The cache key is `sha256(joined(filePath:contentHash
+ * for each file in the chunk, sorted))`. A content edit invalidates only
+ * that file's pack; add/delete/rename only the affected bucket.
  *
  * Why not per-file:
  * - Workers process sub-batches and emit aggregated `ParseWorkerResult`s.
@@ -650,7 +652,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // `route-extractors/` and `workers/` module content — would close the missing-
 // bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 79;
+const SCHEMA_BUMP = 80;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -675,6 +677,51 @@ const GITNEXUS_PKG_VERSION = (() => {
   return '0.0.0-unknown';
 })();
 export const PARSE_CACHE_VERSION = `${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}`;
+
+/** Stable parse-cache bucket count (#3088). Changing this requires SCHEMA_BUMP. */
+export const PARSE_CACHE_BUCKET_COUNT = 128;
+
+/** Bucket id for cache membership: `sha256(path) mod N` without IEEE-754 truncation. */
+export const parseCacheBucketId = (filePath: string): number =>
+  Number(BigInt(`0x${fileContentHash(filePath)}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
+
+export type ParseCachePackFile = { path: string; size: number; language: string };
+
+/**
+ * Pack files into parse-cache chunks: group by (language, bucket id), sort
+ * paths inside the group, then cut at `byteBudget`. Visit order is language
+ * then bucket id so membership is independent of scan order and worker count.
+ */
+export const packParseCacheChunks = (
+  files: readonly ParseCachePackFile[],
+  byteBudget: number,
+): string[][] => {
+  const buckets = new Map<string, ParseCachePackFile[]>();
+  for (const file of files) {
+    const key = `${file.language}\0${parseCacheBucketId(file.path)}`;
+    const list = buckets.get(key);
+    if (list) list.push(file);
+    else buckets.set(key, [file]);
+  }
+  const chunks: string[][] = [];
+  for (const key of [...buckets.keys()].sort()) {
+    const group = buckets.get(key)!;
+    group.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    let current: string[] = [];
+    let bytes = 0;
+    for (const file of group) {
+      if (current.length > 0 && bytes + file.size > byteBudget) {
+        chunks.push(current);
+        current = [];
+        bytes = 0;
+      }
+      current.push(file.path);
+      bytes += file.size;
+    }
+    if (current.length > 0) chunks.push(current);
+  }
+  return chunks;
+};
 
 const LEGACY_CACHE_FILENAME = 'parse-cache.json';
 const CACHE_DIRNAME = 'parse-cache';

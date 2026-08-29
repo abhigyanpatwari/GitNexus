@@ -180,6 +180,31 @@ const serializeParsedFileShard = (parsedFiles: readonly ParsedFile[]): string | 
 const shardPath = (storagePath: string, shardId: string): string =>
   path.join(getParsedFileStoreDir(storagePath), `${shardId}.json`);
 
+/** Sidecar listing `filePath`s in a shard; not matched by `endsWith('.json')`. */
+const shardPathsSidecarPath = (jsonPath: string): string => `${jsonPath}.paths`;
+
+const LOAD_GC_BYTE_BUDGET = 128 * 1024 * 1024;
+const LOAD_YIELD_EVERY_SHARDS = 128;
+
+/**
+ * Test seam for #3086. Production always calls {@link forceGc}; unit tests
+ * replace `run` to count cadence without requiring `--expose-gc`.
+ */
+export const parsedFileLoadGc = {
+  run: forceGc,
+};
+
+const encodeShardPathsSidecar = (parsedFiles: readonly ParsedFile[]): string =>
+  parsedFiles.map((pf) => pf.filePath).join('\n') + (parsedFiles.length > 0 ? '\n' : '');
+
+const writeShardPathsSidecar = async (jsonPath: string, parsedFiles: readonly ParsedFile[]): Promise<void> => {
+  await fs.writeFile(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
+};
+
+const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly ParsedFile[]): void => {
+  writeFileSync(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
+};
+
 /**
  * Write one parse chunk's `ParsedFile[]` to the store as a single shard (async).
  * No-op for an empty chunk. `shardId` must be unique within a run. Used by the
@@ -194,7 +219,9 @@ export const persistParsedFileChunk = async (
   const payload = serializeParsedFileShard(parsedFiles);
   if (payload === null) return;
   await fs.mkdir(getParsedFileStoreDir(storagePath), { recursive: true });
-  await fs.writeFile(shardPath(storagePath, shardId), payload, 'utf-8');
+  const dest = shardPath(storagePath, shardId);
+  await fs.writeFile(dest, payload, 'utf-8');
+  await writeShardPathsSidecar(dest, parsedFiles);
 };
 
 // Per-process set of store dirs we've already `mkdir`ed, so the sync worker
@@ -223,7 +250,9 @@ export const persistParsedFileShardSync = (
     mkdirSync(dir, { recursive: true });
     createdStoreDirs.add(dir);
   }
-  writeFileSync(shardPath(storagePath, shardId), payload, 'utf-8');
+  const dest = shardPath(storagePath, shardId);
+  writeFileSync(dest, payload, 'utf-8');
+  writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
 /**
@@ -255,7 +284,37 @@ export const loadParsedFilesForPaths = async (
   let filesWithDroppedSites = 0;
   let droppedChains = 0;
   let rejectedFiles = 0;
+  let bytesSinceGc = 0;
+  let shardsSinceYield = 0;
+  const maybeYieldAndGc = async (forceByteGc: boolean): Promise<void> => {
+    if (forceByteGc) {
+      parsedFileLoadGc.run();
+      bytesSinceGc = 0;
+      shardsSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return;
+    }
+    shardsSinceYield++;
+    if (shardsSinceYield >= LOAD_YIELD_EVERY_SHARDS) {
+      shardsSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
   for (let i = 0; i < shards.length; i++) {
+    const jsonName = shards[i];
+    const jsonFull = path.join(dir, jsonName);
+    try {
+      const sidecarRaw = await fs.readFile(shardPathsSidecarPath(jsonFull), 'utf-8');
+      if (sidecarRaw.includes('\0')) {
+        throw new Error('corrupt sidecar');
+      }
+      const listed = sidecarRaw.split('\n').filter((line) => line.length > 0);
+      if (listed.length > 0 && !listed.some((p) => wantPaths.has(p))) {
+        continue;
+      }
+    } catch {
+      // Missing or unreadable sidecar → read the shard (pre-sidecar stores).
+    }
     // Per-shard def pool: a SymbolDefinition's three serialized copies live within
     // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
     // pool would retain defs of files NOT in `wantPaths` (loaded-but-discarded
@@ -263,12 +322,15 @@ export const loadParsedFilesForPaths = async (
     const defPool = new Map<string, SymbolDefinition>();
     const reviver = makeInterningReviver(pool, defPool);
     let parsed: ParsedFile[];
+    let raw: string;
     try {
-      const raw = await fs.readFile(path.join(dir, shards[i]), 'utf-8');
+      raw = await fs.readFile(jsonFull, 'utf-8');
       parsed = JSON.parse(raw, reviver) as ParsedFile[];
     } catch {
       continue; // skip a corrupt shard; missing files fall back to fresh extract
     }
+    bytesSinceGc += Buffer.byteLength(raw, 'utf8');
+    const crossedBudget = bytesSinceGc >= LOAD_GC_BYTE_BUDGET;
     if (!Array.isArray(parsed)) continue;
     for (const pf of parsed) {
       if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
@@ -296,13 +358,9 @@ export const loadParsedFilesForPaths = async (
         });
       }
     }
-    // Every few shards, reclaim the transient pre-intern parse churn before it
-    // piles up against the heap limit (~5 GB avoidable on the kernel), and
-    // yield so the GC + any pending I/O can run.
-    if ((i & 7) === 7) {
-      forceGc();
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
+    // GC when deserialized shard bytes reach 128 MiB (#3086), not every 8
+    // shards. Still yield at least every 128 shards so pending I/O can run.
+    await maybeYieldAndGc(crossedBudget);
   }
   if (droppedSites > 0 || droppedChains > 0) {
     // Facts for the dropped sites are omitted this run (the file itself is
@@ -595,7 +653,9 @@ export const persistDurableParsedFileShardSync = (
     mkdirSync(dir, { recursive: true });
     createdDurableDirs.add(dir);
   }
-  writeFileSync(path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`), payload, 'utf-8');
+  const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`);
+  writeFileSync(dest, payload, 'utf-8');
+  writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
 /**
@@ -625,6 +685,12 @@ export const restoreDurableParsedFileShard = async (
   await fs.mkdir(dst, { recursive: true });
   for (const name of shards) {
     await fs.copyFile(path.join(src, name), path.join(dst, name));
+    const sidecar = shardPathsSidecarPath(name);
+    try {
+      await fs.copyFile(path.join(src, sidecar), path.join(dst, sidecar));
+    } catch {
+      // Pre-sidecar durable generation: load falls back to reading JSON.
+    }
   }
   return shards.length;
 };

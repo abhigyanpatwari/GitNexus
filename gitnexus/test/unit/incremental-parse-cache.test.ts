@@ -6,6 +6,8 @@ import {
   PARSE_CACHE_VERSION,
   computeChunkHash,
   fileContentHash,
+  packParseCacheChunks,
+  parseCacheBucketId,
   loadParseCache,
   loadParseCacheChunk,
   persistParseCacheChunk,
@@ -240,15 +242,10 @@ describe('PARSE_CACHE_VERSION', () => {
   // collided, because each re-checked once and neither re-checked after the
   // other moved — which is why the rule is re-applied AT MERGE, not when the
   // number is picked.
-  it('pins SCHEMA_BUMP to 79 so concurrent bumps cannot silently collide (#2766, #3015)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(79);
-    // The PREVIOUS version must fail the reuse gate, not merely differ from the
-    // current one — a hardcoded number outside the conflict hunk rebases cleanly
-    // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    // Every nearby historical or in-flight value is rejected, including 69,
-    // which carried the route-table payload before this merge.
+  it('pins SCHEMA_BUMP to 80 so concurrent bumps cannot silently collide (#2766, #3015, #3088)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(80);
     for (const taken of [
-      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78,
+      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
@@ -257,6 +254,33 @@ describe('PARSE_CACHE_VERSION', () => {
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
     // Looks like "1+1.6.4" — schema bump prefix + actual gitnexus version
     expect(PARSE_CACHE_VERSION).toMatch(/^\d+\+\d+\.\d+\.\d+/);
+  });
+});
+
+describe('packParseCacheChunks (#3088)', () => {
+  it('does not use worker count; add/delete only moves the affected bucket', () => {
+    const files = [
+      { path: 'src/a.ts', size: 100, language: 'typescript' },
+      { path: 'src/b.ts', size: 100, language: 'typescript' },
+      { path: 'pkg/c.py', size: 100, language: 'python' },
+    ];
+    const a = packParseCacheChunks(files, 2 * 1024 * 1024);
+    const b = packParseCacheChunks(files, 2 * 1024 * 1024);
+    expect(a).toEqual(b);
+    const withNew = packParseCacheChunks(
+      [...files, { path: 'AAA.ts', size: 150_000, language: 'typescript' }],
+      2 * 1024 * 1024,
+    );
+    const oldSets = a.map((c) => c.join('|'));
+    const newSets = withNew.map((c) => c.join('|'));
+    const unchanged = oldSets.filter((s) => newSets.includes(s)).length;
+    expect(unchanged).toBeGreaterThanOrEqual(a.length - 1);
+  });
+
+  it('parseCacheBucketId is stable for a path and uses the full digest', () => {
+    expect(parseCacheBucketId('src/foo.ts')).toBe(parseCacheBucketId('src/foo.ts'));
+    expect(parseCacheBucketId('src/foo.ts')).toBeGreaterThanOrEqual(0);
+    expect(parseCacheBucketId('src/foo.ts')).toBeLessThan(128);
   });
 });
 
