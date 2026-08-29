@@ -557,6 +557,18 @@ function resolveConsumerPath(
   return legacyShape || looksLikeHttpPath(literal) ? literal : null;
 }
 
+/**
+ * Find the nearest enclosing class_declaration for a node, or null.
+ */
+function findEnclosingClass(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  let cur: Parser.SyntaxNode | null = node.parent;
+  while (cur) {
+    if (cur.type === 'class_declaration') return cur;
+    cur = cur.parent;
+  }
+  return null;
+}
+
 function scanBundle(
   bundle: NodePatternBundle,
   tree: Parser.Tree,
@@ -816,6 +828,9 @@ function scanBundle(
       name: null,
       line: optionsNode.startPosition.row + 1,
       confidence: 0.65,
+    });
+  }
+
   for (const route of scanDataRouteTables(tree)) {
     const imported =
       route.handlerLocalName === undefined ? undefined : importMap.get(route.handlerLocalName);
