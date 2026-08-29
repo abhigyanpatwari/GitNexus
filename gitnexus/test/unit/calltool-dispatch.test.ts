@@ -1344,10 +1344,65 @@ describe('LocalBackend.callTool', () => {
       await backend.callTool('context', { name: 'src/a.ts:collide', kind: 'Function' });
 
       const parenthesised =
-        /WHERE \(n\.id = \$symName OR n\.name = \$symName\) AND n\.id STARTS WITH \$kindPrefix/;
+        /WHERE \(n\.id = \$symName OR n\.name = \$symName OR \(n\.id STARTS WITH \$filePrefix AND \(n\.filePath = \$symName OR n\.filePath ENDS WITH \$suffix\)\)\) AND n\.id STARTS WITH \$kindPrefix/;
       const calls = resolverCalls();
       expect(calls).toHaveLength(2);
       expect(calls.filter((c) => parenthesised.test(c.query))).toHaveLength(2);
+    });
+
+    it('exact File path wins over suffixed matches during qualified resolution (#3084 review P2)', async () => {
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) => {
+        if (query.startsWith('MATCH (n)')) {
+          return [
+            {
+              id: 'File:src/lib/a.ts',
+              name: 'a.ts',
+              filePath: 'src/lib/a.ts',
+              kind: 'File',
+              total_hits: 1,
+            },
+            {
+              id: 'File:lib/a.ts',
+              name: 'a.ts',
+              filePath: 'lib/a.ts',
+              kind: 'File',
+              total_hits: 1,
+            },
+          ];
+        }
+        return [{ total: 2 }];
+      });
+
+      const result = await backend.callTool('context', { name: 'lib/a.ts' });
+      expect(result).toMatchObject({
+        status: 'found',
+        symbol: {
+          filePath: 'lib/a.ts',
+          uid: 'File:lib/a.ts',
+        },
+      });
+    });
+
+    it('not_found impact queries return impactedCount null and risk UNKNOWN across modes (#3074 / #3084 review)', async () => {
+      (executeParameterized as any).mockImplementation(async () => []);
+
+      const cgResult = await backend.callTool('impact', { target: 'nonexistent_target_xyz' });
+      expect(cgResult).toMatchObject({
+        error: "Target 'nonexistent_target_xyz' not found",
+        impactedCount: null,
+        risk: 'UNKNOWN',
+      });
+
+      const pdgResult = await backend.callTool('impact', {
+        target: 'nonexistent_target_xyz',
+        mode: 'pdg',
+      });
+      expect(pdgResult).toMatchObject({
+        error: "Target 'nonexistent_target_xyz' not found",
+        impactedCount: null,
+        risk: 'UNKNOWN',
+        pdgResultVersion: 3,
+      });
     });
 
     it('retries UNFILTERED when the kind hint matches no label prefix (#2787 review F5)', async () => {
@@ -3241,7 +3296,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.mode).toBe('pdg');
     expect(result.target).toEqual({ name: 'missingSymbol' });
     expect(result.direction).toBe('upstream');
-    expect(result.impactedCount).toBe(0);
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
   });
 
@@ -3257,7 +3312,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.mode).toBe('pdg');
     expect(result.target).toEqual({ name: 'main' });
     expect(result.direction).toBe('downstream');
-    expect(result.impactedCount).toBe(0);
+    expect(result.impactedCount).toBeNull();
     expect(result.risk).toBe('UNKNOWN');
     expect(result.suggestion).toMatch(/context/);
     implSpy.mockRestore();
