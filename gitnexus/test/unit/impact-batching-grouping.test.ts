@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock the lbug-adapter module before importing LocalBackend so the class
 // uses the mocked implementations of executeQuery / executeParameterized.
@@ -36,6 +36,10 @@ import { LocalBackend } from '../../src/mcp/local/local-backend';
 describe('impact: batching and grouping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.IMPACT_MAX_CHUNKS;
   });
 
   it('batches 250 IDs into 3 chunked STEP_IN_PROCESS queries', async () => {
