@@ -792,6 +792,40 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
+  it('drops a leftover sidecar before overwriting JSON so load cannot skip new paths', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-rewrite-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('stale.c')]);
+      const origUnlink = nodeFsPromises.unlink.bind(nodeFsPromises);
+      const origWrite = nodeFsPromises.writeFile.bind(nodeFsPromises);
+      const order: string[] = [];
+      const unlinkSpy = vi.spyOn(nodeFsPromises, 'unlink').mockImplementation(async (p, ...rest) => {
+        order.push(`unlink:${path.basename(String(p))}`);
+        return origUnlink(p, ...rest);
+      });
+      const writeSpy = vi
+        .spyOn(nodeFsPromises, 'writeFile')
+        .mockImplementation(async (p, data, enc) => {
+          order.push(`write:${path.basename(String(p))}`);
+          return origWrite(p, data, enc);
+        });
+      try {
+        await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      } finally {
+        unlinkSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
+      const jsonIdx = order.indexOf('write:ok.json');
+      const pathsIdx = order.indexOf('unlink:ok.json.paths');
+      expect(pathsIdx).toBeGreaterThanOrEqual(0);
+      expect(pathsIdx).toBeLessThan(jsonIdx);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('persist still succeeds when the sidecar write fails', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-enospc-'));
     try {

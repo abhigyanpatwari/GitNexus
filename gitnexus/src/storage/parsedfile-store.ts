@@ -217,6 +217,23 @@ const ignoreMissingSidecarUnlink = (err: unknown, jsonPath: string): void => {
   );
 };
 
+/** Drop a leftover listing before publishing JSON so load cannot skip new paths. */
+const dropPathSidecar = async (jsonPath: string): Promise<void> => {
+  try {
+    await fs.unlink(shardPathsSidecarPath(jsonPath));
+  } catch (err) {
+    ignoreMissingSidecarUnlink(err, jsonPath);
+  }
+};
+
+const dropPathSidecarSync = (jsonPath: string): void => {
+  try {
+    unlinkSync(shardPathsSidecarPath(jsonPath));
+  } catch (err) {
+    ignoreMissingSidecarUnlink(err, jsonPath);
+  }
+};
+
 const writeShardPathsSidecar = async (
   jsonPath: string,
   parsedFiles: readonly ParsedFile[],
@@ -289,6 +306,7 @@ export const persistParsedFileChunk = async (
   if (payload === null) return;
   await fs.mkdir(getParsedFileStoreDir(storagePath), { recursive: true });
   const dest = shardPath(storagePath, shardId);
+  await dropPathSidecar(dest);
   await fs.writeFile(dest, payload, 'utf-8');
   await writeShardPathsSidecar(dest, parsedFiles);
 };
@@ -320,6 +338,7 @@ export const persistParsedFileShardSync = (
     createdStoreDirs.add(dir);
   }
   const dest = shardPath(storagePath, shardId);
+  dropPathSidecarSync(dest);
   writeFileSync(dest, payload, 'utf-8');
   writeShardPathsSidecarSync(dest, parsedFiles);
 };
@@ -732,6 +751,7 @@ export const persistDurableParsedFileShardSync = (
     createdDurableDirs.add(dir);
   }
   const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`);
+  dropPathSidecarSync(dest);
   writeFileSync(dest, payload, 'utf-8');
   writeShardPathsSidecarSync(dest, parsedFiles);
 };
@@ -764,6 +784,7 @@ export const restoreDurableParsedFileShard = async (
   for (const name of shards) {
     const srcJson = path.join(src, name);
     const dstJson = path.join(dst, name);
+    await dropPathSidecar(dstJson);
     await fs.copyFile(srcJson, dstJson);
     try {
       await fs.copyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
