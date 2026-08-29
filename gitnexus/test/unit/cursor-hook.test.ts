@@ -566,10 +566,17 @@ describe('Shell quoted-pattern parser', () => {
     ['rg -e "User Service" src/', 'User Service'],
     ['rg --regexp=UserService src/', 'UserService'],
     ['grep -eUserService src/', 'UserService'],
+    ['rg -e x -e LongPattern src/', 'LongPattern'],
+    ['rg -ex -eLongPattern src/', 'LongPattern'],
+    ['rg --regexp=x --regexp=LongPattern src/', 'LongPattern'],
     ['/usr/bin/rg -- "User Service" src/', 'User Service'],
     ['rg -- -error src/', '-error'],
   ])('extracts %j from %j', (command, expected) => {
     expect(parseRgGrepPattern(command)).toBe(expected);
+  });
+
+  it('does not treat a path after a short explicit pattern as the pattern', () => {
+    expect(parseRgGrepPattern('rg -e x src/')).toBeNull();
   });
 
   it('keeps single-token quoted patterns intact', () => {

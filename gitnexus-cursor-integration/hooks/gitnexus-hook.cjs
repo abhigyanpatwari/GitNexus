@@ -152,6 +152,7 @@ function parseRgGrepPattern(cmd) {
   let skipNext = false;
   let skipNextAsPattern = false;
   let endOfOptions = false;
+  let explicitPatternSeen = false;
   const flagsWithValues = new Set([
     '-e',
     '-f',
@@ -172,7 +173,8 @@ function parseRgGrepPattern(cmd) {
     if (skipNext) {
       skipNext = false;
       if (skipNextAsPattern) {
-        return token.length >= 3 ? token : null;
+        skipNextAsPattern = false;
+        if (token.length >= 3) return token;
       }
       continue;
     }
@@ -185,6 +187,7 @@ function parseRgGrepPattern(cmd) {
       continue;
     }
     if (endOfOptions) {
+      if (explicitPatternSeen) continue;
       return token.length >= 3 ? token : null;
     }
     if (token === '--') {
@@ -194,14 +197,18 @@ function parseRgGrepPattern(cmd) {
     if (token.startsWith('-')) {
       const attachedPattern = token.match(/^--regexp=(.+)$/) || token.match(/^-e(.+)$/);
       if (attachedPattern) {
-        return attachedPattern[1].length >= 3 ? attachedPattern[1] : null;
+        explicitPatternSeen = true;
+        if (attachedPattern[1].length >= 3) return attachedPattern[1];
+        continue;
       }
       if (flagsWithValues.has(token) || patternFlags.has(token)) {
         skipNext = true;
         skipNextAsPattern = patternFlags.has(token);
+        if (skipNextAsPattern) explicitPatternSeen = true;
       }
       continue;
     }
+    if (explicitPatternSeen) continue;
     return token.length >= 3 ? token : null;
   }
   return null;
