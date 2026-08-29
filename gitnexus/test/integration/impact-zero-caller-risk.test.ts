@@ -95,10 +95,10 @@ withTestLbugDB(
         expect(c.risk).toBe('UNKNOWN');
         expect(typeof c.riskNote).toBe('string');
         expect(c.riskNote).toMatch(/not evidence/i);
-        expect((c as { riskScale?: { unusedAxes?: { reason: string }[] } }).riskScale?.unusedAxes).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({ reason: 'enrichment-skipped' }),
-          ]),
+        expect(
+          (c as { riskScale?: { unusedAxes?: { reason: string }[] } }).riskScale?.unusedAxes,
+        ).toEqual(
+          expect.arrayContaining([expect.objectContaining({ reason: 'enrichment-skipped' })]),
         );
       }
     });

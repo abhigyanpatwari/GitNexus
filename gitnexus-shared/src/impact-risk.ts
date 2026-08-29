@@ -65,7 +65,10 @@ function unusedPair(reason: UnusedImpactRiskReason): UnusedImpactRiskAxis[] {
 
 function countsWithUnmeasuredAxesZeroed(
   input: ImpactRiskInput,
-): Pick<ImpactRiskInput, 'direction' | 'directCount' | 'processCount' | 'moduleCount' | 'impactedCount'> {
+): Pick<
+  ImpactRiskInput,
+  'direction' | 'directCount' | 'processCount' | 'moduleCount' | 'impactedCount'
+> {
   let processCount = input.processCount;
   let moduleCount = input.moduleCount;
   for (const unused of input.unusedAxes ?? []) {
@@ -119,9 +122,7 @@ export function scoreImpactRisk(input: ImpactRiskInput): ImpactRiskResult {
   // any HIGH/CRITICAL warning already proved by those counts, but never emit a
   // confident LOW/MEDIUM edit gate from an incomplete enrichment pass.
   const risk =
-    queryFailed && (observedRisk === 'LOW' || observedRisk === 'MEDIUM')
-      ? 'UNKNOWN'
-      : observedRisk;
+    queryFailed && (observedRisk === 'LOW' || observedRisk === 'MEDIUM') ? 'UNKNOWN' : observedRisk;
 
   return {
     risk,

@@ -455,8 +455,7 @@ describe('formatImpactResult', () => {
       direction: 'upstream',
       impactedCount: 0,
       risk: 'UNKNOWN',
-      riskNote:
-        'safe to change is a claim about callers and there were none to reason about',
+      riskNote: 'safe to change is a claim about callers and there were none to reason about',
       byDepth: {},
     });
     expect(result).toContain('Risk: UNKNOWN');

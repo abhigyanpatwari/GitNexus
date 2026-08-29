@@ -364,9 +364,7 @@ describe('impact: batching and grouping', () => {
     } as any);
     expect(res.riskScale.comparableAcrossKinds).toBe(false);
     expect(res.riskScale.unusedAxes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ reason: 'enrichment-budget-exhausted' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ reason: 'enrichment-budget-exhausted' })]),
     );
     delete process.env.IMPACT_MAX_CHUNKS;
   });

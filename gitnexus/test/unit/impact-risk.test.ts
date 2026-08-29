@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { scoreImpactRisk, unusedAxesForImpactWalk, type ImpactRiskInput, type UnusedImpactRiskAxis } from 'gitnexus-shared';
+import {
+  scoreImpactRisk,
+  unusedAxesForImpactWalk,
+  type ImpactRiskInput,
+  type UnusedImpactRiskAxis,
+} from 'gitnexus-shared';
 
 const fileUnusedAxes: readonly UnusedImpactRiskAxis[] = [
   {
