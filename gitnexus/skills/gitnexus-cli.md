@@ -59,15 +59,19 @@ Deletes the `.gitnexus/` directory and unregisters the repo from the global regi
 node .gitnexus/run.cjs wiki
 ```
 
-Generates repository documentation from the knowledge graph using an LLM. Requires an API key (saved to `~/.gitnexus/config.json` on first use).
+Generates repository documentation from the knowledge graph using an LLM. HTTP providers require an API key (saved to `~/.gitnexus/config.json` on first use). Local CLI providers (`--provider cursor|claude|codex|opencode|grok`) use your existing CLI login.
 
 | Flag                | Effect                                    |
 | ------------------- | ----------------------------------------- |
-| `--force`           | Force full regeneration                   |
+| `--force`           | Force full regeneration, also required to re-generate an existing wiki in a different language |
+| `--provider <name>` | LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax). Local CLIs (`cursor`, `claude`, `codex`, `opencode`, `grok`) use your existing CLI login and skip `--api-key`. |
 | `--model <model>`   | LLM model (default: MiniMax-M3)           |
 | `--base-url <url>`  | LLM API base URL                          |
 | `--api-key <key>`   | LLM API key                               |
 | `--concurrency <n>` | Parallel LLM calls (default: 3)           |
+| `--timeout <seconds>` | LLM request timeout in seconds (default: disabled) |
+| `--retries <n>`     | Max LLM retry attempts per request (default: 3) |
+| `--lang <lang>`     | Output language for generated documentation (e.g. english, chinese, spanish, japanese) |
 | `--gist`            | Publish wiki as a public GitHub Gist      |
 
 ### list — Show all indexed repos
