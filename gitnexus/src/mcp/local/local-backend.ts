@@ -621,6 +621,14 @@ export interface CodebaseContext {
     communityCount: number;
     processCount: number;
   };
+  parserCoverage?: {
+    totalFiles: number;
+    supportedFiles: number;
+    unsupportedFiles: number;
+    unsupportedByExtension: Array<{ extension: string; count: number }>;
+    unavailableParserFiles: number;
+    unavailableByLanguage: Array<{ language: string; count: number }>;
+  };
 }
 
 /** Collapse dropped-site boundary notes into an epistemic verdict: any note at
@@ -1573,6 +1581,7 @@ export class LocalBackend {
           communityCount: s.communities || 0,
           processCount: s.processes || 0,
         },
+        parserCoverage: s.parserCoverage,
       });
     }
 
