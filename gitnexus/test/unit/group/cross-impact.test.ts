@@ -444,4 +444,89 @@ describe('cross-impact', () => {
       cleanup();
     }
   });
+
+  it('hints the yaml member path when --repo is the registry alias', async () => {
+    const tmpDir = path.join(os.tmpdir(), `gitnexus-ci-alias-${Date.now()}`);
+    const groupDir = path.join(tmpDir, 'groups', 'g1');
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'group.yaml'),
+      `version: 1
+name: g1
+repos:
+  demo/api: demo-api
+  demo/web: demo-web
+`,
+    );
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(),
+        impact: vi.fn(),
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'demo-api',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in r).toBe(true);
+      if ('error' in r) {
+        expect(r.error).toContain('demo/api');
+        expect(r.error).toMatch(/registry alias/i);
+        expect(r.error).not.toContain('demo/web');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('lists every member path that shares the same registry alias', async () => {
+    const tmpDir = path.join(os.tmpdir(), `gitnexus-ci-alias-dup-${Date.now()}`);
+    const groupDir = path.join(tmpDir, 'groups', 'g1');
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'group.yaml'),
+      `version: 1
+name: g1
+repos:
+  demo/api: shared
+  demo/other: shared
+`,
+    );
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(),
+        impact: vi.fn(),
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'shared',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in r).toBe(true);
+      if ('error' in r) {
+        expect(r.error).toContain('demo/api');
+        expect(r.error).toContain('demo/other');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
