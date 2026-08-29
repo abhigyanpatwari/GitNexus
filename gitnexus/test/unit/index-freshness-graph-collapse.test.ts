@@ -208,27 +208,69 @@ describe('graph-write-collapsed incomplete reason (B2)', () => {
 
   it('reports a collapsed write as incomplete rather than fresh', () => {
     expect(
-      getIndexIncompleteReasons({ graphWriteCollapsed: { expected: 23009, persisted: 2170 } }),
+      getIndexIncompleteReasons({
+        graphWriteCollapsed: { expected: 23009, persisted: 2170 },
+        scopeExtractionReceipt: 1,
+      }),
     ).toEqual(['graph-write-collapsed']);
   });
 
   it('treats a missing relation table (zero persisted) the same way', () => {
     expect(
-      getIndexIncompleteReasons({ graphWriteCollapsed: { expected: 23009, persisted: 0 } }),
+      getIndexIncompleteReasons({
+        graphWriteCollapsed: { expected: 23009, persisted: 0 },
+        scopeExtractionReceipt: 1,
+      }),
     ).toEqual(['graph-write-collapsed']);
   });
 
   it('says nothing on a healthy run', () => {
-    expect(getIndexIncompleteReasons({})).toEqual([]);
-    expect(getIndexIncompleteReasons(null)).toEqual([]);
+    expect(getIndexIncompleteReasons({ scopeExtractionReceipt: 1 })).toEqual([]);
+  });
+
+  it('marks missing metadata or receipt as scope-extraction-unverified', () => {
+    expect(INDEX_INCOMPLETE_REASONS).toContain('scope-extraction-unverified');
+    expect(getIndexIncompleteReasons({})).toEqual(['scope-extraction-unverified']);
+    expect(getIndexIncompleteReasons(null)).toEqual(['scope-extraction-unverified']);
   });
 
   it('reports alongside other reasons rather than masking them', () => {
     const reasons = getIndexIncompleteReasons({
       incrementalInProgress: { startedAt: 1, toWriteCount: 0 },
       graphWriteCollapsed: { expected: 500, persisted: 10 },
+      scopeExtractionReceipt: 1,
     });
     expect(reasons).toContain('incremental-in-progress');
     expect(reasons).toContain('graph-write-collapsed');
+  });
+});
+
+describe('scope-extraction-failed incomplete reason (#3015)', () => {
+  it('is stable and reports a partial scope index as incomplete', () => {
+    expect(INDEX_INCOMPLETE_REASONS).toContain('scope-extraction-failed');
+    expect(
+      getIndexIncompleteReasons({
+        scopeExtractionReceipt: 1,
+        scopeExtractionFailures: { total: 2, paths: ['src/a.ts', 'src/b.ts'] },
+      }),
+    ).toContain('scope-extraction-failed');
+  });
+
+  it('does not report a malformed zero-count record as incomplete', () => {
+    expect(
+      getIndexIncompleteReasons({
+        scopeExtractionReceipt: 1,
+        scopeExtractionFailures: { total: 0, paths: [] },
+      }),
+    ).toEqual([]);
+  });
+
+  it('marks malformed summaries as unverified even when the receipt is present', () => {
+    expect(
+      getIndexIncompleteReasons({
+        scopeExtractionReceipt: 1,
+        scopeExtractionFailures: { total: Number.NaN, paths: [] },
+      }),
+    ).toEqual(['scope-extraction-unverified']);
   });
 });
