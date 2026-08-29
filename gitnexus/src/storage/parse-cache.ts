@@ -917,7 +917,17 @@ export const persistParseCacheChunk = async (
       createdCacheDirs.add(cacheDir);
     }
     const payload = JSON.stringify(slim, mapReplacer);
-    await fs.writeFile(getCacheChunkPath(cache.storagePath, chunkHash), payload, 'utf-8');
+    const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
+    try {
+      await fs.writeFile(chunkPath, payload, 'utf-8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // Long-lived analyze --watch processes can replace the sharded cache
+      // directory after this process-local memo recorded it as created.
+      await fs.mkdir(cacheDir, { recursive: true });
+      createdCacheDirs.add(cacheDir);
+      await fs.writeFile(chunkPath, payload, 'utf-8');
+    }
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
     cache.entries.delete(chunkHash);
