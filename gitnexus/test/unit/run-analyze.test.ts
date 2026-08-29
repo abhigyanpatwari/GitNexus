@@ -131,6 +131,8 @@ describe('run-analyze module', () => {
       const entries = await readRegistry();
       expect(entries).toHaveLength(1);
       expect(entries[0].name).toBe('new');
+      const agents = await fs.readFile(path.join(tmpRepo.dbPath, 'AGENTS.md'), 'utf-8');
+      expect(agents).toContain('**new**');
     } finally {
       if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = savedHome;
@@ -263,10 +265,16 @@ describe('run-analyze module', () => {
       await saveMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'original' });
 
+      const registerSpy = vi.spyOn(
+        await import('../../src/storage/repo-manager.js'),
+        'registerRepo',
+      );
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
       expect(result.alreadyUpToDate).toBe(true);
+      expect(registerSpy).not.toHaveBeenCalled();
       expect((await readRegistry())[0].name).toBe('original');
+      registerSpy.mockRestore();
     } finally {
       if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = savedHome;

@@ -1308,6 +1308,13 @@ async function runFullAnalysisInner(
       }
       progress('fts', 90, 'Search indexes ready');
       progress('done', 100, 'Done');
+      if (options.registryName) {
+        await registerRepo(repoPath, existingMeta, {
+          name: options.registryName,
+          allowDuplicateName: options.allowDuplicateName,
+          branch: placement.branch,
+        });
+      }
       return {
         repoName:
           options.registryName ??
@@ -1693,6 +1700,28 @@ async function runFullAnalysisInner(
             allowDuplicateName: options.allowDuplicateName,
             branch: placement.branch,
           });
+          if (!placement.branch) {
+            try {
+              await generateAIContextFiles(
+                repoPath,
+                storagePath,
+                options.registryName,
+                existingMeta.stats ?? {},
+                undefined,
+                {
+                  skipAgentsMd: options.skipAgentsMd,
+                  skipSkills: options.skipSkills,
+                  noStats: options.noStats,
+                  defaultBranch: options.defaultBranch,
+                  // Fast path does not re-run PDG. Using `options.pdg` would
+                  // strip PDG bullets from AGENTS.md on a rename-only analyze.
+                  hasPdg: existingMeta.pdg != null,
+                },
+              );
+            } catch {
+              /* best-effort — never fail the fast path over a context refresh */
+            }
+          }
         }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
         // The flat slot follows the checked-out working tree; a branch switch

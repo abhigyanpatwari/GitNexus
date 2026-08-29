@@ -292,6 +292,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // windowed manifest resolution below (re-init + lease per window). Keyed by
   // group path because manifest links reference repos by group path.
   const repoHandles = new Map<string, { poolId: string; lbugPath: string; repoPath: string }>();
+  // Keep resolved disk paths even when extraction fails and removes the
+  // corresponding handle; workspace discovery does not need a readable index.
+  const resolvedRepoPaths = new Map<string, string>();
   // Every eviction lease this sync holds. Window loops release their own leases
   // (bounding residency); this set is the defensive outer-finally sweep —
   // release disposers are idempotent, so double-release is a safe no-op.
@@ -327,6 +330,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           missingRepos.push(groupPath);
           continue;
         }
+        resolvedRepoPaths.set(groupPath, handle.repoPath);
 
         const poolId = handle.id;
         const lbugPath = path.join(handle.storagePath, 'lbug');
@@ -488,11 +492,12 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const repoPaths = new Map<string, string>();
       if (!registryEntries) registryEntries = await readRegistry();
       for (const [groupPath, regName] of Object.entries(config.repos)) {
-        const fromHandle = repoHandles.get(groupPath);
-        if (fromHandle) {
-          repoPaths.set(groupPath, fromHandle.repoPath);
+        const resolvedPath = resolvedRepoPaths.get(groupPath);
+        if (resolvedPath) {
+          repoPaths.set(groupPath, resolvedPath);
           continue;
         }
+        if (opts?.resolveRepoHandle) continue;
         const e = findRegistryEntryByName(registryEntries, regName);
         if (e) repoPaths.set(groupPath, e.path);
       }

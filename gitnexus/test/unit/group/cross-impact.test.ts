@@ -446,7 +446,7 @@ describe('cross-impact', () => {
   });
 
   it('hints the yaml member path when --repo is the registry alias', async () => {
-    const tmpDir = path.join(os.tmpdir(), `gitnexus-ci-alias-${Date.now()}`);
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-ci-alias-'));
     const groupDir = path.join(tmpDir, 'groups', 'g1');
     fs.mkdirSync(groupDir, { recursive: true });
     fs.writeFileSync(
@@ -502,7 +502,7 @@ repos:
   });
 
   it('lists every member path that shares the same registry alias', async () => {
-    const tmpDir = path.join(os.tmpdir(), `gitnexus-ci-alias-dup-${Date.now()}`);
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-ci-alias-dup-'));
     const groupDir = path.join(tmpDir, 'groups', 'g1');
     fs.mkdirSync(groupDir, { recursive: true });
     fs.writeFileSync(

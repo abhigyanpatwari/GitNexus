@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { syncGroup } from '../../../src/core/group/sync.js';
 import { RegistryAmbiguousTargetError } from '../../../src/storage/repo-manager.js';
@@ -8,8 +9,10 @@ import type { GroupConfig } from '../../../src/core/group/types.js';
 import { GroupService } from '../../../src/core/group/service.js';
 import type { GroupToolPort } from '../../../src/core/group/service.js';
 
+const initLbugMock = vi.fn(async () => {});
+
 vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
-  initLbug: vi.fn(async () => {}),
+  initLbug: (...args: unknown[]) => initLbugMock(...args),
   executeParameterized: vi.fn(async () => []),
   pinRepo: vi.fn(() => () => {}),
   getMaxResidentRepos: vi.fn(() => 5),
@@ -45,13 +48,16 @@ const row = (
   storagePath: string;
   indexedAt: string;
   lastCommit: string;
-} => ({
-  name,
-  path: path.join(tmpHome, 'repos', clone),
-  storagePath: path.join(tmpHome, 'repos', clone, '.gitnexus'),
-  indexedAt: '2026-01-01T00:00:00.000Z',
-  lastCommit: 'abc123',
-});
+} => {
+  mkdirSync(path.join(tmpHome, 'repos', clone), { recursive: true });
+  return {
+    name,
+    path: path.join(tmpHome, 'repos', clone),
+    storagePath: path.join(tmpHome, 'repos', clone, '.gitnexus'),
+    indexedAt: '2026-01-01T00:00:00.000Z',
+    lastCommit: 'abc123',
+  };
+};
 
 describe('syncGroup registry name identity', () => {
   let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
@@ -59,6 +65,8 @@ describe('syncGroup registry name identity', () => {
   let registryPath: string;
 
   beforeEach(async () => {
+    initLbugMock.mockReset();
+    initLbugMock.mockResolvedValue(undefined);
     tmpHome = await createTempDir('gitnexus-sync-registry-id-');
     savedGitnexusHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
@@ -82,15 +90,15 @@ describe('syncGroup registry name identity', () => {
     const prior = '{"contracts":[],"crossLinks":[],"marker":"keep"}\n';
     await fs.writeFile(contractsPath, prior);
 
-    await expect(
-      syncGroup(makeConfig({ 'demo/api': 'demo-api' }), { groupDir }),
-    ).rejects.toSatisfy((err: unknown) => {
-      expect(err).toBeInstanceOf(RegistryAmbiguousTargetError);
-      const amb = err as RegistryAmbiguousTargetError;
-      expect(amb.matches).toHaveLength(2);
-      expect(amb.matches.map((m) => m.path).sort()).toEqual([a.path, b.path].sort());
-      return true;
-    });
+    await expect(syncGroup(makeConfig({ 'demo/api': 'demo-api' }), { groupDir })).rejects.toSatisfy(
+      (err: unknown) => {
+        expect(err).toBeInstanceOf(RegistryAmbiguousTargetError);
+        const amb = err as RegistryAmbiguousTargetError;
+        expect(amb.matches).toHaveLength(2);
+        expect(amb.matches.map((m) => m.path).sort()).toEqual([a.path, b.path].sort());
+        return true;
+      },
+    );
 
     expect(await fs.readFile(contractsPath, 'utf-8')).toBe(prior);
     await expect(fs.access(path.join(groupDir, 'bridge.lbug'))).rejects.toThrow();
@@ -167,7 +175,17 @@ describe('syncGroup registry name identity', () => {
     const result = await syncGroup(
       makeConfig(
         { 'demo/api': 'demo-api' },
-        { detect: { http: false, graphql: false, grpc: false, thrift: false, topics: false, includes: false, workspace_deps: true } },
+        {
+          detect: {
+            http: false,
+            graphql: false,
+            grpc: false,
+            thrift: false,
+            topics: false,
+            includes: false,
+            workspace_deps: true,
+          },
+        },
       ),
       {
         skipWrite: true,
@@ -181,6 +199,42 @@ describe('syncGroup registry name identity', () => {
     );
 
     expect(result.missingRepos).toEqual([]);
+  });
+
+  it('injected resolveRepoHandle plus workspace_deps still bypasses name lookup after extraction failure', async () => {
+    const a = row(tmpHome.dbPath, 'demo-api', 'clone-a');
+    const b = row(tmpHome.dbPath, 'demo-api', 'clone-b');
+    await fs.writeFile(registryPath, JSON.stringify([a, b]));
+    initLbugMock.mockRejectedValueOnce(new Error('init failed'));
+
+    const result = await syncGroup(
+      makeConfig(
+        { 'demo/api': 'demo-api' },
+        {
+          detect: {
+            http: false,
+            graphql: false,
+            grpc: false,
+            thrift: false,
+            topics: false,
+            includes: false,
+            workspace_deps: true,
+          },
+        },
+      ),
+      {
+        skipWrite: true,
+        resolveRepoHandle: async (_name, groupPath) => ({
+          id: 'injected',
+          path: groupPath,
+          repoPath: a.path,
+          storagePath: a.storagePath,
+        }),
+      },
+    );
+
+    expect(result.missingRepos).toEqual([]);
+    expect(result.unreadableRepos).toEqual(['demo/api']);
   });
 
   it('MCP groupSync returns { error } for an ambiguous registry name', async () => {

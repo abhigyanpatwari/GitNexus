@@ -66,10 +66,14 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   getMaxResidentRepos: vi.fn(() => 5),
 }));
 
-vi.mock('../../../src/storage/repo-manager.js', () => ({
-  readRegistry: (...args: unknown[]) => readRegistryLenientMock(...args),
-  readRegistryStrict: (...args: unknown[]) => readRegistryStrictMock(...args),
-}));
+vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    readRegistry: (...args: unknown[]) => readRegistryLenientMock(...args),
+    readRegistryStrict: (...args: unknown[]) => readRegistryStrictMock(...args),
+  };
+});
 
 /**
  * Armed by the bridge-write-failure suite at the bottom of this file, `null`

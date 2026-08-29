@@ -909,7 +909,10 @@ const registerRepoUnlocked = async (
   // falling back to `path.resolve` when the path doesn't exist.
   const canonicalInput = canonicalizePath(repoPath);
 
-  const entries = await readRegistry();
+  // Mutating writes must not treat an unreadable/truncated registry as empty
+  // (#3094): lenient `readRegistry()` returns `[]` on parse failure and would
+  // replace the machine-wide file with only this entry. ENOENT stays empty.
+  const entries = await readRegistryStrict();
   const existingIdx = entries.findIndex((e) => {
     // Canonicalise the STORED entry too so pre-canonicalisation
     // registries (written by older versions, or paths passed in a
@@ -1024,7 +1027,7 @@ const registerRepoUnlocked = async (
   // R9): re-derive THIS run's delta against the FRESHEST snapshot so a
   // concurrent change to the OTHER axis (a branch upsert vs a primary refresh)
   // survives instead of being clobbered by a stale entry-time view.
-  const fresh = await readRegistry();
+  const fresh = await readRegistryStrict();
   const freshIdx = fresh.findIndex((e) => {
     const a = canonicalizePath(e.path);
     return registryPathEquals(a, canonicalInput);
