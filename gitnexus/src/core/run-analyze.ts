@@ -483,7 +483,13 @@ export interface AnalyzeOptions {
 
 const liveIndexMutationRisks = new WeakSet<object>();
 
-/** Whether a failed incremental analyze may already have changed the live DB. */
+function recordLiveIndexMutationRisk(error: unknown): void {
+  if ((typeof error === 'object' && error !== null) || typeof error === 'function') {
+    liveIndexMutationRisks.add(error);
+  }
+}
+
+/** Whether a failed analyze may already have changed the live DB. */
 export function analyzeFailureMayHaveMutatedLiveIndex(error: unknown): boolean {
   return (
     ((typeof error === 'object' && error !== null) || typeof error === 'function') &&
@@ -1996,6 +2002,10 @@ async function runFullAnalysisInner(
   // valve. Nothing between here and there reads either binding except
   // `initLbug(buildPath)`, which the upgrade re-runs against the staging path.
   let useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
+  // Set only at the first operation that can mutate the live graph store.
+  // Pre-write failures (config, lock, parsing, metadata, importer expansion)
+  // remain retryable even when this platform cannot use an atomic swap.
+  let liveIndexMutationStarted = false;
   // #2658: a per-run staging name (was the fixed `lbug.new`). Even under the
   // single-writer lock, a unique name means a crashed run's half-built staging
   // file can never be mistaken for — or clobber — a live run's; the lock's
@@ -2072,7 +2082,13 @@ async function runFullAnalysisInner(
     // (`buildPath` = `<lbugPath>.new`, clearing any stragglers from a crashed
     // run) and leaves the live index untouched until the end-of-run swap. On
     // Windows buildPath === lbugPath, so this is the original in-place wipe.
-    await wipeLbugDbFiles(buildPath);
+    if (buildPath === lbugPath) liveIndexMutationStarted = true;
+    try {
+      await wipeLbugDbFiles(buildPath);
+    } catch (error) {
+      if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
+      throw error;
+    }
   }
 
   // Size the buffer pool to the graph just built by the pipeline (a page cache
@@ -2095,7 +2111,12 @@ async function runFullAnalysisInner(
 
   // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
   // Windows use `buildPath === lbugPath` in place.
-  await initLbug(buildPath);
+  try {
+    await initLbug(buildPath);
+  } catch (error) {
+    if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
+    throw error;
+  }
 
   // Manual WAL checkpoint driver (#1741): periodically drain the WAL
   // from JS so the un-retriable native auto-checkpoint almost never
@@ -2614,6 +2635,7 @@ async function runFullAnalysisInner(
         }
         await walCheckpointDriver.stop();
         await closeLbug();
+        if (buildPath === lbugPath) liveIndexMutationStarted = true;
         await wipeLbugDbFiles(buildPath);
         await initLbug(buildPath);
         walCheckpointDriver = startWalCheckpointDriver();
@@ -2639,6 +2661,7 @@ async function runFullAnalysisInner(
         // same connection, and nothing on this branch creates or drops an index
         // in between — so re-reading would only weaken the one-read invariant
         // the snapshot type exists to enforce.
+        if (buildPath === lbugPath) liveIndexMutationStarted = true;
         await dropSearchFTSIndexes(indexCatalogRows);
         // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
@@ -3893,14 +3916,10 @@ async function runFullAnalysisInner(
         /* swallow — orphan reclamation must never mask the real failure */
       }
     }
-    const liveIndexMayBeMutated = isIncremental && !!hashDiff && !useAtomicSwap;
-    if (
-      liveIndexMayBeMutated &&
-      ((typeof err === 'object' && err !== null) || typeof err === 'function')
-    ) {
+    if (liveIndexMutationStarted) {
       // Preserve the original error identity/prototype: callers distinguish
       // IndexLockTimeoutError and other domain failures with `instanceof`.
-      liveIndexMutationRisks.add(err);
+      recordLiveIndexMutationRisk(err);
     }
     throw err;
   }

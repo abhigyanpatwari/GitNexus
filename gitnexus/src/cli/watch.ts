@@ -9,8 +9,8 @@ import {
   type AnalyzeResult,
 } from '../core/run-analyze.js';
 import { getGitRoot, hasGitDir } from '../storage/git.js';
-import { IndexLockTimeoutError } from '../storage/index-lock.js';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
+import { GITNEXUS_DIR } from '../storage/repo-meta.js';
 import {
   loadAnalyzeConfigStrict,
   mergeAnalyzeOptions,
@@ -32,8 +32,12 @@ const TRANSIENT_WATCH_ERROR_CODES = new Set(['EACCES', 'ENOENT', 'ENOTDIR', 'EPE
 
 export type WatchCliOptions = AnalyzeOptions;
 
+function posixWatchPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^\.\/+/, '');
+}
+
 export function isRelevantWatchPath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/').replace(/^\.\/+/, '');
+  const normalized = posixWatchPath(filePath);
   return (
     normalized.length > 0 &&
     normalized !== '.' &&
@@ -44,12 +48,17 @@ export function isRelevantWatchPath(filePath: string): boolean {
 }
 
 function isIgnoreControlPath(filePath: string): boolean {
-  const normalized = filePath.replace(/\\/g, '/').replace(/^\.\/+/, '');
+  const normalized = posixWatchPath(filePath);
   return normalized === '.gitignore' || normalized === '.gitnexusignore';
 }
 
 function isConfigControlPath(filePath: string): boolean {
-  return filePath.replace(/\\/g, '/').replace(/^\.\/+/, '') === '.gitnexusrc';
+  return posixWatchPath(filePath) === '.gitnexusrc';
+}
+
+function isAnalyzerOwnedWatchPath(filePath: string): boolean {
+  const normalized = posixWatchPath(filePath).replace(/\/+$/, '');
+  return normalized === GITNEXUS_DIR || normalized.startsWith(`${GITNEXUS_DIR}/`);
 }
 
 function repoRelativeWatchPath(repoPath: string, candidate: string): string | null {
@@ -98,6 +107,10 @@ export async function resolveWatchOptions(
     ['--embeddings', cli.embeddings],
     ['--drop-embeddings', cli.dropEmbeddings],
     ['--skills', cli.skills],
+    ['--default-branch', cli.defaultBranch],
+    ['--skip-agents-md', cli.skipAgentsMd],
+    ['--skip-skills', cli.skipSkills],
+    ['--no-stats', cli.stats === false],
     ['--self-commit', cli.selfCommit],
     ['--index-only', cli.indexOnly],
     ['--skip-git', cli.skipGit],
@@ -120,6 +133,10 @@ export async function resolveWatchOptions(
     [
       ['embeddings', config.embeddings],
       ['dropEmbeddings', config.dropEmbeddings],
+      ['defaultBranch', config.defaultBranch],
+      ['skipAgentsMd', config.skipAgentsMd !== undefined],
+      ['skipSkills', config.skipSkills !== undefined],
+      ['stats', config.stats !== undefined],
       ['walCheckpointThreshold', config.walCheckpointThreshold],
       ['embeddingThreads', config.embeddingThreads],
       ['embeddingBatchSize', config.embeddingBatchSize],
@@ -211,6 +228,17 @@ class WatchControlReloadError extends Error {
   }
 }
 
+export function shouldStopAfterWatchRefreshFailure(
+  error: unknown,
+  paths: readonly string[],
+): boolean {
+  return (
+    paths.length > 0 &&
+    !(error instanceof WatchControlReloadError) &&
+    analyzeFailureMayHaveMutatedLiveIndex(error)
+  );
+}
+
 /** Start the real filesystem watcher with bounded, serialized refreshes. */
 export async function startWatchFileLoop(
   repoPath: string,
@@ -262,6 +290,7 @@ export async function startWatchFileLoop(
     awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 },
     ignored: (candidate, stats) => {
       const relative = repoRelativeWatchPath(repoPath, candidate);
+      if (relative !== null && isAnalyzerOwnedWatchPath(relative)) return true;
       if (relative !== null && (isIgnoreControlPath(relative) || isConfigControlPath(relative))) {
         return false;
       }
@@ -270,13 +299,8 @@ export async function startWatchFileLoop(
   });
   watcher.on('all', (event, changedPath) => {
     if (event !== 'add' && event !== 'change' && event !== 'unlink') return;
-    const relative = path.relative(repoPath, changedPath).replace(/\\/g, '/');
-    if (
-      relative &&
-      !relative.startsWith('../') &&
-      !path.isAbsolute(relative) &&
-      isRelevantWatchPath(relative)
-    ) {
+    const relative = repoRelativeWatchPath(repoPath, changedPath);
+    if (relative && isRelevantWatchPath(relative) && !isAnalyzerOwnedWatchPath(relative)) {
       queue.enqueue(relative);
     }
   });
@@ -430,14 +454,7 @@ export async function watchCommandWithRunnerIdentity(
           },
           (error, paths) => {
             const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
-            const failedBeforeWrite = error instanceof IndexLockTimeoutError;
-            if (
-              paths.length > 0 &&
-              !failedBeforeWrite &&
-              (analyzeOptions.atomicIncremental === false ||
-                analyzeFailureMayHaveMutatedLiveIndex(error)) &&
-              !(error instanceof WatchControlReloadError)
-            ) {
+            if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
               cliError(
                 `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +

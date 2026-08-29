@@ -288,22 +288,25 @@ analysis and then debounces scanner-admitted working-tree changes for 300 ms by
 default into serialized incremental refreshes. Events arriving during a run
 remain queued, and retryable failures retain the same batch with bounded
 backoff. Invalid `.gitnexusrc` or ignore-file reloads pause ordinary refreshes
-until the control file is fixed. Stop it with Ctrl+C.
+until the control file is fixed. Watch refreshes update only the graph: they
+intentionally skip AGENTS.md / CLAUDE.md injection and standard skill
+installation. Run a one-shot `gitnexus analyze` when those generated files need
+updating. Stop watch mode with Ctrl+C.
 
 Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
 `--max-file-size`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
-embedding flags, `--skills`, `--self-commit`, `--index-only`, and `--skip-git`
-are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a
-warning.
+embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`,
+`--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`
+are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a warning.
 
 POSIX requests clone-first copy-and-swap publication when the live index has no
 orphan sidecars. Windows and sidecar fallback runs update in place: failures
 known to occur before writes are retried, while a failure that may have mutated
 the live index stops the watcher. Watch mode does not pull remotes. Running MCP
-and `serve` processes reopen a newly published index automatically; MCP observes
-the replacement on its next tool call, typically within five seconds, so no
-restart is required.
+and `serve` processes periodically check for a newly published index and reopen
+it without a restart. MCP checks are throttled to once every five seconds, so a
+tool call before the next check can briefly use the previous index.
 
 GraphQL contract matching is opt-in in the group's `group.yaml`:
 

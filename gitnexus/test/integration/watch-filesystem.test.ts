@@ -47,6 +47,32 @@ describe('watch filesystem integration', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it('never enqueues analyzer-owned .gitnexus writes created by the initial refresh', async () => {
+    const repo = await makeRepo();
+    const batches: string[][] = [];
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => {
+        batches.push([...paths]);
+        if (paths.length === 0) {
+          await fs.mkdir(path.join(repo, '.gitnexus'), { recursive: true });
+          await fs.writeFile(path.join(repo, '.gitnexus', 'gitnexus.json'), '{}\n', 'utf8');
+          await fs.writeFile(path.join(repo, '.gitnexus', 'lbug'), 'index bytes', 'utf8');
+        }
+      },
+      (error) => {
+        throw error;
+      },
+    );
+    loops.push(loop);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await loop.waitForIdle();
+
+    expect(batches).toEqual([[]]);
+  });
+
   it('coalesces indexed add/change/rename/delete events and stops cleanly', async () => {
     const repo = await makeRepo();
     const batches: string[][] = [];

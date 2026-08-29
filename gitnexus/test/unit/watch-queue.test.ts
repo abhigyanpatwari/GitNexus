@@ -150,6 +150,37 @@ describe('WatchRefreshQueue', () => {
     expect(attempts).toBe(4);
   });
 
+  it('merges an event during retry backoff without shortening the retry delay', async () => {
+    vi.useFakeTimers();
+    const batches: string[][] = [];
+    let attempts = 0;
+    const queue = new WatchRefreshQueue(
+      async (paths) => {
+        attempts++;
+        if (attempts === 1) throw new Error('failed');
+        batches.push([...paths]);
+      },
+      () => {},
+      10,
+      { retryBaseDelayMs: 1_000 },
+    );
+
+    queue.enqueue('src/a.ts');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(attempts).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(100);
+    queue.enqueue('src/b.ts');
+    await vi.advanceTimersByTimeAsync(899);
+    expect(attempts).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    await queue.waitForIdle();
+
+    expect(attempts).toBe(2);
+    expect(batches).toEqual([['src/a.ts', 'src/b.ts']]);
+  });
+
   it('contains a throwing error reporter for a detached refresh', async () => {
     vi.useFakeTimers();
     const queue = new WatchRefreshQueue(

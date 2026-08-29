@@ -23,6 +23,7 @@ export class WatchRefreshQueue {
   private firstPendingAt: number | undefined;
   private overflowed = false;
   private consecutiveFailures = 0;
+  private retryNotBefore: number | undefined;
 
   constructor(
     private readonly refresh: WatchRefresh,
@@ -87,6 +88,7 @@ export class WatchRefreshQueue {
     this.firstPendingAt = undefined;
     this.overflowed = false;
     this.consecutiveFailures = 0;
+    this.retryNotBefore = undefined;
     // A refresh rejection is already surfaced through `onError` (or through
     // runInitial). Closing from that handler can race the runBatch `finally`,
     // so consume the same rejection here instead of reporting it twice.
@@ -97,8 +99,17 @@ export class WatchRefreshQueue {
   private schedule(retryDelayMs?: number): void {
     if (this.timer !== undefined) clearTimeout(this.timer);
     const maxWaitMs = this.options.maxWaitMs ?? Math.max(this.debounceMs, 2_000);
-    const elapsed = this.firstPendingAt === undefined ? 0 : Date.now() - this.firstPendingAt;
-    const delay = retryDelayMs ?? Math.max(0, Math.min(this.debounceMs, maxWaitMs - elapsed));
+    const now = Date.now();
+    if (retryDelayMs !== undefined) this.retryNotBefore = now + retryDelayMs;
+    const elapsed = this.firstPendingAt === undefined ? 0 : now - this.firstPendingAt;
+    const debounced = Math.max(0, Math.min(this.debounceMs, maxWaitMs - elapsed));
+    // An event arriving mid-backoff merges into the pending batch but must not
+    // pull the retry earlier than the deadline the backoff already committed to.
+    const delay =
+      retryDelayMs ??
+      (this.retryNotBefore === undefined
+        ? debounced
+        : Math.max(debounced, this.retryNotBefore - now));
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.drain();
@@ -114,6 +125,7 @@ export class WatchRefreshQueue {
     this.pending.clear();
     this.firstPendingAt = undefined;
     this.overflowed = false;
+    this.retryNotBefore = undefined;
     await this.runBatch(paths, false);
   }
 

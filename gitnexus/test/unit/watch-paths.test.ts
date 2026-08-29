@@ -104,7 +104,16 @@ describe('watch path selection', () => {
   });
 
   it('ignores unsupported repository defaults but rejects explicit unsupported CLI flags', async () => {
-    await fs.writeFile(path.join(repoPath, '.gitnexusrc'), JSON.stringify({ embeddings: true }));
+    await fs.writeFile(
+      path.join(repoPath, '.gitnexusrc'),
+      JSON.stringify({
+        embeddings: true,
+        defaultBranch: 'develop',
+        skipAgentsMd: false,
+        skipSkills: false,
+        stats: true,
+      }),
+    );
     const ignored: string[][] = [];
     await expect(
       resolveWatchOptions(
@@ -118,19 +127,26 @@ describe('watch path selection', () => {
         (names) => ignored.push([...names]),
       ),
     ).resolves.toMatchObject({ skipAgentsMd: true, skipSkills: true });
-    expect(ignored).toEqual([['embeddings']]);
+    expect(ignored).toEqual([
+      ['embeddings', 'defaultBranch', 'skipAgentsMd', 'skipSkills', 'stats'],
+    ]);
 
-    await expect(
-      resolveWatchOptions(
-        repoPath,
-        { embeddings: true },
-        {
+    const unsupportedCliOptions: Array<[Parameters<typeof resolveWatchOptions>[1], string]> = [
+      [{ embeddings: true }, '--embeddings'],
+      [{ defaultBranch: 'develop' }, '--default-branch'],
+      [{ skipAgentsMd: true }, '--skip-agents-md'],
+      [{ skipSkills: true }, '--skip-skills'],
+      [{ stats: false }, '--no-stats'],
+    ];
+    for (const [options, flag] of unsupportedCliOptions) {
+      await expect(
+        resolveWatchOptions(repoPath, options, {
           maxFileSize: undefined,
           workerTimeout: undefined,
           verbose: undefined,
-        },
-      ),
-    ).rejects.toThrow('analyze --watch does not support --embeddings');
+        }),
+      ).rejects.toThrow(`analyze --watch does not support ${flag}`);
+    }
   });
 
   it('rejects a watch file-size threshold above the parser ceiling', async () => {
