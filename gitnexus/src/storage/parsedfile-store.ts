@@ -328,6 +328,7 @@ export const loadParsedFilesForPaths = async (
       }
       const listed = sidecarRaw.split('\n').filter((line) => line.length > 0);
       if (listed.length > 0 && !listed.some((p) => wantPaths.has(p))) {
+        await maybeYieldAndGc(false);
         continue;
       }
     } catch {

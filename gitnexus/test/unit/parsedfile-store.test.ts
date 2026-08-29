@@ -722,6 +722,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       expect(await readdir(storeDir)).toEqual(
         expect.arrayContaining(['abc-w1-0.json', 'abc-w1-0.json.paths']),
       );
+      expect(await readFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'utf-8')).toBe('a.c\n');
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       expect(loaded.has('a.c')).toBe(true);
     } finally {
