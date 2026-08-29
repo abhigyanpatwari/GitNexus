@@ -7865,11 +7865,15 @@ export class LocalBackend {
               processQueryFailed || moduleQueryFailed
                 ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
                   'are lower bounds; retry impact before treating the change as safe.'
-                : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
-                  'a caller reaching it through a reference class this index does not record — ' +
-                  'plain-object property access, a bare-identifier read of a module-scope const — ' +
-                  'produces no edge to find. Confirm with a text search before treating the ' +
-                  'change as safe.',
+                : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
+                  ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
+                    'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
+                    'treating the change as safe.'
+                  : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+                    'a caller reaching it through a reference class this index does not record — ' +
+                    'plain-object property access, a bare-identifier read of a module-scope const — ' +
+                    'produces no edge to find. Confirm with a text search before treating the ' +
+                    'change as safe.',
           }
         : {}),
       ...epistemic,
