@@ -206,16 +206,24 @@ const writeShardPathsSidecar = async (
   parsedFiles: readonly ParsedFile[],
 ): Promise<void> => {
   if (!shardPathsSidecarSafe(parsedFiles)) return;
-  await fs.writeFile(
-    shardPathsSidecarPath(jsonPath),
-    encodeShardPathsSidecar(parsedFiles),
-    'utf-8',
-  );
+  try {
+    await fs.writeFile(
+      shardPathsSidecarPath(jsonPath),
+      encodeShardPathsSidecar(parsedFiles),
+      'utf-8',
+    );
+  } catch {
+    // Sidecar is a load optimization; JSON shard remains the source of truth.
+  }
 };
 
 const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly ParsedFile[]): void => {
   if (!shardPathsSidecarSafe(parsedFiles)) return;
-  writeFileSync(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
+  try {
+    writeFileSync(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
+  } catch {
+    // Sidecar is a load optimization; JSON shard remains the source of truth.
+  }
 };
 
 /**
