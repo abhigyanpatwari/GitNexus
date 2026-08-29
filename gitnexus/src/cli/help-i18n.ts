@@ -72,6 +72,8 @@ const OPTION_DESCRIPTION_KEYS = {
   'analyze|--embedding-batch-size <n>': 'help.option.analyze.embeddingBatchSize',
   'analyze|--embedding-sub-batch-size <n>': 'help.option.analyze.embeddingSubBatchSize',
   'analyze|--embedding-device <device>': 'help.option.analyze.embeddingDevice',
+  'analyze|--watch': 'help.option.analyze.watch',
+  'analyze|--debounce <ms>': 'help.option.analyze.debounce',
   'index|-f, --force': 'help.option.index.force',
   'index|--allow-non-git': 'help.option.index.allowNonGit',
   'mcp|--http': 'help.option.mcp.http',

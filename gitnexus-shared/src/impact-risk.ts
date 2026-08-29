@@ -116,7 +116,7 @@ export function scoreImpactRisk(input: ImpactRiskInput): ImpactRiskResult {
   const observedRisk = score(countsWithUnmeasuredAxesZeroed(input));
   const queryFailed = unusedAxes.some((unused) => unused.reason === 'enrichment-query-failed');
   // A failed query makes observed process/module counts lower bounds. Preserve
-  // any HIGH/CRITICAL warning already proven by those counts, but never emit a
+  // any HIGH/CRITICAL warning already proved by those counts, but never emit a
   // confident LOW/MEDIUM edit gate from an incomplete enrichment pass.
   const risk =
     queryFailed && (observedRisk === 'LOW' || observedRisk === 'MEDIUM')
