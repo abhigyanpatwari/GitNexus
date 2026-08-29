@@ -1687,6 +1687,13 @@ async function runFullAnalysisInner(
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
       if (!dirty && !healUnregistered) {
+        if (options.registryName) {
+          await registerRepo(repoPath, existingMeta, {
+            name: options.registryName,
+            allowDuplicateName: options.allowDuplicateName,
+            branch: placement.branch,
+          });
+        }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
         // The flat slot follows the checked-out working tree; a branch switch
         // at the SAME commit with a clean tree changes nothing the pipeline
