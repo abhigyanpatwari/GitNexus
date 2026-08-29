@@ -1227,9 +1227,14 @@ describe('Grok CLI timeout', () => {
     vi.advanceTimersByTime(5000 + 2000 + 2000);
     await expect(promise).rejects.toThrow('grok CLI timed out after 5s');
     expect(fs.existsSync(cwd)).toBe(true);
+
+    // Late close rms via fire-and-forget fs.rm. Fake setTimeout would starve
+    // that I/O; switch to real timers and poll until the dir is gone.
+    vi.useRealTimers();
     child.emit('close', null);
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setImmediate(r));
+    const goneDeadline = Date.now() + 2000;
+    while (fs.existsSync(cwd) && Date.now() < goneDeadline) {
+      await new Promise((r) => setTimeout(r, 10));
     }
     expect(fs.existsSync(cwd)).toBe(false);
   });
