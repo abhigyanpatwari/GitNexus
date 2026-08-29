@@ -193,35 +193,19 @@ export function heapPressureRemedy(heapLimitBytes: number): string {
   );
 }
 
-/** Max bytes of source content to load per parse chunk.
+/** Max bytes of source content to load per parse cache pack.
  *
- * Memory bound for the worker pool dispatch + a granularity knob for
- * the parse cache. A single file change invalidates only its enclosing
- * chunk, so smaller budgets → finer-grained invalidation.
- *
- * Override via GITNEXUS_CHUNK_BYTE_BUDGET (bytes) — the default of 2MB
- * gives a useful invalidation floor (~1/N chunks on a multi-MB repo)
- * while keeping worker dispatch overhead under 5% on cold runs.
- */
-/**
- * Built-in chunk byte budget when neither `PipelineOptions.chunkByteBudget`
- * nor `GITNEXUS_CHUNK_BYTE_BUDGET` is set. Tuned to give a useful
- * cache-invalidation floor (~1/N chunks on a multi-MB repo) while keeping
- * worker dispatch overhead under 5% on cold runs. Resolution happens at
- * call time inside `runChunkedParseAndResolve` (U14 from PR #1693 review)
- * — previously this was a module-load IIFE, which froze the env value at
- * import time and meant per-call option threading silently no-op'd.
+ * Granularity knob for the parse cache: a single file change invalidates only
+ * its enclosing pack. Override via GITNEXUS_CHUNK_BYTE_BUDGET. Resolution
+ * happens at call time (U14 from PR #1693) — not at module load.
  */
 const DEFAULT_CHUNK_BYTE_BUDGET = 2 * 1024 * 1024;
 
 /**
- * Cache-chunk byte budget. Membership must not scale with the worker pool
- * (#3088): a larger pool used to inflate this to 16 MiB on 8 cores so a
- * one-line edit re-parsed almost everything. Worker occupancy is handled by
- * sub-batch sizing below (`MIN_SUB_BATCH_BYTES` vs pack size), not by
- * coarsening cache keys.
+ * Byte unit for auto pool sizing (one worker per this much source). Same
+ * magnitude as the default cache pack, but not a membership input (#3088).
  */
-const CHUNK_BYTES_PER_WORKER = 2 * 1024 * 1024;
+const CHUNK_BYTES_PER_WORKER = DEFAULT_CHUNK_BYTE_BUDGET;
 
 /**
  * Target jobs-per-worker per dispatch. More jobs than workers gives the pool's
@@ -233,7 +217,7 @@ const TARGET_JOBS_PER_WORKER = 3;
 /** Floor for a derived sub-batch so jobs don't shrink to per-file IPC churn. */
 const MIN_SUB_BATCH_BYTES = 256 * 1024;
 
-function resolveChunkByteBudget(options?: PipelineOptions, _effectivePoolSize = 1): number {
+function resolveChunkByteBudget(options?: PipelineOptions): number {
   const opt = options?.chunkByteBudget;
   if (typeof opt === 'number' && Number.isFinite(opt) && opt > 0) return opt;
   const env = Number(process.env.GITNEXUS_CHUNK_BYTE_BUDGET);
@@ -519,15 +503,6 @@ export async function runChunkedParseAndResolve(
     0,
   );
 
-  // Sort parseableScanned alphabetically for stable chunk membership
-  // across runs (Finding 4). Without this, filesystem-scan order can
-  // shift between runs (notably on macOS APFS where directory entry
-  // order can change after modifications) — different files in the
-  // same chunk → different chunk hash → cache miss even when no file
-  // content changed. The cache also becomes platform-specific: a
-  // Linux-built cache misses on macOS for the same repo.
-  parseableScanned.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-
   const totalParseable = parseableScanned.length;
   const totalBytes = parseableScanned.reduce((sum, f) => sum + f.size, 0);
 
@@ -574,15 +549,10 @@ export async function runChunkedParseAndResolve(
   // runs. Resolving in the function body restores per-call configurability
   // and matches the pattern used by resolveAutoPoolSize and the U1
   // parseChunkConcurrency resolver.
-  // Effective worker count, computed up-front so the chunk budget can scale to
-  // keep the whole pool busy (#worker-idle). The pool is ALWAYS used (sequential
-  // parsing was removed; the disabled channels threw above). Size it to the
-  // work: an explicit `--workers <N>` pins the size; otherwise the cores-based
-  // auto size is capped by the repo's worth of work (~one worker per
-  // CHUNK_BYTES_PER_WORKER of source) so a tiny repo spawns ~1 worker instead of
-  // a full pool, replacing the job the deleted small-repo threshold used to do.
-  // KTD-3 of the remove-sequential plan; the cap formula is intentionally coarse
-  // (tuning deferred).
+  // Effective worker count: explicit `--workers <N>` pins it; otherwise
+  // cores-based auto size is capped by source bytes / CHUNK_BYTES_PER_WORKER
+  // so a tiny repo does not spawn a full idle pool. Cache pack membership
+  // is independent of this number (#3088).
   const explicitPoolSize = options?.workerPoolSize;
   const workProportionalCap = Math.max(1, Math.ceil(totalBytes / CHUNK_BYTES_PER_WORKER));
   const effectivePoolSize =
@@ -592,7 +562,7 @@ export async function runChunkedParseAndResolve(
   // Cache packs: stable (language, hash(path) mod 128) buckets, then the
   // per-call byte budget inside each bucket (#3088). Pool size is used only
   // for worker count and sub-batch fan-out, not membership.
-  const chunkByteBudget = resolveChunkByteBudget(options, effectivePoolSize);
+  const chunkByteBudget = resolveChunkByteBudget(options);
   // Sub-batch size so a 2 MiB pack fans into ~TARGET_JOBS_PER_WORKER jobs
   // per worker, floored at MIN_SUB_BATCH_BYTES (256 KiB) so an 8-worker
   // pool still gets ~8 jobs from one pack instead of one idle-heavy job

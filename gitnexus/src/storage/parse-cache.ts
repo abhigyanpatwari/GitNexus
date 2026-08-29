@@ -29,6 +29,7 @@ import { createRequire } from 'module';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
 
 /**
@@ -689,8 +690,9 @@ export type ParseCachePackFile = { path: string; size: number; language: string 
 
 /**
  * Pack files into parse-cache chunks: group by (language, bucket id), sort
- * paths inside the group, then cut at `byteBudget`. Visit order is language
- * then bucket id so membership is independent of scan order and worker count.
+ * paths inside the group, then cut at `byteBudget`. Bucket visit order is
+ * the lexicographic order of `${language}\\0${bucketId}` keys (deterministic,
+ * independent of scan order and worker count).
  */
 export const packParseCacheChunks = (
   files: readonly ParseCachePackFile[],
@@ -706,7 +708,7 @@ export const packParseCacheChunks = (
   const chunks: string[][] = [];
   for (const key of [...buckets.keys()].sort()) {
     const group = buckets.get(key)!;
-    group.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    group.sort((a, b) => compareCodeUnits(a.path, b.path));
     let current: string[] = [];
     let bytes = 0;
     for (const file of group) {
