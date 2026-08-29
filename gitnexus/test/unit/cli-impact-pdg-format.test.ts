@@ -38,7 +38,7 @@ function pdgFindings(overrides: Record<string, unknown> = {}): Record<string, un
   ];
   return {
     mode: 'pdg',
-    pdgResultVersion: 2,
+    pdgResultVersion: 3,
     target: {
       id: 'Function:src/svc.ts:computeTotal',
       name: 'computeTotal',
@@ -136,7 +136,7 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     // The PDG result family advertises a contract version (FIX #2) so external
     // MCP/agent consumers can version against future shape evolution. It is a
     // mode:'pdg'-only field — never on the default callgraph result.
-    expect(pdgFindings()).toMatchObject({ mode: 'pdg', pdgResultVersion: 2 });
+    expect(pdgFindings()).toMatchObject({ mode: 'pdg', pdgResultVersion: 3 });
   });
 
   it('surfaces ambiguous-projection and unresolved block counts honestly', () => {
