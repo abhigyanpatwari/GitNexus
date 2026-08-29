@@ -234,7 +234,7 @@ export const en = {
     'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
-    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: minimax)',
+    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
   'help.option.wiki.model': 'LLM model or deployment name (default: MiniMax-M3)',
   'help.option.wiki.baseUrl':
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
@@ -293,10 +293,9 @@ export const en = {
   'help.option.embeddings.install.force':
     'Install into the runtime prefix even when the stack already resolves',
   'help.option.group.create.force': 'Overwrite existing group',
-  'help.option.group.sync.skipEmbeddings': 'Exact + BM25 only (no embedding fallback)',
-  'help.option.group.sync.exactOnly': 'Exact match only',
-  'help.option.group.sync.allowStale': 'Skip stale index warnings',
-  'help.option.group.sync.verbose': 'Show each cross-link detail',
+  'help.option.group.sync.exactOnly':
+    'Skip wildcard service matching; cross-link on exact contract-id match only (manifest links still apply)',
+  'help.option.group.sync.verbose': 'Show additional sync diagnostics',
   'help.option.status.json': 'Emit machine-readable index and analyzer provenance',
   'help.option.json': 'JSON output',
   'help.option.group.impact.target': 'Symbol or file name to analyze',

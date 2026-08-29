@@ -221,14 +221,35 @@ describe('PARSE_CACHE_VERSION', () => {
   // Version 69 added #2969's JS/TS data-route-table decoratorRoutes. Version 70
   // adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so it is
   // the next free value after both cache payload changes.
-  it('pins SCHEMA_BUMP to 70 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(70);
+  // Moved 70 -> 71 for #2980's Java constant-route capture set (moduleConstants
+  // + routePathOperands). 72 -> 74 added import-proven Convex endpoint metadata,
+  // skipping 73 because open PR #3046 claims it.
+  // Version 75 adds #3009's NestJS decorator routes to the same JS/TS
+  // decoratorRoutes channel, so a warm pre-feature cache cannot replay the empty
+  // route set that change fixes. This branch originally claimed 71; origin/main
+  // cascaded past it (71 to #2980, 74 to Convex) while the PR was open, so 71
+  // would now be BELOW main and the reuse gate would never fire. 75 is the next
+  // free value above origin/main and above every in-flight claim (#3046 at 73,
+  // #1616 at a stale 2) — the rule, re-applied at merge, not at authoring time.
+  // Moved 75 -> 76 within this same branch for the NestJS array form, then
+  // 76 -> 77 because 76 turned out not to be free: origin/main reached 76 via
+  // #3046 while this branch was in review, and package.json is 1.6.9 on both
+  // sides, so the cache key was the byte-identical `76+1.6.9` on two branches
+  // with incompatible worker output. #3046 had skipped 75 precisely because
+  // this branch held it. Two PRs each doing the bookkeeping correctly still
+  // collided, because each re-checked once and neither re-checked after the
+  // other moved — which is why the rule is re-applied AT MERGE, not when the
+  // number is picked.
+  it('pins SCHEMA_BUMP to 79 so concurrent bumps cannot silently collide (#2766, #3015)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(79);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
     // Every nearby historical or in-flight value is rejected, including 69,
     // which carried the route-table payload before this merge.
-    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69]) {
+    for (const taken of [
+      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78,
+    ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
   });
@@ -615,12 +636,14 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
           referenceSites: [],
         },
       ],
+      scopeExtractionFailures: ['a.c'],
     });
     const slim = slimParseWorkerResultsForCache([raw])[0];
     expect(slim.calls).toEqual([]);
     expect(slim.assignments).toEqual([]);
     expect(slim.constructorBindings).toEqual([]);
     expect(slim.parsedFiles).toEqual([]);
+    expect(slim.scopeExtractionFailures).toEqual(['a.c']);
     expect(slim.fileCount).toBe(raw.fileCount);
   });
 
@@ -639,6 +662,24 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     // are what mergeChunkResults replays to rebuild the ExportedTypeMap.
     expect(slim.nodes).toEqual(raw.nodes);
     expect(slim.nodes).toHaveLength(1);
+  });
+
+  it('round-trips scope extraction failures through a persisted cache shard', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const key = 'e'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[key, [minimalResult({ scopeExtractionFailures: ['src/broken.ts'] })]]]),
+        usedKeys: new Set([key]),
+      });
+
+      const loaded = await loadParseCache(dir);
+      const replayed = await loadParseCacheChunk(loaded, key);
+      expect(replayed?.[0]?.scopeExtractionFailures).toEqual(['src/broken.ts']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('persistParseCacheChunk writes to disk without retaining in-memory entries', async () => {

@@ -84,8 +84,12 @@ export const kotlinScopeResolver: ScopeResolver = {
     return undefined;
   },
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: KotlinResolveContext = { fromFile, allFilePaths };
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, _resolutionConfig, context) => {
+    const ws: KotlinResolveContext = {
+      fromFile,
+      allFilePaths,
+      parsedFiles: context?.parsedFiles,
+    };
     return resolveKotlinImportTarget(
       { kind: 'named', localName: '_', importedName: '_', targetRaw },
       ws,

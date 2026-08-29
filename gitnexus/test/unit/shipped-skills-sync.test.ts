@@ -247,6 +247,44 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  // Same reasoning as the UNKNOWN guard above: these copies are not
+  // byte-compared, so an edit to one copy alone silently ships four
+  // distributions that disagree about whether identity is required. The
+  // fragments are matched against whitespace-normalized text because the
+  // copies wrap the same sentences at different columns.
+  const IDENTITY_CONTRACT_SKILLS = [
+    'gitnexus-impact-analysis',
+    'gitnexus-refactoring',
+    'gitnexus-debugging',
+    'gitnexus-exploring',
+  ] as const;
+
+  const normalize = (text: string): string => text.replace(/\s+/g, ' ');
+
+  it.each(IDENTITY_CONTRACT_SKILLS)(
+    'keeps the repository-identity contract in every %s copy',
+    (name) => {
+      const required = [
+        'list_repos {}',
+        '`offset: pagination.nextOffset`',
+        '`hasMore` is false',
+
+        'an omitted `repo` normally errors',
+        'stop and ask',
+
+        'repo: "my-app"',
+
+        'bind repo; explicit repo when >1 indexed, ask if ambiguous',
+      ];
+      const copies = standardSkillCopies(name);
+      expect(copies.length).toBeGreaterThan(1);
+      for (const file of copies) {
+        const content = normalize(fs.readFileSync(file, 'utf-8'));
+        for (const fragment of required) expect(content).toContain(normalize(fragment));
+      }
+    },
+  );
+
   it("uses the rename API's text_search vocabulary in every refactoring copy", () => {
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
       const content = fs.readFileSync(file, 'utf-8');

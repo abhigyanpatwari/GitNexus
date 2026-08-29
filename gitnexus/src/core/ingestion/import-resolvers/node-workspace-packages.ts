@@ -19,7 +19,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { createRequire } from 'node:module';
 
-import { isHardcodedIgnoredDirectory } from '../../../config/ignore-service.js';
+import { isHardcodedIgnoredDirectoryAtPath } from '../../../config/ignore-service.js';
 import { logger } from '../../logger.js';
 import { resolveFile } from '../languages/typescript/file-candidates.js';
 
@@ -361,9 +361,10 @@ export async function loadNodeWorkspacePackages(
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (isHardcodedIgnoredDirectory(entry.name)) continue;
+        const childDir = path.join(dir, entry.name);
+        if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
         if (depth < SCAN_MAX_DEPTH) {
-          queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+          queue.push({ dir: childDir, depth: depth + 1 });
         }
         continue;
       }
