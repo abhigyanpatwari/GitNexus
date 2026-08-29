@@ -731,7 +731,11 @@ export const restoreDurableParsedFileShard = async (
     try {
       await fs.copyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
     } catch {
-      // Pre-sidecar durable generation: load falls back to reading JSON.
+      try {
+        await fs.unlink(shardPathsSidecarPath(dstJson));
+      } catch {
+        // Destination had no sidecar, or unlink failed; JSON remains authoritative.
+      }
     }
   }
   return shards.length;
