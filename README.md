@@ -768,6 +768,10 @@ gitnexus wiki
 gitnexus wiki --model gpt-4o
 gitnexus wiki --base-url https://api.anthropic.com/v1
 
+# Use the Atlas Cloud preset
+export ATLASCLOUD_API_KEY=<key>
+gitnexus wiki --provider atlascloud
+
 # Force full regeneration
 gitnexus wiki --force
 

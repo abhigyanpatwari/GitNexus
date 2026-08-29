@@ -163,6 +163,13 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('-c, --coding-agent <agents>');
   });
 
+  it('wiki help lists the Atlas Cloud provider preset', () => {
+    const result = runHelp('wiki');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('atlascloud');
+  });
+
   it('localizes every registered CLI command and option description in zh-CN help', () => {
     const zhHelpOutput = allHelpCommands
       .map((args) => {
