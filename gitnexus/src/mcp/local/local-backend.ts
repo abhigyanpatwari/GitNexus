@@ -13,6 +13,7 @@ import {
   initLbug,
   executeQuery,
   executeParameterized,
+  ensureVectorExtension,
   closeLbug,
   isLbugReady,
   statDbIdentity,
@@ -20,6 +21,7 @@ import {
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { querySpringAopMetadata } from './aop-metadata.js';
+import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
@@ -122,6 +124,7 @@ import {
 } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UnresolvedReceiverSummary } from '../../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import {
   DEFERRED_IMPORT_REASON_SUFFIX,
@@ -652,6 +655,8 @@ export interface CodebaseContext {
  * number of SENTENCES, which has no relation to how much is missing.
  */
 export interface EpistemicCauses {
+  /** Files whose scope-extraction output is absent from this index. */
+  readonly scopeExtractionFiles: number;
   /**
    * Call SITES dropped at index time because the receiver's type could not be
    * established. Unit: call sites, taken from the index's
@@ -659,9 +664,8 @@ export interface EpistemicCauses {
    */
   readonly receiverTyping: number;
   /**
-   * Symbols on the far side of a dispatch boundary that the traversal could not
-   * attribute to the queried symbol: implementations plus interface-level
-   * consumers, summed over the boundary nodes that were flagged.
+   * Symbols on or beyond a dispatch boundary that the traversal could not
+   * attribute statically: implementations plus interface-level consumers.
    *
    * Unit: SYMBOLS, not call sites — deliberately, because a call-site count is
    * not derivable on this side. The graph does not retain per-site multiplicity
@@ -670,6 +674,10 @@ export interface EpistemicCauses {
    * per (caller, target) pair no matter how many syntactic sites exist. A
    * symbol reachable through two flagged boundary nodes is counted once per
    * node, so this is itself a lower bound.
+   *
+   * Framework runtime-proxy metadata can prove that impact is incomplete but
+   * cannot provide this magnitude, so it contributes a boundary note while
+   * leaving this count unchanged.
    *
    * It is still directly comparable in magnitude with `receiverTyping` — both
    * answer "how much is missing" — which `boundaries.length` was not.
@@ -711,6 +719,8 @@ function epistemicFrom(dropped: {
   sites: number;
   external: number;
   undecided: number;
+  dispatch: number;
+  scopeExtraction: number;
 }): {
   epistemic: 'exact' | 'lower-bound';
   boundaries?: string[];
@@ -724,8 +734,9 @@ function epistemicFrom(dropped: {
       ? {
           epistemic: 'exact',
           causes: {
+            scopeExtractionFiles: dropped.scopeExtraction,
             receiverTyping: 0,
-            dispatchBoundary: 0,
+            dispatchBoundary: dropped.dispatch,
             externalBoundary: dropped.external,
             undecidedSatisfaction: 0,
           },
@@ -739,12 +750,36 @@ function epistemicFrom(dropped: {
         // prose saying `2 call sites` — a consumer branching on the number
         // would read a different magnitude than the human reading the text.
         causes: {
+          scopeExtractionFiles: dropped.scopeExtraction,
           receiverTyping: dropped.sites,
-          dispatchBoundary: 0,
+          dispatchBoundary: dropped.dispatch,
           externalBoundary: dropped.external,
           undecidedSatisfaction: dropped.undecided,
         },
       };
+}
+
+function scopeExtractionBoundaries(
+  summary: unknown,
+  receipt: unknown,
+): { notes: string[]; files: number } {
+  const unknown = {
+    notes: [
+      'Scope-extraction completeness was not recorded for this index, so actual impact may be higher.',
+    ],
+    files: 0,
+  };
+  if (receipt !== 1) return unknown;
+  const total = scopeExtractionFailureTotal(summary);
+  if (total === undefined) return unknown;
+  if (total === 0) return { notes: [], files: 0 };
+  return {
+    notes: [
+      `Scope extraction failed for ${total} ${total === 1 ? 'file' : 'files'} while this index was built. ` +
+        `Scope-resolution edges from ${total === 1 ? 'that file are' : 'those files are'} absent, so actual impact may be higher.`,
+    ],
+    files: total,
+  };
 }
 
 /**
@@ -1248,12 +1283,12 @@ export class LocalBackend {
   private warnedSiblingDrift: Set<string> = new Set();
 
   /**
-   * One-shot stderr warning for the VECTOR-extension fallback. Without this
-   * guard the diagnostic would fire on every `semanticSearch()` call on
-   * platforms where the extension is unsupported (e.g. Windows), making MCP
-   * stderr noisy per DoD §2.8.
+   * One-shot stderr guards for distinct VECTOR load and index-query failures.
+   * Keeping them separate preserves both diagnostics across semanticSearch calls
+   * without repeating either on hot paths.
    */
-  private warnedVectorUnsupported = false;
+  private warnedVectorLoadFailed = false;
+  private warnedVectorQueryFailed = false;
 
   /**
    * One-shot warning when a pruned or Node-unloadable optional embedding stack
@@ -3214,21 +3249,31 @@ export class LocalBackend {
       this.lastQueryEmbeddingDims.set(repo.lbugPath, dims);
       const queryVecStr = `[${queryVec.join(',')}]`;
       const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
+      let vectorReady = false;
+      try {
+        vectorReady = await ensureVectorExtension(repo.lbugPath);
+      } catch (err) {
+        if (!this.warnedVectorLoadFailed) {
+          this.warnedVectorLoadFailed = true;
+          logger.warn(
+            { err },
+            'GitNexus [query:vector]: vector extension load failed; using exact scan fallback',
+          );
+        }
+      }
 
       let bestChunks = new Map<
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      // Always TRY the vector lane — no platform gate. LadybugDB ships the
-      // VECTOR extension for every supported platform, Windows included
-      // (#2623 follow-up; the old `platform !== 'win32'` gate was stale), so
-      // whether the index is queryable is a per-machine runtime fact. The
-      // catch below is the fallback: any failure (extension unloadable, index
-      // absent, older DB) degrades to the exact scan with a once-per-backend
-      // diagnostic instead of being silently swallowed.
-      try {
-        bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-          const vectorQuery = `
+      // Try the vector lane only after its lazy load succeeds. An unavailable
+      // extension is already reported by ExtensionManager; an index/query
+      // failure below gets its own once-per-backend diagnostic before the exact
+      // scan fallback.
+      if (vectorReady) {
+        try {
+          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+            const vectorQuery = `
             CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
@@ -3239,26 +3284,27 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-          const embResults = await executeQuery(repo.lbugPath, vectorQuery);
-          return embResults.map((row) => ({
-            nodeId: row.nodeId ?? row[0],
-            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-            startLine: row.startLine ?? row[2] ?? 0,
-            endLine: row.endLine ?? row[3] ?? 0,
-            distance: row.distance ?? row[4],
-          }));
-        });
-      } catch (err) {
-        bestChunks = new Map();
-        if (!this.warnedVectorUnsupported) {
-          // Rare diagnostic: surface why semantic search fell back to the
-          // exact scan. Emitted once per `LocalBackend` instance lifetime to
-          // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
-          this.warnedVectorUnsupported = true;
-          logger.warn(
-            { err },
-            'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
-          );
+            const embResults = await executeQuery(repo.lbugPath, vectorQuery);
+            return embResults.map((row) => ({
+              nodeId: row.nodeId ?? row[0],
+              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+              startLine: row.startLine ?? row[2] ?? 0,
+              endLine: row.endLine ?? row[3] ?? 0,
+              distance: row.distance ?? row[4],
+            }));
+          });
+        } catch (err) {
+          bestChunks = new Map();
+          if (!this.warnedVectorQueryFailed) {
+            // Rare diagnostic: surface why semantic search fell back to the
+            // exact scan. Emitted once per `LocalBackend` instance lifetime to
+            // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
+            this.warnedVectorQueryFailed = true;
+            logger.warn(
+              { err },
+              'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
+            );
+          }
         }
       }
 
@@ -6356,6 +6402,7 @@ export class LocalBackend {
                 summaryOnly: true,
                 skipEpistemic: true,
                 skipEnrichment: true,
+                hasExplicitRelationTypes,
               },
             );
           } catch (e) {
@@ -6610,6 +6657,7 @@ export class LocalBackend {
           limit: Number.isFinite(params.limit) ? params.limit : 100,
           offset: Number.isFinite(params.offset) ? params.offset : 0,
           pdgBridge,
+          hasExplicitRelationTypes,
         });
         return composeUnifiedPdgImpactResult(pdgResult, interproceduralResult);
       } catch (e) {
@@ -6626,6 +6674,7 @@ export class LocalBackend {
       limit: Number.isFinite(params.limit) ? params.limit : 100,
       offset: Number.isFinite(params.offset) ? params.offset : 0,
       summaryOnly: params.summaryOnly,
+      hasExplicitRelationTypes,
     });
   }
 
@@ -6775,6 +6824,7 @@ export class LocalBackend {
     symId: string,
     symType: string,
     symName: string,
+    direction?: 'upstream' | 'downstream',
   ): Promise<{
     epistemic: 'exact' | 'lower-bound';
     boundaries?: string[];
@@ -6802,6 +6852,10 @@ export class LocalBackend {
       meta = undefined;
     }
     const receiverDrops = unresolvedReceiverBoundaries(meta?.unresolvedReceiverMembers, symName);
+    const scopeExtractionDrops = scopeExtractionBoundaries(
+      meta?.scopeExtractionFailures,
+      meta?.scopeExtractionReceipt,
+    );
     // #2873 — satisfaction checks the analyzer never completed. Read on the
     // same footing as the receiver drops, and BEFORE the heritage probe for the
     // same reason: this cause leaves no edge for that probe to find, so a
@@ -6811,6 +6865,19 @@ export class LocalBackend {
     // the owning-type hop below would be a graph round-trip per method query in
     // every index that has no such record — which is every non-Go one, since Go
     // is the only language with a structural-satisfaction hook.
+    const convexDispatchPromise =
+      direction === 'downstream'
+        ? Promise.resolve(undefined)
+        : queryConvexDispatchMetadata(repo.lbugPath, symId, symName, symType);
+    const interfaceRowsPromise = executeParameterized(
+      repo.lbugPath,
+      `MATCH (x)-[r:CodeRelation]->(iface)
+       WHERE x.id = $symId AND r.type IN $heritage
+       RETURN DISTINCT iface.id AS id, iface.name AS name, labels(iface)[0] AS label
+       ORDER BY id
+       LIMIT 25`,
+      { symId, heritage: HERITAGE_TYPES },
+    ).catch(() => []);
     const undecidedSummary = meta?.undecidedInterfaceSatisfaction;
     const undecidedDrops =
       undecidedSummary === undefined
@@ -6821,10 +6888,21 @@ export class LocalBackend {
               ? await this.owningTypeNames(repo, symId)
               : []),
           ]);
+    const convexDispatch = await convexDispatchPromise;
     const droppedBoundaries = {
       ...receiverDrops,
-      notes: [...receiverDrops.notes, ...undecidedDrops.notes],
+      notes: [
+        ...receiverDrops.notes,
+        ...scopeExtractionDrops.notes,
+        ...undecidedDrops.notes,
+        ...(convexDispatch === undefined ? [] : [convexDispatch.boundary]),
+      ],
       undecided: undecidedDrops.undecided,
+      // Endpoint/probe evidence proves incompleteness but does not expose a
+      // count of omitted symbols. Keep the magnitude at zero rather than
+      // inventing one from the presence of a note.
+      dispatch: 0,
+      scopeExtraction: scopeExtractionDrops.files,
     };
     try {
       // Discover the interface / abstract supertypes on the target's boundary.
@@ -6833,15 +6911,7 @@ export class LocalBackend {
       if (symType === 'Interface') {
         boundary.set(symId, { name: symName || '', label: 'Interface' });
       }
-      const ifaceRows = await executeParameterized(
-        repo.lbugPath,
-        `MATCH (x)-[r:CodeRelation]->(iface)
-         WHERE x.id = $symId AND r.type IN $heritage
-         RETURN DISTINCT iface.id AS id, iface.name AS name, labels(iface)[0] AS label
-         ORDER BY id
-         LIMIT 25`,
-        { symId, heritage: HERITAGE_TYPES },
-      ).catch(() => []);
+      const ifaceRows = await interfaceRowsPromise;
       for (const r of ifaceRows) {
         const id = (r.id ?? r[0]) as string;
         if (id && !boundary.has(id)) {
@@ -6919,8 +6989,9 @@ export class LocalBackend {
         epistemic: 'lower-bound',
         boundaries: [...droppedBoundaries.notes, ...boundaries],
         causes: {
+          scopeExtractionFiles: droppedBoundaries.scopeExtraction,
           receiverTyping: droppedBoundaries.sites,
-          dispatchBoundary: dispatchBoundarySymbols,
+          dispatchBoundary: droppedBoundaries.dispatch + dispatchBoundarySymbols,
           externalBoundary: droppedBoundaries.external,
           undecidedSatisfaction: droppedBoundaries.undecided,
         },
@@ -6984,6 +7055,8 @@ export class LocalBackend {
       skipEpistemic?: boolean;
       skipEnrichment?: boolean;
       pdgBridge?: PdgBridgeOptions;
+      /** Preserve an explicit caller filter; implicit structural seeds must not widen it. */
+      hasExplicitRelationTypes?: boolean;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
@@ -7027,7 +7100,13 @@ export class LocalBackend {
       causes?: EpistemicCauses;
     }> = opts.skipEpistemic
       ? Promise.resolve({})
-      : this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
+      : this.computeEpistemicBoundary(
+          repo,
+          symId,
+          symType,
+          (sym.name || sym[1]) as string,
+          direction,
+        );
     const beanMetadataPromise =
       opts.skipEpistemic || summaryOnly
         ? Promise.resolve(undefined)
@@ -7040,7 +7119,11 @@ export class LocalBackend {
     const visited = new Set<string>([symId]);
     const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
     let frontier = [symId];
+    const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
+    // Fetch one sentinel row beyond the cap so generated object bindings
+    // degrade visibly instead of allocating an unbounded seed frontier.
+    const OBJECT_CALLABLE_MEMBER_CAP = 5000;
 
     // Fix #480: For Java (and other JVM) Class/Interface nodes, CALLS edges
     // point to Constructor nodes and IMPORTS edges point to File nodes — not
@@ -7115,6 +7198,63 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('impact:class-node-expansion', e);
+        traversalComplete = false;
+      }
+    }
+
+    // Function-valued properties on exported object bindings are represented
+    // as Const/Variable -[:HAS_METHOD]-> Function. HAS_METHOD is intentionally
+    // absent from the default usage traversal, but downstream impact on the
+    // binding still needs to enter its own callable member before following
+    // CALLS.
+    if (
+      direction === 'downstream' &&
+      (symType === 'Const' || symType === 'Variable') &&
+      relationTypes.includes('CALLS') &&
+      !relationTypes.includes('HAS_METHOD') &&
+      !opts.hasExplicitRelationTypes
+    ) {
+      try {
+        const memberRows = await executeParameterized(
+          repo.lbugPath,
+          `
+          MATCH (n)-[hm:CodeRelation]->(member:Function)
+          WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
+          RETURN DISTINCT member.id AS id, member.name AS name,
+                 'Function' AS type, member.filePath AS filePath
+          ORDER BY id
+          LIMIT ${OBJECT_CALLABLE_MEMBER_CAP + 1}
+          UNION ALL
+          MATCH (n)-[hm:CodeRelation]->(member:Method)
+          WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
+          RETURN DISTINCT member.id AS id, member.name AS name,
+                 'Method' AS type, member.filePath AS filePath
+          ORDER BY id
+          LIMIT ${OBJECT_CALLABLE_MEMBER_CAP + 1}
+        `,
+          { symId },
+        );
+        memberRows.sort((a, b) => compareCodeUnits(String(a.id ?? a[0]), String(b.id ?? b[0])));
+        if (memberRows.length > OBJECT_CALLABLE_MEMBER_CAP) traversalComplete = false;
+        for (const row of memberRows.slice(0, OBJECT_CALLABLE_MEMBER_CAP)) {
+          const memberId = row.id || row[0];
+          if (memberId && !visited.has(memberId)) {
+            visited.add(memberId);
+            objectCallableFrontier.push(memberId);
+            impacted.push({
+              depth: 1,
+              id: memberId,
+              name: row.name || row[1],
+              type: row.type || row[2],
+              filePath: row.filePath || row[3] || '',
+              relationType: 'HAS_METHOD',
+              confidence: 1,
+            });
+          }
+        }
+      } catch (e) {
+        logQueryError('impact:object-callable-expansion', e);
+        traversalComplete = false;
       }
     }
 
@@ -7269,7 +7409,10 @@ export class LocalBackend {
         break;
       }
 
-      frontier = nextFrontier;
+      frontier =
+        depth === 1 && objectCallableFrontier.length > 0
+          ? [...new Set([...nextFrontier, ...objectCallableFrontier])]
+          : nextFrontier;
     }
 
     // Stamp the finalized, order-independent bridge evidence (strongest across
@@ -7883,6 +8026,7 @@ export class LocalBackend {
         // the #1858 epistemic/boundaries fields — computing them per neighbor is
         // dead work on the highest-volume path, so suppress them here too.
         skipEpistemic: true,
+        hasExplicitRelationTypes: opts.relationTypes.length > 0,
       });
     } catch {
       return null;

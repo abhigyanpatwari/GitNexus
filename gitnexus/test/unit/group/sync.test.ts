@@ -23,14 +23,14 @@ describe('syncGroup', () => {
     packages: {},
     detect: {
       http: true,
+      graphql: false,
       grpc: false,
       thrift: false,
       topics: false,
-      shared_libs: false,
-      embedding_fallback: false,
+      includes: false,
       workspace_deps: false,
     },
-    matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    matching: {},
   });
 
   it('returns SyncResult with contracts and cross-links', async () => {
@@ -71,6 +71,33 @@ describe('syncGroup', () => {
     expect(result.crossLinks[0].matchType).toBe('exact');
     expect(result.crossLinks[0].confidence).toBe(1.0);
     expect(result.unmatched).toHaveLength(0);
+  });
+
+  it('exact-matches GraphQL root fields across repositories', async () => {
+    const config = makeConfig({ api: 'api-repo', web: 'web-repo' });
+    const contracts: StoredContract[] = [
+      {
+        ...makeContract('graphql::query::widget', 'provider', 'api'),
+        type: 'graphql',
+      },
+      {
+        ...makeContract('graphql::query::widget', 'consumer', 'web'),
+        type: 'graphql',
+      },
+    ];
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => contracts,
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toEqual([
+      expect.objectContaining({
+        type: 'graphql',
+        contractId: 'graphql::query::widget',
+        matchType: 'exact',
+      }),
+    ]);
   });
 
   it('reports missing repos', async () => {
@@ -222,11 +249,10 @@ describe('syncGroup', () => {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
-        embedding_fallback: false,
+        includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const result = await syncGroup(config, {
@@ -676,11 +702,10 @@ service OrderService {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
-        embedding_fallback: false,
+        includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const cap = _captureLogger();
@@ -746,11 +771,10 @@ service OrderService {
           grpc: false,
           thrift: false,
           topics: false,
-          shared_libs: false,
-          embedding_fallback: false,
+          includes: false,
           workspace_deps: workspaceDeps,
         },
-        matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+        matching: {},
       };
     }
 
@@ -903,11 +927,10 @@ service OrderService {
           grpc: false,
           thrift: false,
           topics: false,
-          shared_libs: false,
-          embedding_fallback: false,
+          includes: false,
           workspace_deps: true,
         },
-        matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+        matching: {},
       };
 
       const result = await syncGroup(config, {
@@ -994,11 +1017,10 @@ service OrderService {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
-        embedding_fallback: false,
+        includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
@@ -1078,11 +1100,10 @@ service OrderService {
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
-        embedding_fallback: false,
+        includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
 
     const result = await syncGroup(config, {
@@ -1122,11 +1143,10 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
-        embedding_fallback: false,
+        includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
   };
 

@@ -20,13 +20,14 @@ describe('Group types', () => {
       packages: {},
       detect: {
         http: true,
+        graphql: true,
         grpc: true,
         thrift: true,
         topics: true,
-        shared_libs: true,
-        embedding_fallback: true,
+        includes: true,
+        workspace_deps: true,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
     expect(config.version).toBe(1);
     expect(config.name).toBe('company');
@@ -48,7 +49,7 @@ describe('Group types', () => {
   });
 
   it('ExtractedContract accepts all contract types', () => {
-    const types: ContractType[] = ['http', 'grpc', 'topic', 'lib', 'custom'];
+    const types: ContractType[] = ['http', 'graphql', 'grpc', 'topic', 'lib', 'custom'];
     types.forEach((t) => {
       const contract: ExtractedContract = {
         contractId: `${t}::test`,
@@ -88,13 +89,14 @@ describe('Group types', () => {
       packages: {},
       detect: {
         http: true,
+        graphql: true,
         grpc: true,
         thrift: true,
         topics: true,
-        shared_libs: true,
-        embedding_fallback: true,
+        includes: true,
+        workspace_deps: true,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
     expect(config.detect.thrift).toBe(true);
   });

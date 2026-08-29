@@ -616,17 +616,137 @@ const sanitizeEntries = (entries: RegistryEntry[]): RegistryEntry[] =>
   });
 
 /**
- * Read the global registry. Returns empty array if not found.
+ * A registry row we can actually resolve a repo from.
+ *
+ * `Array.isArray` is not enough on the strict path: `[{}]` is a JSON array, so
+ * a malformed registry passed the shape check, every configured repo failed to
+ * resolve, and — because none of them produced a load ERROR — the total-failure
+ * guard stayed off and a good contracts.json was replaced by an empty one. That
+ * is the same fail-open the strict mode exists to close, one level down from
+ * the file to the rows inside it.
+ *
+ * Only the three fields the resolution path actually depends on are required.
+ * `indexedAt` / `lastCommit` are deliberately NOT: callers already default them
+ * (`e?.indexedAt || ''`), so demanding them would reject a legacy row that
+ * resolves perfectly well — trading a fail-open for a fail-shut on real data.
+ *
+ * Two of the three must also be non-blank, because `typeof '' === 'string'`
+ * passes a row that cannot identify anything. `name` is what
+ * `defaultResolveHandle` matches a configured repo against, so a blank one
+ * matches nothing and puts every repo in `missingRepos` — the same fail-open,
+ * dressed as a clean answer. `storagePath` is what the resolved handle carries
+ * to `path.join(storagePath, 'lbug')`; blank, that joins to a relative `lbug`
+ * under the CWD, so the sync opens an index that is not the repo's.
+ *
+ * `path` stays at the bare string check, on the same reasoning that exempts
+ * `indexedAt` / `lastCommit`: require only what the resolution path depends on
+ * to IDENTIFY the repo. This check rejects the WHOLE registry, which is
+ * machine-wide, so a field tightened past what resolution needs would let one
+ * blank value in one row break every group sync on the machine — including
+ * groups whose repos all resolve.
  */
-export const readRegistry = async (): Promise<RegistryEntry[]> => {
+const isResolvableEntry = (value: unknown): value is RegistryEntry => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const e = value as Record<string, unknown>;
+  const identifies = (v: unknown): boolean => typeof v === 'string' && v.trim() !== '';
+  return identifies(e.name) && identifies(e.storagePath) && typeof e.path === 'string';
+};
+
+/**
+ * Shared body for the two read modes below.
+ *
+ * `strict` distinguishes "the registry says nothing is registered" from "the
+ * registry could not be read". Lenient collapses both into `[]`.
+ *
+ * ENOENT is lenient in BOTH modes: no file genuinely means nothing has been
+ * registered yet, and every first-run path depends on that.
+ */
+const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
+  let raw: string;
   try {
-    const raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? sanitizeEntries(data) : [];
-  } catch {
+    raw = await fs.readFile(getGlobalRegistryPath(), 'utf-8');
+  } catch (err) {
+    if (strict && (err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    return [];
+  }
+  try {
+    // The parse gets its OWN guarded region, narrower than the checks below,
+    // and the parser's error is DISCARDED rather than rethrown.
+    //
+    // `JSON.parse`'s SyntaxError quotes a ten-character window of the source
+    // either side of the break — `Unexpected token 'L', ..."end.git"},<here>"...`.
+    // Registry rows carry remote URLs with their HTTPS userinfo verbatim, so a
+    // registry that breaks on one of those URLs puts the credential into that
+    // window, and the thrown message is not the only place it goes from there:
+    // `groupStatus` interpolates it into `unresolvableReason` for an MCP
+    // client, and `gitnexus group sync` prints it.
+    //
+    // Not logged and not attached as `cause` either, deliberately against this
+    // file's own convention of handing the `Error` object to the logger so it
+    // captures stack and cause: under MCP stdio the client writes those records
+    // to a log file on disk, so following the convention here would move the
+    // byte window from one channel to a more durable one. The parser's position
+    // offset is not worth a credential — the path and the failure class are
+    // what an operator acts on, and they are what the two errors below say too.
+    let data: unknown;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error(`${getGlobalRegistryPath()} is not valid JSON (registry is corrupt)`);
+    }
+    if (!Array.isArray(data)) {
+      if (strict) {
+        throw new Error(`${getGlobalRegistryPath()} is not a JSON array (registry is corrupt)`);
+      }
+      return [];
+    }
+    if (strict) {
+      // Reject the WHOLE registry, never filter the bad rows out. Dropping them
+      // would report the repos they name as unregistered, which is precisely
+      // the unreadable-as-missing answer this mode refuses to give.
+      const bad = data.findIndex((entry) => !isResolvableEntry(entry));
+      if (bad !== -1) {
+        throw new Error(
+          `${getGlobalRegistryPath()} entry ${bad} does not identify a repo — name and storagePath must be non-empty strings and path must be a string (registry is corrupt)`,
+        );
+      }
+    }
+    return sanitizeEntries(data as RegistryEntry[]);
+  } catch (err) {
+    if (strict) throw err;
     return [];
   }
 };
+
+/**
+ * Read the global registry. Returns empty array if not found — and, note, also
+ * when the file exists but cannot be read or parsed. That is fine for a
+ * read-only listing, where an unreadable registry and an empty one print the
+ * same nothing. It is not fine for a caller that ACTS on emptiness; see
+ * `readRegistryStrict`.
+ */
+export const readRegistry = async (): Promise<RegistryEntry[]> => readRegistryFile(false);
+
+/**
+ * Read the global registry, refusing to report an unreadable one as empty.
+ *
+ * An EACCES after a `sudo gitnexus analyze`, a truncated registry.json, or an
+ * $HOME-on-NFS blip otherwise presents as "no repo is registered" — an
+ * unreadable condition reported as missing, which is exactly the conflation
+ * #3011 removes one frame further down. `syncGroup` is the caller that acts on
+ * that answer, by replacing a good contracts.json with an empty one.
+ *
+ * Deliberately a separate export rather than an option on `readRegistry`:
+ * leaving that signature untouched keeps every existing lenient call site
+ * provably unaffected, and the mode is legible at the call site.
+ *
+ * No count here on purpose. This comment carried one, it said nine, and the
+ * real figure was thirteen by the time anyone checked and fourteen shortly
+ * after — a number in prose beside code that moves is a claim that rots
+ * silently, which is the defect class this whole change set is about. The
+ * argument does not need the figure: it holds for one call site or fifty.
+ */
+export const readRegistryStrict = async (): Promise<RegistryEntry[]> => readRegistryFile(true);
 
 /**
  * Write the global registry to disk.
@@ -1462,11 +1582,13 @@ export interface CLIConfig {
     | 'claude'
     | 'codex'
     | 'opencode'
+    | 'grok'
     | 'minimax';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;
   opencodeModel?: string;
+  grokModel?: string;
   /** Azure api-version query param (e.g. '2024-10-21'). Only used when provider is 'azure'. */
   apiVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */

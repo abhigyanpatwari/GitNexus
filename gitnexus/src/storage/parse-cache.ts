@@ -568,8 +568,89 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // and the v37/v38 clash it was written for: the next free value above every
 // IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
 // scanned; #3017 is the only other claimant.
+//
+// 72 -> 74 adds import-proven Convex endpoint metadata to Const/Function worker
+// output. A warm v72 cache has no convexEndpointFactory property, so the MCP
+// impact probe would keep claiming exact results for unchanged endpoints. The
+// parse-cache bump makes unchanged files re-parse; analyzer runner identity
+// drift separately forces the graph re-emit (run-analyze.ts), and an id/schema
+// migration needs both guarantees. Version 73 is intentionally skipped because
+// concurrent PR #3046 (fixes #3041) claims it. Re-check main and open PRs
+// immediately before merge.
+//
+// 74 -> 76 makes object-literal Function and Method members owner-qualified
+// (#3041). A warm v74 cache replays the old collapsed callable ids and omits
+// the new Const/Variable -> callable HAS_METHOD ownership edges, so this bump
+// makes unchanged files re-parse rather than waiting for a source edit. The
+// persisted graph is rebuilt separately when `analyzerRunnerIdentitiesEqual`
+// detects the changed analyzer build in run-analyze.ts. Both guards are
+// required; a parse-cache bump alone must never be read as a graph rebuild.
+// Version 75 is intentionally skipped because concurrent PR #3017 claims it.
+//
+// 74 -> 75 adds #3009's NestJS decorator routes to the JS/TS decoratorRoutes
+// channel. Same reasoning as 69: a warm pre-feature cache replays unchanged
+// worker results, which for every already-indexed NestJS repo means replaying
+// the empty route set this change exists to fix — the fix would appear to do
+// nothing until something else invalidated the cache.
+//
+// 75, not 71 (this branch's original claim) and not 74: origin/main cascaded
+// past both while this PR was open. #2980 took 71, #3046 claims 73, and the
+// Convex endpoint-metadata change took 74 (skipping 73 for exactly that
+// reason). 75 is the next free value above origin/main AND above every
+// in-flight claim — the rule the ledger states, not "one above main". Every
+// open PR touching gitnexus/src/storage/parse-cache.ts was scanned at this
+// merge: #3046 (73) and #1616 (a stale 2) are the only other claimants.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 72;
+//
+// 75 -> 76 for the NestJS multi-path (array) form: `@Get(['a','b'])` now yields
+// one `decoratorRoutes` entry per path where it previously yielded none. That
+// changes worker output for the same file, and 75 was already claimed earlier
+// on this same branch — so a warm cache written by a dev or CI build at v75,
+// before the array form landed, would replay the pre-feature captures under a
+// BYTE-IDENTICAL `PARSE_CACHE_VERSION` and the array form would be inert. The
+// package version is untouched here, so it cannot rescue that case. Same-branch
+// re-bumping is unusual, but the ledger's rule is about what a warm cache can
+// replay, not about how the value was reached.
+//
+// 76 -> 77 because 76 was NOT free. While this branch sat in review, origin/main
+// advanced to ac68f5254 and #3046 took 76 — the value this branch already held.
+// `gitnexus/package.json` is 1.6.9 on both sides, so `PARSE_CACHE_VERSION` was
+// the byte-identical string `76+1.6.9` on two branches that changed
+// incompatible worker output. Every warm cache would have been reused across
+// both features, making both inert while every test stayed green.
+//
+// The sharpest part: #3046 skipped 75 BECAUSE this branch held it, then took
+// 76 — and this branch had meanwhile moved 75 -> 76 for the array form. Two
+// PRs each doing the bookkeeping correctly still collided, because each
+// re-checked once and neither re-checked after the other moved. That is what
+// the re-check line below is for, and why it says AT MERGE rather than
+// when you pick the number.
+//
+// 78 was claimed concurrently by #3060 while this branch was in review. Both
+// branches keep the same package version, so sharing 78 would replay
+// incompatible worker output without a textual merge conflict. This branch
+// therefore takes 79, the next free value above origin/main and every open PR
+// found by the contents-API scan at their exact head SHAs.
+//
+// WHY THIS IS STILL A HAND-PICKED NUMBER, when `SCHEMA_FINGERPRINT` next door
+// is a derived sha256 that cannot collide. The derivation exists and already
+// runs: `resolveAnalyzerRunnerIdentity` computes `build.digest` over the
+// analyzer build tree on every analyze. It is not used here because it moves on
+// ANY build change — a comment-only edit, this paragraph included — so every
+// dev and CI rebuild would force a full re-parse of every repo. That is the
+// expensive half of the trade, and `PARSE_CACHE_VERSION` already carries the
+// package version, so this counter's only job is separating builds that SHARE
+// one: dev, CI, unreleased. Exactly the population a whole-build digest would
+// punish, and exactly the population that hits the exact-clash failure.
+//
+// So the counter stays, and the open cost is that a bump nobody makes is
+// invisible: a capture change with no bump ships inert and no check can see it.
+// #2860 (a base-branch CI comparison) closes the "not greater than main" axis
+// only. A digest over just the determinant subset — the language queries plus
+// `route-extractors/` and `workers/` module content — would close the missing-
+// bump axis without invalidating on unrelated churn, and is the real follow-up.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 79;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

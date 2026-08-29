@@ -1,8 +1,9 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
-  boundCallableStartRow,
+  boundCallableStartPosition,
   localIdentity,
   nestedCallableQualifiedName,
+  positionQualifiedCallableName,
 } from './callable-id.js';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
@@ -91,6 +92,7 @@ import {
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
   findObjectLiteralBindingInfo,
+  isArrayContainedObjectLiteralMember,
   findReturnShapeOwnerInfo,
   isReturnShapeProperty,
   findMemberAssignmentOwnerInfo,
@@ -141,7 +143,11 @@ import {
   templateConstraintsIdTag,
 } from '../utils/template-arguments.js';
 import type { LanguageProvider } from '../language-provider.js';
-import { shouldHarvestModuleConstants } from '../language-provider.js';
+import {
+  mergeCanonicalDefinitionProperties,
+  runDefinitionPropertiesExtractor,
+  shouldHarvestModuleConstants,
+} from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
 import {
@@ -493,6 +499,12 @@ export interface ParseWorkerResult {
    * finalize-orchestrator.
    */
   parsedFiles: ParsedFile[];
+  /**
+   * Repo-relative paths whose scope-capture/extraction step threw. Optional for
+   * parse-cache compatibility; unlike transient worker telemetry this must be
+   * replayed on a cache hit so the persisted index cannot claim completeness.
+   */
+  scopeExtractionFailures?: string[];
   skippedLanguages: Record<string, number>;
   /**
    * Files whose parse output carried a value the structured-clone algorithm
@@ -836,6 +848,13 @@ const CALLABLE_PREFIX_BOUNDARY_TYPES: ReadonlySet<string> = new Set<string>([
   'anonymous_object_creation_expression', // C#
 ]);
 
+/**
+ * Object-literal callables use the binding owner in their identity so spelling
+ * a member as a property or shorthand method cannot change its graph semantics.
+ */
+const shouldObjectOwnerQualifyCallable = (label: NodeLabel): boolean =>
+  label === 'Function' || label === 'Method';
+
 const enclosingCallablePrefix = (
   node: SyntaxNode,
   filePath: string,
@@ -903,13 +922,27 @@ const callableOwnQualifiedName = (
   // `ownName === null` branch below carries the position INSTEAD of a name,
   // never in addition to one, so the two spellings cannot stack.
   const ownName = efnResult?.funcName ?? genericFuncName(fnNode) ?? null;
+  let finalLabel = efnResult?.label ?? inferFunctionLabel(fnNode.type);
+  if (provider.labelOverride) {
+    const override = provider.labelOverride(fnNode, finalLabel);
+    if (override !== null) finalLabel = override;
+  }
 
   const prefix = enclosingCallablePrefix(fnNode, filePath, provider);
   const classInfo =
     prefix === undefined
       ? cachedFindEnclosingClassInfo(fnNode, filePath, provider.resolveEnclosingOwner)
       : null;
-  const owner = prefix ?? classInfo?.className;
+  const objectOwner =
+    prefix === undefined && classInfo === null && shouldObjectOwnerQualifyCallable(finalLabel)
+      ? findObjectLiteralBindingInfo(fnNode, filePath, { includeOwnerName: true })?.ownerName
+      : undefined;
+  const owner = prefix ?? classInfo?.className ?? objectOwner;
+  const needsArrayPosition =
+    owner === undefined &&
+    ownName !== null &&
+    shouldObjectOwnerQualifyCallable(finalLabel) &&
+    isArrayContainedObjectLiteralMember(fnNode);
   const result =
     prefix !== undefined
       ? nestedCallableQualifiedName(prefix, fnNode, ownName ?? 'fn')
@@ -917,7 +950,9 @@ const callableOwnQualifiedName = (
         ? localIdentity(fnNode, 'fn')
         : owner
           ? `${owner}.${ownName}`
-          : ownName;
+          : needsArrayPosition
+            ? positionQualifiedCallableName(ownName, fnNode.startPosition)
+            : ownName;
   callableQualifiedNameCache.set(fnNode, result);
   return result;
 };
@@ -970,8 +1005,21 @@ const findEnclosingFunctionId = (
         // to the METHOD, not directly to the class, and a Go receiver method can
         // never itself be nested inside another callable.
         const nestedPrefix = enclosingCallablePrefix(current, filePath, provider);
+        const objectOwnerName =
+          nestedPrefix === undefined &&
+          classInfo === null &&
+          shouldObjectOwnerQualifyCallable(finalLabel)
+            ? findObjectLiteralBindingInfo(current, filePath, { includeOwnerName: true })?.ownerName
+            : undefined;
         const ownerName =
-          nestedPrefix ?? classInfo?.className ?? standaloneMethodInfo?.receiverType ?? undefined;
+          nestedPrefix ??
+          classInfo?.className ??
+          standaloneMethodInfo?.receiverType ??
+          objectOwnerName;
+        const needsArrayPosition =
+          ownerName === undefined &&
+          shouldObjectOwnerQualifyCallable(finalLabel) &&
+          isArrayContainedObjectLiteralMember(current);
         // Lockstep with the other two id-building phases — see
         // `nestedCallableQualifiedName`, which is the shared rule. When a
         // nested prefix exists it IS `ownerName`, so this branch and the
@@ -981,7 +1029,9 @@ const findEnclosingFunctionId = (
             ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
             : ownerName
               ? `${ownerName}.${funcName}`
-              : funcName;
+              : needsArrayPosition
+                ? positionQualifiedCallableName(funcName, current.startPosition)
+                : funcName;
         // Include #<arity> suffix to match definition-phase Method/Constructor IDs.
         // Use the same MethodExtractor (getMethodInfo) as the definition phase.
         // When same-arity collisions exist, also append ~type1,type2.
@@ -1543,14 +1593,19 @@ const processFileGroup = (
     // see parsedfile-store.ts). parse-impl flushes `result.parsedFiles` to disk
     // per chunk and does NOT retain them in main-thread heap, so this no longer
     // costs ~1× the semantic model in RAM during parse.
+    let scopeExtractionFailed = false;
     const parsedFile = extractParsedFile(
       provider,
       parseContent,
       file.path,
-      reportWarning,
+      (message) => {
+        scopeExtractionFailed = true;
+        reportWarning(message);
+      },
       tree,
       scopeSourceKind,
     );
+    if (scopeExtractionFailed) (result.scopeExtractionFailures ??= []).push(file.path);
     if (parsedFile !== undefined) {
       // Capture-time side-channel (#1983): `extractParsedFile` just ran the
       // provider's `emitScopeCaptures`, which (for C++ ADL/namespace marks,
@@ -2279,23 +2334,24 @@ const processFileGroup = (
       // wrapper while scope-resolution anchors on the INNER expression. The
       // position join is line-only, so `startLine` must follow the initializer
       // (ids still use `definitionNode` via `localIdentity`).
-      const startRow =
+      const startPosition =
         definitionNode &&
         (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor')
-          ? boundCallableStartRow(
+          ? boundCallableStartPosition(
               definitionNode,
               nodeName,
               nodeLabel,
               parsedFile?.localDefs,
               nameNode,
             )
-          : definitionNode?.startPosition.row;
+          : definitionNode?.startPosition;
       const startLine =
-        startRow !== undefined
-          ? startRow + lineOffset
+        startPosition !== undefined
+          ? startPosition.row + lineOffset
           : nameNode
             ? nameNode.startPosition.row + lineOffset
             : lineOffset;
+      const startColumn = startPosition?.column ?? nameNode?.startPosition.column ?? 0;
 
       // Compute enclosing class BEFORE node ID — needed to qualify method IDs
       const needsOwner =
@@ -2381,20 +2437,31 @@ const processFileGroup = (
       // and COLLAPSE INTO ONE node — two distinct settings become one symbol,
       // and the merged name then looks workspace-unique to name inference,
       // which resolves reads of it to a node representing both.
+      const objectLiteralBindingInfo =
+        !enclosingClassId &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Property') &&
+        definitionNode
+          ? findObjectLiteralBindingInfo(definitionNode, file.path, {
+              includeOwnerName:
+                shouldObjectOwnerQualifyCallable(nodeLabel) || nodeLabel === 'Property',
+            })
+          : null;
       const objectLiteralOwnerInfo =
-        !enclosingClassId && (nodeLabel === 'Method' || nodeLabel === 'Property') && definitionNode
+        !enclosingClassId &&
+        (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Property') &&
+        definitionNode
           ? (findMemberAssignmentOwnerInfo(definitionNode, file.path) ??
-            findObjectLiteralBindingInfo(definitionNode, file.path, {
-              // Only `Property` opts into the qualifier; `Method` ids must stay
-              // byte-identical or every object-literal method in every indexed
-              // repo changes id.
-              includeOwnerName: nodeLabel === 'Property',
-            }) ??
+            objectLiteralBindingInfo ??
             // R3-4: an anonymous literal in return position is owned by the
             // function whose shape it is. Last in the chain so a variable-bound
             // literal keeps its existing owner and its existing id.
             (nodeLabel === 'Property' ? findReturnShapeOwnerInfo(definitionNode, file.path) : null))
           : null;
+      const isArrayContainedObjectCallable =
+        !enclosingClassId &&
+        shouldObjectOwnerQualifyCallable(nodeLabel) &&
+        definitionNode !== undefined &&
+        isArrayContainedObjectLiteralMember(definitionNode);
       // Provenance for narrowing (R3-4). A return shape is a real definition but
       // the weaker one, and the unique-name pass ranks declared anchors above it
       // so indexing these cannot change an answer that already resolved.
@@ -2492,7 +2559,9 @@ const processFileGroup = (
                   // define `bar` stay distinct nodes.
                   objectLiteralOwnerInfo?.ownerName !== undefined
                   ? `${objectLiteralOwnerInfo.ownerName}.${nodeName}`
-                  : nodeName;
+                  : isArrayContainedObjectCallable
+                    ? positionQualifiedCallableName(nodeName, startPosition)
+                    : nodeName;
 
       // #2742: qualify by the enclosing `mod` chain, so two same-named items at
       // different module depths in one file are DISTINCT nodes. Without this,
@@ -2821,19 +2890,42 @@ const processFileGroup = (
         }
       }
 
+      const isExported =
+        language === SupportedLanguages.Vue && isVueSetup
+          ? isVueSetupTopLevel(nameNode || definitionNode)
+          : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName);
+      if (definitionNode && provider.definitionPropertiesExtractor) {
+        const definitionProperties = runDefinitionPropertiesExtractor(
+          provider.definitionPropertiesExtractor,
+          {
+            nodeLabel,
+            nodeName,
+            definitionNode,
+            parsedImports: parsedFile?.parsedImports ?? [],
+            isExported,
+          },
+          (error) =>
+            reportWarning(
+              `Definition property extraction failed for ${file.path}:${nodeName}: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+        );
+        if (definitionProperties !== undefined) Object.assign(methodProps, definitionProperties);
+      }
+
       result.nodes.push({
         id: nodeId,
         label: nodeLabel,
-        properties: {
+        properties: mergeCanonicalDefinitionProperties(methodProps, {
           name: nodeName,
           filePath: file.path,
           startLine,
+          ...(shouldObjectOwnerQualifyCallable(nodeLabel) &&
+          (objectLiteralBindingInfo?.ownerName || isArrayContainedObjectCallable)
+            ? { startColumn }
+            : {}),
           endLine: definitionNode ? definitionNode.endPosition.row + lineOffset : startLine,
           language: language,
-          isExported:
-            language === SupportedLanguages.Vue && isVueSetup
-              ? isVueSetupTopLevel(nameNode || definitionNode)
-              : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName),
+          isExported,
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
           ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
             ? { templateArguments: classTemplateArguments }
@@ -2848,10 +2940,9 @@ const processFileGroup = (
               }
             : {}),
           ...(description !== undefined ? { description } : {}),
-          ...methodProps,
           ...(declaredType !== undefined ? { declaredType } : {}),
           ...(returnShapeProperty ? { fromReturnShape: true, isDetail: true } : {}),
-        },
+        }),
       });
 
       // enclosingClassId already computed above (before nodeId generation)
@@ -2896,8 +2987,12 @@ const processFileGroup = (
           : {}),
       });
 
-      // Only emit File -> Symbol DEFINES for top-level symbols (issue #1944).
-      if (ownerId === undefined) {
+      // Object-literal callables remain file definitions as well as members of
+      // their exported binding. Class members still use HAS_METHOD alone.
+      const isTopLevelObjectCallable =
+        objectLiteralBindingInfo?.ownerName !== undefined &&
+        shouldObjectOwnerQualifyCallable(nodeLabel);
+      if (ownerId === undefined || isTopLevelObjectCallable) {
         const fileId = generateId('File', file.path);
         const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
         result.relationships.push({
@@ -2920,7 +3015,7 @@ const processFileGroup = (
           type: memberEdgeType,
           confidence: 1.0,
           reason: objectLiteralOwnerInfo
-            ? 'object literal method belongs to exported object binding'
+            ? 'object literal member belongs to exported object binding'
             : '',
         });
       }

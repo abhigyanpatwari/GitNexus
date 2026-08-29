@@ -483,7 +483,7 @@ export const streamAllCSVsToDisk = async (
     const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
     const functionWriter = new BufferedCSVWriter(
       path.join(csvDir, 'function.csv'),
-      codeElementHeader,
+      `${codeElementHeader},convexEndpointFactory`,
     );
     const classWriter = new BufferedCSVWriter(
       path.join(csvDir, 'class.csv'),
@@ -536,6 +536,7 @@ export const streamAllCSVsToDisk = async (
 
     // Multi-language node types share the same CSV shape (no isExported column)
     const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
+    const constHeader = `${multiLangHeader},convexEndpointFactory`;
     const MULTI_LANG_TYPES = [
       'Struct',
       'Enum',
@@ -565,7 +566,7 @@ export const streamAllCSVsToDisk = async (
         t,
         new BufferedCSVWriter(
           path.join(csvDir, `${t.toLowerCase()}.csv`),
-          t === 'Property' ? propertyHeader : multiLangHeader,
+          t === 'Property' ? propertyHeader : t === 'Const' ? constHeader : multiLangHeader,
         ),
       );
     }
@@ -734,6 +735,8 @@ export const streamAllCSVsToDisk = async (
             ];
             if (node.label === 'Class') {
               row.push(escapeCSVField(formatCSVStringArray(node.properties.frameworkAnnotations)));
+            } else if (node.label === 'Function') {
+              row.push(escapeCSVField(String(node.properties.convexEndpointFactory ?? '')));
             }
             pending = writer.addRow(row.join(','));
           } else {
@@ -758,7 +761,9 @@ export const streamAllCSVsToDisk = async (
                         // empty BOOLEAN cell fails the COPY.
                         node.properties.isDetail === true ? 'true' : 'false',
                       ]
-                    : []),
+                    : node.label === 'Const'
+                      ? [escapeCSVField(String(node.properties.convexEndpointFactory ?? ''))]
+                      : []),
                 ].join(','),
               );
             } else {

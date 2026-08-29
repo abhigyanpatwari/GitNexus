@@ -1516,6 +1516,8 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
         totalFileCount: 1,
+        scopeExtractionFailures: [],
+        unavailableScopeLanguageFiles: 0,
         graph: {
           forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
           getNode: (id: string) => (id === GATE_NODE_ID ? stubNode : undefined),
@@ -2122,6 +2124,8 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
         totalFileCount: 1,
+        scopeExtractionFailures: [],
+        unavailableScopeLanguageFiles: 0,
         graph: {
           forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
           getNode: (id: string) => (id === RESILIENCE_NODE_ID ? stubNode : undefined),

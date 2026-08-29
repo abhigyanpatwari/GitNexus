@@ -135,6 +135,10 @@ interface SharedDB {
    *  scan (#2623 follow-up). Optional with `?? false` semantics so the
    *  construction sites stay minimal. */
   vectorLoaded?: boolean;
+  /** In-flight/completed lazy VECTOR probe for this Database lifecycle.
+   *  Retaining a false result prevents every semantic request from retrying
+   *  the same unavailable extension; teardown clears it before a reopen. */
+  vectorLoadPromise?: Promise<boolean>;
   /** File identity at open — used to detect reuse of a shared read-only handle
    *  whose on-disk index was rebuilt/swapped since it opened (only reachable
    *  when a second pool consumer shares this dbPath; #2614 F2). */
@@ -368,6 +372,7 @@ function closeOne(repoId: string): void {
         shared.refCount = 0;
         shared.ftsLoaded = false;
         shared.vectorLoaded = false;
+        shared.vectorLoadPromise = undefined;
       } else {
         shared.db.close().catch(() => {});
         dbCache.delete(entry.dbPath);
@@ -823,14 +828,6 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   if (!shared.ftsLoaded) {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
-  // VECTOR too — extension load scope is per-Database, so this one load
-  // makes QUERY_VECTOR_INDEX legal on every pooled connection. Same
-  // load-only contract as FTS above; on failure the semantic-query lane
-  // falls back to the exact scan with its own diagnostic (#2623 follow-up).
-  if (!shared.vectorLoaded) {
-    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
-  }
-
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
@@ -900,12 +897,6 @@ export async function initLbugWithDb(
   if (!shared.ftsLoaded) {
     shared.ftsLoaded = await loadFTSExtension(available[0], { policy: 'load-only' });
   }
-  // VECTOR too — same per-Database scope and load-only contract as the
-  // doInitLbug site above (#2623 follow-up).
-  if (!shared.vectorLoaded) {
-    shared.vectorLoaded = await loadVectorExtension(available[0], { policy: 'load-only' });
-  }
-
   pool.set(repoId, {
     db: existingDb,
     available,
@@ -919,6 +910,143 @@ export async function initLbugWithDb(
   });
   ensureIdleTimer();
   traceRss('init', repoId);
+}
+
+/**
+ * Lazily load VECTOR for a semantic query.
+ *
+ * Exact graph reads never call this function, so opening their read pool does
+ * not probe or warn about an optional extension they do not use. The promise
+ * lives on SharedDB because extension scope is per Database, and also joins
+ * concurrent first semantic requests onto one LOAD attempt.
+ */
+export async function ensureVectorExtension(repoId: string): Promise<boolean> {
+  const entry = pool.get(repoId);
+  if (!entry) {
+    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
+  }
+
+  const shared = dbCache.get(entry.dbPath);
+  if (!shared) {
+    throw new Error(`LadybugDB shared handle is unavailable for repo "${repoId}".`);
+  }
+  if (shared.vectorLoaded) return true;
+  if (shared.vectorLoadPromise) return shared.vectorLoadPromise;
+
+  const loadAttempt = (async () => {
+    const conn = await checkout(entry);
+    try {
+      const loaded = await loadVectorExtension(conn, { policy: 'load-only' });
+      shared.vectorLoaded = loaded;
+      return loaded;
+    } finally {
+      checkin(entry, conn);
+    }
+  })();
+  const cachedAttempt = loadAttempt.catch((err) => {
+    // A transient checkout/load failure must not poison this Database for the
+    // rest of its lifetime. Keep resolved false cached, but let a later
+    // semantic request retry a rejected attempt.
+    if (shared.vectorLoadPromise === cachedAttempt) {
+      shared.vectorLoadPromise = undefined;
+    }
+    throw err;
+  });
+  shared.vectorLoadPromise = cachedAttempt;
+
+  return shared.vectorLoadPromise;
+}
+
+/**
+ * Detect an actual VECTOR procedure call without treating source text stored in
+ * Cypher literals or comments as executable syntax.
+ */
+function callsVectorIndex(cypher: string): boolean {
+  if (!/QUERY_VECTOR_INDEX/i.test(cypher)) return false;
+
+  let code = '';
+  let state: 'code' | 'single' | 'double' | 'backtick' | 'line-comment' | 'block-comment' = 'code';
+  let backtickIdentifier = '';
+
+  for (let i = 0; i < cypher.length; i++) {
+    const ch = cypher[i];
+    const next = cypher[i + 1];
+
+    if (state === 'code') {
+      if (ch === "'" || ch === '"' || ch === '`') {
+        state = ch === "'" ? 'single' : ch === '"' ? 'double' : 'backtick';
+        if (state === 'backtick') backtickIdentifier = '';
+        code += ' ';
+      } else if (ch === '/' && next === '/') {
+        state = 'line-comment';
+        code += '  ';
+        i++;
+      } else if (ch === '/' && next === '*') {
+        state = 'block-comment';
+        code += '  ';
+        i++;
+      } else {
+        code += ch;
+      }
+      continue;
+    }
+
+    if (state === 'line-comment') {
+      if (ch === '\n' || ch === '\r') {
+        state = 'code';
+        code += ch;
+      } else {
+        code += ' ';
+      }
+      continue;
+    }
+
+    if (state === 'block-comment') {
+      if (ch === '*' && next === '/') {
+        state = 'code';
+        code += '  ';
+        i++;
+      } else {
+        code += ch === '\n' || ch === '\r' ? ch : ' ';
+      }
+      continue;
+    }
+
+    if (state === 'backtick') {
+      if (ch === '`' && next === '`') {
+        backtickIdentifier += '`';
+        code += '  ';
+        i++;
+      } else if (ch === '`') {
+        state = 'code';
+        code +=
+          backtickIdentifier.toUpperCase() === 'QUERY_VECTOR_INDEX' ? 'QUERY_VECTOR_INDEX' : ' ';
+      } else if (ch === '\\' && next !== undefined) {
+        backtickIdentifier += next;
+        code += '  ';
+        i++;
+      } else {
+        backtickIdentifier += ch;
+        code += ch === '\n' || ch === '\r' ? ch : ' ';
+      }
+      continue;
+    }
+
+    if (ch === '\\') {
+      code += ' ';
+      if (next !== undefined) {
+        code += next === '\n' || next === '\r' ? next : ' ';
+        i++;
+      }
+      continue;
+    }
+
+    const closesLiteral = (state === 'single' && ch === "'") || (state === 'double' && ch === '"');
+    if (closesLiteral) state = 'code';
+    code += ch === '\n' || ch === '\r' ? ch : ' ';
+  }
+
+  return /\bCALL\s+QUERY_VECTOR_INDEX\s*\(/i.test(code);
 }
 
 /**
@@ -1028,14 +1156,31 @@ export const executeParameterized = async (
     poolSidecarLogger.warn(message),
   );
 
-  const entry = pool.get(repoId);
+  let entry = pool.get(repoId);
   if (!entry) {
     throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
   }
 
-  entry.lastUsed = Date.now();
+  // Exact reads must not pay for VECTOR, but an explicit raw vector procedure
+  // call is a semantic read. Preflight before taking the query connection:
+  // ensureVectorExtension performs its own checkout, so holding one here could
+  // make a saturated pool wait for a connection that every caller is holding.
+  // A load rejection must not replace the query's own diagnostic.
+  if (callsVectorIndex(cypher)) {
+    await ensureVectorExtension(repoId).catch(() => false);
+
+    // The preflight suspends, so close/re-init may replace the pool entry.
+    // Re-read it before checkout to avoid querying through a stale handle.
+    entry = pool.get(repoId);
+    if (!entry) {
+      throw new Error(
+        `LadybugDB connection pool closed for repo "${repoId}" (re-init/teardown); retry the query.`,
+      );
+    }
+  }
 
   const conn = await checkout(entry);
+  entry.lastUsed = Date.now();
   silenceStdout();
   activeQueryCount++;
   let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;

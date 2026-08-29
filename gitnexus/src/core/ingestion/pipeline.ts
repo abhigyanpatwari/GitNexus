@@ -370,14 +370,16 @@ export const runPipelineFromRepo = async (
   }
 
   // Extract final results for the PipelineResult contract
-  const { totalFiles, usedWorkerPool } = getPhaseOutput<{
+  const { totalFiles, usedWorkerPool, unavailableScopeLanguageFiles } = getPhaseOutput<{
     totalFiles: number;
     usedWorkerPool: boolean;
+    unavailableScopeLanguageFiles: number;
   }>(results, 'parse');
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
   const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
+  const scopeExtractionFailures = scopeResolutionOutput.scopeExtractionFailures;
   const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
   const undecidedSatisfaction = scopeResolutionOutput.undecidedSatisfaction;
   // Streamed PDG-emit manifest (#2202): present only when streaming was on.
@@ -424,6 +426,8 @@ export const runPipelineFromRepo = async (
     resolutionOutcomes,
     undecidedSatisfaction,
     usedWorkerPool,
+    scopeExtractionFailures,
+    unavailableScopeLanguageFiles,
     pdgEmitManifest,
     propertyInference,
   };
