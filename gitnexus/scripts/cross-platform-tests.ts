@@ -114,6 +114,9 @@ const PLATFORM_LOGIC = [
   // POSIX and Windows — the fail-closed path-claim semantics must hold on the
   // real windows-latest path implementation (#2419/#2420).
   'test/unit/server-api-repo-resolution.test.ts',
+  // #3073: cwd-based repository selection canonicalizes real paths, compares
+  // platform separators/case, and rejects nested Git-boundary fallthrough.
+  'test/unit/calltool-dispatch.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.

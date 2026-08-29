@@ -153,8 +153,11 @@ import {
   hasGitDir,
   getInferredRepoName,
   isWorkingTreeDirty,
+  listWorkingTreeDirtyPaths,
   resolveRepoIdentityRoot,
 } from '../storage/git.js';
+import { isGitNexusManagedPath } from '../storage/gitnexus-managed-paths.js';
+import { getMaxFileSizeBytes } from './ingestion/utils/max-file-size.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
@@ -1305,6 +1308,13 @@ async function runFullAnalysisInner(
       }
       progress('fts', 90, 'Search indexes ready');
       progress('done', 100, 'Done');
+      if (options.registryName) {
+        await registerRepo(repoPath, existingMeta, {
+          name: options.registryName,
+          allowDuplicateName: options.allowDuplicateName,
+          branch: placement.branch,
+        });
+      }
       return {
         repoName:
           options.registryName ??
@@ -1684,6 +1694,35 @@ async function runFullAnalysisInner(
       // later read on a host where it loads — which is a legitimate, common
       // state, and the invariant `analyzer-identity-cli.test.ts` pins.
       if (!dirty && !healUnregistered) {
+        if (options.registryName) {
+          await registerRepo(repoPath, existingMeta, {
+            name: options.registryName,
+            allowDuplicateName: options.allowDuplicateName,
+            branch: placement.branch,
+          });
+          if (!placement.branch) {
+            try {
+              await generateAIContextFiles(
+                repoPath,
+                storagePath,
+                options.registryName,
+                existingMeta.stats ?? {},
+                undefined,
+                {
+                  skipAgentsMd: options.skipAgentsMd,
+                  skipSkills: options.skipSkills,
+                  noStats: options.noStats,
+                  defaultBranch: options.defaultBranch,
+                  // Fast path does not re-run PDG. Using `options.pdg` would
+                  // strip PDG bullets from AGENTS.md on a rename-only analyze.
+                  hasPdg: existingMeta.pdg != null,
+                },
+              );
+            } catch {
+              /* best-effort — never fail the fast path over a context refresh */
+            }
+          }
+        }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
         // The flat slot follows the checked-out working tree; a branch switch
         // at the SAME commit with a clean tree changes nothing the pipeline
@@ -3642,6 +3681,16 @@ async function runFullAnalysisInner(
       // absence has exactly one meaning — an index older than the field.
       embeddingDims: EMBEDDING_DIMS,
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      indexCoverage: hasGitDir(repoPath)
+        ? {
+            maxFileSizeBytes: getMaxFileSizeBytes(),
+            dirtyPaths: (
+              listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord)
+            ).filter(
+              (rel) => newFileHashesRecord[rel] !== undefined && !isGitNexusManagedPath(rel),
+            ),
+          }
+        : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted

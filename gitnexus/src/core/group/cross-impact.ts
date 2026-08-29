@@ -244,6 +244,17 @@ async function resolveGroupRepo(
 ): Promise<GroupRepoHandle | { error: string }> {
   const registryName = config.repos[repoPath];
   if (!registryName) {
+    const matchingMemberPaths = Object.entries(config.repos)
+      .filter(([, alias]) => alias.toLowerCase() === repoPath.toLowerCase())
+      .map(([memberPath]) => memberPath);
+    if (matchingMemberPaths.length > 0) {
+      return {
+        error:
+          `Unknown repo path "${repoPath}" in this group. ` +
+          `That value is a registry alias for member path(s): ${matchingMemberPaths.join(', ')}. ` +
+          `Pass the group.yaml key to --repo, not the alias.`,
+      };
+    }
     return { error: `Unknown repo path "${repoPath}" in this group.` };
   }
   try {
