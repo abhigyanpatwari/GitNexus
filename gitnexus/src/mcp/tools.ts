@@ -83,7 +83,7 @@ export const PDG_QUERY_MAX_LIMIT = 200;
 export const IMPACT_MAX_DEPTH = 32;
 
 const CWD_AWARE_REPO_OMISSION =
-  'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered repo; otherwise specify it explicitly.';
+  'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
 const MUTATING_REPO_OMISSION =
   'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo.';
 
@@ -100,8 +100,9 @@ WHEN TO USE: First step when multiple repos are indexed, or to discover availabl
 AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
 
 When multiple repos are indexed, repo-scoped read-only tools use the configured
-MCP default or the registered repo containing the GitNexus process cwd. If
-neither applies, specify the "repo" parameter explicitly.`,
+MCP default or the registered path containing the GitNexus process cwd, unless
+cwd has crossed into an unindexed nested Git checkout. If neither applies,
+specify the "repo" parameter explicitly.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',

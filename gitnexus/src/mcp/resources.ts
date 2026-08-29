@@ -314,7 +314,7 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   if (repos.length > 1) {
     lines.push('');
     lines.push(
-      '# Multiple repos indexed. Read-only tools may omit repo when an MCP default is configured or the GitNexus process cwd is inside one listed path.',
+      '# Multiple repos indexed. Read-only tools may omit repo when an MCP default is configured or the GitNexus process cwd is inside one listed path without crossing an unindexed nested Git checkout.',
     );
     lines.push('# Otherwise—and for mutating tools without an MCP default—pass repo explicitly:');
     lines.push(`# query({search_query: "auth", repo: "${repos[0].name}"})`);

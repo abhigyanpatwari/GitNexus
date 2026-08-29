@@ -287,6 +287,9 @@ describe('GITNEXUS_TOOLS', () => {
     expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
       /process cwd/i,
     );
+    expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
+      /unindexed nested Git checkout/i,
+    );
     for (const tool of GITNEXUS_TOOLS) {
       if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) continue;
       const description = tool.inputSchema.properties.repo.description;
@@ -294,6 +297,7 @@ describe('GITNEXUS_TOOLS', () => {
         expect(description).toMatch(/mutating tools require an explicit repo/i);
       } else {
         expect(description).toMatch(/process cwd/i);
+        expect(description).toMatch(/unindexed nested Git checkout/i);
       }
     }
   });
