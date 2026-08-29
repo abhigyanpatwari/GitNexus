@@ -22,6 +22,7 @@ import {
   summarizeUnresolvedReceivers,
 } from './ingestion/scope-resolution/unresolved-receivers.js';
 import { summarizeUndecidedSatisfaction } from './ingestion/scope-resolution/undecided-satisfaction.js';
+import { summarizeScopeExtractionFailures } from './ingestion/scope-resolution/scope-extraction-failures.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
@@ -3548,6 +3549,13 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      scopeExtractionFailures: summarizeScopeExtractionFailures(
+        pipelineResult.scopeExtractionFailures,
+      ),
+      // A receipt certifies that every scope-capable source file was inspected.
+      // Optional grammars may be unavailable by design; omitting the receipt in
+      // that case makes readers report an unverified lower bound.
+      scopeExtractionReceipt: pipelineResult.unavailableScopeLanguageFiles === 0 ? 1 : undefined,
       // Carried forward ONLY when this run could not measure — `saveMeta` writes
       // a fresh object, so omitting the key deletes a prior record and turns a
       // hedged answer back into a confident one. A run that DID measure always

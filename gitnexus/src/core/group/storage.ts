@@ -96,6 +96,7 @@ packages: {}
 
 detect:
   http: true
+  graphql: false
   grpc: true
   topics: true
 

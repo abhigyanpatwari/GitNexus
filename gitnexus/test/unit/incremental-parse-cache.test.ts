@@ -240,14 +240,16 @@ describe('PARSE_CACHE_VERSION', () => {
   // collided, because each re-checked once and neither re-checked after the
   // other moved — which is why the rule is re-applied AT MERGE, not when the
   // number is picked.
-  it('pins SCHEMA_BUMP to 77 so concurrent bumps cannot silently collide (#2766)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(77);
+  it('pins SCHEMA_BUMP to 79 so concurrent bumps cannot silently collide (#2766, #3015)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(79);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
     // while being wrong, which is exactly how the 37/38 exact clashes landed.
     // Every nearby historical or in-flight value is rejected, including 69,
     // which carried the route-table payload before this merge.
-    for (const taken of [59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76]) {
+    for (const taken of [
+      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78,
+    ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
   });
@@ -634,12 +636,14 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
           referenceSites: [],
         },
       ],
+      scopeExtractionFailures: ['a.c'],
     });
     const slim = slimParseWorkerResultsForCache([raw])[0];
     expect(slim.calls).toEqual([]);
     expect(slim.assignments).toEqual([]);
     expect(slim.constructorBindings).toEqual([]);
     expect(slim.parsedFiles).toEqual([]);
+    expect(slim.scopeExtractionFailures).toEqual(['a.c']);
     expect(slim.fileCount).toBe(raw.fileCount);
   });
 
@@ -658,6 +662,24 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     // are what mergeChunkResults replays to rebuild the ExportedTypeMap.
     expect(slim.nodes).toEqual(raw.nodes);
     expect(slim.nodes).toHaveLength(1);
+  });
+
+  it('round-trips scope extraction failures through a persisted cache shard', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const key = 'e'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[key, [minimalResult({ scopeExtractionFailures: ['src/broken.ts'] })]]]),
+        usedKeys: new Set([key]),
+      });
+
+      const loaded = await loadParseCache(dir);
+      const replayed = await loadParseCacheChunk(loaded, key);
+      expect(replayed?.[0]?.scopeExtractionFailures).toEqual(['src/broken.ts']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('persistParseCacheChunk writes to disk without retaining in-memory entries', async () => {

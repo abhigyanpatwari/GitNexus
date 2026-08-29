@@ -539,6 +539,7 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
       lastCommit: 'current-head',
       indexedAt: '2026-07-18T12:00:00.000Z',
       incrementalInProgress: { startedAt: 1, toWriteCount: 2 },
+      scopeExtractionReceipt: 1,
       embeddingCheckpoint: {
         at: '2026-07-18T12:00:00.000Z',
         nodesProcessed: 1,

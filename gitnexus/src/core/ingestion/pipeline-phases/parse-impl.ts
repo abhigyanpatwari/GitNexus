@@ -482,6 +482,9 @@ export async function runChunkedParseAndResolve(
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  scopeExtractionFailures: string[];
+  /** Files excluded because their non-standalone language parser was unavailable. */
+  unavailableScopeLanguageFiles: number;
 }> {
   const model = createSemanticModel();
   const symbolTable = model.symbols;
@@ -514,6 +517,10 @@ export async function runChunkedParseAndResolve(
       );
     }
   }
+  const unavailableScopeLanguageFiles = [...skippedByLang.values()].reduce(
+    (total, count) => total + count,
+    0,
+  );
 
   // Sort parseableScanned alphabetically for stable chunk membership
   // across runs (Finding 4). Without this, filesystem-scan order can
@@ -743,6 +750,7 @@ export async function runChunkedParseAndResolve(
   // the second-half of the parse-cache speedup since scope-resolution's
   // re-parse otherwise dominates the warm-cache wall-clock time.
   const allParsedFiles: import('gitnexus-shared').ParsedFile[] = [];
+  const scopeExtractionFailures = new Set<string>();
 
   // Incremental parse cache (Option B): chunk-level content-addressed.
   // When the chunk's (filePath, content-hash) signature matches a prior
@@ -844,6 +852,9 @@ export async function runChunkedParseAndResolve(
       chunkStartMs: number | null,
     ): Promise<void> => {
       if (chunkWorkerData) {
+        for (const filePath of chunkWorkerData.scopeExtractionFailures) {
+          scopeExtractionFailures.add(filePath);
+        }
         if (chunkWorkerData.parsedFiles?.length) {
           if (parsedFileStorePath) {
             await persistParsedFileChunk(
@@ -1616,5 +1627,7 @@ export async function runChunkedParseAndResolve(
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    scopeExtractionFailures: [...scopeExtractionFailures].sort(),
+    unavailableScopeLanguageFiles,
   };
 }

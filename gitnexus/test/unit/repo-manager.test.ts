@@ -230,6 +230,30 @@ describe('saveMeta dual-write', () => {
     expect(JSON.parse(legacy)).toEqual(meta);
   });
 
+  it('round-trips scope extraction failure metadata through the production writer', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    const withFailures: RepoMeta = {
+      ...meta,
+      scopeExtractionReceipt: 1,
+      scopeExtractionFailures: {
+        total: 3,
+        paths: ['src/a.ts', 'src/b.ts'],
+        truncated: true,
+      },
+    };
+
+    await saveMeta(storagePath, withFailures);
+
+    expect(await loadMeta(storagePath)).toMatchObject({
+      scopeExtractionReceipt: 1,
+      scopeExtractionFailures: {
+        total: 3,
+        paths: ['src/a.ts', 'src/b.ts'],
+        truncated: true,
+      },
+    });
+  });
+
   it('leaves no stray tmp files behind after a successful write', async () => {
     const { storagePath } = getStoragePaths(tmpRepo.dbPath);
     await saveMeta(storagePath, meta);
