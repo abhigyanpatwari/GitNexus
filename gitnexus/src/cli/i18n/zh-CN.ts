@@ -37,6 +37,15 @@ export const zhCN = {
   'status.workspaceIndexLabel':
     "工作区索引：最近在 '{{primary}}' 分支上分析（重新运行 gitnexus analyze 以跟随当前分支）",
   'status.status': '状态',
+  'status.indexContentCurrent': '索引内容：与覆盖的全部 {{count}} 个文件一致',
+  'status.indexContentDrifted':
+    '索引内容：{{changed}} 个已修改，{{added}} 个新增，{{deleted}} 个已删除',
+  'status.indexContentMore': '  ……另有 {{count}} 个 {{label}}',
+  'status.indexContentUnmeasurable': '索引内容：无法比对（{{reason}}），已回退到工作区检查',
+  'status.indexContentScanFailed': '索引内容：覆盖扫描失败，按过期处理',
+  'status.driftChanged': '已修改',
+  'status.driftAdded': '新增',
+  'status.driftDeleted': '已删除',
   'status.upToDate': '✅ 已是最新',
   'status.stale': '⚠️ 已过期（重新运行 gitnexus analyze）',
   'clean.deleteAll': '将删除 {{count}} 个仓库的 GitNexus 索引：',
