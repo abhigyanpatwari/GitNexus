@@ -3326,12 +3326,51 @@ describe('LocalBackend.resolveRepo', () => {
     );
   });
 
-  it('throws for ambiguous repos without param', async () => {
-    setupMultipleRepos();
-    await backend.init();
-    await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
-      'Multiple repositories indexed',
-    );
+  it('throws for ambiguous repos when cwd is outside every indexed path', async () => {
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue('/tmp/test-project-sibling');
+
+    try {
+      setupMultipleRepos();
+      await backend.init();
+      await expect(backend.callTool('query', { query: 'test' })).rejects.toThrow(
+        'Multiple repositories indexed',
+      );
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  it('defaults to the deepest indexed repo containing cwd (#3073)', async () => {
+    const outerDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-cwd-outer-'));
+    const nestedDir = path.join(outerDir, 'packages', 'nested');
+    const cwdDir = path.join(nestedDir, 'src');
+    mkdirSync(cwdDir, { recursive: true });
+    duplicateFixtureDirs.push(outerDir);
+    (listRegisteredRepos as any).mockResolvedValue([
+      {
+        ...MOCK_REPO_ENTRY,
+        name: 'outer',
+        path: outerDir,
+        storagePath: path.join(outerDir, '.gitnexus'),
+      },
+      {
+        ...MOCK_REPO_ENTRY,
+        name: 'nested',
+        path: nestedDir,
+        storagePath: path.join(nestedDir, '.gitnexus'),
+      },
+    ]);
+    const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(cwdDir);
+
+    try {
+      await backend.init();
+      const resolved = await backend.resolveRepo();
+      expect(resolved.repoPath).toBe(nestedDir);
+      const explicit = await backend.resolveRepo('outer');
+      expect(explicit.repoPath).toBe(outerDir);
+    } finally {
+      cwdSpy.mockRestore();
+    }
   });
 
   it('resolves repo by name parameter', async () => {

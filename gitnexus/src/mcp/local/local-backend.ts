@@ -1939,26 +1939,43 @@ export class LocalBackend {
       return this.repos.values().next().value!;
     }
 
+    const cwdPick = this.pickRepoHandleForCwd([...this.repos.values()]);
+    if (cwdPick) return cwdPick;
+
     return null; // Multiple repos, no param — ambiguous
   }
 
   /**
-   * Prefer the indexed repo whose path matches the git root of process.cwd().
+   * Prefer the indexed repo containing process.cwd(); the longest path wins.
    *
    * In MCP stdio server mode, `process.cwd()` is the server's launch directory,
-   * not the agent client's cwd. If the server was started from an unrelated
-   * directory, `getGitRoot` returns null and duplicate-name resolution throws
-   * {@link RegistryAmbiguousTargetError} — callers should pass an absolute path.
+   * not the agent client's cwd. If no indexed path contains that directory, the
+   * exact git-root match used by duplicate-name resolution remains as a fallback.
    */
   private pickRepoHandleForCwd(candidates: RepoHandle[]): RepoHandle | null {
-    const cwdRoot = getGitRoot(process.cwd());
+    const cwd = process.cwd();
+    const normalize = (value: string): string => {
+      const canonical = canonicalizePath(value);
+      return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+    };
+    const canonicalCwd = normalize(cwd);
+    const containing = candidates
+      .map((handle) => ({ handle, repoPath: normalize(handle.repoPath) }))
+      .filter(
+        ({ repoPath }) =>
+          canonicalCwd === repoPath ||
+          canonicalCwd.startsWith(
+            repoPath.endsWith(path.sep) ? repoPath : `${repoPath}${path.sep}`,
+          ),
+      )
+      .sort((a, b) => b.repoPath.length - a.repoPath.length);
+    if (containing.length > 0) return containing[0].handle;
+
+    const cwdRoot = getGitRoot(cwd);
     if (!cwdRoot) return null;
-    const canonicalCwd = canonicalizePath(cwdRoot);
+    const canonicalRoot = normalize(cwdRoot);
     const cwdMatches = candidates.filter((handle) => {
-      const stored = canonicalizePath(handle.repoPath);
-      return process.platform === 'win32'
-        ? stored.toLowerCase() === canonicalCwd.toLowerCase()
-        : stored === canonicalCwd;
+      return normalize(handle.repoPath) === canonicalRoot;
     });
     return cwdMatches.length === 1 ? cwdMatches[0] : null;
   }
