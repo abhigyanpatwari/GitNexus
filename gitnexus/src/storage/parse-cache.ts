@@ -635,6 +635,16 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // therefore takes 79, the next free value above origin/main and every open PR
 // found by the contents-API scan at their exact head SHAs.
 //
+// 79 -> 80 for #3088: parse-cache membership is `(language, sha256(path) mod
+// 128)` then the byte budget *inside* that bucket. Worker count is no longer a
+// membership input, so a warm v79 cache keyed sequential scan-order packs (and
+// on multi-worker hosts, pool×2 MiB mega-chunks) must miss. Sidecar-era
+// ParsedFile stores (#3086/#3087) share PARSE_CACHE_VERSION, so both stores
+// invalidate in lockstep. origin/main at allocation is 79; open PRs that still
+// touch gitnexus/src/storage/parse-cache.ts claim 78 (#3060), 71 (#2840), and
+// 2 (#1616) — none claim 80. RE-CHECK AGAINST origin/main AND OPEN PRs
+// IMMEDIATELY BEFORE MERGING.
+//
 // WHY THIS IS STILL A HAND-PICKED NUMBER, when `SCHEMA_FINGERPRINT` next door
 // is a derived sha256 that cannot collide. The derivation exists and already
 // runs: `resolveAnalyzerRunnerIdentity` computes `build.digest` over the
@@ -679,12 +689,18 @@ const GITNEXUS_PKG_VERSION = (() => {
 })();
 export const PARSE_CACHE_VERSION = `${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}`;
 
+/** SHA-256 hex of a string or buffer (paths for bucket ids, contents for cache keys). */
+const sha256Hex = (input: Buffer | string): string =>
+  createHash('sha256')
+    .update(typeof input === 'string' ? Buffer.from(input) : input)
+    .digest('hex');
+
 /** Stable parse-cache bucket count (#3088). Changing this requires SCHEMA_BUMP. */
 export const PARSE_CACHE_BUCKET_COUNT = 128;
 
 /** Bucket id for cache membership: `sha256(path) mod N` without IEEE-754 truncation. */
 export const parseCacheBucketId = (filePath: string): number =>
-  Number(BigInt(`0x${fileContentHash(filePath)}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
+  Number(BigInt(`0x${sha256Hex(filePath)}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
 
 export type ParseCachePackFile = { path: string; size: number; language: string };
 
@@ -768,12 +784,6 @@ export interface ParseCache {
   /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
   onDiskKeys?: Set<string>;
 }
-
-/** SHA-256 hex of a single string or buffer. */
-const sha256Hex = (input: Buffer | string): string =>
-  createHash('sha256')
-    .update(typeof input === 'string' ? Buffer.from(input) : input)
-    .digest('hex');
 
 /** Stable hash of a single file's contents — used by callers to compose a chunk hash. */
 export const fileContentHash = (content: Buffer | string): string => sha256Hex(content);

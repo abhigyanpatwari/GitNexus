@@ -187,7 +187,9 @@ const FIXTURE_FILES = {
 const POISON_PATH = 'src/poison.ts';
 const DEFAULT_TEST_CHUNK_BUDGET = 2 * 1024 * 1024;
 
-const poisonPackHash = (scanned: { path: string; size: number }[]): string => {
+const hashPacks = (
+  scanned: { path: string; size: number }[],
+): { poison: string; others: string[] } => {
   const packs = packParseCacheChunks(
     scanned.map((file) => ({
       path: file.path,
@@ -196,14 +198,19 @@ const poisonPackHash = (scanned: { path: string; size: number }[]): string => {
     })),
     DEFAULT_TEST_CHUNK_BUDGET,
   );
-  const pack = packs.find((paths) => paths.includes(POISON_PATH));
-  if (!pack) throw new Error('poison.ts was not packed');
-  return computeChunkHash(
-    pack.map((p) => ({
-      filePath: p,
-      contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
-    })),
-  );
+  const hashOf = (pack: string[]) =>
+    computeChunkHash(
+      pack.map((p) => ({
+        filePath: p,
+        contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
+      })),
+    );
+  const poisonPack = packs.find((paths) => paths.includes(POISON_PATH));
+  if (!poisonPack) throw new Error('poison.ts was not packed');
+  return {
+    poison: hashOf(poisonPack),
+    others: packs.filter((paths) => !paths.includes(POISON_PATH)).map(hashOf),
+  };
 };
 
 describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex finding)', () => {
@@ -242,7 +249,7 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
       size: statSync(path.join(repoDir, rel)).size,
     }));
 
-    const expectedChunkHash = poisonPackHash(scanned);
+    const expectedChunkHash = hashPacks(scanned).poison;
 
     const parseCache = {
       version: 'test',
@@ -310,17 +317,20 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     // against a fresh-quarantine pool.
     expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
     expect(parseCache.usedKeys.has(expectedChunkHash)).toBe(true);
+    for (const hash of hashPacks(scanned).others) {
+      expect(parseCache.entries.has(hash)).toBe(true);
+    }
   });
 
-  it('cross-run: unchanged fixture re-dispatches on a second pass because the cache was empty', async () => {
-    // First pass: same setup as the previous test. Cache stays empty
-    // because poison.ts triggered quarantine.
+  it('cross-run: unchanged fixture re-dispatches the poison pack because that pack was not cached', async () => {
+    // First pass: same setup as the previous test. The poison pack is not
+    // cached; other packs may be.
     const filePaths = Object.keys(FIXTURE_FILES);
     const scanned = filePaths.map((rel) => ({
       path: rel,
       size: statSync(path.join(repoDir, rel)).size,
     }));
-    const expectedChunkHash = poisonPackHash(scanned);
+    const expectedChunkHash = hashPacks(scanned).poison;
 
     const parseCache = {
       version: 'test',
@@ -380,6 +390,9 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
       // load-bearing cross-run protection.
       expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
       expect(parseCache.usedKeys.has(expectedChunkHash)).toBe(true);
+      for (const hash of hashPacks(scanned).others) {
+        expect(parseCache.entries.has(hash)).toBe(true);
+      }
       // Worker path ran again; surviving files in the graph; poison
       // still absent per the U20 contract (workers are the sole
       // resilience layer, no sequential reparse).

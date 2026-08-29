@@ -28,7 +28,7 @@ import path from 'node:path';
 
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { parseCacheBucketId } from '../../src/storage/parse-cache.js';
+import { PARSE_CACHE_VERSION, parseCacheBucketId } from '../../src/storage/parse-cache.js';
 
 const ORIGINAL_BUDGET = process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
 
@@ -149,5 +149,30 @@ describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
     expect(small).toBe(3);
     const expectedBuckets = new Set(files.map((f) => `typescript\0${parseCacheBucketId(f)}`));
     expect(large).toBe(expectedBuckets.size);
+  });
+
+  it('workerPoolSize 1 vs 2 produce the same cache keys when budget is unset (#3088)', async () => {
+    delete process.env.GITNEXUS_CHUNK_BYTE_BUDGET;
+    const files = ['a.ts', 'b.ts', 'c.ts'];
+    const keysForPool = async (workerPoolSize: number): Promise<string[]> => {
+      const parseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set<string>(),
+      };
+      const graph = createKnowledgeGraph();
+      await runChunkedParseAndResolve(
+        graph,
+        scanned(repoPath, files),
+        files,
+        files.length,
+        repoPath,
+        Date.now(),
+        () => {},
+        { workerPoolSize, parseCache },
+      );
+      return [...parseCache.usedKeys].sort();
+    };
+    expect(await keysForPool(1)).toEqual(await keysForPool(2));
   });
 });

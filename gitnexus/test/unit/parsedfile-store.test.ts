@@ -255,6 +255,15 @@ describe('parsedfile-store', () => {
         'utf-8',
       );
       expect(syncBytes).toBe(asyncBytes);
+      const asyncPaths = await readFile(
+        path.join(getParsedFileStoreDir(asyncDir), 'shard.json.paths'),
+        'utf-8',
+      );
+      const syncPaths = await readFile(
+        path.join(getParsedFileStoreDir(syncDir), 'shard.json.paths'),
+        'utf-8',
+      );
+      expect(syncPaths).toBe(asyncPaths);
     } finally {
       await rm(asyncDir, { recursive: true, force: true });
       await rm(syncDir, { recursive: true, force: true });
@@ -726,6 +735,24 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
+  it('forceGc when accumulated raw JSON bytes reach parsedFileLoadGc.byteBudget (#3086)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-gc-pos-'));
+    const gc = vi.fn();
+    const prevRun = parsedFileLoadGc.run;
+    const prevBudget = parsedFileLoadGc.byteBudget;
+    parsedFileLoadGc.run = gc;
+    parsedFileLoadGc.byteBudget = 8;
+    try {
+      await persistParsedFileChunk(dir, 's0', [makeParsedFile('f0.c')]);
+      await loadParsedFilesForPaths(dir, new Set(['f0.c']));
+      expect(gc).toHaveBeenCalled();
+    } finally {
+      parsedFileLoadGc.run = prevRun;
+      parsedFileLoadGc.byteBudget = prevBudget;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('restoreDurableParsedFileShard copies sidecars and returns JSON shard count (#3087)', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-'));
     try {
@@ -741,6 +768,45 @@ describe('parsedfile-store receiverChain sanitation', () => {
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       expect(loaded.has('a.c')).toBe(true);
     } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restoreDurableParsedFileShard unlinks a stale dest sidecar when the source has none', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-stale-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const durableShard = path.join(durable, 'abc', 'abc-w1-0.json');
+      await rm(`${durableShard}.paths`, { force: true });
+      const storeDir = getParsedFileStoreDir(dir);
+      await nodeFsPromises.mkdir(storeDir, { recursive: true });
+      await writeFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'stale.c\n', 'utf-8');
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      await expect(readFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'utf-8')).rejects.toThrow();
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persist still succeeds when the sidecar write fails', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-enospc-'));
+    const orig = nodeFsPromises.writeFile.bind(nodeFsPromises);
+    const spy = vi.spyOn(nodeFsPromises, 'writeFile').mockImplementation(async (p, data, enc) => {
+      if (String(p).endsWith('.paths')) {
+        throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+      }
+      return orig(p, data, enc);
+    });
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      spy.mockRestore();
       await rm(dir, { recursive: true, force: true });
     }
   });

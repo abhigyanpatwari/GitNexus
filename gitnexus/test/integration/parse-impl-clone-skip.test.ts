@@ -141,18 +141,10 @@ parentPort.on('message', (msg) => {
 });
 `;
 
-const pathInSameBucket = (stem: string, like: string): string => {
-  const bucket = parseCacheBucketId(like);
-  for (let i = 0; i < 50_000; i++) {
-    const candidate = `src/${stem}_${i}.ts`;
-    if (parseCacheBucketId(candidate) === bucket) return candidate;
-  }
-  throw new Error(`no ${stem} path in bucket of ${like}`);
-};
-
 const POISON_PATH = 'src/poison.ts';
-const GOOD_A_PATH = pathInSameBucket('good_a', POISON_PATH);
-const GOOD_C_PATH = pathInSameBucket('good_c', POISON_PATH);
+/** Pinned same-bucket fixtures (sha256(path) mod 128 of poison.ts). */
+const GOOD_A_PATH = 'src/good_a_16.ts';
+const GOOD_C_PATH = 'src/good_c_51.ts';
 const GOOD_A_NAME = path.basename(GOOD_A_PATH, '.ts');
 const GOOD_C_NAME = path.basename(GOOD_C_PATH, '.ts');
 
@@ -181,6 +173,11 @@ const nodeNames = (graph: ReturnType<typeof createKnowledgeGraph>): Set<string> 
 const STRICT = process.env.GITNEXUS_STRICT_CLONE === '1';
 
 describe.skipIf(STRICT)('#2112: worker result clone-safety integration (POOL_SIZE=1)', () => {
+  it('pins survivors into the same parse-cache bucket as poison.ts', () => {
+    expect(parseCacheBucketId(GOOD_A_PATH)).toBe(parseCacheBucketId(POISON_PATH));
+    expect(parseCacheBucketId(GOOD_C_PATH)).toBe(parseCacheBucketId(POISON_PATH));
+  });
+
   let tempDir: string;
   let repoDir: string;
 
