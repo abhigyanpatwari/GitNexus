@@ -304,6 +304,21 @@ and `serve` processes reopen a newly published index automatically; MCP observes
 the replacement on its next tool call, typically within five seconds, so no
 restart is required.
 
+GraphQL contract matching is opt-in in the group's `group.yaml`:
+
+```yaml
+detect:
+  graphql: true
+```
+
+The initial exact-only slice matches methods and properties on top-level NestJS `@Resolver`
+classes using imported `@Query`, `@Mutation`, and `@Subscription` decorators. Named
+`.graphql`/`.gql` operations are anchored by generated `<OperationName>Document` declarations;
+object, static `gql` template, and `TypedDocumentString` initializers must prove the operation name
+and root fields. Dynamic decorator names, anonymous operations, and ambiguous or missing graph
+anchors are deliberately omitted. Add common infrastructure fields such as `/health` to
+`matching.exclude_links_paths` to keep those GraphQL contracts visible without cross-linking them.
+
 > **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
 ## Remote Embeddings

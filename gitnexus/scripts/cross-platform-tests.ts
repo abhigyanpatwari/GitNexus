@@ -90,6 +90,7 @@ const PLATFORM_LOGIC = [
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
   'test/unit/group/bridge-db-edge.test.ts',
+  'test/unit/group/fs-utils.test.ts',
   'test/unit/onnxruntime-node-resolver.test.ts',
   // Windows cmd.exe arg-quoting + compose-and-spawn for the npm install (#2372):
   // the quoting rules and win32 single-string spawn shape are OS-sensitive, so
@@ -140,6 +141,7 @@ const LBUG_NATIVE = [
   // opens them through the pool adapter (native addon + bridge file locking).
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
+  'test/integration/group/graphql-resolve-symbol.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',

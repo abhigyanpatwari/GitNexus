@@ -82,6 +82,10 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /** Files whose scope extraction failed while legacy parsing continued. */
+  readonly scopeExtractionFailures: readonly string[];
+  /** Files omitted because their non-standalone language parser was unavailable. */
+  readonly unavailableScopeLanguageFiles: number;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

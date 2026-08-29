@@ -183,6 +183,24 @@ describe('runExactMatch', () => {
     expect(matched).toHaveLength(0);
   });
 
+  it('suppresses configured GraphQL root fields from exact matching', () => {
+    const provider = {
+      ...makeContract('graphql::query::health', 'provider', 'api'),
+      type: 'graphql' as const,
+    };
+    const consumer = {
+      ...makeContract('graphql::query::health', 'consumer', 'web'),
+      type: 'graphql' as const,
+    };
+
+    const { matched, unmatched } = runExactMatch([provider, consumer], undefined, {
+      exclude_links_paths: ['/health'],
+    });
+
+    expect(matched).toEqual([]);
+    expect(unmatched).toEqual([]);
+  });
+
   it('does not match same-repo when only one has service', () => {
     const contracts: StoredContract[] = [
       {
