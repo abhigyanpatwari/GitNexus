@@ -73,8 +73,8 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Wrong repo in multi-repo setups
 
 - **Trigger:** Query/impact results belong to another project.
-- **Do:** Call `list_repos`, then pass `repo` on subsequent tools.
-- **Why:** Default target is ambiguous when multiple repos are registered.
+- **Do:** Confirm an MCP default is configured or the GitNexus process was launched inside the intended registered repo. Otherwise call `list_repos`, then pass `repo` on subsequent tools; pass it for mutating tools when multiple repos are registered and no MCP default exists.
+- **Why:** Read-only tools derive their default from MCP configuration or process cwd when it is inside a registered repo. Outside those paths the target remains ambiguous, and mutating tools stay explicit unless configuration supplies the target.
 
 ### LadybugDB lock / "database busy"
 

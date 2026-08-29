@@ -179,9 +179,37 @@ export class McpRepositoryPolicy {
       });
   }
 
-  async requiresExplicitRepo(backend: LocalBackend): Promise<boolean> {
-    if (this.defaultRepo) return false;
-    return (await this.listAllowedRepos(backend)).length > 1;
+  async toolSchemaRepoRequirements(backend: LocalBackend): Promise<{
+    readOnlyRequiresRepo: boolean;
+    mutatingRequiresRepo: boolean;
+  }> {
+    if (this.defaultRepo) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+
+    // One fresh listing supplies both schema decisions. Besides keeping the
+    // advertised contract internally consistent, this avoids doing two full
+    // per-repo staleness fan-outs for every tools/list request.
+    const visibleRepos = await this.listAllowedRepos(backend);
+    if (visibleRepos.length <= 1) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+    if (this.restricted) {
+      return { readOnlyRequiresRepo: true, mutatingRequiresRepo: true };
+    }
+
+    try {
+      // listAllowedRepos() refreshed this backend immediately above. Resolve
+      // against that exact cache snapshot instead of racing another registry
+      // read; only read-only schemas may advertise the cwd-derived default.
+      await backend.resolveRepo(undefined, undefined, {
+        allowCwdDefault: true,
+        refreshRegistry: false,
+      });
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
+    } catch {
+      return { readOnlyRequiresRepo: true, mutatingRequiresRepo: true };
+    }
   }
 
   private async listReposPage(
