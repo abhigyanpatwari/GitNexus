@@ -484,17 +484,19 @@ function collectInvokeAfterIdent(
   ident: string,
   cur: SourceCursor,
   previous: string | undefined,
+  memberReceiver: string | undefined,
   names: Set<string>,
 ): void {
   skipCsharpTrivia(cur);
+  const hasMvcReceiver = previous !== '.' || memberReceiver === 'this' || memberReceiver === 'base';
   if (ident === 'ViewComponent' && cur.peek() === '(') {
-    if (previous === '[' || previous === ',') return;
+    if (previous === '[' || previous === ',' || !hasMvcReceiver) return;
     cur.advance();
     const name = componentNameFromLiteral(decodeCsharpString(cur));
     if (name !== undefined) names.add(name);
     return;
   }
-  if (ident !== 'Component' || cur.peek() !== '.') return;
+  if (ident !== 'Component' || cur.peek() !== '.' || !hasMvcReceiver) return;
   const afterDot = cur.snapshot();
   cur.advance();
   skipCsharpTrivia(cur);
@@ -515,6 +517,7 @@ export function extractCsharpViewComponentInvocations(source: string): string[] 
   const names = new Set<string>();
   const cur = new SourceCursor(source);
   let previous: string | undefined;
+  let memberReceiver: string | undefined;
   let squareDepth = 0;
   while (!cur.done) {
     skipCsharpTrivia(cur);
@@ -526,13 +529,15 @@ export function extractCsharpViewComponentInvocations(source: string): string[] 
     const ident = readIdent(cur);
     if (ident !== undefined) {
       const inAttribute = squareDepth > 0;
-      collectInvokeAfterIdent(ident, cur, inAttribute ? '[' : previous, names);
+      collectInvokeAfterIdent(ident, cur, inAttribute ? '[' : previous, memberReceiver, names);
       previous = ident;
+      memberReceiver = undefined;
       continue;
     }
     const ch = cur.peek();
     if (ch === '[') squareDepth += 1;
     else if (ch === ']' && squareDepth > 0) squareDepth -= 1;
+    memberReceiver = ch === '.' ? previous : undefined;
     previous = ch;
     cur.advance();
   }
@@ -612,7 +617,10 @@ export function extractViewComponentAliasBinds(source: string): ViewComponentAli
     }
     if (TYPE_MODIFIERS.has(ident)) continue;
     if (ident === 'class' || ident === 'record') {
-      const className = tryReadIdent(cur);
+      let className = tryReadIdent(cur);
+      if (ident === 'record' && (className === 'class' || className === 'struct')) {
+        className = tryReadIdent(cur);
+      }
       if (className !== undefined && pending.some((entry) => entry.aliases.length > 0)) {
         flushPending(className, startLine, startCol);
       } else {

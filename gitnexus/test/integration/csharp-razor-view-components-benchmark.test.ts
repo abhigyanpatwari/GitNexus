@@ -54,7 +54,7 @@ function razorMixed(i: number): string {
 }
 
 function expectedHits(fileCount: number): number {
-  return Math.floor((fileCount - 1) / 10) + (fileCount > 0 ? 1 : 0);
+  return fileCount > 0 ? Math.floor((fileCount - 1) / 10) + 1 : 0;
 }
 
 function scanCsharp(fileCount: number): { hits: number; elapsedMs: number } {

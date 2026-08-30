@@ -79,6 +79,8 @@ describe('Razor ViewComponent convention extraction', () => {
       return base.ViewComponent("FromBase");
       await this.Component.InvokeAsync("FromThisComponent");
       await Task.InvokeAsync("NotAComponent");
+      renderer.ViewComponent("UnrelatedRenderer");
+      await obj.Component.InvokeAsync("UnrelatedProperty");
     `;
     expect(extractCsharpViewComponentInvocations(source)).toEqual([
       'SessionSummaryBar',
@@ -132,6 +134,22 @@ describe('Razor ViewComponent convention extraction', () => {
     `;
     expect(extractViewComponentAliases(source)).toEqual(
       new Map([['MenuViewComponent', ['AccountMenu']]]),
+    );
+  });
+
+  it('extracts aliases from explicit record declarations', () => {
+    const source = `
+      [ViewComponent(Name = "AccountMenu")]
+      public record class MenuViewComponent : ViewComponent {}
+
+      [ViewComponent(Name = "Checkout")]
+      internal record CheckoutWidget : ViewComponent {}
+    `;
+    expect(extractViewComponentAliases(source)).toEqual(
+      new Map([
+        ['MenuViewComponent', ['AccountMenu']],
+        ['CheckoutWidget', ['Checkout']],
+      ]),
     );
   });
 
