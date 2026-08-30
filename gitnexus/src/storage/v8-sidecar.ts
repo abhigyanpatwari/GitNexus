@@ -7,10 +7,10 @@
  * Tiny JSON manifests (`index.json`) stay outside this module.
  *
  * Envelope: magic, format, Node major, V8 version, optional path listing,
- * `v8.serialize` of the live graph, then its SHA-256 digest. Path bytes live
- * before the payload so a ParsedFile loader can skip a shard whose listing
- * misses `wantPaths` without deserializing. An unreadable/invalid listing is
- * fail-closed: deserialize, never skip.
+ * `v8.serialize` of the live graph, then SHA-256 of listing||payload. Path
+ * bytes live before the payload so a ParsedFile loader can skip a shard whose
+ * authenticated listing misses `wantPaths` without deserializing. An
+ * unreadable/invalid listing is fail-closed: deserialize, never skip.
  */
 import { promises as fs } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -20,7 +20,7 @@ import { linkOrCopyFile, writeFileAtomicBytes, writeFileAtomicBytesSync } from '
 
 const MAGIC = Buffer.from('GNXV8CF1', 'ascii');
 /** Envelope version — independent of PARSE_CACHE_VERSION / SCHEMA_BUMP. */
-export const V8_CACHE_FORMAT = 4;
+export const V8_CACHE_FORMAT = 5;
 const U32 = 4;
 const U16 = 2;
 const PAYLOAD_HASH_LEN = 32;
@@ -142,7 +142,7 @@ const encodeEnvelope = (graph: unknown, paths: readonly string[]): Buffer | unde
   header.writeUInt32LE(pathListing.byteLength, off);
   off += U32;
   header.writeUInt32LE(payload.byteLength, off);
-  const payloadHash = createHash('sha256').update(payload).digest();
+  const payloadHash = createHash('sha256').update(pathListing).update(payload).digest();
   return Buffer.concat([header, pathListing, payload, payloadHash]);
 };
 
@@ -208,12 +208,14 @@ const readExact = async (
 const readVerifiedPayload = async (
   fh: Awaited<ReturnType<typeof fs.open>>,
   meta: EnvelopeMeta,
+  pathRaw: Buffer,
 ): Promise<Buffer | undefined> => {
   const payloadAndHash = await readExact(fh, meta.payloadOff, meta.payloadLen + PAYLOAD_HASH_LEN);
   if (!payloadAndHash) return undefined;
   const payload = payloadAndHash.subarray(0, meta.payloadLen);
   const expected = payloadAndHash.subarray(meta.payloadLen);
-  return createHash('sha256').update(payload).digest().equals(expected) ? payload : undefined;
+  const digest = createHash('sha256').update(pathRaw).update(payload).digest();
+  return digest.equals(expected) ? payload : undefined;
 };
 
 /**
@@ -244,7 +246,7 @@ export const inspectV8Cache = async (filePath: string): Promise<V8CacheInspectio
     if (listed === null || listed.length !== meta.pathCount || listed.length === 0) {
       return undefined;
     }
-    if (!(await readVerifiedPayload(fh, meta))) return undefined;
+    if (!(await readVerifiedPayload(fh, meta, pathRaw))) return undefined;
     return { paths: listed };
   } catch (err) {
     if (!isEnoent(err)) {
@@ -257,10 +259,10 @@ export const inspectV8Cache = async (filePath: string): Promise<V8CacheInspectio
 };
 
 /**
- * Load a cache file. When `wantPaths` is set and a valid non-empty path listing
- * has no intersection, returns `{ kind: 'skip' }` without deserializing.
- * Invalid listings deserialize (fail closed). Envelope/runtime/payload failure
- * returns undefined (miss).
+ * Load a cache file. When `wantPaths` is set and a digest-verified non-empty
+ * path listing has no intersection, returns `{ kind: 'skip' }` without
+ * deserializing. An authentic listing that does not parse deserializes (fail
+ * closed). Envelope/runtime/digest failure returns undefined (miss).
  */
 export const tryLoadV8Cache = async (
   filePath: string,
@@ -289,6 +291,9 @@ export const tryLoadV8Cache = async (
       }
     }
 
+    const payload = await readVerifiedPayload(fh, meta, pathRaw);
+    if (!payload) return undefined;
+
     if (wantPaths && wantPaths.size > 0 && meta.pathBytes > 0) {
       const listed = parseCachePathListing(pathRaw);
       if (
@@ -300,9 +305,6 @@ export const tryLoadV8Cache = async (
         return { kind: 'skip', bytes: st.size };
       }
     }
-
-    const payload = await readVerifiedPayload(fh, meta);
-    if (!payload) return undefined;
     const value = v8.deserialize(payload);
     if (internPool) internGraphStrings(value, internPool);
     return { kind: 'hit', value, bytes: st.size };

@@ -635,7 +635,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
-  it('deserializes when the embedded path listing is invalid instead of skipping', async () => {
+  it('misses when the embedded path listing is corrupted', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-listing-fb-'));
     try {
       await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
@@ -646,7 +646,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       buf[pathsOff] = 0;
       await writeFile(dest, buf);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
-      expect(loaded.has('a.c')).toBe(true);
+      expect(loaded.has('a.c')).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

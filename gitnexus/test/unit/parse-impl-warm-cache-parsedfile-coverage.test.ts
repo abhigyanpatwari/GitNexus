@@ -206,7 +206,7 @@ const writeV8 = (filePath, graph, paths) => {
   const nodeMajor = Number.parseInt(process.versions.node.split('.')[0], 10);
   const header = Buffer.allocUnsafe(16 + v8ver.length + 12);
   MAGIC.copy(header, 0);
-  header.writeUInt32LE(4, 8);
+  header.writeUInt32LE(5, 8);
   header.writeUInt16LE(nodeMajor, 12);
   header.writeUInt16LE(v8ver.length, 14);
   v8ver.copy(header, 16);
@@ -215,7 +215,7 @@ const writeV8 = (filePath, graph, paths) => {
   header.writeUInt32LE(listing.length, off + 4);
   header.writeUInt32LE(payload.length, off + 8);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const payloadHash = createHash('sha256').update(payload).digest();
+  const payloadHash = createHash('sha256').update(listing).update(payload).digest();
   fs.writeFileSync(filePath, Buffer.concat([header, listing, payload, payloadHash]));
 };
 const reset = () => ({

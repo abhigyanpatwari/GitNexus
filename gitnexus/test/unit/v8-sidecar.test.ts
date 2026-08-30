@@ -54,7 +54,7 @@ describe('v8 cache envelope', () => {
     }
   });
 
-  it('deserializes when path listing is invalid instead of skipping', async () => {
+  it('misses when the path listing bytes are corrupted', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-failclosed-'));
     try {
       const filePath = path.join(dir, 'shard.v8');
@@ -67,7 +67,25 @@ describe('v8 cache envelope', () => {
       buf.fill(0x00, pathsOff, pathsOff + Math.min(pathBytes, 1));
       await writeFile(filePath, buf);
       const hit = await tryLoadV8Cache(filePath, undefined, new Set(['other.c']));
-      expect(hit?.kind).toBe('hit');
+      expect(hit).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('misses when a same-length path listing is rewritten without the digest', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-list-tamper-'));
+    try {
+      const filePath = path.join(dir, 'shard.v8');
+      await writeV8CacheFile(filePath, [{ filePath: 'a.c' }], ['a.c']);
+      const buf = await readFile(filePath);
+      const v8len = buf.readUInt16LE(14);
+      const pathsOff = 16 + v8len + 12;
+      const listing = Buffer.from('1\nb.c\n');
+      listing.copy(buf, pathsOff);
+      await writeFile(filePath, buf);
+      expect(await inspectV8Cache(filePath)).toBeUndefined();
+      expect(await tryLoadV8Cache(filePath, undefined, new Set(['other.c']))).toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -77,7 +95,7 @@ describe('v8 cache envelope', () => {
     expect(parseCachePathListing(Buffer.from([0x31, 0x0a, 0xff, 0x0a]))).toBeNull();
   });
 
-  it('deserializes when the path listing is invalid UTF-8 instead of skipping', async () => {
+  it('misses when the path listing is invalid UTF-8 instead of skipping', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-utf8-'));
     try {
       const filePath = path.join(dir, 'shard.v8');
@@ -89,7 +107,7 @@ describe('v8 cache envelope', () => {
       buf.fill(0xff, pathsOff, pathsOff + Math.min(pathBytes, 1));
       await writeFile(filePath, buf);
       const hit = await tryLoadV8Cache(filePath, undefined, new Set(['other.c']));
-      expect(hit?.kind).toBe('hit');
+      expect(hit).toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
