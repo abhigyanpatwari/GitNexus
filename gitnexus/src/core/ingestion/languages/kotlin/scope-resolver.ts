@@ -27,6 +27,7 @@ import { clearKotlinPackageFacts } from './package-facts.js';
 import { attachKotlinSpringDiMetadata } from './spring-di.js';
 import { attachKotlinSpringConditionalMetadata } from './spring-conditionals.js';
 import { attachKotlinSpringNonHttpHandlerMetadata } from './spring-non-http-handlers.js';
+import { attachKotlinSpringDynamicLookup } from './spring-dynamic-lookup.js';
 
 /**
  * Kotlin scope resolver for RFC #909 Ring 3.
@@ -148,6 +149,7 @@ export const kotlinScopeResolver: ScopeResolver = {
     attachKotlinSpringConditionalMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringNonHttpHandlerMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachKotlinSpringDynamicLookup(graph, parsedFiles, nodeLookup, indexes);
   },
 };
 

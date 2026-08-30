@@ -668,7 +668,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // each (no JSON/path/generation siblings). A v80 index still names `.json`
 // keys and would skip workers while scope-resolution found nothing — the
 // #1983 main-thread reparse. origin/main at allocation is 80.
-const SCHEMA_BUMP = 81;
+// 81 -> 82: Java and Kotlin ParsedFile capture side channels now carry
+// programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
+// would skip workers and silently omit the new INJECTS edges. origin/main at
+// allocation is 81.
+const SCHEMA_BUMP = 82;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
