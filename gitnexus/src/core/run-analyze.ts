@@ -2033,11 +2033,7 @@ async function runFullAnalysisInner(
     skipDerivedGraphPhases &&
     isIncremental &&
     !!hashDiff &&
-    shouldPreservePersistedDerivedGraph({
-      deletedCount: hashDiff.deleted.length,
-      addedCount: hashDiff.added.length,
-      changedCount: hashDiff.changed.length,
-    });
+    shouldPreservePersistedDerivedGraph(hashDiff);
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
@@ -2804,10 +2800,6 @@ async function runFullAnalysisInner(
         if (touchedFts) {
           touchedFts.add('Class');
         }
-        // An empty set would read as "rebuild everything" to the callees, which
-        // is the opposite instruction. A write set that touches no FTS-backed
-        // table still has to name one, and File is the table every run writes.
-        if (touchedFts && touchedFts.size === 0) touchedFts.add('File');
         incrementalFtsRebuildTables = touchedFts;
         // MEMBER_OF / STEP_IN_PROCESS / ENTRY_POINT_OF edges hang off the nodes
         // the DETACH DELETE below removes, so preserving the Community/Process

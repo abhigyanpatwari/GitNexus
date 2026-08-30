@@ -16,6 +16,17 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
+
+function assertUniquePhaseNames(phases: readonly PipelinePhase[]): void {
+  const seen = new Set<string>();
+  for (const phase of phases) {
+    if (seen.has(phase.name)) {
+      throw new Error(`Duplicate phase name: '${phase.name}'`);
+    }
+    seen.add(phase.name);
+  }
+}
+
 /**
  * Validate that the phases form a valid dependency graph (no cycles, all deps present).
  * Returns phases in topological execution order.
@@ -28,13 +39,8 @@ function topologicalSort(
   phases: readonly PipelinePhase[],
   satisfied: ReadonlySet<string> = new Set(),
 ): PipelinePhase[] {
-  const phaseMap = new Map<string, PipelinePhase>();
-  for (const phase of phases) {
-    if (phaseMap.has(phase.name)) {
-      throw new Error(`Duplicate phase name: '${phase.name}'`);
-    }
-    phaseMap.set(phase.name, phase);
-  }
+  assertUniquePhaseNames(phases);
+  const phaseMap = new Map<string, PipelinePhase>(phases.map((p) => [p.name, p]));
 
   // Validate all deps exist
   for (const phase of phases) {
@@ -170,13 +176,7 @@ export async function runPipeline(
     // Duplicate names must be rejected on the caller-supplied list *before*
     // seed-filtering. Filtering first would drop a seeded duplicate and let
     // `topologicalSort` see a unique name (#3102).
-    const seenNames = new Set<string>();
-    for (const phase of phases) {
-      if (seenNames.has(phase.name)) {
-        throw new Error(`Duplicate phase name: '${phase.name}'`);
-      }
-      seenNames.add(phase.name);
-    }
+    assertUniquePhaseNames(phases);
     sorted = topologicalSort(
       phases.filter((p) => !satisfied.has(p.name)),
       satisfied,

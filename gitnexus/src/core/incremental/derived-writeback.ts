@@ -15,6 +15,7 @@
  */
 import { FTS_INDEXES } from '../search/fts-schema.js';
 import type { KnowledgeGraph } from '../graph/types.js';
+import type { FileHashDiff } from '../../storage/file-hash.js';
 
 const FTS_TABLE_NAMES: ReadonlySet<string> = new Set(FTS_INDEXES.map((i) => i.table));
 
@@ -26,13 +27,6 @@ export const ftsTablesAmong = (tables: Iterable<string>): Set<string> => {
   }
   return out;
 };
-
-/** Counts from `FileHashDiff` that decide whether Leiden/flows can be reused. */
-export interface DerivedGraphPreserveInput {
-  deletedCount: number;
-  addedCount: number;
-  changedCount: number;
-}
 
 /**
  * Whether a surgical incremental write may reuse the persisted derived layer.
@@ -46,8 +40,10 @@ export interface DerivedGraphPreserveInput {
  * consume. File-deletion-only was too weak a proof that the derived graph is
  * still valid.
  */
-export const shouldPreservePersistedDerivedGraph = (diff: DerivedGraphPreserveInput): boolean =>
-  diff.deletedCount === 0 && diff.addedCount === 0 && diff.changedCount === 0;
+export const shouldPreservePersistedDerivedGraph = (
+  diff: Pick<FileHashDiff, 'deleted' | 'added' | 'changed'>,
+): boolean =>
+  diff.deleted.length === 0 && diff.added.length === 0 && diff.changed.length === 0;
 
 /**
  * FTS-backed node tables that the fresh graph will WRITE rows into for
