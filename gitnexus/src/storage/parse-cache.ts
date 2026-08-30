@@ -32,9 +32,12 @@ import { fileURLToPath } from 'url';
 import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
 import {
+  bindV8GenerationBestEffort,
   copyV8SidecarIfPresent,
   dropV8Sidecar,
+  newV8Generation,
   tryLoadV8Sidecar,
+  warnStaleV8Unresolvable,
   writeV8SidecarBestEffort,
 } from './v8-sidecar.js';
 
@@ -989,22 +992,40 @@ export const persistParseCacheChunk = async (
     let payload: string | undefined = JSON.stringify(slim, mapReplacer);
     const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
     const jsonBytes = Buffer.byteLength(payload, 'utf8');
-    const writeJson = async (json: string): Promise<void> => {
-      await dropV8Sidecar(chunkPath);
+    const generation = newV8Generation();
+    /**
+     * `skipped` means neither generation rotation nor removal of the old
+     * sidecar succeeded, so a same-length rewrite could leave the stale `.v8`
+     * indistinguishable from the new JSON. The shard is content-addressed, so
+     * the existing one holds equivalent bytes — keeping it is the safe choice.
+     */
+    const writeJson = async (json: string): Promise<'skipped' | 'json-only' | 'json+v8'> => {
+      const generationBound = await bindV8GenerationBestEffort(chunkPath, generation, jsonBytes);
+      const oldSidecarDropped = await dropV8Sidecar(chunkPath);
+      if (!generationBound && !oldSidecarDropped) return 'skipped';
       await fs.writeFile(chunkPath, json, 'utf-8');
+      return generationBound ? 'json+v8' : 'json-only';
     };
+    let outcome: 'skipped' | 'json-only' | 'json+v8';
     try {
-      await writeJson(payload);
+      outcome = await writeJson(payload);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       // Long-lived analyze --watch processes can replace the sharded cache
       // directory after this process-local memo recorded it as created.
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
-      await writeJson(payload);
+      outcome = await writeJson(payload);
     }
     payload = undefined;
-    await writeV8SidecarBestEffort(chunkPath, slim, jsonBytes);
+    if (outcome === 'skipped') {
+      warnStaleV8Unresolvable(chunkPath);
+      cache.entries.set(chunkHash, slim);
+      return;
+    }
+    if (outcome === 'json+v8') {
+      await writeV8SidecarBestEffort(chunkPath, slim, jsonBytes, generation);
+    }
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
     cache.entries.delete(chunkHash);
@@ -1116,10 +1137,21 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
       } catch {
         continue;
       }
-      await fs.writeFile(chunkPath, payload, 'utf-8');
       const jsonBytes = Buffer.byteLength(payload, 'utf8');
+      const generation = newV8Generation();
+      // `tmpDir` is freshly created, so the drop normally reports ENOENT-gone;
+      // the OR contract is asserted here anyway so every writer follows it.
+      const generationBound = await bindV8GenerationBestEffort(chunkPath, generation, jsonBytes);
+      const oldSidecarDropped = await dropV8Sidecar(chunkPath);
+      if (!generationBound && !oldSidecarDropped) {
+        warnStaleV8Unresolvable(chunkPath);
+        continue;
+      }
+      await fs.writeFile(chunkPath, payload, 'utf-8');
       payload = '';
-      await writeV8SidecarBestEffort(chunkPath, inMemory, jsonBytes);
+      if (generationBound) {
+        await writeV8SidecarBestEffort(chunkPath, inMemory, jsonBytes, generation);
+      }
       writtenKeys.push(chunkHash);
       continue;
     }

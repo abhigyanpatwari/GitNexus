@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm, readdir, writeFile } from 'fs/promises';
+import { mkdtemp, rm, readdir, writeFile, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
@@ -42,6 +42,11 @@ const minimalResult = (overrides: Partial<ParseWorkerResult> = {}): ParseWorkerR
   fileCount: 0,
   ...overrides,
 });
+
+const overwriteJsonWithSameLengthGarbage = async (jsonPath: string): Promise<void> => {
+  const json = await readFile(jsonPath, 'utf8');
+  await writeFile(jsonPath, 'x'.repeat(json.length), 'utf-8');
+};
 
 describe('computeChunkHash', () => {
   it('produces a stable hex hash for a fixed set of (filePath, contentHash) entries', () => {
@@ -827,6 +832,20 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
   it('writes a V8 sidecar and loads it with Map-preserving semantics (#3089)', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-'));
     try {
+      const innerMap = new Map<string, string>([
+        ['k1', 'v1'],
+        ['k2', 'v2'],
+      ]);
+      const innerSet = new Set<string>(['s1', 's2']);
+      const fake = minimalResult({
+        fileCount: 9,
+        imports: [
+          {
+            typeBindings: innerMap,
+            extras: innerSet,
+          } as unknown as ParseWorkerResult['imports'][number],
+        ],
+      });
       const key = 'f'.repeat(64);
       const cache: ParseCache = {
         version: PARSE_CACHE_VERSION,
@@ -835,11 +854,26 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
         storagePath: dir,
         onDiskKeys: new Set(),
       };
-      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 9 })]);
+      await persistParseCacheChunk(cache, key, [fake]);
       const names = await readdir(path.join(dir, 'parse-cache'));
-      expect(names).toEqual(expect.arrayContaining([`${key}.json`, `${key}.json.v8`]));
+      expect(names).toEqual(
+        expect.arrayContaining([`${key}.json`, `${key}.json.v8`, `${key}.json.v8gen`]),
+      );
+      const jsonPath = path.join(dir, 'parse-cache', `${key}.json`);
+      await overwriteJsonWithSameLengthGarbage(jsonPath);
       const loaded = await loadParseCacheChunk(cache, key);
       expect(loaded?.[0]?.fileCount).toBe(9);
+      const smuggled = loaded?.[0]?.imports[0] as unknown as {
+        typeBindings?: unknown;
+        extras?: unknown;
+      };
+      expect(smuggled.typeBindings).toBeInstanceOf(Map);
+      expect([...(smuggled.typeBindings as Map<string, string>)]).toEqual([
+        ['k1', 'v1'],
+        ['k2', 'v2'],
+      ]);
+      expect(smuggled.extras).toBeInstanceOf(Set);
+      expect([...(smuggled.extras as Set<string>)].sort()).toEqual(['s1', 's2']);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -879,7 +913,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 42 })]);
       await saveParseCache(dir, cache);
       expect(await readdir(path.join(dir, 'parse-cache'))).toEqual(
-        expect.arrayContaining([`${key}.json`, `${key}.json.v8`, 'index.json']),
+        expect.arrayContaining([`${key}.json`, `${key}.json.v8`, `${key}.json.v8gen`, 'index.json']),
       );
       const loaded = await loadParseCache(dir);
       expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(42);

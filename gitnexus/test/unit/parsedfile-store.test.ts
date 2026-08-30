@@ -266,7 +266,11 @@ describe('parsedfile-store', () => {
       expect(syncPaths).toBe(asyncPaths);
       const asyncV8 = await readFile(path.join(getParsedFileStoreDir(asyncDir), 'shard.json.v8'));
       const syncV8 = await readFile(path.join(getParsedFileStoreDir(syncDir), 'shard.json.v8'));
-      expect(syncV8.equals(asyncV8)).toBe(true);
+      const v8Payload = (buf: Buffer): Buffer => {
+        const v8len = buf.readUInt16LE(14);
+        return buf.subarray(16 + v8len + 8 + 16 + 4);
+      };
+      expect(v8Payload(syncV8).equals(v8Payload(asyncV8))).toBe(true);
     } finally {
       await rm(asyncDir, { recursive: true, force: true });
       await rm(syncDir, { recursive: true, force: true });
@@ -643,9 +647,11 @@ describe('parsedfile-store receiverChain sanitation', () => {
         'chunk-0.json',
         'chunk-0.json.paths',
         'chunk-0.json.v8',
+        'chunk-0.json.v8gen',
         'chunk-1.json',
         'chunk-1.json.paths',
         'chunk-1.json.v8',
+        'chunk-1.json.v8gen',
       ]);
       const readSpy = vi.spyOn(nodeFsPromises, 'readFile');
       try {
@@ -725,7 +731,11 @@ describe('parsedfile-store receiverChain sanitation', () => {
     try {
       await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
       const storeDir = getParsedFileStoreDir(dir);
-      expect(await readdir(storeDir)).toEqual(['ok.json', 'ok.json.v8']);
+      expect((await readdir(storeDir)).sort()).toEqual([
+        'ok.json',
+        'ok.json.v8',
+        'ok.json.v8gen',
+      ]);
       const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
       expect(loaded.has(weird)).toBe(true);
     } finally {
@@ -740,7 +750,11 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await persistParsedFileChunk(dir, 'ok', [makeParsedFile('safe.c')]);
       await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
       const storeDir = getParsedFileStoreDir(dir);
-      expect(await readdir(storeDir)).toEqual(['ok.json', 'ok.json.v8']);
+      expect((await readdir(storeDir)).sort()).toEqual([
+        'ok.json',
+        'ok.json.v8',
+        'ok.json.v8gen',
+      ]);
       const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
       expect(loaded.has(weird)).toBe(true);
     } finally {
@@ -923,7 +937,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       const badv8 = path.join(storeDir, 'badv8.json.v8');
       const envelope = await readFile(badv8);
       const v8len = envelope.readUInt16LE(14);
-      envelope.fill(0x7f, 16 + v8len + 8 + 4);
+      envelope.fill(0x7f, 16 + v8len + 8 + 16 + 4);
       await writeFile(badv8, envelope);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c', 'c.c', 'd.c']));
       expect(loaded.has('a.c')).toBe(true);
@@ -965,6 +979,56 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await expect(readFile(path.join(storeDir, 'abc-w1-0.json.v8'))).rejects.toThrow();
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads rewritten JSON when a leftover same-size V8 sidecar is not replaced (#3089)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-v8-samesize-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      const dest = path.join(getParsedFileStoreDir(dir), 'ok.json');
+      const jsonA = await readFile(dest);
+      const staleV8 = await readFile(`${dest}.v8`);
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('x.c')]);
+      const jsonX = await readFile(dest);
+      expect(jsonX.byteLength).toBe(jsonA.byteLength);
+      await writeFile(`${dest}.v8`, staleV8);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'x.c']));
+      expect(loaded.has('x.c')).toBe(true);
+      expect(loaded.has('a.c')).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // The exact dangerous sequence: generation rotation fails, the stale sidecar
+  // cannot be unlinked, and the replacement JSON has the SAME byte length. With
+  // no way to tell the old sidecar apart from the new JSON after a restart, the
+  // writer must keep the previous cache generation instead of publishing.
+  it('keeps the previous shard when generation bind and sidecar unlink both fail on a same-size rewrite (#3089)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-v8-both-fail-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      const dest = path.join(getParsedFileStoreDir(dir), 'ok.json');
+      const jsonBefore = await readFile(dest);
+      // Non-empty directories block unlink (EISDIR) and the atomic rename that
+      // publishes the generation token (ENOTEMPTY), without mocking fs.
+      for (const blocked of [`${dest}.v8`, `${dest}.v8gen`]) {
+        await rm(blocked, { force: true });
+        await nodeFsPromises.mkdir(blocked);
+        await writeFile(path.join(blocked, 'occupied'), 'x', 'utf-8');
+      }
+
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('x.c')]);
+
+      const jsonAfter = await readFile(dest);
+      expect(jsonAfter.byteLength).toBe(jsonBefore.byteLength);
+      expect(jsonAfter.equals(jsonBefore)).toBe(true);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'x.c']));
+      expect(loaded.has('a.c')).toBe(true);
+      expect(loaded.has('x.c')).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

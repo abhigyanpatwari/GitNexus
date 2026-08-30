@@ -62,11 +62,15 @@ import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-cod
 import { logger } from '../core/logger.js';
 import { mapReplacer, mapReviver } from './parse-cache.js';
 import {
+  bindV8GenerationBestEffort,
+  bindV8GenerationBestEffortSync,
   copyV8SidecarIfPresent,
+  dropV8Generation,
   dropV8Sidecar,
   dropV8SidecarSync,
-  internGraphStrings,
+  newV8Generation,
   tryLoadV8Sidecar,
+  warnStaleV8Unresolvable,
   writeV8SidecarBestEffort,
   writeV8SidecarBestEffortSync,
 } from './v8-sidecar.js';
@@ -338,12 +342,20 @@ export const persistParsedFileChunk = async (
   if (payload === null) return;
   await fs.mkdir(getParsedFileStoreDir(storagePath), { recursive: true });
   const dest = shardPath(storagePath, shardId);
-  await dropPathSidecar(dest);
-  await dropV8Sidecar(dest);
-  await fs.writeFile(dest, payload, 'utf-8');
   const jsonBytes = Buffer.byteLength(payload, 'utf8');
+  const generation = newV8Generation();
+  const generationBound = await bindV8GenerationBestEffort(dest, generation, jsonBytes);
+  const oldSidecarDropped = await dropV8Sidecar(dest);
+  if (!generationBound && !oldSidecarDropped) {
+    warnStaleV8Unresolvable(dest);
+    return;
+  }
+  await dropPathSidecar(dest);
+  await fs.writeFile(dest, payload, 'utf-8');
   payload = null;
-  await writeV8SidecarBestEffort(dest, parsedFiles, jsonBytes);
+  if (generationBound) {
+    await writeV8SidecarBestEffort(dest, parsedFiles, jsonBytes, generation);
+  }
   await writeShardPathsSidecar(dest, parsedFiles);
 };
 
@@ -374,12 +386,20 @@ export const persistParsedFileShardSync = (
     createdStoreDirs.add(dir);
   }
   const dest = shardPath(storagePath, shardId);
-  dropPathSidecarSync(dest);
-  dropV8SidecarSync(dest);
-  writeFileSync(dest, payload, 'utf-8');
   const jsonBytes = Buffer.byteLength(payload, 'utf8');
+  const generation = newV8Generation();
+  const generationBound = bindV8GenerationBestEffortSync(dest, generation, jsonBytes);
+  const oldSidecarDropped = dropV8SidecarSync(dest);
+  if (!generationBound && !oldSidecarDropped) {
+    warnStaleV8Unresolvable(dest);
+    return;
+  }
+  dropPathSidecarSync(dest);
+  writeFileSync(dest, payload, 'utf-8');
   payload = null;
-  writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes);
+  if (generationBound) {
+    writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes, generation);
+  }
   writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
@@ -448,9 +468,8 @@ export const loadParsedFilesForPaths = async (
       // Missing or unreadable sidecar → read the shard (pre-sidecar stores).
     }
     let parsed: ParsedFile[] | undefined;
-    const v8Hit = await tryLoadV8Sidecar(jsonFull);
+    const v8Hit = await tryLoadV8Sidecar(jsonFull, pool);
     if (v8Hit !== undefined && Array.isArray(v8Hit.value)) {
-      internGraphStrings(v8Hit.value, pool);
       parsed = v8Hit.value as ParsedFile[];
       bytesSinceGc += v8Hit.bytes;
     } else {
@@ -796,12 +815,20 @@ export const persistDurableParsedFileShardSync = (
     createdDurableDirs.add(dir);
   }
   const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`);
-  dropPathSidecarSync(dest);
-  dropV8SidecarSync(dest);
-  writeFileSync(dest, payload, 'utf-8');
   const jsonBytes = Buffer.byteLength(payload, 'utf8');
+  const generation = newV8Generation();
+  const generationBound = bindV8GenerationBestEffortSync(dest, generation, jsonBytes);
+  const oldSidecarDropped = dropV8SidecarSync(dest);
+  if (!generationBound && !oldSidecarDropped) {
+    warnStaleV8Unresolvable(dest);
+    return;
+  }
+  dropPathSidecarSync(dest);
+  writeFileSync(dest, payload, 'utf-8');
   payload = null;
-  writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes);
+  if (generationBound) {
+    writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes, generation);
+  }
   writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
@@ -830,12 +857,22 @@ export const restoreDurableParsedFileShard = async (
   if (shards.length === 0) return 0;
   const dst = getParsedFileStoreDir(runStoragePath);
   await fs.mkdir(dst, { recursive: true });
+  let restored = 0;
   for (const name of shards) {
     const srcJson = path.join(src, name);
     const dstJson = path.join(dst, name);
+    // Same OR contract as the persist paths: the restored JSON is a different
+    // generation, so at least one invalidation of the destination pair must
+    // succeed before the copy.
+    const generationDropped = await dropV8Generation(dstJson);
+    const oldSidecarDropped = await dropV8Sidecar(dstJson);
+    if (!generationDropped && !oldSidecarDropped) {
+      warnStaleV8Unresolvable(dstJson);
+      continue;
+    }
     await dropPathSidecar(dstJson);
-    await dropV8Sidecar(dstJson);
     await fs.copyFile(srcJson, dstJson);
+    restored++;
     await copyV8SidecarIfPresent(srcJson, dstJson);
     try {
       await fs.copyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
@@ -855,7 +892,7 @@ export const restoreDurableParsedFileShard = async (
       }
     }
   }
-  return shards.length;
+  return restored;
 };
 
 /**
