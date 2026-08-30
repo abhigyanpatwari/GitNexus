@@ -26,7 +26,7 @@ describe('C# Razor ViewComponent conventions', () => {
       `,
       'Components/MenuViewComponent.cs': `
         namespace Demo.Components;
-        [ViewComponent(Name = "AccountMenu")]
+        [ApiController, ViewComponent(Name = "AccountMenu")]
         public class MenuViewComponent : ViewComponent
         {
           public object Invoke() => new object();
@@ -43,18 +43,26 @@ describe('C# Razor ViewComponent conventions', () => {
       'Views/Home/Index.cshtml': `
         @await Component.InvokeAsync("SessionSummaryBar", new { id = 1 })
         <vc:account-menu />
+        @{
+          await Component.InvokeAsync("SessionSummaryBar");
+        }
+        @@await Component.InvokeAsync("SessionSummaryBar")
+        <!-- @await Component.InvokeAsync("AccountMenu") -->
       `,
       'Views/Shared/Alias.cshtml': `@await Component.InvokeAsync("AccountMenu")`,
       'Views/Shared/Ambiguous.cshtml': `@await Component.InvokeAsync("Duplicate")`,
       'Views/Shared/Commented.cshtml': `
         @* @await Component.InvokeAsync("SessionSummaryBar") *@
       `,
+      'Views/Shared/Suffix.cshtml': `@await Component.InvokeAsync("Menu")`,
       'Controllers/HomeController.cs': `
         using Microsoft.AspNetCore.Mvc;
         namespace Demo.Controllers;
         public class HomeController : Controller
         {
           public IViewComponentResult Widget() => ViewComponent("SessionSummaryBar");
+          public IViewComponentResult FromBase() => base.ViewComponent("SessionSummaryBar");
+          public IViewComponentResult FromThis() => this.ViewComponent("SessionSummaryBar");
         }
       `,
     });
@@ -102,14 +110,18 @@ describe('C# Razor ViewComponent conventions', () => {
     ]);
     expect(calls.some((edge) => edge.target === 'ViewComponent')).toBe(false);
     expect(calls.some((edge) => edge.target === 'InvokeAsync')).toBe(false);
+    expect(calls.some((edge) => edge.sourceFilePath === 'Components/MenuViewComponent.cs')).toBe(
+      false,
+    );
   });
 
-  it('fails closed for ambiguous names and commented invocations', () => {
+  it('fails closed for ambiguous names, Razor comments, and replaced suffixes', () => {
     const razorSources = getRelationships(result, 'CALLS')
       .filter((edge) => edge.rel.reason === 'aspnet-razor-view-component')
       .map((edge) => edge.sourceFilePath);
 
     expect(razorSources).not.toContain('Views/Shared/Ambiguous.cshtml');
     expect(razorSources).not.toContain('Views/Shared/Commented.cshtml');
+    expect(razorSources).not.toContain('Views/Shared/Suffix.cshtml');
   });
 });
