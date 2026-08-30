@@ -4,8 +4,11 @@ import { tmpdir } from 'os';
 import path from 'path';
 import {
   PARSE_CACHE_VERSION,
+  PARSE_CACHE_BUCKET_COUNT,
   computeChunkHash,
   fileContentHash,
+  packParseCacheChunks,
+  parseCacheBucketId,
   loadParseCache,
   loadParseCacheChunk,
   persistParseCacheChunk,
@@ -240,15 +243,11 @@ describe('PARSE_CACHE_VERSION', () => {
   // collided, because each re-checked once and neither re-checked after the
   // other moved — which is why the rule is re-applied AT MERGE, not when the
   // number is picked.
-  it('pins SCHEMA_BUMP to 79 so concurrent bumps cannot silently collide (#2766, #3015)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(79);
-    // The PREVIOUS version must fail the reuse gate, not merely differ from the
-    // current one — a hardcoded number outside the conflict hunk rebases cleanly
-    // while being wrong, which is exactly how the 37/38 exact clashes landed.
-    // Every nearby historical or in-flight value is rejected, including 69,
-    // which carried the route-table payload before this merge.
+  it('pins SCHEMA_BUMP to 80 so concurrent bumps cannot silently collide (#2766, #3015, #3088)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(80);
+    expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
-      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78,
+      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
@@ -257,6 +256,55 @@ describe('PARSE_CACHE_VERSION', () => {
   it('embeds the gitnexus package version (so upgrades invalidate the cache)', () => {
     // Looks like "1+1.6.4" — schema bump prefix + actual gitnexus version
     expect(PARSE_CACHE_VERSION).toMatch(/^\d+\+\d+\.\d+\.\d+/);
+  });
+});
+
+describe('packParseCacheChunks (#3088)', () => {
+  const files = [
+    { path: 'src/a.ts', size: 100, language: 'typescript' },
+    { path: 'src/b.ts', size: 100, language: 'typescript' },
+    { path: 'pkg/c.py', size: 100, language: 'python' },
+  ];
+  const budget = 2 * 1024 * 1024;
+  const packKey = (chunk: string[]): string =>
+    `${files.find((f) => f.path === chunk[0])?.language ?? 'typescript'}\0${parseCacheBucketId(chunk[0])}`;
+
+  it('is independent of scan order', () => {
+    expect(packParseCacheChunks(files, budget)).toEqual(
+      packParseCacheChunks([...files].reverse(), budget),
+    );
+  });
+
+  it('add/delete only rewrites packs in the affected (language, bucket)', () => {
+    const a = packParseCacheChunks(files, budget);
+    const added = { path: 'AAA.ts', size: 150_000, language: 'typescript' };
+    const withNew = packParseCacheChunks([...files, added], budget);
+    const addedKey = packKey([added.path]);
+    const untouched = (packs: string[][]) =>
+      packs.filter((c) => packKey(c) !== addedKey).map((c) => c.join('|'));
+    expect(untouched(withNew).sort()).toEqual(untouched(a).sort());
+    expect(withNew.some((c) => c.includes(added.path))).toBe(true);
+
+    const withoutB = packParseCacheChunks(
+      files.filter((f) => f.path !== 'src/b.ts'),
+      budget,
+    );
+    const removedKey = packKey(['src/b.ts']);
+    const leftover = (packs: string[][]) =>
+      packs.filter((c) => packKey(c) !== removedKey).map((c) => c.join('|'));
+    expect(leftover(withoutB).sort()).toEqual(leftover(a).sort());
+    expect(withoutB.every((c) => !c.includes('src/b.ts'))).toBe(true);
+  });
+
+  it('parseCacheBucketId uses the full sha256 digest, not an IEEE-754 prefix', () => {
+    const path = 'src/foo.ts';
+    const hex = fileContentHash(path);
+    const full = Number(BigInt(`0x${hex}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
+    const truncated = Number.parseInt(hex.slice(0, 8), 16) % PARSE_CACHE_BUCKET_COUNT;
+    expect(parseCacheBucketId(path)).toBe(full);
+    expect(parseCacheBucketId(path)).toBeGreaterThanOrEqual(0);
+    expect(parseCacheBucketId(path)).toBeLessThan(PARSE_CACHE_BUCKET_COUNT);
+    expect(full).not.toBe(truncated);
   });
 });
 

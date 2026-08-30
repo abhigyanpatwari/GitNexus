@@ -48,7 +48,7 @@
  * file changes its chunk hash, which misses BOTH stores and re-dispatches.
  */
 
-import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
+import { promises as fs, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
@@ -180,6 +180,140 @@ const serializeParsedFileShard = (parsedFiles: readonly ParsedFile[]): string | 
 const shardPath = (storagePath: string, shardId: string): string =>
   path.join(getParsedFileStoreDir(storagePath), `${shardId}.json`);
 
+/** Sidecar listing `filePath`s in a shard; not matched by `endsWith('.json')`. */
+const shardPathsSidecarPath = (jsonPath: string): string => `${jsonPath}.paths`;
+
+const LOAD_YIELD_EVERY_SHARDS = 128;
+
+/**
+ * Test seam for #3086. Production always calls {@link forceGc}; unit tests
+ * replace `run` to count cadence without requiring `--expose-gc`.
+ */
+export const parsedFileLoadGc = {
+  run: forceGc,
+  /** Raw UTF-8 JSON shard bytes between GCs (#3086). Tests may lower this. */
+  byteBudget: 128 * 1024 * 1024,
+};
+
+const encodeShardPathsSidecar = (parsedFiles: readonly ParsedFile[]): string => {
+  const paths = parsedFiles.map((pf) => pf.filePath);
+  return `${paths.length}\n${paths.length === 0 ? '' : `${paths.join('\n')}\n`}`;
+};
+
+/**
+ * Parse a counted NDJSON path listing. Returns `null` when the sidecar must
+ * not be trusted to skip the JSON shard: missing trailing newline, CR/NUL,
+ * a truncated listing that still ends on a complete line, or a count that
+ * does not match the remaining lines.
+ */
+const parseShardPathsSidecar = (sidecarRaw: string): string[] | null => {
+  if (sidecarRaw.includes('\0') || sidecarRaw.includes('\r') || !sidecarRaw.endsWith('\n')) {
+    return null;
+  }
+  const nl = sidecarRaw.indexOf('\n');
+  if (nl < 0) return null;
+  const countToken = sidecarRaw.slice(0, nl);
+  if (!/^[0-9]+$/.test(countToken)) return null;
+  const count = Number(countToken);
+  const body = sidecarRaw.slice(nl + 1);
+  const listed = body === '' ? [] : body.slice(0, -1).split('\n');
+  if (listed.length !== count) return null;
+  return listed;
+};
+
+/** NDJSON sidecars cannot encode paths that themselves contain CR/LF/NUL. */
+const shardPathsSidecarSafe = (parsedFiles: readonly ParsedFile[]): boolean =>
+  parsedFiles.every((pf) => !/[\r\n\0]/.test(pf.filePath));
+
+const isEnoent = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT';
+
+const warnSidecarIo = (err: unknown, jsonPath: string, msg: string): void => {
+  logger.warn({ err, jsonPath }, msg);
+};
+
+const ignoreMissingSidecarUnlink = (err: unknown, jsonPath: string): void => {
+  if (isEnoent(err)) return;
+  warnSidecarIo(
+    err,
+    jsonPath,
+    'parsedfile-store: failed to drop path sidecar; JSON remains authoritative',
+  );
+};
+
+/** Drop a leftover listing before publishing JSON so load cannot skip new paths. */
+const dropPathSidecar = async (jsonPath: string): Promise<void> => {
+  try {
+    await fs.unlink(shardPathsSidecarPath(jsonPath));
+  } catch (err) {
+    ignoreMissingSidecarUnlink(err, jsonPath);
+  }
+};
+
+const dropPathSidecarSync = (jsonPath: string): void => {
+  try {
+    unlinkSync(shardPathsSidecarPath(jsonPath));
+  } catch (err) {
+    ignoreMissingSidecarUnlink(err, jsonPath);
+  }
+};
+
+const writeShardPathsSidecar = async (
+  jsonPath: string,
+  parsedFiles: readonly ParsedFile[],
+): Promise<void> => {
+  if (!shardPathsSidecarSafe(parsedFiles)) {
+    try {
+      await fs.unlink(shardPathsSidecarPath(jsonPath));
+    } catch (err) {
+      ignoreMissingSidecarUnlink(err, jsonPath);
+    }
+    return;
+  }
+  try {
+    await fs.writeFile(
+      shardPathsSidecarPath(jsonPath),
+      encodeShardPathsSidecar(parsedFiles),
+      'utf-8',
+    );
+  } catch (err) {
+    warnSidecarIo(
+      err,
+      jsonPath,
+      'parsedfile-store: path sidecar write failed; JSON shard remains authoritative',
+    );
+    try {
+      await fs.unlink(shardPathsSidecarPath(jsonPath));
+    } catch (unlinkErr) {
+      ignoreMissingSidecarUnlink(unlinkErr, jsonPath);
+    }
+  }
+};
+
+const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly ParsedFile[]): void => {
+  if (!shardPathsSidecarSafe(parsedFiles)) {
+    try {
+      unlinkSync(shardPathsSidecarPath(jsonPath));
+    } catch (err) {
+      ignoreMissingSidecarUnlink(err, jsonPath);
+    }
+    return;
+  }
+  try {
+    writeFileSync(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
+  } catch (err) {
+    warnSidecarIo(
+      err,
+      jsonPath,
+      'parsedfile-store: path sidecar write failed; JSON shard remains authoritative',
+    );
+    try {
+      unlinkSync(shardPathsSidecarPath(jsonPath));
+    } catch (unlinkErr) {
+      ignoreMissingSidecarUnlink(unlinkErr, jsonPath);
+    }
+  }
+};
+
 /**
  * Write one parse chunk's `ParsedFile[]` to the store as a single shard (async).
  * No-op for an empty chunk. `shardId` must be unique within a run. Used by the
@@ -194,7 +328,10 @@ export const persistParsedFileChunk = async (
   const payload = serializeParsedFileShard(parsedFiles);
   if (payload === null) return;
   await fs.mkdir(getParsedFileStoreDir(storagePath), { recursive: true });
-  await fs.writeFile(shardPath(storagePath, shardId), payload, 'utf-8');
+  const dest = shardPath(storagePath, shardId);
+  await dropPathSidecar(dest);
+  await fs.writeFile(dest, payload, 'utf-8');
+  await writeShardPathsSidecar(dest, parsedFiles);
 };
 
 // Per-process set of store dirs we've already `mkdir`ed, so the sync worker
@@ -223,7 +360,10 @@ export const persistParsedFileShardSync = (
     mkdirSync(dir, { recursive: true });
     createdStoreDirs.add(dir);
   }
-  writeFileSync(shardPath(storagePath, shardId), payload, 'utf-8');
+  const dest = shardPath(storagePath, shardId);
+  dropPathSidecarSync(dest);
+  writeFileSync(dest, payload, 'utf-8');
+  writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
 /**
@@ -255,54 +395,90 @@ export const loadParsedFilesForPaths = async (
   let filesWithDroppedSites = 0;
   let droppedChains = 0;
   let rejectedFiles = 0;
+  let bytesSinceGc = 0;
+  let shardsSinceYield = 0;
+  const maybeYieldAndGc = async (forceByteGc: boolean): Promise<void> => {
+    if (forceByteGc) {
+      parsedFileLoadGc.run();
+      bytesSinceGc = 0;
+      shardsSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return;
+    }
+    shardsSinceYield++;
+    if (shardsSinceYield >= LOAD_YIELD_EVERY_SHARDS) {
+      shardsSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
   for (let i = 0; i < shards.length; i++) {
+    const jsonName = shards[i];
+    const jsonFull = path.join(dir, jsonName);
+    try {
+      const sidecarRaw = await fs.readFile(shardPathsSidecarPath(jsonFull), 'utf-8');
+      // Fail closed: complete writers emit `<count>\n` plus one path per line
+      // and a trailing newline, never CR. Stripping CR (or accepting a
+      // newline-terminated prefix) would let a truncated listing skip JSON.
+      const listed = parseShardPathsSidecar(sidecarRaw);
+      if (listed === null) {
+        throw new Error('corrupt sidecar');
+      }
+      if (listed.length > 0 && !listed.some((p) => wantPaths.has(p))) {
+        await maybeYieldAndGc(false);
+        continue;
+      }
+    } catch {
+      // Missing or unreadable sidecar → read the shard (pre-sidecar stores).
+    }
     // Per-shard def pool: a SymbolDefinition's three serialized copies live within
     // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
     // pool would retain defs of files NOT in `wantPaths` (loaded-but-discarded
     // shards), reintroducing the leak; per-shard drops them with the shard.
     const defPool = new Map<string, SymbolDefinition>();
     const reviver = makeInterningReviver(pool, defPool);
-    let parsed: ParsedFile[];
+    let raw: string;
     try {
-      const raw = await fs.readFile(path.join(dir, shards[i]), 'utf-8');
+      raw = await fs.readFile(jsonFull, 'utf-8');
+    } catch {
+      continue; // skip a missing shard; missing files fall back to fresh extract
+    }
+    bytesSinceGc += Buffer.byteLength(raw, 'utf8');
+    const crossedBudget = bytesSinceGc >= parsedFileLoadGc.byteBudget;
+    let parsed: ParsedFile[] | undefined;
+    try {
       parsed = JSON.parse(raw, reviver) as ParsedFile[];
     } catch {
-      continue; // skip a corrupt shard; missing files fall back to fresh extract
+      parsed = undefined;
     }
-    if (!Array.isArray(parsed)) continue;
-    for (const pf of parsed) {
-      if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
-      const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
-      if (flow === undefined) {
-        // non-array garbage → distrust the file, re-extract
-        rejectedFiles++;
-        continue;
-      }
-      const chains = sanitizeReceiverChains(pf.referenceSites);
-      if (chains === undefined) {
-        rejectedFiles++;
-        continue;
-      }
-      if (flow.dropped === 0 && chains.dropped === 0) {
-        out.set(pf.filePath, pf);
-      } else {
-        droppedSites += flow.dropped;
-        droppedChains += chains.dropped;
-        filesWithDroppedSites++;
-        out.set(pf.filePath, {
-          ...pf,
-          ...(flow.dropped === 0 ? {} : { callableFlowSites: flow.sites }),
-          ...(chains.dropped === 0 ? {} : { referenceSites: chains.sites }),
-        });
+    if (Array.isArray(parsed)) {
+      for (const pf of parsed) {
+        if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
+        const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
+        if (flow === undefined) {
+          // non-array garbage → distrust the file, re-extract
+          rejectedFiles++;
+          continue;
+        }
+        const chains = sanitizeReceiverChains(pf.referenceSites);
+        if (chains === undefined) {
+          rejectedFiles++;
+          continue;
+        }
+        if (flow.dropped === 0 && chains.dropped === 0) {
+          out.set(pf.filePath, pf);
+        } else {
+          droppedSites += flow.dropped;
+          droppedChains += chains.dropped;
+          filesWithDroppedSites++;
+          out.set(pf.filePath, {
+            ...pf,
+            ...(flow.dropped === 0 ? {} : { callableFlowSites: flow.sites }),
+            ...(chains.dropped === 0 ? {} : { referenceSites: chains.sites }),
+          });
+        }
       }
     }
-    // Every few shards, reclaim the transient pre-intern parse churn before it
-    // piles up against the heap limit (~5 GB avoidable on the kernel), and
-    // yield so the GC + any pending I/O can run.
-    if ((i & 7) === 7) {
-      forceGc();
-      await new Promise<void>((resolve) => setImmediate(resolve));
-    }
+    await maybeYieldAndGc(crossedBudget);
   }
   if (droppedSites > 0 || droppedChains > 0) {
     // Facts for the dropped sites are omitted this run (the file itself is
@@ -595,7 +771,10 @@ export const persistDurableParsedFileShardSync = (
     mkdirSync(dir, { recursive: true });
     createdDurableDirs.add(dir);
   }
-  writeFileSync(path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`), payload, 'utf-8');
+  const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`);
+  dropPathSidecarSync(dest);
+  writeFileSync(dest, payload, 'utf-8');
+  writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
 /**
@@ -624,7 +803,27 @@ export const restoreDurableParsedFileShard = async (
   const dst = getParsedFileStoreDir(runStoragePath);
   await fs.mkdir(dst, { recursive: true });
   for (const name of shards) {
-    await fs.copyFile(path.join(src, name), path.join(dst, name));
+    const srcJson = path.join(src, name);
+    const dstJson = path.join(dst, name);
+    await dropPathSidecar(dstJson);
+    await fs.copyFile(srcJson, dstJson);
+    try {
+      await fs.copyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
+    } catch (copyErr) {
+      if (!isEnoent(copyErr)) {
+        warnSidecarIo(
+          copyErr,
+          srcJson,
+          'parsedfile-store: durable path sidecar copy failed; JSON remains authoritative',
+        );
+        continue;
+      }
+      try {
+        await fs.unlink(shardPathsSidecarPath(dstJson));
+      } catch (err) {
+        ignoreMissingSidecarUnlink(err, dstJson);
+      }
+    }
   }
   return shards.length;
 };
