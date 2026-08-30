@@ -15,6 +15,8 @@ import {
   DATA_ROUTE_TABLE_SOURCE,
   scanDataRouteTables,
 } from '../../../ingestion/route-extractors/data-route-table.js';
+import { extractNestRoutes } from '../../../ingestion/route-extractors/nest.js';
+import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
 import {
   buildJsRepoFacts,
   extractJsModuleFacts,
@@ -27,7 +29,8 @@ import {
 
 /**
  * Node.js / TypeScript HTTP plugin family. Handles:
- *   - NestJS `@Controller('prefix')` classes with `@Get(':id')` methods
+ *   - NestJS `@Controller('prefix')` classes with `@Get(':id')` methods,
+ *     delegated wholesale to the indexer's `extractNestRoutes`
  *   - Express `router.get(...)` / `app.post(...)` providers
  *   - `fetch(url)` / `fetch(url, { method: 'POST' })` consumers
  *   - `axios.get(url)` / `axios.delete(url)` consumers
@@ -42,34 +45,8 @@ import {
  * same `scan` function but bind to different grammars.
  */
 
-// ─── Provider: NestJS — class-level @Controller('prefix') ────────────
-// In tree-sitter-typescript decorators are NOT children of
-// class_declaration / method_definition — they're siblings in the
-// surrounding class_body / program node. We therefore match the
-// decorator standalone and walk to its related class/method in JS.
-const NEST_CONTROLLER_SPEC: PatternSpec<Record<string, never>> = {
-  meta: {},
-  query: `
-    (decorator
-      (call_expression
-        function: (identifier) @dec (#eq? @dec "Controller")
-        arguments: (arguments . [(string) (template_string)] @prefix))) @ctrl_decorator
-  `,
-};
-
-// ─── Provider: NestJS — method-level @Get/@Post/... decorators ───────
-// Matches either `@Get('path')` or `@Get()`. The `@path` capture is
-// optional — when the first argument isn't a string, the plugin falls
-// back to '/' for the method-level path.
-const NEST_METHOD_SPEC: PatternSpec<Record<string, never>> = {
-  meta: {},
-  query: `
-    (decorator
-      (call_expression
-        function: (identifier) @dec (#match? @dec "^(Get|Post|Put|Delete|Patch)$")
-        arguments: (arguments) @args)) @method_decorator
-  `,
-};
+// NestJS providers are not queried here at all — see the `extractNestRoutes`
+// call in `scanBundle`.
 
 // ─── Provider: Express — router.get/app.post/... ─────────────────────
 const EXPRESS_SPEC: PatternSpec<Record<string, never>> = {
@@ -176,8 +153,6 @@ const AXIOS_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
 };
 
 interface NodePatternBundle {
-  controller: CompiledPatterns<Record<string, never>>;
-  methodDecorator: CompiledPatterns<Record<string, never>>;
   express: CompiledPatterns<Record<string, never>>;
   fetchNoOptions: CompiledPatterns<Record<string, never>>;
   fetchWithOptions: CompiledPatterns<Record<string, never>>;
@@ -195,8 +170,6 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
       patterns: [spec],
     } satisfies LanguagePatterns<Record<string, never>>);
   return {
-    controller: mk(NEST_CONTROLLER_SPEC, 'nest-controller'),
-    methodDecorator: mk(NEST_METHOD_SPEC, 'nest-method-decorator'),
     express: mk(EXPRESS_SPEC, 'express'),
     fetchNoOptions: mk(FETCH_NO_OPTIONS_SPEC, 'fetch-no-options'),
     fetchWithOptions: mk(FETCH_WITH_OPTIONS_SPEC, 'fetch-with-options'),
@@ -210,33 +183,6 @@ function compileBundle(language: unknown, name: string): NodePatternBundle {
 const JAVASCRIPT_BUNDLE = compileBundle(JavaScript, 'javascript-http');
 const TYPESCRIPT_BUNDLE = compileBundle(TypeScript.typescript, 'typescript-http');
 const TSX_BUNDLE = compileBundle(TypeScript.tsx, 'tsx-http');
-
-const NEST_DECORATOR_TO_HTTP: Record<string, string> = {
-  Get: 'GET',
-  Post: 'POST',
-  Put: 'PUT',
-  Delete: 'DELETE',
-  Patch: 'PATCH',
-};
-
-/**
- * Find the nearest enclosing class_declaration for a node, or null.
- */
-function findEnclosingClass(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  let cur: Parser.SyntaxNode | null = node.parent;
-  while (cur) {
-    if (cur.type === 'class_declaration') return cur;
-    cur = cur.parent;
-  }
-  return null;
-}
-
-function joinPath(prefix: string, sub: string): string {
-  const cleanPrefix = prefix.replace(/^\/+/, '').replace(/\/+$/, '');
-  const cleanSub = sub.replace(/^\/+/, '');
-  if (!cleanPrefix) return `/${cleanSub}`;
-  return `/${cleanPrefix}/${cleanSub}`;
-}
 
 /**
  * Walk `pair` children of an `object` literal and return the unquoted
@@ -256,68 +202,6 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
     if (valueNode.type !== 'string' && valueNode.type !== 'template_string') continue;
     const lit = unquoteLiteral(valueNode.text);
     if (lit !== null) return lit;
-  }
-  return null;
-}
-
-/**
- * For a standalone `decorator` node (child of class_body / program),
- * find the related `class_declaration` node that it decorates. In
- * tree-sitter-typescript the decorator is placed before the class
- * declaration as a sibling (when decorating a class) or inside the
- * class_body before a method_definition (when decorating a method);
- * we walk the parent chain until we find the enclosing class.
- */
-function findDecoratedClass(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  const parent = decoratorNode.parent;
-  if (!parent) return null;
-  // Case 1: decorator is a sibling of the class_declaration at program /
-  // export_statement level. Walk forward through siblings until we find
-  // the class_declaration this decorator belongs to.
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child && child.id === decoratorNode.id) {
-      for (let j = i + 1; j < parent.namedChildCount; j++) {
-        const next = parent.namedChild(j);
-        if (!next) continue;
-        if (next.type === 'decorator') continue; // adjacent decorators stack
-        if (next.type === 'class_declaration') return next;
-        if (next.type === 'export_statement') {
-          // `export class Foo { ... }` wraps the declaration.
-          for (let k = 0; k < next.namedChildCount; k++) {
-            const inner = next.namedChild(k);
-            if (inner?.type === 'class_declaration') return inner;
-          }
-        }
-        break;
-      }
-      break;
-    }
-  }
-  // Case 2: decorator is inside a class_body (decorating a method) —
-  // walk up to the enclosing class_declaration.
-  return findEnclosingClass(decoratorNode);
-}
-
-/**
- * For a method-level decorator node (child of class_body before a
- * method_definition), find the method_definition it decorates.
- */
-function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  const parent = decoratorNode.parent;
-  if (!parent || parent.type !== 'class_body') return null;
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child && child.id === decoratorNode.id) {
-      for (let j = i + 1; j < parent.namedChildCount; j++) {
-        const next = parent.namedChild(j);
-        if (!next) continue;
-        if (next.type === 'decorator') continue;
-        if (next.type === 'method_definition') return next;
-        return null;
-      }
-      return null;
-    }
   }
   return null;
 }
@@ -589,57 +473,33 @@ function scanBundle(
   // symbol resolves to the real definition rather than its local alias text.
   const importMap = buildImportMap(tree);
 
-  // NestJS: collect `@Controller('prefix')` class decorators, keyed by
-  // the `class_declaration` they decorate.
-  const prefixByClassId = new Map<number, string>();
-  for (const match of runCompiledPatterns(bundle.controller, tree)) {
-    const prefixNode = match.captures.prefix;
-    const decoratorNode = match.captures.ctrl_decorator;
-    if (!prefixNode || !decoratorNode) continue;
-    const prefix = unquoteLiteral(prefixNode.text);
-    if (prefix === null) continue;
-    const classNode = findDecoratedClass(decoratorNode);
-    if (!classNode) continue;
-    prefixByClassId.set(classNode.id, prefix);
-  }
-
-  // NestJS: method-level @Get/@Post/... decorators. The decorator's
-  // arguments list may be empty (`@Get()`), a string (`@Get('path')`),
-  // or something else (which we skip).
-  for (const match of runCompiledPatterns(bundle.methodDecorator, tree)) {
-    const decNode = match.captures.dec;
-    const argsNode = match.captures.args;
-    const decoratorNode = match.captures.method_decorator;
-    if (!decNode || !argsNode || !decoratorNode) continue;
-    const httpMethod = NEST_DECORATOR_TO_HTTP[decNode.text];
-    if (!httpMethod) continue;
-    const methodNode = findDecoratedMethod(decoratorNode);
-    if (!methodNode) continue;
-    const enclosingClass = findEnclosingClass(methodNode);
-    // Only emit NestJS detections when the class actually has a
-    // @Controller decorator — without it, the match is almost certainly
-    // something else (e.g. an unrelated library using similar names).
-    if (!enclosingClass || !prefixByClassId.has(enclosingClass.id)) continue;
-    const prefix = prefixByClassId.get(enclosingClass.id) ?? '';
-
-    let rawPath = '/';
-    const firstArg = argsNode.namedChild(0);
-    if (firstArg && (firstArg.type === 'string' || firstArg.type === 'template_string')) {
-      const unquoted = unquoteLiteral(firstArg.text);
-      if (unquoted !== null) rawPath = unquoted;
-    }
-
-    // Get the method name from the decorated method_definition.
-    const methodNameNode = methodNode.childForFieldName('name');
-    const name = methodNameNode?.text ?? null;
-
+  // NestJS: delegated to the indexer's extractor rather than re-queried here.
+  // Two independent readings of the same decorators is how the layers drift:
+  // the local scan saw only `class_declaration` (never `abstract class`), only
+  // five of the nine verbs, only a positional string `@Controller('x')`, and
+  // — worst — INVENTED `/` for a method path it could not read, so
+  // `@Get(ROUTES.SEARCH)` became a `GET /venues` contract that the graph, which
+  // correctly drops it, has no Route node for. "A missing route is a coverage
+  // limit; an invented one is a lie" (ARCHITECTURE.md). Calling the extractor
+  // makes that divergence structurally impossible, exactly as the
+  // `scanDataRouteTables` call below already does for static route tables.
+  //
+  // `filePath` rides only on the returned struct and never reaches the
+  // `HttpDetection`, so a bare `scan(tree)` with no `fileRel` passes '' rather
+  // than losing the routes. `lineOffset` is 0: the group scanner parses whole
+  // files, so `lineNumber` is already the absolute 1-based line this
+  // `HttpDetection.line` wants.
+  for (const route of extractNestRoutes(tree, fileRel ?? '', 0)) {
     out.push({
       role: 'provider',
       framework: 'nest',
-      method: httpMethod,
-      path: joinPath(prefix, rawPath),
-      name,
-      line: methodNode.startPosition.row + 1,
+      method: route.httpMethod,
+      // The prefix travels separately at the ingestion layer, so the join is
+      // ours to do — with ingestion's own joiner, so the two layers cannot
+      // disagree about the URL either.
+      path: normalizeExtractedRoutePath(route.routePath, route.prefix ?? null),
+      name: route.handlerName ?? null,
+      line: route.lineNumber,
       confidence: 0.8,
     });
   }

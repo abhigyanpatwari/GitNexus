@@ -175,6 +175,32 @@ describe('group impact fan-out is bounded by a count, not by the clock (#2787)',
     expect(result).not.toHaveProperty('riskEpistemic');
   });
 
+  it('applies crossing risk to shared axes while preserving local scale metadata', async () => {
+    bridgeRows.value = [crossingRow(0, 0.9)];
+    const riskScale = {
+      comparableAcrossKinds: true,
+      unusedAxes: [],
+    } as const;
+    const port = makePort({
+      impact: vi.fn(async () => ({
+        target: { id: 'Function:src/api.ts:publish', filePath: 'src/api.ts' },
+        byDepth: { 1: [{ id: 'u1', filePath: 'src/a.ts' }] },
+        summary: { direct: 1, processes_affected: 4, modules_affected: 0 },
+        risk: 'HIGH',
+        riskSharedAxes: 'LOW',
+        riskScale,
+      })) as GroupToolPort['impact'],
+    });
+
+    const result = await run(port);
+
+    expect(result).toMatchObject({
+      risk: 'HIGH',
+      riskSharedAxes: 'HIGH',
+      riskScale,
+    });
+  });
+
   it('marks risk as a floor when a crossing is dropped, and does NOT clamp the value down', async () => {
     // Three crossings, one neighbour unresolvable. Two traverse → HIGH (the
     // >=0.85-confidence gate). Had the third traversed, `traversed.length >= 3`

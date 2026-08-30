@@ -54,10 +54,14 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   getMaxResidentRepos: vi.fn(() => 5),
 }));
 
-vi.mock('../../../src/storage/repo-manager.js', () => ({
-  readRegistry: vi.fn(async () => []),
-  readRegistryStrict: vi.fn(async () => []),
-}));
+vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    readRegistry: vi.fn(async () => []),
+    readRegistryStrict: vi.fn(async () => []),
+  };
+});
 
 vi.mock('../../../src/core/group/extractors/http-route-extractor.js', () => ({
   HttpRouteExtractor: class {
@@ -92,12 +96,10 @@ const config = (): GroupConfig => ({
     grpc: true,
     thrift: false,
     topics: false,
-    shared_libs: false,
-    embedding_fallback: false,
     includes: false,
     workspace_deps: false,
   },
-  matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+  matching: {},
 });
 
 describe('syncGroup when one extractor fails partway through a repo', () => {

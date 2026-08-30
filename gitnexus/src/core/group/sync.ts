@@ -8,8 +8,12 @@ import {
   getMaxResidentRepos,
 } from '../lbug/pool-adapter.js';
 import {
+  findRegistryEntryByName,
+  canonicalizePath,
+  registryPathEquals,
   readRegistry,
   readRegistryStrict,
+  RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import type {
@@ -19,8 +23,10 @@ import type {
   StoredContract,
   CrossLink,
   GroupManifestLink,
+  MatchType,
 } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
+import { GraphqlExtractor } from './extractors/graphql-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { ThriftExtractor } from './extractors/thrift-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
@@ -28,10 +34,15 @@ import { IncludeExtractor } from './extractors/include-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
 import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
+import type { WildcardMatchResult } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
 import { getContractRegistryPath, readContractRegistry, writeContractRegistry } from './storage.js';
-import { refreshPreservedBridgeMeta, writeBridgeUnlocked } from './bridge-db.js';
+import {
+  markBridgeProvenanceUnknown,
+  refreshPreservedBridgeMeta,
+  writeBridgeUnlocked,
+} from './bridge-db.js';
 import { withGroupSyncLock } from './group-lock.js';
 import type { ContractRegistry } from './types.js';
 
@@ -43,10 +54,8 @@ export interface SyncOptions {
   resolveRepoHandle?: (registryName: string, groupPath: string) => Promise<RepoHandle | null>;
   skipWrite?: boolean;
   groupDir?: string;
-  allowStale?: boolean;
   verbose?: boolean;
   exactOnly?: boolean;
-  skipEmbeddings?: boolean;
 }
 
 /**
@@ -96,6 +105,14 @@ export interface SyncResult {
   unreadableRepos: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
   /**
+   * Matching stages this run was asked to skip. Populated on EVERY outcome,
+   * not just `written`: the sync genuinely did skip the stage whatever
+   * happened to the file afterwards, and the CLI summary renders from this
+   * rather than re-deriving it from the caller's options. Only the persisted
+   * registry stamps it conditionally — see the write below.
+   */
+  suppressedMatchStages: MatchType[];
+  /**
    * What this sync did to `contracts.json`. Callers must not announce a write
    * they did not get: without this, `group sync` printed "Wrote contracts.json
    * (0 contracts, 0 cross-links)" about a file it had deliberately left alone.
@@ -115,9 +132,19 @@ export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry
   return base;
 }
 
+/** Operator copy for group sync — unique `--name`, not a path in yaml. */
+export function formatGroupSyncAmbiguousError(err: RegistryAmbiguousTargetError): string {
+  const listing = err.matches.map((m) => `  - ${m.path}`).join('\n');
+  return (
+    `Multiple registered repos are named "${err.target}":\n${listing}\n` +
+    `Give each clone a unique registry name with \`gitnexus analyze --name\`, then re-sync. ` +
+    `Do not put a filesystem path in group.yaml.`
+  );
+}
+
 function defaultResolveHandle(allEntries: RegistryEntry[]) {
   return async (registryName: string, groupPath: string): Promise<RepoHandle | null> => {
-    const e = allEntries.find((en) => en.name === registryName);
+    const e = findRegistryEntryByName(allEntries, registryName);
     if (!e) return null;
     const poolId = stableRepoPoolId(e, allEntries);
     return {
@@ -264,7 +291,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // Group-path → pool identity for repos that successfully initialized. Drives
   // windowed manifest resolution below (re-init + lease per window). Keyed by
   // group path because manifest links reference repos by group path.
-  const repoHandles = new Map<string, { poolId: string; lbugPath: string }>();
+  const repoHandles = new Map<string, { poolId: string; lbugPath: string; repoPath: string }>();
+  // Keep resolved disk paths even when extraction fails and removes the
+  // corresponding handle; workspace discovery does not need a readable index.
+  const resolvedRepoPaths = new Map<string, string>();
   // Every eviction lease this sync holds. Window loops release their own leases
   // (bounding residency); this set is the defensive outer-finally sweep —
   // release disposers are idempotent, so double-release is a safe no-op.
@@ -282,7 +312,13 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       registryEntries = await readRegistryStrict();
       const entries = registryEntries;
       const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
+      if (!opts?.resolveRepoHandle) {
+        for (const regName of Object.values(config.repos)) {
+          findRegistryEntryByName(entries, regName);
+        }
+      }
       const httpEx = new HttpRouteExtractor();
+      const graphqlEx = new GraphqlExtractor();
       const grpcEx = new GrpcExtractor();
       const thriftEx = new ThriftExtractor();
       const topicEx = new TopicExtractor();
@@ -294,6 +330,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           missingRepos.push(groupPath);
           continue;
         }
+        resolvedRepoPaths.set(groupPath, handle.repoPath);
 
         const poolId = handle.id;
         const lbugPath = path.join(handle.storagePath, 'lbug');
@@ -313,7 +350,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // resolution no longer reuses these executors — it re-inits + leases
           // each repo per window (see windowed resolution below, issue #2189).
           // Record the pool identity so windowed resolution can re-init.
-          repoHandles.set(groupPath, { poolId, lbugPath });
+          repoHandles.set(groupPath, { poolId, lbugPath, repoPath: handle.repoPath });
 
           const executor: CypherExecutor = (query, params) =>
             executeParameterized(poolId, query, params ?? {});
@@ -322,6 +359,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.http) {
             const extracted = await httpEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              repoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.graphql === true) {
+            const extracted = await graphqlEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               repoContracts.push({
                 ...c,
@@ -384,7 +432,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
               lastCommit: m.lastCommit || '',
             };
           } catch {
-            const e = entries.find((en) => en.name === regName);
+            const resolvedHandlePath = canonicalizePath(handle.repoPath);
+            const e = entries.find((en) =>
+              registryPathEquals(canonicalizePath(en.path), resolvedHandlePath),
+            );
             repoSnapshots[groupPath] = {
               indexedAt: e?.indexedAt || '',
               lastCommit: e?.lastCommit || '',
@@ -406,6 +457,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // read. The loop bounds the append by memory instead.
           for (const contract of repoContracts) autoContracts.push(contract);
         } catch (err) {
+          if (err instanceof RegistryAmbiguousTargetError) throw err;
           // This spans initLbug plus all contract extraction for the repo. The
           // error used to be discarded entirely, so the only trace of (say) a
           // storage-version mismatch was an empty contracts.json and a later
@@ -440,7 +492,13 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const repoPaths = new Map<string, string>();
       if (!registryEntries) registryEntries = await readRegistry();
       for (const [groupPath, regName] of Object.entries(config.repos)) {
-        const e = registryEntries.find((en) => en.name === regName);
+        const resolvedPath = resolvedRepoPaths.get(groupPath);
+        if (resolvedPath) {
+          repoPaths.set(groupPath, resolvedPath);
+          continue;
+        }
+        if (opts?.resolveRepoHandle) continue;
+        const e = findRegistryEntryByName(registryEntries, regName);
         if (e) repoPaths.set(groupPath, e.path);
       }
 
@@ -561,7 +619,21 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
   const providerIndex = buildProviderIndex(autoContracts, config.matching);
   const { matched, unmatched } = runExactMatch(autoContracts, providerIndex, config.matching);
-  const wildcard = runWildcardMatch(unmatched, providerIndex);
+  // `exactOnly` had the same defect this PR removes `skipEmbeddings` for: it was
+  // declared, threaded through the CLI and MCP, and never read, so `--exact-only`
+  // silently produced wildcard links anyway. It is honoured here rather than
+  // deleted because — unlike the never-built BM25/embedding stages — the stage it
+  // names does exist, so the flag describes a real choice. Contracts left
+  // unmatched by the exact pass stay unmatched, which is exactly what it promises.
+  // `remaining`, not `unmatched`: this feeds SyncResult.unmatched below, so every
+  // contract the exact pass could not place has to be reported as unmatched
+  // rather than silently dropped from the count.
+  const wildcard: WildcardMatchResult = opts?.exactOnly
+    ? { matched: [], remaining: unmatched }
+    : runWildcardMatch(unmatched, providerIndex);
+  // Measured, not assumed: `[]` says this run suppressed nothing, which is a
+  // different statement from a registry that never recorded the field at all.
+  const suppressedMatchStages: MatchType[] = opts?.exactOnly ? ['wildcard'] : [];
 
   // Dedupe cross-links. Manifest contracts participate in runExactMatch, so a
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the
@@ -583,6 +655,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     // not recorded, telling the operator to re-run the sync that had just
     // succeeded. The tri-state only works if the writer commits to it.
     unreadableRepos,
+    // Stamped only on the path that writes THIS run's contracts. The preserve
+    // path below re-writes `{ ...prior }`, so a carried-forward registry keeps
+    // the marker of the sync that actually produced its contracts instead of
+    // being relabelled with this run's request.
+    suppressedMatchStages,
     contracts: allContracts,
     crossLinks,
   };
@@ -765,6 +842,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             repoSnapshots,
             missingRepos,
             unreadableRepos,
+            suppressedMatchStages,
           });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -777,11 +855,23 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // true is the one thing not to do — it would recreate exactly the
           // metadata/database mis-pairing the stamping on the preserve path above
           // exists to prevent.
+          // Fail the stale bridge CLOSED. contracts.json has advanced and the
+          // database has not, so the two describe different syncs; leaving the
+          // bridge vouching for itself lets `group_impact` call a superseded
+          // graph complete while `group_contracts` reports the new one. This
+          // withdraws the claim without touching the database — the previous
+          // graph stays queryable, it just stops being called complete.
+          const withdrawn = await markBridgeProvenanceUnknown(groupDir);
+          const provenanceNote = withdrawn
+            ? 'Its metadata has been marked provenance-unknown, so those answers now report as ' +
+              'a lower bound rather than as complete.'
+            : 'Its metadata could NOT be marked provenance-unknown, so those answers may still ' +
+              'report as complete despite describing an older sync.';
           logger.warn(
-            { err: msg, groupDir },
+            { err: msg, groupDir, bridgeProvenanceWithdrawn: withdrawn },
             '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
               'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
-              "the previous sync's contracts, and nothing marks them as superseded. " +
+              `the previous sync's contracts. ${provenanceNote} ` +
               'Re-run `gitnexus group sync` to retry.',
           );
         }
@@ -792,6 +882,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   return {
     contracts: allContracts,
     crossLinks,
+    suppressedMatchStages,
     unmatched: wildcard.remaining,
     missingRepos,
     unreadableRepos,

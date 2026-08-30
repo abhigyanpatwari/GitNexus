@@ -156,10 +156,14 @@ vi.mock('../../../src/core/lbug/sidecar-recovery.js', () => ({
 
 // The registry read happens in syncGroup's else branch; resolveRepoHandle is
 // supplied, so an empty registry is fine (only the meta.json fallback reads it).
-vi.mock('../../../src/storage/repo-manager.js', () => ({
-  readRegistry: vi.fn().mockResolvedValue([]),
-  readRegistryStrict: vi.fn().mockResolvedValue([]),
-}));
+vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    readRegistry: vi.fn().mockResolvedValue([]),
+    readRegistryStrict: vi.fn().mockResolvedValue([]),
+  };
+});
 
 const { syncGroup } = await import('../../../src/core/group/sync.js');
 const { closeLbug, getMaxResidentRepos } = await import('../../../src/core/lbug/pool-adapter.js');
@@ -213,12 +217,10 @@ describe('syncGroup windowed resolution bounds pool residency (real pool, #2189)
         grpc: false,
         thrift: false,
         topics: false,
-        shared_libs: false,
-        embedding_fallback: false,
         includes: false,
         workspace_deps: false,
       },
-      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+      matching: {},
     };
 
     await syncGroup(config, {

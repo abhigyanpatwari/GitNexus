@@ -96,15 +96,11 @@ packages: {}
 
 detect:
   http: true
+  graphql: false
   grpc: true
   topics: true
-  shared_libs: true
-  embedding_fallback: true
 
 matching:
-  bm25_threshold: 0.7
-  embedding_threshold: 0.65
-  max_candidates_per_step: 3
   # exclude_links_paths: [/ping, /health, /healthcheck]
   # exclude_links_param_only_paths: false
 `;

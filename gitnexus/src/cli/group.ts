@@ -2,6 +2,7 @@
 import { createRequire } from 'node:module';
 import type { Command } from 'commander';
 import type { RegistryWriteOutcome } from '../core/group/sync.js';
+import type { MatchType } from '../core/group/types.js';
 import { logger } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
@@ -134,6 +135,7 @@ export function registerGroupCommands(program: Command): void {
           >;
           missingRepos?: string[];
           unreadableRepos?: string[];
+          suppressedMatchStages?: string[];
         };
 
         console.log('  Repo index / contracts staleness:');
@@ -188,6 +190,18 @@ export function registerGroupCommands(program: Command): void {
         if ((st.missingRepos || []).length > 0) {
           console.log(`\n  Last sync missing repos: ${st.missingRepos!.join(', ')}`);
         }
+        // Only the populated case prints. Absent means a registry that predates
+        // the field, and empty is the ordinary clean sync — neither is worth a
+        // line, whereas a narrowed registry changes how every later answer
+        // should be read.
+        const skippedStages = st.suppressedMatchStages ?? [];
+        if (skippedStages.length > 0) {
+          console.log(
+            `\n  Last sync skipped matching stages: ${skippedStages.join(', ')}` +
+              `\n     Cross-links those stages would have found are absent by request.` +
+              `\n     Re-run \`gitnexus group sync\` without --exact-only for the complete set.`,
+          );
+        }
       } finally {
         await backend.dispose().catch(() => {});
       }
@@ -196,16 +210,18 @@ export function registerGroupCommands(program: Command): void {
   group
     .command('sync <name>')
     .description('Sync Contract Registry — extract contracts and build cross-links')
-    .option('--skip-embeddings', 'Exact + BM25 only (no embedding fallback)')
-    .option('--exact-only', 'Exact match only')
-    .option('--allow-stale', 'Skip stale index warnings')
-    .option('--verbose', 'Show each cross-link detail')
+    .option(
+      '--exact-only',
+      'Skip wildcard service matching; cross-link on exact contract-id match only (manifest links still apply)',
+    )
+    .option('--verbose', 'Show additional sync diagnostics')
     .option('--json', 'JSON output')
     .action(async (name: string, opts: Record<string, boolean | undefined>) => {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
       const { loadGroupConfig } = await import('../core/group/config-parser.js');
-      const { syncGroup } = await import('../core/group/sync.js');
+      const { syncGroup, formatGroupSyncAmbiguousError } = await import('../core/group/sync.js');
       const { GroupSyncLockError } = await import('../core/group/group-lock.js');
+      const { RegistryAmbiguousTargetError } = await import('../storage/repo-manager.js');
 
       const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
       const config = await loadGroupConfig(groupDir);
@@ -216,12 +232,15 @@ export function registerGroupCommands(program: Command): void {
       try {
         result = await syncGroup(config, {
           groupDir,
-          allowStale: Boolean(opts.allowStale),
           verbose: Boolean(opts.verbose),
-          skipEmbeddings: Boolean(opts.skipEmbeddings),
           exactOnly: Boolean(opts.exactOnly),
         });
       } catch (err) {
+        if (err instanceof RegistryAmbiguousTargetError) {
+          logger.error(`⚠️ Did not sync group "${name}": ${formatGroupSyncAmbiguousError(err)}`);
+          process.exitCode = 1;
+          return;
+        }
         // A sync that could not take the group's lock did NOT run and wrote
         // nothing (R9 fails closed). That is an operator-actionable outcome, not
         // a crash, so report it as a failed command rather than letting it
@@ -257,10 +276,40 @@ export function registerGroupCommands(program: Command): void {
               `\n     Index them with \`gitnexus analyze\`, or remove them from group.yaml.`,
           );
         }
-        console.log(`\nMatching cascade:`);
-        const exactLinks = result.crossLinks.filter((l) => l.matchType === 'exact');
-        console.log(`  exact:     ${exactLinks.length} cross-links (confidence 1.0)`);
-        console.log(`  unmatched: ${result.unmatched.length} contracts`);
+        // Every stage that produced a link, not just `exact`. This used to print
+        // `Matching cascade:` and then count `exact` alone, while the `Wrote
+        // contracts.json (…)` line below reports `result.crossLinks.length` —
+        // which also includes `manifest` and `wildcard` links. For any group with
+        // those, the two numbers disagreed with nothing on screen explaining why.
+        // Summing the stages here makes them reconcile by construction.
+        console.log(`\nMatching:`);
+        // Exhaustive by construction, same idiom as OUTCOME_LINE below: adding a
+        // MatchType fails the build here instead of silently going uncounted and
+        // reopening the very mismatch this replaced. Every stage prints even at
+        // zero — a stage that is absent reads as "did not apply", not "found none".
+        const STAGE_COUNTS: Record<MatchType, number> = {
+          exact: 0,
+          manifest: 0,
+          wildcard: 0,
+        };
+        for (const link of result.crossLinks) STAGE_COUNTS[link.matchType] += 1;
+        // A stage the sync was told to skip is reported as skipped, not as a
+        // zero count. The two are different facts — "ran, matched nothing" and
+        // "never ran" — and printing both as `0` is the same conflation this
+        // block replaced. Driven by what the sync did (`suppressedMatchStages`)
+        // rather than by what the caller asked for, so it stays correct on the
+        // outcomes where the run ended without writing a registry.
+        for (const stage of Object.keys(STAGE_COUNTS) as MatchType[]) {
+          const count = STAGE_COUNTS[stage];
+          const label = `${stage}:`.padEnd(10);
+          if (result.suppressedMatchStages.includes(stage)) {
+            console.log(`  ${label} skipped (--exact-only)`);
+            continue;
+          }
+          const confidence = stage === 'exact' ? ' (confidence 1.0)' : '';
+          console.log(`  ${label} ${count} cross-links${confidence}`);
+        }
+        console.log(`  ${'unmatched:'.padEnd(10)} ${result.unmatched.length} contracts`);
         // Driven by what actually happened to the file. This line used to be
         // unconditional, so a run that deliberately preserved the previous
         // registry still announced `Wrote contracts.json (0 contracts, 0
@@ -391,11 +440,28 @@ export function registerGroupCommands(program: Command): void {
             // repos — reporting it as crossings understates a fan-out cap the
             // same way #2787's totals did.
             const dropped = (raw as { truncatedRepos?: string[] })?.truncatedRepos ?? [];
-            console.log(
-              dropped.length > 0
-                ? `  risk is a LOWER BOUND — fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
-                : '  risk is a LOWER BOUND — the local impact walk did not complete (every bridge crossing was traversed)',
-            );
+            const reason = (raw as { truncationReason?: string })?.truncationReason;
+            // Keyed on the REASON, not on which incidental fact happens to be
+            // non-empty. `truncatedRepos` is populated for a structural gap too
+            // — the bridge's incomplete repos are unioned into it even when ZERO
+            // crossings were attempted — so branching on its length first
+            // reported "fan-out stopped early" for a run where nothing stopped
+            // early, and omitted the only remedy that works. Same false-cause
+            // shape the contract listing was just re-gated for, one command over.
+            const floorReason = (): string => {
+              if (reason === 'suppressed-stage') {
+                return 'the last sync skipped a matching stage (--exact-only); re-run `gitnexus group sync` without it for the complete graph';
+              }
+              if (reason === 'incomplete-sync') {
+                return dropped.length > 0
+                  ? `the last sync could not account for ${dropped.join(', ')}; their contracts are absent from every query against this bridge — re-run \`gitnexus group sync\``
+                  : 'the last sync could not say which repos it read — re-run `gitnexus group sync`';
+              }
+              return dropped.length > 0
+                ? `fan-out stopped early; crossings to ${dropped.length} repo(s) not traversed: ${dropped.join(', ')}`
+                : 'the local impact walk did not complete (every bridge crossing was traversed)';
+            };
+            console.log(`  risk is a LOWER BOUND — ${floorReason()}`);
           }
         }
       } finally {
@@ -480,7 +546,15 @@ export function registerGroupCommands(program: Command): void {
           return;
         }
 
-        const { contracts, crossLinks, truncated, unreadableRepos, missingRepos } = raw as {
+        const {
+          contracts,
+          crossLinks,
+          truncated,
+          unreadableRepos,
+          missingRepos,
+          suppressedMatchStages,
+          truncationReason,
+        } = raw as {
           contracts: Array<{
             role: string;
             contractId: string;
@@ -495,6 +569,8 @@ export function registerGroupCommands(program: Command): void {
             contractId: string;
           }>;
           truncated?: boolean;
+          suppressedMatchStages?: string[];
+          truncationReason?: string;
           unreadableRepos?: string[];
           missingRepos?: string[];
         };
@@ -518,7 +594,27 @@ export function registerGroupCommands(program: Command): void {
               `  ${l.from.repo} -> ${l.to.repo}  [${l.matchType}, conf=${l.confidence}]  ${l.contractId}`,
             );
           }
-          if (truncated) {
+          // Separate from `truncated` below, and deliberately so: that one means
+          // the sync could not read something and the remedy is to fix the repo.
+          // This one means the sync was ASKED to skip a stage, and the remedy is
+          // to re-run without the flag. A listing narrowed on purpose is still
+          // narrowed, and without this the human view showed nothing at all.
+          if (suppressedMatchStages && suppressedMatchStages.length > 0) {
+            console.log(
+              `\n⚠️ This listing is a lower bound: the last sync skipped ${suppressedMatchStages.join(', ')} matching` +
+                `\n   (--exact-only), so cross-links that stage would have found are absent.` +
+                `\n   Re-run \`gitnexus group sync\` without --exact-only for the complete set.`,
+            );
+          }
+          // Gated on the REASON, not just the flag. A suppressed stage sets
+          // `truncated` with both repo lists empty, which sent this block down
+          // its else-branch and printed "the last sync did not record which
+          // repos it could read" — a false statement, with the wrong remedy,
+          // about a sync that recorded them fine. The suppressed-stage warning
+          // above already said the true thing. When a repo gap co-occurs the
+          // reason is 'incomplete-sync' (the repo side takes precedence in
+          // `crossRepoCompleteness`), so this block still runs for it.
+          if (truncated && truncationReason !== 'suppressed-stage') {
             // Counts above are a floor, not a census. Name the repos when the
             // registry recorded them, and say so plainly when it did not — a
             // listing that cannot say what it is missing is still incomplete.

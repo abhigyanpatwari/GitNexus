@@ -66,10 +66,14 @@ vi.mock('../../../src/core/lbug/pool-adapter.js', () => ({
   getMaxResidentRepos: vi.fn(() => 5),
 }));
 
-vi.mock('../../../src/storage/repo-manager.js', () => ({
-  readRegistry: (...args: unknown[]) => readRegistryLenientMock(...args),
-  readRegistryStrict: (...args: unknown[]) => readRegistryStrictMock(...args),
-}));
+vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    readRegistry: (...args: unknown[]) => readRegistryLenientMock(...args),
+    readRegistryStrict: (...args: unknown[]) => readRegistryStrictMock(...args),
+  };
+});
 
 /**
  * Armed by the bridge-write-failure suite at the bottom of this file, `null`
@@ -169,12 +173,10 @@ const makeConfig = (repos: Record<string, string>): GroupConfig => ({
     grpc: false,
     thrift: false,
     topics: false,
-    shared_libs: false,
-    embedding_fallback: false,
     includes: false,
     workspace_deps: false,
   },
-  matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+  matching: {},
 });
 
 /**
@@ -329,6 +331,55 @@ describe('syncGroup with an unreadable index', () => {
     // ...but the diagnostic describing THIS run is refreshed, which is what
     // makes `gitnexus group status` able to explain the failure afterwards.
     expect(onDisk.unreadableRepos).toEqual(['app/backend']);
+  });
+
+  it('keeps the prior suppressedMatchStages instead of stamping this run request', async () => {
+    // The preserved registry describes an EARLIER sync. If this run's request
+    // were stamped onto it, a graph narrowed by `--exact-only` would be
+    // relabelled complete the moment a later plain sync failed to read
+    // anything — and `group_impact` reads exactly that field to decide whether
+    // its answer is a floor.
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+
+    const contractsPath = path.join(groupDir, 'contracts.json');
+    fs.writeFileSync(
+      contractsPath,
+      JSON.stringify({ ...PRIOR_REGISTRY, suppressedMatchStages: ['wildcard'] }),
+    );
+
+    // This run asks for NO suppression, and fails to read anything.
+    const result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+
+    expect(result.registryOutcome).toBe('preserved');
+    // The result describes THIS run — it really did suppress nothing.
+    expect(result.suppressedMatchStages).toEqual([]);
+
+    const onDisk = JSON.parse(fs.readFileSync(contractsPath, 'utf8')) as Record<string, unknown>;
+    // The file still describes the sync that produced its contracts.
+    expect(onDisk.suppressedMatchStages).toEqual(['wildcard']);
+  });
+
+  it('does not stamp this run request onto the preserved bridge metadata', async () => {
+    // Same property one artifact over. `bridge.lbug` is untouched on this path,
+    // so its meta.json must keep describing the sync that built it; otherwise
+    // contracts.json, meta.json and the database describe three different runs.
+    initLbugMock.mockRejectedValue(new Error(LBUG_VERSION_ERROR));
+
+    fs.writeFileSync(path.join(groupDir, 'contracts.json'), JSON.stringify(PRIOR_REGISTRY));
+    await writeBridgeMeta(groupDir, {
+      version: 1,
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      missingRepos: [],
+      unreadableRepos: [],
+      suppressedMatchStages: ['wildcard'],
+    });
+
+    await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), { groupDir });
+
+    const meta = await readBridgeMeta(groupDir);
+    expect(meta.suppressedMatchStages).toEqual(['wildcard']);
+    // ...while the diagnostics describing THIS run are refreshed, as before.
+    expect(meta.unreadableRepos).toEqual(['app/backend']);
   });
 
   it('writes nothing at all when there is no previous registry to preserve', async () => {
@@ -922,6 +973,57 @@ describe('the warning after a failed bridge write', () => {
   /** The bridge-failure warning is the only record carrying `groupDir`. */
   const bridgeWarning = (cap: ReturnType<typeof _captureLogger>) =>
     cap.records().find((r) => r.level === 40 && typeof r.groupDir === 'string');
+
+  it('withdraws the old bridge provenance when the registry advanced but the bridge write failed', async () => {
+    // The split-brain this guards: contracts.json commits, the bridge write
+    // then fails, and the previous database stays in place describing an
+    // EARLIER sync. Left vouching for itself, `group_impact` traverses that
+    // older graph and calls its answer complete while `group_contracts`
+    // reports the new registry — two public surfaces, contradictory claims,
+    // out of one sync. Marking provenance unknown withdraws the completeness
+    // claim without deleting a graph still useful as a floor.
+    // `unreadableRepos` is deliberately UNREADABLE here, not merely empty: that
+    // is what makes `readBridgeMeta` set the reader-only `repoListsUnreadable`
+    // on what it returns, so the assertion below can actually catch a
+    // read-modify-write writer round-tripping it back to disk. Seeded with a
+    // valid list the check passes whether or not the strip exists.
+    fs.writeFileSync(
+      path.join(groupDir, 'meta.json'),
+      JSON.stringify({
+        version: 1,
+        generatedAt: '2026-01-01T00:00:00.000Z',
+        missingRepos: [],
+        unreadableRepos: 'not-a-list',
+      }),
+    );
+    expect((await readBridgeMeta(groupDir)).repoListsUnreadable).toBe(true);
+    expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBeUndefined();
+
+    writeBridgeFailure = new Error('ENOSPC: no space left on device');
+    await runSync();
+
+    expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBe(true);
+
+    // ...and the withdrawal must not persist the reader-only fields.
+    // `readBridgeMeta` sets both on what it returns, so a read-modify-write
+    // writer round-trips them unless the write boundary strips them.
+    // `pairedWithDatabase` is the poisonous one: persisted, it would tell every
+    // later reader the pair was verified when nothing verified it.
+    const raw = JSON.parse(fs.readFileSync(path.join(groupDir, 'meta.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(raw).not.toHaveProperty('pairedWithDatabase');
+    expect(raw).not.toHaveProperty('repoListsUnreadable');
+  });
+
+  // control: a sync whose bridge write SUCCEEDS must not withdraw provenance —
+  // otherwise every healthy sync would report its own answers as a floor.
+  it('control: a successful bridge write leaves provenance intact', async () => {
+    await runSync();
+
+    expect((await readBridgeMeta(groupDir)).provenanceUnknown).toBeFalsy();
+  });
 
   it('names the registry as intact and does not promise a truncation this branch never reports', async () => {
     writeBridgeFailure = new Error('ENOSPC: no space left on device');

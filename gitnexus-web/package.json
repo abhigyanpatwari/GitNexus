@@ -46,28 +46,28 @@
     "pandemonium": "^2.4.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.8",
-    "react-i18next": "^17.0.11",
+    "react-i18next": "^17.0.12",
     "react-markdown": "^10.1.0",
     "react-syntax-highlighter": "^16.1.1",
     "react-zoom-pan-pinch": "^4.0.3",
     "remark-gfm": "^4.0.1",
     "sigma": "^3.0.3",
     "tailwindcss": "^4.3.3",
-    "uuid": "^14.0.1",
+    "uuid": "^14.0.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@babel/types": "^8.0.4",
     "@playwright/test": "^1.62.0",
-    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
-    "@testing-library/user-event": "^14.6.1",
+    "@testing-library/user-event": "^14.6.6",
     "@types/dompurify": "^3.2.0",
     "@types/node": "^26.0.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.4",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@vercel/node": "^5.9.9",
+    "@vercel/node": "^5.10.2",
     "@vitejs/plugin-react": "^6.0.5",
     "@vitest/coverage-v8": "^4.1.9",
     "jsdom": "^29.1.1",
@@ -83,7 +83,7 @@
     },
     "@vercel/node": {
       "path-to-regexp": "6.3.0",
-      "undici": "6.24.0"
+      "undici": "6.28.0"
     },
     "@vercel/python-analysis": {
       "minimatch": "10.2.3",

@@ -6,9 +6,9 @@
  * replaced, produce a smaller KnowledgeGraph that contains:
  *
  *   - Every node whose `properties.filePath` is in `toWriteSet`.
- *   - Every graph-wide node (Community, Process, and Spring metadata
- *     placeholders) — these are regenerated each run and must be fully
- *     rewritten.
+ *   - Graph-wide Community/Process nodes unless `includeDerivedGraphWide`
+ *     is false (#3016 incremental preserve). Spring metadata placeholders
+ *     are always included.
  *   - Every relationship where AT LEAST ONE endpoint is in the writable
  *     set above. Relationships entirely between unchanged-file nodes
  *     are skipped — their rows are still in the DB and re-inserting
@@ -122,13 +122,18 @@ const indexNodeFilePaths = (fullGraph: KnowledgeGraph): Map<string, string> => {
 export const extractChangedSubgraph = (
   fullGraph: KnowledgeGraph,
   toWriteSet: ReadonlySet<string>,
+  options?: { includeDerivedGraphWide?: boolean },
 ): KnowledgeGraph => {
   const sub = createKnowledgeGraph();
   const writableNodeIds = new Set<string>();
 
+  const includeDerivedGraphWide = options?.includeDerivedGraphWide !== false;
+
   fullGraph.forEachNode((n: GraphNode) => {
     const filePath = n.properties?.filePath as string | undefined;
-    const include = (filePath && toWriteSet.has(filePath)) || isGraphWideNode(n);
+    const derivedWide =
+      includeDerivedGraphWide || (n.label !== 'Community' && n.label !== 'Process');
+    const include = (filePath && toWriteSet.has(filePath)) || (isGraphWideNode(n) && derivedWide);
     if (include) {
       sub.addNode(n);
       writableNodeIds.add(n.id);

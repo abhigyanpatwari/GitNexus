@@ -909,7 +909,10 @@ const registerRepoUnlocked = async (
   // falling back to `path.resolve` when the path doesn't exist.
   const canonicalInput = canonicalizePath(repoPath);
 
-  const entries = await readRegistry();
+  // Mutating writes must not treat an unreadable/truncated registry as empty
+  // (#3094): lenient `readRegistry()` returns `[]` on parse failure and would
+  // replace the machine-wide file with only this entry. ENOENT stays empty.
+  const entries = await readRegistryStrict();
   const existingIdx = entries.findIndex((e) => {
     // Canonicalise the STORED entry too so pre-canonicalisation
     // registries (written by older versions, or paths passed in a
@@ -1024,7 +1027,7 @@ const registerRepoUnlocked = async (
   // R9): re-derive THIS run's delta against the FRESHEST snapshot so a
   // concurrent change to the OTHER axis (a branch upsert vs a primary refresh)
   // survives instead of being clobbered by a stale entry-time view.
-  const fresh = await readRegistry();
+  const fresh = await readRegistryStrict();
   const freshIdx = fresh.findIndex((e) => {
     const a = canonicalizePath(e.path);
     return registryPathEquals(a, canonicalInput);
@@ -1470,6 +1473,27 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 };
 
 /**
+ * Name-only registry match (the name tier of {@link resolveRegistryEntry},
+ * without path matching). Used by `group.yaml` member *values*, which are
+ * registry aliases, not filesystem paths.
+ *
+ * Zero matches → `undefined` (caller treats as missing). One match → that
+ * entry. Two or more → {@link RegistryAmbiguousTargetError}.
+ */
+export const findRegistryEntryByName = (
+  entries: RegistryEntry[],
+  name: string,
+): RegistryEntry | undefined => {
+  const targetLower = name.toLowerCase();
+  const nameMatches = entries.filter((e) => e.name.toLowerCase() === targetLower);
+  if (nameMatches.length === 1) return nameMatches[0];
+  if (nameMatches.length > 1) {
+    throw new RegistryAmbiguousTargetError(name, nameMatches);
+  }
+  return undefined;
+};
+
+/**
  * List all registered repos from the global registry.
  *
  * With `validate: true`, prunes only entries whose metadata is *provably* gone
@@ -1582,11 +1606,13 @@ export interface CLIConfig {
     | 'claude'
     | 'codex'
     | 'opencode'
+    | 'grok'
     | 'minimax';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;
   opencodeModel?: string;
+  grokModel?: string;
   /** Azure api-version query param (e.g. '2024-10-21'). Only used when provider is 'azure'. */
   apiVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */

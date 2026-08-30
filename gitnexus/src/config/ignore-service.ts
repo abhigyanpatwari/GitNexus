@@ -3,6 +3,7 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
+import { readRepoControlFile } from './repo-control-file.js';
 import { logger } from '../core/logger.js';
 import { getCoreExcludesFilePath, getGitInfoExcludePath } from '../storage/git.js';
 
@@ -58,13 +59,33 @@ const DEFAULT_IGNORE_LIST = new Set([
   'obj',
   'target', // Java/Rust
   '.next',
+  // `.next` is Next.js's build CACHE; `_next` is the EMITTED output, and the two
+  // are different directories. A Capacitor/Cordova shell copies the emitted
+  // bundle to `<platform>/app/src/main/assets/public/_next/static/…`, where none
+  // of the path segments hit this list — so a mobile-wrapped Next.js app had its
+  // shipped bundle indexed as source, and every Route node it produced pointed at
+  // a webpack chunk rather than code anyone wrote (#3007).
+  //
+  // The name is deliberately unanchored. No `<web-root>/_next` form matches a
+  // root-level `_next/static/…`, which is the shape the reported repo has, so
+  // anchoring it would miss the case it was added for. The accepted cost is a
+  // hand-written directory literally named `_next`; recover one with a bare
+  // `!_next/` line in `.gitnexusignore`.
+  '_next',
   '.nuxt',
   '.output',
   '.vercel',
   '.netlify',
   '.serverless',
   '_build',
-  'public/build',
+  // `'public/build'` used to sit here. This set is tested one path SEGMENT at a
+  // time, and `isHardcodedIgnoredDirectory(name)` takes a bare directory name,
+  // so a slash-containing member could never match either — it was inert. Its
+  // paths were never unignored though: bare `'build'` above already prunes
+  // `public/build/**`, so removing the entry changes no behavior (#3007).
+  // `test/unit/ignore-build-output.test.ts` keeps the next slash-bearing entry
+  // in this set — or in IGNORED_FILES, ROOT_ARTIFACT_DIRECTORIES or
+  // IGNORED_EXTENSIONS — from dying the same way.
   '.parcel-cache',
   '.turbo',
   '.svelte-kit',
@@ -95,7 +116,6 @@ const DEFAULT_IGNORE_LIST = new Set([
   // remains covered by .gitignore/.gitnexusignore and the unambiguous names.
   'monaco-workers', // Monaco editor web-worker bundles generated for browser runtime
   '.terraform',
-  '.serverless',
 
   // Documentation (optional - might want to keep)
   // 'docs',
@@ -382,6 +402,8 @@ export interface IgnoreOptions {
   noGitignore?: boolean;
   /** Skip core.excludesFile and $GIT_COMMON_DIR/info/exclude. Defaults to GITNEXUS_NO_GLOBAL_IGNORE env var. */
   noGlobalIgnore?: boolean;
+  /** Fail repository-control reloads closed so long-lived watchers keep their prior predicate. */
+  strictRepoControlFiles?: boolean;
 }
 
 export const loadIgnoreRules = async (
@@ -423,18 +445,54 @@ export const loadIgnoreRules = async (
 
   for (const filename of filenames) {
     try {
-      const content = await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      const content = options?.strictRepoControlFiles
+        ? await readRepoControlFile(repoPath, filename)
+        : await fs.readFile(nodePath.join(repoPath, filename), 'utf-8');
+      if (content === null) continue;
       ig.add(content);
       hasRules = true;
     } catch (err: unknown) {
       const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT') {
-        logger.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
-      }
+      if (!options?.strictRepoControlFiles && code === 'ENOENT') continue;
+      if (options?.strictRepoControlFiles) throw err;
+      logger.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
     }
   }
 
   return hasRules ? ig : null;
+};
+
+/**
+ * Build a synchronous predicate for long-lived filesystem watchers.
+ *
+ * Unlike {@link createIgnoreFilter}, callers pass ordinary absolute or
+ * repository-relative paths instead of path-scurry `Path` objects. The rule
+ * precedence deliberately mirrors the scanner: explicit negations win over
+ * hardcoded defaults unless a more-specific rule re-ignores the path.
+ */
+export const createWatchIgnorePredicate = async (
+  repoPath: string,
+  options?: IgnoreOptions,
+): Promise<(candidatePath: string, isDirectory?: boolean) => boolean> => {
+  const ig = await loadIgnoreRules(repoPath, { ...options, strictRepoControlFiles: true });
+  const repoRoot = nodePath.resolve(repoPath);
+
+  return (candidatePath: string, isDirectory = false): boolean => {
+    const absolute = nodePath.isAbsolute(candidatePath)
+      ? nodePath.resolve(candidatePath)
+      : nodePath.resolve(repoRoot, candidatePath);
+    const rel = nodePath.relative(repoRoot, absolute).replace(/\\/g, '/');
+    if (!rel) return false;
+    if (rel === '..' || rel.startsWith('../') || nodePath.isAbsolute(rel)) return true;
+
+    if (ig && hasExplicitUnignore(ig, rel) && !ig.ignores(isDirectory ? `${rel}/` : rel)) {
+      return false;
+    }
+
+    if (ig && ig.ignores(isDirectory ? `${rel}/` : rel)) return true;
+    if (isDirectory && isHardcodedIgnoredDirectoryAtPath(repoRoot, absolute)) return true;
+    return shouldIgnorePath(rel);
+  };
 };
 
 /**

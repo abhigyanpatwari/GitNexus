@@ -359,6 +359,52 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('--repair-fts applies analyze --name without a full re-index', async () => {
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-name-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-repair-name-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      const seeded: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'abc123',
+        indexedAt: new Date().toISOString(),
+        stats: { files: 1, nodes: 1, edges: 1 },
+      };
+      await saveMeta(storagePath, seeded);
+      const { registerRepo, readRegistry } = await import('../../src/storage/repo-manager.js');
+      await registerRepo(tmpRepo.dbPath, seeded, { name: 'old' });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true, registryName: 'new' },
+        { onProgress: () => {} },
+      );
+      expect(result.ftsRepairedOnly).toBe(true);
+      expect((await readRegistry())[0].name).toBe('new');
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('--repair-fts backfills a full capabilities object when the existing meta predates the field entirely (#2767)', async () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
@@ -1516,6 +1562,8 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
         totalFileCount: 1,
+        scopeExtractionFailures: [],
+        unavailableScopeLanguageFiles: 0,
         graph: {
           forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
           getNode: (id: string) => (id === GATE_NODE_ID ? stubNode : undefined),
@@ -2122,6 +2170,8 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
         totalFileCount: 1,
+        scopeExtractionFailures: [],
+        unavailableScopeLanguageFiles: 0,
         graph: {
           forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
           getNode: (id: string) => (id === RESILIENCE_NODE_ID ? stubNode : undefined),

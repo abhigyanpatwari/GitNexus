@@ -363,6 +363,7 @@ interface RespawnExit {
   stdout?: string;
   stderr?: string;
   message?: string;
+  forwardedSignal?: NodeJS.Signals;
 }
 
 const appendOutputTail = (tail: string, chunk: unknown): string => {
@@ -395,17 +396,28 @@ const runRespawnedAnalyze = (
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const finish = (exit: RespawnExit): void => {
-      if (settled) return;
-      settled = true;
-      resolve(exit);
-    };
-
+    let forwardedSignal: NodeJS.Signals | undefined;
     const child = spawn(process.execPath, [...args], {
       stdio: ['inherit', 'pipe', 'pipe'],
       windowsHide: true,
       env,
     });
+    const forwardSignal = (signal: NodeJS.Signals): void => {
+      forwardedSignal ??= signal;
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    };
+    const forwardSigint = () => forwardSignal('SIGINT');
+    const forwardSigterm = () => forwardSignal('SIGTERM');
+    const finish = (exit: RespawnExit): void => {
+      if (settled) return;
+      settled = true;
+      process.removeListener('SIGINT', forwardSigint);
+      process.removeListener('SIGTERM', forwardSigterm);
+      resolve({ ...exit, forwardedSignal });
+    };
+
+    process.once('SIGINT', forwardSigint);
+    process.once('SIGTERM', forwardSigterm);
 
     child.stdout?.on('data', (chunk) => {
       stdout = appendOutputTail(stdout, chunk);
@@ -548,7 +560,16 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *    tooling), not a deliberate per-run choice: warn and respawn with the
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify. */
-async function ensureHeap(): Promise<boolean> {
+export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
+  if (cleanTermination) return 0;
+  if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGTERM') return 143;
+  return 1;
+}
+
+export async function ensureHeap(
+  options: { cleanForwardedTermination?: boolean } = {},
+): Promise<boolean> {
   // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
   // override and the default v8-limit respawn — and is honored SILENTLY:
   // the operator already made the call, and stderr-sensitive consumers
@@ -590,6 +611,13 @@ async function ensureHeap(): Promise<boolean> {
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  if (childExit.forwardedSignal !== undefined) {
+    process.exitCode = forwardedSignalExitCode(
+      childExit.forwardedSignal,
+      options.cleanForwardedTermination === true,
+    );
+    return true;
+  }
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
       cliError(
@@ -739,6 +767,19 @@ export const analyzeCommandWithRunnerIdentity = async (
   inputPath?: string,
   options?: AnalyzeOptions,
 ): Promise<void> => analyzeCommand(inputPath, options, runnerIdentityAtBootstrap);
+
+export async function analyzeOrWatchCommandWithRunnerIdentity(
+  runnerIdentityAtBootstrap: AnalyzerRunnerIdentity,
+  inputPath?: string,
+  options: AnalyzeOptions = {},
+): Promise<void> {
+  if (options.watch) {
+    const { watchCommandWithRunnerIdentity } = await import('./watch.js');
+    await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+    return;
+  }
+  await analyzeCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+}
 
 const analyzeCommandImpl = async (
   inputPath?: string,
@@ -1395,6 +1436,9 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (runOptions.registryName) {
+        console.log(`  Registry name: ${result.repoName}\n`);
+      }
       if (baseRefRefreshed.length > 0) {
         console.log(
           `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,

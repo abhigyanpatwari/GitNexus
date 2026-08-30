@@ -334,6 +334,38 @@ describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771
     expect(filter.childrenIgnored(mkPath('Env'))).toBe(false);
   });
 
+  // `_next` has to prune the DIRECTORY, not merely reject each file underneath.
+  // Every measured benefit of ignoring it comes from never enumerating the
+  // bundle tree, and no file list can show the difference — anything under
+  // `_next` is rejected either way. `childrenIgnored` is the only observation
+  // that distinguishes them, so a refactor that moved `_next` to a
+  // `shouldIgnorePath`-only rule would keep the build-output suite green while
+  // silently restoring the full walk.
+  it('prunes emitted _next output as a directory, at any depth', async () => {
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(mkPath('_next'))).toBe(true);
+    expect(filter.childrenIgnored(mkPath('android/app/src/main/assets/public/_next'))).toBe(true);
+  });
+
+  it('matches _next as a whole segment, so _nextgen source is still walked', async () => {
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(mkPath('src/_nextgen'))).toBe(false);
+    expect(filter.childrenIgnored(mkPath('packages/my_next'))).toBe(false);
+  });
+
+  it('`!_next/` negation unlocks the emitted output directory at any depth', async () => {
+    // The bare form is the one that works. `!_next/**` alone is a silent no-op:
+    // `childrenIgnored` prunes the directory before any descendant pattern is
+    // ever tested, so no file underneath reaches `ignored`.
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!_next/\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.childrenIgnored(mkPath('_next'))).toBe(false);
+    expect(filter.childrenIgnored(mkPath('android/app/src/main/assets/public/_next'))).toBe(false);
+  });
+
   it('prunes a nested env directory only when pyvenv.cfg identifies a virtual environment', async () => {
     await fs.mkdir(path.join(tmpDir, 'backend', 'env'), { recursive: true });
     await fs.writeFile(path.join(tmpDir, 'backend', 'env', 'pyvenv.cfg'), 'home = python\n');

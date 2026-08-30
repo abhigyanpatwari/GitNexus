@@ -112,7 +112,11 @@ export function getResourceTemplates(): ResourceTemplate[] {
         'three-state, and an ABSENT key is not an empty one: absent means the last sync never ' +
         'recorded which repos it could read (provenance unknown — treat cross-repo answers for ' +
         'this group as a floor), an empty list means the sync measured none, and a populated list ' +
-        'names the repos whose contracts are missing from the registry.',
+        'names the repos whose contracts are missing from the registry. suppressedMatchStages is ' +
+        'three-state the same way: absent is a registry predating the field, an empty list means ' +
+        'the sync skipped no matching stage, and a populated list names stages it was ASKED to ' +
+        'skip — those cross-link counts are a lower bound by request, and the remedy is to re-sync ' +
+        'without that flag rather than to repair a repo.',
       mimeType: 'text/yaml',
     },
   ];
@@ -309,7 +313,10 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
 
   if (repos.length > 1) {
     lines.push('');
-    lines.push('# Multiple repos indexed. Use repo parameter in tool calls:');
+    lines.push(
+      '# Multiple repos indexed. Read-only tools may omit repo when an MCP default is configured or GitNexus process.cwd() is inside one listed path without crossing an unindexed nested Git checkout.',
+    );
+    lines.push('# Otherwise—and for mutating tools without an MCP default—pass repo explicitly:');
     lines.push(`# query({search_query: "auth", repo: "${repos[0].name}"})`);
   }
 
