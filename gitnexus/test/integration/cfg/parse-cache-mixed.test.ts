@@ -77,7 +77,7 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
     // mixed-mode run)…
     persistDurableParsedFileShardSync(durableDir, chunkHash, 7, 0, files.map(mkParsedFile));
     const wanted = new Set(files);
-    expect(await durableChunkHasShards(durableDir, tempDir, chunkHash, wanted)).toBe(true);
+    expect(await durableChunkHasShards(tempDir, chunkHash, wanted)).toBe(true);
     const loaded = await loadParsedFilesForPaths(tempDir, wanted);
     expect(loaded.size).toBe(2);
     for (const filePath of files) {
@@ -106,7 +106,7 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
       mkParsedFile('src/same2.ts'),
     ]);
     const wanted = new Set(['src/same1.ts', 'src/same2.ts']);
-    expect(await durableChunkHasShards(durableDir, tempDir, chunkHash, wanted)).toBe(true);
+    expect(await durableChunkHasShards(tempDir, chunkHash, wanted)).toBe(true);
     const loaded = await loadParsedFilesForPaths(tempDir, wanted);
     const c1 = (loaded.get('src/same1.ts') as { cfgSideChannel?: FunctionCfg[] }).cfgSideChannel;
     const c2 = (loaded.get('src/same2.ts') as { cfgSideChannel?: FunctionCfg[] }).cfgSideChannel;

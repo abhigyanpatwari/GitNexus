@@ -237,11 +237,6 @@ export const persistParsedFileShardSync = (
   );
 };
 
-export type ParsedFileLoadSource = {
-  durableDir?: string;
-  durableKeys?: ReadonlySet<string>;
-};
-
 const listV8Shards = async (dir: string): Promise<string[]> => {
   try {
     return (await fs.readdir(dir)).filter(isV8ShardName).map((name) => path.join(dir, name));
@@ -253,17 +248,10 @@ const listV8Shards = async (dir: string): Promise<string[]> => {
 export const loadParsedFilesForPaths = async (
   storagePath: string,
   wantPaths: ReadonlySet<string>,
-  source?: ParsedFileLoadSource,
 ): Promise<Map<string, ParsedFile>> => {
   const out = new Map<string, ParsedFile>();
   if (wantPaths.size === 0) return out;
-  const shardPaths: string[] = [];
-  if (source?.durableDir && source.durableKeys && source.durableKeys.size > 0) {
-    for (const key of source.durableKeys) {
-      shardPaths.push(...(await listV8Shards(path.join(source.durableDir, key))));
-    }
-  }
-  shardPaths.push(...(await listV8Shards(getParsedFileStoreDir(storagePath))));
+  const shardPaths = await listV8Shards(getParsedFileStoreDir(storagePath));
   const pool = new Map<string, string>();
   let droppedSites = 0;
   let filesWithDroppedSites = 0;
@@ -610,12 +598,11 @@ export const persistDurableParsedFileShardSync = (
  * before returning pins the inodes against concurrent branch-cache rotation.
  */
 export const durableChunkHasShards = async (
-  durableDir: string,
   runStoragePath: string,
   chunkHash: string,
   expectedPaths: ReadonlySet<string>,
 ): Promise<boolean> => {
-  const sourceDir = durableChunkDir(durableDir, chunkHash);
+  const sourceDir = durableChunkDir(getDurableParsedFileDir(runStoragePath), chunkHash);
   const shards = await listV8Shards(sourceDir);
   if (shards.length === 0 || expectedPaths.size === 0) return false;
 
@@ -649,12 +636,7 @@ export const durableChunkHasShards = async (
     }
   }
 
-  if (
-    covered.size !== expectedPaths.size ||
-    [...expectedPaths].some((filePath) => !covered.has(filePath))
-  ) {
-    return rollback();
-  }
+  if (covered.size !== expectedPaths.size) return rollback();
   return true;
 };
 
@@ -664,13 +646,8 @@ export const loadDurableParsedFileIndex = async (
 ): Promise<Map<string, ReadonlySet<string>>> => {
   try {
     const raw = await fs.readFile(path.join(durableDir, DURABLE_INDEX_FILENAME), 'utf-8');
-    const idx = JSON.parse(raw) as DurableParsedFileIndex;
-    if (
-      idx?.version !== expectedVersion ||
-      idx.entries === null ||
-      typeof idx.entries !== 'object' ||
-      Array.isArray(idx.entries)
-    ) {
+    const idx: unknown = JSON.parse(raw);
+    if (!isRecord(idx) || idx.version !== expectedVersion || !isRecord(idx.entries)) {
       return new Map();
     }
     const entries = new Map<string, ReadonlySet<string>>();

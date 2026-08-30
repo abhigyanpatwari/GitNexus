@@ -739,9 +739,9 @@ export async function runChunkedParseAndResolve(
   // a sibling of the run-scoped store, NOT cleared per run. Workers write a
   // shard per chunk hash; on a warm parse-cache hit we restore the chunk's
   // shards into the run-scoped store so scope-resolution streams them without
-  // re-parsing. `durableHitKeys` is the prior run's index, version-gated by
-  // PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk re-dispatches, which
-  // repopulates the durable store — never the main-thread extract fallback).
+  // re-parsing. `durableHitEntries` is the prior run's path-coverage index,
+  // version-gated by PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk
+  // re-dispatches, which repopulates the durable store).
   const durableParsedFileDir =
     parsedFileStorePath !== undefined ? getDurableParsedFileDir(parsedFileStorePath) : undefined;
   const durableHitEntries =
@@ -1031,12 +1031,7 @@ export async function runChunkedParseAndResolve(
         durableParsedFileDir !== undefined &&
         parsedFileStorePath !== undefined &&
         durableExpectedPaths !== undefined &&
-        (await durableChunkHasShards(
-          durableParsedFileDir,
-          parsedFileStorePath,
-          chunkHash,
-          durableExpectedPaths,
-        ));
+        (await durableChunkHasShards(parsedFileStorePath, chunkHash, durableExpectedPaths));
 
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker

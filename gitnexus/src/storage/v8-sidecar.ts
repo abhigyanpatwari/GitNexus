@@ -183,7 +183,7 @@ const runtimeCompatible = (meta: EnvelopeMeta): boolean =>
 export type V8CacheHit = { kind: 'hit'; value: unknown; bytes: number };
 export type V8CacheSkip = { kind: 'skip'; bytes: number };
 export type V8CacheLoad = V8CacheHit | V8CacheSkip;
-export type V8CacheInspection = { paths: readonly string[]; bytes: number };
+export type V8CacheInspection = { paths: readonly string[] };
 
 const readExact = async (
   fh: Awaited<ReturnType<typeof fs.open>>,
@@ -200,14 +200,15 @@ const readExact = async (
   return buf;
 };
 
-const payloadHashMatches = async (
+const readVerifiedPayload = async (
   fh: Awaited<ReturnType<typeof fs.open>>,
   meta: EnvelopeMeta,
-): Promise<boolean> => {
-  const payload = await readExact(fh, meta.payloadOff, meta.payloadLen);
-  const expected = await readExact(fh, meta.payloadOff + meta.payloadLen, PAYLOAD_HASH_LEN);
-  if (!payload || !expected) return false;
-  return createHash('sha256').update(payload).digest().equals(expected);
+): Promise<Buffer | undefined> => {
+  const payloadAndHash = await readExact(fh, meta.payloadOff, meta.payloadLen + PAYLOAD_HASH_LEN);
+  if (!payloadAndHash) return undefined;
+  const payload = payloadAndHash.subarray(0, meta.payloadLen);
+  const expected = payloadAndHash.subarray(meta.payloadLen);
+  return createHash('sha256').update(payload).digest().equals(expected) ? payload : undefined;
 };
 
 /**
@@ -238,8 +239,8 @@ export const inspectV8Cache = async (filePath: string): Promise<V8CacheInspectio
     if (listed === null || listed.length !== meta.pathCount || listed.length === 0) {
       return undefined;
     }
-    if (!(await payloadHashMatches(fh, meta))) return undefined;
-    return { paths: listed, bytes: st.size };
+    if (!(await readVerifiedPayload(fh, meta))) return undefined;
+    return { paths: listed };
   } catch (err) {
     if (!isEnoent(err)) {
       logger.debug({ err, filePath }, 'v8 cache: inspection failed; treating as miss');
@@ -295,12 +296,8 @@ export const tryLoadV8Cache = async (
       }
     }
 
-    const payload = await readExact(fh, meta.payloadOff, meta.payloadLen);
+    const payload = await readVerifiedPayload(fh, meta);
     if (!payload) return undefined;
-    const expectedHash = await readExact(fh, meta.payloadOff + meta.payloadLen, PAYLOAD_HASH_LEN);
-    if (!expectedHash || !createHash('sha256').update(payload).digest().equals(expectedHash)) {
-      return undefined;
-    }
     const value = v8.deserialize(payload);
     if (internPool) internGraphStrings(value, internPool);
     return { kind: 'hit', value, bytes: st.size };

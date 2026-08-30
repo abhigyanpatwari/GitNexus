@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadParsedFilesForPaths } from '../../src/storage/parsedfile-store.ts';
-import { tryLoadV8Cache } from '../../src/storage/v8-sidecar.ts';
+import { inspectV8Cache } from '../../src/storage/v8-sidecar.ts';
 
 const srcStorage = process.argv[2];
 if (!srcStorage) {
@@ -46,12 +46,10 @@ try {
   const want = new Set();
   let sourceShards = 0;
   for (const name of names) {
-    const loaded = await tryLoadV8Cache(path.join(storeDir, name), new Map());
-    if (loaded?.kind !== 'hit' || !Array.isArray(loaded.value)) continue;
+    const inspected = await inspectV8Cache(path.join(storeDir, name));
+    if (!inspected) continue;
     sourceShards++;
-    for (const pf of loaded.value) {
-      if (pf && typeof pf.filePath === 'string') want.add(pf.filePath);
-    }
+    for (const filePath of inspected.paths) want.add(filePath);
     if (sourceShards >= PATH_SOURCE_SHARDS) break;
   }
   if (want.size === 0) {

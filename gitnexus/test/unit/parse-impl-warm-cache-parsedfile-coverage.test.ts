@@ -71,6 +71,7 @@ import {
   getParsedFileStoreDir,
   prepareDurableParsedFileChunk,
   persistDurableParsedFileShardSync,
+  durableChunkHasShards,
   loadParsedFilesForPaths,
   loadDurableParsedFileIndex,
   pruneAndSaveDurableParsedFileStore,
@@ -111,19 +112,16 @@ describe('durable ParsedFile store — content-addressed warm-cache coverage', (
     // A worker would write this at flush on a cache MISS.
     persistDurableParsedFileShardSync(durableDir, chunkHash, 7, 0, files.map(mkParsedFile));
     await clearParsedFileStore(tempDir);
-    const loaded = await loadParsedFilesForPaths(tempDir, new Set(files), {
-      durableDir,
-      durableKeys: new Set([chunkHash]),
-    });
+    const wanted = new Set(files);
+    expect(await durableChunkHasShards(tempDir, chunkHash, wanted)).toBe(true);
+    const loaded = await loadParsedFilesForPaths(tempDir, wanted);
     expect([...loaded.keys()].sort()).toEqual([...files].sort());
   });
 
   it('durableChunkHasShards is false when the chunk has no durable shards', async () => {
-    const durableDir = getDurableParsedFileDir(tempDir);
-    const { durableChunkHasShards } = await import('../../src/storage/parsedfile-store.js');
-    expect(
-      await durableChunkHasShards(durableDir, tempDir, 'b'.repeat(64), new Set(['missing.ts'])),
-    ).toBe(false);
+    expect(await durableChunkHasShards(tempDir, 'b'.repeat(64), new Set(['missing.ts']))).toBe(
+      false,
+    );
   });
 
   it('prepares a fresh durable generation without retaining old worker shards', async () => {
@@ -141,11 +139,11 @@ describe('durable ParsedFile store — content-addressed warm-cache coverage', (
       .filter((name) => name.endsWith('.v8'))
       .sort();
     expect(shards).toEqual([`${chunkHash}-w1-0.v8`, `${chunkHash}-w2-0.v8`]);
-    const files = await loadParsedFilesForPaths(
-      tempDir,
-      new Set(['old.ts', 'new-a.ts', 'new-b.ts']),
-      { durableDir, durableKeys: new Set([chunkHash]) },
+    const wanted = new Set(['old.ts', 'new-a.ts', 'new-b.ts']);
+    expect(await durableChunkHasShards(tempDir, chunkHash, new Set(['new-a.ts', 'new-b.ts']))).toBe(
+      true,
     );
+    const files = await loadParsedFilesForPaths(tempDir, wanted);
     expect([...files.keys()].sort()).toEqual(['new-a.ts', 'new-b.ts']);
   });
 

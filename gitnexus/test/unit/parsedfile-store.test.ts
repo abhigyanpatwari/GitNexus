@@ -725,7 +725,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
     try {
       const durable = getDurableParsedFileDir(dir);
       persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
-      expect(await durableChunkHasShards(durable, dir, 'abc', new Set(['a.c']))).toBe(true);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c']))).toBe(true);
       await rm(path.join(durable, 'abc'), { recursive: true, force: true });
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       expect(loaded.has('a.c')).toBe(true);
@@ -743,7 +743,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       persistDurableParsedFileShardSync(durable, 'abc', 2, 0, [makeParsedFile('b.c')]);
       await writeFile(path.join(durable, 'abc', 'abc-w2-0.v8'), Buffer.from([0, 1, 2]));
 
-      expect(await durableChunkHasShards(durable, dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
       expect(await readdir(getParsedFileStoreDir(dir))).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -756,7 +756,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       const durable = getDurableParsedFileDir(dir);
       persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
 
-      expect(await durableChunkHasShards(durable, dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
       expect(await readdir(getParsedFileStoreDir(dir))).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -768,12 +768,10 @@ describe('parsedfile-store receiverChain sanitation', () => {
     try {
       const durable = getDurableParsedFileDir(dir);
       persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c']))).toBe(true);
       persistParsedFileShardSync(dir, 'w1-0', [makeParsedFile('other.c')]);
       persistParsedFileShardSync(dir, 'w1-1', [makeStoreEntry('a.c', { moduleScope: 'from-run' })]);
-      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'other.c']), {
-        durableDir: durable,
-        durableKeys: new Set(['abc']),
-      });
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'other.c']));
       expect(loaded.get('a.c')?.moduleScope).toBe('from-run');
       expect(loaded.has('other.c')).toBe(true);
     } finally {
@@ -791,14 +789,8 @@ describe('parsedfile-store receiverChain sanitation', () => {
       persistParsedFileShardSync(dir, 'w1-0', [makeParsedFile('run.c')]);
       await clearParsedFileStore(dir);
       expect(await readFile(src)).toEqual(before);
-      expect(
-        (
-          await loadParsedFilesForPaths(dir, new Set(['a.c']), {
-            durableDir: durable,
-            durableKeys: new Set(['abc']),
-          })
-        ).has('a.c'),
-      ).toBe(true);
+      expect(await durableChunkHasShards(dir, 'abc', new Set(['a.c']))).toBe(true);
+      expect((await loadParsedFilesForPaths(dir, new Set(['a.c']))).has('a.c')).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
