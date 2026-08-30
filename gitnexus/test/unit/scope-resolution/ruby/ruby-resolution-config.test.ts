@@ -20,7 +20,7 @@ function makeRepo(): string {
 }
 
 describe('Ruby dependency resolution config (#2966)', () => {
-  it('loads literal Gemfile/gemspec dependencies and adjacent locked transitive gems', () => {
+  it('keeps manifest directories separate and records conventional require prefixes', () => {
     const repo = makeRepo();
     writeFileSync(
       join(repo, 'Gemfile'),
@@ -32,15 +32,24 @@ describe('Ruby dependency resolution config (#2966)', () => {
         '\n',
       ),
     );
-    mkdirSync(join(repo, 'packages'));
+    mkdirSync(join(repo, 'packages', 'widget'), { recursive: true });
     writeFileSync(
-      join(repo, 'packages', 'widget.gemspec'),
-      ["spec.add_dependency 'dry-types'", 'spec.add_development_dependency("rspec")'].join('\n'),
+      join(repo, 'packages', 'widget', 'widget.gemspec'),
+      [
+        "spec.name = 'widget'",
+        "spec.require_paths = ['src']",
+        "spec.add_dependency 'dry-types'",
+        'spec.add_development_dependency("rspec")',
+      ].join('\n'),
     );
 
     const config = loadRubyResolutionConfig(repo);
+    const root = config?.scopesByDirectory.get('');
+    const widget = config?.scopesByDirectory.get('packages/widget');
 
-    expect(config?.gemNames).toEqual(new Set(['rails', 'pg', 'dry-types', 'rspec', 'actionpack']));
+    expect(root?.externalRequirePrefixes).toEqual(new Set(['rails', 'pg', 'actionpack']));
+    expect(widget?.externalRequirePrefixes).toEqual(new Set(['dry-types', 'dry/types', 'rspec']));
+    expect(widget?.localLoadRootsByPrefix.get('widget')).toEqual(['packages/widget/src']);
   });
 
   it('fails open when a lockfile exists without a Gemfile or gemspec', () => {
@@ -50,15 +59,10 @@ describe('Ruby dependency resolution config (#2966)', () => {
     expect(loadRubyResolutionConfig(repo)).toBeNull();
   });
 
-  it('threads the config through the resolver without changing local bare or relative resolution', async () => {
+  it('gates external gems without changing local bare, relative, or no-config resolution', async () => {
     const repo = makeRepo();
-    writeFileSync(join(repo, 'Gemfile'), ["gem 'rails'", "gem 'generators'"].join('\n'));
-    const files = new Set([
-      'lib/app/models/user.rb',
-      'lib/generators.rb',
-      'lib/rails/generators.rb',
-      'lib/main.rb',
-    ]);
+    writeFileSync(join(repo, 'Gemfile'), "gem 'rails'\n");
+    const files = new Set(['lib/app/models/user.rb', 'lib/generators.rb', 'lib/main.rb']);
     const config = await rubyScopeResolver.loadResolutionConfig?.(repo);
 
     expect(
@@ -67,9 +71,118 @@ describe('Ruby dependency resolution config (#2966)', () => {
     expect(
       rubyScopeResolver.resolveImportTarget('app/models/user', 'lib/main.rb', files, config),
     ).toBe('lib/app/models/user.rb');
-    expect(resolveRubyImportTarget('generators', 'lib/main.rb', files)).toBe('lib/generators.rb');
+    expect(resolveRubyImportTarget('generators', 'lib/main.rb', files, config)).toBe(
+      'lib/generators.rb',
+    );
     expect(resolveRubyImportTarget('./generators', 'lib/main.rb', files, config)).toBe(
       'lib/generators.rb',
     );
+    expect(resolveRubyImportTarget('rails/generators', 'lib/main.rb', files)).toBe(
+      'lib/generators.rb',
+    );
+  });
+
+  it('gates the conventional slash prefix of a hyphenated gem', () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, 'Gemfile'), "gem 'dry-types'\n");
+    const files = new Set(['lib/types.rb', 'lib/main.rb']);
+    const config = loadRubyResolutionConfig(repo);
+
+    expect(resolveRubyImportTarget('dry/types', 'lib/main.rb', files, config)).toBeNull();
+    expect(resolveRubyImportTarget('dry-types', 'lib/main.rb', files, config)).toBeNull();
+    expect(resolveRubyImportTarget('types', 'lib/main.rb', files, config)).toBe('lib/types.rb');
+  });
+
+  it('resolves a Gemfile path gem through its local load root', () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, 'engines', 'my_engine'), { recursive: true });
+    writeFileSync(join(repo, 'Gemfile'), "gem 'my_engine', path: 'engines/my_engine'\n");
+    writeFileSync(
+      join(repo, 'engines', 'my_engine', 'my_engine.gemspec'),
+      ["spec.name = 'my_engine'", "spec.require_paths = ['lib']"].join('\n'),
+    );
+    const files = new Set([
+      'engines/my_engine/lib/my_engine.rb',
+      'lib/my_engine.rb',
+      'lib/main.rb',
+    ]);
+    const config = loadRubyResolutionConfig(repo);
+
+    expect(resolveRubyImportTarget('my_engine', 'lib/main.rb', files, config)).toBe(
+      'engines/my_engine/lib/my_engine.rb',
+    );
+    expect(config?.scopesByDirectory.get('')?.externalRequirePrefixes).not.toContain('my_engine');
+  });
+
+  it('recognizes the Gemfile hashrocket path syntax as local', () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, 'engines', 'my_engine'), { recursive: true });
+    writeFileSync(join(repo, 'Gemfile'), "gem 'my_engine', :path => 'engines/my_engine'\n");
+    writeFileSync(
+      join(repo, 'engines', 'my_engine', 'my_engine.gemspec'),
+      "spec.name = 'my_engine'\n",
+    );
+    const files = new Set(['engines/my_engine/lib/my_engine.rb', 'lib/main.rb']);
+    const config = loadRubyResolutionConfig(repo);
+
+    expect(resolveRubyImportTarget('my_engine', 'lib/main.rb', files, config)).toBe(
+      'engines/my_engine/lib/my_engine.rb',
+    );
+    expect(config?.scopesByDirectory.get('')?.externalRequirePrefixes).not.toContain('my_engine');
+  });
+
+  it('keeps lockfile PATH specs local while gating GEM specs', () => {
+    const repo = makeRepo();
+    writeFileSync(
+      join(repo, 'mygem.gemspec'),
+      ["spec.name = 'mygem'", "spec.require_paths = ['lib']"].join('\n'),
+    );
+    writeFileSync(
+      join(repo, 'Gemfile.lock'),
+      [
+        'PATH',
+        '  remote: .',
+        '  specs:',
+        '    mygem (1.0.0)',
+        '',
+        'GEM',
+        '  remote: https://rubygems.org/',
+        '  specs:',
+        '    rails (8.0.0)',
+        '',
+        'DEPENDENCIES',
+        '  mygem!',
+        '  rails',
+      ].join('\n'),
+    );
+    const files = new Set(['lib/mygem.rb', 'lib/generators.rb', 'lib/main.rb']);
+    const config = loadRubyResolutionConfig(repo);
+    const root = config?.scopesByDirectory.get('');
+
+    expect(resolveRubyImportTarget('mygem', 'lib/main.rb', files, config)).toBe('lib/mygem.rb');
+    expect(resolveRubyImportTarget('rails/generators', 'lib/main.rb', files, config)).toBeNull();
+    expect(root?.externalRequirePrefixes).toContain('rails');
+    expect(root?.externalRequirePrefixes).not.toContain('mygem');
+  });
+
+  it('uses the nearest manifest instead of a repository-wide monorepo union', () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, 'packages', 'a'), { recursive: true });
+    mkdirSync(join(repo, 'packages', 'b'), { recursive: true });
+    writeFileSync(join(repo, 'packages', 'a', 'Gemfile'), "gem 'rails'\n");
+    writeFileSync(join(repo, 'packages', 'b', 'Gemfile'), "source 'https://rubygems.org'\n");
+    const files = new Set([
+      'packages/a/lib/main.rb',
+      'packages/b/lib/main.rb',
+      'packages/b/lib/rails/generators.rb',
+    ]);
+    const config = loadRubyResolutionConfig(repo);
+
+    expect(
+      resolveRubyImportTarget('rails/generators', 'packages/a/lib/main.rb', files, config),
+    ).toBeNull();
+    expect(
+      resolveRubyImportTarget('rails/generators', 'packages/b/lib/main.rb', files, config),
+    ).toBe('packages/b/lib/rails/generators.rb');
   });
 });

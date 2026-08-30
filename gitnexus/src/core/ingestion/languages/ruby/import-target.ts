@@ -10,7 +10,11 @@
 import { resolveRubyImportInternal } from '../../import-resolvers/ruby.js';
 import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
 import { isHeritageMarker } from '../../utils/heritage-marker.js';
-import type { RubyResolutionConfig } from './resolution-config.js';
+import {
+  findRubyResolutionScope,
+  type RubyResolutionConfig,
+  type RubyResolutionScope,
+} from './resolution-config.js';
 
 export interface RubyResolveContext {
   readonly fromFile: string;
@@ -52,10 +56,15 @@ export function resolveRubyImportTarget(
     return resolved;
   }
 
-  // ── require: bare/gem-style suffix matching ─────────────────────────
-  const gemNames = (resolutionConfig as RubyResolutionConfig | undefined)?.gemNames;
-  const firstSegment = targetRaw.split('/', 1)[0];
-  if (gemNames?.has(firstSegment)) return null;
+  // ── require: scoped gem evidence before repository-wide fallback ────
+  const config = resolutionConfig as RubyResolutionConfig | null | undefined;
+  const scope =
+    config === null || config === undefined ? undefined : findRubyResolutionScope(config, fromFile);
+  if (scope !== undefined) {
+    const localGemTarget = resolveLocalGemTarget(targetRaw, scope, allFilePaths);
+    if (localGemTarget !== null) return localGemTarget;
+    if (matchesRequirePrefix(targetRaw, scope.externalRequirePrefixes)) return null;
+  }
 
   return resolveBare(targetRaw, allFilePaths);
 }
@@ -97,6 +106,47 @@ function resolveRelative(
   // The path might already include .rb extension
   if (resolvedPath.endsWith('.rb') && allFilePaths.has(resolvedPath)) return resolvedPath;
 
+  return null;
+}
+
+/**
+ * Yield the target itself, then each slash-delimited ancestor. This makes both
+ * local-root and external-gem lookup O(require path depth), not O(gem count).
+ */
+function requirePrefixCandidates(targetRaw: string): readonly string[] {
+  const candidates = [targetRaw];
+  let slash = targetRaw.lastIndexOf('/');
+  while (slash !== -1) {
+    candidates.push(targetRaw.slice(0, slash));
+    slash = targetRaw.lastIndexOf('/', slash - 1);
+  }
+  return candidates;
+}
+
+function matchesRequirePrefix(targetRaw: string, prefixes: ReadonlySet<string>): boolean {
+  return requirePrefixCandidates(targetRaw).some((candidate) => prefixes.has(candidate));
+}
+
+/** Resolve a path/gemspec-backed gem against its declared Ruby load roots. */
+function resolveLocalGemTarget(
+  targetRaw: string,
+  scope: RubyResolutionScope,
+  allFilePaths: ReadonlySet<string>,
+): string | null {
+  for (const prefix of requirePrefixCandidates(targetRaw)) {
+    const loadRoots = scope.localLoadRootsByPrefix.get(prefix);
+    if (loadRoots === undefined) continue;
+
+    for (const loadRoot of loadRoots) {
+      const base = loadRoot ? `${loadRoot}/${targetRaw}` : targetRaw;
+      if (base.endsWith('.rb')) {
+        if (allFilePaths.has(base)) return base;
+        continue;
+      }
+      const rbFile = `${base}.rb`;
+      if (allFilePaths.has(rbFile)) return rbFile;
+    }
+  }
   return null;
 }
 

@@ -53,8 +53,18 @@ import {
 const PHP_COMPOSER: ComposerConfig = { psr4: new Map([['App', 'app']]) };
 /** The value `loadGoModulePath` produces for a repo with a `go.mod`. */
 const GO_MODULE = { modulePath: 'example.com/mod' };
-/** The dependency set `loadRubyResolutionConfig` would have produced. */
-const RUBY_GEMS = { gemNames: new Set(['rails']) };
+/** The root dependency scope `loadRubyResolutionConfig` would have produced. */
+const RUBY_GEMS = {
+  scopesByDirectory: new Map([
+    [
+      '',
+      {
+        externalRequirePrefixes: new Set(['rails']),
+        localLoadRootsByPrefix: new Map(),
+      },
+    ],
+  ]),
+};
 /** What `scanCSharpProject` would report for the C# workspace below — the
  *  in-repo namespace evidence the #1881 suffix-fallback gate reads. */
 const CSHARP_NAMESPACES = {
