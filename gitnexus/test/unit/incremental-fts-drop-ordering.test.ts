@@ -128,10 +128,19 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
       expect(indexNamesAtDeleteTime).toBeDefined();
-      // Mini-repo handler.ts writes File, Function, Class, and Method rows.
-      // Those indexes must be down before DETACH DELETE (#2589). Every other
+      // handler.ts writes File/Function/Class/Method. The incremental write set
+      // also pulls importer-expanded mini-repo files (index.ts re-exports
+      // handler; validator.ts holds Interface + Property), so those FTS
+      // indexes must be down before DETACH DELETE (#2589). Every other
       // configured FTS index must still be live (#3016 narrowing).
-      const down = new Set(['file_fts', 'function_fts', 'class_fts', 'method_fts']);
+      const down = new Set([
+        'file_fts',
+        'function_fts',
+        'class_fts',
+        'method_fts',
+        'interface_fts',
+        'property_fts',
+      ]);
       const configured = FTS_INDEXES.map((i) => i.indexName);
       const ftsAtDelete = indexNamesAtDeleteTime!.filter((name) => configured.includes(name));
       expect([...ftsAtDelete].sort()).toEqual(configured.filter((name) => !down.has(name)).sort());
