@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
+import { describe, it, expect, vi } from 'vitest';
+import { promises as nodeFsPromises } from 'node:fs';
+import { mkdtemp, rm, readdir, readFile, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import type { ParsedFile } from 'gitnexus-shared';
@@ -7,8 +8,12 @@ import {
   clearParsedFileStore,
   persistParsedFileChunk,
   persistParsedFileShardSync,
+  persistDurableParsedFileShardSync,
+  restoreDurableParsedFileShard,
   loadParsedFilesForPaths,
   getParsedFileStoreDir,
+  getDurableParsedFileDir,
+  parsedFileLoadGc,
 } from '../../src/storage/parsedfile-store.js';
 
 /**
@@ -250,6 +255,15 @@ describe('parsedfile-store', () => {
         'utf-8',
       );
       expect(syncBytes).toBe(asyncBytes);
+      const asyncPaths = await readFile(
+        path.join(getParsedFileStoreDir(asyncDir), 'shard.json.paths'),
+        'utf-8',
+      );
+      const syncPaths = await readFile(
+        path.join(getParsedFileStoreDir(syncDir), 'shard.json.paths'),
+        'utf-8',
+      );
+      expect(syncPaths).toBe(asyncPaths);
     } finally {
       await rm(asyncDir, { recursive: true, force: true });
       await rm(syncDir, { recursive: true, force: true });
@@ -610,6 +624,256 @@ describe('parsedfile-store receiverChain sanitation', () => {
       expect(loaded.referenceSites[0]).toMatchObject({ receiverChain: '2|svc|cgetUser' });
       expect(loaded.referenceSites[1]).not.toHaveProperty('receiverChain');
       expect(loaded.referenceSites[2]).toMatchObject({ receiverChain: '2|other|ffield' });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a .json.paths sidecar and skips JSON for non-intersecting shards (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [makeParsedFile('a.c')]);
+      await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('b.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      const names = await readdir(storeDir);
+      expect(names.sort()).toEqual([
+        'chunk-0.json',
+        'chunk-0.json.paths',
+        'chunk-1.json',
+        'chunk-1.json.paths',
+      ]);
+      const readSpy = vi.spyOn(nodeFsPromises, 'readFile');
+      try {
+        const loaded = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+        expect([...loaded.keys()]).toEqual(['b.c']);
+        const jsonReads = readSpy.mock.calls.filter(([p]) => {
+          const n = String(p);
+          return n.endsWith('.json') && !n.endsWith('.json.paths');
+        });
+        expect(jsonReads).toHaveLength(1);
+        expect(String(jsonReads[0][0])).toMatch(/chunk-1\.json$/);
+      } finally {
+        readSpy.mockRestore();
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a shard when its sidecar is missing or garbage (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-fb-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      await persistParsedFileChunk(dir, 'bad', [makeParsedFile('b.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await rm(path.join(storeDir, 'ok.json.paths'), { force: true });
+      await writeFile(path.join(storeDir, 'bad.json.paths'), 'not\x00valid', 'utf-8');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c']));
+      expect(loaded.has('a.c')).toBe(true);
+      expect(loaded.has('b.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a shard when its sidecar is truncated without a trailing newline (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-trunc-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('wanted.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await writeFile(path.join(storeDir, 'ok.json.paths'), 'unrelated.c', 'utf-8');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['wanted.c']));
+      expect(loaded.has('wanted.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a shard when its sidecar is a newline-terminated partial listing', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-partial-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('wanted.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await writeFile(path.join(storeDir, 'ok.json.paths'), 'unrelated.c\n', 'utf-8');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['wanted.c']));
+      expect(loaded.has('wanted.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a shard when its sidecar contains CR', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-cr-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('wanted.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await writeFile(path.join(storeDir, 'ok.json.paths'), 'unrelated.c\r\n', 'utf-8');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['wanted.c']));
+      expect(loaded.has('wanted.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('omits a sidecar when a filePath contains a newline and still loads JSON', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-nl-'));
+    const weird = 'weird\nname.c';
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
+      const storeDir = getParsedFileStoreDir(dir);
+      expect(await readdir(storeDir)).toEqual(['ok.json']);
+      const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
+      expect(loaded.has(weird)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes a stale sidecar when a rewritten shard is no longer listing-safe', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-stale-'));
+    const weird = 'weird\nname.c';
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('safe.c')]);
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
+      const storeDir = getParsedFileStoreDir(dir);
+      expect(await readdir(storeDir)).toEqual(['ok.json']);
+      const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
+      expect(loaded.has(weird)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not forceGc on a small store (byte budget, not every 8 shards) (#3086)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-gc-'));
+    const gc = vi.fn();
+    const prev = parsedFileLoadGc.run;
+    parsedFileLoadGc.run = gc;
+    try {
+      for (let i = 0; i < 16; i++) {
+        await persistParsedFileChunk(dir, `s${i}`, [makeParsedFile(`f${i}.c`)]);
+      }
+      await loadParsedFilesForPaths(dir, new Set(Array.from({ length: 16 }, (_, i) => `f${i}.c`)));
+      expect(gc).not.toHaveBeenCalled();
+    } finally {
+      parsedFileLoadGc.run = prev;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('forceGc when accumulated raw JSON bytes reach parsedFileLoadGc.byteBudget (#3086)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-gc-pos-'));
+    const gc = vi.fn();
+    const prevRun = parsedFileLoadGc.run;
+    const prevBudget = parsedFileLoadGc.byteBudget;
+    parsedFileLoadGc.run = gc;
+    parsedFileLoadGc.byteBudget = 8;
+    try {
+      await persistParsedFileChunk(dir, 's0', [makeParsedFile('f0.c')]);
+      await loadParsedFilesForPaths(dir, new Set(['f0.c']));
+      expect(gc).toHaveBeenCalled();
+    } finally {
+      parsedFileLoadGc.run = prevRun;
+      parsedFileLoadGc.byteBudget = prevBudget;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restoreDurableParsedFileShard copies sidecars and returns JSON shard count (#3087)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      const storeDir = getParsedFileStoreDir(dir);
+      expect(await readdir(storeDir)).toEqual(
+        expect.arrayContaining(['abc-w1-0.json', 'abc-w1-0.json.paths']),
+      );
+      expect(await readFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'utf-8')).toBe('1\na.c\n');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restoreDurableParsedFileShard unlinks a stale dest sidecar when the source has none', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-stale-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const durableShard = path.join(durable, 'abc', 'abc-w1-0.json');
+      await rm(`${durableShard}.paths`, { force: true });
+      const storeDir = getParsedFileStoreDir(dir);
+      await nodeFsPromises.mkdir(storeDir, { recursive: true });
+      await writeFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'stale.c\n', 'utf-8');
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      await expect(readFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'utf-8')).rejects.toThrow();
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops a leftover sidecar before overwriting JSON so load cannot skip new paths', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-rewrite-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('stale.c')]);
+      const origUnlink = nodeFsPromises.unlink.bind(nodeFsPromises);
+      const origWrite = nodeFsPromises.writeFile.bind(nodeFsPromises);
+      const order: string[] = [];
+      const unlinkSpy = vi
+        .spyOn(nodeFsPromises, 'unlink')
+        .mockImplementation(async (p, ...rest) => {
+          order.push(`unlink:${path.basename(String(p))}`);
+          return origUnlink(p, ...rest);
+        });
+      const writeSpy = vi
+        .spyOn(nodeFsPromises, 'writeFile')
+        .mockImplementation(async (p, data, enc) => {
+          order.push(`write:${path.basename(String(p))}`);
+          return origWrite(p, data, enc);
+        });
+      try {
+        await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      } finally {
+        unlinkSpy.mockRestore();
+        writeSpy.mockRestore();
+      }
+      const jsonIdx = order.indexOf('write:ok.json');
+      const pathsIdx = order.indexOf('unlink:ok.json.paths');
+      expect(pathsIdx).toBeGreaterThanOrEqual(0);
+      expect(pathsIdx).toBeLessThan(jsonIdx);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persist still succeeds when the sidecar write fails', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-enospc-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('stale.c')]);
+      const orig = nodeFsPromises.writeFile.bind(nodeFsPromises);
+      const spy = vi.spyOn(nodeFsPromises, 'writeFile').mockImplementation(async (p, data, enc) => {
+        if (String(p).endsWith('.paths')) {
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        return orig(p, data, enc);
+      });
+      try {
+        await persistParsedFileChunk(dir, 'ok', [makeParsedFile('a.c')]);
+      } finally {
+        spy.mockRestore();
+      }
+      const storeDir = getParsedFileStoreDir(dir);
+      await expect(readFile(path.join(storeDir, 'ok.json.paths'), 'utf-8')).rejects.toThrow();
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
