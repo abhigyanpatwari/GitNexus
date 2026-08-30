@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdtemp, rm, readdir, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
@@ -819,6 +819,90 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
 
       const loaded = await loadParseCache(dir);
       expect((await loadParseCacheChunk(loaded, secondKey))?.[0]?.fileCount).toBe(2);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a V8 sidecar and loads it with Map-preserving semantics (#3089)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-'));
+    try {
+      const key = 'f'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 9 })]);
+      const names = await readdir(path.join(dir, 'parse-cache'));
+      expect(names).toEqual(expect.arrayContaining([`${key}.json`, `${key}.json.v8`]));
+      const loaded = await loadParseCacheChunk(cache, key);
+      expect(loaded?.[0]?.fileCount).toBe(9);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to JSON when the parse-cache V8 sidecar is corrupt (#3089)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-fb-'));
+    try {
+      const key = 'a'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 4 })]);
+      await writeFile(path.join(dir, 'parse-cache', `${key}.json.v8`), Buffer.from([1, 2, 3]));
+      const loaded = await loadParseCacheChunk(cache, key);
+      expect(loaded?.[0]?.fileCount).toBe(4);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('saveParseCache copyFile branch copies the V8 sidecar (#3089)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-copy-'));
+    try {
+      const key = 'c'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 42 })]);
+      await saveParseCache(dir, cache);
+      expect(await readdir(path.join(dir, 'parse-cache'))).toEqual(
+        expect.arrayContaining([`${key}.json`, `${key}.json.v8`, 'index.json']),
+      );
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(42);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads a JSON-only parse-cache shard when no V8 sidecar exists (#3089)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-v8-legacy-'));
+    try {
+      const key = 'b'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
+      await rm(path.join(dir, 'parse-cache', `${key}.json.v8`), { force: true });
+      const loaded = await loadParseCacheChunk(cache, key);
+      expect(loaded?.[0]?.fileCount).toBe(7);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

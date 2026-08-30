@@ -61,6 +61,15 @@ import type {
 import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-codec.js';
 import { logger } from '../core/logger.js';
 import { mapReplacer, mapReviver } from './parse-cache.js';
+import {
+  copyV8SidecarIfPresent,
+  dropV8Sidecar,
+  dropV8SidecarSync,
+  internGraphStrings,
+  tryLoadV8Sidecar,
+  writeV8SidecarBestEffort,
+  writeV8SidecarBestEffortSync,
+} from './v8-sidecar.js';
 
 const STORE_DIRNAME = 'parsedfile-store';
 const DURABLE_DIRNAME = 'parsedfile-cache';
@@ -325,12 +334,16 @@ export const persistParsedFileChunk = async (
   shardId: string,
   parsedFiles: readonly ParsedFile[],
 ): Promise<void> => {
-  const payload = serializeParsedFileShard(parsedFiles);
+  let payload = serializeParsedFileShard(parsedFiles);
   if (payload === null) return;
   await fs.mkdir(getParsedFileStoreDir(storagePath), { recursive: true });
   const dest = shardPath(storagePath, shardId);
   await dropPathSidecar(dest);
+  await dropV8Sidecar(dest);
   await fs.writeFile(dest, payload, 'utf-8');
+  const jsonBytes = Buffer.byteLength(payload, 'utf8');
+  payload = null;
+  await writeV8SidecarBestEffort(dest, parsedFiles, jsonBytes);
   await writeShardPathsSidecar(dest, parsedFiles);
 };
 
@@ -353,7 +366,7 @@ export const persistParsedFileShardSync = (
   shardId: string,
   parsedFiles: readonly ParsedFile[],
 ): void => {
-  const payload = serializeParsedFileShard(parsedFiles);
+  let payload = serializeParsedFileShard(parsedFiles);
   if (payload === null) return;
   const dir = getParsedFileStoreDir(storagePath);
   if (!createdStoreDirs.has(dir)) {
@@ -362,7 +375,11 @@ export const persistParsedFileShardSync = (
   }
   const dest = shardPath(storagePath, shardId);
   dropPathSidecarSync(dest);
+  dropV8SidecarSync(dest);
   writeFileSync(dest, payload, 'utf-8');
+  const jsonBytes = Buffer.byteLength(payload, 'utf8');
+  payload = null;
+  writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes);
   writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
@@ -430,26 +447,33 @@ export const loadParsedFilesForPaths = async (
     } catch {
       // Missing or unreadable sidecar → read the shard (pre-sidecar stores).
     }
-    // Per-shard def pool: a SymbolDefinition's three serialized copies live within
-    // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
-    // pool would retain defs of files NOT in `wantPaths` (loaded-but-discarded
-    // shards), reintroducing the leak; per-shard drops them with the shard.
-    const defPool = new Map<string, SymbolDefinition>();
-    const reviver = makeInterningReviver(pool, defPool);
-    let raw: string;
-    try {
-      raw = await fs.readFile(jsonFull, 'utf-8');
-    } catch {
-      continue; // skip a missing shard; missing files fall back to fresh extract
-    }
-    bytesSinceGc += Buffer.byteLength(raw, 'utf8');
-    const crossedBudget = bytesSinceGc >= parsedFileLoadGc.byteBudget;
     let parsed: ParsedFile[] | undefined;
-    try {
-      parsed = JSON.parse(raw, reviver) as ParsedFile[];
-    } catch {
-      parsed = undefined;
+    const v8Hit = await tryLoadV8Sidecar(jsonFull);
+    if (v8Hit !== undefined && Array.isArray(v8Hit.value)) {
+      internGraphStrings(v8Hit.value, pool);
+      parsed = v8Hit.value as ParsedFile[];
+      bytesSinceGc += v8Hit.bytes;
+    } else {
+      // Per-shard def pool: a SymbolDefinition's three serialized copies live within
+      // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
+      // pool would retain defs of files NOT in `wantPaths` (loaded-but-discarded
+      // shards), reintroducing the leak; per-shard drops them with the shard.
+      const defPool = new Map<string, SymbolDefinition>();
+      const reviver = makeInterningReviver(pool, defPool);
+      let raw: string;
+      try {
+        raw = await fs.readFile(jsonFull, 'utf-8');
+      } catch {
+        continue; // skip a missing shard; missing files fall back to fresh extract
+      }
+      bytesSinceGc += Buffer.byteLength(raw, 'utf8');
+      try {
+        parsed = JSON.parse(raw, reviver) as ParsedFile[];
+      } catch {
+        parsed = undefined;
+      }
     }
+    const crossedBudget = bytesSinceGc >= parsedFileLoadGc.byteBudget;
     if (Array.isArray(parsed)) {
       for (const pf of parsed) {
         if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
@@ -764,7 +788,7 @@ export const persistDurableParsedFileShardSync = (
   shardSeq: number,
   parsedFiles: readonly ParsedFile[],
 ): void => {
-  const payload = serializeParsedFileShard(parsedFiles);
+  let payload = serializeParsedFileShard(parsedFiles);
   if (payload === null) return;
   const dir = durableChunkDir(durableDir, chunkHash);
   if (!createdDurableDirs.has(dir)) {
@@ -773,7 +797,11 @@ export const persistDurableParsedFileShardSync = (
   }
   const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`);
   dropPathSidecarSync(dest);
+  dropV8SidecarSync(dest);
   writeFileSync(dest, payload, 'utf-8');
+  const jsonBytes = Buffer.byteLength(payload, 'utf8');
+  payload = null;
+  writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes);
   writeShardPathsSidecarSync(dest, parsedFiles);
 };
 
@@ -806,7 +834,9 @@ export const restoreDurableParsedFileShard = async (
     const srcJson = path.join(src, name);
     const dstJson = path.join(dst, name);
     await dropPathSidecar(dstJson);
+    await dropV8Sidecar(dstJson);
     await fs.copyFile(srcJson, dstJson);
+    await copyV8SidecarIfPresent(srcJson, dstJson);
     try {
       await fs.copyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
     } catch (copyErr) {

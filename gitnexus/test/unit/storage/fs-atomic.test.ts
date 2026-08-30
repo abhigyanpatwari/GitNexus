@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { writeFileAtomic } from '../../../src/storage/fs-atomic.js';
+import { writeFileAtomic, writeFileAtomicBytes, writeFileAtomicBytesSync } from '../../../src/storage/fs-atomic.js';
 import { createTempDir } from '../../helpers/test-db.js';
 
 describe('writeFileAtomic', () => {
@@ -69,5 +69,32 @@ describe('writeFileAtomic', () => {
     expect(await fs.readFile(target, 'utf-8')).toBe('first');
     // readdir order is unspecified — sort so the assertion is deterministic.
     expect((await fs.readdir(tmp.dbPath)).sort()).toEqual(['blocked', 'thing.json']);
+  });
+});
+
+describe('writeFileAtomicBytes', () => {
+  let tmp: Awaited<ReturnType<typeof createTempDir>>;
+  let target: string;
+
+  beforeEach(async () => {
+    tmp = await createTempDir('gitnexus-fs-atomic-bin-');
+    target = path.join(tmp.dbPath, 'thing.bin');
+  });
+
+  afterEach(async () => {
+    await tmp.cleanup();
+  });
+
+  it('publishes binary data and leaves no tmp file behind', async () => {
+    const bytes = Buffer.from([0, 1, 255, 10]);
+    await writeFileAtomicBytes(target, bytes);
+    expect(Buffer.from(await fs.readFile(target))).toEqual(bytes);
+    expect((await fs.readdir(tmp.dbPath)).filter((f) => f !== 'thing.bin')).toEqual([]);
+  });
+
+  it('writeFileAtomicBytesSync publishes the same bytes', async () => {
+    const bytes = Buffer.from('hello');
+    writeFileAtomicBytesSync(target, bytes);
+    expect(Buffer.from(await fs.readFile(target))).toEqual(bytes);
   });
 });

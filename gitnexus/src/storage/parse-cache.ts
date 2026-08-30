@@ -31,6 +31,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
+import {
+  copyV8SidecarIfPresent,
+  dropV8Sidecar,
+  tryLoadV8Sidecar,
+  writeV8SidecarBestEffort,
+} from './v8-sidecar.js';
 
 /**
  * Cache version composed of:
@@ -930,7 +936,12 @@ const readParseCacheChunkFromDisk = async (
 ): Promise<ParseWorkerResult[] | undefined> => {
   if (!isValidChunkCacheKey(chunkHash)) return undefined;
   try {
-    const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
+    const chunkPath = getCacheChunkPath(storagePath, chunkHash);
+    const v8Hit = await tryLoadV8Sidecar(chunkPath);
+    if (v8Hit !== undefined && Array.isArray(v8Hit.value)) {
+      return v8Hit.value as ParseWorkerResult[];
+    }
+    const chunkRaw = await fs.readFile(chunkPath, 'utf-8');
     const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
     return Array.isArray(chunkData) ? chunkData : undefined;
   } catch {
@@ -975,18 +986,25 @@ export const persistParseCacheChunk = async (
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
     }
-    const payload = JSON.stringify(slim, mapReplacer);
+    let payload: string | undefined = JSON.stringify(slim, mapReplacer);
     const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
+    const jsonBytes = Buffer.byteLength(payload, 'utf8');
+    const writeJson = async (json: string): Promise<void> => {
+      await dropV8Sidecar(chunkPath);
+      await fs.writeFile(chunkPath, json, 'utf-8');
+    };
     try {
-      await fs.writeFile(chunkPath, payload, 'utf-8');
+      await writeJson(payload);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       // Long-lived analyze --watch processes can replace the sharded cache
       // directory after this process-local memo recorded it as created.
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
-      await fs.writeFile(chunkPath, payload, 'utf-8');
+      await writeJson(payload);
     }
+    payload = undefined;
+    await writeV8SidecarBestEffort(chunkPath, slim, jsonBytes);
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
     cache.entries.delete(chunkHash);
@@ -1099,12 +1117,16 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
         continue;
       }
       await fs.writeFile(chunkPath, payload, 'utf-8');
+      const jsonBytes = Buffer.byteLength(payload, 'utf8');
+      payload = '';
+      await writeV8SidecarBestEffort(chunkPath, inMemory, jsonBytes);
       writtenKeys.push(chunkHash);
       continue;
     }
     const existingPath = getCacheChunkPath(storagePath, chunkHash);
     try {
       await fs.copyFile(existingPath, chunkPath);
+      await copyV8SidecarIfPresent(existingPath, chunkPath);
       writtenKeys.push(chunkHash);
     } catch {
       /* shard missing — skip; next run treats as cache miss */

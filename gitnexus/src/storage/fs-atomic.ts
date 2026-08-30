@@ -6,6 +6,7 @@
  * core/group/ import (the established direction is core/group/ -> storage/,
  * e.g. core/group/service.ts already imports loadMeta from here).
  */
+import { closeSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import fsp from 'fs/promises';
 import { randomBytes } from 'crypto';
 
@@ -57,7 +58,7 @@ export async function writeFileAtomic(
   data: string,
   attempts?: number,
 ): Promise<void> {
-  const tmpPath = `${targetPath}.tmp.${randomBytes(8).toString('hex')}`;
+  const tmpPath = tmpBeside(targetPath);
   const handle = await fsp.open(tmpPath, 'wx', 0o600);
   try {
     try {
@@ -68,6 +69,63 @@ export async function writeFileAtomic(
     await retryRename(tmpPath, targetPath, attempts);
   } catch (err) {
     await fsp.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+}
+
+function tmpBeside(targetPath: string): string {
+  return `${targetPath}.tmp.${randomBytes(8).toString('hex')}`;
+}
+
+/**
+ * Binary sibling of {@link writeFileAtomic}. Same random tmp + `'wx'` + `0o600`
+ * + rename contract; used for optional V8 cache sidecars that cannot go through
+ * a UTF-8 `writeFile`.
+ */
+export async function writeFileAtomicBytes(
+  targetPath: string,
+  data: Uint8Array,
+  attempts?: number,
+): Promise<void> {
+  const tmpPath = tmpBeside(targetPath);
+  const handle = await fsp.open(tmpPath, 'wx', 0o600);
+  try {
+    try {
+      await handle.writeFile(data);
+    } finally {
+      await handle.close();
+    }
+    await retryRename(tmpPath, targetPath, attempts);
+  } catch (err) {
+    await fsp.unlink(tmpPath).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Sync binary publish for parse workers. Same exclusive-tmp + mode contract as
+ * {@link writeFileAtomicBytes}; rename is not retried (the worker is not the
+ * Windows multi-reader case `retryRename` exists for).
+ */
+export function writeFileAtomicBytesSync(targetPath: string, data: Uint8Array): void {
+  const tmpPath = tmpBeside(targetPath);
+  const fd = openSync(tmpPath, 'wx', 0o600);
+  try {
+    try {
+      let offset = 0;
+      while (offset < data.byteLength) {
+        offset += writeSync(fd, data, offset);
+      }
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmpPath, targetPath);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      /* leftover tmp is unlinked on the next exclusive create */
+    }
     throw err;
   }
 }
