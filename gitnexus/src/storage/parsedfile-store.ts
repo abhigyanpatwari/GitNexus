@@ -195,8 +195,31 @@ export const parsedFileLoadGc = {
   byteBudget: 128 * 1024 * 1024,
 };
 
-const encodeShardPathsSidecar = (parsedFiles: readonly ParsedFile[]): string =>
-  parsedFiles.map((pf) => pf.filePath).join('\n') + (parsedFiles.length > 0 ? '\n' : '');
+const encodeShardPathsSidecar = (parsedFiles: readonly ParsedFile[]): string => {
+  const paths = parsedFiles.map((pf) => pf.filePath);
+  return `${paths.length}\n${paths.length === 0 ? '' : `${paths.join('\n')}\n`}`;
+};
+
+/**
+ * Parse a counted NDJSON path listing. Returns `null` when the sidecar must
+ * not be trusted to skip the JSON shard: missing trailing newline, CR/NUL,
+ * a truncated listing that still ends on a complete line, or a count that
+ * does not match the remaining lines.
+ */
+const parseShardPathsSidecar = (sidecarRaw: string): string[] | null => {
+  if (sidecarRaw.includes('\0') || sidecarRaw.includes('\r') || !sidecarRaw.endsWith('\n')) {
+    return null;
+  }
+  const nl = sidecarRaw.indexOf('\n');
+  if (nl < 0) return null;
+  const countToken = sidecarRaw.slice(0, nl);
+  if (!/^[0-9]+$/.test(countToken)) return null;
+  const count = Number(countToken);
+  const body = sidecarRaw.slice(nl + 1);
+  const listed = body === '' ? [] : body.slice(0, -1).split('\n');
+  if (listed.length !== count) return null;
+  return listed;
+};
 
 /** NDJSON sidecars cannot encode paths that themselves contain CR/LF/NUL. */
 const shardPathsSidecarSafe = (parsedFiles: readonly ParsedFile[]): boolean =>
@@ -392,16 +415,14 @@ export const loadParsedFilesForPaths = async (
     const jsonName = shards[i];
     const jsonFull = path.join(dir, jsonName);
     try {
-      const sidecarRaw = (await fs.readFile(shardPathsSidecarPath(jsonFull), 'utf-8')).replace(
-        /\r/g,
-        '',
-      );
-      // Fail closed: truncated/garbage listings without a trailing newline or
-      // with NULs can omit wanted paths. Complete writers always end with `\n`.
-      if (sidecarRaw.includes('\0') || !sidecarRaw.endsWith('\n')) {
+      const sidecarRaw = await fs.readFile(shardPathsSidecarPath(jsonFull), 'utf-8');
+      // Fail closed: complete writers emit `<count>\n` plus one path per line
+      // and a trailing newline, never CR. Stripping CR (or accepting a
+      // newline-terminated prefix) would let a truncated listing skip JSON.
+      const listed = parseShardPathsSidecar(sidecarRaw);
+      if (listed === null) {
         throw new Error('corrupt sidecar');
       }
-      const listed = sidecarRaw.split('\n').filter((line) => line.length > 0);
       if (listed.length > 0 && !listed.some((p) => wantPaths.has(p))) {
         await maybeYieldAndGc(false);
         continue;

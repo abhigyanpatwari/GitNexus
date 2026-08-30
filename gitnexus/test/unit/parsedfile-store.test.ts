@@ -689,6 +689,32 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
+  it('reads a shard when its sidecar is a newline-terminated partial listing', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-partial-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('wanted.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await writeFile(path.join(storeDir, 'ok.json.paths'), 'unrelated.c\n', 'utf-8');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['wanted.c']));
+      expect(loaded.has('wanted.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a shard when its sidecar contains CR', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-cr-'));
+    try {
+      await persistParsedFileChunk(dir, 'ok', [makeParsedFile('wanted.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await writeFile(path.join(storeDir, 'ok.json.paths'), 'unrelated.c\r\n', 'utf-8');
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['wanted.c']));
+      expect(loaded.has('wanted.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('omits a sidecar when a filePath contains a newline and still loads JSON', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-sidecar-nl-'));
     const weird = 'weird\nname.c';
@@ -764,7 +790,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       expect(await readdir(storeDir)).toEqual(
         expect.arrayContaining(['abc-w1-0.json', 'abc-w1-0.json.paths']),
       );
-      expect(await readFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'utf-8')).toBe('a.c\n');
+      expect(await readFile(path.join(storeDir, 'abc-w1-0.json.paths'), 'utf-8')).toBe('1\na.c\n');
       const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       expect(loaded.has('a.c')).toBe(true);
     } finally {
