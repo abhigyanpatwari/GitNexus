@@ -50,6 +50,7 @@ const syncGroupMock = vi.fn<() => Promise<SyncResult>>();
 
 vi.mock('../../../src/core/group/sync.js', () => ({
   syncGroup: (...args: unknown[]) => syncGroupMock(...(args as [])),
+  formatGroupSyncAmbiguousError: (err: Error) => err.message,
 }));
 
 const { GroupService } = await import('../../../src/core/group/service.js');

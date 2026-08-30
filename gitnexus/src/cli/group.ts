@@ -219,8 +219,9 @@ export function registerGroupCommands(program: Command): void {
     .action(async (name: string, opts: Record<string, boolean | undefined>) => {
       const { getGroupDir, getDefaultGitnexusDir } = await import('../core/group/storage.js');
       const { loadGroupConfig } = await import('../core/group/config-parser.js');
-      const { syncGroup } = await import('../core/group/sync.js');
+      const { syncGroup, formatGroupSyncAmbiguousError } = await import('../core/group/sync.js');
       const { GroupSyncLockError } = await import('../core/group/group-lock.js');
+      const { RegistryAmbiguousTargetError } = await import('../storage/repo-manager.js');
 
       const groupDir = getGroupDir(getDefaultGitnexusDir(), name);
       const config = await loadGroupConfig(groupDir);
@@ -235,6 +236,11 @@ export function registerGroupCommands(program: Command): void {
           exactOnly: Boolean(opts.exactOnly),
         });
       } catch (err) {
+        if (err instanceof RegistryAmbiguousTargetError) {
+          logger.error(`⚠️ Did not sync group "${name}": ${formatGroupSyncAmbiguousError(err)}`);
+          process.exitCode = 1;
+          return;
+        }
         // A sync that could not take the group's lock did NOT run and wrote
         // nothing (R9 fails closed). That is an operator-actionable outcome, not
         // a crash, so report it as a failed command rather than letting it

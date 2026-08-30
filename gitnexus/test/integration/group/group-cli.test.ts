@@ -55,6 +55,51 @@ describe('group CLI', () => {
     expect(l.stdout).toContain('acme');
   });
 
+  it('sync exits nonzero with formatted copy when a member name is ambiguous', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-group-cli-amb-'));
+    try {
+      fs.mkdirSync(path.join(home, 'groups', 'g1'), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, 'groups', 'g1', 'group.yaml'),
+        `version: 1
+name: g1
+repos:
+  demo/api: demo-api
+`,
+      );
+      const cloneA = path.join(home, 'clone-a');
+      const cloneB = path.join(home, 'clone-b');
+      fs.mkdirSync(path.join(cloneA, '.gitnexus'), { recursive: true });
+      fs.mkdirSync(path.join(cloneB, '.gitnexus'), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, 'registry.json'),
+        JSON.stringify([
+          {
+            name: 'demo-api',
+            path: cloneA,
+            storagePath: path.join(cloneA, '.gitnexus'),
+            indexedAt: '2026-01-01T00:00:00.000Z',
+            lastCommit: 'aaa',
+          },
+          {
+            name: 'demo-api',
+            path: cloneB,
+            storagePath: path.join(cloneB, '.gitnexus'),
+            indexedAt: '2026-01-01T00:00:00.000Z',
+            lastCommit: 'bbb',
+          },
+        ]),
+      );
+      const r = runGroupIn(home, ['sync', 'g1']);
+      expect(r.status).not.toBe(0);
+      // CLI logs JSON (pino): quotes around the group name are escaped in the byte stream.
+      expect(`${r.stderr}${r.stdout}`).toMatch(/Did not sync group \\"g1\\"/);
+      expect(`${r.stderr}${r.stdout}`).toContain('demo-api');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('test_create_with_invalid_name_fails', () => {
     const result = runGroup(['create', '../../evil']);
     expect(result.status).not.toBe(0);
