@@ -36,7 +36,7 @@ import {
   getDurableParsedFileDir,
   loadDurableParsedFileIndex,
   prepareDurableParsedFileChunk,
-  restoreDurableParsedFileShard,
+  durableChunkHasShards,
 } from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
@@ -1020,7 +1020,10 @@ export async function runChunkedParseAndResolve(
       // a worker re-dispatch to repopulate them. NEVER let scope-resolution
       // re-extract on the main thread (the #1983 OOM the durable store closes).
       const durableHit =
-        chunkHash !== null && durableParsedFileDir !== undefined && durableHitKeys.has(chunkHash);
+        chunkHash !== null &&
+        durableParsedFileDir !== undefined &&
+        durableHitKeys.has(chunkHash) &&
+        (await durableChunkHasShards(durableParsedFileDir, chunkHash));
 
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
@@ -1053,22 +1056,8 @@ export async function runChunkedParseAndResolve(
             nodesCreated: graph.nodeCount,
           },
         });
-        // Restore the chunk's durable ParsedFile shards into the run-scoped
-        // store so scope-resolution finds full coverage with ZERO main-thread
-        // re-parse. A verbatim byte copy — byte-identical to a cold run.
-        if (durableHit && durableParsedFileDir && parsedFileStorePath && chunkHash) {
-          const restored = await restoreDurableParsedFileShard(
-            durableParsedFileDir,
-            parsedFileStorePath,
-            chunkHash,
-          );
-          if (restored === 0) {
-            logger.warn(
-              `parsedfile-cache: durable shards missing for cached chunk ` +
-                `${chunkHash.slice(0, 8)} — scope-resolution will re-extract these files`,
-            );
-          }
-        }
+        // Warm hits load durable `.v8` shards in place during scope-resolution.
+        // Do not copy them into the run-scoped store.
         await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
       } else {
         // Cache miss: dispatch to workers, capture the raw results, store
@@ -1548,7 +1537,10 @@ export async function runChunkedParseAndResolve(
     return target?.length === 1 ? target[0] : null;
   };
   if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
-    const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
+    const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths, {
+      durableDir: durableParsedFileDir,
+      durableKeys: parseCache?.usedKeys,
+    });
     for (const parsed of allParsedFiles) {
       if (dataRouteFilePaths.has(parsed.filePath)) byPath.set(parsed.filePath, parsed);
     }
@@ -1560,7 +1552,10 @@ export async function runChunkedParseAndResolve(
         if (target !== null) directTargets.add(target);
       }
     }
-    const importedFiles = await loadParsedFilesForPaths(parsedFileStorePath, directTargets);
+    const importedFiles = await loadParsedFilesForPaths(parsedFileStorePath, directTargets, {
+      durableDir: durableParsedFileDir,
+      durableKeys: parseCache?.usedKeys,
+    });
     for (const parsed of importedFiles.values()) byPath.set(parsed.filePath, parsed);
     routeResolutionFiles = [...byPath.values()];
   }

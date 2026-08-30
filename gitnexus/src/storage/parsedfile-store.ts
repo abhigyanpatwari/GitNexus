@@ -24,11 +24,11 @@
  *
  * ## Shape
  *
- * `<storagePath>/parsedfile-store/<shardId>.json` — one shard per parse chunk,
- * a JSON array of `ParsedFile` serialized with the same `mapReplacer` the parse
- * cache uses (Scope.bindings / Scope.typeBindings are `Map`s). The store is
- * cleared at the start of each parse and after scope-resolution consumes it, so
- * it never lingers and never goes stale across runs.
+ * `<storagePath>/parsedfile-store/<shardId>.v8` — one shard per parse chunk,
+ * a V8 envelope of `ParsedFile[]` (Scope.bindings / Scope.typeBindings stay
+ * `Map`s). The store is cleared at the start of each parse and after
+ * scope-resolution consumes it, so it never lingers and never goes stale
+ * across runs.
  *
  * ## Durable sibling store (`parsedfile-cache/`, warm-cache coverage)
  *
@@ -41,18 +41,14 @@
  * that gap we ALSO write the worker's ParsedFiles to a second, CONTENT-ADDRESSED
  * store keyed by the parse chunk hash (`getDurableParsedFileDir`), which mirrors
  * the parse cache's lifecycle (persists across runs, pruned by `usedKeys`,
- * version-tied via `PARSE_CACHE_VERSION`). On a warm hit the chunk's durable
- * shards are published into the run-scoped store by hardlink (or atomic
- * copy+rename when the filesystem cannot link) — no re-parse, no
- * re-serialize → byte-identical. Scope-resolution streams them exactly as
- * on a cold run. Content-addressing makes stale reuse impossible: a changed
- * file changes its chunk hash, which misses BOTH stores and re-dispatches.
- * Restored names are chunk-hash prefixed, so run-store writers (`w<tid>-<seq>`)
- * cannot target them; cleanup is `fs.rm` of directory entries, which drops a
- * link count without opening durable inodes.
+ * version-tied via `PARSE_CACHE_VERSION`). Warm hits load those durable `.v8`
+ * shards in place — no restore copy into the run store. Content-addressing
+ * makes stale reuse impossible: a changed file changes its chunk hash, which
+ * misses BOTH stores and re-dispatches. Load overlays this run's `usedKeys`
+ * durable dirs first, then the run store so a same-run miss write wins.
  */
 
-import { promises as fs, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { promises as fs, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
@@ -64,18 +60,8 @@ import type {
 } from 'gitnexus-shared';
 import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-codec.js';
 import { logger } from '../core/logger.js';
-import { mapReplacer, mapReviver } from './parse-cache.js';
-import { linkOrCopyFile } from './fs-atomic.js';
-import {
-  copyV8SidecarIfPresent,
-  invalidatePriorV8Generation,
-  invalidatePriorV8GenerationSync,
-  newV8Generation,
-  prepareCopiedShardDestination,
-  tryLoadV8Sidecar,
-  writeV8SidecarBestEffort,
-  writeV8SidecarBestEffortSync,
-} from './v8-sidecar.js';
+import { mapReviver } from './parse-cache.js';
+import { tryLoadV8Cache, writeV8CacheFile, writeV8CacheFileSync } from './v8-sidecar.js';
 
 const STORE_DIRNAME = 'parsedfile-store';
 const DURABLE_DIRNAME = 'parsedfile-cache';
@@ -179,24 +165,13 @@ export const clearParsedFileStore = async (storagePath: string): Promise<void> =
   await fs.rm(getParsedFileStoreDir(storagePath), { recursive: true, force: true });
 };
 
-/**
- * Single source of truth for a shard's bytes. Returns `null` for an empty
- * chunk (caller writes nothing). Both the async (`persistParsedFileChunk`) and
- * sync (`persistParsedFileShardSync`) writers go through this so the two paths
- * are guaranteed byte-identical — the shards must round-trip through the same
- * `mapReviver`, and matching bytes by having both authors type the same
- * `mapReplacer` call would be a coincidence, not a guarantee.
- */
-const serializeParsedFileShard = (parsedFiles: readonly ParsedFile[]): string | null => {
-  if (parsedFiles.length === 0) return null;
-  return JSON.stringify(parsedFiles, mapReplacer);
-};
+const isV8ShardName = (name: string): boolean => name.endsWith('.v8') && !name.includes('.v8.');
 
 const shardPath = (storagePath: string, shardId: string): string =>
-  path.join(getParsedFileStoreDir(storagePath), `${shardId}.json`);
+  path.join(getParsedFileStoreDir(storagePath), `${shardId}.v8`);
 
-/** Sidecar listing `filePath`s in a shard; not matched by `endsWith('.json')`. */
-const shardPathsSidecarPath = (jsonPath: string): string => `${jsonPath}.paths`;
+const shardFilePaths = (parsedFiles: readonly ParsedFile[]): string[] =>
+  parsedFiles.map((pf) => pf.filePath);
 
 const LOAD_YIELD_EVERY_SHARDS = 128;
 
@@ -210,155 +185,22 @@ export const parsedFileLoadGc = {
   byteBudget: 128 * 1024 * 1024,
 };
 
-const encodeShardPathsSidecar = (parsedFiles: readonly ParsedFile[]): string => {
-  const paths = parsedFiles.map((pf) => pf.filePath);
-  return `${paths.length}\n${paths.length === 0 ? '' : `${paths.join('\n')}\n`}`;
-};
-
 /**
- * Parse a counted NDJSON path listing. Returns `null` when the sidecar must
- * not be trusted to skip the JSON shard: missing trailing newline, CR/NUL,
- * a truncated listing that still ends on a complete line, or a count that
- * does not match the remaining lines.
- */
-const parseShardPathsSidecar = (sidecarRaw: string): string[] | null => {
-  if (sidecarRaw.includes('\0') || sidecarRaw.includes('\r') || !sidecarRaw.endsWith('\n')) {
-    return null;
-  }
-  const nl = sidecarRaw.indexOf('\n');
-  if (nl < 0) return null;
-  const countToken = sidecarRaw.slice(0, nl);
-  if (!/^[0-9]+$/.test(countToken)) return null;
-  const count = Number(countToken);
-  const body = sidecarRaw.slice(nl + 1);
-  const listed = body === '' ? [] : body.slice(0, -1).split('\n');
-  if (listed.length !== count) return null;
-  return listed;
-};
-
-/** NDJSON sidecars cannot encode paths that themselves contain CR/LF/NUL. */
-const shardPathsSidecarSafe = (parsedFiles: readonly ParsedFile[]): boolean =>
-  parsedFiles.every((pf) => !/[\r\n\0]/.test(pf.filePath));
-
-const isEnoent = (err: unknown): boolean => (err as NodeJS.ErrnoException).code === 'ENOENT';
-
-const warnSidecarIo = (err: unknown, jsonPath: string, msg: string): void => {
-  logger.warn({ err, jsonPath }, msg);
-};
-
-const ignoreMissingSidecarUnlink = (err: unknown, jsonPath: string): void => {
-  if (isEnoent(err)) return;
-  warnSidecarIo(
-    err,
-    jsonPath,
-    'parsedfile-store: failed to drop path sidecar; JSON remains authoritative',
-  );
-};
-
-/** Drop a leftover listing before publishing JSON so load cannot skip new paths. */
-const dropPathSidecar = async (jsonPath: string): Promise<void> => {
-  try {
-    await fs.unlink(shardPathsSidecarPath(jsonPath));
-  } catch (err) {
-    ignoreMissingSidecarUnlink(err, jsonPath);
-  }
-};
-
-const dropPathSidecarSync = (jsonPath: string): void => {
-  try {
-    unlinkSync(shardPathsSidecarPath(jsonPath));
-  } catch (err) {
-    ignoreMissingSidecarUnlink(err, jsonPath);
-  }
-};
-
-const writeShardPathsSidecar = async (
-  jsonPath: string,
-  parsedFiles: readonly ParsedFile[],
-): Promise<void> => {
-  if (!shardPathsSidecarSafe(parsedFiles)) {
-    try {
-      await fs.unlink(shardPathsSidecarPath(jsonPath));
-    } catch (err) {
-      ignoreMissingSidecarUnlink(err, jsonPath);
-    }
-    return;
-  }
-  try {
-    await fs.writeFile(
-      shardPathsSidecarPath(jsonPath),
-      encodeShardPathsSidecar(parsedFiles),
-      'utf-8',
-    );
-  } catch (err) {
-    warnSidecarIo(
-      err,
-      jsonPath,
-      'parsedfile-store: path sidecar write failed; JSON shard remains authoritative',
-    );
-    try {
-      await fs.unlink(shardPathsSidecarPath(jsonPath));
-    } catch (unlinkErr) {
-      ignoreMissingSidecarUnlink(unlinkErr, jsonPath);
-    }
-  }
-};
-
-const writeShardPathsSidecarSync = (jsonPath: string, parsedFiles: readonly ParsedFile[]): void => {
-  if (!shardPathsSidecarSafe(parsedFiles)) {
-    try {
-      unlinkSync(shardPathsSidecarPath(jsonPath));
-    } catch (err) {
-      ignoreMissingSidecarUnlink(err, jsonPath);
-    }
-    return;
-  }
-  try {
-    writeFileSync(shardPathsSidecarPath(jsonPath), encodeShardPathsSidecar(parsedFiles), 'utf-8');
-  } catch (err) {
-    warnSidecarIo(
-      err,
-      jsonPath,
-      'parsedfile-store: path sidecar write failed; JSON shard remains authoritative',
-    );
-    try {
-      unlinkSync(shardPathsSidecarPath(jsonPath));
-    } catch (unlinkErr) {
-      ignoreMissingSidecarUnlink(unlinkErr, jsonPath);
-    }
-  }
-};
-
-/**
- * Write one parse chunk's `ParsedFile[]` to the store as a single shard (async).
- * No-op for an empty chunk. `shardId` must be unique within a run. Used by the
- * main-thread no-store-disabled fallback and any non-worker writer; the worker
- * store path uses {@link persistParsedFileShardSync}.
+ * Write one parse chunk's `ParsedFile[]` to the store as a single `.v8` shard.
+ * No-op for an empty chunk. `shardId` must be unique within a run.
  */
 export const persistParsedFileChunk = async (
   storagePath: string,
   shardId: string,
   parsedFiles: readonly ParsedFile[],
-): Promise<void> => {
-  let payload = serializeParsedFileShard(parsedFiles);
-  if (payload === null) return;
+): Promise<boolean> => {
+  if (parsedFiles.length === 0) return true;
   await fs.mkdir(getParsedFileStoreDir(storagePath), { recursive: true });
-  const dest = shardPath(storagePath, shardId);
-  const jsonBytes = Buffer.byteLength(payload, 'utf8');
-  const generation = newV8Generation();
-  const plan = await invalidatePriorV8Generation(dest, generation, jsonBytes);
-  if (plan === 'blocked') return;
-  await dropPathSidecar(dest);
-  await fs.writeFile(dest, payload, 'utf-8');
-  payload = null;
-  if (plan === 'json+v8') {
-    await Promise.all([
-      writeV8SidecarBestEffort(dest, parsedFiles, jsonBytes, generation),
-      writeShardPathsSidecar(dest, parsedFiles),
-    ]);
-    return;
-  }
-  await writeShardPathsSidecar(dest, parsedFiles);
+  return writeV8CacheFile(
+    shardPath(storagePath, shardId),
+    parsedFiles,
+    shardFilePaths(parsedFiles),
+  );
 };
 
 // Per-process set of store dirs we've already `mkdir`ed, so the sync worker
@@ -368,63 +210,54 @@ const createdStoreDirs = new Set<string>();
 
 /**
  * Synchronous shard writer for use INSIDE a parse worker (#1983 parallel
- * serialization). The worker is a dedicated thread, so a blocking write there
- * protects the main thread, and a sync write avoids threading `async`/`await`
- * through the synchronous per-file extract loop. Produces byte-identical shards
- * to {@link persistParsedFileChunk} via the shared {@link serializeParsedFileShard}.
- * No-op for an empty chunk. `shardId` must be globally unique for the run (the
- * worker uses `w<threadId>-<seq>`); a duplicate would silently overwrite.
+ * serialization). Returns false on write failure so the worker can keep
+ * ParsedFiles in the result instead of dropping them.
  */
 export const persistParsedFileShardSync = (
   storagePath: string,
   shardId: string,
   parsedFiles: readonly ParsedFile[],
-): void => {
-  let payload = serializeParsedFileShard(parsedFiles);
-  if (payload === null) return;
+): boolean => {
+  if (parsedFiles.length === 0) return true;
   const dir = getParsedFileStoreDir(storagePath);
   if (!createdStoreDirs.has(dir)) {
     mkdirSync(dir, { recursive: true });
     createdStoreDirs.add(dir);
   }
-  const dest = shardPath(storagePath, shardId);
-  const jsonBytes = Buffer.byteLength(payload, 'utf8');
-  const generation = newV8Generation();
-  const plan = invalidatePriorV8GenerationSync(dest, generation, jsonBytes);
-  if (plan === 'blocked') return;
-  dropPathSidecarSync(dest);
-  writeFileSync(dest, payload, 'utf-8');
-  payload = null;
-  if (plan === 'json+v8') {
-    writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes, generation);
-  }
-  writeShardPathsSidecarSync(dest, parsedFiles);
+  return writeV8CacheFileSync(
+    shardPath(storagePath, shardId),
+    parsedFiles,
+    shardFilePaths(parsedFiles),
+  );
 };
 
-/**
- * Stream the store and return the `ParsedFile`s whose `filePath` is in
- * `wantPaths`, keyed by path. Loads one shard at a time and retains only the
- * matching entries, so peak heap is bounded by (matched set) + (one shard)
- * rather than the whole store. Returns an empty map when the store is absent
- * (e.g. tests, or a run with no worker pool) — callers fall back to a fresh
- * extract for the missing files.
- */
+export type ParsedFileLoadSource = {
+  durableDir?: string;
+  durableKeys?: ReadonlySet<string>;
+};
+
+const listV8Shards = async (dir: string): Promise<string[]> => {
+  try {
+    return (await fs.readdir(dir)).filter(isV8ShardName).map((name) => path.join(dir, name));
+  } catch {
+    return [];
+  }
+};
+
 export const loadParsedFilesForPaths = async (
   storagePath: string,
   wantPaths: ReadonlySet<string>,
+  source?: ParsedFileLoadSource,
 ): Promise<Map<string, ParsedFile>> => {
   const out = new Map<string, ParsedFile>();
   if (wantPaths.size === 0) return out;
-  const dir = getParsedFileStoreDir(storagePath);
-  let shards: string[];
-  try {
-    shards = (await fs.readdir(dir)).filter((f) => f.endsWith('.json'));
-  } catch {
-    return out; // store absent
+  const shardPaths: string[] = [];
+  if (source?.durableDir && source.durableKeys && source.durableKeys.size > 0) {
+    for (const key of source.durableKeys) {
+      shardPaths.push(...(await listV8Shards(path.join(source.durableDir, key))));
+    }
   }
-  // Shared interning pool for this load — deduplicates strings ACROSS shards
-  // (one `int` / one repeated filePath for the whole language), which is where
-  // most of the saving comes from. Dropped when this function returns.
+  shardPaths.push(...(await listV8Shards(getParsedFileStoreDir(storagePath))));
   const pool = new Map<string, string>();
   let droppedSites = 0;
   let filesWithDroppedSites = 0;
@@ -446,57 +279,25 @@ export const loadParsedFilesForPaths = async (
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   };
-  for (let i = 0; i < shards.length; i++) {
-    const jsonName = shards[i];
-    const jsonFull = path.join(dir, jsonName);
-    try {
-      const sidecarRaw = await fs.readFile(shardPathsSidecarPath(jsonFull), 'utf-8');
-      // Fail closed: complete writers emit `<count>\n` plus one path per line
-      // and a trailing newline, never CR. Stripping CR (or accepting a
-      // newline-terminated prefix) would let a truncated listing skip JSON.
-      const listed = parseShardPathsSidecar(sidecarRaw);
-      if (listed === null) {
-        throw new Error('corrupt sidecar');
-      }
-      if (listed.length > 0 && !listed.some((p) => wantPaths.has(p))) {
-        await maybeYieldAndGc(false);
-        continue;
-      }
-    } catch {
-      // Missing or unreadable sidecar → read the shard (pre-sidecar stores).
+  for (const shardFull of shardPaths) {
+    const loaded = await tryLoadV8Cache(shardFull, pool, wantPaths);
+    if (loaded === undefined) {
+      await maybeYieldAndGc(false);
+      continue;
     }
-    let parsed: ParsedFile[] | undefined;
-    const v8Hit = await tryLoadV8Sidecar(jsonFull, pool);
-    if (v8Hit !== undefined && Array.isArray(v8Hit.value)) {
-      parsed = v8Hit.value as ParsedFile[];
-      bytesSinceGc += v8Hit.bytes;
-    } else {
-      // Per-shard def pool: a SymbolDefinition's three serialized copies live within
-      // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
-      // pool would retain defs of files NOT in `wantPaths` (loaded-but-discarded
-      // shards), reintroducing the leak; per-shard drops them with the shard.
-      const defPool = new Map<string, SymbolDefinition>();
-      const reviver = makeInterningReviver(pool, defPool);
-      let raw: string;
-      try {
-        raw = await fs.readFile(jsonFull, 'utf-8');
-      } catch {
-        continue; // skip a missing shard; missing files fall back to fresh extract
-      }
-      bytesSinceGc += Buffer.byteLength(raw, 'utf8');
-      try {
-        parsed = JSON.parse(raw, reviver) as ParsedFile[];
-      } catch {
-        parsed = undefined;
-      }
+    if (loaded.kind === 'skip') {
+      bytesSinceGc += loaded.bytes;
+      await maybeYieldAndGc(bytesSinceGc >= parsedFileLoadGc.byteBudget);
+      continue;
     }
+    bytesSinceGc += loaded.bytes;
+    const parsed = Array.isArray(loaded.value) ? (loaded.value as ParsedFile[]) : undefined;
     const crossedBudget = bytesSinceGc >= parsedFileLoadGc.byteBudget;
     if (Array.isArray(parsed)) {
       for (const pf of parsed) {
         if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
         const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
         if (flow === undefined) {
-          // non-array garbage → distrust the file, re-extract
           rejectedFiles++;
           continue;
         }
@@ -522,19 +323,12 @@ export const loadParsedFilesForPaths = async (
     await maybeYieldAndGc(crossedBudget);
   }
   if (droppedSites > 0 || droppedChains > 0) {
-    // Facts for the dropped sites are omitted this run (the file itself is
-    // retained, so no re-extract happens) — surface it so a recurring drop
-    // on every warm load is observable rather than silent (#2522 review).
     logger.warn(
       { droppedSites, droppedChains, files: filesWithDroppedSites },
       'parsedfile-store: dropped malformed/over-bound sites at load; files retained without those facts',
     );
   }
   if (rejectedFiles > 0) {
-    // The other half of the same defect. A rejected file silently falls back to
-    // a fresh extract EVERY load, so a writer that keeps minting what this
-    // reader keeps refusing is a permanent warm-cache miss that costs real time
-    // and says nothing about why.
     logger.warn(
       { rejectedFiles },
       'parsedfile-store: rejected shard entries at load (untrusted shape); those files re-extract every run',
@@ -543,16 +337,6 @@ export const loadParsedFilesForPaths = async (
   return out;
 };
 
-/**
- * Treat the durable ParsedFile store as an untrusted serialization boundary.
- * Sanitation is per-SITE, not per-file: one malformed or over-bound fact drops
- * only itself (counted, logged by the caller), so a legitimately pathological
- * source file cannot push its whole ParsedFile into a permanent, silent
- * warm-cache-miss reparse loop (#2522 review). Only a non-array field —
- * i.e. garbage that says the serialization itself is untrustworthy — rejects
- * the file, and `undefined` (never emitted / no facts) passes through.
- * Returns `undefined` for the reject-file case.
- */
 function sanitizeCallableFlowSites(
   value: unknown,
 ): { sites: readonly CallableFlowSite[] | undefined; dropped: number } | undefined {
@@ -750,12 +534,10 @@ function isSafeIndex(value: unknown): boolean {
 
 // ─── Durable, content-addressed sibling store (warm-cache coverage) ──────────
 //
-// Layout: `<durableDir>/<chunkHash>/<chunkHash>-w<tid>-<seq>.json` plus a
+// Layout: `<durableDir>/<chunkHash>/<chunkHash>-w<tid>-<seq>.v8` plus a
 // top-level `<durableDir>/index.json` = `{version, keys:[chunkHash…]}`. One
 // subdir per chunk hash so a chunk's (possibly several) shards collect and
-// prune as a unit, and so `readdir(<chunkHash>/)` is O(shards-of-this-chunk),
-// not O(all-history). Shards are byte-identical to run-scoped shards (same
-// `serializeParsedFileShard`); restore is a verbatim copy, never a re-serialize.
+// prune as a unit. Warm hits load these files in place.
 
 interface DurableParsedFileIndex {
   version: string;
@@ -785,10 +567,6 @@ export const prepareDurableParsedFileChunk = async (
   await fs.mkdir(dir, { recursive: true });
 };
 
-// Per-process set of durable chunk subdirs already `mkdir`ed (mirrors
-// `createdStoreDirs`) so the worker doesn't `mkdirSync` on every shard.
-const createdDurableDirs = new Set<string>();
-
 /**
  * Synchronous durable-shard writer for use INSIDE a parse worker, alongside
  * {@link persistParsedFileShardSync}. Writes the SAME bytes to a content-addressed
@@ -798,99 +576,34 @@ const createdDurableDirs = new Set<string>();
  * uniqueness that makes the run-scoped `w<tid>-<seq>` name safe, prefixed by
  * content. No-op for an empty chunk.
  */
+
+const createdDurableDirs = new Set<string>();
+
 export const persistDurableParsedFileShardSync = (
   durableDir: string,
   chunkHash: string,
   threadId: number,
   shardSeq: number,
   parsedFiles: readonly ParsedFile[],
-): void => {
-  let payload = serializeParsedFileShard(parsedFiles);
-  if (payload === null) return;
+): boolean => {
+  if (parsedFiles.length === 0) return true;
   const dir = durableChunkDir(durableDir, chunkHash);
   if (!createdDurableDirs.has(dir)) {
     mkdirSync(dir, { recursive: true });
     createdDurableDirs.add(dir);
   }
-  const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`);
-  const jsonBytes = Buffer.byteLength(payload, 'utf8');
-  const generation = newV8Generation();
-  const plan = invalidatePriorV8GenerationSync(dest, generation, jsonBytes);
-  if (plan === 'blocked') return;
-  dropPathSidecarSync(dest);
-  writeFileSync(dest, payload, 'utf-8');
-  payload = null;
-  if (plan === 'json+v8') {
-    writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes, generation);
-  }
-  writeShardPathsSidecarSync(dest, parsedFiles);
+  const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.v8`);
+  return writeV8CacheFileSync(dest, parsedFiles, shardFilePaths(parsedFiles));
 };
 
-/**
- * Restore a cached chunk's durable shards into the run-scoped store on a warm
- * hit. Verbatim bytes (no parse, no re-serialize), published by `fs.link`
- * where the filesystem allows it, otherwise copy-to-tmp + rename over the dest
- * name. `linkOrCopyFile` may replace a destination directory entry but must
- * never write through the inode that name currently references — so a leftover
- * dest that happens to be a hardlink into `parsedfile-cache/` cannot be
- * truncated. Restored names already carry the chunk hash, so they never collide
- * with the worker's run-scoped `w<tid>-<seq>` shards; `clearParsedFileStore`
- * only unlinks entries. Returns the number of shards restored (0 ⇒ no durable
- * coverage for this chunk; caller treats it as a miss).
- */
-export const restoreDurableParsedFileShard = async (
+export const durableChunkHasShards = async (
   durableDir: string,
-  runStoragePath: string,
   chunkHash: string,
-): Promise<number> => {
-  const src = durableChunkDir(durableDir, chunkHash);
-  let shards: string[];
-  try {
-    shards = (await fs.readdir(src)).filter((f) => f.endsWith('.json'));
-  } catch {
-    return 0; // no durable shards for this chunk
-  }
-  if (shards.length === 0) return 0;
-  const dst = getParsedFileStoreDir(runStoragePath);
-  await fs.mkdir(dst, { recursive: true });
-  let restored = 0;
-  for (const name of shards) {
-    const srcJson = path.join(src, name);
-    const dstJson = path.join(dst, name);
-    if (!(await prepareCopiedShardDestination(dstJson))) continue;
-    await dropPathSidecar(dstJson);
-    await linkOrCopyFile(srcJson, dstJson);
-    restored++;
-    await copyV8SidecarIfPresent(srcJson, dstJson);
-    try {
-      await linkOrCopyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
-    } catch (copyErr) {
-      if (!isEnoent(copyErr)) {
-        warnSidecarIo(
-          copyErr,
-          srcJson,
-          'parsedfile-store: durable path sidecar copy failed; JSON remains authoritative',
-        );
-        continue;
-      }
-      try {
-        await fs.unlink(shardPathsSidecarPath(dstJson));
-      } catch (err) {
-        ignoreMissingSidecarUnlink(err, dstJson);
-      }
-    }
-  }
-  return restored;
+): Promise<boolean> => {
+  const shards = await listV8Shards(durableChunkDir(durableDir, chunkHash));
+  return shards.length > 0;
 };
 
-/**
- * Read the durable index and return the set of chunk hashes it vouches for,
- * gated on `expectedVersion` (`PARSE_CACHE_VERSION`). A version mismatch or a
- * missing/corrupt index returns the empty set — the caller then treats every
- * chunk as a durable miss and re-dispatches workers (NEVER the main-thread
- * `extractParsedFile` fallback), which rewrites the durable store under the new
- * version. Mirrors `loadParseCache`'s version-invalidation contract.
- */
 export const loadDurableParsedFileIndex = async (
   durableDir: string,
   expectedVersion: string,
@@ -931,7 +644,7 @@ export const pruneAndSaveDurableParsedFileStore = async (
     const full = path.join(durableDir, name);
     if (keepKeys.has(name)) {
       try {
-        const shards = (await fs.readdir(full)).filter((f) => f.endsWith('.json'));
+        const shards = (await fs.readdir(full)).filter((f) => f.endsWith('.v8'));
         if (shards.length > 0) {
           survivors.push(name);
           continue;

@@ -31,14 +31,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
-import {
-  copyV8SidecarIfPresent,
-  invalidatePriorV8Generation,
-  newV8Generation,
-  tryLoadV8Sidecar,
-  writeV8SidecarBestEffort,
-  type V8Invalidation,
-} from './v8-sidecar.js';
+import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sidecar.js';
 
 /**
  * Cache version composed of:
@@ -671,7 +664,11 @@ import {
 // `route-extractors/` and `workers/` module content — would close the missing-
 // bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 80;
+// 80 -> 81: ParsedFile and parse-cache shards are one immutable `.v8` envelope
+// each (no JSON/path/generation siblings). A v80 index still names `.json`
+// keys and would skip workers while scope-resolution found nothing — the
+// #1983 main-thread reparse. origin/main at allocation is 80.
+const SCHEMA_BUMP = 81;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -907,7 +904,7 @@ const getCacheIndexPath = (storagePath: string): string =>
   path.join(getCacheDirPath(storagePath), CACHE_INDEX_FILENAME);
 
 const getCacheChunkPath = (storagePath: string, chunkHash: string): string =>
-  path.join(getCacheDirPath(storagePath), `${chunkHash}.json`);
+  path.join(getCacheDirPath(storagePath), `${chunkHash}.v8`);
 
 /**
  * Drop fields that are not replayed by `mergeChunkResults` / parse-impl after
@@ -939,13 +936,11 @@ const readParseCacheChunkFromDisk = async (
   if (!isValidChunkCacheKey(chunkHash)) return undefined;
   try {
     const chunkPath = getCacheChunkPath(storagePath, chunkHash);
-    const v8Hit = await tryLoadV8Sidecar(chunkPath);
-    if (v8Hit !== undefined && Array.isArray(v8Hit.value)) {
+    const v8Hit = await tryLoadV8Cache(chunkPath);
+    if (v8Hit?.kind === 'hit' && Array.isArray(v8Hit.value)) {
       return v8Hit.value as ParseWorkerResult[];
     }
-    const chunkRaw = await fs.readFile(chunkPath, 'utf-8');
-    const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
-    return Array.isArray(chunkData) ? chunkData : undefined;
+    return undefined;
   } catch {
     return undefined;
   }
@@ -988,34 +983,16 @@ export const persistParseCacheChunk = async (
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
     }
-    let payload: string | undefined = JSON.stringify(slim, mapReplacer);
     const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
-    const jsonBytes = Buffer.byteLength(payload, 'utf8');
-    const generation = newV8Generation();
-    const writeJson = async (json: string): Promise<V8Invalidation> => {
-      const plan = await invalidatePriorV8Generation(chunkPath, generation, jsonBytes);
-      if (plan === 'blocked') return plan;
-      await fs.writeFile(chunkPath, json, 'utf-8');
-      return plan;
-    };
-    let outcome: V8Invalidation;
-    try {
-      outcome = await writeJson(payload);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      // Long-lived analyze --watch processes can replace the sharded cache
-      // directory after this process-local memo recorded it as created.
+    let ok = await writeV8CacheFile(chunkPath, slim);
+    if (!ok) {
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
-      outcome = await writeJson(payload);
+      ok = await writeV8CacheFile(chunkPath, slim);
     }
-    payload = undefined;
-    if (outcome === 'blocked') {
+    if (!ok) {
       cache.entries.set(chunkHash, slim);
       return;
-    }
-    if (outcome === 'json+v8') {
-      await writeV8SidecarBestEffort(chunkPath, slim, jsonBytes, generation);
     }
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
@@ -1119,37 +1096,17 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   // index from what we persisted, not from the raw usedKeys snapshot.
   const writtenKeys: string[] = [];
   for (const chunkHash of keys) {
-    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
+    const chunkPath = path.join(tmpDir, `${chunkHash}.v8`);
     const inMemory = cache.entries.get(chunkHash);
     if (inMemory !== undefined) {
-      let payload: string;
-      try {
-        payload = JSON.stringify(inMemory, mapReplacer);
-      } catch {
-        continue;
+      if (await writeV8CacheFile(chunkPath, inMemory)) {
+        writtenKeys.push(chunkHash);
       }
-      const jsonBytes = Buffer.byteLength(payload, 'utf8');
-      const generation = newV8Generation();
-      const plan = await invalidatePriorV8Generation(chunkPath, generation, jsonBytes);
-      if (plan === 'blocked') continue;
-      await fs.writeFile(chunkPath, payload, 'utf-8');
-      payload = '';
-      if (plan === 'json+v8') {
-        await writeV8SidecarBestEffort(chunkPath, inMemory, jsonBytes, generation);
-      }
-      writtenKeys.push(chunkHash);
       continue;
     }
     const existingPath = getCacheChunkPath(storagePath, chunkHash);
-    try {
-      await fs.copyFile(existingPath, chunkPath);
-      // Sidecars are hardlinked into tmpDir when the FS allows it (#3090).
-      // Publication is rm(cacheDir)+rename(tmpDir, cacheDir), which only
-      // unlinks old names — linked inodes survive at the new path.
-      await copyV8SidecarIfPresent(existingPath, chunkPath);
+    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
       writtenKeys.push(chunkHash);
-    } catch {
-      /* shard missing — skip; next run treats as cache miss */
     }
   }
 

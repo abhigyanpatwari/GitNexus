@@ -40,6 +40,7 @@ import {
   clearParsedFileStore,
   loadParsedFilesForPaths,
   forceGc,
+  getDurableParsedFileDir,
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
 import type { UndecidedSatisfaction } from '../contract/scope-resolver.js';
@@ -402,7 +403,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         // ParsedFiles are resident at a time.
         const loadStoreFor = async (paths: ReadonlySet<string>): Promise<void> => {
           if (!parsedFileStorePath) return;
-          const fromDisk = await loadParsedFilesForPaths(parsedFileStorePath, paths);
+          const fromDisk = await loadParsedFilesForPaths(parsedFileStorePath, paths, {
+            durableDir: getDurableParsedFileDir(parsedFileStorePath),
+            durableKeys: ctx.options?.parseCache?.usedKeys,
+          });
           for (const [fp, pf] of fromDisk) preExtractedByPath.set(fp, pf);
         };
 
