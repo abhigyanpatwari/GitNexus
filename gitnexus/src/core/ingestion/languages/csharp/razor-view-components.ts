@@ -40,9 +40,7 @@ export interface RazorViewComponentConfig {
 }
 
 function withoutRazorComments(source: string): string {
-  return source
-    .replace(/@\*[\s\S]*?\*@/g, '')
-    .replace(/<!--[\s\S]*?-->/g, '');
+  return source.replace(/@\*[\s\S]*?\*@/g, '').replace(/<!--[\s\S]*?-->/g, '');
 }
 
 function withoutCsharpComments(source: string): string {
@@ -82,7 +80,9 @@ export function extractCsharpViewComponentInvocations(source: string): string[] 
 }
 
 /** Extract explicit `[ViewComponent(Name = "...")]` aliases by class name. */
-export function extractViewComponentAliases(source: string): ReadonlyMap<string, readonly string[]> {
+export function extractViewComponentAliases(
+  source: string,
+): ReadonlyMap<string, readonly string[]> {
   const aliases = new Map<string, string[]>();
   for (const match of withoutCsharpComments(source).matchAll(VIEW_COMPONENT_ALIAS_RE)) {
     const alias = match[1]!;
