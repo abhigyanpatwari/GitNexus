@@ -409,16 +409,6 @@ function componentNameFromLiteral(value: string | undefined): string | undefined
   return value;
 }
 
-function catalogNamesFromAlias(alias: string): string[] {
-  const names = [alias];
-  const dotted = alias.lastIndexOf('.');
-  if (dotted >= 0) {
-    const shortName = alias.slice(dotted + 1);
-    if (COMPONENT_NAME_RE.test(shortName)) names.push(shortName);
-  }
-  return names;
-}
-
 function isViewComponentAttributeName(name: string): boolean {
   return name === 'ViewComponent' || name === 'ViewComponentAttribute';
 }
@@ -592,7 +582,7 @@ export function extractViewComponentAliasBinds(source: string): ViewComponentAli
       className,
       startLine: start?.startLine ?? startLine,
       startCol: start?.startCol ?? startCol,
-      aliases: [...new Set(aliases.flatMap(catalogNamesFromAlias))],
+      aliases: [...new Set(aliases)],
     });
     pending.length = 0;
   };

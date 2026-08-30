@@ -116,13 +116,13 @@ describe('Razor ViewComponent convention extraction', () => {
       [ViewComponent(Name = "AccountMenu")]
       public sealed class MenuViewComponent : ViewComponent {}
 
-      [Microsoft.AspNetCore.Mvc.ViewComponentAttribute(Name = "Checkout")]
+      [Microsoft.AspNetCore.Mvc.ViewComponentAttribute(Name = "Admin.Checkout")]
       internal class CheckoutWidget : ViewComponent {}
     `;
     expect(extractViewComponentAliases(source)).toEqual(
       new Map([
         ['MenuViewComponent', ['AccountMenu']],
-        ['CheckoutWidget', ['Checkout']],
+        ['CheckoutWidget', ['Admin.Checkout']],
       ]),
     );
   });
