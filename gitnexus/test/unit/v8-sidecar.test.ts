@@ -5,6 +5,7 @@ import path from 'path';
 import {
   inspectV8Cache,
   internGraphStrings,
+  parseCachePathListing,
   tryLoadV8Cache,
   writeV8CacheFile,
   V8_CACHE_FORMAT,
@@ -64,6 +65,28 @@ describe('v8 cache envelope', () => {
       const pathBytes = buf.readUInt32LE(pathBytesOff);
       const pathsOff = 16 + v8len + 12;
       buf.fill(0x00, pathsOff, pathsOff + Math.min(pathBytes, 1));
+      await writeFile(filePath, buf);
+      const hit = await tryLoadV8Cache(filePath, undefined, new Set(['other.c']));
+      expect(hit?.kind).toBe('hit');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats invalid UTF-8 path listing bytes as untrusted', () => {
+    expect(parseCachePathListing(Buffer.from([0x31, 0x0a, 0xff, 0x0a]))).toBeNull();
+  });
+
+  it('deserializes when the path listing is invalid UTF-8 instead of skipping', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-utf8-'));
+    try {
+      const filePath = path.join(dir, 'shard.v8');
+      await writeV8CacheFile(filePath, [{ filePath: 'a.c' }], ['a.c']);
+      const buf = await readFile(filePath);
+      const v8len = buf.readUInt16LE(14);
+      const pathBytes = buf.readUInt32LE(16 + v8len + 4);
+      const pathsOff = 16 + v8len + 12;
+      buf.fill(0xff, pathsOff, pathsOff + Math.min(pathBytes, 1));
       await writeFile(filePath, buf);
       const hit = await tryLoadV8Cache(filePath, undefined, new Set(['other.c']));
       expect(hit?.kind).toBe('hit');

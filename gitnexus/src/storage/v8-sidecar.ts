@@ -96,7 +96,12 @@ export const encodeCachePathListing = (paths: readonly string[]): Buffer => {
  */
 export const parseCachePathListing = (raw: Buffer): string[] | null => {
   if (raw.byteLength === 0) return [];
-  const sidecarRaw = raw.toString('utf8');
+  let sidecarRaw: string;
+  try {
+    sidecarRaw = new TextDecoder('utf-8', { fatal: true }).decode(raw);
+  } catch {
+    return null;
+  }
   if (sidecarRaw.includes('\0') || sidecarRaw.includes('\r') || !sidecarRaw.endsWith('\n')) {
     return null;
   }

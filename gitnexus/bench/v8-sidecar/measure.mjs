@@ -54,7 +54,7 @@ try {
   }
   if (want.size === 0) {
     throw new Error(
-      `no file paths readable from the first ${Math.min(PATH_SOURCE_SHARDS, names.length)} of ${names.length} shard(s) in ${srcStoreDir} — shards may be from another Node/V8 runtime, so re-analyze with this runtime`,
+      `no file paths readable from ${names.length} shard(s) in ${srcStoreDir} — shards may be from another Node/V8 runtime, so re-analyze with this runtime`,
     );
   }
 
