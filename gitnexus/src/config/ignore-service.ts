@@ -1,5 +1,6 @@
 import ignore, { type Ignore } from 'ignore';
 import { existsSync } from 'fs';
+import { glob } from 'glob';
 import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
@@ -406,6 +407,39 @@ export interface IgnoreOptions {
   strictRepoControlFiles?: boolean;
 }
 
+const addNestedIgnoreRules = async (repoPath: string, ig: Ignore): Promise<boolean> => {
+  let hasRules = false;
+  const controlFiles = await glob('**/.gitignore', { cwd: repoPath, dot: true, nodir: true });
+  for (const relativeFile of controlFiles) {
+    if (relativeFile === '.gitignore') continue;
+    const directory = nodePath.dirname(relativeFile).replace(/\\/g, '/');
+    // Nested repositories are separate projects. Their control files must not
+    // affect the parent scan; the boundary itself is pruned below.
+    if (directory.split('/').some((segment, index, parts) =>
+      existsSync(nodePath.join(repoPath, ...parts.slice(0, index + 1), '.git')),
+    )) continue;
+    try {
+      const content = await fs.readFile(nodePath.join(repoPath, relativeFile), 'utf-8');
+      const transformed = content.split(/\\r?\\n/).map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) return line;
+        const negated = trimmed.startsWith('!');
+        const pattern = negated ? trimmed.slice(1) : trimmed;
+        if (pattern.startsWith('#') || !pattern) return line;
+        const anchored = pattern.startsWith('/');
+        const body = anchored ? pattern.slice(1) : pattern;
+        const scoped = body.includes('/') ? `${directory}/${body}` : `${directory}/**/${body}`;
+        return `${negated ? '!' : ''}${scoped}`;
+      }).join('\n');
+      ig.add(transformed);
+      hasRules = true;
+    } catch (err) {
+      logger.warn(`  Warning: could not read nested ${relativeFile}: ${(err as Error).message}`);
+    }
+  }
+  return hasRules;
+};
+
 export const loadIgnoreRules = async (
   repoPath: string,
   options?: IgnoreOptions,
@@ -458,6 +492,8 @@ export const loadIgnoreRules = async (
       logger.warn(`  Warning: could not read ${filename}: ${(err as Error).message}`);
     }
   }
+
+  if (!skipGitignore) hasRules = (await addNestedIgnoreRules(repoPath, ig)) || hasRules;
 
   return hasRules ? ig : null;
 };
@@ -583,6 +619,9 @@ export const createIgnoreFilter = async (repoPath: string, options?: IgnoreOptio
       // last-match-wins: `!__tests__/` + `__tests__/generated/` still
       // blocks descent into `__tests__/generated/`.
       if (ig && rel && hasExplicitUnignore(ig, rel) && !ig.ignores(rel + '/')) return false;
+      // A nested Git checkout is a separate repository. Stop at its root so
+      // the parent analysis never indexes submodule/vendor working trees (#2675).
+      if (rel && existsSync(nodePath.join(repoPath, rel, '.git'))) return true;
       // Hardcoded and path-aware rules prune whole trees before glob walks them.
       if (rel && isHardcodedIgnoredDirectoryAtPath(repoPath, nodePath.join(repoPath, rel))) {
         return true;
