@@ -28,9 +28,14 @@ describe('Ruby dependency resolution config (#2966)', () => {
     );
     writeFileSync(
       join(repo, 'Gemfile.lock'),
-      ['GEM', '  specs:', '    actionpack (8.0.0)', '      rack (~> 3.0)', 'DEPENDENCIES'].join(
-        '\n',
-      ),
+      [
+        'GEM',
+        '  specs:',
+        '    actionpack (8.0.0)',
+        '      rack (~> 3.0)',
+        '    rack (3.0.0)',
+        'DEPENDENCIES',
+      ].join('\n'),
     );
     mkdirSync(join(repo, 'packages', 'widget'), { recursive: true });
     writeFileSync(
@@ -47,7 +52,7 @@ describe('Ruby dependency resolution config (#2966)', () => {
     const root = config?.scopesByDirectory.get('');
     const widget = config?.scopesByDirectory.get('packages/widget');
 
-    expect(root?.externalRequirePrefixes).toEqual(new Set(['rails', 'pg', 'actionpack']));
+    expect(root?.externalRequirePrefixes).toEqual(new Set(['rails', 'pg', 'actionpack', 'rack']));
     expect(widget?.externalRequirePrefixes).toEqual(new Set(['dry-types', 'dry/types', 'rspec']));
     expect(widget?.localLoadRootsByPrefix.get('widget')).toEqual(['packages/widget/src']);
   });
