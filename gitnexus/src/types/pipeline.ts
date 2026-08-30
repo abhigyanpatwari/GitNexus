@@ -16,6 +16,18 @@ export interface PipelineResult {
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
   /**
+   * Runs the community/process phases that `skipDerivedGraphPhases` held back
+   * (#3016), against the same graph and phase outputs the pipeline already
+   * produced, and populates `communityResult`/`processResult` on this object.
+   *
+   * Present ONLY when those phases were skipped for that reason, so a caller
+   * that optimistically skipped them can still get a byte-identical derived
+   * layer on the paths that turn out to need one (full rebuild, escalated
+   * write, or an incremental run with deleted files). Absent means the phases
+   * either already ran or were disabled for an unrelated reason.
+   */
+  runDeferredDerivedPhases?: () => Promise<void>;
+  /**
    * Additive diagnostics for registry-primary resolution decisions that
    * deliberately suppress edge emission. Empty means no diagnostic was
    * produced; graph edge semantics are unchanged.
