@@ -41,11 +41,11 @@
  * that gap we ALSO write the worker's ParsedFiles to a second, CONTENT-ADDRESSED
  * store keyed by the parse chunk hash (`getDurableParsedFileDir`), which mirrors
  * the parse cache's lifecycle (persists across runs, pruned by `usedKeys`,
- * version-tied via `PARSE_CACHE_VERSION`). Warm hits load those durable `.v8`
- * shards in place — no restore copy into the run store. Content-addressing
- * makes stale reuse impossible: a changed file changes its chunk hash, which
- * misses BOTH stores and re-dispatches. Load overlays this run's `usedKeys`
- * durable dirs first, then the run store so a same-run miss write wins.
+ * version-tied via `PARSE_CACHE_VERSION`). On a warm hit the chunk's immutable
+ * durable shards are hardlinked (or atomically copied) into the run store after
+ * their envelope metadata proves complete coverage. That pins a stable snapshot
+ * before workers are skipped, even when another branch refreshes the shared
+ * durable directory concurrently.
  */
 
 import { promises as fs, mkdirSync } from 'node:fs';
@@ -61,7 +61,13 @@ import type {
 import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-codec.js';
 import { logger } from '../core/logger.js';
 import { mapReviver } from './parse-cache.js';
-import { tryLoadV8Cache, writeV8CacheFile, writeV8CacheFileSync } from './v8-sidecar.js';
+import { linkOrCopyFile } from './fs-atomic.js';
+import {
+  inspectV8Cache,
+  tryLoadV8Cache,
+  writeV8CacheFile,
+  writeV8CacheFileSync,
+} from './v8-sidecar.js';
 
 const STORE_DIRNAME = 'parsedfile-store';
 const DURABLE_DIRNAME = 'parsedfile-cache';
@@ -181,7 +187,7 @@ const LOAD_YIELD_EVERY_SHARDS = 128;
  */
 export const parsedFileLoadGc = {
   run: forceGc,
-  /** Raw UTF-8 JSON shard bytes between GCs (#3086). Tests may lower this. */
+  /** V8 envelope bytes visited between GCs (#3086). Tests may lower this. */
   byteBudget: 128 * 1024 * 1024,
 };
 
@@ -535,13 +541,14 @@ function isSafeIndex(value: unknown): boolean {
 // ─── Durable, content-addressed sibling store (warm-cache coverage) ──────────
 //
 // Layout: `<durableDir>/<chunkHash>/<chunkHash>-w<tid>-<seq>.v8` plus a
-// top-level `<durableDir>/index.json` = `{version, keys:[chunkHash…]}`. One
-// subdir per chunk hash so a chunk's (possibly several) shards collect and
-// prune as a unit. Warm hits load these files in place.
+// top-level `<durableDir>/index.json` that records each chunk hash's actual
+// persisted file-path coverage. One subdir per chunk hash so a chunk's
+// (possibly several) shards collect and prune as a unit. Warm hits snapshot
+// these files into the run store before worker dispatch is skipped.
 
 interface DurableParsedFileIndex {
   version: string;
-  keys: string[];
+  entries: Record<string, string[]>;
 }
 
 /** Durable store dir — a sibling of `parsedfile-store/`, NEVER cleared per run. */
@@ -596,25 +603,90 @@ export const persistDurableParsedFileShardSync = (
   return writeV8CacheFileSync(dest, parsedFiles, shardFilePaths(parsedFiles));
 };
 
+/**
+ * Validate and snapshot one durable chunk into the run store. Every envelope
+ * must be runtime-compatible and integrity-valid, and together they must match
+ * the path coverage recorded when the durable index was published. Linking
+ * before returning pins the inodes against concurrent branch-cache rotation.
+ */
 export const durableChunkHasShards = async (
   durableDir: string,
+  runStoragePath: string,
   chunkHash: string,
+  expectedPaths: ReadonlySet<string>,
 ): Promise<boolean> => {
-  const shards = await listV8Shards(durableChunkDir(durableDir, chunkHash));
-  return shards.length > 0;
+  const sourceDir = durableChunkDir(durableDir, chunkHash);
+  const shards = await listV8Shards(sourceDir);
+  if (shards.length === 0 || expectedPaths.size === 0) return false;
+
+  const runDir = getParsedFileStoreDir(runStoragePath);
+  try {
+    await fs.mkdir(runDir, { recursive: true });
+  } catch {
+    return false;
+  }
+  const restored: string[] = [];
+  const covered = new Set<string>();
+  const rollback = async (): Promise<boolean> => {
+    await Promise.all(restored.map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
+    return false;
+  };
+
+  for (const sourcePath of shards) {
+    const name = path.basename(sourcePath);
+    const destinationPath = path.join(runDir, name);
+    try {
+      await linkOrCopyFile(sourcePath, destinationPath);
+      restored.push(destinationPath);
+    } catch {
+      return rollback();
+    }
+    const inspected = await inspectV8Cache(destinationPath);
+    if (!inspected) return rollback();
+    for (const filePath of inspected.paths) {
+      if (!expectedPaths.has(filePath)) return rollback();
+      covered.add(filePath);
+    }
+  }
+
+  if (
+    covered.size !== expectedPaths.size ||
+    [...expectedPaths].some((filePath) => !covered.has(filePath))
+  ) {
+    return rollback();
+  }
+  return true;
 };
 
 export const loadDurableParsedFileIndex = async (
   durableDir: string,
   expectedVersion: string,
-): Promise<Set<string>> => {
+): Promise<Map<string, ReadonlySet<string>>> => {
   try {
     const raw = await fs.readFile(path.join(durableDir, DURABLE_INDEX_FILENAME), 'utf-8');
     const idx = JSON.parse(raw) as DurableParsedFileIndex;
-    if (idx?.version !== expectedVersion || !Array.isArray(idx.keys)) return new Set();
-    return new Set(idx.keys);
+    if (
+      idx?.version !== expectedVersion ||
+      idx.entries === null ||
+      typeof idx.entries !== 'object' ||
+      Array.isArray(idx.entries)
+    ) {
+      return new Map();
+    }
+    const entries = new Map<string, ReadonlySet<string>>();
+    for (const [key, paths] of Object.entries(idx.entries)) {
+      if (
+        !Array.isArray(paths) ||
+        paths.length === 0 ||
+        paths.some((filePath) => typeof filePath !== 'string')
+      ) {
+        return new Map();
+      }
+      entries.set(key, new Set(paths));
+    }
+    return entries;
   } catch {
-    return new Set();
+    return new Map();
   }
 };
 
@@ -623,9 +695,9 @@ export const loadDurableParsedFileIndex = async (
  * be the parse cache's surviving on-disk keys (so the two stores stay coherent:
  * a chunk is "cached" iff BOTH its parse-cache shard and its durable shards
  * exist; a quarantined chunk — no parse-cache shard — drops its durable subdir
- * here and re-dispatches next run). Only subdirs with ≥1 shard are indexed
- * (mirrors `saveParseCache`'s written-keys discipline — never vouch for a chunk
- * hash with no backing shard). The index write is tmp+rename atomic.
+ * here and re-dispatches next run). Only chunks whose envelopes all validate
+ * are indexed, together with their exact persisted path coverage (never vouch
+ * for a missing/corrupt shard). The index write is tmp+rename atomic.
  */
 export const pruneAndSaveDurableParsedFileStore = async (
   durableDir: string,
@@ -638,16 +710,28 @@ export const pruneAndSaveDurableParsedFileStore = async (
   } catch {
     return; // nothing written this run
   }
-  const survivors: string[] = [];
+  const survivors: Record<string, string[]> = {};
   for (const name of entries) {
     if (name === DURABLE_INDEX_FILENAME) continue;
     const full = path.join(durableDir, name);
     if (keepKeys.has(name)) {
       try {
-        const shards = (await fs.readdir(full)).filter((f) => f.endsWith('.v8'));
+        const shards = await listV8Shards(full);
         if (shards.length > 0) {
-          survivors.push(name);
-          continue;
+          const covered = new Set<string>();
+          let valid = true;
+          for (const shard of shards) {
+            const inspected = await inspectV8Cache(shard);
+            if (!inspected) {
+              valid = false;
+              break;
+            }
+            for (const filePath of inspected.paths) covered.add(filePath);
+          }
+          if (valid && covered.size > 0) {
+            survivors[name] = [...covered].sort();
+            continue;
+          }
         }
       } catch {
         /* not a readable dir → drop below */
@@ -655,7 +739,7 @@ export const pruneAndSaveDurableParsedFileStore = async (
     }
     await fs.rm(full, { recursive: true, force: true });
   }
-  const idx: DurableParsedFileIndex = { version, keys: survivors };
+  const idx: DurableParsedFileIndex = { version, entries: survivors };
   const tmp = path.join(durableDir, `${DURABLE_INDEX_FILENAME}.tmp`);
   await fs.mkdir(durableDir, { recursive: true });
   await fs.writeFile(tmp, JSON.stringify(idx), 'utf-8');

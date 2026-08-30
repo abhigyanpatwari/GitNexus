@@ -6,22 +6,24 @@
  * or deserialize-failed envelope is a cache miss (re-extract / re-dispatch).
  * Tiny JSON manifests (`index.json`) stay outside this module.
  *
- * Envelope: magic, format, Node major, V8 version, optional path listing, then
- * `v8.serialize` of the live graph. Path bytes live before the payload so a
- * ParsedFile loader can skip a shard whose listing misses `wantPaths` without
- * deserializing. An unreadable/invalid listing is fail-closed: deserialize,
- * never skip.
+ * Envelope: magic, format, Node major, V8 version, optional path listing,
+ * `v8.serialize` of the live graph, then its SHA-256 digest. Path bytes live
+ * before the payload so a ParsedFile loader can skip a shard whose listing
+ * misses `wantPaths` without deserializing. An unreadable/invalid listing is
+ * fail-closed: deserialize, never skip.
  */
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import v8 from 'node:v8';
 import { logger } from '../core/logger.js';
 import { linkOrCopyFile, writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
 
 const MAGIC = Buffer.from('GNXV8CF1', 'ascii');
 /** Envelope version — independent of PARSE_CACHE_VERSION / SCHEMA_BUMP. */
-export const V8_CACHE_FORMAT = 3;
+export const V8_CACHE_FORMAT = 4;
 const U32 = 4;
 const U16 = 2;
+const PAYLOAD_HASH_LEN = 32;
 const MAGIC_LEN = 8;
 const FIXED_PREFIX = MAGIC_LEN + U32 + U16 + U16; // magic + format + nodeMajor + v8len
 
@@ -135,7 +137,8 @@ const encodeEnvelope = (graph: unknown, paths: readonly string[]): Buffer | unde
   header.writeUInt32LE(pathListing.byteLength, off);
   off += U32;
   header.writeUInt32LE(payload.byteLength, off);
-  return Buffer.concat([header, pathListing, payload]);
+  const payloadHash = createHash('sha256').update(payload).digest();
+  return Buffer.concat([header, pathListing, payload, payloadHash]);
 };
 
 type EnvelopeMeta = {
@@ -180,6 +183,7 @@ const runtimeCompatible = (meta: EnvelopeMeta): boolean =>
 export type V8CacheHit = { kind: 'hit'; value: unknown; bytes: number };
 export type V8CacheSkip = { kind: 'skip'; bytes: number };
 export type V8CacheLoad = V8CacheHit | V8CacheSkip;
+export type V8CacheInspection = { paths: readonly string[]; bytes: number };
 
 const readExact = async (
   fh: Awaited<ReturnType<typeof fs.open>>,
@@ -194,6 +198,56 @@ const readExact = async (
     got += bytesRead;
   }
   return buf;
+};
+
+const payloadHashMatches = async (
+  fh: Awaited<ReturnType<typeof fs.open>>,
+  meta: EnvelopeMeta,
+): Promise<boolean> => {
+  const payload = await readExact(fh, meta.payloadOff, meta.payloadLen);
+  const expected = await readExact(fh, meta.payloadOff + meta.payloadLen, PAYLOAD_HASH_LEN);
+  if (!payload || !expected) return false;
+  return createHash('sha256').update(payload).digest().equals(expected);
+};
+
+/**
+ * Validate the immutable envelope metadata needed by the durable ParsedFile
+ * warm-hit gate without deserializing its payload. Atomic publication means a
+ * runtime-compatible envelope whose exact file length and counted path listing
+ * validate is a stable snapshot candidate; malformed/truncated envelopes miss.
+ */
+export const inspectV8Cache = async (filePath: string): Promise<V8CacheInspection | undefined> => {
+  let fh: Awaited<ReturnType<typeof fs.open>> | undefined;
+  try {
+    fh = await fs.open(filePath, 'r');
+    const st = await fh.stat();
+    const prefix = await readExact(fh, 0, Math.min(st.size, FIXED_PREFIX + 256 + U32 * 3));
+    if (!prefix) return undefined;
+    const meta = decodePrefix(prefix);
+    if (!meta || !runtimeCompatible(meta)) return undefined;
+    if (meta.payloadOff + meta.payloadLen + PAYLOAD_HASH_LEN !== st.size || meta.pathBytes === 0) {
+      return undefined;
+    }
+
+    const pathRaw =
+      prefix.byteLength >= meta.payloadOff
+        ? Buffer.from(prefix.subarray(meta.pathsOff, meta.payloadOff))
+        : await readExact(fh, meta.pathsOff, meta.pathBytes);
+    if (!pathRaw) return undefined;
+    const listed = parseCachePathListing(pathRaw);
+    if (listed === null || listed.length !== meta.pathCount || listed.length === 0) {
+      return undefined;
+    }
+    if (!(await payloadHashMatches(fh, meta))) return undefined;
+    return { paths: listed, bytes: st.size };
+  } catch (err) {
+    if (!isEnoent(err)) {
+      logger.debug({ err, filePath }, 'v8 cache: inspection failed; treating as miss');
+    }
+    return undefined;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
 };
 
 /**
@@ -216,7 +270,7 @@ export const tryLoadV8Cache = async (
     const meta = decodePrefix(prefix);
     if (!meta) return undefined;
     if (!runtimeCompatible(meta)) return undefined;
-    if (meta.payloadOff + meta.payloadLen !== st.size) return undefined;
+    if (meta.payloadOff + meta.payloadLen + PAYLOAD_HASH_LEN !== st.size) return undefined;
 
     let pathRaw = Buffer.alloc(0);
     if (meta.pathBytes > 0) {
@@ -231,13 +285,22 @@ export const tryLoadV8Cache = async (
 
     if (wantPaths && wantPaths.size > 0 && meta.pathBytes > 0) {
       const listed = parseCachePathListing(pathRaw);
-      if (listed !== null && listed.length > 0 && !listed.some((p) => wantPaths.has(p))) {
+      if (
+        listed !== null &&
+        listed.length === meta.pathCount &&
+        listed.length > 0 &&
+        !listed.some((p) => wantPaths.has(p))
+      ) {
         return { kind: 'skip', bytes: st.size };
       }
     }
 
     const payload = await readExact(fh, meta.payloadOff, meta.payloadLen);
     if (!payload) return undefined;
+    const expectedHash = await readExact(fh, meta.payloadOff + meta.payloadLen, PAYLOAD_HASH_LEN);
+    if (!expectedHash || !createHash('sha256').update(payload).digest().equals(expectedHash)) {
+      return undefined;
+    }
     const value = v8.deserialize(payload);
     if (internPool) internGraphStrings(value, internPool);
     return { kind: 'hit', value, bytes: st.size };

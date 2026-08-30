@@ -2,9 +2,9 @@
 /**
  * Optional V8 sidecar warm-load bench (#3089).
  *
- * Not part of `npm test`. Compares interned JSON load vs V8 sidecar load of
- * the same ParsedFile shards already on disk. Replay of identical shards is
- * throughput-only — it is not unique-object scale.
+ * Not part of `npm test`. Measures repeated warm loads of the `.v8` ParsedFile
+ * shards already on disk through the production loader. Replay of identical
+ * shards is throughput-only — it is not unique-object scale.
  *
  * Copies the store into a temporary workspace first. The source cache is
  * never mutated.
@@ -12,11 +12,12 @@
  * Usage (from gitnexus/):
  *   node --expose-gc --import tsx bench/v8-sidecar/measure.mjs <storagePath>
  */
-import { cp, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { loadParsedFilesForPaths } from '../../src/storage/parsedfile-store.ts';
+import { tryLoadV8Cache } from '../../src/storage/v8-sidecar.ts';
 
 const srcStorage = process.argv[2];
 if (!srcStorage) {
@@ -27,22 +28,36 @@ if (!srcStorage) {
 const srcStoreDir = path.join(srcStorage, 'parsedfile-store');
 const benchRoot = await mkdtemp(path.join(tmpdir(), 'gnx-v8-bench-'));
 const storeDir = path.join(benchRoot, 'parsedfile-store');
+const PATH_SOURCE_SHARDS = 8;
+const RUNS = 3;
 
 try {
   await cp(srcStoreDir, storeDir, { recursive: true });
 
-  const names = (await readdir(storeDir)).filter(
-    (f) => f.endsWith('.json') && !f.includes('.json.'),
-  );
+  const names = (await readdir(storeDir))
+    .filter((f) => f.endsWith('.v8') && !f.includes('.v8.'))
+    .sort();
+  if (names.length === 0) {
+    throw new Error(
+      `no .v8 ParsedFile shards in ${srcStoreDir} — run an analyze that populates the store first`,
+    );
+  }
+
   const want = new Set();
-  for (const name of names.slice(0, 8)) {
-    const raw = await readFile(path.join(storeDir, name), 'utf8');
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) {
-      for (const pf of arr) {
-        if (pf && typeof pf.filePath === 'string') want.add(pf.filePath);
-      }
+  let sourceShards = 0;
+  for (const name of names) {
+    const loaded = await tryLoadV8Cache(path.join(storeDir, name), new Map());
+    if (loaded?.kind !== 'hit' || !Array.isArray(loaded.value)) continue;
+    sourceShards++;
+    for (const pf of loaded.value) {
+      if (pf && typeof pf.filePath === 'string') want.add(pf.filePath);
     }
+    if (sourceShards >= PATH_SOURCE_SHARDS) break;
+  }
+  if (want.size === 0) {
+    throw new Error(
+      `no file paths readable from the first ${Math.min(PATH_SOURCE_SHARDS, names.length)} of ${names.length} shard(s) in ${srcStoreDir} — shards may be from another Node/V8 runtime, so re-analyze with this runtime`,
+    );
   }
 
   const rss = () => Math.round(process.memoryUsage().rss / 1024 / 1024);
@@ -53,10 +68,15 @@ try {
     const t0 = performance.now();
     const loaded = await loadParsedFilesForPaths(benchRoot, want);
     const ms = Math.round(performance.now() - t0);
+    if (loaded.size !== want.size) {
+      throw new Error(`incomplete V8 load: requested ${want.size} paths but loaded ${loaded.size}`);
+    }
     if (typeof globalThis.gc === 'function') globalThis.gc();
     console.log(
       JSON.stringify({
         label,
+        shards: names.length,
+        wantPaths: want.size,
         files: loaded.size,
         ms,
         rssMiB: rss(),
@@ -65,12 +85,9 @@ try {
     );
   };
 
-  await run('v8-or-json');
-  for (const name of names) {
-    await rm(path.join(storeDir, `${name}.v8`), { force: true });
-    await rm(path.join(storeDir, `${name}.v8gen`), { force: true });
+  for (let i = 1; i <= RUNS; i++) {
+    await run(`v8-load-${i}`);
   }
-  await run('json-only');
 } finally {
   await rm(benchRoot, { recursive: true, force: true });
 }

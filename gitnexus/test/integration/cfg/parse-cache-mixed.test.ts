@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   getDurableParsedFileDir,
   persistDurableParsedFileShardSync,
+  durableChunkHasShards,
   loadParsedFilesForPaths,
 } from '../../../src/storage/parsedfile-store.js';
 import type { ParsedFile } from 'gitnexus-shared';
@@ -75,10 +76,9 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
     // What a worker writes at flush on a cache MISS (the cold half of a
     // mixed-mode run)…
     persistDurableParsedFileShardSync(durableDir, chunkHash, 7, 0, files.map(mkParsedFile));
-    const loaded = await loadParsedFilesForPaths(tempDir, new Set(files), {
-      durableDir,
-      durableKeys: new Set([chunkHash]),
-    });
+    const wanted = new Set(files);
+    expect(await durableChunkHasShards(durableDir, tempDir, chunkHash, wanted)).toBe(true);
+    const loaded = await loadParsedFilesForPaths(tempDir, wanted);
     expect(loaded.size).toBe(2);
     for (const filePath of files) {
       const pf = loaded.get(filePath);
@@ -105,11 +105,9 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
       mkParsedFile('src/same1.ts'),
       mkParsedFile('src/same2.ts'),
     ]);
-    const loaded = await loadParsedFilesForPaths(
-      tempDir,
-      new Set(['src/same1.ts', 'src/same2.ts']),
-      { durableDir, durableKeys: new Set([chunkHash]) },
-    );
+    const wanted = new Set(['src/same1.ts', 'src/same2.ts']);
+    expect(await durableChunkHasShards(durableDir, tempDir, chunkHash, wanted)).toBe(true);
+    const loaded = await loadParsedFilesForPaths(tempDir, wanted);
     const c1 = (loaded.get('src/same1.ts') as { cfgSideChannel?: FunctionCfg[] }).cfgSideChannel;
     const c2 = (loaded.get('src/same2.ts') as { cfgSideChannel?: FunctionCfg[] }).cfgSideChannel;
     expect(c1?.[0].bindings).toEqual(factCfg.bindings);

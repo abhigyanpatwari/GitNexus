@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 import {
+  inspectV8Cache,
   internGraphStrings,
   tryLoadV8Cache,
   writeV8CacheFile,
@@ -18,6 +19,8 @@ describe('v8 cache envelope', () => {
     expect(graph.a).toBe(graph.b);
     expect(graph.m).toBe(m);
     expect(graph.m.get('k')).toBe(graph.a);
+    expect([...pool.keys()].sort()).toEqual(['dup', 'k']);
+    expect(pool.get('dup')).toBe('dup');
   });
 
   it('round-trips a live graph including Maps', async () => {
@@ -69,6 +72,23 @@ describe('v8 cache envelope', () => {
     }
   });
 
+  it('deserializes when the envelope path count disagrees with the listing', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-count-'));
+    try {
+      const filePath = path.join(dir, 'shard.v8');
+      await writeV8CacheFile(filePath, [{ filePath: 'a.c' }], ['a.c']);
+      const buf = await readFile(filePath);
+      const v8len = buf.readUInt16LE(14);
+      buf.writeUInt32LE(2, 16 + v8len);
+      await writeFile(filePath, buf);
+      expect(await inspectV8Cache(filePath)).toBeUndefined();
+      const hit = await tryLoadV8Cache(filePath, undefined, new Set(['other.c']));
+      expect(hit?.kind).toBe('hit');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('misses when internGraphStrings throws during materialization', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-intern-'));
     try {
@@ -84,7 +104,7 @@ describe('v8 cache envelope', () => {
     }
   });
 
-  it('misses when recorded Node major or V8 version does not match this runtime', async () => {
+  it('misses when the recorded Node major does not match this runtime', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-compat-'));
     try {
       const filePath = path.join(dir, 'shard.v8');
@@ -98,14 +118,31 @@ describe('v8 cache envelope', () => {
     }
   });
 
-  it('misses when v8.deserialize rejects a well-formed envelope', async () => {
+  it('misses when the recorded V8 version does not match this runtime', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-v8-compat-'));
+    try {
+      const filePath = path.join(dir, 'shard.v8');
+      await writeV8CacheFile(filePath, { ok: true });
+      const buf = await readFile(filePath);
+      buf[16] ^= 1;
+      await writeFile(filePath, buf);
+      expect(await tryLoadV8Cache(filePath)).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('misses when the payload checksum rejects same-size corruption', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'v8cf-payload-'));
     try {
       const filePath = path.join(dir, 'shard.v8');
       await writeV8CacheFile(filePath, { ok: true });
       const buf = await readFile(filePath);
       expect(buf.readUInt32LE(8)).toBe(V8_CACHE_FORMAT);
-      buf[buf.byteLength - 1] ^= 0xff;
+      const v8len = buf.readUInt16LE(14);
+      const pathBytes = buf.readUInt32LE(16 + v8len + 4);
+      const payloadOff = 16 + v8len + 12 + pathBytes;
+      buf[payloadOff] ^= 0xff;
       await writeFile(filePath, buf);
       expect(await tryLoadV8Cache(filePath)).toBeUndefined();
     } finally {

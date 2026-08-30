@@ -744,10 +744,10 @@ export async function runChunkedParseAndResolve(
   // repopulates the durable store — never the main-thread extract fallback).
   const durableParsedFileDir =
     parsedFileStorePath !== undefined ? getDurableParsedFileDir(parsedFileStorePath) : undefined;
-  const durableHitKeys =
+  const durableHitEntries =
     durableParsedFileDir !== undefined
       ? await loadDurableParsedFileIndex(durableParsedFileDir, PARSE_CACHE_VERSION)
-      : new Set<string>();
+      : new Map<string, ReadonlySet<string>>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
   let reparsedFileCount = 0;
@@ -825,11 +825,14 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.parsedFiles?.length) {
           if (parsedFileStorePath) {
-            await persistParsedFileChunk(
+            const wrote = await persistParsedFileChunk(
               parsedFileStorePath,
               `chunk-${chunkIdx}`,
               chunkWorkerData.parsedFiles,
             );
+            if (!wrote) {
+              for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
+            }
           } else {
             for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
           }
@@ -1019,11 +1022,21 @@ export async function runChunkedParseAndResolve(
       // store was introduced, or a pruned/version-stale shard — fall through to
       // a worker re-dispatch to repopulate them. NEVER let scope-resolution
       // re-extract on the main thread (the #1983 OOM the durable store closes).
+      const durableExpectedPaths =
+        chunkHash === null ? undefined : durableHitEntries.get(chunkHash);
       const durableHit =
+        cachedRaw !== undefined &&
+        cachedRaw.length > 0 &&
         chunkHash !== null &&
         durableParsedFileDir !== undefined &&
-        durableHitKeys.has(chunkHash) &&
-        (await durableChunkHasShards(durableParsedFileDir, chunkHash));
+        parsedFileStorePath !== undefined &&
+        durableExpectedPaths !== undefined &&
+        (await durableChunkHasShards(
+          durableParsedFileDir,
+          parsedFileStorePath,
+          chunkHash,
+          durableExpectedPaths,
+        ));
 
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
@@ -1056,8 +1069,8 @@ export async function runChunkedParseAndResolve(
             nodesCreated: graph.nodeCount,
           },
         });
-        // Warm hits load durable `.v8` shards in place during scope-resolution.
-        // Do not copy them into the run-scoped store.
+        // The durable gate already snapshotted warm `.v8` shards into the
+        // run-scoped store for scope resolution.
         await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
       } else {
         // Cache miss: dispatch to workers, capture the raw results, store
@@ -1537,10 +1550,7 @@ export async function runChunkedParseAndResolve(
     return target?.length === 1 ? target[0] : null;
   };
   if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
-    const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths, {
-      durableDir: durableParsedFileDir,
-      durableKeys: parseCache?.usedKeys,
-    });
+    const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
     for (const parsed of allParsedFiles) {
       if (dataRouteFilePaths.has(parsed.filePath)) byPath.set(parsed.filePath, parsed);
     }
@@ -1552,10 +1562,7 @@ export async function runChunkedParseAndResolve(
         if (target !== null) directTargets.add(target);
       }
     }
-    const importedFiles = await loadParsedFilesForPaths(parsedFileStorePath, directTargets, {
-      durableDir: durableParsedFileDir,
-      durableKeys: parseCache?.usedKeys,
-    });
+    const importedFiles = await loadParsedFilesForPaths(parsedFileStorePath, directTargets);
     for (const parsed of importedFiles.values()) byPath.set(parsed.filePath, parsed);
     routeResolutionFiles = [...byPath.values()];
   }

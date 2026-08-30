@@ -134,10 +134,15 @@ describe('linkOrCopyFile (#3090)', () => {
     const dst = path.join(tmp.dbPath, 'dst.bin');
     await fs.writeFile(src, 'payload');
     await linkOrCopyFile(src, dst);
-    const [s, d] = await Promise.all([fs.stat(src), fs.stat(dst)]);
-    expect(d.ino).toBe(s.ino);
-    expect(s.nlink).toBe(2);
-    expect(await fs.readFile(dst, 'utf-8')).toBe('payload');
+    const dstFd = await fs.open(dst, 'r');
+    try {
+      const [s, d] = await Promise.all([fs.stat(src), dstFd.stat()]);
+      expect(d.ino).toBe(s.ino);
+      expect(s.nlink).toBe(2);
+      expect(await dstFd.readFile('utf-8')).toBe('payload');
+    } finally {
+      await dstFd.close();
+    }
   });
 
   it('falls back to tmp+rename when link reports EXDEV', async () => {
@@ -172,14 +177,19 @@ describe('linkOrCopyFile (#3090)', () => {
     await fs.writeFile(durable, 'DURABLE');
     await fs.link(durable, dst);
     await fs.writeFile(src, 'FRESH');
-    const before = await fs.stat(durable);
-    vi.spyOn(fs, 'link').mockRejectedValue(Object.assign(new Error('exdev'), { code: 'EXDEV' }));
-    await linkOrCopyFile(src, dst);
-    const after = await fs.stat(durable);
-    expect(await fs.readFile(durable, 'utf-8')).toBe('DURABLE');
-    expect(after.ino).toBe(before.ino);
-    expect(after.nlink).toBe(1);
-    expect(await fs.readFile(dst, 'utf-8')).toBe('FRESH');
-    expect((await fs.stat(dst)).ino).not.toBe(before.ino);
+    const durableFd = await fs.open(durable, 'r');
+    try {
+      const before = await durableFd.stat();
+      vi.spyOn(fs, 'link').mockRejectedValue(Object.assign(new Error('exdev'), { code: 'EXDEV' }));
+      await linkOrCopyFile(src, dst);
+      const after = await durableFd.stat();
+      expect(await durableFd.readFile('utf-8')).toBe('DURABLE');
+      expect(after.ino).toBe(before.ino);
+      expect(after.nlink).toBe(1);
+      expect(await fs.readFile(dst, 'utf-8')).toBe('FRESH');
+      expect((await fs.stat(dst)).ino).not.toBe(before.ino);
+    } finally {
+      await durableFd.close();
+    }
   });
 });

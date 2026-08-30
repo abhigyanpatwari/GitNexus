@@ -720,19 +720,44 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
-  it('loads durable shards in place without copying into the run store', async () => {
+  it('restores a complete durable chunk into a stable run-store snapshot', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-durable-load-'));
     try {
       const durable = getDurableParsedFileDir(dir);
       persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
-      expect(await durableChunkHasShards(durable, 'abc')).toBe(true);
-      await clearParsedFileStore(dir);
-      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']), {
-        durableDir: durable,
-        durableKeys: new Set(['abc']),
-      });
+      expect(await durableChunkHasShards(durable, dir, 'abc', new Set(['a.c']))).toBe(true);
+      await rm(path.join(durable, 'abc'), { recursive: true, force: true });
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
       expect(loaded.has('a.c')).toBe(true);
-      expect(await readdir(getParsedFileStoreDir(dir)).catch(() => [])).toEqual([]);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual(['abc-w1-0.v8']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a durable chunk with corrupt or incomplete shard coverage', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-durable-partial-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      persistDurableParsedFileShardSync(durable, 'abc', 2, 0, [makeParsedFile('b.c')]);
+      await writeFile(path.join(durable, 'abc', 'abc-w2-0.v8'), Buffer.from([0, 1, 2]));
+
+      expect(await durableChunkHasShards(durable, dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects valid durable shards that do not cover every indexed path', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-durable-missing-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+
+      expect(await durableChunkHasShards(durable, dir, 'abc', new Set(['a.c', 'b.c']))).toBe(false);
+      expect(await readdir(getParsedFileStoreDir(dir))).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
