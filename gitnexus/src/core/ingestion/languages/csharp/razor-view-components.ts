@@ -135,7 +135,8 @@ function isIdentPart(ch: string): boolean {
 function skipWhitespace(cur: SourceCursor): void {
   while (!cur.done) {
     const ch = cur.peek();
-    if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r' && ch !== '\f' && ch !== '\v') break;
+    if (ch !== ' ' && ch !== '\t' && ch !== '\n' && ch !== '\r' && ch !== '\f' && ch !== '\v')
+      break;
     cur.advance();
   }
 }
@@ -382,11 +383,7 @@ function decodeCsharpString(cur: SourceCursor): string | undefined {
   return undefined;
 }
 
-function skipBalanced(
-  cur: SourceCursor,
-  open: string,
-  close: string,
-): boolean {
+function skipBalanced(cur: SourceCursor, open: string, close: string): boolean {
   skipCsharpTrivia(cur);
   if (cur.peek() !== open) return false;
   let depth = 0;
@@ -629,7 +626,9 @@ export function extractViewComponentAliasBinds(source: string): ViewComponentAli
 }
 
 /** Extract explicit `[ViewComponent(Name = "...")]` aliases by class name. */
-export function extractViewComponentAliases(source: string): ReadonlyMap<string, readonly string[]> {
+export function extractViewComponentAliases(
+  source: string,
+): ReadonlyMap<string, readonly string[]> {
   const aliases = new Map<string, string[]>();
   for (const bind of extractViewComponentAliasBinds(source)) {
     if (bind.aliases.length === 0) continue;
@@ -892,8 +891,7 @@ export function emitRazorViewComponentEdges(
   for (const parsed of parsedFiles) {
     if (!parsed.filePath.endsWith('.cs')) continue;
     const source = csharpSources.get(parsed.filePath) ?? '';
-    const binds =
-      source.includes('ViewComponent') ? extractViewComponentAliasBinds(source) : [];
+    const binds = source.includes('ViewComponent') ? extractViewComponentAliasBinds(source) : [];
     for (const def of parsed.localDefs) {
       if (def.type !== 'Class') continue;
       const className = def.qualifiedName?.split('.').pop() ?? def.nodeId.split(':').pop() ?? '';

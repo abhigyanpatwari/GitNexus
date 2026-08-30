@@ -68,11 +68,7 @@ describe('Razor ViewComponent convention extraction', () => {
       }
       @(await Component.InvokeAsync("Explicit"))
     `;
-    expect(extractRazorViewComponentInvocations(source)).toEqual([
-      'InBlock',
-      'InIf',
-      'Explicit',
-    ]);
+    expect(extractRazorViewComponentInvocations(source)).toEqual(['InBlock', 'InIf', 'Explicit']);
   });
 
   it('extracts in-repo C# helper calls without matching SDK Task.InvokeAsync', () => {
