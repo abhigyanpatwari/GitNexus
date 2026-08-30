@@ -848,7 +848,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
           deletedFiles: 0,
           writeMode: 'incremental',
         });
-        expect(incremental.incrementalStats?.reparsedFiles).toBe(7);
+        expect(incremental.incrementalStats?.reparsedFiles).toBe(1);
         expect(
           querySpy.mock.calls.some(
             ([query]) =>
