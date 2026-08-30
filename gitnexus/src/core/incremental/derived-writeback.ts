@@ -42,8 +42,7 @@ export const ftsTablesAmong = (tables: Iterable<string>): Set<string> => {
  */
 export const shouldPreservePersistedDerivedGraph = (
   diff: Pick<FileHashDiff, 'deleted' | 'added' | 'changed'>,
-): boolean =>
-  diff.deleted.length === 0 && diff.added.length === 0 && diff.changed.length === 0;
+): boolean => diff.deleted.length === 0 && diff.added.length === 0 && diff.changed.length === 0;
 
 /**
  * FTS-backed node tables that the fresh graph will WRITE rows into for
