@@ -30,20 +30,31 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       message: 'Scanning repository...',
     });
 
-    const scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
-      const scanProgress = Math.round((current / total) * 15);
-      ctx.onProgress({
-        phase: 'extracting',
-        percent: scanProgress,
-        message: 'Scanning repository...',
-        detail: filePath,
-        stats: {
-          filesProcessed: current,
-          totalFiles: total,
-          nodesCreated: ctx.graph.nodeCount,
-        },
+    let scannedFiles;
+    try {
+      scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
+        const scanProgress = Math.round((current / total) * 15);
+        ctx.onProgress({
+          phase: 'extracting',
+          percent: scanProgress,
+          message: 'Scanning repository...',
+          detail: filePath,
+          stats: {
+            filesProcessed: current,
+            totalFiles: total,
+            nodesCreated: ctx.graph.nodeCount,
+          },
+        });
       });
-    });
+    } catch (err) {
+      // Missing roots throw so status cannot treat an empty glob as "every
+      // covered file was deleted". The pipeline still reports an empty scan
+      // for a path that is not a directory, matching analyze of a bad cwd.
+      if (err instanceof Error && err.message.startsWith('walkRepositoryPaths:')) {
+        return { scannedFiles: [], allPaths: [], totalFiles: 0 };
+      }
+      throw err;
+    }
 
     const totalFiles = scannedFiles.length;
     const allPaths = scannedFiles.map((f) => f.path);

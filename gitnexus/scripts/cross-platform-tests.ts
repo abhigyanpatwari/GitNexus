@@ -114,6 +114,9 @@ const PLATFORM_LOGIC = [
   // POSIX and Windows — the fail-closed path-claim semantics must hold on the
   // real windows-latest path implementation (#2419/#2420).
   'test/unit/server-api-repo-resolution.test.ts',
+  // #3073: cwd-based repository selection canonicalizes real paths, compares
+  // platform separators/case, and rejects nested Git-boundary fallthrough.
+  'test/unit/calltool-dispatch.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.
@@ -234,7 +237,7 @@ const SPAWN_CLI = [
   // Cheap: measured on the Windows runner at 448 ms, 53 ms and sub-second. An
   // earlier attempt to register them still turned the matrix red — not from
   // their own cost, but because vitest sharded by file COUNT, so inserting any
-  // file re-partitioned the list and happened to cluster `cli-e2e` (361 s) with
+  // file re-partitioned the list and happened to cluster `cli-e2e` (621 s) with
   // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
   // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
   // heavy one.
@@ -273,6 +276,7 @@ const NATIVE_ADDON_SMOKE = [
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is

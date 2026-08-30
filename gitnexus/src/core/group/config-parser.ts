@@ -60,7 +60,16 @@ export function parseGroupConfig(yamlContent: string): GroupConfig {
     throw new Error('repos is required in group.yaml (must be a mapping)');
   }
 
-  const repos = raw.repos as Record<string, string>;
+  const reposRaw = raw.repos as Record<string, unknown>;
+  const repos: Record<string, string> = {};
+  for (const [memberPath, registryName] of Object.entries(reposRaw)) {
+    if (typeof registryName !== 'string' || registryName.trim() === '') {
+      throw new Error(
+        `repos["${memberPath}"] must be a non-empty registry name string, not ${typeof registryName}`,
+      );
+    }
+    repos[memberPath] = registryName.trim();
+  }
   const repoPaths = new Set(Object.keys(repos));
 
   const rawLinks = (raw.links as unknown[]) || [];

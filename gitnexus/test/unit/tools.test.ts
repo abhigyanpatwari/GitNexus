@@ -193,6 +193,17 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.description).toContain('truncatedBy');
   });
 
+  it('documents riskSharedAxes as a compare aid, not the edit gate', () => {
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    expect(impactTool.description).toContain('riskSharedAxes');
+    expect(impactTool.description).toContain('Never substitute it for `risk`');
+    expect(impactTool.description).toContain('IMPACT_MAX_CHUNKS=0');
+    expect(impactTool.description).toContain('sampled a subset of impacted symbols');
+    expect(impactTool.description).toContain('Graph-RAG');
+    expect(impactTool.description).toContain('cross-repo crossing overlay');
+    expect(impactTool.description).toContain('known HIGH/CRITICAL warnings survive');
+  });
+
   it.each(['query', 'context', 'impact'])(
     '%s advertises an optional positive maxTokens budget',
     (name) => {
@@ -269,6 +280,25 @@ describe('GITNEXUS_TOOLS', () => {
       expect(tool.inputSchema.properties.repo).toBeDefined();
       expect(tool.inputSchema.properties.repo.type).toBe('string');
       expect(tool.inputSchema.required).not.toContain('repo');
+    }
+  });
+
+  it('repo descriptions explain the cwd default and mutating exception (#3073)', () => {
+    expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
+      /process cwd/i,
+    );
+    expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
+      /unindexed nested Git checkout/i,
+    );
+    for (const tool of GITNEXUS_TOOLS) {
+      if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) continue;
+      const description = tool.inputSchema.properties.repo.description;
+      if (tool.name === 'rename') {
+        expect(description).toMatch(/mutating tools require an explicit repo/i);
+      } else {
+        expect(description).toMatch(/process cwd/i);
+        expect(description).toMatch(/unindexed nested Git checkout/i);
+      }
     }
   });
 

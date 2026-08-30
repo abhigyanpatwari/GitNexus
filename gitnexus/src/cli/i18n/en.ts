@@ -33,6 +33,17 @@ export const en = {
   'status.workspaceIndexLabel':
     "Workspace index: last analyzed on '{{primary}}' (re-run gitnexus analyze to follow the current branch)",
   'status.status': 'Status',
+  'status.indexContentCurrent': 'Index content: matches all {{count}} covered file(s)',
+  'status.indexContentDrifted':
+    'Index content: {{changed}} changed, {{added}} added, {{deleted}} deleted',
+  'status.indexContentMore': '  ...and {{count}} more {{label}}',
+  'status.indexContentUnmeasurable':
+    'Index content: not comparable ({{reason}}); fell back to the working-tree check',
+  'status.indexContentScanFailed':
+    'Index content: coverage scan failed; treating the index as stale',
+  'status.driftChanged': 'changed',
+  'status.driftAdded': 'added',
+  'status.driftDeleted': 'deleted',
   'status.upToDate': '✅ up-to-date',
   'status.stale': '⚠️ stale (re-run gitnexus analyze)',
   'clean.deleteAll': 'This will delete GitNexus indexes for {{count}} repo(s):',
@@ -217,6 +228,8 @@ export const en = {
   'help.option.analyze.embeddingBatchSize': 'Number of nodes per embedding batch',
   'help.option.analyze.embeddingSubBatchSize': 'Number of chunks per embedding model call',
   'help.option.analyze.embeddingDevice': 'Embedding device: auto, cpu, dml, cuda, or wasm',
+  'help.option.analyze.watch': 'Keep the index current with serialized incremental refreshes',
+  'help.option.analyze.debounce': 'Watch quiet period before refreshing (milliseconds)',
   'help.option.index.force': 'Register even if index metadata is missing (stats will be empty)',
   'help.option.index.allowNonGit': 'Allow registering folders that are not Git repositories',
   'help.option.port': 'Port number',
@@ -225,7 +238,7 @@ export const en = {
   'help.option.mcp.host':
     'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
   'help.option.mcp.authToken':
-    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+    "Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var, which also enables MCP Bearer auth on gitnexus serve's /api/mcp route. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.",
   'help.option.force.confirmation': 'Skip confirmation prompt',
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',

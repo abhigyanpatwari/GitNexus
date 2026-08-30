@@ -3,7 +3,7 @@
  *
  * WHY THIS EXISTS. `run-cross-platform.ts` used to hand vitest the whole file
  * list plus `--shard=i/n`, and vitest partitions by file COUNT. Runtime on this
- * suite is wildly uneven — measured on the Windows runner, `cli-e2e` is 361 s
+ * suite is wildly uneven — measured on the Windows runner, `cli-e2e` is 621 s
  * and `worker-pool` 221 s, while most files are under a second — so a
  * count-split routinely put several of the heaviest suites on one shard. That
  * is #2449, and this file's sibling header has documented the symptom ("the
@@ -44,7 +44,9 @@
  * partition depend on the very machine load it is trying to protect against.
  */
 export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
-  'test/integration/cli-e2e.test.ts': 361,
+  // Re-measured after the analyze --watch e2e landed in #3072. The previous
+  // 361 s entry undercharged this suite and left shard 1 close to the watchdog.
+  'test/integration/cli-e2e.test.ts': 621,
   'test/integration/worker-pool.test.ts': 222,
   'test/unit/incremental-vector-extension-ordering.test.ts': 87,
   // ESTIMATE, not a measurement (#2841): this suite drives more full

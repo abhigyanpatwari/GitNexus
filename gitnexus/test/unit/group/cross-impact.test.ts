@@ -371,6 +371,35 @@ describe('cross-impact', () => {
     expect(r).not.toHaveProperty('truncationReason');
   });
 
+  it('lifts local riskSharedAxes and riskScale when there are no symbol uids to fan out', async () => {
+    const riskScale = {
+      comparableAcrossKinds: false,
+      unusedAxes: [
+        {
+          axis: 'processes' as const,
+          reason: 'file-nodes-have-no-process-or-community-membership',
+        },
+        {
+          axis: 'modules',
+          reason: 'file-nodes-have-no-process-or-community-membership',
+        },
+      ],
+    };
+    const r = await runLocalOnlyImpact(async () => ({
+      byDepth: {},
+      summary: { direct: 13, processes_affected: 0, modules_affected: 0 },
+      risk: 'MEDIUM',
+      riskSharedAxes: 'MEDIUM',
+      riskScale,
+    }));
+    expect(r).toMatchObject({
+      truncated: false,
+      risk: 'MEDIUM',
+      riskSharedAxes: 'MEDIUM',
+      riskScale,
+    });
+  });
+
   it('test_runGroupImpact_bridge_schema_mismatch_returns_error', async () => {
     const { tmpDir, groupDir, cleanup } = tmpGroup();
     vi.stubEnv('GITNEXUS_HOME', tmpDir);
@@ -413,6 +442,104 @@ describe('cross-impact', () => {
     } finally {
       vi.unstubAllEnvs();
       cleanup();
+    }
+  });
+
+  it('hints the yaml member path when --repo is the registry alias', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-ci-alias-'));
+    const groupDir = path.join(tmpDir, 'groups', 'g1');
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'group.yaml'),
+      `version: 1
+name: g1
+repos:
+  demo/api: demo-api
+  demo/web: demo-web
+`,
+    );
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(),
+        impact: vi.fn(),
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'demo-api',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in r).toBe(true);
+      if ('error' in r) {
+        expect(r.error).toContain('demo/api');
+        expect(r.error).toMatch(/registry alias/i);
+        expect(r.error).not.toContain('demo/web');
+      }
+      const mixedCase = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'Demo-API',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in mixedCase).toBe(true);
+      if ('error' in mixedCase) {
+        expect(mixedCase.error).toContain('demo/api');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('lists every member path that shares the same registry alias', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-ci-alias-dup-'));
+    const groupDir = path.join(tmpDir, 'groups', 'g1');
+    fs.mkdirSync(groupDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(groupDir, 'group.yaml'),
+      `version: 1
+name: g1
+repos:
+  demo/api: shared
+  demo/other: shared
+`,
+    );
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(),
+        impact: vi.fn(),
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'shared',
+          target: 'Sym',
+          direction: 'upstream',
+        },
+      );
+      expect('error' in r).toBe(true);
+      if ('error' in r) {
+        expect(r.error).toContain('demo/api');
+        expect(r.error).toContain('demo/other');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });
