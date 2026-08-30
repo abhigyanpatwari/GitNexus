@@ -32,13 +32,12 @@ import { fileURLToPath } from 'url';
 import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
 import {
-  bindV8GenerationBestEffort,
   copyV8SidecarIfPresent,
-  dropV8Sidecar,
+  invalidatePriorV8Generation,
   newV8Generation,
   tryLoadV8Sidecar,
-  warnStaleV8Unresolvable,
   writeV8SidecarBestEffort,
+  type V8Invalidation,
 } from './v8-sidecar.js';
 
 /**
@@ -993,20 +992,13 @@ export const persistParseCacheChunk = async (
     const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
     const jsonBytes = Buffer.byteLength(payload, 'utf8');
     const generation = newV8Generation();
-    /**
-     * `skipped` means neither generation rotation nor removal of the old
-     * sidecar succeeded, so a same-length rewrite could leave the stale `.v8`
-     * indistinguishable from the new JSON. The shard is content-addressed, so
-     * the existing one holds equivalent bytes — keeping it is the safe choice.
-     */
-    const writeJson = async (json: string): Promise<'skipped' | 'json-only' | 'json+v8'> => {
-      const generationBound = await bindV8GenerationBestEffort(chunkPath, generation, jsonBytes);
-      const oldSidecarDropped = await dropV8Sidecar(chunkPath);
-      if (!generationBound && !oldSidecarDropped) return 'skipped';
+    const writeJson = async (json: string): Promise<V8Invalidation> => {
+      const plan = await invalidatePriorV8Generation(chunkPath, generation, jsonBytes);
+      if (plan === 'blocked') return plan;
       await fs.writeFile(chunkPath, json, 'utf-8');
-      return generationBound ? 'json+v8' : 'json-only';
+      return plan;
     };
-    let outcome: 'skipped' | 'json-only' | 'json+v8';
+    let outcome: V8Invalidation;
     try {
       outcome = await writeJson(payload);
     } catch (error) {
@@ -1018,8 +1010,7 @@ export const persistParseCacheChunk = async (
       outcome = await writeJson(payload);
     }
     payload = undefined;
-    if (outcome === 'skipped') {
-      warnStaleV8Unresolvable(chunkPath);
+    if (outcome === 'blocked') {
       cache.entries.set(chunkHash, slim);
       return;
     }
@@ -1139,17 +1130,11 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
       }
       const jsonBytes = Buffer.byteLength(payload, 'utf8');
       const generation = newV8Generation();
-      // `tmpDir` is freshly created, so the drop normally reports ENOENT-gone;
-      // the OR contract is asserted here anyway so every writer follows it.
-      const generationBound = await bindV8GenerationBestEffort(chunkPath, generation, jsonBytes);
-      const oldSidecarDropped = await dropV8Sidecar(chunkPath);
-      if (!generationBound && !oldSidecarDropped) {
-        warnStaleV8Unresolvable(chunkPath);
-        continue;
-      }
+      const plan = await invalidatePriorV8Generation(chunkPath, generation, jsonBytes);
+      if (plan === 'blocked') continue;
       await fs.writeFile(chunkPath, payload, 'utf-8');
       payload = '';
-      if (generationBound) {
+      if (plan === 'json+v8') {
         await writeV8SidecarBestEffort(chunkPath, inMemory, jsonBytes, generation);
       }
       writtenKeys.push(chunkHash);

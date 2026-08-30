@@ -36,7 +36,7 @@
  * sidecar or generation file at the final path.
  */
 import { randomBytes } from 'node:crypto';
-import { promises as fs, statSync, unlinkSync } from 'node:fs';
+import { promises as fs, unlinkSync } from 'node:fs';
 import v8 from 'node:v8';
 import { logger } from '../core/logger.js';
 import { writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
@@ -44,7 +44,7 @@ import { writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
 const MAGIC = Buffer.from('GNXV8SC1', 'ascii');
 const GEN_MAGIC = Buffer.from('GNXV8GN1', 'ascii');
 /** Sidecar envelope version — independent of PARSE_CACHE_VERSION / SCHEMA_BUMP. */
-export const V8_SIDECAR_FORMAT = 2;
+const V8_SIDECAR_FORMAT = 2;
 const U32 = 4;
 const U16 = 2;
 const U64 = 8;
@@ -188,43 +188,47 @@ const ignoreMissingUnlink = (err: unknown, jsonPath: string): void => {
   warnSidecar(err, jsonPath, 'v8 sidecar: failed to drop leftover; JSON remains authoritative');
 };
 
+const isBindableGeneration = (generation: Buffer, jsonBytes: number): boolean =>
+  generation.byteLength === GEN_LEN &&
+  Number.isSafeInteger(jsonBytes) &&
+  jsonBytes >= 0 &&
+  jsonBytes <= 0xffff_ffff;
+
+const unlinkGone = async (target: string, jsonPath: string): Promise<boolean> => {
+  try {
+    await fs.unlink(target);
+    return true;
+  } catch (err) {
+    ignoreMissingUnlink(err, jsonPath);
+    return isEnoent(err);
+  }
+};
+
+const unlinkGoneSync = (target: string, jsonPath: string): boolean => {
+  try {
+    unlinkSync(target);
+    return true;
+  } catch (err) {
+    ignoreMissingUnlink(err, jsonPath);
+    return isEnoent(err);
+  }
+};
+
 /**
  * Remove a sidecar. Returns true when the file is gone (deleted or already
- * absent) — i.e. when this invalidation mechanism succeeded. Callers use that
- * to decide whether a new canonical generation is safe to publish.
+ * absent) — i.e. when this invalidation mechanism succeeded.
  */
-export const dropV8Sidecar = async (jsonPath: string): Promise<boolean> => {
-  try {
-    await fs.unlink(v8SidecarPath(jsonPath));
-    return true;
-  } catch (err) {
-    ignoreMissingUnlink(err, jsonPath);
-    return isEnoent(err);
-  }
-};
+export const dropV8Sidecar = (jsonPath: string): Promise<boolean> =>
+  unlinkGone(v8SidecarPath(jsonPath), jsonPath);
 
-export const dropV8SidecarSync = (jsonPath: string): boolean => {
-  try {
-    unlinkSync(v8SidecarPath(jsonPath));
-    return true;
-  } catch (err) {
-    ignoreMissingUnlink(err, jsonPath);
-    return isEnoent(err);
-  }
-};
+export const dropV8SidecarSync = (jsonPath: string): boolean =>
+  unlinkGoneSync(v8SidecarPath(jsonPath), jsonPath);
 
 /** Remove the generation token. Same true-on-gone contract as {@link dropV8Sidecar}. */
-export const dropV8Generation = async (jsonPath: string): Promise<boolean> => {
-  try {
-    await fs.unlink(v8GenerationPath(jsonPath));
-    return true;
-  } catch (err) {
-    ignoreMissingUnlink(err, jsonPath);
-    return isEnoent(err);
-  }
-};
+export const dropV8Generation = (jsonPath: string): Promise<boolean> =>
+  unlinkGone(v8GenerationPath(jsonPath), jsonPath);
 
-export const warnStaleV8Unresolvable = (jsonPath: string): void => {
+const warnStaleV8Unresolvable = (jsonPath: string): void => {
   logger.warn(
     { jsonPath },
     'v8 sidecar: neither generation rotation nor sidecar removal succeeded; ' +
@@ -233,18 +237,16 @@ export const warnStaleV8Unresolvable = (jsonPath: string): void => {
 };
 
 /**
- * Rotate the durable generation token *before* overwriting JSON. Failure is
- * logged and returns false — callers must still persist canonical JSON.
+ * Rotate the durable generation token. Returns false on failure; that is only
+ * one of the two invalidation mechanisms and does not by itself authorize a
+ * JSON overwrite.
  */
 export const bindV8GenerationBestEffort = async (
   jsonPath: string,
   generation: Buffer,
   jsonBytes: number,
 ): Promise<boolean> => {
-  if (generation.byteLength !== GEN_LEN) return false;
-  if (!Number.isSafeInteger(jsonBytes) || jsonBytes < 0 || jsonBytes > 0xffff_ffff) {
-    return false;
-  }
+  if (!isBindableGeneration(generation, jsonBytes)) return false;
   try {
     await writeFileAtomicBytes(v8GenerationPath(jsonPath), encodeBind(generation, jsonBytes), 1);
     return true;
@@ -260,10 +262,7 @@ export const bindV8GenerationBestEffortSync = (
   generation: Buffer,
   jsonBytes: number,
 ): boolean => {
-  if (generation.byteLength !== GEN_LEN) return false;
-  if (!Number.isSafeInteger(jsonBytes) || jsonBytes < 0 || jsonBytes > 0xffff_ffff) {
-    return false;
-  }
+  if (!isBindableGeneration(generation, jsonBytes)) return false;
   try {
     writeFileAtomicBytesSync(v8GenerationPath(jsonPath), encodeBind(generation, jsonBytes));
     return true;
@@ -274,9 +273,65 @@ export const bindV8GenerationBestEffortSync = (
   }
 };
 
-const jsonFileSize = (jsonPath: string): number | undefined => {
+/** Result of the OR invalidation gate. `blocked` means leave the previous generation. */
+export type V8Invalidation = 'blocked' | 'json-only' | 'json+v8';
+
+const decideInvalidation = (
+  jsonPath: string,
+  generationBound: boolean,
+  oldSidecarDropped: boolean,
+): V8Invalidation => {
+  if (!generationBound && !oldSidecarDropped) {
+    warnStaleV8Unresolvable(jsonPath);
+    return 'blocked';
+  }
+  return generationBound ? 'json+v8' : 'json-only';
+};
+
+/**
+ * Bind a new generation and/or drop the old sidecar. Callers overwrite JSON
+ * only when the result is not `blocked`, and publish a new sidecar only for
+ * `json+v8`.
+ */
+export const invalidatePriorV8Generation = async (
+  jsonPath: string,
+  generation: Buffer,
+  jsonBytes: number,
+): Promise<V8Invalidation> => {
+  const [generationBound, oldSidecarDropped] = await Promise.all([
+    bindV8GenerationBestEffort(jsonPath, generation, jsonBytes),
+    dropV8Sidecar(jsonPath),
+  ]);
+  return decideInvalidation(jsonPath, generationBound, oldSidecarDropped);
+};
+
+export const invalidatePriorV8GenerationSync = (
+  jsonPath: string,
+  generation: Buffer,
+  jsonBytes: number,
+): V8Invalidation =>
+  decideInvalidation(
+    jsonPath,
+    bindV8GenerationBestEffortSync(jsonPath, generation, jsonBytes),
+    dropV8SidecarSync(jsonPath),
+  );
+
+/** Destination of a copied shard is a new generation — drop `.v8gen` or `.v8`. */
+export const prepareCopiedShardDestination = async (jsonPath: string): Promise<boolean> => {
+  const [generationDropped, oldSidecarDropped] = await Promise.all([
+    dropV8Generation(jsonPath),
+    dropV8Sidecar(jsonPath),
+  ]);
+  if (!generationDropped && !oldSidecarDropped) {
+    warnStaleV8Unresolvable(jsonPath);
+    return false;
+  }
+  return true;
+};
+
+const jsonFileSize = async (jsonPath: string): Promise<number | undefined> => {
   try {
-    return statSync(jsonPath).size;
+    return (await fs.stat(jsonPath)).size;
   } catch {
     return undefined;
   }
@@ -288,10 +343,7 @@ const writeEnvelope = (
   jsonBytes: number,
   generation: Buffer,
 ): Buffer | undefined => {
-  if (generation.byteLength !== GEN_LEN) return undefined;
-  if (!Number.isSafeInteger(jsonBytes) || jsonBytes < 0 || jsonBytes > 0xffff_ffff) {
-    return undefined;
-  }
+  if (!isBindableGeneration(generation, jsonBytes)) return undefined;
   let payload: Buffer;
   try {
     payload = v8.serialize(graph);
@@ -380,9 +432,8 @@ export const tryLoadV8Sidecar = async (
   }
   const decoded = decodeSidecar(buf);
   if (!decoded) return undefined;
-  const bound = await readBindFile(jsonPath);
+  const [bound, size] = await Promise.all([readBindFile(jsonPath), jsonFileSize(jsonPath)]);
   if (!bound || !bound.generation.equals(decoded.generation)) return undefined;
-  const size = jsonFileSize(jsonPath);
   if (size === undefined || size !== decoded.jsonBytes || size !== bound.jsonBytes) {
     return undefined;
   }
@@ -412,8 +463,7 @@ export const copyV8SidecarIfPresent = async (srcJson: string, dstJson: string): 
       warnSidecar(copyErr, srcJson, 'v8 sidecar: copy failed; JSON remains authoritative');
       return;
     }
-    await dropV8Sidecar(dstJson);
-    await dropV8Generation(dstJson);
+    await Promise.all([dropV8Sidecar(dstJson), dropV8Generation(dstJson)]);
     return;
   }
   try {

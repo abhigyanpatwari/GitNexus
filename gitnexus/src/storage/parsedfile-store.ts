@@ -62,15 +62,12 @@ import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-cod
 import { logger } from '../core/logger.js';
 import { mapReplacer, mapReviver } from './parse-cache.js';
 import {
-  bindV8GenerationBestEffort,
-  bindV8GenerationBestEffortSync,
   copyV8SidecarIfPresent,
-  dropV8Generation,
-  dropV8Sidecar,
-  dropV8SidecarSync,
+  invalidatePriorV8Generation,
+  invalidatePriorV8GenerationSync,
   newV8Generation,
+  prepareCopiedShardDestination,
   tryLoadV8Sidecar,
-  warnStaleV8Unresolvable,
   writeV8SidecarBestEffort,
   writeV8SidecarBestEffortSync,
 } from './v8-sidecar.js';
@@ -344,17 +341,17 @@ export const persistParsedFileChunk = async (
   const dest = shardPath(storagePath, shardId);
   const jsonBytes = Buffer.byteLength(payload, 'utf8');
   const generation = newV8Generation();
-  const generationBound = await bindV8GenerationBestEffort(dest, generation, jsonBytes);
-  const oldSidecarDropped = await dropV8Sidecar(dest);
-  if (!generationBound && !oldSidecarDropped) {
-    warnStaleV8Unresolvable(dest);
-    return;
-  }
+  const plan = await invalidatePriorV8Generation(dest, generation, jsonBytes);
+  if (plan === 'blocked') return;
   await dropPathSidecar(dest);
   await fs.writeFile(dest, payload, 'utf-8');
   payload = null;
-  if (generationBound) {
-    await writeV8SidecarBestEffort(dest, parsedFiles, jsonBytes, generation);
+  if (plan === 'json+v8') {
+    await Promise.all([
+      writeV8SidecarBestEffort(dest, parsedFiles, jsonBytes, generation),
+      writeShardPathsSidecar(dest, parsedFiles),
+    ]);
+    return;
   }
   await writeShardPathsSidecar(dest, parsedFiles);
 };
@@ -388,16 +385,12 @@ export const persistParsedFileShardSync = (
   const dest = shardPath(storagePath, shardId);
   const jsonBytes = Buffer.byteLength(payload, 'utf8');
   const generation = newV8Generation();
-  const generationBound = bindV8GenerationBestEffortSync(dest, generation, jsonBytes);
-  const oldSidecarDropped = dropV8SidecarSync(dest);
-  if (!generationBound && !oldSidecarDropped) {
-    warnStaleV8Unresolvable(dest);
-    return;
-  }
+  const plan = invalidatePriorV8GenerationSync(dest, generation, jsonBytes);
+  if (plan === 'blocked') return;
   dropPathSidecarSync(dest);
   writeFileSync(dest, payload, 'utf-8');
   payload = null;
-  if (generationBound) {
+  if (plan === 'json+v8') {
     writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes, generation);
   }
   writeShardPathsSidecarSync(dest, parsedFiles);
@@ -817,16 +810,12 @@ export const persistDurableParsedFileShardSync = (
   const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`);
   const jsonBytes = Buffer.byteLength(payload, 'utf8');
   const generation = newV8Generation();
-  const generationBound = bindV8GenerationBestEffortSync(dest, generation, jsonBytes);
-  const oldSidecarDropped = dropV8SidecarSync(dest);
-  if (!generationBound && !oldSidecarDropped) {
-    warnStaleV8Unresolvable(dest);
-    return;
-  }
+  const plan = invalidatePriorV8GenerationSync(dest, generation, jsonBytes);
+  if (plan === 'blocked') return;
   dropPathSidecarSync(dest);
   writeFileSync(dest, payload, 'utf-8');
   payload = null;
-  if (generationBound) {
+  if (plan === 'json+v8') {
     writeV8SidecarBestEffortSync(dest, parsedFiles, jsonBytes, generation);
   }
   writeShardPathsSidecarSync(dest, parsedFiles);
@@ -861,15 +850,7 @@ export const restoreDurableParsedFileShard = async (
   for (const name of shards) {
     const srcJson = path.join(src, name);
     const dstJson = path.join(dst, name);
-    // Same OR contract as the persist paths: the restored JSON is a different
-    // generation, so at least one invalidation of the destination pair must
-    // succeed before the copy.
-    const generationDropped = await dropV8Generation(dstJson);
-    const oldSidecarDropped = await dropV8Sidecar(dstJson);
-    if (!generationDropped && !oldSidecarDropped) {
-      warnStaleV8Unresolvable(dstJson);
-      continue;
-    }
+    if (!(await prepareCopiedShardDestination(dstJson))) continue;
     await dropPathSidecar(dstJson);
     await fs.copyFile(srcJson, dstJson);
     restored++;
