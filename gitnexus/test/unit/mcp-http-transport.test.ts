@@ -15,6 +15,7 @@
  */
 
 import http from 'http';
+import { readFileSync } from 'fs';
 import type { AddressInfo } from 'net';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import express from 'express';
@@ -34,7 +35,7 @@ import {
   installSignalShutdown,
   SHUTDOWN_EXIT_CODES,
 } from '../../src/mcp/server.js';
-import { mountMCPEndpoints } from '../../src/server/mcp-http.js';
+import { installServeMcpAuth, mountMCPEndpoints } from '../../src/server/mcp-http.js';
 
 // ─── Live-HTTP helpers (real req/res for SDK-touching paths) ───────────
 
@@ -638,6 +639,59 @@ describe('createSseHandlers', () => {
 // ─── mountMCPEndpoints refactor safety ───────────────────────────────
 
 describe('mountMCPEndpoints', () => {
+  it.each([{}, { GITNEXUS_MCP_AUTH_TOKEN: '' }, { GITNEXUS_MCP_AUTH_TOKEN: '   ' }])(
+    'does not install serve auth without a nonblank token (%j)',
+    (env) => {
+      const app = { use: vi.fn() };
+
+      expect(installServeMcpAuth(app as never, env)).toBe(false);
+      expect(app.use).not.toHaveBeenCalled();
+    },
+  );
+
+  it('installs the shared Bearer middleware for serve /api/mcp', () => {
+    const app = { use: vi.fn() };
+
+    expect(installServeMcpAuth(app as never, { GITNEXUS_MCP_AUTH_TOKEN: 'serve-secret' })).toBe(
+      true,
+    );
+    expect(app.use).toHaveBeenCalledTimes(1);
+    expect(app.use.mock.calls[0]?.[0]).toBe('/api/mcp');
+
+    const middleware = app.use.mock.calls[0]?.[1] as (
+      req: Request,
+      res: Response,
+      next: NextFunction,
+    ) => void;
+    const missingRes = createMockRes();
+    const missingNext = vi.fn();
+    middleware(createMockReq(), missingRes, missingNext);
+    expect(missingRes._status).toBe(401);
+    expect(missingNext).not.toHaveBeenCalled();
+
+    const wrongRes = createMockRes();
+    const wrongNext = vi.fn();
+    middleware(createMockReq({ authorization: 'Bearer wrong-secret' }), wrongRes, wrongNext);
+    expect(wrongRes._status).toBe(401);
+    expect(wrongNext).not.toHaveBeenCalled();
+
+    const validRes = createMockRes();
+    const validNext = vi.fn();
+    middleware(createMockReq({ authorization: 'Bearer serve-secret' }), validRes, validNext);
+    expect(validNext).toHaveBeenCalledOnce();
+    expect(validRes._status).toBe(200);
+  });
+
+  it('wires serve MCP auth before the global JSON body parser', () => {
+    const source = readFileSync(new URL('../../src/server/api.ts', import.meta.url), 'utf8');
+    const authIndex = source.indexOf('installServeMcpAuth(app);');
+    const parserIndex = source.indexOf("app.use(express.json({ limit: '10mb' }));");
+
+    expect(authIndex).toBeGreaterThan(-1);
+    expect(parserIndex).toBeGreaterThan(-1);
+    expect(authIndex).toBeLessThan(parserIndex);
+  });
+
   it('returns a cleanup function', async () => {
     const backend = createMockBackend();
     const mockApp = {
