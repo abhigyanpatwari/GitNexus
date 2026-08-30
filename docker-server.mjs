@@ -112,6 +112,14 @@ const upstreamOrigin = upstreamBase ? new URL(upstreamBase).origin : null;
 // (gitnexus/src/mcp/http-transport.ts).
 const authToken = process.env.GITNEXUS_SERVE_AUTH_TOKEN?.trim() || null;
 
+// The protocol-layer credential the upstream `serve` expects on /api/mcp when it
+// runs with MCP Bearer auth enabled. Set it to the SAME value on both services:
+// the edge token is spent here and replaced with this one for MCP requests only
+// (see proxyToUpstream). Unset — the default — means no injection, so a backend
+// without MCP auth is unaffected. Blank-is-absent follows resolveAuthToken
+// (gitnexus/src/mcp/http-transport.ts). Never logged.
+const mcpAuthToken = process.env.GITNEXUS_MCP_AUTH_TOKEN?.trim() || null;
+
 // Mirrors the non-loopback refusal in http-transport.ts (startMcpHttpServer),
 // relocated because the trust boundary is here: an unguarded `serve` behind a
 // private service is legitimate, an unguarded public proxy is not.
@@ -341,11 +349,17 @@ async function proxyToUpstream(req, res) {
   // talks to this same-origin web service.
   delete headers.origin;
   delete headers.referer;
-  // The edge token is spent here and must not be forwarded: copying
-  // Authorization would put a live credential into another service's logs.
-  // Backend GITNEXUS_MCP_AUTH_TOKEN therefore cannot compose through this hop
-  // without a matching forward-injection change. Pinned by test.
+  // The edge token is spent here and must never be forwarded: copying
+  // Authorization would put a live credential into another service's logs. So
+  // drop it unconditionally first, then — for the MCP route alone, and only
+  // when a backend token is configured — replace it with that separate
+  // protocol credential. Unset GITNEXUS_MCP_AUTH_TOKEN (the default) leaves
+  // every request stripped, as before. The scope is the normalized pathname,
+  // so a query string can't widen it and /api/mcpfoo doesn't qualify.
   delete headers.authorization;
+  const upstreamPath = upstream.pathname;
+  const isMcpRoute = upstreamPath === '/api/mcp' || upstreamPath.startsWith('/api/mcp/');
+  if (isMcpRoute && mcpAuthToken) headers.authorization = `Bearer ${mcpAuthToken}`;
   headers.host = upstream.host;
   // Replace, never forward, the inbound chain (see clientAddressFor).
   const clientAddress = clientAddressFor(req);
