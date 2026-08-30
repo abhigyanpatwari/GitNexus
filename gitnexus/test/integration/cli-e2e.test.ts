@@ -1126,7 +1126,10 @@ describe('CLI end-to-end', () => {
               });
               return;
             }
-            if (stage === 'proof' && /Refresh complete: 1 changed, 8 re-parsed,/.test(output)) {
+            if (
+              stage === 'proof' &&
+              /Refresh complete: 1 changed, 1 re-parsed, 0 affected dependent\(s\)/.test(output)
+            ) {
               const meta = JSON.parse(
                 fs.readFileSync(path.join(repo, '.gitnexus', 'gitnexus.json'), 'utf8'),
               );
@@ -1214,7 +1217,9 @@ describe('CLI end-to-end', () => {
               return;
             }
             expect(stage).toBe('stopping');
-            expect(transcript).toContain('Refresh complete: 1 changed, 8 re-parsed,');
+            expect(transcript).toContain(
+              'Refresh complete: 1 changed, 1 re-parsed, 0 affected dependent(s)',
+            );
             resolve();
           });
         });
