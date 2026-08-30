@@ -67,7 +67,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.4",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@vercel/node": "^5.10.1",
+    "@vercel/node": "^5.10.2",
     "@vitejs/plugin-react": "^6.0.5",
     "@vitest/coverage-v8": "^4.1.9",
     "jsdom": "^29.1.1",
@@ -87,14 +87,7 @@
     },
     "@vercel/python-analysis": {
       "minimatch": "10.2.3",
-      "smol-toml": "1.6.1",
-      "js-yaml": "4.3.1"
-    },
-    "jsdom": {
-      "undici": "7.29.0"
-    },
-    "js-yaml": "4.3.1",
-    "nanoid": "3.3.18",
-    "tar": "7.5.22"
+      "smol-toml": "1.6.1"
+    }
   }
 }
