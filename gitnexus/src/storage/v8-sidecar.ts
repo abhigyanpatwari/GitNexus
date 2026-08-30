@@ -39,7 +39,7 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs, unlinkSync } from 'node:fs';
 import v8 from 'node:v8';
 import { logger } from '../core/logger.js';
-import { writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
+import { linkOrCopyFile, writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
 
 const MAGIC = Buffer.from('GNXV8SC1', 'ascii');
 const GEN_MAGIC = Buffer.from('GNXV8GN1', 'ascii');
@@ -457,7 +457,7 @@ export const tryLoadV8Sidecar = async (
 
 export const copyV8SidecarIfPresent = async (srcJson: string, dstJson: string): Promise<void> => {
   try {
-    await fs.copyFile(v8SidecarPath(srcJson), v8SidecarPath(dstJson));
+    await linkOrCopyFile(v8SidecarPath(srcJson), v8SidecarPath(dstJson));
   } catch (copyErr) {
     if (!isEnoent(copyErr)) {
       warnSidecar(copyErr, srcJson, 'v8 sidecar: copy failed; JSON remains authoritative');
@@ -467,7 +467,7 @@ export const copyV8SidecarIfPresent = async (srcJson: string, dstJson: string): 
     return;
   }
   try {
-    await fs.copyFile(v8GenerationPath(srcJson), v8GenerationPath(dstJson));
+    await linkOrCopyFile(v8GenerationPath(srcJson), v8GenerationPath(dstJson));
   } catch (copyErr) {
     if (!isEnoent(copyErr)) {
       warnSidecar(

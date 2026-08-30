@@ -1143,6 +1143,9 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
     const existingPath = getCacheChunkPath(storagePath, chunkHash);
     try {
       await fs.copyFile(existingPath, chunkPath);
+      // Sidecars are hardlinked into tmpDir when the FS allows it (#3090).
+      // Publication is rm(cacheDir)+rename(tmpDir, cacheDir), which only
+      // unlinks old names — linked inodes survive at the new path.
       await copyV8SidecarIfPresent(existingPath, chunkPath);
       writtenKeys.push(chunkHash);
     } catch {

@@ -4,10 +4,11 @@
  * source-text guards in test/unit/group/insecure-tempfile.test.ts used to
  * approximate by regex, for three separate copies of the sequence.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import fs from 'node:fs/promises';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import {
+  linkOrCopyFile,
   writeFileAtomic,
   writeFileAtomicBytes,
   writeFileAtomicBytesSync,
@@ -100,5 +101,85 @@ describe('writeFileAtomicBytes', () => {
     const bytes = Buffer.from('hello');
     writeFileAtomicBytesSync(target, bytes);
     expect(Buffer.from(await fs.readFile(target))).toEqual(bytes);
+  });
+});
+
+describe('linkOrCopyFile (#3090)', () => {
+  let tmp: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmp = await createTempDir('gitnexus-link-or-copy-');
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmp.cleanup();
+  });
+
+  const hardlinksWork = async (): Promise<boolean> => {
+    const a = path.join(tmp.dbPath, '.probe-a');
+    const b = path.join(tmp.dbPath, '.probe-b');
+    await fs.writeFile(a, 'x');
+    try {
+      await fs.link(a, b);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('hardlinks when the filesystem allows it', async () => {
+    if (!(await hardlinksWork())) return;
+    const src = path.join(tmp.dbPath, 'src.bin');
+    const dst = path.join(tmp.dbPath, 'dst.bin');
+    await fs.writeFile(src, 'payload');
+    await linkOrCopyFile(src, dst);
+    const [s, d] = await Promise.all([fs.stat(src), fs.stat(dst)]);
+    expect(d.ino).toBe(s.ino);
+    expect(s.nlink).toBe(2);
+    expect(await fs.readFile(dst, 'utf-8')).toBe('payload');
+  });
+
+  it('falls back to tmp+rename when link reports EXDEV', async () => {
+    const src = path.join(tmp.dbPath, 'src.bin');
+    const dst = path.join(tmp.dbPath, 'dst.bin');
+    await fs.writeFile(src, 'payload');
+    const err = Object.assign(new Error('cross-device'), { code: 'EXDEV' });
+    vi.spyOn(fs, 'link').mockRejectedValue(err);
+    await linkOrCopyFile(src, dst);
+    expect(await fs.readFile(dst, 'utf-8')).toBe('payload');
+    const [s, d] = await Promise.all([fs.stat(src), fs.stat(dst)]);
+    if (s.ino !== 0) expect(d.ino).not.toBe(s.ino);
+    expect(s.nlink).toBe(1);
+    expect((await fs.readdir(tmp.dbPath)).filter((f) => f.includes('.tmp.'))).toEqual([]);
+  });
+
+  it('replaces an existing dest via rename without touching src', async () => {
+    const src = path.join(tmp.dbPath, 'src.bin');
+    const dst = path.join(tmp.dbPath, 'dst.bin');
+    await fs.writeFile(src, 'new-bytes');
+    await fs.writeFile(dst, 'old-bytes');
+    await linkOrCopyFile(src, dst);
+    expect(await fs.readFile(dst, 'utf-8')).toBe('new-bytes');
+    expect(await fs.readFile(src, 'utf-8')).toBe('new-bytes');
+  });
+
+  it('does not write through a dest that is already a hardlink to other durable bytes', async () => {
+    if (!(await hardlinksWork())) return;
+    const durable = path.join(tmp.dbPath, 'durable.bin');
+    const dst = path.join(tmp.dbPath, 'dst.bin');
+    const src = path.join(tmp.dbPath, 'src.bin');
+    await fs.writeFile(durable, 'DURABLE');
+    await fs.link(durable, dst);
+    await fs.writeFile(src, 'FRESH');
+    const before = await fs.stat(durable);
+    vi.spyOn(fs, 'link').mockRejectedValue(Object.assign(new Error('exdev'), { code: 'EXDEV' }));
+    await linkOrCopyFile(src, dst);
+    const after = await fs.stat(durable);
+    expect(await fs.readFile(durable, 'utf-8')).toBe('DURABLE');
+    expect(after.ino).toBe(before.ino);
+    expect(after.nlink).toBe(1);
+    expect(await fs.readFile(dst, 'utf-8')).toBe('FRESH');
+    expect((await fs.stat(dst)).ino).not.toBe(before.ino);
   });
 });

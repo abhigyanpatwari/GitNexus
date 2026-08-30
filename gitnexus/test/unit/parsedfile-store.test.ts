@@ -808,6 +808,160 @@ describe('parsedfile-store receiverChain sanitation', () => {
     }
   });
 
+  const restoreSidecarSuffixes = ['.json', '.json.paths', '.json.v8', '.json.v8gen'] as const;
+
+  const hardlinksWorkIn = async (dir: string): Promise<boolean> => {
+    const a = path.join(dir, '.hl-a');
+    const b = path.join(dir, '.hl-b');
+    await writeFile(a, 'x');
+    try {
+      await nodeFsPromises.link(a, b);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('restoreDurableParsedFileShard hardlinks all four files when the FS allows it (#3090)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-hl-'));
+    try {
+      if (!(await hardlinksWorkIn(dir))) return;
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      const srcBase = path.join(durable, 'abc', 'abc-w1-0');
+      const dstBase = path.join(getParsedFileStoreDir(dir), 'abc-w1-0');
+      for (const suffix of restoreSidecarSuffixes) {
+        const src = `${srcBase}${suffix}`;
+        const dst = `${dstBase}${suffix}`;
+        const [s, d] = await Promise.all([nodeFsPromises.stat(src), nodeFsPromises.stat(dst)]);
+        expect(d.ino, suffix).toBe(s.ino);
+        expect(s.nlink, suffix).toBe(2);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restoreDurableParsedFileShard falls back to copy when link reports EXDEV (#3090)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-exdev-'));
+    const spy = vi.spyOn(nodeFsPromises, 'link').mockRejectedValue(
+      Object.assign(new Error('cross-device'), { code: 'EXDEV' }),
+    );
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      const srcJson = path.join(durable, 'abc', 'abc-w1-0.json');
+      const dstJson = path.join(getParsedFileStoreDir(dir), 'abc-w1-0.json');
+      expect(await readFile(dstJson)).toEqual(await readFile(srcJson));
+      const [s, d] = await Promise.all([nodeFsPromises.stat(srcJson), nodeFsPromises.stat(dstJson)]);
+      if (s.ino !== 0) expect(d.ino).not.toBe(s.ino);
+      expect(s.nlink).toBe(1);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      spy.mockRestore();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restoreDurableParsedFileShard replaces a leftover dest JSON via rename (#3090)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-eexist-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const storeDir = getParsedFileStoreDir(dir);
+      await nodeFsPromises.mkdir(storeDir, { recursive: true });
+      const dstJson = path.join(storeDir, 'abc-w1-0.json');
+      await writeFile(dstJson, '{"stale":true}', 'utf-8');
+      const srcJson = path.join(durable, 'abc', 'abc-w1-0.json');
+      const srcBytes = await readFile(srcJson);
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      expect(await readFile(dstJson)).toEqual(srcBytes);
+      expect(await readFile(srcJson)).toEqual(srcBytes);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restoreDurableParsedFileShard fallback does not mutate a dest that is a hardlink into durable data (#3090)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-through-'));
+    try {
+      if (!(await hardlinksWorkIn(dir))) return;
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      persistDurableParsedFileShardSync(durable, 'def', 1, 0, [makeParsedFile('z.c')]);
+      const other = path.join(durable, 'def', 'def-w1-0.json');
+      const storeDir = getParsedFileStoreDir(dir);
+      await nodeFsPromises.mkdir(storeDir, { recursive: true });
+      const dstJson = path.join(storeDir, 'abc-w1-0.json');
+      await nodeFsPromises.link(other, dstJson);
+      const before = await nodeFsPromises.stat(other);
+      const otherBytes = await readFile(other);
+      vi.spyOn(nodeFsPromises, 'link').mockRejectedValue(
+        Object.assign(new Error('cross-device'), { code: 'EXDEV' }),
+      );
+      const restored = await restoreDurableParsedFileShard(durable, dir, 'abc');
+      expect(restored).toBe(1);
+      const after = await nodeFsPromises.stat(other);
+      expect(await readFile(other)).toEqual(otherBytes);
+      expect(after.ino).toBe(before.ino);
+      expect(after.nlink).toBe(1);
+      expect((await nodeFsPromises.stat(dstJson)).ino).not.toBe(before.ino);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      expect(loaded.has('a.c')).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('clearParsedFileStore after restore leaves the durable cache intact (#3090)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-cleanup-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const srcBase = path.join(durable, 'abc', 'abc-w1-0');
+      const before = new Map<string, Buffer>();
+      for (const suffix of restoreSidecarSuffixes) {
+        before.set(suffix, await readFile(`${srcBase}${suffix}`));
+      }
+      expect(await restoreDurableParsedFileShard(durable, dir, 'abc')).toBe(1);
+      await clearParsedFileStore(dir);
+      for (const suffix of restoreSidecarSuffixes) {
+        const p = `${srcBase}${suffix}`;
+        expect(await readFile(p)).toEqual(before.get(suffix));
+        expect((await nodeFsPromises.stat(p)).nlink).toBe(1);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('run-store persist of w<tid>-<seq> does not collide with a restored durable name (#3090)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-collide-'));
+    try {
+      const durable = getDurableParsedFileDir(dir);
+      persistDurableParsedFileShardSync(durable, 'abc', 1, 0, [makeParsedFile('a.c')]);
+      const srcJson = path.join(durable, 'abc', 'abc-w1-0.json');
+      const before = await readFile(srcJson);
+      expect(await restoreDurableParsedFileShard(durable, dir, 'abc')).toBe(1);
+      persistParsedFileShardSync(dir, 'w1-0', [makeParsedFile('other.c')]);
+      expect(await readFile(srcJson)).toEqual(before);
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['a.c', 'other.c']));
+      expect(loaded.has('a.c')).toBe(true);
+      expect(loaded.has('other.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('restoreDurableParsedFileShard unlinks a stale dest sidecar when the source has none', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-restore-stale-'));
     try {

@@ -6,8 +6,7 @@
  * core/group/ import (the established direction is core/group/ -> storage/,
  * e.g. core/group/service.ts already imports loadMeta from here).
  */
-import { closeSync, openSync, renameSync, unlinkSync, writeSync } from 'node:fs';
-import fsp from 'fs/promises';
+import { closeSync, openSync, promises as fsp, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { randomBytes } from 'crypto';
 
 const RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
@@ -75,6 +74,34 @@ export async function writeFileAtomic(
 
 function tmpBeside(targetPath: string): string {
   return `${targetPath}.tmp.${randomBytes(8).toString('hex')}`;
+}
+
+/**
+ * Publish `src` at `dst` without ever writing through the inode currently
+ * named by `dst` (#3090). Fast path is `fs.link`. Any failure (EEXIST, EXDEV,
+ * EPERM, unsupported hardlinks) copies into a unique sibling and
+ * {@link retryRename}s over `dst`. POSIX rename of a file over an existing
+ * file unlinks the old name; it does not open or truncate that inode.
+ *
+ * Invariant: may replace the destination directory entry; must never modify
+ * the inode that entry currently references. There is no dest unlink and no
+ * in-place `copyFile(src, dst)`.
+ */
+export async function linkOrCopyFile(src: string, dst: string): Promise<void> {
+  try {
+    await fsp.link(src, dst);
+    return;
+  } catch {
+    /* any link failure → publish a new inode via tmp + rename */
+  }
+  const tmp = tmpBeside(dst);
+  try {
+    await fsp.copyFile(src, tmp);
+    await retryRename(tmp, dst);
+  } catch (err) {
+    await fsp.unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 /**

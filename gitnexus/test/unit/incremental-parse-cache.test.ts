@@ -911,6 +911,9 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
         onDiskKeys: new Set(),
       };
       await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 42 })]);
+      const liveJson = path.join(dir, 'parse-cache', `${key}.json`);
+      const liveV8 = await readFile(`${liveJson}.v8`);
+      const liveGen = await readFile(`${liveJson}.v8gen`);
       await saveParseCache(dir, cache);
       expect(await readdir(path.join(dir, 'parse-cache'))).toEqual(
         expect.arrayContaining([
@@ -920,6 +923,8 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
           'index.json',
         ]),
       );
+      expect(await readFile(path.join(dir, 'parse-cache', `${key}.json.v8`))).toEqual(liveV8);
+      expect(await readFile(path.join(dir, 'parse-cache', `${key}.json.v8gen`))).toEqual(liveGen);
       const loaded = await loadParseCache(dir);
       expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(42);
     } finally {

@@ -42,10 +42,14 @@
  * store keyed by the parse chunk hash (`getDurableParsedFileDir`), which mirrors
  * the parse cache's lifecycle (persists across runs, pruned by `usedKeys`,
  * version-tied via `PARSE_CACHE_VERSION`). On a warm hit the chunk's durable
- * shards are byte-COPIED into the run-scoped store (no re-parse, no
- * re-serialize → byte-identical), so scope-resolution streams them exactly as
+ * shards are published into the run-scoped store by hardlink (or atomic
+ * copy+rename when the filesystem cannot link) — no re-parse, no
+ * re-serialize → byte-identical. Scope-resolution streams them exactly as
  * on a cold run. Content-addressing makes stale reuse impossible: a changed
  * file changes its chunk hash, which misses BOTH stores and re-dispatches.
+ * Restored names are chunk-hash prefixed, so run-store writers (`w<tid>-<seq>`)
+ * cannot target them; cleanup is `fs.rm` of directory entries, which drops a
+ * link count without opening durable inodes.
  */
 
 import { promises as fs, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -61,6 +65,7 @@ import type {
 import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-codec.js';
 import { logger } from '../core/logger.js';
 import { mapReplacer, mapReviver } from './parse-cache.js';
+import { linkOrCopyFile } from './fs-atomic.js';
 import {
   copyV8SidecarIfPresent,
   invalidatePriorV8Generation,
@@ -823,13 +828,15 @@ export const persistDurableParsedFileShardSync = (
 
 /**
  * Restore a cached chunk's durable shards into the run-scoped store on a warm
- * hit. A verbatim byte copy (no parse, no re-serialize), so the restored
- * ParsedFiles are byte-identical to a cold run and `loadParsedFilesForPaths`
- * (which keys on `filePath`, not shard name) gives scope-resolution full
- * coverage. The durable shard names already carry the chunk hash, so they never
- * collide with the worker's run-scoped `w<tid>-<seq>` shards. Returns the number
- * of shards restored (0 ⇒ no durable coverage for this chunk; caller treats it
- * as a miss).
+ * hit. Verbatim bytes (no parse, no re-serialize), published by `fs.link`
+ * where the filesystem allows it, otherwise copy-to-tmp + rename over the dest
+ * name. `linkOrCopyFile` may replace a destination directory entry but must
+ * never write through the inode that name currently references — so a leftover
+ * dest that happens to be a hardlink into `parsedfile-cache/` cannot be
+ * truncated. Restored names already carry the chunk hash, so they never collide
+ * with the worker's run-scoped `w<tid>-<seq>` shards; `clearParsedFileStore`
+ * only unlinks entries. Returns the number of shards restored (0 ⇒ no durable
+ * coverage for this chunk; caller treats it as a miss).
  */
 export const restoreDurableParsedFileShard = async (
   durableDir: string,
@@ -852,11 +859,11 @@ export const restoreDurableParsedFileShard = async (
     const dstJson = path.join(dst, name);
     if (!(await prepareCopiedShardDestination(dstJson))) continue;
     await dropPathSidecar(dstJson);
-    await fs.copyFile(srcJson, dstJson);
+    await linkOrCopyFile(srcJson, dstJson);
     restored++;
     await copyV8SidecarIfPresent(srcJson, dstJson);
     try {
-      await fs.copyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
+      await linkOrCopyFile(shardPathsSidecarPath(srcJson), shardPathsSidecarPath(dstJson));
     } catch (copyErr) {
       if (!isEnoent(copyErr)) {
         warnSidecarIo(
