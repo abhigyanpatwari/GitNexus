@@ -128,16 +128,16 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
       expect(indexNamesAtDeleteTime).toBeDefined();
-      // #3016 narrowed the sweep from "every configured index" to "the indexes
-      // over tables this writeback touches", so the #2589 ordering guarantee is
-      // now asserted per touched table. This mini-repo is TypeScript: the
-      // changed file writes File and Function rows, so those two indexes must
-      // be down before the DETACH DELETE...
-      expect(indexNamesAtDeleteTime).not.toContain('file_fts');
-      expect(indexNamesAtDeleteTime).not.toContain('function_fts');
-      // ...while the tables no language in this repo populates (Trait, Impl, …)
-      // are never DML'd and keep their index, which is the saving itself.
-      expect(indexNamesAtDeleteTime!.length).toBeGreaterThan(0);
+      // Mini-repo handler.ts writes File, Function, Class, and Method rows.
+      // Those indexes must be down before DETACH DELETE (#2589). Every other
+      // configured FTS index must still be live (#3016 narrowing).
+      const down = new Set(['file_fts', 'function_fts', 'class_fts', 'method_fts']);
+      const configured = FTS_INDEXES.map((i) => i.indexName);
+      const ftsAtDelete = indexNamesAtDeleteTime!.filter((name) => configured.includes(name));
+      expect([...ftsAtDelete].sort()).toEqual(configured.filter((name) => !down.has(name)).sort());
+      for (const name of down) {
+        expect(ftsAtDelete).not.toContain(name);
+      }
     } finally {
       await repo.cleanup();
     }

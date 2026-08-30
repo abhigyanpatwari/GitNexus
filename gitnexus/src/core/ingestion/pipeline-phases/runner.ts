@@ -167,6 +167,16 @@ export async function runPipeline(
   const satisfied = new Set(seed?.keys() ?? []);
   let sorted: PipelinePhase[];
   try {
+    // Duplicate names must be rejected on the caller-supplied list *before*
+    // seed-filtering. Filtering first would drop a seeded duplicate and let
+    // `topologicalSort` see a unique name (#3102).
+    const seenNames = new Set<string>();
+    for (const phase of phases) {
+      if (seenNames.has(phase.name)) {
+        throw new Error(`Duplicate phase name: '${phase.name}'`);
+      }
+      seenNames.add(phase.name);
+    }
     sorted = topologicalSort(
       phases.filter((p) => !satisfied.has(p.name)),
       satisfied,

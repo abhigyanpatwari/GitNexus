@@ -2693,6 +2693,7 @@ export const nodeTablesWithRowsForFiles = async (
 const DERIVED_REL_KINDS = [
   { type: 'MEMBER_OF', targetLabel: 'Community' },
   { type: 'STEP_IN_PROCESS', targetLabel: 'Process' },
+  { type: 'ENTRY_POINT_OF', targetLabel: 'Process' },
 ] as const;
 
 /**
@@ -2714,7 +2715,7 @@ export interface DerivedRelSnapshot {
 }
 
 /**
- * Capture the MEMBER_OF / STEP_IN_PROCESS edges owned by `filePaths`, before a
+ * Capture the MEMBER_OF / STEP_IN_PROCESS / ENTRY_POINT_OF edges owned by `filePaths`, before a
  * surgical incremental write DETACH DELETEs their file-side endpoints (#3016).
  *
  * Only meaningful on the write plan that keeps the persisted Community/Process
@@ -2767,7 +2768,12 @@ export const snapshotDerivedRelsForFiles = async (
                 type,
                 confidence: typeof rec.confidence === 'number' ? rec.confidence : 1.0,
                 reason: typeof rec.reason === 'string' ? rec.reason : '',
-                step: typeof rec.step === 'number' ? rec.step : 0,
+                step:
+                  typeof rec.step === 'number'
+                    ? rec.step
+                    : typeof rec.step === 'bigint'
+                      ? Number(rec.step)
+                      : 0,
               });
             }
           } finally {

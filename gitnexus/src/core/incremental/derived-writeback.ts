@@ -3,15 +3,15 @@
  *
  * The derived layers — Leiden communities, execution flows, and the FTS
  * indexes — are graph-wide, so every analyze run rebuilt all three in full no
- * matter how small the diff. On a surgical incremental write with no deleted
- * files the previous run's derived layer is still valid for everything outside
- * the write set, which lets that run instead:
+ * matter how small the diff. A surgical incremental write can instead:
  *   - drop and rebuild only the FTS indexes whose tables hold rows in the
  *     write set (LadybugDB still cannot DML a table with a live FTS index —
  *     #2589 — so a table being written must still lose its index first);
  *   - leave the untouched tables' rows alone, so their indexes stay live;
- *   - keep the persisted Community/Process rows rather than wiping them and
- *     re-running Leiden over the whole graph.
+ *   - reuse persisted Community/Process rows only when the file-hash diff is
+ *     empty (no added, changed, or deleted files). Any content change can
+ *     add, rename, or retarget symbols that Leiden and flow extraction
+ *     consume — a no-deletion edit is not a validity proof.
  */
 import { FTS_INDEXES } from '../search/fts-schema.js';
 import type { KnowledgeGraph } from '../graph/types.js';
@@ -27,15 +27,27 @@ export const ftsTablesAmong = (tables: Iterable<string>): Set<string> => {
   return out;
 };
 
+/** Counts from `FileHashDiff` that decide whether Leiden/flows can be reused. */
+export interface DerivedGraphPreserveInput {
+  deletedCount: number;
+  addedCount: number;
+  changedCount: number;
+}
+
 /**
  * Whether a surgical incremental write may reuse the persisted derived layer.
  *
  * Deletions disqualify it: the persisted Community/Process rows and their
  * MEMBER_OF / STEP_IN_PROCESS edges can reference nodes that no longer exist
  * after this run, and nothing short of re-deriving can tell which.
+ *
+ * Added or content-changed files also disqualify it: they can introduce,
+ * rename, or retarget symbols and CALLS edges that Leiden and flow extraction
+ * consume. File-deletion-only was too weak a proof that the derived graph is
+ * still valid.
  */
-export const shouldPreservePersistedDerivedGraph = (deletedCount: number): boolean =>
-  deletedCount === 0;
+export const shouldPreservePersistedDerivedGraph = (diff: DerivedGraphPreserveInput): boolean =>
+  diff.deletedCount === 0 && diff.addedCount === 0 && diff.changedCount === 0;
 
 /**
  * FTS-backed node tables that the fresh graph will WRITE rows into for

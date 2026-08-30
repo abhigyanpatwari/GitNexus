@@ -2025,16 +2025,19 @@ async function runFullAnalysisInner(
   //   - not incremental      → full rebuild writes the whole graph, and a graph
   //                            with no Community/Process nodes would publish an
   //                            index with no communities and no flows;
-  //   - deletions present    → the surviving persisted rows can reference nodes
-  //                            this run removes, so they are not reusable and
-  //                            `deleteAllCommunitiesAndProcesses` wipes them.
-  // Only the no-deletions incremental case keeps the persisted derived layer,
-  // which is the case the skip exists for.
+  //   - added/changed/deleted files → the persisted derived layer can miss new
+  //                            symbols, keep stale memberships, or reference
+  //                            removed ids. Only an empty file-hash diff is a
+  //                            proof that Leiden/flows still match.
   const preserveDerivedLayer =
     skipDerivedGraphPhases &&
     isIncremental &&
     !!hashDiff &&
-    shouldPreservePersistedDerivedGraph(hashDiff.deleted.length);
+    shouldPreservePersistedDerivedGraph({
+      deletedCount: hashDiff.deleted.length,
+      addedCount: hashDiff.added.length,
+      changedCount: hashDiff.changed.length,
+    });
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
@@ -2764,13 +2767,13 @@ async function runFullAnalysisInner(
         // in between — so re-reading would only weaken the one-read invariant
         // the snapshot type exists to enforce.
         if (buildPath === lbugPath) liveIndexMutationStarted = true;
-        // #3016: which node tables actually hold rows for the write set. One
-        // probe answers both narrowings below, and it has to be a question
-        // about the DB rather than the fresh graph — a symbol the edit DELETED
-        // is in no fresh graph but is still a row that has to go.
-        const tablesWithRows = preserveDerivedLayer
-          ? await nodeTablesWithRowsForFiles(filesToDelete, NODE_TABLES)
-          : undefined;
+        // FTS narrowing is independent of Leiden/flow reuse: even when this
+        // run re-derives communities, Ladybug still cannot DML a live FTS
+        // index (#2589), so only the tables this write set touches should
+        // lose their index. The probe is a question about the DB rather than
+        // the fresh graph — a symbol the edit DELETED is in no fresh graph
+        // but is still a row that has to go.
+        const tablesWithRows = await nodeTablesWithRowsForFiles(filesToDelete, NODE_TABLES);
         // Narrowing 1 — the FTS sweep, from "every configured index" to "the
         // indexes this run must touch". Three sources, and dropping any one of
         // them strands something:
@@ -2784,28 +2787,34 @@ async function runFullAnalysisInner(
         //     rebuild would be the only thing that ever restored them.
         // An unreadable catalog proves nothing about that third set, so it
         // withdraws the narrowing entirely rather than guess.
-        const missingFts = tablesWithRows
-          ? await missingSearchFTSIndexTables(indexCatalogRows)
+        const missingFts = await missingSearchFTSIndexTables(indexCatalogRows);
+        const touchedFts = missingFts
+          ? new Set([
+              ...ftsTablesAmong(tablesWithRows),
+              ...incrementalFtsTablesFromGraph(pipelineResult.graph, new Set(filesToDelete)),
+              ...missingFts,
+            ])
           : undefined;
-        const touchedFts =
-          tablesWithRows && missingFts
-            ? new Set([
-                ...ftsTablesAmong(tablesWithRows),
-                ...incrementalFtsTablesFromGraph(pipelineResult.graph, new Set(filesToDelete)),
-                ...missingFts,
-              ])
-            : undefined;
+        // Graph-wide Spring synthetic Class nodes are DETACH DELETEd on this
+        // branch even when Class is not in the write set
+        // (`deleteSpringAutoConfigurationSyntheticClasses`). Always include
+        // Class so class_fts is not live across that DML (#2589), including
+        // when the fresh graph no longer materializes the synthetics but the
+        // DB still holds them.
+        if (touchedFts) {
+          touchedFts.add('Class');
+        }
         // An empty set would read as "rebuild everything" to the callees, which
         // is the opposite instruction. A write set that touches no FTS-backed
         // table still has to name one, and File is the table every run writes.
         if (touchedFts && touchedFts.size === 0) touchedFts.add('File');
         incrementalFtsRebuildTables = touchedFts;
-        // Narrowing 2 — MEMBER_OF / STEP_IN_PROCESS edges hang off the nodes
+        // MEMBER_OF / STEP_IN_PROCESS / ENTRY_POINT_OF edges hang off the nodes
         // the DETACH DELETE below removes, so preserving the Community/Process
         // nodes preserves only half the layer unless these are reattached after
         // the subgraph write puts the member nodes back. Only the probed tables
         // can own such an edge, so they are the only ones worth scanning.
-        const derivedSnapshot = tablesWithRows
+        const derivedSnapshot = preserveDerivedLayer
           ? await snapshotDerivedRelsForFiles(filesToDelete, [...tablesWithRows])
           : [];
         await dropSearchFTSIndexes(indexCatalogRows, incrementalFtsRebuildTables);

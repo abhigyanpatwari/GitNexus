@@ -17,12 +17,22 @@ const node = (id: string, label: string, filePath: string): GraphNode =>
   }) as unknown as GraphNode;
 
 describe('shouldPreservePersistedDerivedGraph (#3016)', () => {
-  it('is true when the incremental diff has no deleted files', () => {
-    expect(shouldPreservePersistedDerivedGraph(0)).toBe(true);
+  const empty = { deletedCount: 0, addedCount: 0, changedCount: 0 };
+
+  it('is true only when the file-hash diff is empty', () => {
+    expect(shouldPreservePersistedDerivedGraph(empty)).toBe(true);
   });
 
   it('is false when any file was deleted (old labels are not in the fresh graph)', () => {
-    expect(shouldPreservePersistedDerivedGraph(1)).toBe(false);
+    expect(shouldPreservePersistedDerivedGraph({ ...empty, deletedCount: 1 })).toBe(false);
+  });
+
+  it('is false when a file was added (new symbols have no persisted membership)', () => {
+    expect(shouldPreservePersistedDerivedGraph({ ...empty, addedCount: 1 })).toBe(false);
+  });
+
+  it('is false when a file changed (in-file add/rename/CALLS can change Leiden/flows)', () => {
+    expect(shouldPreservePersistedDerivedGraph({ ...empty, changedCount: 1 })).toBe(false);
   });
 });
 

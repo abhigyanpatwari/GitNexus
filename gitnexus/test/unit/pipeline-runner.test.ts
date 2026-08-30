@@ -419,7 +419,11 @@ describe('runPipeline with seeded results (#3016 deferred derived phases)', () =
   });
 
   it('returns the seeded results alongside the newly run ones', async () => {
-    const later: PipelinePhase<string> = { name: 'later', deps: ['earlier'], execute: async () => 'x' };
+    const later: PipelinePhase<string> = {
+      name: 'later',
+      deps: ['earlier'],
+      execute: async () => 'x',
+    };
 
     const results = await runPipeline([later], makeCtx(), seeded('earlier', 'earlierOutput'));
 
@@ -445,10 +449,25 @@ describe('runPipeline with seeded results (#3016 deferred derived phases)', () =
   });
 
   it('still rejects a dependency that is neither registered nor seeded', async () => {
-    const later: PipelinePhase<string> = { name: 'later', deps: ['missing'], execute: async () => 'x' };
+    const later: PipelinePhase<string> = {
+      name: 'later',
+      deps: ['missing'],
+      execute: async () => 'x',
+    };
 
     await expect(runPipeline([later], makeCtx(), seeded('earlier', 'e'))).rejects.toThrow(
       /depends on 'missing', which is not registered/,
+    );
+  });
+
+  it('rejects duplicate phase names even when one copy is also seeded', async () => {
+    const dup: PipelinePhase = {
+      name: 'earlier',
+      deps: [],
+      async execute() {},
+    };
+    await expect(runPipeline([dup, dup], makeCtx(), seeded('earlier', 'seed'))).rejects.toThrow(
+      /Duplicate phase name/,
     );
   });
 });
