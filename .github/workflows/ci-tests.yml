@@ -711,16 +711,17 @@ jobs:
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         if: ${{ !cancelled() }}
-        # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
-        # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
-        # so it had never run in CI and the PR #1990 ADL emit-scaling guard it
-        # holds was dead. ~45s of test time.
+        # cpp-adl-benchmark.test.ts and csharp-razor-view-components-benchmark.test.ts
+        # are not `*-pipeline-benchmark.test.ts` files but belong here for the
+        # same reason: they are skipIf-gated on GITNEXUS_BENCH, so the scaling
+        # guards they hold never run in the main coverage job.
         env:
           GITNEXUS_BENCH: '1'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/csharp-razor-view-components-benchmark.test.ts
           test/integration/cpp-adl-benchmark.test.ts
           test/integration/data-route-table-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
