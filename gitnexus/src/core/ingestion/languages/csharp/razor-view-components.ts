@@ -829,14 +829,20 @@ export async function loadRazorViewComponentConfig(
   const views = new Map<string, readonly string[]>();
   for (const rawPath of paths) {
     const filePath = rawPath.replace(/\\/g, '/');
+    // The size gate and the read go through one handle so both observe the same
+    // inode. Re-resolving the path for the read would let a template swapped in
+    // between them be read unchecked (CodeQL js/file-system-race).
+    let handle: fs.FileHandle | undefined;
     try {
-      const fullPath = path.join(repoRoot, filePath);
-      const stat = await fs.stat(fullPath);
+      handle = await fs.open(path.join(repoRoot, filePath), 'r');
+      const stat = await handle.stat();
       if (!stat.isFile() || stat.size > maxBytes) continue;
-      const source = await fs.readFile(fullPath, 'utf8');
+      const source = await handle.readFile('utf8');
       views.set(filePath, extractRazorViewComponentInvocations(source));
     } catch {
-      // A view may disappear between glob/stat/read during watch mode.
+      // A view may disappear between glob/open/read during watch mode.
+    } finally {
+      await handle?.close().catch(() => {});
     }
   }
   return { views };
