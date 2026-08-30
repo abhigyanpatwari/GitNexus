@@ -160,17 +160,20 @@ export const diPhase: PipelinePhase<DIOutput> = {
       };
     }
 
-    const interfaceToImplementers = new Map<string, Set<string>>();
+    const directSubtypes = new Map<string, Set<string>>();
     const directSupertypes = new Map<string, Set<string>>();
     for (const rel of ctx.graph.iterRelationshipsByType('IMPLEMENTS')) {
-      const set = interfaceToImplementers.get(rel.targetId) ?? new Set<string>();
-      set.add(rel.sourceId);
-      interfaceToImplementers.set(rel.targetId, set);
+      const subtypes = directSubtypes.get(rel.targetId) ?? new Set<string>();
+      subtypes.add(rel.sourceId);
+      directSubtypes.set(rel.targetId, subtypes);
       const supertypes = directSupertypes.get(rel.sourceId) ?? new Set<string>();
       supertypes.add(rel.targetId);
       directSupertypes.set(rel.sourceId, supertypes);
     }
     for (const rel of ctx.graph.iterRelationshipsByType('EXTENDS')) {
+      const subtypes = directSubtypes.get(rel.targetId) ?? new Set<string>();
+      subtypes.add(rel.sourceId);
+      directSubtypes.set(rel.targetId, subtypes);
       const supertypes = directSupertypes.get(rel.sourceId) ?? new Set<string>();
       supertypes.add(rel.targetId);
       directSupertypes.set(rel.sourceId, supertypes);
@@ -187,14 +190,16 @@ export const diPhase: PipelinePhase<DIOutput> = {
     const interfacesByLanguage = new Map<string, NameIndex>();
     const classesByLanguage = new Map<string, NameIndex>();
     ctx.graph.forEachNode((node) => {
-      if (node.label !== 'Class' && node.label !== 'Interface') return;
+      const concreteType =
+        node.label === 'Class' || node.label === 'Record' || node.label === 'Enum';
+      if (!concreteType && node.label !== 'Interface') return;
       const language = node.properties.language;
       if (typeof language !== 'string' || !candidateLanguages.has(language)) return;
-      const indexes = node.label === 'Class' ? classesByLanguage : interfacesByLanguage;
+      const indexes = concreteType ? classesByLanguage : interfacesByLanguage;
       const index = indexes.get(language) ?? emptyNameIndex();
       addIndexedName(index, node);
       indexes.set(language, index);
-      if (node.label === 'Class') providerNodes.set(node.id, node);
+      if (concreteType) providerNodes.set(node.id, node);
     });
 
     // A declaration returning a concrete class is assignable to every class or
@@ -301,9 +306,31 @@ export const diPhase: PipelinePhase<DIOutput> = {
       }
 
       const structural = new Set<string>();
-      if (typeof classEntry === 'string') structural.add(classEntry);
-      if (typeof interfaceEntry === 'string') {
-        for (const id of interfaceToImplementers.get(interfaceEntry) ?? []) structural.add(id);
+      const rootTypeId =
+        typeof classEntry === 'string'
+          ? classEntry
+          : typeof interfaceEntry === 'string'
+            ? interfaceEntry
+            : undefined;
+      if (rootTypeId !== undefined) {
+        const queue = [rootTypeId];
+        const visited = new Set<string>();
+        while (queue.length > 0) {
+          const typeId = queue.pop();
+          if (typeId === undefined || visited.has(typeId)) continue;
+          visited.add(typeId);
+          const typeNode = ctx.graph.getNode(typeId);
+          if (
+            (typeNode?.label === 'Class' ||
+              typeNode?.label === 'Record' ||
+              typeNode?.label === 'Enum') &&
+            typeNode.properties.language === candidate.language
+          ) {
+            structural.add(typeId);
+          }
+          const children = [...(directSubtypes.get(typeId) ?? [])].sort().reverse();
+          queue.push(...children);
+        }
       }
       for (const id of providedTypes.get(candidate.language)?.get(candidate.targetTypeName) ?? []) {
         structural.add(id);

@@ -39,12 +39,14 @@ import {
   setJavaSpringConfigConsumerFacts,
   setJavaSpringConditionalFacts,
   setJavaSpringDiFacts,
+  setJavaSpringDynamicLookupFacts,
   setJavaSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 import { captureJavaSpringDiClassFact, type JavaSpringDiClassFact } from './spring-di.js';
+import { captureJavaSpringDynamicLookupFacts } from './spring-dynamic-lookup.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { captureJavaSpringAopFacts, type JavaSpringAopFact } from './spring-aop.js';
 import {
@@ -401,6 +403,10 @@ export function emitJavaScopeCaptures(
   setJavaSpringAopFacts(filePath, springAopFacts);
   setJavaSpringConditionalFacts(filePath, springConditionalFacts);
   setJavaSpringDiFacts(filePath, springDiFacts);
+  setJavaSpringDynamicLookupFacts(
+    filePath,
+    captureJavaSpringDynamicLookupFacts(tree.rootNode, filePath),
+  );
   setJavaSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
 
   return [

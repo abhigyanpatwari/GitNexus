@@ -98,7 +98,7 @@ const javaScopeResolver: ScopeResolver = {
     attachJavaSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringNonHttpHandlerMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringConfigBindings(graph, parsedFiles, nodeLookup, indexes, ctx);
-    attachJavaSpringDynamicLookup(graph, parsedFiles, ctx.fileContents);
+    attachJavaSpringDynamicLookup(graph, parsedFiles, nodeLookup, indexes);
   },
 };
 

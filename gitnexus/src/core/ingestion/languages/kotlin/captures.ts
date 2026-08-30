@@ -23,11 +23,13 @@ import {
   setKotlinSpringAopFacts,
   setKotlinSpringConditionalFacts,
   setKotlinSpringDiFacts,
+  setKotlinSpringDynamicLookupFacts,
   setKotlinSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
+import { captureKotlinSpringDynamicLookupFacts } from './spring-dynamic-lookup.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { captureKotlinSpringAopFacts, type KotlinSpringAopFact } from './spring-aop.js';
 import {
@@ -357,6 +359,10 @@ export function emitKotlinScopeCaptures(
   setKotlinSpringAopFacts(filePath, springAopFacts);
   setKotlinSpringConditionalFacts(filePath, springConditionalFacts);
   setKotlinSpringDiFacts(filePath, springDiFacts);
+  setKotlinSpringDynamicLookupFacts(
+    filePath,
+    captureKotlinSpringDynamicLookupFacts(tree.rootNode, filePath),
+  );
   setKotlinSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;
