@@ -69,13 +69,13 @@ Do not hand the URL out as a public demo. A token holder has read access to ever
 
 This repository runs the following scans automatically. Findings appear under the repository's **Security → Code scanning** tab.
 
-| Scan                                 | Tool                                                                              | Trigger                    | Action on finding                      |
-| ------------------------------------ | --------------------------------------------------------------------------------- | -------------------------- | -------------------------------------- |
-| Static analysis (JS/TS, Python)      | [CodeQL](https://github.com/github/codeql-action)                                 | PR, `main` push, weekly    | Advisory (Security tab)                |
-| Dependency vulnerabilities (PR diff) | [`dependency-review-action`](https://github.com/actions/dependency-review-action) | PR                         | **Blocks PR** at `high+` severity      |
-| Secret scanning                      | [Gitleaks](https://github.com/gitleaks/gitleaks-action)                           | PR, `main` push            | **Blocks PR** on default rules         |
-| Supply-chain posture                 | [OpenSSF Scorecard](https://github.com/ossf/scorecard-action)                     | Weekly, `main` push        | Advisory (Security tab + public badge) |
-| Workflow lint                        | [zizmor](https://github.com/woodruffw/zizmor)                                     | PR (touching `.github/**`) | **Blocks PR** at `high+` severity      |
-| Container image scan                 | [Trivy](https://github.com/aquasecurity/trivy-action)                             | Weekly, `main` push        | Advisory (Security tab)                |
+| Scan | Tool | Trigger | Action on finding |
+|------|------|---------|-------------------|
+| Static analysis (JS/TS, Python) | [CodeQL](https://github.com/github/codeql-action) | PR, `main` push, weekly | Advisory (Security tab) |
+| Dependency vulnerabilities (PR diff) | [`dependency-review-action`](https://github.com/actions/dependency-review-action) | PR | **Blocks PR** at `high+` severity |
+| Secret scanning | [Gitleaks](https://github.com/gitleaks/gitleaks-action) | PR, `main` push | **Blocks PR** on default rules |
+| Supply-chain posture | [OpenSSF Scorecard](https://github.com/ossf/scorecard-action) | Weekly, `main` push | Advisory (Security tab + public badge) |
+| Workflow lint | [zizmor](https://github.com/woodruffw/zizmor) | PR (touching `.github/**`) | **Blocks PR** at `high+` severity |
+| Container image scan | [Trivy](https://github.com/aquasecurity/trivy-action) | Weekly, `main` push | Advisory (Security tab) |
 
 Dependency version updates are managed separately by Dependabot — see `.github/dependabot.yml`.
