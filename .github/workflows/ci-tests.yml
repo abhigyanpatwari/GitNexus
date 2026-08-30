@@ -725,6 +725,7 @@ jobs:
           test/integration/data-route-table-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
           test/integration/spring-bean-resource-benchmark.test.ts
+          test/integration/spring-dynamic-lookup-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts

@@ -46,7 +46,7 @@ export interface SpringDynamicLookupFact {
 export function springDynamicLookupCardinality(
   receiverName: string,
   methodName: string,
-): 'single' | 'collection' | null {
+): DiInjectionMatch['cardinality'] | null {
   const receiverSimpleName = receiverName.slice(receiverName.lastIndexOf('.') + 1);
   if (!KNOWN_RECEIVERS.has(receiverSimpleName)) return null;
   if (COLLECTION_LOOKUP_METHODS.has(methodName)) return 'collection';

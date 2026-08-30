@@ -102,6 +102,10 @@ function providerCandidates(
   return recognized.length > 0 ? recognized : all;
 }
 
+function isConcreteTypeNode(node: GraphNode | undefined): boolean {
+  return node?.label === 'Class' || node?.label === 'Record' || node?.label === 'Enum';
+}
+
 export const diPhase: PipelinePhase<DIOutput> = {
   name: 'di',
   deps: ['mro'],
@@ -178,6 +182,9 @@ export const diPhase: PipelinePhase<DIOutput> = {
       supertypes.add(rel.targetId);
       directSupertypes.set(rel.sourceId, supertypes);
     }
+    const orderedDirectSubtypes = new Map<string, readonly string[]>(
+      [...directSubtypes].map(([typeId, subtypes]) => [typeId, [...subtypes].sort().reverse()]),
+    );
 
     const memberToClass = new Map<string, string>();
     for (const relationType of ['HAS_PROPERTY', 'HAS_METHOD'] as const) {
@@ -190,8 +197,7 @@ export const diPhase: PipelinePhase<DIOutput> = {
     const interfacesByLanguage = new Map<string, NameIndex>();
     const classesByLanguage = new Map<string, NameIndex>();
     ctx.graph.forEachNode((node) => {
-      const concreteType =
-        node.label === 'Class' || node.label === 'Record' || node.label === 'Enum';
+      const concreteType = isConcreteTypeNode(node);
       if (!concreteType && node.label !== 'Interface') return;
       const language = node.properties.language;
       if (typeof language !== 'string' || !candidateLanguages.has(language)) return;
@@ -201,6 +207,34 @@ export const diPhase: PipelinePhase<DIOutput> = {
       indexes.set(language, index);
       if (concreteType) providerNodes.set(node.id, node);
     });
+
+    const concreteSubtypesByRoot = new Map<string, ReadonlySet<string>>();
+    const concreteSubtypes = (rootTypeId: string, language: string): ReadonlySet<string> => {
+      const cacheKey = `${language}\0${rootTypeId}`;
+      const cached = concreteSubtypesByRoot.get(cacheKey);
+      if (cached !== undefined) return cached;
+
+      const concrete = new Set<string>();
+      const queue = [rootTypeId];
+      const visited = new Set<string>();
+      while (queue.length > 0) {
+        const typeId = queue.pop();
+        if (typeId === undefined || visited.has(typeId)) continue;
+        visited.add(typeId);
+        const typeNode = ctx.graph.getNode(typeId);
+        if (
+          typeNode !== undefined &&
+          isConcreteTypeNode(typeNode) &&
+          typeNode.properties.language === language
+        ) {
+          concrete.add(typeId);
+        }
+        const children = orderedDirectSubtypes.get(typeId) ?? [];
+        queue.push(...children);
+      }
+      concreteSubtypesByRoot.set(cacheKey, concrete);
+      return concrete;
+    };
 
     // A declaration returning a concrete class is assignable to every class or
     // interface that type extends/implements. Expand once per language+type and
@@ -305,33 +339,15 @@ export const diPhase: PipelinePhase<DIOutput> = {
         continue;
       }
 
-      const structural = new Set<string>();
       const rootTypeId =
         typeof classEntry === 'string'
           ? classEntry
           : typeof interfaceEntry === 'string'
             ? interfaceEntry
             : undefined;
-      if (rootTypeId !== undefined) {
-        const queue = [rootTypeId];
-        const visited = new Set<string>();
-        while (queue.length > 0) {
-          const typeId = queue.pop();
-          if (typeId === undefined || visited.has(typeId)) continue;
-          visited.add(typeId);
-          const typeNode = ctx.graph.getNode(typeId);
-          if (
-            (typeNode?.label === 'Class' ||
-              typeNode?.label === 'Record' ||
-              typeNode?.label === 'Enum') &&
-            typeNode.properties.language === candidate.language
-          ) {
-            structural.add(typeId);
-          }
-          const children = [...(directSubtypes.get(typeId) ?? [])].sort().reverse();
-          queue.push(...children);
-        }
-      }
+      const structural = new Set(
+        rootTypeId === undefined ? [] : concreteSubtypes(rootTypeId, candidate.language),
+      );
       for (const id of providedTypes.get(candidate.language)?.get(candidate.targetTypeName) ?? []) {
         structural.add(id);
       }
