@@ -969,8 +969,9 @@ it('forwards an /api/* request that carries the correct token', async () => {
 });
 
 it('strips the Authorization header instead of forwarding the edge token', async () => {
-  // The token is spent at this hop. `serve` reads no Authorization header, so
-  // forwarding would only copy a live credential into another service's logs.
+  // The edge credential is spent and stripped at this hop. Forwarding it
+  // would copy a live credential into another service's logs; backend MCP
+  // auth cannot compose through this proxy without forward injection.
   await withProxy({}, async (port, ctx) => {
     const res = await apiRequest(port, '/api/mcp', { method: 'POST', body: '{}' });
     assert.equal(res.status, 200, 'the request itself must still be proxied');

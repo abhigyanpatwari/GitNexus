@@ -238,7 +238,7 @@ export const en = {
   'help.option.mcp.host':
     'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
   'help.option.mcp.authToken':
-    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+    "Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var, which also enables MCP Bearer auth on gitnexus serve's /api/mcp route. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.",
   'help.option.force.confirmation': 'Skip confirmation prompt',
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',

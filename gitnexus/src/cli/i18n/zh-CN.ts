@@ -222,7 +222,7 @@ export const zhCN = {
   'help.option.mcp.host':
     'HTTP 绑定地址（仅与 --http 搭配使用）。默认：127.0.0.1（回环）。使用 0.0.0.0 向所有接口开放。',
   'help.option.mcp.authToken':
-    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
+    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置，该变量同时为 gitnexus serve 的 /api/mcp 路由启用 MCP Bearer 认证。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',

@@ -15,7 +15,6 @@
  */
 
 import http from 'http';
-import { readFileSync } from 'fs';
 import type { AddressInfo } from 'net';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import express from 'express';
@@ -682,14 +681,67 @@ describe('mountMCPEndpoints', () => {
     expect(validRes._status).toBe(200);
   });
 
-  it('wires serve MCP auth before the global JSON body parser', () => {
-    const source = readFileSync(new URL('../../src/server/api.ts', import.meta.url), 'utf8');
-    const authIndex = source.indexOf('installServeMcpAuth(app);');
-    const parserIndex = source.indexOf("app.use(express.json({ limit: '10mb' }));");
+  it('wires serve MCP auth before the global JSON body parser', async () => {
+    const app = express();
+    let parsedBodies = 0;
 
-    expect(authIndex).toBeGreaterThan(-1);
-    expect(parserIndex).toBeGreaterThan(-1);
-    expect(authIndex).toBeLessThan(parserIndex);
+    expect(installServeMcpAuth(app, { GITNEXUS_MCP_AUTH_TOKEN: 'serve-secret' })).toBe(true);
+    app.use(
+      express.json({
+        limit: '10mb',
+        verify: () => {
+          parsedBodies += 1;
+        },
+      }),
+    );
+    app.all('/api/mcp', (_req: Request, res: Response) => {
+      res.status(204).end();
+    });
+    app.post('/api/other', (req: Request, res: Response) => {
+      res.status(200).json(req.body);
+    });
+
+    const { port, close } = await listen(app);
+    const json = { 'Content-Type': 'application/json' };
+    const payload = JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 1 });
+
+    try {
+      const missing = await request(port, 'POST', '/api/mcp', json, payload);
+      expect(missing.status).toBe(401);
+      expect(JSON.parse(missing.body)).toMatchObject({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Unauthorized' },
+      });
+      expect(parsedBodies).toBe(0);
+
+      const wrong = await request(
+        port,
+        'POST',
+        '/api/mcp',
+        { ...json, Authorization: 'Bearer wrong-secret' },
+        payload,
+      );
+      expect(wrong.status).toBe(401);
+      expect(parsedBodies).toBe(0);
+
+      const valid = await request(
+        port,
+        'POST',
+        '/api/mcp',
+        { ...json, Authorization: 'Bearer serve-secret' },
+        payload,
+      );
+      expect(valid.status).toBe(204);
+      expect(parsedBodies).toBe(1);
+
+      // The auth gate is scoped to /api/mcp: other routes stay unauthenticated and parsed.
+      const other = await request(port, 'POST', '/api/other', json, JSON.stringify({ ok: true }));
+      expect(other.status).toBe(200);
+      expect(JSON.parse(other.body)).toEqual({ ok: true });
+      expect(parsedBodies).toBe(2);
+    } finally {
+      await close();
+    }
   });
 
   it('returns a cleanup function', async () => {

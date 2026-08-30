@@ -59,7 +59,7 @@ The `render.yaml` Blueprint (see the README's **Deploy to Render**) puts `gitnex
 - **The generated `GITNEXUS_SERVE_AUTH_TOKEN` is the only access control.** The proxy rejects any `/api/*` request without it with a `401` before forwarding. Rotate it by editing the environment variable on the `gitnexus-web` service and redeploying.
 - **The CSRF guard is inert on this path.** The proxy strips `Origin` before forwarding, so the server's write-origin guard does nothing for proxied traffic — it passes `Origin`-less requests through by design. The token is not a second layer behind the guard.
 - **Anyone holding the token can read every indexed repo's source.** These routes carry no origin guard, and the first three carry no rate limiter either: `GET /api/repos`, `GET /api/graph`, `POST /api/query`, `GET /api/file`, `GET /api/grep`. Whoever has the token can also index and delete repositories.
-- **`POST /api/mcp` rides the same path.** When `GITNEXUS_MCP_AUTH_TOKEN` is set on the backend, `serve` protects `/api/mcp` with the same constant-time Bearer check as the dedicated HTTP MCP server, before parsing the request body. The Render Blueprint instead relies on its edge token plus the private backend network by default; the edge and protocol tokens are independent controls.
+- **`POST /api/mcp` rides the same path.** When `GITNEXUS_MCP_AUTH_TOKEN` is set on the backend, `serve` protects `/api/mcp` with the same constant-time Bearer check as the dedicated HTTP MCP server, before parsing the request body. The Render Blueprint does not set a backend MCP token: the public proxy authenticates with `GITNEXUS_SERVE_AUTH_TOKEN` and then strips `Authorization` before forwarding, so backend MCP auth must not be enabled on that topology without a matching proxy change that can inject a protocol token after the edge credential is spent.
 - **A directly reachable `serve` still needs an explicit control.** If neither `GITNEXUS_MCP_AUTH_TOKEN` nor an authenticated edge/private-network boundary is present, `/api/mcp` is unauthenticated. Do not bind that topology to a LAN or public interface: MCP readers can access indexed source and graph context.
 - **Rate limits bound cost, not access.** They cap what a token holder can spend; they do not decide who gets in.
 
@@ -69,13 +69,13 @@ Do not hand the URL out as a public demo. A token holder has read access to ever
 
 This repository runs the following scans automatically. Findings appear under the repository's **Security → Code scanning** tab.
 
-| Scan | Tool | Trigger | Action on finding |
-|------|------|---------|-------------------|
-| Static analysis (JS/TS, Python) | [CodeQL](https://github.com/github/codeql-action) | PR, `main` push, weekly | Advisory (Security tab) |
-| Dependency vulnerabilities (PR diff) | [`dependency-review-action`](https://github.com/actions/dependency-review-action) | PR | **Blocks PR** at `high+` severity |
-| Secret scanning | [Gitleaks](https://github.com/gitleaks/gitleaks-action) | PR, `main` push | **Blocks PR** on default rules |
-| Supply-chain posture | [OpenSSF Scorecard](https://github.com/ossf/scorecard-action) | Weekly, `main` push | Advisory (Security tab + public badge) |
-| Workflow lint | [zizmor](https://github.com/woodruffw/zizmor) | PR (touching `.github/**`) | **Blocks PR** at `high+` severity |
-| Container image scan | [Trivy](https://github.com/aquasecurity/trivy-action) | Weekly, `main` push | Advisory (Security tab) |
+| Scan                                 | Tool                                                                              | Trigger                    | Action on finding                      |
+| ------------------------------------ | --------------------------------------------------------------------------------- | -------------------------- | -------------------------------------- |
+| Static analysis (JS/TS, Python)      | [CodeQL](https://github.com/github/codeql-action)                                 | PR, `main` push, weekly    | Advisory (Security tab)                |
+| Dependency vulnerabilities (PR diff) | [`dependency-review-action`](https://github.com/actions/dependency-review-action) | PR                         | **Blocks PR** at `high+` severity      |
+| Secret scanning                      | [Gitleaks](https://github.com/gitleaks/gitleaks-action)                           | PR, `main` push            | **Blocks PR** on default rules         |
+| Supply-chain posture                 | [OpenSSF Scorecard](https://github.com/ossf/scorecard-action)                     | Weekly, `main` push        | Advisory (Security tab + public badge) |
+| Workflow lint                        | [zizmor](https://github.com/woodruffw/zizmor)                                     | PR (touching `.github/**`) | **Blocks PR** at `high+` severity      |
+| Container image scan                 | [Trivy](https://github.com/aquasecurity/trivy-action)                             | Weekly, `main` push        | Advisory (Security tab)                |
 
 Dependency version updates are managed separately by Dependabot — see `.github/dependabot.yml`.

@@ -341,10 +341,10 @@ async function proxyToUpstream(req, res) {
   // talks to this same-origin web service.
   delete headers.origin;
   delete headers.referer;
-  // The edge token is spent here. `serve` reads no Authorization header
-  // (gitnexus/src/server/mcp-http.ts mounts /api/mcp unguarded), so forwarding
-  // it would only copy a live credential into another service's logs. Pinned by
-  // test.
+  // The edge token is spent here and must not be forwarded: copying
+  // Authorization would put a live credential into another service's logs.
+  // Backend GITNEXUS_MCP_AUTH_TOKEN therefore cannot compose through this hop
+  // without a matching forward-injection change. Pinned by test.
   delete headers.authorization;
   headers.host = upstream.host;
   // Replace, never forward, the inbound chain (see clientAddressFor).
