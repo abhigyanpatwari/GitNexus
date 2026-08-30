@@ -5,8 +5,8 @@
  * PREVIOUS run's index. This drives the real `runFullAnalysis` incremental
  * path (real git repo, real LadybugDB, real FTS extension) and asserts,
  * at the moment `deleteNodesForFiles` is invoked, that `SHOW_INDEXES()`
- * already reports every FTS index absent — proving the drop-before-delete
- * ordering end-to-end rather than only unit-testing the call sequence.
+ * already reports FTS indexes for tables that will be DML'd as absent
+ * (#2589 drop-before-delete). #3016: empty-language FTS tables may remain.
  */
 import { readFile, writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
@@ -67,7 +67,7 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
     vi.resetModules();
   });
 
-  it('SHOW_INDEXES() reports every FTS index absent by the time deleteNodesForFiles runs', async () => {
+  it('SHOW_INDEXES() reports the FTS indexes of every table being written as absent by the time deleteNodesForFiles runs', async () => {
     const lbugAdapter = await import('../../src/core/lbug/lbug-adapter.js');
     const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
 
@@ -128,9 +128,16 @@ describe('runFullAnalysis incremental writeback — FTS drop-before-delete order
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
       expect(indexNamesAtDeleteTime).toBeDefined();
-      for (const { indexName } of FTS_INDEXES) {
-        expect(indexNamesAtDeleteTime).not.toContain(indexName);
-      }
+      // #3016 narrowed the sweep from "every configured index" to "the indexes
+      // over tables this writeback touches", so the #2589 ordering guarantee is
+      // now asserted per touched table. This mini-repo is TypeScript: the
+      // changed file writes File and Function rows, so those two indexes must
+      // be down before the DETACH DELETE...
+      expect(indexNamesAtDeleteTime).not.toContain('file_fts');
+      expect(indexNamesAtDeleteTime).not.toContain('function_fts');
+      // ...while the tables no language in this repo populates (Trait, Impl, …)
+      // are never DML'd and keep their index, which is the saving itself.
+      expect(indexNamesAtDeleteTime!.length).toBeGreaterThan(0);
     } finally {
       await repo.cleanup();
     }

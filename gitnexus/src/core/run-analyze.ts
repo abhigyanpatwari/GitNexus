@@ -36,6 +36,9 @@ import {
   closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFiles,
+  nodeTablesWithRowsForFiles,
+  snapshotDerivedRelsForFiles,
+  restoreDerivedRels,
   ensureEmbeddingRowDmlSafe,
   ensureFtsRowDmlSafe,
   readIndexCatalogSnapshot,
@@ -67,6 +70,7 @@ import {
   createSearchFTSIndexes,
   summarizeFtsIndexBuildFailures,
   dropSearchFTSIndexes,
+  missingSearchFTSIndexTables,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
@@ -136,6 +140,13 @@ import {
 } from './incremental/subgraph-extract.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
+import {
+  ftsTablesAmong,
+  incrementalFtsTablesFromGraph,
+  nodeTablesForIncrementalDelete,
+  shouldPreservePersistedDerivedGraph,
+} from './incremental/derived-writeback.js';
+import { NODE_TABLES } from './lbug/schema.js';
 import {
   loadParseCache,
   saveParseCache,
@@ -1885,6 +1896,25 @@ async function runFullAnalysisInner(
   // `resolveStreamPdgEmit` — read fresh at the same point — behaves.)
   const streamGraphEmitActive = resolveStreamGraphEmit(options);
 
+  // #3016: hold back Leiden and flow extraction when the persisted metadata
+  // says this run is a candidate for a surgical incremental write, whose
+  // derived layer is reused rather than recomputed. Deliberately the same
+  // conditions as the `isIncremental` decision below MINUS the two that only
+  // the pipeline can answer (the analysis-feature re-check and a non-empty
+  // file list), so this is a superset: every run that turns out incremental
+  // had the phases skipped, and the runs that do not are caught by
+  // `runDeferredDerivedPhases` once the write plan is known. Excluded on the
+  // streaming path because that is a full rebuild by construction, and the
+  // deferred phases must not write into a finalized emit sink.
+  const skipDerivedGraphPhases =
+    !streamGraphEmitActive &&
+    !options.force &&
+    !!existingMeta &&
+    !!existingMeta.fileHashes &&
+    Object.keys(existingMeta.fileHashes).length > 0 &&
+    repoHasGit &&
+    !schemaFingerprintMismatch(existingMeta.schemaFingerprint);
+
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(
     repoPath,
@@ -1927,6 +1957,7 @@ async function runFullAnalysisInner(
         ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
         : undefined,
       fetchWrappers: options.fetchWrappers,
+      skipDerivedGraphPhases,
     },
   );
 
@@ -1985,6 +2016,29 @@ async function runFullAnalysisInner(
   const hashDiff = isIncremental
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
     : undefined;
+
+  // #3016: `skipDerivedGraphPhases` was decided BEFORE the pipeline, from the
+  // persisted metadata alone, so it can only ever be a bet that this run stays
+  // surgical. Settle the bet here, where `isIncremental` and the deletion set
+  // are both known, and pay it off by running the held-back phases whenever the
+  // write plan needs a freshly derived layer:
+  //   - not incremental      → full rebuild writes the whole graph, and a graph
+  //                            with no Community/Process nodes would publish an
+  //                            index with no communities and no flows;
+  //   - deletions present    → the surviving persisted rows can reference nodes
+  //                            this run removes, so they are not reusable and
+  //                            `deleteAllCommunitiesAndProcesses` wipes them.
+  // Only the no-deletions incremental case keeps the persisted derived layer,
+  // which is the case the skip exists for.
+  const preserveDerivedLayer =
+    skipDerivedGraphPhases &&
+    isIncremental &&
+    !!hashDiff &&
+    shouldPreservePersistedDerivedGraph(hashDiff.deleted.length);
+  if (skipDerivedGraphPhases && !preserveDerivedLayer) {
+    progress('communities', 58, 'Detecting code communities and flows...');
+    await pipelineResult.runDeferredDerivedPhases?.();
+  }
 
   // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
   // path and swap it over the live index in one rename at the very end, so a
@@ -2196,6 +2250,7 @@ async function runFullAnalysisInner(
     // collapse check compares the whole in-memory graph against the whole DB,
     // which is only a like-for-like comparison on a full rebuild.
     let wroteChangedSubgraphOnly = false;
+    let incrementalFtsRebuildTables: Set<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -2490,6 +2545,14 @@ async function runFullAnalysisInner(
       );
       if (extensionForcedRebuild || sizeForcedRebuild) {
         escalatedFullWrite = true;
+        // #3016: escalation converts this run into a wipe + full bulk COPY of
+        // the in-memory graph, so the derived layer the skip was betting on
+        // preserving has to exist in that graph after all. Same reasoning as
+        // the not-incremental branch above, just discovered later.
+        if (preserveDerivedLayer) {
+          progress('communities', 63, 'Detecting code communities and flows...');
+          await pipelineResult.runDeferredDerivedPhases?.();
+        }
         // Every live cause is named, not just the first: a DB can carry BOTH a
         // vector index and FTS indexes, and reporting one cause while the other
         // is equally fatal is how #2841 stayed mis-diagnosed for so long. §5.D:
@@ -2701,7 +2764,51 @@ async function runFullAnalysisInner(
         // in between — so re-reading would only weaken the one-read invariant
         // the snapshot type exists to enforce.
         if (buildPath === lbugPath) liveIndexMutationStarted = true;
-        await dropSearchFTSIndexes(indexCatalogRows);
+        // #3016: which node tables actually hold rows for the write set. One
+        // probe answers both narrowings below, and it has to be a question
+        // about the DB rather than the fresh graph — a symbol the edit DELETED
+        // is in no fresh graph but is still a row that has to go.
+        const tablesWithRows = preserveDerivedLayer
+          ? await nodeTablesWithRowsForFiles(filesToDelete, NODE_TABLES)
+          : undefined;
+        // Narrowing 1 — the FTS sweep, from "every configured index" to "the
+        // indexes this run must touch". Three sources, and dropping any one of
+        // them strands something:
+        //   - what the writeback DELETES (the probe above), because a symbol
+        //     the edit removed is in no fresh graph but is still a row;
+        //   - what it INSERTS (the fresh graph), because inserting under a live
+        //     FTS index is the same #2589 hazard as deleting under one;
+        //   - what is MISSING right now, because narrowing to the written
+        //     tables would otherwise leave keyword search degraded forever on
+        //     tables whose index a previous escalation dropped — the next full
+        //     rebuild would be the only thing that ever restored them.
+        // An unreadable catalog proves nothing about that third set, so it
+        // withdraws the narrowing entirely rather than guess.
+        const missingFts = tablesWithRows
+          ? await missingSearchFTSIndexTables(indexCatalogRows)
+          : undefined;
+        const touchedFts =
+          tablesWithRows && missingFts
+            ? new Set([
+                ...ftsTablesAmong(tablesWithRows),
+                ...incrementalFtsTablesFromGraph(pipelineResult.graph, new Set(filesToDelete)),
+                ...missingFts,
+              ])
+            : undefined;
+        // An empty set would read as "rebuild everything" to the callees, which
+        // is the opposite instruction. A write set that touches no FTS-backed
+        // table still has to name one, and File is the table every run writes.
+        if (touchedFts && touchedFts.size === 0) touchedFts.add('File');
+        incrementalFtsRebuildTables = touchedFts;
+        // Narrowing 2 — MEMBER_OF / STEP_IN_PROCESS edges hang off the nodes
+        // the DETACH DELETE below removes, so preserving the Community/Process
+        // nodes preserves only half the layer unless these are reattached after
+        // the subgraph write puts the member nodes back. Only the probed tables
+        // can own such an edge, so they are the only ones worth scanning.
+        const derivedSnapshot = tablesWithRows
+          ? await snapshotDerivedRelsForFiles(filesToDelete, [...tablesWithRows])
+          : [];
+        await dropSearchFTSIndexes(indexCatalogRows, incrementalFtsRebuildTables);
         // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
         //     loop issued a count + delete per table per FILE — ~13k
@@ -2716,6 +2823,9 @@ async function runFullAnalysisInner(
         await deleteNodesForFiles(filesToDelete, {
           onChunk: (done, total) =>
             progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
+          nodeTables: incrementalFtsRebuildTables
+            ? nodeTablesForIncrementalDelete(NODE_TABLES, incrementalFtsRebuildTables)
+            : undefined,
         });
         // Surgical path: Phase 3.5 restores exactly these files' embedding
         // rows (FIX 3). Sound because deleteNodesForFiles propagates errors
@@ -2723,10 +2833,12 @@ async function runFullAnalysisInner(
         // deterministically — and this process holds the exclusive DB lock,
         // so no concurrent writer can disturb the derivation.
         deletedFilePathsForRestore = new Set(filesToDelete);
-        // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
-        //    from the fresh pipeline output below. Required for the
-        //    "Leiden runs on the FULL graph" correctness invariant.
-        await deleteAllCommunitiesAndProcesses();
+        if (!preserveDerivedLayer) {
+          // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
+          //    from the fresh pipeline output below. Required for the
+          //    "Leiden runs on the FULL graph" correctness invariant.
+          await deleteAllCommunitiesAndProcesses();
+        }
         // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
         //     validity is a whole-program property (a third-file change to the
         //     interface or an implementer creates/invalidates edges between two
@@ -2774,7 +2886,9 @@ async function runFullAnalysisInner(
         //    only that. Unchanged-file rows in the DB stay untouched. Pass
         //    the SAME effectiveWriteSet so the subgraph and the deletes
         //    cover identical files (asymmetry would silently corrupt).
-        const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+        const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet, {
+          includeDerivedGraphWide: !preserveDerivedLayer,
+        });
         wroteChangedSubgraphOnly = true;
         await saveIncrementalDirtyState('load-graph', {
           importerExpansion,
@@ -2787,6 +2901,9 @@ async function runFullAnalysisInner(
           const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
           progress('lbug', pct, msg);
         });
+        if (preserveDerivedLayer && derivedSnapshot.length > 0) {
+          await restoreDerivedRels(derivedSnapshot);
+        }
       }
 
       // Boundary drain (#2409): checkpoint at the end of the incremental
@@ -2846,6 +2963,7 @@ async function runFullAnalysisInner(
       // pre-existing row (#2544/#2546) must not discard this run's otherwise-
       // successful graph/embeddings work — only keyword search degrades.
       const ftsResult = await buildSearchIndexesOrDegrade(executeQuery, {
+        tables: incrementalFtsRebuildTables,
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -3600,8 +3718,11 @@ async function runFullAnalysisInner(
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
         edges: stats.edges,
-        communities: pipelineResult.communityResult?.stats.totalCommunities,
-        processes: pipelineResult.processResult?.stats.totalProcesses,
+        communities:
+          pipelineResult.communityResult?.stats.totalCommunities ??
+          existingMeta?.stats?.communities,
+        processes:
+          pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
         embeddings: persistedEmbeddingCount,
       },
       capabilities: {
@@ -3830,9 +3951,12 @@ async function runFullAnalysisInner(
             files: pipelineResult.totalFileCount,
             nodes: stats.nodes,
             edges: stats.edges,
-            communities: pipelineResult.communityResult?.stats.totalCommunities,
+            communities:
+              pipelineResult.communityResult?.stats.totalCommunities ??
+              existingMeta?.stats?.communities,
             clusters: aggregatedClusterCount,
-            processes: pipelineResult.processResult?.stats.totalProcesses,
+            processes:
+              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
           },
           undefined,
           {

@@ -19,8 +19,15 @@ import { logger } from '../../logger.js';
 /**
  * Validate that the phases form a valid dependency graph (no cycles, all deps present).
  * Returns phases in topological execution order.
+ *
+ * `satisfied` names phases whose results are already available (a deferred
+ * follow-up run over the same context, #3016). Their edges are dropped rather
+ * than validated, because they are resolved by definition.
  */
-function topologicalSort(phases: readonly PipelinePhase[]): PipelinePhase[] {
+function topologicalSort(
+  phases: readonly PipelinePhase[],
+  satisfied: ReadonlySet<string> = new Set(),
+): PipelinePhase[] {
   const phaseMap = new Map<string, PipelinePhase>();
   for (const phase of phases) {
     if (phaseMap.has(phase.name)) {
@@ -32,7 +39,7 @@ function topologicalSort(phases: readonly PipelinePhase[]): PipelinePhase[] {
   // Validate all deps exist
   for (const phase of phases) {
     for (const dep of phase.deps) {
-      if (!phaseMap.has(dep)) {
+      if (!phaseMap.has(dep) && !satisfied.has(dep)) {
         throw new Error(`Phase '${phase.name}' depends on '${dep}', which is not registered`);
       }
     }
@@ -43,8 +50,9 @@ function topologicalSort(phases: readonly PipelinePhase[]): PipelinePhase[] {
   const reverseDeps = new Map<string, string[]>();
 
   for (const phase of phases) {
-    inDegree.set(phase.name, phase.deps.length);
-    for (const dep of phase.deps) {
+    const pendingDeps = phase.deps.filter((dep) => !satisfied.has(dep));
+    inDegree.set(phase.name, pendingDeps.length);
+    for (const dep of pendingDeps) {
       let rev = reverseDeps.get(dep);
       if (!rev) {
         rev = [];
@@ -143,15 +151,26 @@ function findCyclePath(
  *
  * @param phases  All phases to execute (order doesn't matter — sorted internally)
  * @param ctx     Shared pipeline context
+ * @param seed    Results of phases that already ran against this same context,
+ *                available to `phases` as dependencies (#3016 deferred derived
+ *                phases). Included in the returned map.
  * @returns       Map of phase name → PhaseResult (all completed phases)
  */
 export async function runPipeline(
   phases: readonly PipelinePhase[],
   ctx: PipelineContext,
+  seed?: ReadonlyMap<string, PhaseResult<unknown>>,
 ): Promise<ReadonlyMap<string, PhaseResult<unknown>>> {
+  // A seeded phase has already run against this context; re-running it would
+  // apply its graph writes a second time. "Already ran" is the whole meaning of
+  // the seed, so honour it here rather than making every caller pre-filter.
+  const satisfied = new Set(seed?.keys() ?? []);
   let sorted: PipelinePhase[];
   try {
-    sorted = topologicalSort(phases);
+    sorted = topologicalSort(
+      phases.filter((p) => !satisfied.has(p.name)),
+      satisfied,
+    );
   } catch (err) {
     // Emit a terminal 'error' progress event for graph-validation failures
     // (cycle detected, duplicate phase, missing dep) so CLI/MCP consumers see
@@ -171,7 +190,7 @@ export async function runPipeline(
     }
     throw err;
   }
-  const results = new Map<string, PhaseResult<unknown>>();
+  const results = new Map<string, PhaseResult<unknown>>(seed);
 
   for (const phase of sorted) {
     const start = Date.now();

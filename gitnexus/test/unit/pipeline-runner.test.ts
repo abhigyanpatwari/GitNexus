@@ -400,6 +400,59 @@ describe('runPipeline', () => {
   });
 });
 
+describe('runPipeline with seeded results (#3016 deferred derived phases)', () => {
+  const seeded = (name: string, output: unknown): ReadonlyMap<string, PhaseResult<unknown>> =>
+    new Map([[name, { phaseName: name, output, durationMs: 0 }]]);
+
+  it('satisfies a dependency from the seed instead of demanding the phase', async () => {
+    const later: PipelinePhase<string> = {
+      name: 'later',
+      deps: ['earlier'],
+      async execute(_ctx, deps) {
+        return `${getPhaseOutput<string>(deps, 'earlier')}+later`;
+      },
+    };
+
+    const results = await runPipeline([later], makeCtx(), seeded('earlier', 'earlierOutput'));
+
+    expect(getPhaseOutput<string>(results, 'later')).toBe('earlierOutput+later');
+  });
+
+  it('returns the seeded results alongside the newly run ones', async () => {
+    const later: PipelinePhase<string> = { name: 'later', deps: ['earlier'], execute: async () => 'x' };
+
+    const results = await runPipeline([later], makeCtx(), seeded('earlier', 'earlierOutput'));
+
+    expect([...results.keys()].sort()).toEqual(['earlier', 'later']);
+  });
+
+  it('does not re-run a seeded phase', async () => {
+    let ran = 0;
+    const earlier: PipelinePhase<string> = {
+      name: 'earlier',
+      deps: [],
+      async execute() {
+        ran++;
+        return 'fresh';
+      },
+    };
+
+    await runPipeline([earlier], makeCtx(), seeded('earlier', 'seeded'));
+
+    // The seed already carries this phase's output, so the runner must treat it
+    // as a duplicate registration rather than silently executing it twice.
+    expect(ran).toBe(0);
+  });
+
+  it('still rejects a dependency that is neither registered nor seeded', async () => {
+    const later: PipelinePhase<string> = { name: 'later', deps: ['missing'], execute: async () => 'x' };
+
+    await expect(runPipeline([later], makeCtx(), seeded('earlier', 'e'))).rejects.toThrow(
+      /depends on 'missing', which is not registered/,
+    );
+  });
+});
+
 describe('getPhaseOutput', () => {
   it('retrieves typed output from dependency map', () => {
     const deps = new Map<string, PhaseResult<unknown>>();
