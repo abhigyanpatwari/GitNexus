@@ -245,6 +245,25 @@ links:
     expect(() => parseGroupConfig('version: 1\nname: test')).toThrow(/repos.*required/i);
   });
 
+  it('throws when a repos value is not a string (YAML number/boolean)', () => {
+    expect(() =>
+      parseGroupConfig(`version: 1
+name: test
+repos:
+  app: 12
+`),
+    ).toThrow(/non-empty registry name string/);
+  });
+
+  it('trims padded registry aliases so they match the registry name', () => {
+    const config = parseGroupConfig(`version: 1
+name: test
+repos:
+  app: "  my-app  "
+`);
+    expect(config.repos.app).toBe('my-app');
+  });
+
   it('allows empty repos object (fresh group before first add)', () => {
     const yaml = `version: 1
 name: new-group

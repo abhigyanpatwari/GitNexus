@@ -283,6 +283,25 @@ describe('GITNEXUS_TOOLS', () => {
     }
   });
 
+  it('repo descriptions explain the cwd default and mutating exception (#3073)', () => {
+    expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
+      /process cwd/i,
+    );
+    expect(GITNEXUS_TOOLS.find((tool) => tool.name === 'list_repos')?.description).toMatch(
+      /unindexed nested Git checkout/i,
+    );
+    for (const tool of GITNEXUS_TOOLS) {
+      if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) continue;
+      const description = tool.inputSchema.properties.repo.description;
+      if (tool.name === 'rename') {
+        expect(description).toMatch(/mutating tools require an explicit repo/i);
+      } else {
+        expect(description).toMatch(/process cwd/i);
+        expect(description).toMatch(/unindexed nested Git checkout/i);
+      }
+    }
+  });
+
   it('per-repo tools have an optional branch scope param (#2106); group/list tools do not', () => {
     for (const tool of GITNEXUS_TOOLS) {
       if (tool.name === 'list_repos' || GROUP_TOOLS.has(tool.name)) {
