@@ -35,10 +35,7 @@ function singleClassLiteralArgument(node: SyntaxNode): string | null {
   const argumentsNode = suffix?.namedChildren.find((child) => child.type === 'value_arguments');
   if (argumentsNode === undefined) return null;
   const argumentsWithoutComments = argumentsNode.namedChildren.filter(
-    (child) =>
-      child.type !== 'line_comment' &&
-      child.type !== 'multiline_comment' &&
-      child.type !== 'block_comment',
+    (child) => child.type !== 'line_comment' && child.type !== 'multiline_comment',
   );
   if (argumentsWithoutComments.length !== 1) return null;
   const value = argumentsWithoutComments[0];
