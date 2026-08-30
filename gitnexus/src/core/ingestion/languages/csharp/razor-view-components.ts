@@ -771,6 +771,12 @@ function consumeRazorTransition(cur: SourceCursor, names: Set<string>): void {
 
 /** Extract statically resolvable ViewComponent names from one Razor template. */
 export function extractRazorViewComponentInvocations(source: string): string[] {
+  // Most views do not invoke a ViewComponent. Avoid the character-by-character
+  // Razor scan unless one of the two supported invocation spellings is present.
+  // This is only a coarse gate; the state machine below still decides whether a
+  // token is executable markup/C# or a comment/string/escaped transition.
+  if (!source.includes('InvokeAsync') && !/<\s*vc:/i.test(source)) return [];
+
   const names = new Set<string>();
   const cur = new SourceCursor(source);
   let markupStart = 0;
