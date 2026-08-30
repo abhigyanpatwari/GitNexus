@@ -913,7 +913,12 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 42 })]);
       await saveParseCache(dir, cache);
       expect(await readdir(path.join(dir, 'parse-cache'))).toEqual(
-        expect.arrayContaining([`${key}.json`, `${key}.json.v8`, `${key}.json.v8gen`, 'index.json']),
+        expect.arrayContaining([
+          `${key}.json`,
+          `${key}.json.v8`,
+          `${key}.json.v8gen`,
+          'index.json',
+        ]),
       );
       const loaded = await loadParseCache(dir);
       expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(42);

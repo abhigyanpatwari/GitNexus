@@ -13,11 +13,7 @@ import {
   writeV8SidecarBestEffort,
 } from '../../src/storage/v8-sidecar.js';
 
-const publishSidecar = async (
-  jsonPath: string,
-  json: string,
-  graph: unknown,
-): Promise<Buffer> => {
+const publishSidecar = async (jsonPath: string, json: string, graph: unknown): Promise<Buffer> => {
   const jsonBytes = Buffer.byteLength(json, 'utf8');
   const generation = newV8Generation();
   await bindV8GenerationBestEffort(jsonPath, generation, jsonBytes);

@@ -7,7 +7,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { writeFileAtomic, writeFileAtomicBytes, writeFileAtomicBytesSync } from '../../../src/storage/fs-atomic.js';
+import {
+  writeFileAtomic,
+  writeFileAtomicBytes,
+  writeFileAtomicBytesSync,
+} from '../../../src/storage/fs-atomic.js';
 import { createTempDir } from '../../helpers/test-db.js';
 
 describe('writeFileAtomic', () => {

@@ -731,11 +731,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
     try {
       await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
       const storeDir = getParsedFileStoreDir(dir);
-      expect((await readdir(storeDir)).sort()).toEqual([
-        'ok.json',
-        'ok.json.v8',
-        'ok.json.v8gen',
-      ]);
+      expect((await readdir(storeDir)).sort()).toEqual(['ok.json', 'ok.json.v8', 'ok.json.v8gen']);
       const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
       expect(loaded.has(weird)).toBe(true);
     } finally {
@@ -750,11 +746,7 @@ describe('parsedfile-store receiverChain sanitation', () => {
       await persistParsedFileChunk(dir, 'ok', [makeParsedFile('safe.c')]);
       await persistParsedFileChunk(dir, 'ok', [makeParsedFile(weird)]);
       const storeDir = getParsedFileStoreDir(dir);
-      expect((await readdir(storeDir)).sort()).toEqual([
-        'ok.json',
-        'ok.json.v8',
-        'ok.json.v8gen',
-      ]);
+      expect((await readdir(storeDir)).sort()).toEqual(['ok.json', 'ok.json.v8', 'ok.json.v8gen']);
       const loaded = await loadParsedFilesForPaths(dir, new Set([weird]));
       expect(loaded.has(weird)).toBe(true);
     } finally {

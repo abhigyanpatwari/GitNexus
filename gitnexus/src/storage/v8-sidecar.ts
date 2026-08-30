@@ -154,7 +154,13 @@ const decodeSidecar = (
   const payloadOff = off + U32;
   if (jsonBytes > Number.MAX_SAFE_INTEGER) return undefined;
   if (buf.byteLength !== payloadOff + payloadBytes) return undefined;
-  return { jsonBytes, generation, payload: buf.subarray(payloadOff), recordedNodeMajor, recordedV8 };
+  return {
+    jsonBytes,
+    generation,
+    payload: buf.subarray(payloadOff),
+    recordedNodeMajor,
+    recordedV8,
+  };
 };
 
 const encodeBind = (generation: Buffer, jsonBytes: number): Buffer => {
@@ -403,11 +409,7 @@ export const copyV8SidecarIfPresent = async (srcJson: string, dstJson: string): 
     await fs.copyFile(v8SidecarPath(srcJson), v8SidecarPath(dstJson));
   } catch (copyErr) {
     if (!isEnoent(copyErr)) {
-      warnSidecar(
-        copyErr,
-        srcJson,
-        'v8 sidecar: copy failed; JSON remains authoritative',
-      );
+      warnSidecar(copyErr, srcJson, 'v8 sidecar: copy failed; JSON remains authoritative');
       return;
     }
     await dropV8Sidecar(dstJson);
