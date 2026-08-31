@@ -203,8 +203,7 @@ const GRADLE_GROUP_PATTERNS = [
 const GRADLE_COORD_CONFIGS =
   'implementation|api|compileOnly|runtimeOnly|testImplementation|testApi|testCompileOnly|compile|kapt|ksp|commonMainImplementation|commonMainApi';
 
-const CATALOG_ALIAS =
-  '([A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)*)(?:\\.get\\(\\)|\\.asProvider\\(\\))?';
+const CATALOG_ALIAS = '([A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)*)(?:\\.get\\(\\)|\\.asProvider\\(\\))?';
 
 function gradleDepRe(suffix: string): RegExp {
   return new RegExp(`(?:${GRADLE_COORD_CONFIGS})\\s*${suffix}`, 'g');
@@ -258,7 +257,7 @@ function collectProjectDependencies(project: XmlNode, deps: string[]): void {
 function parsePom(content: string): { groupId: string; artifactId: string; deps: string[] } | null {
   let parsed: unknown;
   try {
-    parsed = pomParser.parse(content);
+    parsed = parseSourceSafe(pomParser, content);
   } catch {
     return null;
   }
