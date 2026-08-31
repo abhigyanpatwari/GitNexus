@@ -59,6 +59,7 @@ import {
   type JavaSpringNonHttpHandlerFact,
 } from './spring-non-http-handlers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
+import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -422,6 +423,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
     ...synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode),
+    ...synthesizeLombokAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];
 }
