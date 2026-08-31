@@ -73,25 +73,28 @@ function safeStrings(value: unknown, limit = 100): string[] {
 }
 
 async function readPayloadFile(filePath: string, label: string): Promise<JsonObject> {
-  let stat;
-  try {
-    stat = await fs.stat(filePath);
-  } catch {
-    throw new SpringActuatorImportError(`Spring Actuator ${label} input could not be read.`);
-  }
-  if (!stat.isFile()) {
-    throw new SpringActuatorImportError(`Spring Actuator ${label} input must be a JSON file.`);
-  }
-  if (stat.size > MAX_ACTUATOR_PAYLOAD_BYTES) {
-    throw new SpringActuatorImportError(
-      `Spring Actuator ${label} payload exceeds the ${MAX_ACTUATOR_PAYLOAD_BYTES / 1024 / 1024} MiB limit.`,
-    );
-  }
+  // Size gate and read share one handle so both observe the same inode.
+  // Re-resolving the path for the read would let a swapped file bypass the
+  // payload cap (CodeQL js/file-system-race).
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   let raw: string;
   try {
-    raw = await fs.readFile(filePath, 'utf8');
-  } catch {
+    handle = await fs.open(filePath, 'r');
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      throw new SpringActuatorImportError(`Spring Actuator ${label} input must be a JSON file.`);
+    }
+    if (stat.size > MAX_ACTUATOR_PAYLOAD_BYTES) {
+      throw new SpringActuatorImportError(
+        `Spring Actuator ${label} payload exceeds the ${MAX_ACTUATOR_PAYLOAD_BYTES / 1024 / 1024} MiB limit.`,
+      );
+    }
+    raw = await handle.readFile('utf8');
+  } catch (err) {
+    if (err instanceof SpringActuatorImportError) throw err;
     throw new SpringActuatorImportError(`Spring Actuator ${label} input could not be read.`);
+  } finally {
+    await handle?.close().catch(() => {});
   }
   let parsed: unknown;
   try {
