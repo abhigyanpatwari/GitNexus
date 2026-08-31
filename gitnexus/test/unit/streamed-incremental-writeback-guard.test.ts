@@ -25,12 +25,9 @@ describe('assertIncrementalWritebackSupportsPipelineResult', () => {
   ] as const)(
     'rejects an incremental result with a defined zero-row %s manifest',
     (_label, manifests, expectedKinds) => {
-      expect(() => assertIncrementalWritebackSupportsPipelineResult(true, manifests)).toThrow(
-        StreamedIncrementalWritebackError,
-      );
-
       try {
         assertIncrementalWritebackSupportsPipelineResult(true, manifests);
+        expect.fail('expected StreamedIncrementalWritebackError');
       } catch (error) {
         expect(error).toBeInstanceOf(StreamedIncrementalWritebackError);
         expect((error as StreamedIncrementalWritebackError).manifestKinds).toEqual(expectedKinds);

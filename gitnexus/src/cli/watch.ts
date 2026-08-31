@@ -467,13 +467,13 @@ export async function watchCommandWithRunnerIdentity(
             }
           },
           (error, paths) => {
-            const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
               cliError(formatFatalWatchRefreshFailure(error, paths));
               stopWatching();
               return;
             }
+            const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             const lastSuccess = lastSuccessfulRefreshAt ?? 'none yet';
             cliWarn(
               `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +

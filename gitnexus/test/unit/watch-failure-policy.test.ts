@@ -7,7 +7,6 @@ vi.mock('../../src/core/run-analyze.js', async (importOriginal) => {
   return {
     ...actual,
     analyzeFailureMayHaveMutatedLiveIndex,
-    runFullAnalysis: vi.fn(),
   };
 });
 
