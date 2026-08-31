@@ -453,6 +453,38 @@ describe('JavaWorkspaceExtractor', () => {
     ]);
   });
 
+  it('reads Gradle group assigned inside allprojects { }', async () => {
+    await writeFile('core/build.gradle', 'allprojects { group = "com.acme" }\n');
+    await writeFile(
+      'core/src/main/java/com/acme/core/Config.java',
+      'package com.acme.core;\npublic class Config {}\n',
+    );
+    await writeFile(
+      'svc/build.gradle',
+      'allprojects { group = "com.acme" }\ndependencies {\n  implementation "com.acme:core:1.0"\n}\n',
+    );
+    await writeFile(
+      'svc/src/main/java/com/acme/svc/App.java',
+      'package com.acme.svc;\nimport com.acme.core.Config;\npublic class App {}\n',
+    );
+
+    const result = await extractNamed(['core', 'svc']);
+
+    expect(result.discoveredProjects.get('core')).toMatchObject({
+      groupId: 'com.acme',
+      artifactId: 'core',
+    });
+    expect(result.links).toEqual([
+      {
+        from: 'core',
+        to: 'svc',
+        type: 'custom',
+        contract: 'core::Config',
+        role: 'provider',
+      },
+    ]);
+  });
+
   it('uses settings.gradle rootProject.name as the Gradle artifactId', async () => {
     await writeFile('checkout/settings.gradle.kts', 'rootProject.name = "shared-core"\n');
     await writeFile('checkout/build.gradle.kts', 'group = "com.acme"\n');
@@ -534,11 +566,23 @@ dependencies {
 `,
     );
     await writeFile(
+      'named-first/build.gradle',
+      `group = 'com.example'
+dependencies {
+  implementation name: 'shared-lib', group: 'com.example', version: '1.0'
+}
+`,
+    );
+    await writeFile(
       'named/src/main/java/com/example/named/App.java',
       'package com.example.named;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
     );
+    await writeFile(
+      'named-first/src/main/java/com/example/namedfirst/App.java',
+      'package com.example.namedfirst;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
+    );
 
-    const result = await extractNamed(['shared-lib', 'models', 'app', 'named']);
+    const result = await extractNamed(['shared-lib', 'models', 'app', 'named', 'named-first']);
 
     expect(result.discoveredProjects.get('app')?.deps.sort()).toEqual([
       'com.example:models',
@@ -549,9 +593,14 @@ dependencies {
         expect.objectContaining({ from: 'shared-lib', to: 'app', contract: 'shared-lib::SharedType' }),
         expect.objectContaining({ from: 'models', to: 'app', contract: 'models::User' }),
         expect.objectContaining({ from: 'shared-lib', to: 'named', contract: 'shared-lib::SharedType' }),
+        expect.objectContaining({
+          from: 'shared-lib',
+          to: 'named-first',
+          contract: 'shared-lib::SharedType',
+        }),
       ]),
     );
-    expect(result.links).toHaveLength(3);
+    expect(result.links).toHaveLength(4);
   });
 
   it('resolves Kotlin DSL named args, catalog get(), and type-safe project accessors', async () => {
