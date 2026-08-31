@@ -11,6 +11,8 @@ import {
 } from '../../route-extractors/route-path.js';
 import { stripBidiAndZeroWidth } from '../../utils/ast-helpers.js';
 import { SPRING_CONFIG_DESCRIPTION } from './config-bindings.js';
+import { getProviderForFile } from '../../languages/index.js';
+import type { RuntimeCallableIdentity } from '../../language-provider.js';
 
 const ACTUATOR_ENDPOINTS = ['mappings', 'beans', 'conditions', 'configprops', 'env'] as const;
 type ActuatorEndpoint = (typeof ACTUATOR_ENDPOINTS)[number];
@@ -233,19 +235,34 @@ function uniqueIndexAdd(index: Map<string, GraphNode | null>, key: string, node:
 
 interface RuntimeNodeIndexes {
   readonly classesByQualifiedName: Map<string, GraphNode | null>;
+  readonly classesByRuntimeAlias: Map<string, GraphNode | null>;
   readonly classesBySimpleName: Map<string, GraphNode | null>;
   readonly beanProvidersByName: Map<string, GraphNode | null>;
   readonly methodsByOwnerId: Map<string, GraphNode[]>;
+  readonly callablesByRuntimeOwner: Map<string, GraphNode[]>;
   readonly routeOwnerFileIdsByRouteId: Map<string, Set<string>>;
+}
+
+function addRuntimeCallable(
+  index: Map<string, GraphNode[]>,
+  ownerName: string,
+  node: GraphNode,
+): void {
+  const normalizedOwner = normalizedQualifiedName(ownerName);
+  const nodes = index.get(normalizedOwner) ?? [];
+  if (!nodes.some((candidate) => candidate.id === node.id)) nodes.push(node);
+  index.set(normalizedOwner, nodes);
 }
 
 function buildRuntimeNodeIndexes(graph: KnowledgeGraph): RuntimeNodeIndexes {
   const allNodes = [...graph.iterNodes()];
   const classesByQualifiedName = new Map<string, GraphNode | null>();
+  const classesByRuntimeAlias = new Map<string, GraphNode | null>();
   const classesBySimpleName = new Map<string, GraphNode | null>();
   const beanProvidersByName = new Map<string, GraphNode | null>();
   const nodesById = new Map(allNodes.map((node) => [node.id, node]));
   const methodsByOwnerId = new Map<string, GraphNode[]>();
+  const callablesByRuntimeOwner = new Map<string, GraphNode[]>();
   const routeOwnerFileIdsByRouteId = new Map<string, Set<string>>();
   for (const node of allNodes) {
     if (node.label === 'Class' || node.label === 'Record') {
@@ -259,13 +276,54 @@ function buildRuntimeNodeIndexes(graph: KnowledgeGraph): RuntimeNodeIndexes {
     for (const name of safeStrings(provider?.names))
       uniqueIndexAdd(beanProvidersByName, name, node);
   }
-  for (const relationship of graph.iterRelationshipsByType('HAS_METHOD')) {
-    const method = nodesById.get(relationship.targetId);
-    if (method === undefined || (method.label !== 'Method' && method.label !== 'Function'))
+  const ownedNodeIds = new Set<string>();
+  for (const relationshipType of ['HAS_METHOD', 'HAS_PROPERTY'] as const) {
+    for (const relationship of graph.iterRelationshipsByType(relationshipType)) {
+      const member = nodesById.get(relationship.targetId);
+      const owner = nodesById.get(relationship.sourceId);
+      if (
+        member === undefined ||
+        !['Method', 'Function', 'Property'].includes(member.label) ||
+        owner === undefined
+      ) {
+        continue;
+      }
+      ownedNodeIds.add(member.id);
+      if (member.label === 'Method' || member.label === 'Function') {
+        const methods = methodsByOwnerId.get(relationship.sourceId) ?? [];
+        methods.push(member);
+        methodsByOwnerId.set(relationship.sourceId, methods);
+      }
+      const ownerQualifiedName = safeText(owner.properties.qualifiedName);
+      if (ownerQualifiedName !== undefined) {
+        addRuntimeCallable(callablesByRuntimeOwner, ownerQualifiedName, member);
+      }
+      const strategy = getProviderForFile(
+        String(member.properties.filePath),
+      )?.runtimeSymbolStrategy;
+      for (const alias of strategy?.callableOwnerAliases?.(member, owner) ?? []) {
+        addRuntimeCallable(callablesByRuntimeOwner, alias, member);
+        if (
+          (owner.label === 'Class' || owner.label === 'Record') &&
+          ownerQualifiedName !== undefined &&
+          normalizedQualifiedName(alias) !== normalizedQualifiedName(ownerQualifiedName)
+        ) {
+          uniqueIndexAdd(classesByRuntimeAlias, normalizedQualifiedName(alias), owner);
+        }
+      }
+    }
+  }
+  for (const node of allNodes) {
+    if (
+      ownedNodeIds.has(node.id) ||
+      (node.label !== 'Function' && node.label !== 'Method' && node.label !== 'Property')
+    ) {
       continue;
-    const methods = methodsByOwnerId.get(relationship.sourceId) ?? [];
-    methods.push(method);
-    methodsByOwnerId.set(relationship.sourceId, methods);
+    }
+    const strategy = getProviderForFile(String(node.properties.filePath))?.runtimeSymbolStrategy;
+    for (const alias of strategy?.callableOwnerAliases?.(node, undefined) ?? []) {
+      addRuntimeCallable(callablesByRuntimeOwner, alias, node);
+    }
   }
   for (const relationship of graph.iterRelationshipsByType('HANDLES_ROUTE')) {
     const owners = routeOwnerFileIdsByRouteId.get(relationship.targetId) ?? new Set<string>();
@@ -274,9 +332,11 @@ function buildRuntimeNodeIndexes(graph: KnowledgeGraph): RuntimeNodeIndexes {
   }
   return {
     classesByQualifiedName,
+    classesByRuntimeAlias,
     classesBySimpleName,
     beanProvidersByName,
     methodsByOwnerId,
+    callablesByRuntimeOwner,
     routeOwnerFileIdsByRouteId,
   };
 }
@@ -289,6 +349,8 @@ function resolveClass(
   const type = normalizedQualifiedName(rawType.replace(/\[\]$/, ''));
   const exact = indexes.classesByQualifiedName.get(type);
   if (exact !== null && exact !== undefined) return exact;
+  const alias = indexes.classesByRuntimeAlias.get(type);
+  if (alias !== null && alias !== undefined) return alias;
   // A qualified runtime name is authoritative. Falling back to a unique class
   // with the same simple name can bind a stale snapshot to a different package
   // and then mint confidence-1 handler evidence for the wrong source.
@@ -298,20 +360,35 @@ function resolveClass(
   return fallback === null ? undefined : fallback;
 }
 
-function descriptorParameterCount(descriptor: string | undefined): number | undefined {
+function descriptorParameterTypes(descriptor: string | undefined): string[] | undefined {
   if (descriptor === undefined || descriptor.charAt(0) !== '(') return undefined;
-  let count = 0;
-  for (let index = 1; index < descriptor.length && descriptor.charAt(index) !== ')'; count++) {
+  const types: string[] = [];
+  for (let index = 1; index < descriptor.length && descriptor.charAt(index) !== ')'; ) {
     while (descriptor.charAt(index) === '[') index++;
     if (descriptor.charAt(index) === 'L') {
       const end = descriptor.indexOf(';', index);
       if (end === -1) return undefined;
+      types.push(descriptor.slice(index + 1, end));
       index = end + 1;
     } else {
+      const primitive = descriptor.charAt(index);
+      if (!'BCDFIJSZ'.includes(primitive)) return undefined;
+      types.push(primitive);
       index++;
     }
   }
-  return count;
+  return descriptor.includes(')') ? types : undefined;
+}
+
+function matchesRuntimeCallable(node: GraphNode, runtime: RuntimeCallableIdentity): boolean {
+  const strategy = getProviderForFile(String(node.properties.filePath))?.runtimeSymbolStrategy;
+  if (strategy !== undefined) return strategy.matchesCallable(node, runtime);
+  return (
+    (node.label === 'Method' || node.label === 'Function') &&
+    node.properties.name === runtime.name &&
+    (runtime.descriptorParameterTypes === undefined ||
+      node.properties.parameterCount === runtime.descriptorParameterTypes.length)
+  );
 }
 
 function resolveHandlerNode(
@@ -321,14 +398,18 @@ function resolveHandlerNode(
   const className = safeText(handlerMethod?.className);
   const methodName = safeText(handlerMethod?.name);
   if (methodName === undefined) return resolveClass(indexes, className);
+  if (className === undefined) return undefined;
   const owner = resolveClass(indexes, className);
-  if (owner === undefined) return undefined;
-  const parameterCount = descriptorParameterCount(safeText(handlerMethod?.descriptor));
-  const candidates = (indexes.methodsByOwnerId.get(owner.id) ?? []).filter(
-    (node) =>
-      node.properties.name === methodName &&
-      (parameterCount === undefined || node.properties.parameterCount === parameterCount),
-  );
+  const runtime: RuntimeCallableIdentity = {
+    name: methodName,
+    descriptorParameterTypes: descriptorParameterTypes(safeText(handlerMethod?.descriptor)),
+  };
+  const ownerCandidates = owner === undefined ? [] : (indexes.methodsByOwnerId.get(owner.id) ?? []);
+  const aliasCandidates =
+    indexes.callablesByRuntimeOwner.get(normalizedQualifiedName(className)) ?? [];
+  const candidates = [...ownerCandidates, ...aliasCandidates]
+    .filter((node, index, all) => all.findIndex((candidate) => candidate.id === node.id) === index)
+    .filter((node) => matchesRuntimeCallable(node, runtime));
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
@@ -418,10 +499,12 @@ function importMappings(
           graph.addNode(route);
         }
         const existingHandlerId = safeText(route.properties.handlerSymbolId);
+        const handlerFilePath =
+          handler !== undefined && typeof handler.properties.filePath === 'string'
+            ? handler.properties.filePath
+            : undefined;
         const handlerFileId =
-          handler === undefined
-            ? undefined
-            : generateId('File', String(handler.properties.filePath));
+          handlerFilePath === undefined ? undefined : generateId('File', handlerFilePath);
         const staticOwnerFileIds = indexes.routeOwnerFileIdsByRouteId.get(route.id);
         const conflictsWithStaticOwner =
           routeWasPresent &&
@@ -527,14 +610,10 @@ function resolveConditionOwner(
   rawName: string,
 ): GraphNode | undefined {
   const separator = rawName.lastIndexOf('#');
-  const className = separator === -1 ? rawName : rawName.slice(0, separator);
-  const methodName = separator === -1 ? undefined : rawName.slice(separator + 1);
-  const owner = resolveClass(indexes, className);
-  if (owner === undefined || methodName === undefined) return owner;
-  const candidates = (indexes.methodsByOwnerId.get(owner.id) ?? []).filter(
-    (node) => node.properties.name === methodName,
-  );
-  return candidates.length === 1 ? candidates[0] : undefined;
+  return resolveHandlerNode(indexes, {
+    className: separator === -1 ? rawName : rawName.slice(0, separator),
+    ...(separator === -1 ? {} : { name: rawName.slice(separator + 1) }),
+  });
 }
 
 function importConditions(

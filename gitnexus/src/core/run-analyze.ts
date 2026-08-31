@@ -1664,10 +1664,7 @@ async function runFullAnalysisInner(
   // removed so stale runtime-only evidence is cleared from the index.
   const springActuatorRequested = options.springActuatorPath !== undefined;
   const springActuatorPreviouslyEnabled = existingMeta?.springActuator?.enabled === true;
-  let springActuatorRepoRelativeInput: string | null | undefined;
-  const previousActuatorInputs = (
-    existingMeta?.springActuator as { repoRelativeInputs?: unknown } | undefined
-  )?.repoRelativeInputs;
+  const previousActuatorInputs: unknown = existingMeta?.springActuator?.repoRelativeInputs;
   const retainedActuatorInputs = Array.isArray(previousActuatorInputs)
     ? previousActuatorInputs.filter((input): input is string => typeof input === 'string')
     : [];
@@ -1675,7 +1672,7 @@ async function runFullAnalysisInner(
     const resolvedRepo = path.resolve(repoPath);
     const resolvedInput = path.resolve(repoPath, options.springActuatorPath!);
     const relativeInput = path.relative(resolvedRepo, resolvedInput);
-    springActuatorRepoRelativeInput =
+    const springActuatorRepoRelativeInput =
       relativeInput === ''
         ? '.'
         : relativeInput === '..' ||
@@ -3747,21 +3744,14 @@ async function runFullAnalysisInner(
       // Persist only normalized repo-relative exclusions, never absolute paths
       // or payloads. Keep them after runtime enrichment is disabled so a later
       // ordinary scan cannot rediscover an unchanged snapshot as source/FTS.
-      ...(springActuatorRequested
+      ...(springActuatorRequested || retainedActuatorInputs.length > 0
         ? {
             springActuator: {
-              enabled: true,
+              enabled: springActuatorRequested,
               repoRelativeInputs: retainedActuatorInputs,
             },
           }
-        : retainedActuatorInputs.length > 0
-          ? {
-              springActuator: {
-                enabled: false,
-                repoRelativeInputs: retainedActuatorInputs,
-              },
-            }
-          : {}),
+        : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
