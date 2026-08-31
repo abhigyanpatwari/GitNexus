@@ -1,6 +1,6 @@
 {
-  "_comment": "Baselines for bench/java-lombok-synthesis/measure.mjs --check (#2885). fingerprint is sha256 over synthetic Method node ids on the lombok_large corpus (800 @Data entities × 4 fields × 2 accessors = 12800 methods). no_lombok arm must emit 0 methods. Budgets are timing gates with CI headroom.",
-  "fingerprint": "92e778c086d7ff43db909502b8c71500cc2e2f3f3f55319a8af4709d1ba95919",
+  "_comment": "Baselines for bench/java-lombok-synthesis/measure.mjs --check (#2885). fingerprint is sha256 over synthetic Method node ids on the lombok_large corpus (800 @Data entities × 4 fields × 2 accessors = 6400 methods). no_lombok arm must emit 0 methods. Budgets are timing gates with CI headroom.",
+  "fingerprint": "b935d6894d32de7594d5887bb62af6ade2b66b19d6846700a05ef3baf1ed1eb1",
   "scaling_budget": 1.6,
   "_scaling_note": "(t_large/t_small)/(800/250) on the lombok arm. Measured ~1.01.",
   "widening_overhead_budget": 2.5,
