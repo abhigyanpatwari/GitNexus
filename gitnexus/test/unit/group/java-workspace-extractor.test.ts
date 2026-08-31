@@ -141,6 +141,135 @@ describe('JavaWorkspaceExtractor', () => {
     ]);
   });
 
+  async function extractNamed(names: string[]) {
+    return extractJavaWorkspaceLinks(
+      Object.fromEntries(names.map((name) => [name, name])),
+      new Map(names.map((name) => [name, path.join(tmpDir, name)])),
+    );
+  }
+
+  it('skips POMs that cannot yield a child artifact identity', async () => {
+    await writeFile('broken/pom.xml', '<project><unclosed');
+    await writeFile('not-maven/pom.xml', '<notproject></notproject>');
+    await writeFile('empty/pom.xml', '<project></project>');
+    await writeFile(
+      'parent-only/pom.xml',
+      `<project>
+        <parent>
+          <groupId>com.example</groupId>
+          <artifactId>parent</artifactId>
+          <version>1</version>
+        </parent>
+      </project>`,
+    );
+    await writeFile(
+      'no-group/pom.xml',
+      '<project><artifactId>orphan</artifactId></project>',
+    );
+
+    const result = await extractNamed([
+      'broken',
+      'not-maven',
+      'empty',
+      'parent-only',
+      'no-group',
+    ]);
+
+    expect(result.discoveredProjects.size).toBe(0);
+    expect(result.links).toHaveLength(0);
+    expect(result.discoveredProjects.has('parent-only')).toBe(false);
+  });
+
+  it('ignores dependencyManagement, profiles, and plugin dependencies for workspace links', async () => {
+    await writeFile('shared-lib/pom.xml', pomTemplate('com.example', 'shared-lib'));
+    await writeFile(
+      'shared-lib/src/main/java/com/example/shared/lib/SharedType.java',
+      'package com.example.shared.lib;\npublic class SharedType {}\n',
+    );
+
+    await writeFile(
+      'bom-consumer/pom.xml',
+      `<project>
+        <groupId>com.example</groupId>
+        <artifactId>bom-consumer</artifactId>
+        <dependencyManagement>
+          <dependencies>
+            <dependency>
+              <groupId>com.example</groupId>
+              <artifactId>shared-lib</artifactId>
+              <version>1</version>
+            </dependency>
+          </dependencies>
+        </dependencyManagement>
+      </project>`,
+    );
+    await writeFile(
+      'bom-consumer/src/main/java/com/example/bom/App.java',
+      'package com.example.bom;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
+    );
+
+    await writeFile(
+      'profile-consumer/pom.xml',
+      `<project>
+        <groupId>com.example</groupId>
+        <artifactId>profile-consumer</artifactId>
+        <profiles>
+          <profile>
+            <id>extra</id>
+            <dependencies>
+              <dependency>
+                <groupId>com.example</groupId>
+                <artifactId>shared-lib</artifactId>
+              </dependency>
+            </dependencies>
+          </profile>
+        </profiles>
+      </project>`,
+    );
+    await writeFile(
+      'profile-consumer/src/main/kotlin/com/example/profile/App.kt',
+      'package com.example.profile\nimport com.example.shared.lib.SharedType\nclass App\n',
+    );
+
+    await writeFile(
+      'plugin-consumer/pom.xml',
+      `<project>
+        <groupId>com.example</groupId>
+        <artifactId>plugin-consumer</artifactId>
+        <build>
+          <plugins>
+            <plugin>
+              <groupId>org.apache.maven.plugins</groupId>
+              <artifactId>maven-compiler-plugin</artifactId>
+              <dependencies>
+                <dependency>
+                  <groupId>com.example</groupId>
+                  <artifactId>shared-lib</artifactId>
+                </dependency>
+              </dependencies>
+            </plugin>
+          </plugins>
+        </build>
+      </project>`,
+    );
+    await writeFile(
+      'plugin-consumer/src/main/java/com/example/plugin/App.java',
+      'package com.example.plugin;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
+    );
+
+    const result = await extractNamed([
+      'shared-lib',
+      'bom-consumer',
+      'profile-consumer',
+      'plugin-consumer',
+    ]);
+
+    expect(result.discoveredProjects.get('bom-consumer')?.deps).toEqual([]);
+    expect(result.discoveredProjects.get('profile-consumer')?.deps).toEqual([]);
+    expect(result.discoveredProjects.get('plugin-consumer')?.deps).toEqual([]);
+    expect(result.links).toEqual([]);
+  });
+
   it('uses an explicit child groupId instead of its Maven parent groupId', async () => {
     await writeFile(
       'service/pom.xml',
@@ -164,6 +293,57 @@ describe('JavaWorkspaceExtractor', () => {
       groupId: 'com.child',
       artifactId: 'service',
     });
+  });
+
+  it('parses namespaced POM coordinates and CDATA text with a real XML parser', async () => {
+    await writeFile(
+      'lib/pom.xml',
+      `<?xml version="1.0"?>
+      <m:project xmlns:m="http://maven.apache.org/POM/4.0.0">
+        <m:parent>
+          <m:groupId>com.parent</m:groupId>
+          <m:artifactId>parent</m:artifactId>
+        </m:parent>
+        <m:artifactId><![CDATA[shared-lib]]></m:artifactId>
+        <m:dependencies>
+          <m:dependency>
+            <m:groupId>com.acme</m:groupId>
+            <m:artifactId>models</m:artifactId>
+          </m:dependency>
+        </m:dependencies>
+      </m:project>`,
+    );
+    await writeFile('models/pom.xml', pomTemplate('com.acme', 'models'));
+    await writeFile(
+      'models/src/main/java/com/acme/models/User.java',
+      'package com.acme.models;\npublic class User {}\n',
+    );
+    await writeFile(
+      'lib/src/main/java/com/parent/shared/lib/App.java',
+      'package com.parent.shared.lib;\nimport com.acme.models.User;\npublic class App {}\n',
+    );
+
+    const result = await extractJavaWorkspaceLinks(
+      { lib: 'lib', models: 'models' },
+      new Map([
+        ['lib', path.join(tmpDir, 'lib')],
+        ['models', path.join(tmpDir, 'models')],
+      ]),
+    );
+
+    expect(result.discoveredProjects.get('lib')).toMatchObject({
+      groupId: 'com.parent',
+      artifactId: 'shared-lib',
+    });
+    expect(result.links).toEqual([
+      {
+        from: 'models',
+        to: 'lib',
+        type: 'custom',
+        contract: 'models::User',
+        role: 'provider',
+      },
+    ]);
   });
 
   it('still rejects genuinely duplicate effective Maven coordinates', async () => {

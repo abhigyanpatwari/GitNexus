@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { XMLParser } from 'fast-xml-parser';
 import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
 import { shouldIgnorePath, loadIgnoreRules } from '../../../config/ignore-service.js';
@@ -20,11 +21,20 @@ interface ImportedSymbol {
   filePath: string;
 }
 
-interface XmlElement {
-  name: string;
-  text: string;
-  children: XmlElement[];
-}
+type XmlNode = Record<string, unknown>;
+
+// POMs are static metadata. Parse hierarchy with a real XML parser, but do not
+// invoke Maven or resolve the effective model. Properties, profiles, and remote
+// parent resolution remain outside this extractor's deterministic boundary.
+const pomParser = new XMLParser({
+  ignoreAttributes: true,
+  removeNSPrefix: true,
+  trimValues: true,
+  parseTagValue: false,
+  processEntities: false,
+  ignoreDeclaration: true,
+  ignorePiTags: true,
+});
 
 async function parseJavaManifest(
   repoPath: string,
@@ -34,7 +44,7 @@ async function parseJavaManifest(
     const content = await fs.readFile(pomPath, 'utf-8');
     return parsePom(content);
   } catch {
-    // fall through to Gradle
+    // Missing pom.xml — fall through to Gradle.
   }
 
   for (const name of ['build.gradle.kts', 'build.gradle']) {
@@ -50,92 +60,63 @@ async function parseJavaManifest(
   return null;
 }
 
-// POMs are static metadata, so preserve XML hierarchy without invoking Maven or
-// pulling in a full effective-model resolver. This intentionally models only
-// literal elements; properties, profiles, and remote parent resolution remain
-// outside the workspace extractor's deterministic boundary.
-function parseXmlRoot(content: string, rootName: string): XmlElement | null {
-  const document: XmlElement = { name: '', text: '', children: [] };
-  const stack = [document];
-  const tokens = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<![^>]*>|<[^>]+>/g;
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = tokens.exec(content)) !== null) {
-    if (stack.length > 1) {
-      stack[stack.length - 1].text += content.slice(cursor, match.index);
-    }
-    cursor = match.index + match[0].length;
-
-    const token = match[0];
-    if (token.startsWith('<![CDATA[')) {
-      if (stack.length > 1) stack[stack.length - 1].text += token.slice(9, -3);
-      continue;
-    }
-    if (token.startsWith('<!--') || token.startsWith('<?') || token.startsWith('<!')) {
-      continue;
-    }
-
-    const closing = token.match(/^<\/\s*([^\s>]+)\s*>$/);
-    if (closing) {
-      const name = closing[1].split(':').pop()!;
-      if (stack.length === 1 || stack[stack.length - 1].name !== name) return null;
-      stack.pop();
-      continue;
-    }
-
-    const opening = token.match(/^<\s*([^\s/>]+)/);
-    if (!opening) return null;
-    const element: XmlElement = {
-      name: opening[1].split(':').pop()!,
-      text: '',
-      children: [],
-    };
-    stack[stack.length - 1].children.push(element);
-    if (!/\/\s*>$/.test(token)) stack.push(element);
-  }
-
-  if (stack.length !== 1) return null;
-  return document.children.find((element) => element.name === rootName) ?? null;
+function asXmlNode(value: unknown): XmlNode | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as XmlNode)
+    : undefined;
 }
 
-function childText(element: XmlElement | undefined, name: string): string | undefined {
-  const value = element?.children.find((child) => child.name === name)?.text.trim();
-  return value || undefined;
+function xmlText(value: unknown): string | undefined {
+  if (typeof value === 'string' || typeof value === 'number') {
+    const text = String(value).trim();
+    return text || undefined;
+  }
+  const nested = asXmlNode(value)?.['#text'];
+  if (nested === undefined) return undefined;
+  return xmlText(nested);
 }
 
-function descendants(element: XmlElement, name: string, matches: XmlElement[] = []): XmlElement[] {
-  for (const child of element.children) {
-    if (child.name === name) matches.push(child);
-    descendants(child, name, matches);
+function xmlChildText(node: XmlNode | undefined, name: string): string | undefined {
+  return node ? xmlText(node[name]) : undefined;
+}
+
+function asList(value: unknown): unknown[] {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+/** Direct project dependencies only — not BOM, profiles, or plugin classpath. */
+function collectProjectDependencies(project: XmlNode, deps: string[]): void {
+  const dependencies = asXmlNode(project.dependencies);
+  if (!dependencies) return;
+  for (const dep of asList(dependencies.dependency)) {
+    const depNode = asXmlNode(dep);
+    const groupId = xmlChildText(depNode, 'groupId');
+    const artifactId = xmlChildText(depNode, 'artifactId');
+    if (groupId && artifactId) deps.push(`${groupId}:${artifactId}`);
   }
-  return matches;
 }
 
 function parsePom(content: string): { groupId: string; artifactId: string; deps: string[] } | null {
-  const project = parseXmlRoot(content, 'project');
+  let parsed: unknown;
+  try {
+    parsed = pomParser.parse(content);
+  } catch {
+    return null;
+  }
+
+  const project = asXmlNode(asXmlNode(parsed)?.project);
   if (!project) return null;
 
   // Maven inherits groupId from <parent>, but artifactId is always the
   // project's own direct child and must never fall back to parent.artifactId.
   const groupId =
-    childText(project, 'groupId') ??
-    childText(
-      project.children.find((child) => child.name === 'parent'),
-      'groupId',
-    );
-  const artifactId = childText(project, 'artifactId');
+    xmlChildText(project, 'groupId') ?? xmlChildText(asXmlNode(project.parent), 'groupId');
+  const artifactId = xmlChildText(project, 'artifactId');
   if (!groupId || !artifactId) return null;
 
   const deps: string[] = [];
-  for (const dependency of descendants(project, 'dependency')) {
-    const dependencyGroupId = childText(dependency, 'groupId');
-    const dependencyArtifactId = childText(dependency, 'artifactId');
-    if (dependencyGroupId && dependencyArtifactId) {
-      deps.push(`${dependencyGroupId}:${dependencyArtifactId}`);
-    }
-  }
-
+  collectProjectDependencies(project, deps);
   return { groupId, artifactId, deps: [...new Set(deps)] };
 }
 
