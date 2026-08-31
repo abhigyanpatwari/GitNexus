@@ -78,6 +78,20 @@ export interface ModuleConstants {
   readonly wildcardImports?: readonly string[];
 }
 
+const NO_UNFOLDABLE_DECLARATIONS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Declaration keys a language extractor found but could not fold. Java and
+ * Kotlin both use this metadata to keep lower-priority imports from replacing
+ * a real local declaration; other producers simply return the empty set.
+ */
+export function unfoldableDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
+  const declarations = (
+    mc as (ModuleConstants & { readonly unfoldableDeclarations?: unknown }) | undefined
+  )?.unfoldableDeclarations;
+  return declarations instanceof Set ? declarations : NO_UNFOLDABLE_DECLARATIONS;
+}
+
 /** Repo-wide map: unique file key (e.g. `app/constants.py`) → that file's
  * {@link ModuleConstants}. */
 export type RepoConstants = ReadonlyMap<string, ModuleConstants>;

@@ -19,9 +19,8 @@ import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import {
-  buildJavaConstantIndex,
-  expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
+  prepareJavaRouteConstants,
 } from '../../src/core/ingestion/route-extractors/java-const-resolver.ts';
 import {
   fingerprintIds,
@@ -64,6 +63,7 @@ function cloneConstants(mc) {
     exprs: new Map(mc.exprs),
     imports: new Map(mc.imports),
     wildcardImports: mc.wildcardImports ? [...mc.wildcardImports] : undefined,
+    unfoldableDeclarations: new Set(mc.unfoldableDeclarations ?? []),
   };
 }
 
@@ -99,11 +99,10 @@ function instantiate(prepared) {
 
 function runAll(instance) {
   const { repo, controllers } = instance;
-  const constantIndex = buildJavaConstantIndex(repo);
+  prepareJavaRouteConstants(repo);
   const bindings = [];
   for (const controller of controllers) {
     const mc = repo.get(controller.key);
-    expandJavaWildcardStaticImports(mc, controller.key, repo, constantIndex);
     const binding = mc.imports.get(controller.route);
     if (binding) {
       bindings.push(

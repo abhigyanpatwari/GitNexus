@@ -19,6 +19,7 @@ import {
   extractJavaModuleConstants,
   foldJavaOperands,
   isJavaConstantFile,
+  prepareJavaRouteConstants,
 } from '../route-extractors/java-const-resolver.js';
 import { javaExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -245,5 +246,6 @@ export const javaProvider = defineLanguage({
     // side needs the importing controller's own import table, which the group
     // side instead derives lazily from the tree it already holds.
     /\bimport\s+(?:static\s+)?[\w.]+(?:\.\*)?\s*;/.test(content),
+  prepareRouteConstants: prepareJavaRouteConstants,
   foldRoutePathOperands: foldJavaOperands,
 });

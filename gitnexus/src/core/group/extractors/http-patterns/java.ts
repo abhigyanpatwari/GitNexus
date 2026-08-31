@@ -29,12 +29,13 @@ import {
   EXCHANGE_CONFIDENCE,
 } from './spring-consumer-shared.js';
 import {
-  buildJavaConstantIndex,
   expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
   foldJavaOperands,
   isJavaConstantFile,
   parseJavaConstOperands,
+  prepareJavaRouteConstants,
+  type JavaConstantIndex,
   type RepoConstants,
 } from '../../../ingestion/route-extractors/java-const-resolver.js';
 import {
@@ -940,16 +941,13 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // a constants file, so it is necessarily a map entry — anything else
     // degrades to the fold's skip floor. In-place: each entry is owned by
     // this map, and every file is expanded exactly once.
-    const constantIndex = buildJavaConstantIndex(constants);
-    for (const [rel, mc] of constants) {
-      expandJavaWildcardStaticImports(mc, rel, constants, constantIndex);
-    }
+    const constantIndex = prepareJavaRouteConstants(constants);
     return { constants, constantIndex };
   },
   scan(tree, repoContext, fileRel) {
     const out: HttpDetection[] = [];
     const javaCtx = repoContext as
-      | { constants: RepoConstants; constantIndex: ReturnType<typeof buildJavaConstantIndex> }
+      | { constants: RepoConstants; constantIndex: JavaConstantIndex }
       | undefined;
 
     // ─── Spring providers + OpenFeign consumers (one query pass) ────

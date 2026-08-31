@@ -20,7 +20,8 @@
  *     src/main/java/com/example/UserController.java — @RequestMapping prefix +
  *                                                    @PostMapping(ApiPaths.X) +
  *                                                    FQN form + concat over a
- *                                                    static-imported bare ref
+ *                                                    named static import +
+ *                                                    wildcard static import
  *
  * Assertions (both runs):
  *  - the emitted Route node carries the FOLDED literal path, not the expr;
@@ -98,6 +99,7 @@ const USER_CONTROLLER = `package com.example;
 
 import com.example.common.ApiPaths;
 import static com.example.common.ApiPaths.V1;
+import static com.example.common.ApiPaths.*;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -113,6 +115,10 @@ public class UserController {
     // FQN-qualified form (F3): multi-segment field_access chain.
     @GetMapping(com.example.common.ApiPaths.ORDERS)
     public void list() {}
+
+    // Bare ref materialized by the provider's repo-wide wildcard prep hook.
+    @GetMapping(ORDERS)
+    public void listViaWildcard() {}
 
     // Inline concat with a STATIC-IMPORTED bare ref — the shape this fixture
     // used to only claim: it spelled the operand as the full FQN chain, which
@@ -202,8 +208,8 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
     const paths = routes.map((r) => r.path).sort();
     expect(paths).toContain('/api/v1/users'); // qualified ref via import
     expect(paths).toContain('/api/v1/orders'); // FQN multi-segment chain
-    // The concat route folds to the same literal as the FQN route.
-    expect(paths.filter((p) => p === '/api/v1/orders').length).toBeGreaterThanOrEqual(2);
+    // FQN, wildcard, and concat routes fold to the same literal.
+    expect(paths.filter((p) => p === '/api/v1/orders').length).toBeGreaterThanOrEqual(3);
     // Skip floor: no phantom empty/raw-expr paths.
     for (const p of paths) {
       expect(p.length).toBeGreaterThan(1);

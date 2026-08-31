@@ -165,6 +165,37 @@ class OrderController {
     ).toEqual(['GET /api/v1/items', 'GET /api/v1/orders']);
   });
 
+  it('prefers same-package sibling declarations over package-star imports', () => {
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+const val ORDERS = "/imported"
+object ApiPaths {
+    const val ITEMS = "/imported/items"
+}
+`,
+        'src/main/kotlin/com/example/app/web/LocalPaths.kt': `package com.example.app.web
+const val ORDERS = "/local"
+object ApiPaths {
+    const val ITEMS = "/local/items"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+import com.example.app.api.*
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+
+    @GetMapping(ApiPaths.ITEMS)
+    fun items() {}
+}
+`,
+      }),
+    ).toEqual(['GET /local', 'GET /local/items']);
+  });
+
   it('folds a constant imported through a nested object', () => {
     expect(
       providers({

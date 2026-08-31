@@ -689,7 +689,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // materialization) — a warm v86 cache has no wildcard bindings, so folding
 // would skip them and drop wildcard-imported route constants. origin/main at
 // allocation is 86 (#2885).
-const SCHEMA_BUMP = 87;
+// 87 -> 88: Java ModuleConstants now preserves unfoldable declaration names
+// across worker/cache replay so wildcard expansion cannot resurrect an imported
+// member hidden by a local field. A warm v87 cache lacks that shadow metadata.
+const SCHEMA_BUMP = 88;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

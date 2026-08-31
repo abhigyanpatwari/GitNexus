@@ -148,7 +148,7 @@ describe('extractJavaModuleConstants', () => {
     const mcStatic = extractJavaModuleConstants(parse(STATIC_IMPORT_CONTROLLER));
     expect(mcStatic.imports.get('DIAGNOSIS_SAVE_V1')).toEqual({
       module: 'com.winning.opt.diagnosis.api.constants.ApiPathConstants',
-      originalName: 'DIAGNOSIS_SAVE_V1',
+      originalName: 'ApiPathConstants.DIAGNOSIS_SAVE_V1',
     });
   });
 
@@ -826,7 +826,7 @@ public class C {}`),
     expect(controller.wildcardImports).toEqual(['com.x.ApiPaths']);
     expect(controller.imports.get('SAVE')).toEqual({
       module: 'com.x.ApiPaths',
-      originalName: 'SAVE',
+      originalName: 'ApiPaths.SAVE',
     });
     const repo: RepoConstants = new Map([
       ['src/com/x/ApiPaths.java', constants],
@@ -835,11 +835,11 @@ public class C {}`),
     expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
     expect(controller.imports.get('SAVE')).toEqual({
       module: 'com.x.ApiPaths',
-      originalName: 'SAVE',
+      originalName: 'ApiPaths.SAVE',
     });
     expect(controller.imports.get('OTHER')).toEqual({
       module: 'com.x.ApiPaths',
-      originalName: 'OTHER',
+      originalName: 'ApiPaths.OTHER',
     });
   });
 
@@ -864,6 +864,74 @@ public class ApiPaths { public static final String SAVE = "/api/v1/save"; }`,
     const repo: RepoConstants = new Map([['src/com/y/C.java', mc]]);
     expandJavaWildcardStaticImports(mc, 'src/com/y/C.java', repo);
     expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'SAVE' }], repo)).toBeNull();
+  });
+
+  it('does not resurrect a wildcard member shadowed by an unfoldable local field', () => {
+    const repo = repoOf({
+      'src/com/x/ApiPaths.java': `package com.x;
+public class ApiPaths { public static final String SAVE = "/imported"; }`,
+      'src/com/y/C.java': `package com.y;
+import static com.x.ApiPaths.*;
+public class C {
+  static final String SAVE = compute();
+  @PostMapping(SAVE) public void save() {}
+}`,
+    });
+    const controller = repo.get('src/com/y/C.java')!;
+    expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
+    expect(controller.imports.has('SAVE')).toBe(false);
+    expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'SAVE' }], repo)).toBeNull();
+  });
+
+  it('binds only fields owned by the wildcard target type', () => {
+    const repo = repoOf({
+      'src/com/x/ApiPaths.java': `package com.x;
+public class ApiPaths { public static final String ROUTE = "/right"; }
+class Other {
+  public static final String ROUTE = "/wrong";
+  public static final String OTHER_ONLY = "/other";
+}`,
+      'src/com/y/C.java': `package com.y;
+import static com.x.ApiPaths.*;
+public class C {}`,
+    });
+    const controller = repo.get('src/com/y/C.java')!;
+    expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
+    expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'ROUTE' }], repo)).toBe(
+      '/right',
+    );
+    expect(controller.imports.has('OTHER_ONLY')).toBe(false);
+  });
+
+  it('floors duplicate wildcard members while preserving an explicit import', () => {
+    const sources = {
+      'src/a/A.java': `package a;
+public class A { public static final String ROUTE = "/a"; }`,
+      'src/b/B.java': `package b;
+public class B { public static final String ROUTE = "/b"; }`,
+    };
+    const ambiguous = repoOf({
+      ...sources,
+      'src/c/C.java': `package c;
+import static a.A.*;
+import static b.B.*;
+public class C {}`,
+    });
+    expandJavaWildcardStaticImports(ambiguous.get('src/c/C.java')!, 'src/c/C.java', ambiguous);
+    expect(
+      foldJavaOperands('src/c/C.java', [{ kind: 'ref', name: 'ROUTE' }], ambiguous),
+    ).toBeNull();
+
+    const explicit = repoOf({
+      ...sources,
+      'src/c/C.java': `package c;
+import static a.A.*;
+import static b.B.*;
+import static b.B.ROUTE;
+public class C {}`,
+    });
+    expandJavaWildcardStaticImports(explicit.get('src/c/C.java')!, 'src/c/C.java', explicit);
+    expect(foldJavaOperands('src/c/C.java', [{ kind: 'ref', name: 'ROUTE' }], explicit)).toBe('/b');
   });
 
   it('admits wildcard-only files on the harvest heuristic', () => {

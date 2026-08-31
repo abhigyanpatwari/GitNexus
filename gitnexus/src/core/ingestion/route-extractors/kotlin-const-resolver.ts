@@ -139,6 +139,7 @@ import type Parser from 'tree-sitter';
 import { unquoteSpringLiteral } from './spring-shared.js';
 import {
   MAX_FOLD_LENGTH,
+  unfoldableDeclarationsOf,
   type ImportBinding,
   type ModuleConstants,
   type Operand,
@@ -151,6 +152,7 @@ export type {
   Operand,
   RepoConstants,
 } from './constant-resolver.js';
+export { unfoldableDeclarationsOf } from './constant-resolver.js';
 
 /**
  * What {@link extractKotlinModuleConstants} returns: the agnostic
@@ -192,21 +194,12 @@ function declaredPackageOf(mc: ModuleConstants | undefined): string | null {
   return typeof declared === 'string' ? declared : null;
 }
 
-const NO_UNFOLDABLE_DECLARATIONS: ReadonlySet<string> = new Set<string>();
-
-/**
- * Kotlin declaration keys known to exist but not fold, or an empty set when
- * `mc` came from another language binding.
- */
-export function unfoldableDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
-  const declarations = (mc as KotlinModuleConstants | undefined)?.unfoldableDeclarations;
-  return declarations instanceof Set ? declarations : NO_UNFOLDABLE_DECLARATIONS;
-}
+const NO_TOP_LEVEL_DECLARATIONS: ReadonlySet<string> = new Set<string>();
 
 /** Kotlin top-level names known to shadow package-star imports. */
 function topLevelDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
   const declarations = (mc as KotlinModuleConstants | undefined)?.topLevelDeclarations;
-  return declarations instanceof Set ? declarations : NO_UNFOLDABLE_DECLARATIONS;
+  return declarations instanceof Set ? declarations : NO_TOP_LEVEL_DECLARATIONS;
 }
 
 /** Source extensions a Kotlin declaration can live in. */
@@ -1341,6 +1334,27 @@ function resolveKotlinWildcardImportTarget(
   return resolved;
 }
 
+/**
+ * Resolve a top-level name visible from the importing file's own package.
+ * `undefined` means the package does not declare the name; `null` means it is
+ * ambiguous and must floor rather than fall through to a star import.
+ */
+function resolveKotlinSamePackageTarget(
+  fileKey: string,
+  name: string,
+  index: KotlinConstantIndex,
+): KotlinImportTarget | null | undefined {
+  const packageName = declaredPackageOf(index.repo.get(fileKey));
+  if (packageName === null) return undefined;
+  const bucket = index.byPackage.get(packageName);
+  if (!bucket?.declarers.has(name)) return undefined;
+  const declaringFile = bucket.declarers.get(name);
+  if (declaringFile === null || declaringFile === undefined) return null;
+  // Same-file literals, expressions, and shadows are handled before this step.
+  if (declaringFile === fileKey) return undefined;
+  return { fileKey: declaringFile, localName: name };
+}
+
 function computeKotlinFold(
   fileKey: string,
   name: string,
@@ -1373,6 +1387,16 @@ function computeKotlinFold(
     }
     // A same-file top-level declaration outranks every star import.
     if (!topLevelDeclarationsOf(mc).has(head)) {
+      const samePackageTarget = resolveKotlinSamePackageTarget(fileKey, head, state.index);
+      if (samePackageTarget === null) return null;
+      if (samePackageTarget !== undefined) {
+        return resolveWithState(
+          samePackageTarget.fileKey,
+          `${samePackageTarget.localName}.${tail}`,
+          state,
+          depth + 1,
+        );
+      }
       const wildcardTarget = resolveKotlinWildcardImportTarget(mc, head, state.index);
       if (wildcardTarget !== null) {
         return resolveWithState(
@@ -1414,6 +1438,16 @@ function computeKotlinFold(
   // Any local declaration still shadows a lower-priority package-star import,
   // including a var/plain type that is absent from the constant maps.
   if (topLevelDeclarationsOf(mc).has(name) || unfoldableDeclarationsOf(mc).has(name)) return null;
+  const samePackageTarget = resolveKotlinSamePackageTarget(fileKey, name, state.index);
+  if (samePackageTarget === null) return null;
+  if (samePackageTarget !== undefined) {
+    return resolveWithState(
+      samePackageTarget.fileKey,
+      samePackageTarget.localName,
+      state,
+      depth + 1,
+    );
+  }
   const wildcardTarget = resolveKotlinWildcardImportTarget(mc, name, state.index);
   if (wildcardTarget !== null) {
     return resolveWithState(wildcardTarget.fileKey, wildcardTarget.localName, state, depth + 1);
