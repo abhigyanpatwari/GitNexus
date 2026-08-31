@@ -672,7 +672,20 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
 // would skip workers and silently omit the new INJECTS edges. origin/main at
 // allocation is 81.
-const SCHEMA_BUMP = 82;
+// 82 -> 83: Java Lombok @Data/@Getter/@Setter accessor synthesis emits
+// synthetic Method nodes, HAS_METHOD edges, and matching scope captures into
+// ParseWorkerResult / ParsedFile. A warm v82 cache replays pre-Lombok worker
+// output and silently omits those callables. origin/main at allocation is 82.
+// 83 -> 84: Kotlin val/var properties synthesize JVM get/set Method nodes
+// (same provider hook as Java Lombok). A warm v83 cache omits those callables.
+// origin/main at allocation is 83 (Java Lombok on this branch).
+// 84 -> 85: JVM synthetic accessor captures now use the declaration
+// qualified_name key consumed by scope extraction, and Kotlin accessor planning
+// follows JvmAbi naming plus conservative @JvmName suppression. A warm v84
+// cache can replay stale names and declaration metadata.
+// 85 -> 86: Kotlin interface property accessors now record isAbstract on the
+// synthetic Method. A warm v85 cache replays them as concrete.
+const SCHEMA_BUMP = 86;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
