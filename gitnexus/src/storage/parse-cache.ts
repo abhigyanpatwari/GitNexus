@@ -683,7 +683,9 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // qualified_name key consumed by scope extraction, and Kotlin accessor planning
 // follows JvmAbi naming plus conservative @JvmName suppression. A warm v84
 // cache can replay stale names and declaration metadata.
-const SCHEMA_BUMP = 85;
+// 85 -> 86: Kotlin interface property accessors now record isAbstract on the
+// synthetic Method. A warm v85 cache replays them as concrete.
+const SCHEMA_BUMP = 86;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
