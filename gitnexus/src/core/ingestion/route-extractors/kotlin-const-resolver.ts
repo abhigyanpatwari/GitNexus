@@ -453,6 +453,11 @@ function contributesKotlinConstants(mc: ModuleConstants): boolean {
   );
 }
 
+/** Foldable or explicitly unfoldable constants that must live in index projections. */
+function hasIndexedConstants(mc: ModuleConstants): boolean {
+  return mc.literals.size > 0 || mc.exprs.size > 0 || unfoldableDeclarationsOf(mc).size > 0;
+}
+
 /** Top-level names declared by one file (`Outer.X` contributes `Outer`). */
 function topLevelDeclarationNames(mc: ModuleConstants): Set<string> {
   const names = new Set<string>();
@@ -586,7 +591,11 @@ export function overlayKotlinConstantIndex(
   fileKey: string,
   mc: ModuleConstants,
 ): KotlinConstantIndex {
-  if (!contributesKotlinConstants(mc) && !index.repo.has(fileKey)) {
+  // Same-file shadows are read from `mc` itself. Rebuild only when this key's
+  // constant projections would change; a controller with a class name but no
+  // foldable constants stays on the overlay so scan stays linear.
+  const existing = index.repo.get(fileKey);
+  if (!hasIndexedConstants(mc) && (!existing || !hasIndexedConstants(existing))) {
     return { ...index, repo: new KotlinConstantOverlay(index.repo, fileKey, mc) };
   }
   const repo = new Map(index.repo);

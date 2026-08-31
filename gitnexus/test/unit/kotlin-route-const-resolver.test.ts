@@ -264,6 +264,7 @@ object Noise${i} {
         parse(`package com.example.app.web
 
 import com.example.app.api.ApiPaths
+class OrdersController
 `),
       );
       const overlaid = overlayKotlinConstantIndex(index, CONTROLLER_KEY, controller);
