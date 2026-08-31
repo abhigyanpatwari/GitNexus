@@ -64,8 +64,8 @@ export function parseGrepQuery(query: Record<string, unknown>): ParsedGrepQuery 
   // Regex semantics by default — what the tool schema always promised.
   // literal=1 opts back into the escaped-substring behaviour of the
   // literal-only era for callers that want it verbatim.
-  const effectivePattern = isFlagTrue(query.literal, 'literal') ? escapeRegExp(pattern) : pattern;
   const caseSensitive = isFlagTrue(query.caseSensitive, 'caseSensitive');
+  const flags = caseSensitive ? '' : 'i';
 
   let regex: RegExp;
   try {
@@ -74,10 +74,14 @@ export function parseGrepQuery(query: Record<string, unknown>): ParsedGrepQuery 
     // had to reset it manually). No 'm' either: each test receives a
     // single line, so ^/$ already anchor at string boundaries — 'm'
     // would be a no-op.
-    // CodeQL js/regular-expression-injection — intentional real regex; see file header + SECURITY.md.
-    // lgtm[js/regular-expression-injection]
-    // codeql[js/regular-expression-injection]
-    regex = new RegExp(effectivePattern, caseSensitive ? '' : 'i');
+    if (isFlagTrue(query.literal, 'literal')) {
+      regex = new RegExp(escapeRegExp(pattern), flags);
+    } else {
+      // Intentional: /api/grep advertises real regex (see file header + SECURITY.md).
+      // ReDoS is mitigated by running the scan in a worker and terminate()-ing it.
+      // codeql[js/regex-injection]
+      regex = new RegExp(pattern, flags);
+    }
   } catch {
     throw new BadRequestError('Invalid regex pattern');
   }
