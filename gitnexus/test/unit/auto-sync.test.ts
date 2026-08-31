@@ -329,14 +329,17 @@ describe('auto-sync', () => {
     );
   });
 
-  it('rejects symlinks in configured clone root paths', async () => {
-    const realRoot = path.join(tempDir, 'real-root');
-    const linkRoot = path.join(tempDir, 'link-root');
-    await fs.mkdir(realRoot);
-    await fs.symlink(realRoot, linkRoot);
+  it.skipIf(process.platform === 'win32')(
+    'rejects symlinks in configured clone root paths',
+    async () => {
+      const realRoot = path.join(tempDir, 'real-root');
+      const linkRoot = path.join(tempDir, 'link-root');
+      await fs.mkdir(realRoot);
+      await fs.symlink(realRoot, linkRoot);
 
-    await expect(resolveConfiguredCloneRoot(linkRoot)).rejects.toThrow('symlink');
-  });
+      await expect(resolveConfiguredCloneRoot(linkRoot)).rejects.toThrow('symlink');
+    },
+  );
 
   it('resolves safe configured clone roots and reports quarantine retention', async () => {
     const root = path.join(tempDir, 'repos');

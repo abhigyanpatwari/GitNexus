@@ -179,7 +179,13 @@ export async function startAutoSyncWatch(
             activeRun = undefined;
             activeAbortController = undefined;
           }
-          if (!stopping) await updateStatus('running');
+          if (!stopping) {
+            await updateStatus('running').catch((error: unknown) => {
+              stderr.write(
+                `[auto-sync] Failed to publish watch status: ${(error as Error).message}\n`,
+              );
+            });
+          }
         });
       activeRun = run;
       activeAbortController = abortController;
