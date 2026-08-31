@@ -3277,12 +3277,14 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
           );
         }
         if (PARSED_FILE_STORE_STORAGE_PATH) {
-          persistParsedFileShardSync(
+          const wrote = persistParsedFileShardSync(
             PARSED_FILE_STORE_STORAGE_PATH,
             `w${threadId}-${seq}`,
             accumulated.parsedFiles,
           );
-          accumulated.parsedFiles = [];
+          if (wrote) {
+            accumulated.parsedFiles = [];
+          }
         }
       }
       postResultCloneSafe(accumulated);

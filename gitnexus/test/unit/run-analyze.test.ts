@@ -14,6 +14,8 @@ import {
   loadMeta,
   registerRepo,
   saveMeta,
+  readRegistry,
+  RegistryNameCollisionError,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
@@ -86,6 +88,197 @@ describe('run-analyze module', () => {
         fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
       ).resolves.toBe('*\n');
     } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('applies analyze --name on the already-up-to-date path without --force', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-name-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-fast-name-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      };
+      await saveMeta(storagePath, meta);
+      await registerRepo(tmpRepo.dbPath, meta, { name: 'old' });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { registryName: 'new' },
+        { onProgress: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.repoName).toBe('new');
+      const entries = await readRegistry();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].name).toBe('new');
+      const agents = await fs.readFile(path.join(tmpRepo.dbPath, 'AGENTS.md'), 'utf-8');
+      expect(agents).toContain('**new**');
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('repeating the same --name on the fast path is a no-op, not an error', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-name-repeat-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-fast-name-repeat-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      };
+      await saveMeta(storagePath, meta);
+      await registerRepo(tmpRepo.dbPath, meta, { name: 'kept' });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { registryName: 'kept' },
+        { onProgress: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect((await readRegistry())[0].name).toBe('kept');
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('fast-path --name still collides when another path already owns the alias', async () => {
+    const tmpA = await createTempDir('gitnexus-run-analyze-fast-name-col-a-');
+    const tmpB = await createTempDir('gitnexus-run-analyze-fast-name-col-b-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-fast-name-col-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      for (const tmp of [tmpA, tmpB]) {
+        execSync('git init', { cwd: tmp.dbPath, stdio: 'pipe' });
+        execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+          cwd: tmp.dbPath,
+          stdio: 'pipe',
+        });
+      }
+      const commitB = execSync('git rev-parse HEAD', {
+        cwd: tmpB.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const metaA: RepoMeta = {
+        repoPath: tmpA.dbPath,
+        lastCommit: 'aaaa',
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      };
+      await registerRepo(tmpA.dbPath, metaA, { name: 'new' });
+
+      const { storagePath } = getStoragePaths(tmpB.dbPath);
+      const metaB: RepoMeta = {
+        repoPath: tmpB.dbPath,
+        lastCommit: commitB,
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      };
+      await saveMeta(storagePath, metaB);
+      await registerRepo(tmpB.dbPath, metaB, { name: 'old' });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await expect(
+        runFullAnalysis(tmpB.dbPath, { registryName: 'new' }, { onProgress: () => {} }),
+      ).rejects.toBeInstanceOf(RegistryNameCollisionError);
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
+      await tmpA.cleanup();
+      await tmpB.cleanup();
+    }
+  });
+
+  it('plain fast path does not call registerRepo when --name is absent', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-no-name-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-fast-no-name-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      const currentCommit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: currentCommit,
+        indexedAt: new Date().toISOString(),
+        schemaFingerprint: SCHEMA_FINGERPRINT,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
+      };
+      await saveMeta(storagePath, meta);
+      await registerRepo(tmpRepo.dbPath, meta, { name: 'original' });
+
+      const registerSpy = vi.spyOn(
+        await import('../../src/storage/repo-manager.js'),
+        'registerRepo',
+      );
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(registerSpy).not.toHaveBeenCalled();
+      expect((await readRegistry())[0].name).toBe('original');
+      registerSpy.mockRestore();
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
       await tmpRepo.cleanup();
     }
   });

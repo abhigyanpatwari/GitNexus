@@ -66,6 +66,7 @@ vi.mock('../../src/storage/git.js', () => ({
   getCurrentBranch: vi.fn().mockReturnValue('main'),
   getGitRoot: vi.fn((p: string) => p),
   isWorkingTreeDirty: vi.fn().mockReturnValue(false),
+  listWorkingTreeDirtyPaths: vi.fn().mockReturnValue([]),
 }));
 
 import { listCommand } from '../../src/cli/list.js';

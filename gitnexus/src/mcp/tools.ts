@@ -82,6 +82,11 @@ export const PDG_QUERY_MAX_LIMIT = 200;
 // PDG direct backend callers also enforce it before running traversal.
 export const IMPACT_MAX_DEPTH = 32;
 
+const CWD_AWARE_REPO_OMISSION =
+  'Omit when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing an unindexed nested Git checkout; otherwise specify it explicitly.';
+const MUTATING_REPO_OMISSION =
+  'Omit only when one repo is indexed or an MCP default is configured; otherwise mutating tools require an explicit repo.';
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -94,8 +99,10 @@ PAGINATION: Results are paginated so a large registry is not truncated by MCP/LL
 WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
 AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
 
-When multiple repos are indexed, you MUST specify the "repo" parameter
-on other tools (query, context, impact, etc.) to target the correct one.`,
+When multiple repos are indexed, repo-scoped read-only tools use the configured
+MCP default or the registered path containing the GitNexus process cwd, unless
+cwd has crossed into an unindexed nested Git checkout. If neither applies,
+specify the "repo" parameter explicitly.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -184,8 +191,7 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
         },
         repo: {
           type: 'string',
-          description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). Omit when only one indexed repo exists.',
+          description: `Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>" (member path keys from group.yaml). ${CWD_AWARE_REPO_OMISSION}`,
         },
         service: {
           type: 'string',
@@ -266,7 +272,7 @@ TIPS:
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: ['statement'],
@@ -331,8 +337,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         },
         repo: {
           type: 'string',
-          description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit if only one repo is indexed.',
+          description: `Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". ${CWD_AWARE_REPO_OMISSION}`,
         },
         service: {
           type: 'string',
@@ -378,7 +383,7 @@ Returns: changed symbols, affected processes, and a risk summary.
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -417,7 +422,7 @@ A graph too large to analyze at all returns \`{ error, truncated: true }\` with 
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -454,7 +459,7 @@ Handles disambiguation via context()'s payload verbatim: an ambiguous symbol_nam
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${MUTATING_REPO_OMISSION}`,
         },
       },
       required: ['new_name'],
@@ -469,17 +474,19 @@ MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/
 
 STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it in affectedStatements (line + text). Inter-procedural symbols are still reported through interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Without "line", pdg returns whole-symbol inter-procedural reach plus local whole-symbol PDG diagnostics.
 
-PDG OUTPUT CONTRACT: every mode:'pdg' result (success, empty, degraded, or error) carries pdgResultVersion:2 — a stable discriminator for external consumers that bumps on any breaking change to the PDG result shape (distinct from the DB schema version). Successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', pdgResultVersion:2, target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar. Return-value-ascent coverage is published structurally at pdgEvidence.ascent — present iff the inter-procedural descent ran, including on an empty slice — with referencesScanned (DISTINCT callees scanned for a CALL_SUMMARY: a distinct-id tally, not a call-site count — two call sites to the same callee count once), returnFlowFound (whether the ascent fired anywhere in the slice), undecodableSummaryCount, examinedComplete (whether that scan covered every callee the index recorded a resolved id for on the visited blocks), incompleteReasons ('traversal-truncated' | 'callee-list-capped' | 'callee-ids-unrecorded'), and callSummaryLayerPresent. Read callSummaryLayerPresent FIRST: false ⇒ a pre-CALL_SUMMARY index, so {referencesScanned:N>0, returnFlowFound:false} is self-consistent and says nothing about the callees — the scan ran, but no layer existed in which a return-flow could be recorded (remedy: re-run gitnexus analyze --pdg). Branch on those fields; the note narrates the same facts in prose for humans and is not a stable contract.
+PDG OUTPUT CONTRACT: every mode:'pdg' result (success, empty, degraded, or error) carries pdgResultVersion:3 — a stable discriminator for external consumers that bumps on any breaking change to the PDG result shape (distinct from the DB schema version). Successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', pdgResultVersion:3, target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar. Return-value-ascent coverage is published structurally at pdgEvidence.ascent — present iff the inter-procedural descent ran, including on an empty slice — with referencesScanned (DISTINCT callees scanned for a CALL_SUMMARY: a distinct-id tally, not a call-site count — two call sites to the same callee count once), returnFlowFound (whether the ascent fired anywhere in the slice), undecodableSummaryCount, examinedComplete (whether that scan covered every callee the index recorded a resolved id for on the visited blocks), incompleteReasons ('traversal-truncated' | 'callee-list-capped' | 'callee-ids-unrecorded'), and callSummaryLayerPresent. Read callSummaryLayerPresent FIRST: false ⇒ a pre-CALL_SUMMARY index, so {referencesScanned:N>0, returnFlowFound:false} is self-consistent and says nothing about the callees — the scan ran, but no layer existed in which a return-flow could be recorded (remedy: re-run gitnexus analyze --pdg). Branch on those fields; the note narrates the same facts in prose for humans and is not a stable contract.
 
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
 
 Output includes:
-- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN. An upstream walk that resolved ZERO callers reports UNKNOWN, never LOW, and carries riskNote: "safe to change" is a claim about callers and there were none to reason about, so the symbol is either genuinely unused OR reached only through a reference class the index does not record (plain-object property access, a bare-identifier read of a module-scope const). Confirm with a text search before acting on it. Downstream walks are unaffected — an empty downstream result reports resolved callees, not safety.
+- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN. This is the HIGH/CRITICAL edit-gate field. File targets lack process/community membership, so their risk is not directly comparable with symbol risk; use riskSharedAxes to compare the direct/total axes common to both. Group-mode (\`repo: "@…"\`) results lift the same fields to the top-level envelope. The web Graph-RAG impact tool expands File targets to in-file symbols before enrichment, so process/cluster axes remain comparable there. An upstream walk that resolved ZERO callers reports UNKNOWN, never LOW, and carries riskNote: "safe to change" is a claim about callers and there were none to reason about, so the symbol is either genuinely unused OR reached only through a reference class the index does not record (plain-object property access, a bare-identifier read of a module-scope const). Confirm with a text search before acting on it. Downstream walks are unaffected — an empty downstream result reports resolved callees, not safety.
+- riskSharedAxes: single-repo risk computed only from direct and total impact. Group mode then applies the cross-repo crossing overlay to that local value. Suitable for comparing File and symbol targets within the same mode. Never substitute it for \`risk\` when deciding whether to warn before edits.
+- riskScale: { comparableAcrossKinds, unusedAxes } — names process/module axes that were structurally unavailable, skipped, budget-exhausted (\`IMPACT_MAX_CHUNKS=0\`), truncated (sampled a subset of impacted symbols), or failed at query time. Failed-query and truncated-sample counts are lower bounds: known HIGH/CRITICAL warnings survive, otherwise risk is UNKNOWN. Group impact copies this metadata from the local leg.
 - riskNote: string — present only when risk is UNKNOWN; states why the verdict is withheld.
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
-- affected_modules: which functional areas are hit (direct vs indirect)
+- affected_modules: which functional areas are hit (direct vs indirect; classification-unavailable when that secondary query fails)
 - byDepth: affected symbols grouped by traversal depth (paginated by limit/offset; omitted when summaryOnly:true — use byDepthCounts for totals per depth, pagination object when truncated). Each item includes a processes:[{id,label,processType,step}] field listing the execution flows that symbol participates in. Empty when the symbol has no process membership. Can ALSO be empty when partial:true is set — either the process-aggregation pass hit its cap before detecting affected processes, or per-symbol enrichment was capped on a very large page. When partial:true, do NOT treat processes:[] as proof of no participation; cross-check the top-level affected_processes list.
 - epistemic: 'exact' | 'lower-bound' — whether impactedCount is the whole story. 'lower-bound' means the walk provably missed callers, so the count is a floor. Absent only on skipped probes (ambiguous-candidate lists, group fan-out).
 - boundaries: string[] — one plain-language sentence per reason the count is short. Prose for humans; branch on causes instead.
@@ -591,8 +598,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         },
         repo: {
           type: 'string',
-          description:
-            'Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". Omit if only one repo is indexed.',
+          description: `Indexed repository name or path, or group mode "@<groupName>" / "@<groupName>/<memberPath>". ${CWD_AWARE_REPO_OMISSION}`,
         },
         service: {
           type: 'string',
@@ -688,7 +694,7 @@ Findings are deliberately NOT part of impact()'s traversal or the web schema —
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -740,7 +746,7 @@ CONTRACT CAVEATS:
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: ['mode', 'target'],
@@ -764,7 +770,7 @@ Returns: route nodes with their handlers, middleware wrapper chains (e.g., withA
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -782,7 +788,10 @@ Returns: tool nodes with their handler files and descriptions.`,
       type: 'object',
       properties: {
         tool: { type: 'string', description: 'Filter by tool name. Omit for all tools.' },
-        repo: { type: 'string', description: 'Repository name or path.' },
+        repo: {
+          type: 'string',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
       },
       required: [],
     },
@@ -805,7 +814,7 @@ Returns routes that have both detected response keys AND consumers. Shows top-le
         },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],
@@ -831,7 +840,10 @@ Response shape is keyed on how many routes match, not on the data: exactly one m
           description:
             'Optional HTTP verb — GET, POST, PUT, PATCH, DELETE, etc. — to narrow a multi-verb route or file lookup to a single method. Returns an error if no matched route uses that verb.',
         },
-        repo: { type: 'string', description: 'Repository name or path.' },
+        repo: {
+          type: 'string',
+          description: `Repository name or path. ${CWD_AWARE_REPO_OMISSION}`,
+        },
       },
       required: [],
     },
@@ -946,8 +958,7 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
         },
         repo: {
           type: 'string',
-          description:
-            'Repository name or path, or "@groupName" / "@groupName/memberPath" for a cross-repo trace over a group. Omit if only one repo is indexed.',
+          description: `Repository name or path, or "@groupName" / "@groupName/memberPath" for a cross-repo trace over a group. ${CWD_AWARE_REPO_OMISSION}`,
         },
       },
       required: [],

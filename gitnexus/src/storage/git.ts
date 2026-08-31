@@ -4,42 +4,32 @@ import path from 'path';
 import os from 'os';
 import { logger } from '../core/logger.js';
 import { toZeroBasedLine } from '../core/ingestion/utils/line-base.js';
+import { GITNEXUS_MANAGED_PATH_EXCLUDES, isGitNexusManagedPath } from './gitnexus-managed-paths.js';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
 const chompGitOutput = (value: Buffer): string => value.toString().replace(/\r?\n$/, '');
+const GIT_PATH_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * True when the working tree has uncommitted changes that analyze would
- * re-index, even at a matching HEAD. Excludes the paths GitNexus writes during
- * analyze (.gitnexus/, .claude/, .cursor/, AGENTS.md, CLAUDE.md, and the
- * repo-local .agents/ mirror) so its own output never counts as dirty
- * (regression vs PR #1233 behavior). The entire .agents/ tree is excluded,
- * matching the .claude/ treatment, because the skill mirror writes across
- * .agents/skills/ and deeper paths. Conservative on any git failure. Shared
- * so `analyze`'s fast-path gate and `status`'s freshness report agree on what
- * "dirty" means.
+ * re-index, even at a matching HEAD. Excludes GITNEXUS_MANAGED_PATHS so
+ * GitNexus's own analyze output never counts as dirty (regression vs PR #1233
+ * behavior); whole directory trees are excluded, not just their root entries,
+ * because the skill mirror writes across .agents/skills/ and deeper paths.
+ * Conservative on any git failure.
+ *
+ * This drives `analyze`'s up-to-date fast path. It is deliberately coarse:
+ * a false "dirty" here costs only a hash diff that finds nothing. `status`
+ * reaches for the per-file comparison in core/index-content-drift.ts instead,
+ * because there the same false positive is a verdict the user cannot clear
+ * (#3077), and falls back to this only when that comparison cannot run.
  */
 export const isWorkingTreeDirty = (repoPath: string): boolean => {
   try {
     const out = execFileSync(
       'git',
-      [
-        'status',
-        '--porcelain',
-        '--',
-        '.',
-        ':(exclude).gitnexus',
-        ':(exclude).gitnexus/**',
-        ':(exclude).claude',
-        ':(exclude).claude/**',
-        ':(exclude).cursor',
-        ':(exclude).cursor/**',
-        ':(exclude)AGENTS.md',
-        ':(exclude)CLAUDE.md',
-        ':(exclude).agents',
-        ':(exclude).agents/**',
-      ],
+      ['status', '--porcelain', '--', '.', ...GITNEXUS_MANAGED_PATH_EXCLUDES],
       {
         cwd: repoPath,
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -50,6 +40,84 @@ export const isWorkingTreeDirty = (repoPath: string): boolean => {
     return out.trim().length > 0;
   } catch {
     return true; // conservative on git failure
+  }
+};
+
+const parsePorcelainPaths = (porcelain: string): string[] => {
+  const paths = new Set<string>();
+  const records = porcelain.split('\0');
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (record.length < 4) continue;
+
+    const status = record.slice(0, 2);
+    paths.add(record.slice(3));
+
+    // In porcelain v1 `-z` mode, rename/copy source and destination paths are
+    // separate NUL records (with no human-facing ` -> ` delimiter). Keep both:
+    // either side may be present in the previous coverage set.
+    if (status.includes('R') || status.includes('C')) {
+      const pairedPath = records[++i];
+      if (pairedPath) paths.add(pairedPath);
+    }
+  }
+  return [...paths];
+};
+
+const gitPathListExec = {
+  stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
+  encoding: 'utf8' as const,
+  maxBuffer: GIT_PATH_LIST_MAX_BUFFER,
+};
+
+const listHiddenIndexPaths = (repoPath: string): string[] => {
+  const out = execFileSync('git', ['ls-files', '-v', '-z', '--'], {
+    cwd: repoPath,
+    windowsHide: true,
+    ...gitPathListExec,
+  });
+  const paths: string[] = [];
+  for (const record of out.split('\0')) {
+    if (record.length < 3 || record[1] !== ' ') continue;
+    const tag = record[0];
+    // `S` marks skip-worktree. With `-v`, an assume-unchanged entry's
+    // ordinary tag is lower-cased (`H` -> `h`, `S` -> `s`, etc.).
+    if (tag === 'S' || (tag >= 'a' && tag <= 'z')) paths.push(record.slice(2));
+  }
+  return paths;
+};
+
+/**
+ * Repo-relative paths `git status` reports as dirty or untracked, using the
+ * same managed-path excludes as {@link isWorkingTreeDirty}, plus tracked paths
+ * whose assume-unchanged or skip-worktree bits can hide content changes from
+ * porcelain. `null` means either query failed — callers must not treat that as
+ * a clean tree.
+ */
+export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => {
+  try {
+    const out = execFileSync(
+      'git',
+      [
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--untracked-files=all',
+        '--',
+        '.',
+        ...GITNEXUS_MANAGED_PATH_EXCLUDES,
+      ],
+      { cwd: repoPath, windowsHide: true, ...gitPathListExec },
+    );
+    return [
+      ...new Set(
+        [...parsePorcelainPaths(out), ...listHiddenIndexPaths(repoPath)].filter(
+          (rel) => !isGitNexusManagedPath(rel),
+        ),
+      ),
+    ];
+  } catch {
+    return null;
   }
 };
 

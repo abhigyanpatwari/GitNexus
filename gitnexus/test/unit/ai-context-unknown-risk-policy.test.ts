@@ -31,6 +31,9 @@ describe('generateGitNexusContent keeps the risk: UNKNOWN policy unconditional (
 
       expect(content).toContain('MUST treat `risk: UNKNOWN` as unresolved, not as low.');
       expect(content).toContain(
+        'never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning',
+      );
+      expect(content).toContain(
         'callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls)',
       );
       expect(content).toContain('`impact` pairs `UNKNOWN` with a `riskNote` saying so');

@@ -37,6 +37,15 @@ export const zhCN = {
   'status.workspaceIndexLabel':
     "工作区索引：最近在 '{{primary}}' 分支上分析（重新运行 gitnexus analyze 以跟随当前分支）",
   'status.status': '状态',
+  'status.indexContentCurrent': '索引内容：与覆盖的全部 {{count}} 个文件一致',
+  'status.indexContentDrifted':
+    '索引内容：{{changed}} 个已修改，{{added}} 个新增，{{deleted}} 个已删除',
+  'status.indexContentMore': '  ……另有 {{count}} 个 {{label}}',
+  'status.indexContentUnmeasurable': '索引内容：无法比对（{{reason}}），已回退到工作区检查',
+  'status.indexContentScanFailed': '索引内容：覆盖扫描失败，按过期处理',
+  'status.driftChanged': '已修改',
+  'status.driftAdded': '新增',
+  'status.driftDeleted': '已删除',
   'status.upToDate': '✅ 已是最新',
   'status.stale': '⚠️ 已过期（重新运行 gitnexus analyze）',
   'clean.deleteAll': '将删除 {{count}} 个仓库的 GitNexus 索引：',
@@ -203,6 +212,8 @@ export const zhCN = {
   'help.option.analyze.embeddingBatchSize': '每个嵌入批次的节点数',
   'help.option.analyze.embeddingSubBatchSize': '每次嵌入模型调用的分块数',
   'help.option.analyze.embeddingDevice': '嵌入设备：auto、cpu、dml、cuda 或 wasm',
+  'help.option.analyze.watch': '监视本地源文件变更并串行执行增量刷新',
+  'help.option.analyze.debounce': '刷新前的静默等待时间（毫秒）',
   'help.option.index.force': '即使缺少索引元数据也注册（统计为空）',
   'help.option.index.allowNonGit': '允许注册非 Git 仓库文件夹',
   'help.option.port': '端口号',
@@ -211,7 +222,7 @@ export const zhCN = {
   'help.option.mcp.host':
     'HTTP 绑定地址（仅与 --http 搭配使用）。默认：127.0.0.1（回环）。使用 0.0.0.0 向所有接口开放。',
   'help.option.mcp.authToken':
-    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
+    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置，该变量同时为 gitnexus serve 的 /api/mcp 路由启用 MCP Bearer 认证。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',

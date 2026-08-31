@@ -285,6 +285,18 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
+   * Coverage policy used when `fileHashes` was recorded. `status` replays it
+   * so analyze-time `--max-file-size` / `GITNEXUS_MAX_FILE_SIZE` cannot make
+   * a later default-cap walk drop a file the index actually covers.
+   * `dirtyPaths` are covered files that were dirty vs HEAD at that moment —
+   * status must re-hash those even after Git becomes clean (indexed-dirty then
+   * restore). Absent on indexes written before this field.
+   */
+  indexCoverage?: {
+    maxFileSizeBytes: number;
+    dirtyPaths?: string[];
+  };
+  /**
    * Set when a run finished but the persisted edge count came back far short
    * of what the pipeline produced — the B2 "refresh reports SUCCESS while the
    * index is unusable" failure (observed as edges collapsing 23009 -> 2170,
