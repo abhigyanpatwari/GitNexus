@@ -6,10 +6,12 @@
  * does is skip the tree-sitter worker dispatch when a chunk's contents
  * haven't changed since the last run.
  *
- * Granularity: chunk-level. The parse phase chunks files into ~20MB byte
- * budgets. The cache key is `sha256(joined(filePath:contentHash for each
- * file in the chunk, sorted))`. A change to a single file invalidates only
- * that file's chunk — typically 1 of ~50 chunks on a 1000-file repo.
+ * Granularity: chunk-level. Files are assigned to a stable
+ * `(language, hash(path) mod 128)` bucket, then packed to a 2 MiB (or
+ * operator) byte budget *inside* that bucket. Membership does not depend
+ * on worker count. The cache key is `sha256(joined(filePath:contentHash
+ * for each file in the chunk, sorted))`. A content edit invalidates only
+ * that file's pack; add/delete/rename only the affected bucket.
  *
  * Why not per-file:
  * - Workers process sub-batches and emit aggregated `ParseWorkerResult`s.
@@ -27,7 +29,9 @@ import { createRequire } from 'module';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
+import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sidecar.js';
 
 /**
  * Cache version composed of:
@@ -631,11 +635,21 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the re-check line below is for, and why it says AT MERGE rather than
 // when you pick the number.
 //
-// 77 is free at this merge: origin/main is 76, and the open PRs touching this
-// constant are #2840 (a stale 71) and #1616 (a stale 2). Scan with the contents
-// API at each PR head, not `gh pr diff` — that exits non-zero on an
-// inaccessible fork and prints nothing, so a grep over its output skips the PR
-// silently. #2840 was missed exactly that way this round.
+// 78 was claimed concurrently by #3060 while this branch was in review. Both
+// branches keep the same package version, so sharing 78 would replay
+// incompatible worker output without a textual merge conflict. This branch
+// therefore takes 79, the next free value above origin/main and every open PR
+// found by the contents-API scan at their exact head SHAs.
+//
+// 79 -> 80 for #3088: parse-cache membership is `(language, sha256(path) mod
+// 128)` then the byte budget *inside* that bucket. Worker count is no longer a
+// membership input, so a warm v79 cache keyed sequential scan-order packs (and
+// on multi-worker hosts, pool×2 MiB mega-chunks) must miss. Sidecar-era
+// ParsedFile stores (#3086/#3087) share PARSE_CACHE_VERSION, so both stores
+// invalidate in lockstep. origin/main at allocation is 79; open PRs that still
+// touch gitnexus/src/storage/parse-cache.ts claim 78 (#3060), 71 (#2840), and
+// 2 (#1616) — none claim 80. RE-CHECK AGAINST origin/main AND OPEN PRs
+// IMMEDIATELY BEFORE MERGING.
 //
 // WHY THIS IS STILL A HAND-PICKED NUMBER, when `SCHEMA_FINGERPRINT` next door
 // is a derived sha256 that cannot collide. The derivation exists and already
@@ -656,11 +670,19 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
 //
-// 77 -> 78 merges the fork Objective-C semantic graph side-channel with
-// upstream's v77 cache payload. A warm cache from either parent must miss:
-// v69 lacks upstream route/Convex/object-literal captures, and v77 lacks the
-// Objective-C provider-owned graph facts.
-const SCHEMA_BUMP = 78;
+// 80 -> 81: ParsedFile and parse-cache shards are one immutable `.v8` envelope
+// each (no JSON/path/generation siblings). A v80 index still names `.json`
+// keys and would skip workers while scope-resolution found nothing — the
+// #1983 main-thread reparse. origin/main at allocation is 80.
+// 81 -> 82: Java and Kotlin ParsedFile capture side channels now carry
+// programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
+// would skip workers and silently omit the new INJECTS edges. origin/main at
+// allocation is 81.
+// 82 -> 83 merges the fork's Objective-C semantic graph side-channel with
+// upstream's v82 payload. A warm cache from either parent must miss: v82 lacks
+// the Objective-C provider-owned graph facts, while v78 lacks the V8 envelope
+// and Spring dynamic-lookup captures added upstream.
+const SCHEMA_BUMP = 83;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -685,6 +707,58 @@ const GITNEXUS_PKG_VERSION = (() => {
   return '0.0.0-unknown';
 })();
 export const PARSE_CACHE_VERSION = `${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}`;
+
+/** SHA-256 hex of a string or buffer (paths for bucket ids, contents for cache keys). */
+const sha256Hex = (input: Buffer | string): string =>
+  createHash('sha256')
+    .update(typeof input === 'string' ? Buffer.from(input) : input)
+    .digest('hex');
+
+/** Stable parse-cache bucket count (#3088). Changing this requires SCHEMA_BUMP. */
+export const PARSE_CACHE_BUCKET_COUNT = 128;
+
+/** Bucket id for cache membership: `sha256(path) mod N` without IEEE-754 truncation. */
+export const parseCacheBucketId = (filePath: string): number =>
+  Number(BigInt(`0x${sha256Hex(filePath)}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
+
+export type ParseCachePackFile = { path: string; size: number; language: string };
+
+/**
+ * Pack files into parse-cache chunks: group by (language, bucket id), sort
+ * paths inside the group, then cut at `byteBudget`. Bucket visit order is
+ * the lexicographic order of `${language}\\0${bucketId}` keys (deterministic,
+ * independent of scan order and worker count).
+ */
+export const packParseCacheChunks = (
+  files: readonly ParseCachePackFile[],
+  byteBudget: number,
+): string[][] => {
+  const buckets = new Map<string, ParseCachePackFile[]>();
+  for (const file of files) {
+    const key = `${file.language}\0${parseCacheBucketId(file.path)}`;
+    const list = buckets.get(key);
+    if (list) list.push(file);
+    else buckets.set(key, [file]);
+  }
+  const chunks: string[][] = [];
+  for (const key of [...buckets.keys()].sort()) {
+    const group = buckets.get(key)!;
+    group.sort((a, b) => compareCodeUnits(a.path, b.path));
+    let current: string[] = [];
+    let bytes = 0;
+    for (const file of group) {
+      if (current.length > 0 && bytes + file.size > byteBudget) {
+        chunks.push(current);
+        current = [];
+        bytes = 0;
+      }
+      current.push(file.path);
+      bytes += file.size;
+    }
+    if (current.length > 0) chunks.push(current);
+  }
+  return chunks;
+};
 
 const LEGACY_CACHE_FILENAME = 'parse-cache.json';
 const CACHE_DIRNAME = 'parse-cache';
@@ -729,12 +803,6 @@ export interface ParseCache {
   /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
   onDiskKeys?: Set<string>;
 }
-
-/** SHA-256 hex of a single string or buffer. */
-const sha256Hex = (input: Buffer | string): string =>
-  createHash('sha256')
-    .update(typeof input === 'string' ? Buffer.from(input) : input)
-    .digest('hex');
 
 /** Stable hash of a single file's contents — used by callers to compose a chunk hash. */
 export const fileContentHash = (content: Buffer | string): string => sha256Hex(content);
@@ -850,7 +918,7 @@ const getCacheIndexPath = (storagePath: string): string =>
   path.join(getCacheDirPath(storagePath), CACHE_INDEX_FILENAME);
 
 const getCacheChunkPath = (storagePath: string, chunkHash: string): string =>
-  path.join(getCacheDirPath(storagePath), `${chunkHash}.json`);
+  path.join(getCacheDirPath(storagePath), `${chunkHash}.v8`);
 
 /**
  * Drop fields that are not replayed by `mergeChunkResults` / parse-impl after
@@ -881,9 +949,12 @@ const readParseCacheChunkFromDisk = async (
 ): Promise<ParseWorkerResult[] | undefined> => {
   if (!isValidChunkCacheKey(chunkHash)) return undefined;
   try {
-    const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
-    const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
-    return Array.isArray(chunkData) ? chunkData : undefined;
+    const chunkPath = getCacheChunkPath(storagePath, chunkHash);
+    const v8Hit = await tryLoadV8Cache(chunkPath);
+    if (v8Hit?.kind === 'hit' && Array.isArray(v8Hit.value)) {
+      return v8Hit.value as ParseWorkerResult[];
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -926,8 +997,17 @@ export const persistParseCacheChunk = async (
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
     }
-    const payload = JSON.stringify(slim, mapReplacer);
-    await fs.writeFile(getCacheChunkPath(cache.storagePath, chunkHash), payload, 'utf-8');
+    const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
+    let ok = await writeV8CacheFile(chunkPath, slim);
+    if (!ok) {
+      await fs.mkdir(cacheDir, { recursive: true });
+      createdCacheDirs.add(cacheDir);
+      ok = await writeV8CacheFile(chunkPath, slim);
+    }
+    if (!ok) {
+      cache.entries.set(chunkHash, slim);
+      return;
+    }
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
     cache.entries.delete(chunkHash);
@@ -1030,25 +1110,17 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   // index from what we persisted, not from the raw usedKeys snapshot.
   const writtenKeys: string[] = [];
   for (const chunkHash of keys) {
-    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
+    const chunkPath = path.join(tmpDir, `${chunkHash}.v8`);
     const inMemory = cache.entries.get(chunkHash);
     if (inMemory !== undefined) {
-      let payload: string;
-      try {
-        payload = JSON.stringify(inMemory, mapReplacer);
-      } catch {
-        continue;
+      if (await writeV8CacheFile(chunkPath, inMemory)) {
+        writtenKeys.push(chunkHash);
       }
-      await fs.writeFile(chunkPath, payload, 'utf-8');
-      writtenKeys.push(chunkHash);
       continue;
     }
     const existingPath = getCacheChunkPath(storagePath, chunkHash);
-    try {
-      await fs.copyFile(existingPath, chunkPath);
+    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
       writtenKeys.push(chunkHash);
-    } catch {
-      /* shard missing — skip; next run treats as cache miss */
     }
   }
 

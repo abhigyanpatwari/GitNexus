@@ -21,7 +21,7 @@
  * `isMissingFilesystemError`) so every existing import site keeps working
  * unchanged.
  *
- * Imports `node:fs`/`node:path` and two type-only shapes. Keep it that way: a
+ * Imports `node:fs`/`node:path` and a few type-only summary shapes. Keep it that way: a
  * value import here would land in every consumer of `storage/`.
  */
 
@@ -30,6 +30,7 @@ import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { resolveStoragePath } from './storage-resolver.js';
+import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
 
 /** The `.gitnexus` directory name, relative to a repo root. */
 export const GITNEXUS_DIR = '.gitnexus';
@@ -257,6 +258,21 @@ export interface RepoMeta {
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
+   * Files omitted from scope-resolution because their provider capture or
+   * extraction step threw. The rest of each file may still be present in the
+   * graph, so this is an index-completeness signal rather than a parse failure.
+   * Absent means the successful run recorded no such omission; older indexes
+   * also read as absent until re-analyzed.
+   */
+  scopeExtractionFailures?: ScopeExtractionFailureSummary;
+  /**
+   * Completeness receipt for scope extraction in the successful run represented
+   * by this metadata. A missing or different value means completeness is
+   * unknown (legacy, malformed, or unreadable metadata), not that zero files
+   * were omitted.
+   */
+  scopeExtractionReceipt?: 1;
+  /**
    * Interfaces whose structural-satisfaction check this run could not COMPLETE
    * (#2873) — not interfaces found to have no implementors.
    *
@@ -279,6 +295,18 @@ export interface RepoMeta {
    * Map keys are repo-relative paths.
    */
   fileHashes?: Record<string, string>;
+  /**
+   * Coverage policy used when `fileHashes` was recorded. `status` replays it
+   * so analyze-time `--max-file-size` / `GITNEXUS_MAX_FILE_SIZE` cannot make
+   * a later default-cap walk drop a file the index actually covers.
+   * `dirtyPaths` are covered files that were dirty vs HEAD at that moment —
+   * status must re-hash those even after Git becomes clean (indexed-dirty then
+   * restore). Absent on indexes written before this field.
+   */
+  indexCoverage?: {
+    maxFileSizeBytes: number;
+    dirtyPaths?: string[];
+  };
   /**
    * Set when a run finished but the persisted edge count came back far short
    * of what the pipeline produced — the B2 "refresh reports SUCCESS while the

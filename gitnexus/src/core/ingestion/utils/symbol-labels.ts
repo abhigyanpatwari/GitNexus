@@ -13,8 +13,8 @@ import type { NodeLabel } from 'gitnexus-shared';
  * Single source of truth so the set can't silently drift the way the inline copy
  * did in #2379.
  *
- * NOTE: `group/extractors/manifest-extractor.ts`'s `CUSTOM_CONTRACT_RESOLVE_QUERY`
- * carries a near-identical hand-list that is intentionally a SUBSET — it excludes
+ * NOTE: group extractor queries in `manifest-extractor.ts` and `graphql-extractor.ts`
+ * carry near-identical hand-lists that are intentionally SUBSETS — they exclude
  * `Namespace`, `Variable`, `Module`. Unifying the two needs a contract-resolution
  * behavior check (would widen which nodes resolve as contract symbols), so it is
  * deliberately left separate for now.

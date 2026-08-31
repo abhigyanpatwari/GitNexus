@@ -2578,7 +2578,11 @@ export const DELETE_FILES_CHUNK_SIZE = 200;
  */
 export const deleteNodesForFiles = async (
   filePaths: readonly string[],
-  options: { onChunk?: (filesDone: number, filesTotal: number) => void } = {},
+  options: {
+    onChunk?: (filesDone: number, filesTotal: number) => void;
+    /** When set, only these node tables are DETACH DELETEd (#3016). */
+    nodeTables?: readonly string[];
+  } = {},
 ): Promise<void> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -2622,7 +2626,8 @@ export const deleteNodesForFiles = async (
         );
       }
     }
-    for (const tableName of NODE_TABLES) {
+    const tables = options.nodeTables ?? NODE_TABLES;
+    for (const tableName of tables) {
       // Community/Process are graph-wide (no filePath); the orchestrator
       // drops them wholesale via deleteAllCommunitiesAndProcesses.
       if (tableName === 'Community' || tableName === 'Process') continue;
@@ -2635,6 +2640,185 @@ export const deleteNodesForFiles = async (
     options.onChunk?.(
       Math.min((chunkIndex + 1) * DELETE_FILES_CHUNK_SIZE, filePaths.length),
       filePaths.length,
+    );
+  }
+};
+
+/**
+ * Which of `candidateTables` currently hold at least one row for `filePaths`.
+ *
+ * The incremental writeback uses this to decide which FTS-backed tables it is
+ * about to DML (#3016). It has to be a question about the DB, not about the
+ * freshly built graph: an edit that DELETES the last Rust trait in a file
+ * leaves no Trait node in the new graph, but the old row is still in the index
+ * and still has to be deleted — and its FTS index still has to come down first.
+ */
+export const nodeTablesWithRowsForFiles = async (
+  filePaths: readonly string[],
+  candidateTables: readonly string[],
+): Promise<Set<string>> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const found = new Set<string>();
+  return withConnLock(async () => {
+    for (const batch of chunk(filePaths, DELETE_FILES_CHUNK_SIZE)) {
+      const listLiteral = `[${batch.map((p) => formatCypherValue(p)).join(', ')}]`;
+      for (const tableName of candidateTables) {
+        // Graph-wide tables have no filePath column to filter on.
+        if (tableName === 'Community' || tableName === 'Process') continue;
+        if (found.has(tableName)) continue;
+        // determinism: probe — asks only whether the table has any row for
+        // these files, so which row comes back cannot change the answer.
+        const queryResult = await c.query(
+          `MATCH (n:${escapeTableName(tableName)}) WHERE n.filePath IN ${listLiteral} ` +
+            `RETURN n.id LIMIT 1`,
+        );
+        try {
+          const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+          if ((await result.getAll()).length > 0) found.add(tableName);
+        } finally {
+          await closeQueryResults(queryResult);
+        }
+      }
+    }
+    return found;
+  });
+};
+
+/**
+ * The graph-wide derived edges and the node table each one points at. Both are
+ * produced by the derived phases (Leiden, flow extraction) rather than by
+ * parsing, which is why an incremental run that skips those phases has to carry
+ * them across the writeback itself.
+ */
+const DERIVED_REL_KINDS = [
+  { type: 'MEMBER_OF', targetLabel: 'Community' },
+  { type: 'STEP_IN_PROCESS', targetLabel: 'Process' },
+  { type: 'ENTRY_POINT_OF', targetLabel: 'Process' },
+] as const;
+
+/**
+ * One MEMBER_OF / STEP_IN_PROCESS edge, carrying everything needed to recreate
+ * it byte-for-byte: both endpoint labels (so the re-MATCH is label-scoped
+ * rather than a scan of every node) and every column of the relationship
+ * table, `step` included — process traces order by it (`ORDER BY r.step`), so
+ * an edge restored without it silently scrambles the flow it belongs to.
+ */
+export interface DerivedRelSnapshot {
+  sourceId: string;
+  sourceLabel: string;
+  targetId: string;
+  targetLabel: string;
+  type: string;
+  confidence: number;
+  reason: string;
+  step: number;
+}
+
+/**
+ * Capture the MEMBER_OF / STEP_IN_PROCESS / ENTRY_POINT_OF edges owned by `filePaths`, before a
+ * surgical incremental write DETACH DELETEs their file-side endpoints (#3016).
+ *
+ * Only meaningful on the write plan that keeps the persisted Community/Process
+ * nodes: those nodes survive the delete, but the edges tying this run's changed
+ * files to them do not, and the pipeline did not re-derive them.
+ *
+ * Both endpoints are matched by an EXPLICIT label — `sourceTables` on one side,
+ * the edge type's fixed target table on the other — so the labels come from the
+ * query rather than the rows. `labels(n)[0]` over an unlabelled match returns
+ * an empty string on this engine, which silently produced a snapshot that
+ * restored nothing.
+ *
+ * Read failures propagate. This runs against a warm index whose derived tables
+ * the caller has already established exist, so a failure here is a real fault —
+ * and swallowing it would drop the edges silently, which looks identical to a
+ * repo that genuinely has no communities.
+ */
+export const snapshotDerivedRelsForFiles = async (
+  filePaths: readonly string[],
+  sourceTables: readonly string[],
+): Promise<DerivedRelSnapshot[]> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const out: DerivedRelSnapshot[] = [];
+  return withConnLock(async () => {
+    for (const batch of chunk(filePaths, DELETE_FILES_CHUNK_SIZE)) {
+      const listLiteral = `[${batch.map((p) => formatCypherValue(p)).join(', ')}]`;
+      for (const sourceLabel of sourceTables) {
+        if (sourceLabel === 'Community' || sourceLabel === 'Process') continue;
+        for (const { type, targetLabel } of DERIVED_REL_KINDS) {
+          const queryResult = await c.query(
+            `MATCH (n:${escapeTableName(sourceLabel)})-[r:${REL_TABLE_NAME}]->` +
+              `(m:${escapeTableName(targetLabel)}) ` +
+              `WHERE n.filePath IN ${listLiteral} AND r.type = ${formatCypherValue(type)} ` +
+              `RETURN n.id AS sourceId, m.id AS targetId, ` +
+              `r.confidence AS confidence, r.reason AS reason, r.step AS step`,
+          );
+          try {
+            const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+            for (const row of await result.getAll()) {
+              const rec = row as Record<string, unknown>;
+              if (typeof rec.sourceId !== 'string' || typeof rec.targetId !== 'string') continue;
+              out.push({
+                sourceId: rec.sourceId,
+                sourceLabel,
+                targetId: rec.targetId,
+                targetLabel,
+                type,
+                confidence: typeof rec.confidence === 'number' ? rec.confidence : 1.0,
+                reason: typeof rec.reason === 'string' ? rec.reason : '',
+                step:
+                  typeof rec.step === 'number'
+                    ? rec.step
+                    : typeof rec.step === 'bigint'
+                      ? Number(rec.step)
+                      : 0,
+              });
+            }
+          } finally {
+            await closeQueryResults(queryResult);
+          }
+        }
+      }
+    }
+    return out;
+  });
+};
+
+/**
+ * Re-create the edges captured by `snapshotDerivedRelsForFiles`, after the
+ * incremental subgraph load has put their file-side endpoints back.
+ *
+ * Endpoints are matched by label + id, mirroring `fallbackRelationshipInserts`:
+ * an unlabelled `MATCH (a), (b)` is a cartesian product over the whole graph
+ * and does not finish on a real index. An endpoint the load did not restore
+ * simply matches nothing, so the edge is dropped rather than mis-attached.
+ */
+export const restoreDerivedRels = async (rels: readonly DerivedRelSnapshot[]): Promise<void> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  if (rels.length === 0) return;
+  const escapeLabel = (label: string): string =>
+    BACKTICK_TABLES.has(label) ? `\`${label}\`` : label;
+  // No outer `withConnLock`: `queryAndDrain` takes the lock per statement, and
+  // wrapping the loop as well trips the re-entry guard in conn-lock.ts. Same
+  // shape as `fallbackRelationshipInserts`, the other per-edge CREATE loop.
+  for (const rel of rels) {
+    if (!NODE_TABLES.includes(rel.sourceLabel as NodeTableName)) continue;
+    if (!NODE_TABLES.includes(rel.targetLabel as NodeTableName)) continue;
+    await queryAndDrain(
+      c,
+      `MATCH (a:${escapeLabel(rel.sourceLabel)} {id: ${formatCypherValue(rel.sourceId)}}), ` +
+        `(b:${escapeLabel(rel.targetLabel)} {id: ${formatCypherValue(rel.targetId)}}) ` +
+        `CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(rel.type)}, ` +
+        `confidence: ${rel.confidence}, reason: ${formatCypherValue(rel.reason)}, ` +
+        `step: ${rel.step}}]->(b)`,
     );
   }
 };

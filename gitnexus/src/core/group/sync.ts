@@ -8,8 +8,12 @@ import {
   getMaxResidentRepos,
 } from '../lbug/pool-adapter.js';
 import {
+  findRegistryEntryByName,
+  canonicalizePath,
+  registryPathEquals,
   readRegistry,
   readRegistryStrict,
+  RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
 import type {
@@ -22,6 +26,7 @@ import type {
   MatchType,
 } from './types.js';
 import { HttpRouteExtractor } from './extractors/http-route-extractor.js';
+import { GraphqlExtractor } from './extractors/graphql-extractor.js';
 import { GrpcExtractor } from './extractors/grpc-extractor.js';
 import { ThriftExtractor } from './extractors/thrift-extractor.js';
 import { TopicExtractor } from './extractors/topic-extractor.js';
@@ -127,9 +132,19 @@ export function stableRepoPoolId(entry: RegistryEntry, allEntries: RegistryEntry
   return base;
 }
 
+/** Operator copy for group sync — unique `--name`, not a path in yaml. */
+export function formatGroupSyncAmbiguousError(err: RegistryAmbiguousTargetError): string {
+  const listing = err.matches.map((m) => `  - ${m.path}`).join('\n');
+  return (
+    `Multiple registered repos are named "${err.target}":\n${listing}\n` +
+    `Give each clone a unique registry name with \`gitnexus analyze --name\`, then re-sync. ` +
+    `Do not put a filesystem path in group.yaml.`
+  );
+}
+
 function defaultResolveHandle(allEntries: RegistryEntry[]) {
   return async (registryName: string, groupPath: string): Promise<RepoHandle | null> => {
-    const e = allEntries.find((en) => en.name === registryName);
+    const e = findRegistryEntryByName(allEntries, registryName);
     if (!e) return null;
     const poolId = stableRepoPoolId(e, allEntries);
     return {
@@ -276,7 +291,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // Group-path → pool identity for repos that successfully initialized. Drives
   // windowed manifest resolution below (re-init + lease per window). Keyed by
   // group path because manifest links reference repos by group path.
-  const repoHandles = new Map<string, { poolId: string; lbugPath: string }>();
+  const repoHandles = new Map<string, { poolId: string; lbugPath: string; repoPath: string }>();
+  // Keep resolved disk paths even when extraction fails and removes the
+  // corresponding handle; workspace discovery does not need a readable index.
+  const resolvedRepoPaths = new Map<string, string>();
   // Every eviction lease this sync holds. Window loops release their own leases
   // (bounding residency); this set is the defensive outer-finally sweep —
   // release disposers are idempotent, so double-release is a safe no-op.
@@ -294,7 +312,13 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       registryEntries = await readRegistryStrict();
       const entries = registryEntries;
       const resolve = opts?.resolveRepoHandle ?? defaultResolveHandle(entries);
+      if (!opts?.resolveRepoHandle) {
+        for (const regName of Object.values(config.repos)) {
+          findRegistryEntryByName(entries, regName);
+        }
+      }
       const httpEx = new HttpRouteExtractor();
+      const graphqlEx = new GraphqlExtractor();
       const grpcEx = new GrpcExtractor();
       const thriftEx = new ThriftExtractor();
       const topicEx = new TopicExtractor();
@@ -306,6 +330,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           missingRepos.push(groupPath);
           continue;
         }
+        resolvedRepoPaths.set(groupPath, handle.repoPath);
 
         const poolId = handle.id;
         const lbugPath = path.join(handle.storagePath, 'lbug');
@@ -325,7 +350,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // resolution no longer reuses these executors — it re-inits + leases
           // each repo per window (see windowed resolution below, issue #2189).
           // Record the pool identity so windowed resolution can re-init.
-          repoHandles.set(groupPath, { poolId, lbugPath });
+          repoHandles.set(groupPath, { poolId, lbugPath, repoPath: handle.repoPath });
 
           const executor: CypherExecutor = (query, params) =>
             executeParameterized(poolId, query, params ?? {});
@@ -334,6 +359,17 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
           if (config.detect.http) {
             const extracted = await httpEx.extract(executor, handle.repoPath, handle);
+            for (const c of extracted) {
+              repoContracts.push({
+                ...c,
+                repo: groupPath,
+                service: assignService(c.symbolRef.filePath, boundaries),
+              });
+            }
+          }
+
+          if (config.detect.graphql === true) {
+            const extracted = await graphqlEx.extract(executor, handle.repoPath, handle);
             for (const c of extracted) {
               repoContracts.push({
                 ...c,
@@ -396,7 +432,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
               lastCommit: m.lastCommit || '',
             };
           } catch {
-            const e = entries.find((en) => en.name === regName);
+            const resolvedHandlePath = canonicalizePath(handle.repoPath);
+            const e = entries.find((en) =>
+              registryPathEquals(canonicalizePath(en.path), resolvedHandlePath),
+            );
             repoSnapshots[groupPath] = {
               indexedAt: e?.indexedAt || '',
               lastCommit: e?.lastCommit || '',
@@ -418,6 +457,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // read. The loop bounds the append by memory instead.
           for (const contract of repoContracts) autoContracts.push(contract);
         } catch (err) {
+          if (err instanceof RegistryAmbiguousTargetError) throw err;
           // This spans initLbug plus all contract extraction for the repo. The
           // error used to be discarded entirely, so the only trace of (say) a
           // storage-version mismatch was an empty contracts.json and a later
@@ -452,7 +492,13 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const repoPaths = new Map<string, string>();
       if (!registryEntries) registryEntries = await readRegistry();
       for (const [groupPath, regName] of Object.entries(config.repos)) {
-        const e = registryEntries.find((en) => en.name === regName);
+        const resolvedPath = resolvedRepoPaths.get(groupPath);
+        if (resolvedPath) {
+          repoPaths.set(groupPath, resolvedPath);
+          continue;
+        }
+        if (opts?.resolveRepoHandle) continue;
+        const e = findRegistryEntryByName(registryEntries, regName);
         if (e) repoPaths.set(groupPath, e.path);
       }
 

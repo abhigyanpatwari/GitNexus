@@ -56,6 +56,8 @@ export interface WorkerExtractedData {
    * finalize-orchestrator.
    */
   parsedFiles: ParsedFile[];
+  /** Scope-extraction omissions represented by this worker/cache result. */
+  scopeExtractionFailures: string[];
 }
 
 type ParsedGraphNode = ParseWorkerResult['nodes'][number];
@@ -126,6 +128,7 @@ export const mergeChunkResults = (
   const allORMQueries: ExtractedORMQuery[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
   const allParsedFiles: ParsedFile[] = [];
+  const scopeExtractionFailures: string[] = [];
 
   for (const result of chunkResults) {
     // Worker jobs and input files are already merged in stable start-index/path
@@ -178,6 +181,9 @@ export const mergeChunkResults = (
     if (result.fileScopeBindings)
       for (const item of result.fileScopeBindings) fileScopeBindingsByFile.push(item);
     if (result.parsedFiles) for (const item of result.parsedFiles) allParsedFiles.push(item);
+    for (const filePath of result.scopeExtractionFailures ?? []) {
+      scopeExtractionFailures.push(filePath);
+    }
   }
 
   return {
@@ -195,6 +201,7 @@ export const mergeChunkResults = (
     springTypes: allSpringTypes,
     fileScopeBindings: fileScopeBindingsByFile,
     parsedFiles: allParsedFiles,
+    scopeExtractionFailures,
   };
 };
 

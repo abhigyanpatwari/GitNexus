@@ -33,8 +33,9 @@ const {
   createSearchFTSIndexes,
   getSearchFTSStemmer,
   initialiseSearchFTSStemmer,
+  missingSearchFTSIndexTables,
 } = await import('../../src/core/search/fts-indexes.js');
-const { FTS_INDEXES } = await import('../../src/core/search/fts-schema.js');
+const { FTS_INDEXES, getFtsIndexes } = await import('../../src/core/search/fts-schema.js');
 const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 
 /** SHOW_INDEXES rows covering every configured FTS index's expected properties. */
@@ -63,6 +64,26 @@ describe('createSearchFTSIndexes', () => {
       `create:${i.table}.${i.indexName}:porter`,
     ]);
     expect(calls).toEqual(expected);
+  });
+
+  it('rebuilds only the requested tables when options.tables is set (#3016)', async () => {
+    await createSearchFTSIndexes({ tables: new Set(['File', 'Function']) });
+    expect(calls).toEqual([
+      'drop:File.file_fts',
+      'create:File.file_fts:porter',
+      'drop:Function.function_fts',
+      'create:Function.function_fts:porter',
+    ]);
+  });
+
+  it('applies the table filter within the selected content-retention profile', async () => {
+    await createSearchFTSIndexes({
+      indexes: getFtsIndexes('name-only'),
+      tables: new Set(['Function']),
+    });
+
+    expect(calls).toEqual(['drop:Function.function_fts', 'create:Function.function_fts:porter']);
+    expect(createFTSIndex).toHaveBeenCalledWith('Function', 'function_fts', ['name'], 'porter');
   });
 
   it('invokes onIndexStart/onIndexReady once per index', async () => {
@@ -193,6 +214,32 @@ describe('buildSearchIndexesOrDegrade', () => {
     const failed = `${FTS_INDEXES[0].table}.${FTS_INDEXES[0].indexName}`;
     expect(result.error).toContain(`${failed} (${POISON})`);
     expect(result.error).not.toContain('missing indexes');
+  });
+});
+
+describe('missingSearchFTSIndexTables (#3016)', () => {
+  const catalogRow = (i: { table: string; indexName: string }) => ({
+    table_name: i.table,
+    index_name: i.indexName,
+  });
+
+  it('reports nothing missing when the catalog carries every configured index', async () => {
+    const missing = await missingSearchFTSIndexTables(FTS_INDEXES.map(catalogRow));
+    expect(missing).toEqual(new Set());
+  });
+
+  it('names every table when the catalog is empty (a prior escalation dropped them all)', async () => {
+    const missing = await missingSearchFTSIndexTables([]);
+    expect(missing).toEqual(new Set(FTS_INDEXES.map((i) => i.table)));
+  });
+
+  it('names only the tables whose index is absent', async () => {
+    const rows = FTS_INDEXES.filter((i) => i.table !== 'Function').map(catalogRow);
+    expect(await missingSearchFTSIndexTables(rows)).toEqual(new Set(['Function']));
+  });
+
+  it('answers undefined when the catalog could not be read, so callers do not narrow', async () => {
+    expect(await missingSearchFTSIndexTables(undefined)).toBeUndefined();
   });
 });
 

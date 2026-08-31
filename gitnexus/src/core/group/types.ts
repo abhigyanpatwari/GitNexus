@@ -1,4 +1,15 @@
-export type ContractType = 'http' | 'grpc' | 'thrift' | 'topic' | 'lib' | 'custom' | 'include';
+import type { ImpactRisk, ImpactRiskResult } from 'gitnexus-shared';
+
+export type ContractType =
+  | 'http'
+  | 'graphql'
+  | 'grpc'
+  | 'thrift'
+  | 'topic'
+  | 'lib'
+  | 'custom'
+  | 'include';
+export type ManifestContractType = Exclude<ContractType, 'graphql'>;
 export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
@@ -16,13 +27,14 @@ export interface GroupConfig {
 export interface GroupManifestLink {
   from: string;
   to: string;
-  type: ContractType;
+  type: ManifestContractType;
   contract: string;
   role: ContractRole;
 }
 
 export interface DetectConfig {
   http: boolean;
+  graphql?: boolean;
   grpc: boolean;
   thrift: boolean;
   topics: boolean;
@@ -32,11 +44,12 @@ export interface DetectConfig {
 
 export interface MatchingConfig {
   /**
-   * HTTP paths to exclude from cross-link matching. Contracts at these paths
+   * HTTP paths or GraphQL root fields to exclude from cross-link matching. Contracts at these paths
    * are still extracted and visible in the registry, but they don't produce
    * cross-repo links. Useful for health-check endpoints (`/ping`, `/health`)
    * that every service exposes and would otherwise create N×M false links.
-   * Trailing slashes are normalized before comparison.
+   * Trailing slashes are normalized before comparison. GraphQL fields may be
+   * written as `health` or `/health`.
    * @default []
    */
   exclude_links_paths?: string[];
@@ -183,7 +196,17 @@ export interface GroupImpactResult {
     modules_affected: number;
     cross_repo_hits: number;
   };
-  risk: string;
+  risk: ImpactRisk;
+  /**
+   * Two-axis (direct + total) risk from the local leg, then `mergeRisk` with
+   * crossings — compare File vs symbol here, not via top-level `risk`.
+   */
+  riskSharedAxes?: ImpactRisk;
+  /**
+   * Local-leg scale metadata (File / skipped enrichment). Crossings do not
+   * invent process/module membership for File nodes.
+   */
+  riskScale?: ImpactRiskResult['riskScale'];
   /**
    * `'lower-bound'` when the fan-out was cut short, so `risk` is a FLOOR, not a
    * verdict. Same vocabulary as single-repo `impact`'s `epistemic` field.

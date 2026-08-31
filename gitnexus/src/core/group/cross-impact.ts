@@ -5,6 +5,7 @@
 
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import type { ImpactRisk } from 'gitnexus-shared';
 import type {
   BridgeHandle,
   BridgeMeta,
@@ -243,6 +244,17 @@ async function resolveGroupRepo(
 ): Promise<GroupRepoHandle | { error: string }> {
   const registryName = config.repos[repoPath];
   if (!registryName) {
+    const matchingMemberPaths = Object.entries(config.repos)
+      .filter(([, alias]) => alias.toLowerCase() === repoPath.toLowerCase())
+      .map(([memberPath]) => memberPath);
+    if (matchingMemberPaths.length > 0) {
+      return {
+        error:
+          `Unknown repo path "${repoPath}" in this group. ` +
+          `That value is a registry alias for member path(s): ${matchingMemberPaths.join(', ')}. ` +
+          `Pass the group.yaml key to --repo, not the alias.`,
+      };
+    }
     return { error: `Unknown repo path "${repoPath}" in this group.` };
   }
   try {
@@ -381,7 +393,17 @@ function extractProcessNames(impact: unknown): string[] {
 // permanently that a PDG `risk:'UNKNOWN'` never coalesces to a confident `LOW`.
 // No behavior change — `'UNKNOWN'` was already handled correctly at the
 // `(localRisk === 'LOW' || localRisk === 'UNKNOWN')` branch below.
-export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
+function asImpactRisk(value: unknown, fallback: ImpactRisk = 'LOW'): ImpactRisk {
+  return value === 'LOW' ||
+    value === 'MEDIUM' ||
+    value === 'HIGH' ||
+    value === 'CRITICAL' ||
+    value === 'UNKNOWN'
+    ? value
+    : fallback;
+}
+
+export function mergeRisk(localRisk: ImpactRisk, cross: CrossRepoImpact[]): ImpactRisk {
   const traversed = cross.filter((c) => c.fanout_status !== 'not_attempted');
   const highConf = traversed.some((c) => c.contract.confidence >= 0.85);
   if (localRisk === 'CRITICAL') return 'CRITICAL';
@@ -389,6 +411,22 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
   if (highConf) return 'HIGH';
   if (traversed.length > 0 && (localRisk === 'LOW' || localRisk === 'UNKNOWN')) return 'MEDIUM';
   return localRisk;
+}
+
+function liftLocalRiskMeta(
+  local: unknown,
+  cross: CrossRepoImpact[],
+): Pick<GroupImpactResult, 'riskSharedAxes' | 'riskScale'> {
+  const { riskSharedAxes, riskScale } = local as {
+    riskSharedAxes?: unknown;
+    riskScale?: GroupImpactResult['riskScale'];
+  };
+  return {
+    ...(riskSharedAxes !== undefined
+      ? { riskSharedAxes: mergeRisk(asImpactRisk(riskSharedAxes), cross) }
+      : {}),
+    ...(riskScale !== undefined ? { riskScale } : {}),
+  };
 }
 
 /**
@@ -601,6 +639,7 @@ export async function runGroupImpact(
         cross_repo_hits: 0,
       },
       risk: 'UNKNOWN',
+      ...liftLocalRiskMeta(local, []),
       timeoutMs,
       crossDepthWarning,
     };
@@ -656,7 +695,8 @@ export async function runGroupImpact(
         modules_affected: s.modules_affected ?? 0,
         cross_repo_hits: 0,
       },
-      risk: String((local as { risk?: string }).risk ?? 'LOW'),
+      risk: asImpactRisk((local as { risk?: unknown }).risk),
+      ...liftLocalRiskMeta(local, []),
       timeoutMs,
       crossDepthWarning,
     };
@@ -826,7 +866,7 @@ export async function runGroupImpact(
   }
 
   const localSum = (local as { summary?: Record<string, number> })?.summary || {};
-  const localRisk = String((local as { risk?: string }).risk ?? 'LOW');
+  const localRisk = asImpactRisk((local as { risk?: unknown }).risk);
   const localPartial = Boolean((local as { partial?: boolean }).partial);
   // The bridge's own incompleteness, in the shared vocabulary, read through
   // what this query DECLARED. The fan-out above already drops every neighbour
@@ -905,6 +945,7 @@ export async function runGroupImpact(
       cross_repo_hits: cross.length,
     },
     risk: mergeRisk(localRisk, cross),
+    ...liftLocalRiskMeta(local, cross),
     timeoutMs,
     crossDepthWarning,
   };
