@@ -23,6 +23,7 @@ import {
 } from '../frameworks/spring/auto-configuration.js';
 import {
   importSpringActuatorRuntime,
+  MAX_RUNTIME_RECORDS,
   type SpringActuatorImportStats,
 } from '../frameworks/spring/actuator-runtime.js';
 import { isDev } from '../utils/env.js';
@@ -318,6 +319,11 @@ export const springAutoConfigurationPhase: PipelinePhase<SpringAutoConfiguration
             ctx.repoPath,
             ctx.options.springActuatorPath,
           );
+    if (actuatorRuntime !== undefined && actuatorRuntime.truncatedEndpoints.length > 0) {
+      logger.warn(
+        `Spring Actuator runtime import reached the ${MAX_RUNTIME_RECORDS.toLocaleString('en-US')}-record limit for: ${actuatorRuntime.truncatedEndpoints.join(', ')}. Runtime evidence is incomplete.`,
+      );
+    }
 
     return {
       metadataFiles,

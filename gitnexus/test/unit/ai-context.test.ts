@@ -225,6 +225,19 @@ describe('generateAIContextFiles', () => {
     expect(withoutPdg).toContain('explain(');
   });
 
+  it('gates Spring Actuator runtime evidence guidance on index metadata', () => {
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    const enabled = generateGitNexusContent('SpringProject', stats, {
+      hasSpringActuator: true,
+    });
+    const disabled = generateGitNexusContent('PlainProject', stats);
+
+    expect(enabled).toContain('Spring Actuator runtime evidence is enabled');
+    expect(enabled).toContain('runtimeConfirmed === true');
+    expect(enabled).toContain('Snapshot values are never persisted');
+    expect(disabled).not.toContain('Spring Actuator runtime evidence is enabled');
+  });
+
   it('documents the MCP and Graph-RAG File-risk scale difference', () => {
     const content = generateGitNexusContent('RiskScaleProject', {
       nodes: 50,

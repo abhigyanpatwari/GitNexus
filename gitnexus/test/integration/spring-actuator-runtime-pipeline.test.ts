@@ -40,6 +40,9 @@ class OrderController {
   String list() { return helper(); }
   String helper() { return leaf(); }
   String leaf() { return "ok"; }
+  String lookup(String id) { return id; }
+  String lookup(Integer id) { return id.toString(); }
+  String tags(String... values) { return String.join(",", values); }
 }
 
 class SiblingController {
@@ -115,6 +118,34 @@ class BillingProperties {
                   requestMappingConditions: {
                     methods: ['POST'],
                     patterns: ['/runtime-only'],
+                  },
+                },
+              },
+              {
+                predicate: '{GET [/runtime-overload]}',
+                details: {
+                  handlerMethod: {
+                    className: 'com.example.OrderController',
+                    name: 'lookup',
+                    descriptor: '(Ljava/lang/String;)Ljava/lang/String;',
+                  },
+                  requestMappingConditions: {
+                    methods: ['GET'],
+                    patterns: ['/runtime-overload'],
+                  },
+                },
+              },
+              {
+                predicate: '{GET [/runtime-varargs]}',
+                details: {
+                  handlerMethod: {
+                    className: 'com.example.OrderController',
+                    name: 'tags',
+                    descriptor: '([Ljava/lang/String;)Ljava/lang/String;',
+                  },
+                  requestMappingConditions: {
+                    methods: ['GET'],
+                    patterns: ['/runtime-varargs'],
                   },
                 },
               },
@@ -257,6 +288,20 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
         result.graph.getNode(edge.targetId)?.properties.name === 'list',
     )?.targetId;
     expect(nodeNamed('/runtime-bound', 'Route')?.properties.handlerSymbolId).toBe(ownerMethodId);
+    const overloadHandler = result.graph.getNode(
+      String(nodeNamed('/runtime-overload', 'Route')?.properties.handlerSymbolId),
+    );
+    expect(overloadHandler?.properties).toMatchObject({
+      name: 'lookup',
+      parameterTypes: ['String'],
+    });
+    const varargsHandler = result.graph.getNode(
+      String(nodeNamed('/runtime-varargs', 'Route')?.properties.handlerSymbolId),
+    );
+    expect(varargsHandler?.properties).toMatchObject({
+      name: 'tags',
+      parameterTypes: ['String'],
+    });
     expect(nodeNamed('BillingService', 'Class')?.properties.runtimeConfirmed).toBeUndefined();
     expect(nodeNamed('BillingService', 'Class')?.properties.description).toContain(
       'Spring Actuator beans runtime-confirmed',
@@ -440,6 +485,34 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
     ).toBe(true);
   }, 60_000);
 
+  it('excludes an in-repo Actuator dump addressed through a directory symlink', async () => {
+    if (process.platform === 'win32') return;
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-actuator-symlink-'));
+    tempRepos.push(repo);
+    writeFixture(repo, 'index.ts', 'export const retained = true;\n');
+    writeJson(repo, 'runtime-dumps/env.json', {
+      propertySources: [
+        {
+          name: 'systemEnvironment',
+          properties: { 'symlink.secret': { value: SECRET_ENV_VALUE } },
+        },
+      ],
+    });
+    fs.symlinkSync('runtime-dumps', path.join(repo, 'actuator'), 'dir');
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      skipGraphPhases: true,
+      springActuatorPath: 'actuator',
+    });
+    const nodes = [...result.graph.iterNodes()];
+
+    expect(
+      nodes.some((node) => node.label === 'Property' && node.properties.name === 'symlink.secret'),
+    ).toBe(true);
+    expect(nodes.some((node) => node.properties.filePath === 'runtime-dumps/env.json')).toBe(false);
+    expect(JSON.stringify(nodes)).not.toContain(SECRET_ENV_VALUE);
+  }, 60_000);
+
   it('links an Actuator-only route with a resolved source handler to its execution flow', async () => {
     const { repo, actuatorDir } = runtimeFixture();
     tempRepos.push(repo);
@@ -592,6 +665,60 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
     expect(
       [...result.graph.iterRelationshipsByType('HANDLES_ROUTE')].some(
         (edge) => edge.sourceId === otherFile?.id && edge.targetId === route?.id,
+      ),
+    ).toBe(false);
+  }, 60_000);
+
+  it('marks duplicate runtime mappings with different handlers as a conflict', async () => {
+    const { repo } = runtimeFixture();
+    tempRepos.push(repo);
+    const mapping = (className: string) => ({
+      predicate: '{GET [/context-conflict]}',
+      details: {
+        handlerMethod: {
+          className,
+          name: 'list',
+          descriptor: '()Ljava/lang/String;',
+        },
+        requestMappingConditions: { methods: ['GET'], patterns: ['/context-conflict'] },
+      },
+    });
+    writeJson(repo, 'runtime-actuator/mappings.json', {
+      contexts: {
+        parent: {
+          mappings: {
+            dispatcherServlets: {
+              dispatcherServlet: [mapping('com.example.OrderController')],
+            },
+          },
+        },
+        child: {
+          mappings: {
+            dispatcherServlets: {
+              dispatcherServlet: [mapping('com.example.SiblingController')],
+            },
+          },
+        },
+      },
+    });
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      skipGraphPhases: true,
+      springActuatorPath: 'runtime-actuator',
+    });
+    const route = [...result.graph.iterNodes()].find(
+      (node) => node.label === 'Route' && node.properties.name === '/context-conflict',
+    );
+
+    expect(route?.properties).toMatchObject({
+      runtimeConfirmed: false,
+      runtimeSource: 'spring-actuator',
+      runtimeStatus: 'handler-conflict',
+    });
+    expect(route?.properties).not.toHaveProperty('handlerSymbolId');
+    expect(
+      [...result.graph.iterRelationshipsByType('HANDLES_ROUTE')].some(
+        (edge) => edge.targetId === route?.id,
       ),
     ).toBe(false);
   }, 60_000);

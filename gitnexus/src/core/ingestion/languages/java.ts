@@ -51,6 +51,7 @@ import {
   javaArityCompatibility,
   resolveJavaImportTarget,
 } from './java/index.js';
+import { javaRuntimeSymbolStrategy } from './java/spring-actuator.js';
 
 /**
  * Java names the platform owns, matched against a BARE IDENTIFIER — a dropped
@@ -199,6 +200,7 @@ export const javaProvider = defineLanguage({
   shouldSkipDefinitionCapture: shouldSkipJavaRecordComponentDefinition,
   variableExtractor: createVariableExtractor(javaVariableConfig),
   classExtractor: createClassExtractor(javaClassConfig),
+  runtimeSymbolStrategy: javaRuntimeSymbolStrategy,
 
   // ── Javadoc → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),

@@ -283,7 +283,7 @@ describe('streamGraphNdjson', () => {
       type: 'node',
       data: { id: 'Route:GET /legacy' },
     });
-    expect(routeRecord.data.properties).not.toHaveProperty('runtimeConfirmed');
+    expect(routeRecord.data.properties.runtimeConfirmed).toBe(false);
     expect(routeRecord.data.properties).not.toHaveProperty('runtimeSource');
     expect(routeRecord.data.properties).not.toHaveProperty('runtimeStatus');
   });
@@ -318,10 +318,8 @@ describe('streamGraphNdjson', () => {
       expect.objectContaining({
         id: 'Route:GET /legacy',
         label: 'Route',
-        properties: expect.not.objectContaining({
-          runtimeConfirmed: expect.anything(),
-          runtimeSource: expect.anything(),
-          runtimeStatus: expect.anything(),
+        properties: expect.objectContaining({
+          runtimeConfirmed: false,
         }),
       }),
     );

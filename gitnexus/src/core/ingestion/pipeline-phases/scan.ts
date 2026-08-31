@@ -12,6 +12,7 @@
 
 import type { PipelinePhase, PipelineContext } from './types.js';
 import { walkRepositoryPaths } from '../filesystem-walker.js';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 
 export interface ScanOutput {
@@ -39,47 +40,66 @@ type CompiledActuatorExclusion =
   | { kind: 'repo-root-endpoints' }
   | { kind: 'dir'; resolved: string };
 
-function compileActuatorExclusions(
+async function canonicalPath(filePath: string): Promise<string> {
+  return fs.realpath(filePath).catch(() => path.resolve(filePath));
+}
+
+async function compileActuatorExclusions(
   repoPath: string,
   inputPaths: readonly string[],
-): CompiledActuatorExclusion[] {
-  const repo = path.resolve(repoPath);
+): Promise<{ repo: string; exclusions: CompiledActuatorExclusion[] }> {
+  const repo = await canonicalPath(repoPath);
+  const lexicalRepo = path.resolve(repoPath);
   const compiled: CompiledActuatorExclusion[] = [];
   const seen = new Set<string>();
   for (const inputPath of inputPaths) {
-    const input = path.resolve(repoPath, inputPath);
-    const inputRelativeToRepo = path.relative(repo, input);
-    if (inputRelativeToRepo === '') {
-      if (seen.has('')) continue;
-      seen.add('');
-      compiled.push({ kind: 'repo-root-endpoints' });
-      continue;
-    }
+    const lexicalInput = path.resolve(repoPath, inputPath);
+    const lexicalRelative = path.relative(lexicalRepo, lexicalInput);
+    const canonicalInput = await canonicalPath(lexicalInput);
+    const candidateInputs = new Set([canonicalInput]);
     if (
-      inputRelativeToRepo === '..' ||
-      inputRelativeToRepo.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(inputRelativeToRepo)
+      lexicalRelative === '' ||
+      (lexicalRelative !== '..' &&
+        !lexicalRelative.startsWith(`..${path.sep}`) &&
+        !path.isAbsolute(lexicalRelative))
     ) {
-      continue;
+      // Preserve the configured in-repo alias as an exclusion even when its
+      // real target is outside the repository.
+      candidateInputs.add(path.resolve(repo, lexicalRelative));
     }
-    if (seen.has(input)) continue;
-    seen.add(input);
-    compiled.push({ kind: 'dir', resolved: input });
+    for (const input of candidateInputs) {
+      const inputRelativeToRepo = path.relative(repo, input);
+      if (inputRelativeToRepo === '') {
+        if (seen.has('')) continue;
+        seen.add('');
+        compiled.push({ kind: 'repo-root-endpoints' });
+        continue;
+      }
+      if (
+        inputRelativeToRepo === '..' ||
+        inputRelativeToRepo.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(inputRelativeToRepo)
+      ) {
+        continue;
+      }
+      if (seen.has(input)) continue;
+      seen.add(input);
+      compiled.push({ kind: 'dir', resolved: input });
+    }
   }
-  return compiled;
+  return { repo, exclusions: compiled };
 }
 
 function matchesActuatorExclusion(
-  repoPath: string,
+  canonicalRepoPath: string,
   filePath: string,
   exclusions: readonly CompiledActuatorExclusion[],
 ): boolean {
   if (exclusions.length === 0) return false;
-  const repo = path.resolve(repoPath);
-  const candidate = path.resolve(repoPath, filePath);
+  const candidate = path.resolve(canonicalRepoPath, filePath);
   for (const exclusion of exclusions) {
     if (exclusion.kind === 'repo-root-endpoints') {
-      const candidateRelativeToRepo = path.relative(repo, candidate);
+      const candidateRelativeToRepo = path.relative(canonicalRepoPath, candidate);
       if (
         path.dirname(candidateRelativeToRepo) === '.' &&
         SPRING_ACTUATOR_ENDPOINT_FILES.has(path.basename(candidateRelativeToRepo).toLowerCase())
@@ -110,15 +130,20 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       message: 'Scanning repository...',
     });
 
-    const actuatorExclusions = compileActuatorExclusions(ctx.repoPath, [
-      ...(ctx.options?.springActuatorPath === undefined ? [] : [ctx.options.springActuatorPath]),
-      ...(ctx.options?.springActuatorScanExclusions ?? []),
-    ]);
+    const { repo: canonicalRepoPath, exclusions: actuatorExclusions } =
+      await compileActuatorExclusions(ctx.repoPath, [
+        ...(ctx.options?.springActuatorPath === undefined ? [] : [ctx.options.springActuatorPath]),
+        ...(ctx.options?.springActuatorScanExclusions ?? []),
+      ]);
     let scannedFiles;
     try {
       scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
         const scanProgress = Math.round((current / total) * 15);
-        const isRuntimeInput = matchesActuatorExclusion(ctx.repoPath, filePath, actuatorExclusions);
+        const isRuntimeInput = matchesActuatorExclusion(
+          canonicalRepoPath,
+          filePath,
+          actuatorExclusions,
+        );
         ctx.onProgress({
           phase: 'extracting',
           percent: scanProgress,
@@ -143,7 +168,7 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
 
     if (actuatorExclusions.length > 0) {
       scannedFiles = scannedFiles.filter(
-        (file) => !matchesActuatorExclusion(ctx.repoPath, file.path, actuatorExclusions),
+        (file) => !matchesActuatorExclusion(canonicalRepoPath, file.path, actuatorExclusions),
       );
     }
 

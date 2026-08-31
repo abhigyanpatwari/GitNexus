@@ -459,9 +459,11 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     responseKeys: row.responseKeys,
     errorKeys: row.errorKeys,
     middleware: row.middleware,
-    runtimeConfirmed: row.runtimeConfirmed,
-    runtimeSource: row.runtimeSource,
-    runtimeStatus: row.runtimeStatus,
+    // Normalize legacy Route projections to the modern contract. Source is
+    // provenance; only runtimeConfirmed === true is authoritative.
+    runtimeConfirmed: table === 'Route' ? (row.runtimeConfirmed ?? false) : undefined,
+    runtimeSource: table === 'Route' ? row.runtimeSource : undefined,
+    runtimeStatus: table === 'Route' ? row.runtimeStatus : undefined,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,
@@ -1497,6 +1499,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           force,
           embeddings,
           dropEmbeddings,
+          springActuatorPath,
           token: repoToken,
         } = req.body;
 
@@ -1507,6 +1510,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         }
         if (repoLocalPath !== undefined && typeof repoLocalPath !== 'string') {
           res.status(400).json({ error: '"path" must be a string' });
+          return;
+        }
+        if (
+          springActuatorPath !== undefined &&
+          (typeof springActuatorPath !== 'string' || springActuatorPath.trim().length === 0)
+        ) {
+          res.status(400).json({ error: '"springActuatorPath" must be a non-empty string' });
           return;
         }
 
@@ -1592,7 +1602,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               throw new Error('No target path resolved');
             }
 
-            launchAnalysisWorker(job, targetPath, { force, embeddings, dropEmbeddings });
+            launchAnalysisWorker(job, targetPath, {
+              force,
+              embeddings,
+              dropEmbeddings,
+              springActuatorPath,
+            });
           } catch (err: any) {
             if (targetPath) releaseRepoLock(getStoragePath(targetPath));
             jobManager.updateJob(job.id, {

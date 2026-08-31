@@ -14,11 +14,17 @@ import { SPRING_CONFIG_DESCRIPTION } from './config-bindings.js';
 import { getProviderForFile } from '../../languages/index.js';
 import type { RuntimeCallableIdentity } from '../../language-provider.js';
 
-const ACTUATOR_ENDPOINTS = ['mappings', 'beans', 'conditions', 'configprops', 'env'] as const;
+export const ACTUATOR_ENDPOINTS = [
+  'mappings',
+  'beans',
+  'conditions',
+  'configprops',
+  'env',
+] as const;
 type ActuatorEndpoint = (typeof ACTUATOR_ENDPOINTS)[number];
 
 const MAX_ACTUATOR_PAYLOAD_BYTES = 16 * 1024 * 1024;
-const MAX_RUNTIME_RECORDS = 50_000;
+export const MAX_RUNTIME_RECORDS = 50_000;
 const MAX_RUNTIME_DEPTH = 64;
 const RUNTIME_FILE_PREFIX = 'spring-actuator:';
 
@@ -31,6 +37,8 @@ export interface SpringActuatorImportStats {
   readonly conditions: number;
   readonly configProperties: number;
   readonly environmentProperties: number;
+  /** Endpoint categories that exceeded the bounded import size. */
+  readonly truncatedEndpoints: readonly ActuatorEndpoint[];
 }
 
 interface MutableImportStats {
@@ -40,6 +48,12 @@ interface MutableImportStats {
   conditions: number;
   configProperties: number;
   environmentProperties: number;
+  truncatedEndpoints: ActuatorEndpoint[];
+}
+
+interface ImportResult {
+  readonly count: number;
+  readonly truncated: boolean;
 }
 
 export class SpringActuatorImportError extends Error {
@@ -211,13 +225,18 @@ function markRuntimeEvidence(
   // plus the DECLARES edge below; setting undeclared properties would make the
   // in-memory graph promise data that CSV/LadybugDB silently drops.
   if (target.label === 'Route') {
-    target.properties.runtimeConfirmed = confirmed;
+    // Confirmation is conflict-dominant. Once any runtime observation
+    // disagrees with static or runtime ownership, a later duplicate must not
+    // restore authoritative status.
+    target.properties.runtimeConfirmed =
+      target.properties.runtimeConfirmed === false ? false : confirmed;
+    // Source records provenance, not authority. Consumers MUST use
+    // runtimeConfirmed === true before treating runtime evidence as confirmed.
     target.properties.runtimeSource = 'spring-actuator';
     const previousStatus = safeText(target.properties.runtimeStatus);
-    target.properties.runtimeStatus =
-      previousStatus === undefined || previousStatus === status
-        ? status
-        : [previousStatus, status].sort().join(',');
+    target.properties.runtimeStatus = [...new Set([...(previousStatus?.split(',') ?? []), status])]
+      .sort()
+      .join(',');
   }
   const marker = `Spring Actuator ${endpoint} ${status}`;
   appendRuntimeMarker(target, marker);
@@ -402,16 +421,21 @@ function descriptorParameterTypes(descriptor: string | undefined): string[] | un
   if (descriptor === undefined || descriptor.charAt(0) !== '(') return undefined;
   const types: string[] = [];
   for (let index = 1; index < descriptor.length && descriptor.charAt(index) !== ')'; ) {
-    while (descriptor.charAt(index) === '[') index++;
+    let arrayDimensions = 0;
+    while (descriptor.charAt(index) === '[') {
+      arrayDimensions++;
+      index++;
+    }
+    const arraySuffix = '[]'.repeat(arrayDimensions);
     if (descriptor.charAt(index) === 'L') {
       const end = descriptor.indexOf(';', index);
       if (end === -1) return undefined;
-      types.push(descriptor.slice(index + 1, end));
+      types.push(`${descriptor.slice(index + 1, end)}${arraySuffix}`);
       index = end + 1;
     } else {
       const primitive = descriptor.charAt(index);
       if (!'BCDFIJSZ'.includes(primitive)) return undefined;
-      types.push(primitive);
+      types.push(`${primitive}${arraySuffix}`);
       index++;
     }
   }
@@ -469,11 +493,14 @@ function predicateParts(predicate: string | undefined): {
   return { methods: [...new Set(methods)], patterns: [...new Set(patterns)] };
 }
 
-function mappingEntries(payload: JsonObject): JsonObject[] {
+function mappingEntries(payload: JsonObject): {
+  entries: JsonObject[];
+  truncated: boolean;
+} {
   const entries: JsonObject[] = [];
   const contexts = objectValue(payload.contexts);
-  if (contexts === undefined) return entries;
-  for (const context of Object.values(contexts).slice(0, MAX_RUNTIME_RECORDS)) {
+  if (contexts === undefined) return { entries, truncated: false };
+  for (const context of Object.values(contexts)) {
     const mappings = objectValue(objectValue(context)?.mappings);
     if (mappings === undefined) continue;
     for (const groupName of ['dispatcherServlets', 'dispatcherHandlers']) {
@@ -484,22 +511,34 @@ function mappingEntries(payload: JsonObject): JsonObject[] {
         for (const entry of group) {
           const object = objectValue(entry);
           if (object !== undefined) entries.push(object);
-          if (entries.length >= MAX_RUNTIME_RECORDS) return entries;
+          if (entries.length > MAX_RUNTIME_RECORDS) {
+            entries.pop();
+            return { entries, truncated: true };
+          }
         }
       }
     }
   }
-  return entries;
+  return { entries, truncated: false };
+}
+
+interface RuntimeMappingCandidate {
+  readonly key: string;
+  readonly method: string | undefined;
+  readonly url: string;
+  readonly handler: GraphNode | undefined;
 }
 
 function importMappings(
   graph: KnowledgeGraph,
   payload: JsonObject,
   indexes: RuntimeNodeIndexes,
-): number {
+): ImportResult {
   let imported = 0;
-  const seen = new Set<string>();
-  for (const entry of mappingEntries(payload)) {
+  const payloadEntries = mappingEntries(payload);
+  let truncated = payloadEntries.truncated;
+  const candidatesByKey = new Map<string, RuntimeMappingCandidate[]>();
+  for (const entry of payloadEntries.entries) {
     const details = objectValue(entry.details);
     const conditions = objectValue(details?.requestMappingConditions);
     const predicate = predicateParts(safeText(entry.predicate));
@@ -515,82 +554,104 @@ function importMappings(
     for (const rawPattern of effectivePatterns) {
       const url = normalizeExtractedRoutePath(rawPattern, null);
       for (const method of effectiveMethods.length > 0 ? effectiveMethods : [undefined]) {
-        if (imported >= MAX_RUNTIME_RECORDS) return imported;
         const normalizedMethod = normalizeRouteMethod(method);
         const key = routeNodeKey(normalizedMethod, url);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const exactId = generateId('Route', key);
-        const fallbackId = generateId('Route', url);
-        let route = graph.getNode(exactId) ?? graph.getNode(fallbackId);
-        if (route?.label !== 'Route') route = undefined;
-        const routeWasPresent = route !== undefined;
-        if (route === undefined) {
-          route = {
-            id: exactId,
-            label: 'Route',
-            properties: {
-              name: url,
-              filePath: handler?.properties.filePath ?? `${RUNTIME_FILE_PREFIX}mappings`,
-              ...(normalizedMethod === undefined ? {} : { method: normalizedMethod }),
-              ...(handler === undefined ? {} : { handlerSymbolId: handler.id }),
-            },
-          };
-          graph.addNode(route);
-        }
-        const existingHandlerId = safeText(route.properties.handlerSymbolId);
-        const handlerFilePath =
-          handler !== undefined && typeof handler.properties.filePath === 'string'
-            ? handler.properties.filePath
-            : undefined;
-        const handlerFileId =
-          handlerFilePath === undefined ? undefined : generateId('File', handlerFilePath);
-        const staticOwnerFileIds = indexes.routeOwnerFileIdsByRouteId.get(route.id);
-        const conflictsWithStaticOwner =
-          routeWasPresent &&
-          handlerFileId !== undefined &&
-          staticOwnerFileIds !== undefined &&
-          [...staticOwnerFileIds].some((ownerFileId) => ownerFileId !== handlerFileId);
-        if (
-          handler !== undefined &&
-          ((existingHandlerId !== undefined && existingHandlerId !== handler.id) ||
-            conflictsWithStaticOwner)
-        ) {
-          // Static ownership and runtime ownership disagree. Preserve the
-          // static handler, persist an explicit conflict, and do not mint an
-          // authoritative HANDLES_ROUTE edge from the runtime candidate.
-          markRuntimeEvidence(graph, 'mappings', route, 'handler-conflict', false);
-          imported++;
-          continue;
-        }
-        if (handler !== undefined && existingHandlerId === undefined) {
-          route.properties.handlerSymbolId = handler.id;
-        }
-        markRuntimeEvidence(graph, 'mappings', route);
-        if (handler !== undefined && handlerFileId !== undefined) {
-          if (graph.getNode(handlerFileId) !== undefined) {
-            graph.addRelationship({
-              id: generateId('HANDLES_ROUTE', `${handlerFileId}->${route.id}`),
-              sourceId: handlerFileId,
-              targetId: route.id,
-              type: 'HANDLES_ROUTE',
-              confidence: 1,
-              reason: 'spring-actuator:runtime-confirmed',
-            });
+        const candidate = { key, method: normalizedMethod, url, handler };
+        const existing = candidatesByKey.get(key);
+        if (existing === undefined) {
+          if (candidatesByKey.size >= MAX_RUNTIME_RECORDS) {
+            truncated = true;
+            continue;
           }
+          candidatesByKey.set(key, [candidate]);
+        } else {
+          existing.push(candidate);
         }
-        imported++;
       }
     }
   }
-  return imported;
+
+  for (const candidates of candidatesByKey.values()) {
+    const first = candidates[0];
+    if (first === undefined) continue;
+    const { key, method: normalizedMethod, url } = first;
+    const resolvedHandlers = new Map(
+      candidates
+        .map((candidate) => candidate.handler)
+        .filter((handler): handler is GraphNode => handler !== undefined)
+        .map((handler) => [handler.id, handler]),
+    );
+    const runtimeHandlerConflict = resolvedHandlers.size > 1;
+    const handler = runtimeHandlerConflict ? undefined : resolvedHandlers.values().next().value;
+    const exactId = generateId('Route', key);
+    const fallbackId = generateId('Route', url);
+    let route = graph.getNode(exactId) ?? graph.getNode(fallbackId);
+    if (route?.label !== 'Route') route = undefined;
+    const routeWasPresent = route !== undefined;
+    if (route === undefined) {
+      route = {
+        id: exactId,
+        label: 'Route',
+        properties: {
+          name: url,
+          filePath: handler?.properties.filePath ?? `${RUNTIME_FILE_PREFIX}mappings`,
+          ...(normalizedMethod === undefined ? {} : { method: normalizedMethod }),
+          ...(handler === undefined ? {} : { handlerSymbolId: handler.id }),
+        },
+      };
+      graph.addNode(route);
+    }
+    const existingHandlerId = safeText(route.properties.handlerSymbolId);
+    const handlerFilePath =
+      handler !== undefined && typeof handler.properties.filePath === 'string'
+        ? handler.properties.filePath
+        : undefined;
+    const handlerFileId =
+      handlerFilePath === undefined ? undefined : generateId('File', handlerFilePath);
+    const staticOwnerFileIds = indexes.routeOwnerFileIdsByRouteId.get(route.id);
+    const conflictsWithStaticOwner =
+      routeWasPresent &&
+      handlerFileId !== undefined &&
+      staticOwnerFileIds !== undefined &&
+      [...staticOwnerFileIds].some((ownerFileId) => ownerFileId !== handlerFileId);
+    if (
+      runtimeHandlerConflict ||
+      (handler !== undefined &&
+        ((existingHandlerId !== undefined && existingHandlerId !== handler.id) ||
+          conflictsWithStaticOwner))
+    ) {
+      // Static ownership and runtime ownership disagree. Preserve the
+      // static handler, persist an explicit conflict, and do not mint an
+      // authoritative HANDLES_ROUTE edge from the runtime candidate.
+      markRuntimeEvidence(graph, 'mappings', route, 'handler-conflict', false);
+      imported++;
+      continue;
+    }
+    if (handler !== undefined && existingHandlerId === undefined) {
+      route.properties.handlerSymbolId = handler.id;
+    }
+    markRuntimeEvidence(graph, 'mappings', route);
+    if (handler !== undefined && handlerFileId !== undefined) {
+      if (graph.getNode(handlerFileId) !== undefined) {
+        graph.addRelationship({
+          id: generateId('HANDLES_ROUTE', `${handlerFileId}->${route.id}`),
+          sourceId: handlerFileId,
+          targetId: route.id,
+          type: 'HANDLES_ROUTE',
+          confidence: 1,
+          reason: 'spring-actuator:runtime-confirmed',
+        });
+      }
+    }
+    imported++;
+  }
+  return { count: imported, truncated };
 }
 
 function contextObjects(payload: JsonObject): JsonObject[] {
   const contexts = objectValue(payload.contexts);
   if (contexts === undefined) return [];
   return Object.values(contexts)
-    .slice(0, MAX_RUNTIME_RECORDS)
     .map(objectValue)
     .filter((context): context is JsonObject => context !== undefined);
 }
@@ -599,14 +660,14 @@ function importBeans(
   graph: KnowledgeGraph,
   payload: JsonObject,
   indexes: RuntimeNodeIndexes,
-): number {
+): ImportResult {
   let imported = 0;
   const seen = new Set<string>();
   for (const [contextIndex, context] of contextObjects(payload).entries()) {
     const beans = objectValue(context.beans);
     if (beans === undefined) continue;
     for (const [rawBeanName, rawBean] of Object.entries(beans)) {
-      if (imported >= MAX_RUNTIME_RECORDS) return imported;
+      if (imported >= MAX_RUNTIME_RECORDS) return { count: imported, truncated: true };
       const beanName = safeText(rawBeanName, 512);
       const bean = objectValue(rawBean);
       if (beanName === undefined || bean === undefined) continue;
@@ -645,7 +706,7 @@ function importBeans(
       imported++;
     }
   }
-  return imported;
+  return { count: imported, truncated: false };
 }
 
 function resolveConditionOwner(
@@ -663,7 +724,7 @@ function importConditions(
   graph: KnowledgeGraph,
   payload: JsonObject,
   indexes: RuntimeNodeIndexes,
-): number {
+): ImportResult {
   let imported = 0;
   const seen = new Set<string>();
   for (const context of contextObjects(payload)) {
@@ -674,7 +735,7 @@ function importConditions(
       const matches = objectValue(context[field]);
       if (matches === undefined) continue;
       for (const rawName of Object.keys(matches)) {
-        if (imported >= MAX_RUNTIME_RECORDS) return imported;
+        if (imported >= MAX_RUNTIME_RECORDS) return { count: imported, truncated: true };
         const name = safeText(rawName);
         if (name === undefined || seen.has(`${status}:${name}`)) continue;
         seen.add(`${status}:${name}`);
@@ -689,7 +750,7 @@ function importConditions(
       }
     }
   }
-  return imported;
+  return { count: imported, truncated: false };
 }
 
 function relaxedPropertyName(value: string): string {
@@ -753,7 +814,10 @@ function ensureRuntimeProperty(
   return node;
 }
 
-function configInputPaths(inputs: unknown): string[] {
+function configInputPaths(inputs: unknown): {
+  paths: string[];
+  truncated: boolean;
+} {
   const out: string[] = [];
   const stack: Array<{ value: unknown; prefix: string; depth: number }> = [
     { value: inputs, prefix: '', depth: 0 },
@@ -785,15 +849,16 @@ function configInputPaths(inputs: unknown): string[] {
       });
     }
   }
-  return out;
+  return { paths: out, truncated: stack.length > 0 };
 }
 
 function importConfigProperties(
   graph: KnowledgeGraph,
   payload: JsonObject,
   propertyIndex: RuntimePropertyIndex,
-): number {
+): ImportResult {
   let imported = 0;
+  let truncated = false;
   const seen = new Set<string>();
   for (const context of contextObjects(payload)) {
     const beans = objectValue(context.beans);
@@ -802,10 +867,14 @@ function importConfigProperties(
       const bean = objectValue(rawBean);
       const prefix = safeText(bean?.prefix, 512)?.replace(/\.+$/, '');
       if (bean === undefined || prefix === undefined) continue;
-      const paths = configInputPaths(bean.inputs);
-      const names = paths.length === 0 ? [prefix] : paths.map((entry) => `${prefix}.${entry}`);
+      const inputPaths = configInputPaths(bean.inputs);
+      truncated ||= inputPaths.truncated;
+      const names =
+        inputPaths.paths.length === 0
+          ? [prefix]
+          : inputPaths.paths.map((entry) => `${prefix}.${entry}`);
       for (const name of names) {
-        if (imported >= MAX_RUNTIME_RECORDS) return imported;
+        if (imported >= MAX_RUNTIME_RECORDS) return { count: imported, truncated: true };
         if (seen.has(name)) continue;
         seen.add(name);
         if (ensureRuntimeProperty(graph, propertyIndex, 'configprops', name) !== undefined)
@@ -813,31 +882,31 @@ function importConfigProperties(
       }
     }
   }
-  return imported;
+  return { count: imported, truncated };
 }
 
 function importEnvironmentProperties(
   graph: KnowledgeGraph,
   payload: JsonObject,
   propertyIndex: RuntimePropertyIndex,
-): number {
+): ImportResult {
   let imported = 0;
   const seen = new Set<string>();
-  if (!Array.isArray(payload.propertySources)) return imported;
-  for (const rawSource of payload.propertySources.slice(0, MAX_RUNTIME_RECORDS)) {
+  if (!Array.isArray(payload.propertySources)) return { count: imported, truncated: false };
+  for (const rawSource of payload.propertySources) {
     const properties = objectValue(objectValue(rawSource)?.properties);
     if (properties === undefined) continue;
     // Deliberately enumerate keys only. Never read, retain, interpolate, or log
     // the corresponding {value, origin} objects.
     for (const rawName of Object.keys(properties)) {
-      if (imported >= MAX_RUNTIME_RECORDS) return imported;
+      if (imported >= MAX_RUNTIME_RECORDS) return { count: imported, truncated: true };
       const name = safeText(rawName, 1024);
       if (name === undefined || seen.has(name)) continue;
       seen.add(name);
       if (ensureRuntimeProperty(graph, propertyIndex, 'env', name) !== undefined) imported++;
     }
   }
-  return imported;
+  return { count: imported, truncated: false };
 }
 
 /**
@@ -860,23 +929,40 @@ export async function importSpringActuatorRuntime(
     conditions: 0,
     configProperties: 0,
     environmentProperties: 0,
+    truncatedEndpoints: [],
   };
   const indexes = buildRuntimeNodeIndexes(graph);
   const propertyIndex = buildRuntimePropertyIndex(graph);
 
   const mappings = payloads.get('mappings');
-  if (mappings !== undefined) stats.mappings = importMappings(graph, mappings, indexes);
+  if (mappings !== undefined) {
+    const result = importMappings(graph, mappings, indexes);
+    stats.mappings = result.count;
+    if (result.truncated) stats.truncatedEndpoints.push('mappings');
+  }
   const beans = payloads.get('beans');
-  if (beans !== undefined) stats.beans = importBeans(graph, beans, indexes);
+  if (beans !== undefined) {
+    const result = importBeans(graph, beans, indexes);
+    stats.beans = result.count;
+    if (result.truncated) stats.truncatedEndpoints.push('beans');
+  }
   const conditions = payloads.get('conditions');
-  if (conditions !== undefined) stats.conditions = importConditions(graph, conditions, indexes);
+  if (conditions !== undefined) {
+    const result = importConditions(graph, conditions, indexes);
+    stats.conditions = result.count;
+    if (result.truncated) stats.truncatedEndpoints.push('conditions');
+  }
   const configprops = payloads.get('configprops');
   if (configprops !== undefined) {
-    stats.configProperties = importConfigProperties(graph, configprops, propertyIndex);
+    const result = importConfigProperties(graph, configprops, propertyIndex);
+    stats.configProperties = result.count;
+    if (result.truncated) stats.truncatedEndpoints.push('configprops');
   }
   const env = payloads.get('env');
   if (env !== undefined) {
-    stats.environmentProperties = importEnvironmentProperties(graph, env, propertyIndex);
+    const result = importEnvironmentProperties(graph, env, propertyIndex);
+    stats.environmentProperties = result.count;
+    if (result.truncated) stats.truncatedEndpoints.push('env');
   }
   return stats;
 }
