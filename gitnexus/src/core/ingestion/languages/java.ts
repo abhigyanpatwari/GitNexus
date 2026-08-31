@@ -241,6 +241,6 @@ export const javaProvider = defineLanguage({
     // general import shape, not on the imported name. Ingestion-only: this
     // side needs the importing controller's own import table, which the group
     // side instead derives lazily from the tree it already holds.
-    /\bimport\s+(?:static\s+)?[\w.]+\s*;/.test(content),
+    /\bimport\s+(?:static\s+)?[\w.]+(?:\.\*)?\s*;/.test(content),
   foldRoutePathOperands: foldJavaOperands,
 });

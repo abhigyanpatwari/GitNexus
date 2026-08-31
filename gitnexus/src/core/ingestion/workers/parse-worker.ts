@@ -3070,7 +3070,12 @@ const processFileGroup = (
     // without booting a worker.
     if (provider.extractModuleConstants && shouldHarvestModuleConstants(provider, parseContent)) {
       const constants = provider.extractModuleConstants(tree);
-      if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
+      if (
+        constants.literals.size > 0 ||
+        constants.exprs.size > 0 ||
+        constants.imports.size > 0 ||
+        (constants.wildcardImports?.length ?? 0) > 0
+      ) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });
       }
     }

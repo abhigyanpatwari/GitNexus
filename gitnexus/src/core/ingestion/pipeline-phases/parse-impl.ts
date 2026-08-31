@@ -93,7 +93,7 @@ import {
   resolveOperands,
   type ModuleConstants,
 } from '../route-extractors/python-const-resolver.js';
-import { expandJavaWildcardStaticImports, foldJavaOperands } from '../route-extractors/java-const-resolver.js';
+import { expandJavaWildcardStaticImports } from '../route-extractors/java-const-resolver.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,

@@ -918,7 +918,12 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         const tree = args.parseSource(args.parser, src);
         if (!tree) continue;
         const mc = extractJavaModuleConstants(tree);
-        if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
+        if (
+          mc.literals.size > 0 ||
+          mc.exprs.size > 0 ||
+          mc.imports.size > 0 ||
+          (mc.wildcardImports?.length ?? 0) > 0
+        ) {
           constants.set(rel, mc);
         }
       } catch {

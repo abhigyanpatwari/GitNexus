@@ -26,6 +26,7 @@ import type { HttpDetection } from '../../../src/core/group/extractors/http-patt
 import { extractSpringRoutes } from '../../../src/core/ingestion/route-extractors/spring.js';
 import { javaProvider } from '../../../src/core/ingestion/languages/java.js';
 import {
+  expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
   foldJavaOperands,
   type RepoConstants,
@@ -61,6 +62,9 @@ function ingestionRoutes(files: Record<string, string>): string[] {
   const repo: RepoConstants = new Map();
   for (const [rel, src] of Object.entries(files)) {
     repo.set(rel, extractJavaModuleConstants(parse(src)));
+  }
+  for (const [rel, mc] of repo) {
+    expandJavaWildcardStaticImports(mc, rel, repo);
   }
   const out: string[] = [];
   for (const [rel, src] of Object.entries(files)) {
@@ -197,6 +201,21 @@ public class OrderController {
     expect(ingestionKeys).toBe(3);
     expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
     expect(ingestionRoutes(files)).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('resolves a wildcard-static-imported mapping on both sides', () => {
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CTL]: `package com.example;
+import static com.example.ApiPaths.*;
+public class OrderController {
+  @GetMapping(ORDERS)
+  public void list() {}
+}`,
+    };
+    expect(javaProvider.moduleConstantHeuristic?.(files[CTL])).toBe(true);
+    expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
+    expect(ingestionRoutes(files)).toEqual(groupProviders(files));
   });
 
   it('leaves literal routes unchanged with no constant map at all', () => {

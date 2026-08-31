@@ -283,20 +283,33 @@ export function extractJavaModuleConstants(tree: Parser.Tree): ModuleConstants {
   const walkImports = (node: Parser.SyntaxNode): void => {
     if (node.type === 'import_declaration') {
       // import a.b.C;  |  import static a.b.C;  |  import static a.b.C.F;
+      // import static a.b.C.*;  — asterisk is a sibling of scoped_identifier
+      // (tree-sitter-java), not the last path segment. Same detection as
+      // import-decomposer.ts (`static-wildcard`).
       const isStatic = node.children.some((c) => c.type === 'static' && c.text === 'static');
-      const scoped = node.children.find((c) => c.type === 'scoped_identifier');
+      const isWildcard = node.children.some((c) => c.type === 'asterisk');
+      const scoped =
+        node.children.find((c) => c.type === 'scoped_identifier') ??
+        node.children.find((c) => c.type === 'identifier');
       if (scoped) {
         const text = scoped.text;
-        const lastDot = text.lastIndexOf('.');
-        const fqn = text.slice(0, lastDot);
-        const name = text.slice(lastDot + 1);
-        if (isStatic) {
-          // import static a.b.C.F → local F from module a.b.C, original F.
-          imports.set(name, { module: fqn, originalName: name });
+        if (isStatic && isWildcard) {
+          // Class FQN only — members are materialized post-map.
+          if (text.length > 0 && !wildcardImports.includes(text)) {
+            wildcardImports.push(text);
+          }
         } else {
-          // import a.b.C → module IS the class FQN; originalName is the class
-          // simple name. resolveJavaImport maps `a.b.C` → `a/b/C.java`.
-          imports.set(name, { module: text, originalName: name });
+          const lastDot = text.lastIndexOf('.');
+          const fqn = text.slice(0, lastDot);
+          const name = text.slice(lastDot + 1);
+          if (isStatic) {
+            // import static a.b.C.F → local F from module a.b.C, original F.
+            imports.set(name, { module: fqn, originalName: name });
+          } else {
+            // import a.b.C → module IS the class FQN; originalName is the class
+            // simple name. resolveJavaImport maps `a.b.C` → `a/b/C.java`.
+            imports.set(name, { module: text, originalName: name });
+          }
         }
       }
     }
@@ -651,7 +664,14 @@ export function expandJavaWildcardStaticImports(
 ): ModuleConstants {
   const wildcards = mc.wildcardImports;
   if (!wildcards || wildcards.length === 0) return mc;
-  const repoKeys = new Set(repo.keys());
+  // Resolve targets against constant-DEFINING files only. Ingestion's harvest
+  // also admits import-only files; measuring uniqueness over every key made
+  // a duplicate empty FQN floor ingestion to skip while group still folded
+  // (#2980 R4).
+  const repoKeys = new Set<string>();
+  for (const [key, target] of repo) {
+    if (target.literals.size > 0 || target.exprs.size > 0) repoKeys.add(key);
+  }
   for (const fqn of wildcards) {
     const targetKey = resolveJavaImport(fileKey, fqn, repoKeys);
     if (targetKey === null) continue;
