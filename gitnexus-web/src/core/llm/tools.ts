@@ -14,7 +14,11 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
-import type { EnrichedSearchResult, GrepResponse } from '../../services/backend-client';
+import type {
+  EnrichedSearchResult,
+  GrepOptions,
+  GrepResponse,
+} from '../../services/backend-client';
 
 /**
  * Tool names registered by createGraphRAGTools — kept in sync with each tool's `name`
@@ -44,11 +48,7 @@ export interface GraphRAGBackend {
     query: string,
     opts?: { limit?: number; mode?: 'hybrid' | 'semantic' | 'bm25'; enrich?: boolean },
   ) => Promise<EnrichedSearchResult[]>;
-  grep: (
-    pattern: string,
-    limit?: number,
-    opts?: { fileFilter?: string; caseSensitive?: boolean },
-  ) => Promise<GrepResponse>;
+  grep: (pattern: string, limit?: number, opts?: GrepOptions) => Promise<GrepResponse>;
   readFile: (filePath: string) => Promise<string>;
 }
 
@@ -380,7 +380,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
         const limit = maxResults ?? 100;
         const { results, timedOut } = await backendGrep(pattern, limit, {
-          fileFilter: fileFilter ?? undefined,
+          fileFilter,
           caseSensitive,
         });
         const timeoutMsg = timedOut

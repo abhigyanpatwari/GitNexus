@@ -64,10 +64,10 @@ export interface GrepResult {
   text: string;
 }
 
-/** Full `/api/grep` payload — `timedOut` means the 5s budget cut the scan short. */
+/** Full `/api/grep` payload — `timedOut` is true when the 5s budget cut the scan short. */
 export interface GrepResponse {
   results: GrepResult[];
-  timedOut?: boolean;
+  timedOut: boolean;
 }
 
 export interface JobProgress {
@@ -878,7 +878,7 @@ export const search = async (
 /** Options for {@link grep} beyond pattern/repo/limit. */
 export interface GrepOptions {
   /** Only search files whose path contains this substring (case-insensitive). */
-  fileFilter?: string;
+  fileFilter?: string | null;
   /** Case-sensitive matching (default: insensitive). */
   caseSensitive?: boolean;
 }
@@ -901,10 +901,10 @@ export const grep = async (
     .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
   await assertOk(response);
-  const body = (await response.json()) as { results?: GrepResult[]; timedOut?: unknown };
+  const body = (await response.json()) as Partial<GrepResponse>;
   return {
-    results: (body.results ?? []) as GrepResult[],
-    ...(body.timedOut === true ? { timedOut: true as const } : {}),
+    results: body.results ?? [],
+    timedOut: body.timedOut === true,
   };
 };
 

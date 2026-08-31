@@ -4,7 +4,7 @@ import { createGraphRAGTools, type GraphRAGBackend } from '../../src/core/llm/to
 const noOpBackend: GraphRAGBackend = {
   executeQuery: async () => [],
   search: async () => [],
-  grep: async () => ({ results: [] }),
+  grep: async () => ({ results: [], timedOut: false }),
   readFile: async () => '',
 };
 
@@ -14,7 +14,7 @@ function grepTool(backend: GraphRAGBackend) {
 
 describe('grep tool timeout contract', () => {
   it('says the scan was incomplete when the server sets timedOut with no hits', async () => {
-    const grep = vi.fn(async () => ({ results: [] as const, timedOut: true as const }));
+    const grep = vi.fn(async () => ({ results: [], timedOut: true }));
     const output = await grepTool({ ...noOpBackend, grep }).invoke({ pattern: 'signOrder' });
     expect(output).toContain('No matches for "signOrder"');
     expect(output).toContain('results may be incomplete');
@@ -23,7 +23,7 @@ describe('grep tool timeout contract', () => {
   it('still warns when a timed-out scan returned some hits below the limit', async () => {
     const grep = vi.fn(async () => ({
       results: [{ filePath: 'a.ts', line: 1, text: 'signOrder()' }],
-      timedOut: true as const,
+      timedOut: true,
     }));
     const output = await grepTool({ ...noOpBackend, grep }).invoke({
       pattern: 'signOrder',

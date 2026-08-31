@@ -4,7 +4,7 @@ import { createGraphRAGTools, type GraphRAGBackend } from '../../src/core/llm/to
 const noOpBackend: GraphRAGBackend = {
   executeQuery: async () => [],
   search: async () => [],
-  grep: async () => ({ results: [] }),
+  grep: async () => ({ results: [], timedOut: false }),
   readFile: async () => '',
 };
 

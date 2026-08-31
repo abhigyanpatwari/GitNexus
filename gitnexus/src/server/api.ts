@@ -1344,10 +1344,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // mapped to 400 by statusFromError in the catch below — including the
       // CodeQL js/type-confusion-through-parameter-tampering guard for
       // array-form query params. ReDoS caveat: the wall-clock budget below
-      // is checked BETWEEN files only — a single catastrophically
-      // backtracking regex.test() blocks the event loop synchronously and
-      // cannot be interrupted (see grep-params.ts and SECURITY.md for the
-      // accepted-risk rationale; literal=1 restores full immunity).
+      // is checked between files (and every 256 lines inside a file) — a
+      // single catastrophically backtracking regex.test() still cannot be
+      // interrupted (see grep-params.ts and SECURITY.md; literal=1 restores
+      // full immunity).
       const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
       const deadline = Date.now() + GREP_TIME_BUDGET_MS;
 
@@ -1368,7 +1368,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // timedOut so callers can distinguish truncation from a full scan.
       // It is NOT a per-test circuit breaker — see the caveat above.
       let timedOut = false;
-      for (const row of fileRows) {
+      files: for (const row of fileRows) {
         if (results.length >= limit) break;
         if (Date.now() > deadline) {
           timedOut = true;
@@ -1392,15 +1392,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (results.length >= limit) break;
-          if (Date.now() > deadline) {
+          // Sample the clock; Date.now() every line is wasted on the hot path
+          // and still cannot abort a blocking regex.test().
+          if ((i & 255) === 0 && Date.now() > deadline) {
             timedOut = true;
-            break;
+            break files;
           }
           if (regex.test(lines[i])) {
             results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
           }
         }
-        if (timedOut) break;
       }
 
       res.json({ results, ...(timedOut ? { timedOut: true } : {}) });

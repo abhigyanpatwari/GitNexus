@@ -8,6 +8,12 @@ import { grep, setBackendUrl } from '../../src/services/backend-client';
 
 const BASE = 'http://grep-client.test:4747';
 
+const jsonOk = (body: unknown) =>
+  new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+
 describe('backend-client grep', () => {
   beforeEach(() => {
     __resetBreakerRegistry__();
@@ -26,13 +32,10 @@ describe('backend-client grep', () => {
       expect(url).toContain(`fileFilter=${encodeURIComponent('src/api')}`);
       expect(url).toContain('caseSensitive=1');
       expect(url).toContain('limit=12');
-      return new Response(
-        JSON.stringify({
-          results: [{ filePath: 'src/api.ts', line: 3, text: 'signOrder()' }],
-          timedOut: true,
-        }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+      return jsonOk({
+        results: [{ filePath: 'src/api.ts', line: 3, text: 'signOrder()' }],
+        timedOut: true,
+      });
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -44,33 +47,29 @@ describe('backend-client grep', () => {
     expect(body.timedOut).toBe(true);
   });
 
-  it('omits timedOut when the server completed the scan', async () => {
+  it('reports timedOut false when the server completed the scan', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
-        return new Response(JSON.stringify({ results: [] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return jsonOk({ results: [] });
       }),
     );
 
     const body = await grep('TODO');
-    expect(body).toEqual({ results: [] });
+    expect(body).toEqual({ results: [], timedOut: false });
   });
 
   it('does not send fileFilter when it is null or empty', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       expect(url).not.toContain('fileFilter=');
-      return new Response(JSON.stringify({ results: [] }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return jsonOk({ results: [] });
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await grep('x', undefined, undefined, { fileFilter: '' });
-    expect(fetchMock).toHaveBeenCalled();
+    for (const fileFilter of ['', null] as const) {
+      await grep('x', undefined, undefined, { fileFilter });
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

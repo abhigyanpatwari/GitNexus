@@ -81,12 +81,7 @@ export function parseGrepQuery(query: Record<string, unknown>): ParsedGrepQuery 
     // had to reset it manually). No 'm' either: each test receives a
     // single line, so ^/$ already anchor at string boundaries — 'm'
     // would be a no-op.
-    //
-    // CodeQL js/regular-expression-injection — `effectivePattern` is the
-    // caller-supplied query unless `literal=1` escaped it. Intentional:
-    // the web grep tool contract is real regex. Residual ReDoS (one
-    // blocking `regex.test`) is documented in SECURITY.md; loopback
-    // default + hosted edge token bound who can send a pattern.
+    // CodeQL js/regular-expression-injection — intentional real regex; see file header + SECURITY.md.
     // lgtm[js/regular-expression-injection]
     // codeql[js/regular-expression-injection]
     regex = new RegExp(effectivePattern, caseSensitive ? '' : 'i');
