@@ -89,6 +89,30 @@ describe('cross-impact', () => {
     if (r.ok) expect(r.timeoutMs).toBe(DEFAULT_LOCAL_IMPACT_TIMEOUT_MS);
   });
 
+  it('test_validateGroupImpactParams_accepts_target_uid_without_name', () => {
+    const r = validateGroupImpactParams({
+      name: 'g',
+      repo: 'a',
+      target_uid: 'sym::uid::1',
+      direction: 'upstream',
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.target).toBe('sym::uid::1');
+      expect(r.target_uid).toBe('sym::uid::1');
+    }
+  });
+
+  it('test_validateGroupImpactParams_rejects_when_neither_target_nor_uid', () => {
+    const r = validateGroupImpactParams({
+      name: 'g',
+      repo: 'a',
+      direction: 'upstream',
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe('target or target_uid is required');
+  });
+
   it('test_collectImpactSymbolUids_respects_service_prefix', () => {
     const local = {
       target: { id: 'a', filePath: 'services/auth/x.ts' },
@@ -447,6 +471,50 @@ describe('cross-impact', () => {
     expect(passed.target_uid).toBeUndefined();
     expect(passed.file_path).toBeUndefined();
     expect(passed.kind).toBeUndefined();
+  });
+
+  it('test_runGroupImpact_accepts_target_uid_without_name', async () => {
+    const impact = vi.fn(async () => ({
+      byDepth: {},
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      risk: 'LOW',
+    }));
+    const { tmpDir, cleanup } = tmpGroup();
+    vi.stubEnv('GITNEXUS_HOME', tmpDir);
+    try {
+      const port: GroupToolPort = {
+        resolveRepo: vi.fn(async () => ({
+          id: 'be',
+          name: 'reg-be',
+          repoPath: '/r',
+          storagePath: '/r/.gitnexus',
+        })),
+        impact,
+        query: vi.fn(),
+        impactByUid: vi.fn(),
+        context: vi.fn(),
+      };
+      const r = await runGroupImpact(
+        { port, gitnexusDir: tmpDir },
+        {
+          name: 'g1',
+          repo: 'app/backend',
+          target_uid: 'sym::uid::1',
+          direction: 'upstream',
+        },
+      );
+      expect(r).toMatchObject({ truncated: false });
+      expect(impact).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          target: 'sym::uid::1',
+          target_uid: 'sym::uid::1',
+        }),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+      cleanup();
+    }
   });
 
   it('test_runGroupImpact_bridge_schema_mismatch_returns_error', async () => {

@@ -37,6 +37,7 @@ import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.
 import type { WildcardMatchResult } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
+import { applyDegradedFlag } from './normalization.js';
 import { getContractRegistryPath, readContractRegistry, writeContractRegistry } from './storage.js';
 import {
   markBridgeProvenanceUnknown,
@@ -112,10 +113,11 @@ export interface SyncResult {
   degradedLinks: number;
   /**
    * Repos whose per-repo extraction threw (init, an extractor, or the
-   * snapshot read). Each still lands in `missingRepos` — unchanged downstream
-   * semantics — but carries its failure reason here: the catch used to
-   * swallow the exception, leaving contracts already pushed by earlier
-   * extractors in this iteration as silent half-repo data.
+   * snapshot read). Each still lands in `unreadableRepos` (group path) —
+   * unchanged downstream semantics — but carries its failure reason here: the
+   * catch used to swallow the exception, leaving contracts already pushed by
+   * earlier extractors in this iteration as silent half-repo data. `repo` is
+   * that same group path (e.g. `app/backend`), not the registry display name.
    */
   failedRepos: Array<{ repo: string; reason: string }>;
   /** Operator-facing run warnings (e.g. bridge.lbug write failed after contracts.json was written). */
@@ -492,7 +494,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           );
           unreadableRepos.push(groupPath);
           failedRepos.push({
-            repo: regName,
+            repo: groupPath,
             reason: err instanceof Error ? err.message : String(err),
           });
           // Forget the handle recorded above (present only if the failure came
@@ -662,7 +664,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // manifest-declared link can also emit a matchType:'exact' CrossLink with the
   // same endpoints. Prefer the manifest version — it reflects operator intent
   // and carries matchType:'manifest' which downstream consumers may rely on.
-  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]);
+  const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]).map(
+    applyDegradedFlag,
+  );
   const allContracts: StoredContract[] = autoContracts;
 
   const registry: ContractRegistry = {
@@ -890,13 +894,16 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
               'a lower bound rather than as complete.'
             : 'Its metadata could NOT be marked provenance-unknown, so those answers may still ' +
               'report as complete despite describing an older sync.';
+          const writeBridgeWarn =
+            '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
+            'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
+            `the previous sync's contracts. ${provenanceNote} ` +
+            'Re-run `gitnexus group sync` to retry.';
           logger.warn(
             { err: msg, groupDir, bridgeProvenanceWithdrawn: withdrawn },
-            '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +
-              'but bridge.lbug was not replaced: cross-repo queries may still answer from ' +
-              `the previous sync's contracts. ${provenanceNote} ` +
-              'Re-run `gitnexus group sync` to retry.',
+            writeBridgeWarn,
           );
+          warnings.push(writeBridgeWarn);
         }
       }
     });
@@ -911,7 +918,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     unreadableRepos,
     failedRepos,
     warnings,
-    degradedLinks: crossLinks.filter((l) => (l as { degraded?: boolean }).degraded === true).length,
+    degradedLinks: crossLinks.filter((l) => l.degraded === true).length,
     repoSnapshots,
     registryOutcome,
   };

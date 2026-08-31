@@ -182,11 +182,21 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   | { ok: false; error: string } {
   const name = String(params.name ?? '').trim();
   const repoPath = String(params.repo ?? '').trim();
-  const target = String(params.target ?? '').trim();
+  // Optional string, same helper shape as cross-trace's `str()`: empty/blank
+  // counts as absent so `target_uid: ''` degrades to the name lookup rather
+  // than a zero-ambiguity lookup of the empty uid. Parsed before the required
+  // check so UID-only callers (MCP impact schema requires `direction`, not
+  // `target`) are accepted.
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v : undefined;
+  const targetName = String(params.target ?? '').trim();
+  const target_uidEarly = str(params.target_uid);
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath)
     return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
-  if (!target) return { ok: false, error: 'target is required' };
+  if (!targetName && !target_uidEarly)
+    return { ok: false, error: 'target or target_uid is required' };
+  const target = targetName || target_uidEarly!;
   if (
     params.service !== undefined &&
     params.service !== null &&
@@ -214,12 +224,7 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const service = normalizeServicePrefix(params.service);
   const subgroup = typeof params.subgroup === 'string' ? params.subgroup : undefined;
 
-  // Optional string, same helper shape as cross-trace's `str()`: empty/blank
-  // counts as absent so `target_uid: ''` degrades to the name lookup rather
-  // than a zero-ambiguity lookup of the empty uid.
-  const str = (v: unknown): string | undefined =>
-    typeof v === 'string' && v.trim() !== '' ? v : undefined;
-  const target_uid = str(params.target_uid);
+  const target_uid = target_uidEarly;
   const file_path = str(params.file_path);
   const kind = str(params.kind);
 

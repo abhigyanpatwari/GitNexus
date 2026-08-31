@@ -131,6 +131,21 @@ export function isUnresolvedEndpoint(endpoint: CrossLinkEndpoint): boolean {
   );
 }
 
+/**
+ * Derive `degraded` from the provider endpoint. Present (`true`) only when
+ * unresolved; deleted otherwise so contracts.json stays "carried only when
+ * meaningful" (`'degraded' in link === false` for anchored links).
+ */
+export function applyDegradedFlag(link: CrossLink): CrossLink {
+  const next: CrossLink = { ...link };
+  if (isUnresolvedEndpoint(next.to)) {
+    next.degraded = true;
+  } else {
+    delete next.degraded;
+  }
+  return next;
+}
+
 export function dedupeContracts(items: StoredContract[]): StoredContract[] {
   const deduped = new Map<string, StoredContract>();
   for (const contract of items) {
@@ -159,13 +174,9 @@ export function dedupeCrossLinks(items: CrossLink[]): CrossLink[] {
       from: mergeEndpoints(primary.from, secondary.from),
       to: mergeEndpoints(primary.to, secondary.to),
     };
-    // A `degraded` flag survives the merge only if the merged provider
-    // endpoint is STILL unresolved — mergeEndpoints backfills `to.symbolUid`
-    // from the losing twin, which would leave a stale flag on an anchored link.
-    if (merged.degraded && !isUnresolvedEndpoint(merged.to)) {
-      delete merged.degraded;
-    }
-    deduped.set(key, merged);
+    // Re-derive after mergeEndpoints: a richer twin can backfill `to.symbolUid`
+    // and must not leave a stale `degraded` flag on an now-anchored link.
+    deduped.set(key, applyDegradedFlag(merged));
   }
-  return [...deduped.values()];
+  return [...deduped.values()].map(applyDegradedFlag);
 }
