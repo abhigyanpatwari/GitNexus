@@ -54,7 +54,9 @@ import {
   persistedEmbeddingCountOrUndefined,
   type PersistedEmbeddingCount,
 } from '../core/embedding-count.js';
-import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
+import { assertString, BadRequestError, createRouteLimiter } from './validation.js';
+import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
+import { runGrepScanInWorker } from './grep-scan.js';
 import {
   extractRepoName,
   getCloneDir,
@@ -1337,50 +1339,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      // Type-confusion guard (CodeQL js/type-confusion-through-parameter-tampering):
-      // req.query.pattern is `string | string[] | ParsedQs` — without an explicit
-      // type check, the `.length` guard below counts array elements instead of
-      // characters, allowing arbitrarily long patterns through.
-      const rawPattern = req.query.pattern;
-      if (rawPattern === undefined) {
-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
-        return;
-      }
-      const pattern = assertString(rawPattern, 'pattern');
-      if (pattern.length === 0) {
-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
-        return;
-      }
-
-      // Length cap: applies to both literal and regex modes as a defense-in-depth
-      // bound against pathological input.
-      if (pattern.length > 200) {
-        res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
-        return;
-      }
-
-      // Treat user input as a literal substring in all cases to prevent
-      // regex-injection/ReDoS via attacker-controlled regex syntax.
-      const effectivePattern = escapeRegExp(pattern);
-
-      // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
-      let regex: RegExp;
-      try {
-        regex = new RegExp(effectivePattern, 'gim');
-      } catch {
-        res.status(400).json({ error: 'Invalid regex pattern' });
-        return;
-      }
-
-      const parsedLimit = Number(req.query.limit ?? 50);
-      const limit = Number.isFinite(parsedLimit)
-        ? Math.max(1, Math.min(200, Math.trunc(parsedLimit)))
-        : 50;
-
-      const results: { filePath: string; line: number; text: string }[] = [];
+      // Pattern parsing lives in grep-params.ts (unit-testable without
+      // Express + LadybugDB). Matching runs in a worker so terminate() can
+      // cut a stuck regex.test() when the wall-clock budget expires.
+      const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
       const repoRoot = path.resolve(entry.path);
 
-      // Get file paths from the graph (lightweight — no content loaded)
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const fileRows = await withLbugDb(
         lbugPath,
@@ -1389,34 +1353,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         { readOnly: true },
       );
 
-      // Search files on disk one at a time (constant memory)
+      const filePaths: string[] = [];
       for (const row of fileRows) {
-        if (results.length >= limit) break;
         const filePath: string = row.filePath || '';
-        const fullPath = path.resolve(repoRoot, filePath);
-
-        // Path traversal guard
-        const safeRepoRoot = repoRoot.endsWith(path.sep) ? repoRoot : repoRoot + path.sep;
-        if (!fullPath.startsWith(safeRepoRoot) && fullPath !== repoRoot) continue;
-
-        let content: string;
-        try {
-          content = await fs.readFile(fullPath, 'utf-8');
-        } catch {
-          continue; // File may have been deleted since indexing
-        }
-
-        const lines = content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (results.length >= limit) break;
-          if (regex.test(lines[i])) {
-            results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
-          }
-          regex.lastIndex = 0;
-        }
+        if (fileFilter && !filePath.toLowerCase().includes(fileFilter)) continue;
+        filePaths.push(filePath);
       }
 
-      res.json({ results });
+      const { results, timedOut } = await runGrepScanInWorker({
+        repoRoot,
+        filePaths,
+        pattern: regex.source,
+        flags: regex.flags,
+        limit,
+        deadlineMs: Date.now() + GREP_TIME_BUDGET_MS,
+      });
+
+      res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
     } catch (err: any) {
       res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
     }
