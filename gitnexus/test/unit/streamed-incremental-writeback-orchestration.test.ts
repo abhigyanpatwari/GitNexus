@@ -1,9 +1,9 @@
 import { execSync } from 'node:child_process';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PipelineResult } from '../../src/types/pipeline.js';
+import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
 
 const fixture = vi.hoisted(() => ({
   result: undefined as PipelineResult | undefined,
@@ -51,11 +51,39 @@ import {
   runFullAnalysis,
 } from '../../src/core/run-analyze.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
-import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
+
+const digest = `sha256:${'0'.repeat(64)}`;
+const runnerIdentity: AnalyzerRunnerIdentity = {
+  schemaVersion: 4,
+  runtime: {
+    executablePath: '/node',
+    version: 'test',
+    platform: 'test',
+    architecture: 'test',
+    modulesAbi: 'test',
+    libc: 'test',
+  },
+  cliVersion: 'test',
+  invokedArtifact: { path: '/run-analyze.ts', digest },
+  build: {
+    kind: 'source',
+    rootPath: '/gitnexus',
+    canonicalization: 'gitnexus-analyzer-build-v2',
+    digest,
+  },
+  dependencyRuntime: {
+    manifestPath: '/gitnexus/package.json',
+    lockfilePath: null,
+    canonicalization: 'gitnexus-analyzer-dependency-runtime-v4',
+    packageCount: 1,
+    artifactCount: 0,
+    digest,
+  },
+};
 
 beforeEach(() => {
   fixture.result = undefined;
@@ -100,9 +128,6 @@ describe('streamed incremental writeback orchestration', () => {
         },
       };
 
-      const runnerIdentity = resolveAnalyzerRunnerIdentity(
-        pathToFileURL(path.resolve('src/core/run-analyze.ts')).href,
-      );
       const { lbugPath, metaPath, storagePath } = getStoragePaths(repo.dbPath);
       await saveMeta(storagePath, {
         repoPath: repo.dbPath,
