@@ -445,7 +445,12 @@ export interface KotlinConstantIndex {
 
 /** Does this file contribute declarations to Kotlin import ambiguity? */
 function contributesKotlinConstants(mc: ModuleConstants): boolean {
-  return mc.literals.size > 0 || mc.exprs.size > 0 || unfoldableDeclarationsOf(mc).size > 0;
+  return (
+    mc.literals.size > 0 ||
+    mc.exprs.size > 0 ||
+    unfoldableDeclarationsOf(mc).size > 0 ||
+    topLevelDeclarationsOf(mc).size > 0
+  );
 }
 
 /** Top-level names declared by one file (`Outer.X` contributes `Outer`). */
@@ -461,6 +466,7 @@ function topLevelDeclarationNames(mc: ModuleConstants): Set<string> {
     const dot = key.indexOf('.');
     names.add(dot < 0 ? key : key.slice(0, dot));
   }
+  for (const name of topLevelDeclarationsOf(mc)) names.add(name);
   return names;
 }
 

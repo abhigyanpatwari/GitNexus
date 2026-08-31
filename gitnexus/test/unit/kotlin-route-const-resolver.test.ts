@@ -523,6 +523,23 @@ import com.example.app.api.*
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ITEMS', repo)).toBe('/local/items');
     });
 
+    it('floors a same-package sibling type before package-star imports', () => {
+      const repo = repoOf({
+        'src/web/Local.kt': `package com.example.app.web
+class ApiPaths
+`,
+        [CONSTS_KEY]: `package com.example.app.api
+object ApiPaths {
+    const val ITEMS = "/imported/items"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+import com.example.app.api.*
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ITEMS', repo)).toBeNull();
+    });
+
     it('floors ambiguous same-package sibling declarations before package stars', () => {
       const repo = repoOf({
         'src/web/One.kt': `package com.example.app.web

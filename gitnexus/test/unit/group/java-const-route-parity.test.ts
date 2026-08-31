@@ -267,6 +267,20 @@ public class OrderController {
     expect(ingestionRoutes(files)).toEqual([]);
   });
 
+  it('does not fold a type-qualified ref from a static wildcard alone', () => {
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CTL]: `package com.example;
+import static com.example.ApiPaths.*;
+public class OrderController {
+  @GetMapping(ApiPaths.ORDERS)
+  public void list() {}
+}`,
+    };
+    expect(groupProviders(files)).toEqual([]);
+    expect(ingestionRoutes(files)).toEqual([]);
+  });
+
   it('leaves literal routes unchanged with no constant map at all', () => {
     const files = {
       [CTL]: `package com.example;

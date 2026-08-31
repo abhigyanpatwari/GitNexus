@@ -934,8 +934,28 @@ public class C {}`,
     expect(foldJavaOperands('src/c/C.java', [{ kind: 'ref', name: 'ROUTE' }], explicit)).toBe('/b');
   });
 
+  it('does not bind the wildcard target type name', () => {
+    const repo = repoOf({
+      'src/com/x/ApiPaths.java': `package com.x;
+public class ApiPaths { public static final String SAVE = "/api/v1/save"; }`,
+      'src/com/y/C.java': WILDCARD_CONTROLLER,
+    });
+    const controller = repo.get('src/com/y/C.java')!;
+    expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
+    expect(controller.imports.has('ApiPaths')).toBe(false);
+    expect(
+      foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'ApiPaths.SAVE' }], repo),
+    ).toBeNull();
+    expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'SAVE' }], repo)).toBe(
+      '/api/v1/save',
+    );
+  });
+
   it('admits wildcard-only files on the harvest heuristic', () => {
     expect(javaProvider.moduleConstantHeuristic?.(WILDCARD_CONTROLLER)).toBe(true);
+    expect(javaProvider.moduleConstantHeuristic?.('import com.example.api.*;\nclass C {}')).toBe(
+      false,
+    );
   });
 });
 

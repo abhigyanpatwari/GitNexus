@@ -774,11 +774,6 @@ export function expandJavaWildcardStaticImports(
       if (previous === undefined) pending.set(name, binding);
       else if (previous !== null && previous.module !== fqn) pending.set(name, null);
     }
-    // The class's own simple name binds like a plain class import, so
-    // qualified refs (`ApiPath.X` under `import static ...ApiPath.*`) fold too.
-    if (classSimple && !mc.imports.has(classSimple)) {
-      mc.imports.set(classSimple, { module: fqn, originalName: classSimple });
-    }
   }
   for (const [name, binding] of pending) {
     if (binding !== null) mc.imports.set(name, binding);
