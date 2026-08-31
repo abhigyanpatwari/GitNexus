@@ -343,6 +343,24 @@ export const writeNdjsonRecord = async (
   }
 };
 
+const LEGACY_ROUTE_NODE_QUERY =
+  'MATCH (n:`Route`) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, ' +
+  'n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware';
+
+const isMissingRouteRuntimePropertyError = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  const mentionsRuntimeProperty = ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus'].some(
+    (property) => message.includes(property),
+  );
+
+  return (
+    mentionsRuntimeProperty &&
+    (/cannot find property/i.test(message) ||
+      /property .* does not exist/i.test(message) ||
+      /property .* not found/i.test(message))
+  );
+};
+
 const buildGraph = async (
   includeContent = false,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
@@ -354,6 +372,13 @@ const buildGraph = async (
         nodes.push(mapGraphNodeRow(table, row, includeContent));
       }
     } catch (err) {
+      if (table === 'Route' && isMissingRouteRuntimePropertyError(err)) {
+        const rows = await executeQuery(LEGACY_ROUTE_NODE_QUERY);
+        for (const row of rows) {
+          nodes.push(mapGraphNodeRow(table, row, includeContent));
+        }
+        continue;
+      }
       if (!isIgnorableGraphQueryError(err)) {
         throw err;
       }
@@ -473,6 +498,19 @@ export const streamGraphNdjson = async (
         );
       });
     } catch (err) {
+      if (table === 'Route' && isMissingRouteRuntimePropertyError(err)) {
+        await streamQuery(LEGACY_ROUTE_NODE_QUERY, async (row) => {
+          await writeNdjsonRecord(
+            res,
+            {
+              type: 'node',
+              data: mapGraphNodeRow(table, row, includeContent),
+            },
+            signal,
+          );
+        });
+        continue;
+      }
       if (!isIgnorableGraphQueryError(err)) {
         throw err;
       }

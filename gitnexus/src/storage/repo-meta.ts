@@ -87,10 +87,17 @@ export interface RepoMeta {
   lastCommit: string;
   indexedAt: string;
   /**
-   * Runtime enrichment mode for this index. Only the enabled bit is persisted:
-   * input paths and Actuator payload data are deliberately excluded from meta.
+   * Runtime enrichment mode plus redacted scan exclusions. Payload data and
+   * absolute/external paths are deliberately excluded from metadata.
    */
-  springActuator?: { enabled: true };
+  springActuator?: {
+    enabled: boolean;
+    /**
+     * Normalized repo-relative inputs that must remain excluded from all future
+     * source scans. The list is empty when every configured input was external.
+     */
+    repoRelativeInputs: string[];
+  };
   /**
    * Analyzer/runtime receipt for the successful run represented by this
    * metadata. Optional so indexes written by older GitNexus releases remain

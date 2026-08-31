@@ -126,12 +126,13 @@ import { PDG_EDGE_TYPES } from './pdg-emit-sink.js';
  *   DEFINES              - local-symbol-pruner's isFileDefinesEdge test
  *   INJECTS              - di phase fan-out
  *   CONDITIONAL_ON       - Spring Actuator runtime condition enrichment
+ *   HANDLES_ROUTE        - Spring Actuator runtime handler conflict detection
  *
  * Deliberately NOT retained: STEP_IN_PROCESS / ENTRY_POINT_OF / MEMBER_OF
  * (written only by the `processes` / `communities` phases, which the streaming
  * flag disables), TAINT_PATH / CALL_SUMMARY (their phases are likewise gated
- * off under the flag), and HANDLES_ROUTE / HANDLES_TOOL (written by
- * `routes`/`tools`, never read back mid-pipeline).
+ * off under the flag), and HANDLES_TOOL (written by `tools`, never read back
+ * mid-pipeline).
  *
  * Adding a relationship type that a phase reads back WITHOUT adding it here is
  * a silent-wrong-graph bug, not a crash. The differential round-trip test cannot:
@@ -152,6 +153,7 @@ export const RETAINED_REL_TYPES: ReadonlySet<RelationshipType> = new Set<Relatio
   'DEFINES',
   'INJECTS',
   'CONDITIONAL_ON',
+  'HANDLES_ROUTE',
   // springAopInheritance reads direct behavior evidence after MRO.
   'ADVISED_BY',
 ]);

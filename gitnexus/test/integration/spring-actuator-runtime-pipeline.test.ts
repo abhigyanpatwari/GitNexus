@@ -37,7 +37,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 class OrderController {
   @GetMapping("/orders")
-  String list() { return "ok"; }
+  String list() { return helper(); }
+  String helper() { return leaf(); }
+  String leaf() { return "ok"; }
 }
 
 class SiblingController {
@@ -240,16 +242,25 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
         result.graph.getNode(edge.targetId)?.properties.name === 'list',
     )?.targetId;
     expect(nodeNamed('/runtime-bound', 'Route')?.properties.handlerSymbolId).toBe(ownerMethodId);
-    expect(nodeNamed('BillingService', 'Class')?.properties.runtimeConfirmed).toBe(true);
-    expect(nodeNamed('runtimeOnlyBean', 'CodeElement')?.properties.runtimeConfirmed).toBe(true);
+    expect(nodeNamed('BillingService', 'Class')?.properties.runtimeConfirmed).toBeUndefined();
+    expect(nodeNamed('BillingService', 'Class')?.properties.description).toContain(
+      'Spring Actuator beans runtime-confirmed',
+    );
+    expect(
+      nodeNamed('runtimeOnlyBean', 'CodeElement')?.properties.runtimeConfirmed,
+    ).toBeUndefined();
+    expect(nodeNamed('runtimeOnlyBean', 'CodeElement')?.properties.description).toContain(
+      'Spring Actuator beans runtime-confirmed',
+    );
     const configOwner = nodeNamed('RuntimeConfig', 'Class');
     const configMethodId = [...result.graph.iterRelationshipsByType('HAS_METHOD')].find(
       (edge) =>
         edge.sourceId === configOwner?.id &&
         result.graph.getNode(edge.targetId)?.properties.name === 'billingService',
     )?.targetId;
-    expect(result.graph.getNode(configMethodId ?? '')?.properties.runtimeStatus).toContain(
-      'matched',
+    expect(result.graph.getNode(configMethodId ?? '')?.properties.runtimeStatus).toBeUndefined();
+    expect(result.graph.getNode(configMethodId ?? '')?.properties.description).toContain(
+      'Spring Actuator conditions matched',
     );
     const siblingOwner = nodeNamed('SiblingConfig', 'Class');
     const siblingMethodId = [...result.graph.iterRelationshipsByType('HAS_METHOD')].find(
@@ -258,8 +269,14 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
         result.graph.getNode(edge.targetId)?.properties.name === 'billingService',
     )?.targetId;
     expect(result.graph.getNode(siblingMethodId ?? '')?.properties.runtimeStatus).toBeUndefined();
-    expect(nodeNamed('app.billing.url', 'Property')?.properties.runtimeConfirmed).toBe(true);
-    expect(nodeNamed('db.password', 'Property')?.properties.runtimeConfirmed).toBe(true);
+    expect(nodeNamed('app.billing.url', 'Property')?.properties.runtimeConfirmed).toBeUndefined();
+    expect(nodeNamed('app.billing.url', 'Property')?.properties.description).toContain(
+      'Spring Actuator configprops runtime-confirmed',
+    );
+    expect(nodeNamed('db.password', 'Property')?.properties.runtimeConfirmed).toBeUndefined();
+    expect(nodeNamed('db.password', 'Property')?.properties.description).toContain(
+      'Spring Actuator env runtime-confirmed',
+    );
 
     const graphText = JSON.stringify({
       nodes,
@@ -325,8 +342,8 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
     expect(
       nodes.find(
         (node) => node.label === 'Property' && node.properties.name === 'bundle.secret-key',
-      )?.properties.runtimeConfirmed,
-    ).toBe(true);
+      )?.properties.description,
+    ).toContain('Spring Actuator env runtime-confirmed');
     expect(nodes.some((node) => node.properties.filePath === 'runtime-snapshot.json')).toBe(false);
     expect(JSON.stringify(nodes)).not.toContain(SECRET_ENV_VALUE);
     expect(JSON.stringify(nodes)).not.toContain('bundle-source');
@@ -366,5 +383,207 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
         (node) => node.label === 'File' && node.properties.filePath === 'index.ts',
       ),
     ).toBe(true);
+  }, 60_000);
+
+  it('links an Actuator-only route with a resolved source handler to its execution flow', async () => {
+    const { repo, actuatorDir } = runtimeFixture();
+    tempRepos.push(repo);
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      springActuatorPath: actuatorDir,
+    });
+    const route = [...result.graph.iterNodes()].find(
+      (node) => node.label === 'Route' && node.properties.name === '/runtime-bound',
+    );
+    const entryEdges = [...result.graph.iterRelationshipsByType('ENTRY_POINT_OF')].filter(
+      (edge) => edge.sourceId === route?.id,
+    );
+
+    expect(route?.properties.handlerSymbolId).toEqual(expect.any(String));
+    expect(entryEdges.length).toBeGreaterThan(0);
+    expect(
+      entryEdges.some(
+        (edge) =>
+          result.graph.getNode(edge.targetId)?.properties.entryPointId ===
+          route?.properties.handlerSymbolId,
+      ),
+    ).toBe(true);
+  }, 60_000);
+
+  it('keeps triple duplicate simple names ambiguous and rejects stale qualified packages', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-actuator-ambiguous-'));
+    tempRepos.push(repo);
+    for (const pkg of ['one', 'two', 'three']) {
+      writeFixture(
+        repo,
+        `src/main/java/${pkg}/DuplicateController.java`,
+        `package ${pkg}; class DuplicateController { String run() { return "${pkg}"; } }\n`,
+      );
+    }
+    writeFixture(
+      repo,
+      'src/main/java/source/AdminController.java',
+      'package source; class AdminController { String run() { return "source"; } }\n',
+    );
+    writeJson(repo, 'actuator/mappings.json', {
+      contexts: {
+        application: {
+          mappings: {
+            dispatcherServlets: {
+              dispatcherServlet: [
+                {
+                  predicate: '{GET [/ambiguous]}',
+                  details: {
+                    handlerMethod: {
+                      className: 'DuplicateController',
+                      name: 'run',
+                      descriptor: '()Ljava/lang/String;',
+                    },
+                    requestMappingConditions: { methods: ['GET'], patterns: ['/ambiguous'] },
+                  },
+                },
+                {
+                  predicate: '{GET [/stale-package]}',
+                  details: {
+                    handlerMethod: {
+                      className: 'runtime.AdminController',
+                      name: 'run',
+                      descriptor: '()Ljava/lang/String;',
+                    },
+                    requestMappingConditions: {
+                      methods: ['GET'],
+                      patterns: ['/stale-package'],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      skipGraphPhases: true,
+      springActuatorPath: 'actuator',
+    });
+    const routes = [...result.graph.iterNodes()].filter((node) => node.label === 'Route');
+
+    expect(
+      routes.find((node) => node.properties.name === '/ambiguous')?.properties,
+    ).not.toHaveProperty('handlerSymbolId');
+    expect(
+      routes.find((node) => node.properties.name === '/stale-package')?.properties,
+    ).not.toHaveProperty('handlerSymbolId');
+  }, 60_000);
+
+  it('records a static/runtime handler conflict without confirming the wrong owner', async () => {
+    const { repo } = runtimeFixture();
+    tempRepos.push(repo);
+    writeFixture(
+      repo,
+      'src/main/java/com/example/OtherController.java',
+      'package com.example; class OtherController { String otherList() { return "other"; } }\n',
+    );
+    writeJson(repo, 'runtime-actuator/mappings.json', {
+      contexts: {
+        application: {
+          mappings: {
+            dispatcherServlets: {
+              dispatcherServlet: [
+                {
+                  predicate: '{GET [/orders]}',
+                  details: {
+                    handlerMethod: {
+                      className: 'com.example.OtherController',
+                      name: 'otherList',
+                      descriptor: '()Ljava/lang/String;',
+                    },
+                    requestMappingConditions: { methods: ['GET'], patterns: ['/orders'] },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      skipGraphPhases: true,
+      springActuatorPath: 'runtime-actuator',
+    });
+    const route = [...result.graph.iterNodes()].find(
+      (node) => node.label === 'Route' && node.properties.name === '/orders',
+    );
+    const otherFile = [...result.graph.iterNodes()].find(
+      (node) => node.label === 'File' && node.properties.filePath.endsWith('OtherController.java'),
+    );
+
+    expect(route?.properties.filePath).toContain('RuntimeApplication.java');
+    expect(route?.properties.handlerSymbolId).not.toBe(
+      [...result.graph.iterNodes()].find(
+        (node) =>
+          node.label === 'Method' &&
+          node.properties.name === 'otherList' &&
+          node.properties.filePath.endsWith('OtherController.java'),
+      )?.id,
+    );
+    expect(route?.properties).toMatchObject({
+      runtimeConfirmed: false,
+      runtimeSource: 'spring-actuator',
+      runtimeStatus: 'handler-conflict',
+    });
+    expect(
+      [...result.graph.iterRelationshipsByType('HANDLES_ROUTE')].some(
+        (edge) => edge.sourceId === otherFile?.id && edge.targetId === route?.id,
+      ),
+    ).toBe(false);
+  }, 60_000);
+
+  it('keeps aggregate negative condition status on the owner instead of every child target', async () => {
+    const { repo } = runtimeFixture();
+    tempRepos.push(repo);
+    writeJson(repo, 'runtime-actuator/conditions.json', {
+      contexts: {
+        application: {
+          positiveMatches: {},
+          negativeMatches: {
+            'com.example.RuntimeConfig#billingService': {
+              notMatched: [{ condition: 'OnPropertyCondition', message: 'did not match' }],
+              matched: [{ condition: 'OnClassCondition', message: 'did match' }],
+            },
+          },
+        },
+      },
+    });
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      skipGraphPhases: true,
+      springActuatorPath: 'runtime-actuator',
+    });
+    const owner = [...result.graph.iterNodes()].find(
+      (node) => node.label === 'Class' && node.properties.name === 'RuntimeConfig',
+    );
+    const methodId = [...result.graph.iterRelationshipsByType('HAS_METHOD')].find(
+      (edge) =>
+        edge.sourceId === owner?.id &&
+        result.graph.getNode(edge.targetId)?.properties.name === 'billingService',
+    )?.targetId;
+    const conditionTargets = [...result.graph.iterRelationshipsByType('CONDITIONAL_ON')]
+      .filter((edge) => edge.sourceId === methodId)
+      .map((edge) => result.graph.getNode(edge.targetId));
+
+    expect(result.graph.getNode(methodId ?? '')?.properties.description).toContain(
+      'Spring Actuator conditions not-matched',
+    );
+    expect(conditionTargets.length).toBeGreaterThan(0);
+    expect(
+      conditionTargets.some((node) =>
+        String(node?.properties.description ?? '').includes(
+          'Spring Actuator conditions not-matched',
+        ),
+      ),
+    ).toBe(false);
   }, 60_000);
 });

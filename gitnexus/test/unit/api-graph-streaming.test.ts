@@ -242,6 +242,51 @@ describe('streamGraphNdjson', () => {
     });
   });
 
+  it('retries Route streaming with the legacy projection when runtime columns are absent', async () => {
+    let modernRouteAttempts = 0;
+    let legacyRouteAttempts = 0;
+    lbugMocks.streamQuery.mockImplementation(
+      async (query: string, onRow: (row: any) => Promise<void>) => {
+        if (!query.includes('MATCH (n:`Route`)')) return 0;
+        if (query.includes('runtimeConfirmed')) {
+          modernRouteAttempts++;
+          throw new Error('Binder exception: Cannot find property runtimeConfirmed for n.');
+        }
+        legacyRouteAttempts++;
+        await onRow({
+          id: 'Route:GET /legacy',
+          name: '/legacy',
+          filePath: 'src/LegacyController.java',
+          responseKeys: [],
+          errorKeys: [],
+          middleware: [],
+        });
+        return 1;
+      },
+    );
+
+    const writes: string[] = [];
+    const response = createMockResponse((chunk) => {
+      writes.push(chunk);
+      return true;
+    });
+
+    await expect(streamGraphNdjson(response, false)).resolves.toBeUndefined();
+
+    expect(modernRouteAttempts).toBe(1);
+    expect(legacyRouteAttempts).toBe(1);
+    const routeRecord = writes
+      .map((chunk) => JSON.parse(chunk))
+      .find((record) => record.data?.id === 'Route:GET /legacy');
+    expect(routeRecord).toMatchObject({
+      type: 'node',
+      data: { id: 'Route:GET /legacy' },
+    });
+    expect(routeRecord.data.properties).not.toHaveProperty('runtimeConfirmed');
+    expect(routeRecord.data.properties).not.toHaveProperty('runtimeSource');
+    expect(routeRecord.data.properties).not.toHaveProperty('runtimeStatus');
+  });
+
   // Taint/PDG substrate (#2080): BasicBlock has no name/content columns, so its
   // getNodeQuery projects none — mapGraphNodeRow must still yield a `string`
   // name (NodeProperties.name contract) or the web layer derefs undefined.

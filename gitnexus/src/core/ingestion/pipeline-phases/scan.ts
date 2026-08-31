@@ -48,10 +48,19 @@ function excludesRuntimeInput(repoPath: string, filePath: string, inputPath: str
       SPRING_ACTUATOR_ENDPOINT_FILES.has(path.basename(candidateRelativeToRepo).toLowerCase())
     );
   }
-  if (inputRelativeToRepo.startsWith('..') || path.isAbsolute(inputRelativeToRepo)) return false;
+  if (
+    inputRelativeToRepo === '..' ||
+    inputRelativeToRepo.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(inputRelativeToRepo)
+  ) {
+    return false;
+  }
 
   const relative = path.relative(input, candidate);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return (
+    relative === '' ||
+    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+  );
 }
 
 export const scanPhase: PipelinePhase<ScanOutput> = {
@@ -65,14 +74,17 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       message: 'Scanning repository...',
     });
 
-    const springActuatorPath = ctx.options?.springActuatorPath;
+    const springActuatorPaths = [
+      ...(ctx.options?.springActuatorPath === undefined ? [] : [ctx.options.springActuatorPath]),
+      ...(ctx.options?.springActuatorScanExclusions ?? []),
+    ];
     let scannedFiles;
     try {
       scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
         const scanProgress = Math.round((current / total) * 15);
-        const isRuntimeInput =
-          springActuatorPath !== undefined &&
-          excludesRuntimeInput(ctx.repoPath, filePath, springActuatorPath);
+        const isRuntimeInput = springActuatorPaths.some((inputPath) =>
+          excludesRuntimeInput(ctx.repoPath, filePath, inputPath),
+        );
         ctx.onProgress({
           phase: 'extracting',
           percent: scanProgress,
@@ -95,9 +107,12 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       throw err;
     }
 
-    if (springActuatorPath !== undefined) {
+    if (springActuatorPaths.length > 0) {
       scannedFiles = scannedFiles.filter(
-        (file) => !excludesRuntimeInput(ctx.repoPath, file.path, springActuatorPath),
+        (file) =>
+          !springActuatorPaths.some((inputPath) =>
+            excludesRuntimeInput(ctx.repoPath, file.path, inputPath),
+          ),
       );
     }
 

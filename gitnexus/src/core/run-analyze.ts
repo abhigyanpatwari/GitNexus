@@ -1664,15 +1664,51 @@ async function runFullAnalysisInner(
   // removed so stale runtime-only evidence is cleared from the index.
   const springActuatorRequested = options.springActuatorPath !== undefined;
   const springActuatorPreviouslyEnabled = existingMeta?.springActuator?.enabled === true;
+  let springActuatorRepoRelativeInput: string | null | undefined;
+  const previousActuatorInputs = (
+    existingMeta?.springActuator as { repoRelativeInputs?: unknown } | undefined
+  )?.repoRelativeInputs;
+  const retainedActuatorInputs = Array.isArray(previousActuatorInputs)
+    ? previousActuatorInputs.filter((input): input is string => typeof input === 'string')
+    : [];
   if (springActuatorRequested) {
+    const resolvedRepo = path.resolve(repoPath);
+    const resolvedInput = path.resolve(repoPath, options.springActuatorPath!);
+    const relativeInput = path.relative(resolvedRepo, resolvedInput);
+    springActuatorRepoRelativeInput =
+      relativeInput === ''
+        ? '.'
+        : relativeInput === '..' ||
+            relativeInput.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeInput)
+          ? null
+          : relativeInput.split(path.sep).join('/');
+    if (
+      springActuatorRepoRelativeInput !== null &&
+      !retainedActuatorInputs.includes(springActuatorRepoRelativeInput)
+    ) {
+      retainedActuatorInputs.push(springActuatorRepoRelativeInput);
+    }
     if (!options.force) {
       log('Spring Actuator runtime enrichment requested; forcing a full rebuild.');
     }
     options = { ...options, force: true };
   } else if (springActuatorPreviouslyEnabled) {
+    if (
+      !Array.isArray(previousActuatorInputs) ||
+      previousActuatorInputs.some((input) => typeof input !== 'string')
+    ) {
+      throw new Error(
+        'Cannot safely disable Spring Actuator runtime enrichment because the previous ' +
+          'index did not record whether its snapshot was inside the repository. Re-run once ' +
+          'with the previous --spring-actuator path, then run again without it.',
+      );
+    }
     log('Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.');
     options = { ...options, force: true };
   }
+  const springActuatorScanExclusions =
+    retainedActuatorInputs.length === 0 ? undefined : retainedActuatorInputs;
 
   // ── Early-return: already up to date ──────────────────────────────
   if (
@@ -1980,6 +2016,7 @@ async function runFullAnalysisInner(
       fetchWrappers: options.fetchWrappers,
       skipDerivedGraphPhases,
       springActuatorPath: options.springActuatorPath,
+      springActuatorScanExclusions,
     },
   );
 
@@ -3707,9 +3744,24 @@ async function runFullAnalysisInner(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       runnerIdentity,
-      // Records only the mode, never the input path or payload. The next run
-      // uses this to remove runtime evidence when the opt-in is omitted.
-      ...(springActuatorRequested ? { springActuator: { enabled: true as const } } : {}),
+      // Persist only normalized repo-relative exclusions, never absolute paths
+      // or payloads. Keep them after runtime enrichment is disabled so a later
+      // ordinary scan cannot rediscover an unchanged snapshot as source/FTS.
+      ...(springActuatorRequested
+        ? {
+            springActuator: {
+              enabled: true,
+              repoRelativeInputs: retainedActuatorInputs,
+            },
+          }
+        : retainedActuatorInputs.length > 0
+          ? {
+              springActuator: {
+                enabled: false,
+                repoRelativeInputs: retainedActuatorInputs,
+              },
+            }
+          : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an

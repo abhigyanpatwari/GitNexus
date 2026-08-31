@@ -71,6 +71,8 @@ export interface PipelineOptions {
    * Undefined keeps runtime enrichment completely disabled.
    */
   springActuatorPath?: string;
+  /** Repo-relative Actuator inputs retained only for a cleanup scan. */
+  springActuatorScanExclusions?: readonly string[];
   /** Per-advice Spring AOP candidate inspection cap. `0` disables this cap. */
   springAopMaxCandidateInspectionsPerAdvice?: number;
   /** Aggregate Spring AOP candidate inspection cap for one analysis. `0` disables this cap. */

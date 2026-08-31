@@ -187,14 +187,21 @@ function markRuntimeEvidence(
   endpoint: ActuatorEndpoint,
   target: GraphNode,
   status: string = 'runtime-confirmed',
+  confirmed: boolean = true,
 ): void {
-  target.properties.runtimeConfirmed = true;
-  target.properties.runtimeSource = 'spring-actuator';
-  const previousStatus = safeText(target.properties.runtimeStatus);
-  target.properties.runtimeStatus =
-    previousStatus === undefined || previousStatus === status
-      ? status
-      : [previousStatus, status].sort().join(',');
+  // Only Route declares structured runtime columns in the persisted schema.
+  // Other labels retain the same evidence durably through their description
+  // plus the DECLARES edge below; setting undeclared properties would make the
+  // in-memory graph promise data that CSV/LadybugDB silently drops.
+  if (target.label === 'Route') {
+    target.properties.runtimeConfirmed = confirmed;
+    target.properties.runtimeSource = 'spring-actuator';
+    const previousStatus = safeText(target.properties.runtimeStatus);
+    target.properties.runtimeStatus =
+      previousStatus === undefined || previousStatus === status
+        ? status
+        : [previousStatus, status].sort().join(',');
+  }
   const marker = `Spring Actuator ${endpoint} ${status}`;
   appendRuntimeMarker(target, marker);
 
@@ -218,7 +225,7 @@ function normalizedQualifiedName(value: string): string {
 function uniqueIndexAdd(index: Map<string, GraphNode | null>, key: string, node: GraphNode): void {
   const existing = index.get(key);
   if (existing === undefined) index.set(key, node);
-  else if (existing.id !== node.id) index.set(key, null);
+  else if (existing !== null && existing.id !== node.id) index.set(key, null);
 }
 
 interface RuntimeNodeIndexes {
@@ -226,6 +233,7 @@ interface RuntimeNodeIndexes {
   readonly classesBySimpleName: Map<string, GraphNode | null>;
   readonly beanProvidersByName: Map<string, GraphNode | null>;
   readonly methodsByOwnerId: Map<string, GraphNode[]>;
+  readonly routeOwnerFileIdsByRouteId: Map<string, Set<string>>;
 }
 
 function buildRuntimeNodeIndexes(graph: KnowledgeGraph): RuntimeNodeIndexes {
@@ -235,6 +243,7 @@ function buildRuntimeNodeIndexes(graph: KnowledgeGraph): RuntimeNodeIndexes {
   const beanProvidersByName = new Map<string, GraphNode | null>();
   const nodesById = new Map(allNodes.map((node) => [node.id, node]));
   const methodsByOwnerId = new Map<string, GraphNode[]>();
+  const routeOwnerFileIdsByRouteId = new Map<string, Set<string>>();
   for (const node of allNodes) {
     if (node.label === 'Class' || node.label === 'Record') {
       const qualified = safeText(node.properties.qualifiedName);
@@ -255,11 +264,17 @@ function buildRuntimeNodeIndexes(graph: KnowledgeGraph): RuntimeNodeIndexes {
     methods.push(method);
     methodsByOwnerId.set(relationship.sourceId, methods);
   }
+  for (const relationship of graph.iterRelationshipsByType('HANDLES_ROUTE')) {
+    const owners = routeOwnerFileIdsByRouteId.get(relationship.targetId) ?? new Set<string>();
+    owners.add(relationship.sourceId);
+    routeOwnerFileIdsByRouteId.set(relationship.targetId, owners);
+  }
   return {
     classesByQualifiedName,
     classesBySimpleName,
     beanProvidersByName,
     methodsByOwnerId,
+    routeOwnerFileIdsByRouteId,
   };
 }
 
@@ -271,6 +286,10 @@ function resolveClass(
   const type = normalizedQualifiedName(rawType.replace(/\[\]$/, ''));
   const exact = indexes.classesByQualifiedName.get(type);
   if (exact !== null && exact !== undefined) return exact;
+  // A qualified runtime name is authoritative. Falling back to a unique class
+  // with the same simple name can bind a stale snapshot to a different package
+  // and then mint confidence-1 handler evidence for the wrong source.
+  if (type.includes('.')) return undefined;
   const simple = type.slice(type.lastIndexOf('.') + 1);
   const fallback = indexes.classesBySimpleName.get(simple);
   return fallback === null ? undefined : fallback;
@@ -381,6 +400,7 @@ function importMappings(
         const fallbackId = generateId('Route', url);
         let route = graph.getNode(exactId) ?? graph.getNode(fallbackId);
         if (route?.label !== 'Route') route = undefined;
+        const routeWasPresent = route !== undefined;
         if (route === undefined) {
           route = {
             id: exactId,
@@ -393,16 +413,39 @@ function importMappings(
             },
           };
           graph.addNode(route);
-        } else if (handler !== undefined && route.properties.handlerSymbolId === undefined) {
+        }
+        const existingHandlerId = safeText(route.properties.handlerSymbolId);
+        const handlerFileId =
+          handler === undefined
+            ? undefined
+            : generateId('File', String(handler.properties.filePath));
+        const staticOwnerFileIds = indexes.routeOwnerFileIdsByRouteId.get(route.id);
+        const conflictsWithStaticOwner =
+          routeWasPresent &&
+          handlerFileId !== undefined &&
+          staticOwnerFileIds !== undefined &&
+          [...staticOwnerFileIds].some((ownerFileId) => ownerFileId !== handlerFileId);
+        if (
+          handler !== undefined &&
+          ((existingHandlerId !== undefined && existingHandlerId !== handler.id) ||
+            conflictsWithStaticOwner)
+        ) {
+          // Static ownership and runtime ownership disagree. Preserve the
+          // static handler, persist an explicit conflict, and do not mint an
+          // authoritative HANDLES_ROUTE edge from the runtime candidate.
+          markRuntimeEvidence(graph, 'mappings', route, 'handler-conflict', false);
+          imported++;
+          continue;
+        }
+        if (handler !== undefined && existingHandlerId === undefined) {
           route.properties.handlerSymbolId = handler.id;
         }
         markRuntimeEvidence(graph, 'mappings', route);
-        if (handler !== undefined) {
-          const fileId = generateId('File', String(handler.properties.filePath));
-          if (graph.getNode(fileId) !== undefined) {
+        if (handler !== undefined && handlerFileId !== undefined) {
+          if (graph.getNode(handlerFileId) !== undefined) {
             graph.addRelationship({
-              id: generateId('HANDLES_ROUTE', `${fileId}->${route.id}`),
-              sourceId: fileId,
+              id: generateId('HANDLES_ROUTE', `${handlerFileId}->${route.id}`),
+              sourceId: handlerFileId,
               targetId: route.id,
               type: 'HANDLES_ROUTE',
               confidence: 1,
@@ -496,15 +539,6 @@ function importConditions(
   payload: JsonObject,
   indexes: RuntimeNodeIndexes,
 ): number {
-  const targetsByOwner = new Map<string, GraphNode[]>();
-  for (const relationship of graph.iterRelationshipsByType('CONDITIONAL_ON')) {
-    const target = graph.getNode(relationship.targetId);
-    if (target === undefined) continue;
-    const targets = targetsByOwner.get(relationship.sourceId) ?? [];
-    targets.push(target);
-    targetsByOwner.set(relationship.sourceId, targets);
-  }
-
   let imported = 0;
   const seen = new Set<string>();
   for (const context of contextObjects(payload)) {
@@ -521,10 +555,11 @@ function importConditions(
         seen.add(`${status}:${name}`);
         const owner = resolveConditionOwner(indexes, name);
         if (owner === undefined) continue;
+        // Actuator reports this status for the aggregate owner entry. Its child
+        // details may contain a mix of matched and not-matched conditions, but
+        // do not carry a stable identifier that maps to our CONDITIONAL_ON
+        // targets. Keep the aggregate on the owner instead of guessing.
         markRuntimeEvidence(graph, 'conditions', owner, status);
-        for (const target of targetsByOwner.get(owner.id) ?? []) {
-          markRuntimeEvidence(graph, 'conditions', target, status);
-        }
         imported++;
       }
     }
