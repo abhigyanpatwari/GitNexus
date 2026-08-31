@@ -1648,6 +1648,30 @@ describe('auto-sync starter', () => {
     }
   });
 
+  it('ignores a tampered ownerId that would escape the watch directory', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
+    const paths = getAutoSyncWatchPaths(tempDir);
+    try {
+      await writeWatchOwner(paths, 12345, '../../victim');
+      await expect(
+        stopAutoSyncWatch({
+          paths,
+          stderr: { write: vi.fn() },
+          deps: {
+            isProcessAlive: vi.fn(() => true),
+            readProcessCommand: vi.fn(() => verifiedWatchCommand),
+            readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+          },
+        }),
+      ).resolves.toBe('refused');
+      await expect(fs.readdir(path.dirname(paths.pidPath))).resolves.not.toContainEqual(
+        expect.stringMatching(/victim/),
+      );
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not trust a stored error status for an unverified live pid', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
     const paths = getAutoSyncWatchPaths(tempDir);

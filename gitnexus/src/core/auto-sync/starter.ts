@@ -392,6 +392,15 @@ export async function readAutoSyncWatchStatus(
   return stored ?? { state: 'stopped', updatedAt: new Date().toISOString() };
 }
 
+function isSafeWatchOwnerId(ownerId: string): boolean {
+  return (
+    ownerId === path.basename(ownerId) &&
+    !ownerId.includes('..') &&
+    !ownerId.includes('/') &&
+    !ownerId.includes('\\')
+  );
+}
+
 async function readOwnerFile(ownerPath: string): Promise<WatchOwnerRecord | undefined> {
   try {
     const raw = await fs.readFile(ownerPath, 'utf-8');
@@ -403,6 +412,7 @@ async function readOwnerFile(ownerPath: string): Promise<WatchOwnerRecord | unde
       parsed.pid > 0 &&
       typeof parsed.ownerId === 'string' &&
       parsed.ownerId &&
+      isSafeWatchOwnerId(parsed.ownerId) &&
       typeof parsed.processStartTime === 'string' &&
       parsed.processStartTime
     ) {
@@ -507,6 +517,9 @@ async function readStatusFile(statusPath: string): Promise<WatchStatusRecord | u
 }
 
 function stopRequestPath(paths: AutoSyncWatchPaths, ownerId: string): string {
+  if (!isSafeWatchOwnerId(ownerId)) {
+    throw new Error('watch ownerId is not a safe filename component');
+  }
   return path.join(path.dirname(paths.pidPath), `watch.stop.${ownerId}.json`);
 }
 
