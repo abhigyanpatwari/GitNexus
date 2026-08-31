@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getLanguageGrammar } from '../../src/core/tree-sitter/parser-loader.ts';
-import { synthesizeKotlinJvmAccessors } from '../../src/core/ingestion/languages/kotlin/jvm-accessors.ts';
+import { synthesizeLombokAccessors } from '../../src/core/ingestion/languages/kotlin/lombok-synthesizer.ts';
 import {
   fingerprintIds,
   minSample,
@@ -77,7 +77,7 @@ function prepare(mode, fileCount) {
 function runAll(files) {
   const nodes = [];
   for (const f of files) {
-    const result = synthesizeKotlinJvmAccessors(f.tree, f.filePath, f.owners);
+    const result = synthesizeLombokAccessors(f.tree, f.filePath, f.owners);
     for (const n of result.nodes) nodes.push(n.id);
   }
   return nodes;

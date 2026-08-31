@@ -1,19 +1,18 @@
 /**
- * JVM JavaBeans accessor names shared by Java Lombok and Kotlin properties.
+ * Language-neutral JVM JavaBeans naming primitives.
  *
- * Lombok invents an `is` prefix for a primitive `boolean` named `active`.
- * Kotlin never invents `is`; it only preserves a name that already starts
- * with `is` plus a non-lowercase character (`isReady`, `is1`).
+ * Language adapters choose whether to invent/preserve an `is` prefix and
+ * which single-character capitalization policy their compiler uses.
  */
 
-function isPrefixRemainder(name: string, thirdOk: (third: string) => boolean): string | null {
-  if (!name.startsWith('is') || name.length < 3) return null;
-  const third = name.charAt(2);
-  return thirdOk(third) ? name.slice(2) : null;
-}
-
 export function capitalizeBeanName(s: string): string {
-  return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  if (s.length === 0) return s;
+  const first = s.charAt(0);
+  const upper = first.toUpperCase();
+  // Java Character case conversion is one UTF-16 code unit. JavaScript
+  // full-case conversion may expand one unit (`ß` → `SS`), which would invent
+  // a method name no JVM compiler emits.
+  return (upper.length === 1 ? upper : first) + s.slice(1);
 }
 
 /**
@@ -22,50 +21,27 @@ export function capitalizeBeanName(s: string): string {
  * (`isEnabled` → `isEnabled()` / `setEnabled(...)`).
  */
 export function booleanIsPrefixBase(fieldName: string, useIsPrefix: boolean): string | null {
-  if (!useIsPrefix) return null;
-  return isPrefixRemainder(
-    fieldName,
-    (third) => third === third.toUpperCase() && third !== third.toLowerCase(),
-  );
+  if (!useIsPrefix || !fieldName.startsWith('is') || fieldName.length < 3) return null;
+  const third = fieldName.charAt(2);
+  return third === third.toUpperCase() ? fieldName.slice(2) : null;
 }
 
-export function jvmGetterName(fieldName: string, useIsPrefix: boolean): string {
+export function jvmGetterName(
+  fieldName: string,
+  useIsPrefix: boolean,
+  capitalize: (name: string) => string = capitalizeBeanName,
+): string {
   if (booleanIsPrefixBase(fieldName, useIsPrefix) !== null) return fieldName;
-  if (useIsPrefix) return `is${capitalizeBeanName(fieldName)}`;
-  return `get${capitalizeBeanName(fieldName)}`;
+  if (useIsPrefix) return `is${capitalize(fieldName)}`;
+  return `get${capitalize(fieldName)}`;
 }
 
-export function jvmSetterName(fieldName: string, useIsPrefix: boolean): string {
+export function jvmSetterName(
+  fieldName: string,
+  useIsPrefix: boolean,
+  capitalize: (name: string) => string = capitalizeBeanName,
+): string {
   const stripped = booleanIsPrefixBase(fieldName, useIsPrefix);
   if (stripped !== null) return `set${stripped}`;
-  return `set${capitalizeBeanName(fieldName)}`;
-}
-
-/** Java primitive `boolean` (boxed `Boolean` stays get/set). */
-export function javaUsesIsPrefix(fieldType: string): boolean {
-  return fieldType === 'boolean';
-}
-
-/**
- * Kotlin preserves a property name that starts with `is` + a non-lowercase
- * character (JvmAbi `!isLowerCase`, so `is1` counts) and derives its setter
- * by replacing `is` with `set`.
- */
-export function kotlinUsesIsPrefix(propertyName: string): boolean {
-  return kotlinIsPrefixRemainder(propertyName) !== null;
-}
-
-function kotlinIsPrefixRemainder(propertyName: string): string | null {
-  return isPrefixRemainder(propertyName, (third) => third === third.toUpperCase());
-}
-
-export function kotlinGetterName(propertyName: string): string {
-  return kotlinIsPrefixRemainder(propertyName) !== null
-    ? propertyName
-    : jvmGetterName(propertyName, false);
-}
-
-export function kotlinSetterName(propertyName: string): string {
-  const remainder = kotlinIsPrefixRemainder(propertyName);
-  return remainder !== null ? `set${remainder}` : jvmSetterName(propertyName, false);
+  return `set${capitalize(fieldName)}`;
 }

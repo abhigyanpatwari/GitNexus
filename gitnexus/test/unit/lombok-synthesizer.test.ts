@@ -64,6 +64,9 @@ describe('Lombok naming helpers', () => {
     expect(setterName('active', 'boolean')).toBe('setActive');
     expect(getterName('active', 'Boolean')).toBe('getActive');
     expect(setterName('active', 'Boolean')).toBe('setActive');
+    expect(getterName('is1', 'boolean')).toBe('is1');
+    expect(setterName('is1', 'boolean')).toBe('set1');
+    expect(getterName('ßeta', 'String')).toBe('getßeta');
   });
 });
 
@@ -194,6 +197,104 @@ public class Order {
           ownerMapBySimpleName(nestedImport, FILE_PATH),
         ).symbols,
       ).toHaveLength(0);
+    });
+
+    it('keeps lombok and lombok.experimental star imports package-specific', () => {
+      const experimentalOnly = parse(`
+import lombok.experimental.*;
+@Data
+public class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(
+          experimentalOnly,
+          FILE_PATH,
+          ownerMapBySimpleName(experimentalOnly, FILE_PATH),
+        ).symbols,
+      ).toHaveLength(0);
+
+      const coreOnly = parse(`
+import lombok.*;
+@Data
+@Accessors(fluent = true)
+public class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(coreOnly, FILE_PATH, ownerMapBySimpleName(coreOnly, FILE_PATH))
+          .symbols.map((symbol) => symbol.name)
+          .sort(),
+      ).toEqual(['getOrderId', 'setOrderId']);
+
+      const splitPackages = parse(`
+import lombok.Data;
+import lombok.experimental.*;
+@Data
+@Accessors(fluent = true)
+public class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(
+          splitPackages,
+          FILE_PATH,
+          ownerMapBySimpleName(splitPackages, FILE_PATH),
+        ).symbols,
+      ).toHaveLength(0);
+    });
+
+    it('lets explicit imports and local declarations shadow star imports', () => {
+      const explicitShadow = parse(`
+import lombok.*;
+import com.acme.Data;
+@Data
+public class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(
+          explicitShadow,
+          FILE_PATH,
+          ownerMapBySimpleName(explicitShadow, FILE_PATH),
+        ).symbols,
+      ).toHaveLength(0);
+
+      const localShadow = parse(`
+import lombok.*;
+@interface Data {}
+@Data
+class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(
+          localShadow,
+          FILE_PATH,
+          ownerMapBySimpleName(localShadow, FILE_PATH),
+        ).symbols,
+      ).toHaveLength(0);
+
+      const staticImport = parse(`
+import static com.acme.Constants.Data;
+import lombok.*;
+@Data
+class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(
+          staticImport,
+          FILE_PATH,
+          ownerMapBySimpleName(staticImport, FILE_PATH),
+        ).symbols.map((symbol) => symbol.name),
+      ).toEqual(['getOrderId', 'setOrderId']);
     });
   });
 
@@ -370,6 +471,78 @@ public class Order {
         ownerMapBySimpleName(tree, FILE_PATH),
       );
       expect(result.symbols.map((s) => s.name)).toEqual(['setOrderId']);
+    });
+
+    it('ignores proven @Tolerate methods when checking accessor collisions', () => {
+      const tree = parse(`
+import lombok.Setter;
+import lombok.experimental.Tolerate;
+public class Order {
+    @Setter private java.sql.Date date;
+    @Tolerate public void setDate(String date) {}
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols).toHaveLength(1);
+      expect(result.symbols[0]).toMatchObject({
+        name: 'setDate',
+        parameterTypes: ['java.sql.Date'],
+      });
+    });
+
+    it('does not let an unproven @Tolerate unlock setter synthesis', () => {
+      const tree = parse(`
+import lombok.Setter;
+import lombok.*;
+public class Order {
+    @Setter private java.sql.Date date;
+    @Tolerate public void setDate(String date) {}
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols).toHaveLength(0);
+    });
+
+    it('treats varargs as an arity range for collision checks', () => {
+      const tree = parse(`
+import lombok.Getter;
+public class Order {
+    @Getter private String name;
+    public String getName(int... ignored) { return name; }
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols).toHaveLength(0);
+    });
+
+    it('finds existing methods nested under enum body declarations', () => {
+      const tree = parse(`
+import lombok.Getter;
+@Getter
+public enum Kind {
+    A, B;
+    private final String code = "";
+    public String getCode() { return code; }
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols).toHaveLength(0);
     });
   });
 

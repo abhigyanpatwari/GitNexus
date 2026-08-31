@@ -2,7 +2,7 @@
  * Build-free throughput + identity bench for Java Lombok accessor synthesis.
  *
  * Arms:
- *   - no_lombok: hand-written getters/setters (control) — synthesizer no-ops
+ *   - no_lombok: unannotated fields (shape-equivalent control) — synthesizer no-ops
  *   - lombok_heavy: @Data classes (feature path)
  *
  * Times synthesizeLombokAccessors over N separate files (not one giant buffer).
@@ -48,14 +48,6 @@ public class Entity${i} {
   private String name;
   private boolean active;
   private Long amount;
-  public String getId() { return id; }
-  public void setId(String id) { this.id = id; }
-  public String getName() { return name; }
-  public void setName(String name) { this.name = name; }
-  public boolean isActive() { return active; }
-  public void setActive(boolean active) { this.active = active; }
-  public Long getAmount() { return amount; }
-  public void setAmount(Long amount) { this.amount = amount; }
 }
 `;
 }
@@ -106,8 +98,8 @@ function measure(mode, fileCount) {
 }
 
 const report = {
-  no_lombok_small: measure('hand', SMALL),
-  no_lombok_large: measure('hand', LARGE),
+  no_lombok_small: measure('bare', SMALL),
+  no_lombok_large: measure('bare', LARGE),
   lombok_small: measure('lombok', SMALL),
   lombok_large: measure('lombok', LARGE),
 };

@@ -25,12 +25,12 @@
 
 import type Parser from 'tree-sitter';
 import type { CaptureMatch } from 'gitnexus-shared';
-import { javaUsesIsPrefix, jvmGetterName, jvmSetterName } from '../jvm/beanspec.js';
+import { jvmGetterName, jvmSetterName } from '../jvm/beanspec.js';
 import {
   createExistingMethodIndex,
   createJvmAccessorSynthesis,
   hasExistingMethod,
-  rememberExistingMethod,
+  rememberExistingMethodRange,
   type ExistingMethodIndex,
   type PlannedJvmAccessor,
   type PlannedJvmAccessorOwner,
@@ -88,18 +88,23 @@ interface LombokClass {
   classSetter: AccessorConfig | null;
   classAccessors: AccessorsOptions;
   fields: LombokField[];
-  /** lowercase method name → set of arities already present (non-@Tolerate). */
   existingMethods: ExistingMethodIndex;
 }
 
-const LOMBOK_ANNOTATIONS = new Set(['Data', 'Getter', 'Setter', 'Accessors', 'Tolerate']);
+const LOMBOK_ANNOTATION_PACKAGE = new Map<string, string>([
+  ['Data', 'lombok'],
+  ['Getter', 'lombok'],
+  ['Setter', 'lombok'],
+  ['Accessors', 'lombok.experimental'],
+  ['Tolerate', 'lombok.experimental'],
+]);
 
 export function getterName(fieldName: string, fieldType: string): string {
-  return jvmGetterName(fieldName, javaUsesIsPrefix(fieldType));
+  return jvmGetterName(fieldName, fieldType === 'boolean');
 }
 
 export function setterName(fieldName: string, fieldType: string): string {
-  return jvmSetterName(fieldName, javaUsesIsPrefix(fieldType));
+  return jvmSetterName(fieldName, fieldType === 'boolean');
 }
 
 // ── Provenance / imports ──────────────────────────────────────────────────
@@ -110,7 +115,8 @@ function annotationSimpleName(nameText: string): string {
 
 interface LombokImportIndex {
   bySimple: Map<string, string>;
-  star: boolean;
+  starPackages: Set<string>;
+  shadowedSimpleNames: Set<string>;
 }
 
 /**
@@ -118,35 +124,42 @@ interface LombokImportIndex {
  */
 function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex {
   const bySimple = new Map<string, string>();
-  let star = false;
+  const starPackages = new Set<string>();
+  const shadowedSimpleNames = new Set<string>();
+  for (const child of root.children) {
+    if (!JAVA_TYPE_DECLS.has(child.type) && child.type !== 'annotation_type_declaration') continue;
+    const name = child.childForFieldName('name')?.text;
+    if (name) shadowedSimpleNames.add(name);
+  }
   for (const child of root.children) {
     if (child.type !== 'import_declaration') continue;
+    if (/^import\s+static\b/.test(child.text)) continue;
     const text = child.text
       .replace(/^import\s+/, '')
       .replace(/;\s*$/, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\s+/g, '')
       .trim();
-    if (text === 'lombok.*' || text === 'lombok.experimental.*') {
-      star = true;
-    } else if (isCanonicalLombokFqn(text)) {
+    if (text === 'lombok.*') {
+      starPackages.add('lombok');
+    } else if (text === 'lombok.experimental.*') {
+      starPackages.add('lombok.experimental');
+    } else if (!text.endsWith('.*')) {
       bySimple.set(annotationSimpleName(text), text);
     }
   }
-  return { bySimple, star };
-}
-
-function isCanonicalLombokFqn(nameText: string): boolean {
-  const simple = annotationSimpleName(nameText);
-  if (!LOMBOK_ANNOTATIONS.has(simple)) return false;
-  return nameText === `lombok.${simple}` || nameText === `lombok.experimental.${simple}`;
+  return { bySimple, starPackages, shadowedSimpleNames };
 }
 
 function isProvenLombokAnnotation(nameText: string, imports: LombokImportIndex): boolean {
   const simple = annotationSimpleName(nameText);
-  if (!LOMBOK_ANNOTATIONS.has(simple)) return false;
-  if (nameText.includes('.')) return isCanonicalLombokFqn(nameText);
-  if (imports.star) return true;
+  const packageName = LOMBOK_ANNOTATION_PACKAGE.get(simple);
+  if (packageName === undefined) return false;
+  if (nameText.includes('.')) return nameText === `${packageName}.${simple}`;
   const imported = imports.bySimple.get(simple);
-  return imported !== undefined && isCanonicalLombokFqn(imported);
+  if (imported !== undefined) return imported === `${packageName}.${simple}`;
+  if (imports.shadowedSimpleNames.has(simple)) return false;
+  return imports.starPackages.has(packageName);
 }
 
 // ── AccessLevel / Accessors structural parse ──────────────────────────────
@@ -175,7 +188,8 @@ function findAccessLevelInAnnotation(ann: Parser.SyntaxNode): LombokVisibility |
   // Named: @Getter(value = AccessLevel.PRIVATE)
   const stack: Parser.SyntaxNode[] = [...ann.children];
   while (stack.length > 0) {
-    const n = stack.pop()!;
+    const n = stack.pop();
+    if (!n) break;
     if (n.type === 'field_access' || n.type === 'identifier') {
       const level = parseAccessLevelToken(n.text);
       if (level !== null) return level;
@@ -193,7 +207,8 @@ function parseAccessorsAnnotation(ann: Parser.SyntaxNode): AccessorsOptions {
   const opts = defaultAccessors();
   const stack: Parser.SyntaxNode[] = [...ann.children];
   while (stack.length > 0) {
-    const n = stack.pop()!;
+    const n = stack.pop();
+    if (!n) break;
     if (n.type === 'element_value_pair') {
       const key =
         n.childForFieldName('key')?.text ?? n.children.find((c) => c.type === 'identifier')?.text;
@@ -337,14 +352,15 @@ function parseFieldDeclaration(
   return out;
 }
 
-function methodArity(methodNode: Parser.SyntaxNode): number {
+function methodArityRange(methodNode: Parser.SyntaxNode): { min: number; max: number } {
   const params = methodNode.childForFieldName('parameters');
-  if (!params) return 0;
+  if (!params) return { min: 0, max: 0 };
   let count = 0;
   for (const child of params.namedChildren) {
-    if (child.type === 'formal_parameter' || child.type === 'spread_parameter') count += 1;
+    if (child.type === 'spread_parameter') return { min: count, max: Number.POSITIVE_INFINITY };
+    if (child.type === 'formal_parameter') count += 1;
   }
-  return count;
+  return { min: count, max: count };
 }
 
 function collectExistingMethods(
@@ -353,15 +369,23 @@ function collectExistingMethods(
 ): ExistingMethodIndex {
   const index = createExistingMethodIndex('case-folded');
   if (!classBody) return index;
-  for (const child of classBody.children) {
-    if (child.type !== 'method_declaration') continue;
-    const mods = child.children.find((c) => c.type === 'modifiers') ?? null;
-    const ann = parseModifierAnnotations(mods, imports);
-    if (ann.tolerate) continue;
-    const nameNode = child.childForFieldName('name');
-    if (!nameNode) continue;
-    rememberExistingMethod(index, nameNode.text, methodArity(child));
-  }
+  const scan = (container: Parser.SyntaxNode): void => {
+    for (const child of container.children) {
+      if (child.type === 'enum_body_declarations') {
+        scan(child);
+        continue;
+      }
+      if (child.type !== 'method_declaration') continue;
+      const mods = child.children.find((c) => c.type === 'modifiers') ?? null;
+      const ann = parseModifierAnnotations(mods, imports);
+      if (ann.tolerate) continue;
+      const nameNode = child.childForFieldName('name');
+      if (!nameNode) continue;
+      const arity = methodArityRange(child);
+      rememberExistingMethodRange(index, nameNode.text, arity.min, arity.max);
+    }
+  };
+  scan(classBody);
   return index;
 }
 
@@ -444,9 +468,9 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
           returnType: field.type,
           parameterTypes: [],
           visibility: getterCfg.visibility,
+          isStatic: false,
           startLine: field.startLine,
           endLine: field.endLine,
-          classNode: cls.node,
           declaratorNode: field.declaratorNode,
         });
       }
@@ -463,9 +487,9 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
           returnType,
           parameterTypes: [field.type],
           visibility: setterCfg.visibility,
+          isStatic: false,
           startLine: field.startLine,
           endLine: field.endLine,
-          classNode: cls.node,
           declaratorNode: field.declaratorNode,
         });
       }
@@ -486,7 +510,6 @@ function planLombokAccessorOwners(root: Parser.SyntaxNode): PlannedJvmAccessorOw
 const lombokAccessorSynthesis = createJvmAccessorSynthesis({
   language: 'java',
   synthetic: 'lombok',
-  typeDeclarationTypes: JAVA_TYPE_DECLS,
   planOwners: planLombokAccessorOwners,
 });
 

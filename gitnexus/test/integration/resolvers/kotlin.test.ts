@@ -2964,6 +2964,32 @@ describe('F52 — Kotlin companion-object properties', () => {
     // The companion's `create` function is a Method, never a Property/field.
     expect(getNodesByLabel(result, 'Property')).not.toContain('create');
   });
+
+  it('synthesizes companion property accessors on the enclosing dispatch class', () => {
+    const accessors = getNodesByLabelFull(result, 'Method')
+      .filter(
+        (node) =>
+          node.properties.synthetic === 'kotlin-jvm' &&
+          (node.name === 'getInstances' || node.name === 'getCfgX'),
+      )
+      .map((node) => ({
+        name: node.name,
+        qualifiedName: node.properties.qualifiedName,
+        returnType: node.properties.returnType,
+        isStatic: node.properties.isStatic,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    expect(accessors).toEqual([
+      { name: 'getCfgX', qualifiedName: 'Factory.getCfgX', returnType: 'Int', isStatic: true },
+      { name: 'getInstances', qualifiedName: 'C.getInstances', returnType: 'Int', isStatic: true },
+    ]);
+
+    const ownership = getRelationships(result, 'HAS_METHOD')
+      .filter((edge) => edge.target === 'getInstances' || edge.target === 'getCfgX')
+      .map((edge) => `${edge.source}.${edge.target}`)
+      .sort();
+    expect(ownership).toEqual(['C.getInstances', 'Factory.getCfgX']);
+  });
 });
 
 // ---------------------------------------------------------------------------

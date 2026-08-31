@@ -4,5 +4,5 @@
   "scaling_budget": 1.6,
   "_scaling_note": "(t_large/t_small)/(800/250) on the lombok arm. Measured ~1.01.",
   "widening_overhead_budget": 2.5,
-  "_widening_overhead_note": "lombok_large_ms / no_lombok_large_ms. Hand-written corpora have larger ASTs so the ratio can be <1; budget guards against a pathological lombok-arm regression."
+  "_widening_overhead_note": "lombok_large_ms / no_lombok_large_ms using an unannotated, shape-equivalent four-field control. Measured about 1.24; budget guards against a pathological feature-arm regression."
 }

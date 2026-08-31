@@ -41,7 +41,7 @@ import {
   kotlinMergeBindings,
   kotlinReceiverBinding,
 } from './kotlin/index.js';
-import { synthesizeKotlinJvmAccessors } from './kotlin/jvm-accessors.js';
+import { synthesizeLombokAccessors } from './kotlin/lombok-synthesizer.js';
 
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
  *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
@@ -203,5 +203,5 @@ export const kotlinProvider = defineLanguage({
   mergeBindings: (_scope, bindings) => kotlinMergeBindings(bindings),
   receiverBinding: kotlinReceiverBinding,
   arityCompatibility: kotlinArityCompatibility,
-  synthesizeStructureMembers: synthesizeKotlinJvmAccessors,
+  synthesizeStructureMembers: synthesizeLombokAccessors,
 });

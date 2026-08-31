@@ -2993,9 +2993,8 @@ const processFileGroup = (
       });
 
       // Class-like definitions register their AST node id → graph node id for
-      // provider.synthesizeStructureMembers (Lombok / Kotlin JVM accessors).
-      // declaration for these labels (see getDefinitionNodeFromCaptures), so
-      // the key is the same node findLombokClasses will walk to.
+      // provider.synthesizeStructureMembers. The definition node is the same
+      // type-declaration AST node that the provider-specific planner receives.
       if (
         isClassLikeLabel &&
         definitionNode &&

@@ -14,10 +14,11 @@ export type MethodNameMatching = 'exact' | 'case-folded';
 export interface ExistingMethodIndex {
   readonly matching: MethodNameMatching;
   readonly aritiesByName: Map<string, Set<number>>;
+  readonly arityRangesByName: Map<string, Array<{ min: number; max: number }>>;
 }
 
 export function createExistingMethodIndex(matching: MethodNameMatching): ExistingMethodIndex {
-  return { matching, aritiesByName: new Map() };
+  return { matching, aritiesByName: new Map(), arityRangesByName: new Map() };
 }
 
 function methodKey(index: ExistingMethodIndex, name: string): string {
@@ -38,12 +39,33 @@ export function rememberExistingMethod(
   arities.add(arity);
 }
 
+export function rememberExistingMethodRange(
+  index: ExistingMethodIndex,
+  name: string,
+  min: number,
+  max: number,
+): void {
+  if (min === max) {
+    rememberExistingMethod(index, name, min);
+    return;
+  }
+  const key = methodKey(index, name);
+  const ranges = index.arityRangesByName.get(key) ?? [];
+  ranges.push({ min, max });
+  index.arityRangesByName.set(key, ranges);
+}
+
 export function hasExistingMethod(
   index: ExistingMethodIndex,
   name: string,
   arity: number,
 ): boolean {
-  return index.aritiesByName.get(methodKey(index, name))?.has(arity) === true;
+  const key = methodKey(index, name);
+  if (index.aritiesByName.get(key)?.has(arity) === true) return true;
+  return (
+    index.arityRangesByName.get(key)?.some((range) => range.min <= arity && arity <= range.max) ===
+    true
+  );
 }
 
 export interface SyntheticAccessorSymbol {
@@ -104,9 +126,9 @@ export interface PlannedJvmAccessor {
   returnType: string;
   parameterTypes: string[];
   visibility: SyntheticVisibility;
+  isStatic: boolean;
   startLine: number;
   endLine: number;
-  classNode: Parser.SyntaxNode;
   declaratorNode: Parser.SyntaxNode;
 }
 
@@ -119,7 +141,6 @@ export interface PlannedJvmAccessorOwner {
 interface JvmAccessorSynthesisConfig {
   language: string;
   synthetic: string;
-  typeDeclarationTypes: ReadonlySet<string>;
   planOwners(rootNode: Parser.SyntaxNode): readonly PlannedJvmAccessorOwner[];
 }
 
@@ -154,8 +175,7 @@ export function createJvmAccessorSynthesis(
       return result;
     },
     captures(rootNode) {
-      const planned = config.planOwners(rootNode).flatMap((owner) => [...owner.accessors]);
-      return capturesForPlannedAccessors(planned, config.typeDeclarationTypes);
+      return capturesForPlannedAccessors(config.planOwners(rootNode));
     },
   };
 }
@@ -181,22 +201,6 @@ export function jvmTypeSimpleName(node: Parser.SyntaxNode): string | undefined {
     if (child.type === 'type_identifier' || child.type === 'simple_identifier') return child.text;
   }
   return undefined;
-}
-
-function ownerQualifiedSimpleName(
-  classNode: Parser.SyntaxNode,
-  typeDeclTypes: ReadonlySet<string>,
-): string {
-  const parts: string[] = [];
-  let current: Parser.SyntaxNode | null = classNode;
-  while (current) {
-    if (typeDeclTypes.has(current.type)) {
-      const name = jvmTypeSimpleName(current);
-      if (name) parts.unshift(name);
-    }
-    current = current.parent;
-  }
-  return parts.join('.') || 'Unknown';
 }
 
 function emitPlannedAccessors(args: {
@@ -227,7 +231,7 @@ function emitPlannedAccessors(args: {
         isExported: false,
         synthetic: args.synthetic,
         visibility: acc.visibility,
-        isStatic: false,
+        isStatic: acc.isStatic,
         returnType: acc.returnType,
         parameterTypes: acc.parameterTypes,
         parameterCount: arity,
@@ -246,7 +250,7 @@ function emitPlannedAccessors(args: {
       parameterTypes: acc.parameterTypes,
       returnType: acc.returnType,
       visibility: acc.visibility,
-      isStatic: false,
+      isStatic: acc.isStatic,
       isAbstract: false,
       isFinal: false,
     });
@@ -270,35 +274,42 @@ function accessorCapture(name: string, acc: PlannedJvmAccessor, text: string): C
   return { name, range: { startLine, startCol, endLine, endCol }, text };
 }
 
-function capturesForPlannedAccessors(
-  planned: readonly PlannedJvmAccessor[],
-  typeDeclTypes: ReadonlySet<string>,
-): CaptureMatch[] {
+function capturesForPlannedAccessors(owners: readonly PlannedJvmAccessorOwner[]): CaptureMatch[] {
   const captures: CaptureMatch[] = [];
-  for (const acc of planned) {
-    const arity = String(acc.parameterTypes.length);
-    const enclosing = ownerQualifiedSimpleName(acc.classNode, typeDeclTypes);
-    const qualifiedName = `${enclosing}.${acc.name}`;
-    captures.push({
-      '@scope.function': accessorCapture('@scope.function', acc, acc.name),
-    });
-    captures.push({
-      '@declaration.method': accessorCapture('@declaration.method', acc, acc.name),
-      '@declaration.name': accessorCapture('@declaration.name', acc, acc.name),
-      '@declaration.qualified_name': accessorCapture(
-        '@declaration.qualified_name',
-        acc,
-        qualifiedName,
-      ),
-      '@declaration.parameter-count': accessorCapture('@declaration.parameter-count', acc, arity),
-      '@declaration.required-parameter-count': accessorCapture(
-        '@declaration.required-parameter-count',
-        acc,
-        arity,
-      ),
-      '@declaration.return-type': accessorCapture('@declaration.return-type', acc, acc.returnType),
-      '@declaration.is-synthetic': accessorCapture('@declaration.is-synthetic', acc, 'true'),
-    });
+  for (const owner of owners) {
+    const enclosing = owner.name;
+    const emitted = new Set<string>();
+    for (const acc of owner.accessors) {
+      const arity = String(acc.parameterTypes.length);
+      const qualifiedName = `${enclosing}.${acc.name}`;
+      const identity = `${qualifiedName}#${arity}`;
+      if (emitted.has(identity)) continue;
+      emitted.add(identity);
+      captures.push({
+        '@scope.function': accessorCapture('@scope.function', acc, acc.name),
+      });
+      captures.push({
+        '@declaration.method': accessorCapture('@declaration.method', acc, acc.name),
+        '@declaration.name': accessorCapture('@declaration.name', acc, acc.name),
+        '@declaration.qualified_name': accessorCapture(
+          '@declaration.qualified_name',
+          acc,
+          qualifiedName,
+        ),
+        '@declaration.parameter-count': accessorCapture('@declaration.parameter-count', acc, arity),
+        '@declaration.required-parameter-count': accessorCapture(
+          '@declaration.required-parameter-count',
+          acc,
+          arity,
+        ),
+        '@declaration.return-type': accessorCapture(
+          '@declaration.return-type',
+          acc,
+          acc.returnType,
+        ),
+        '@declaration.is-synthetic': accessorCapture('@declaration.is-synthetic', acc, 'true'),
+      });
+    }
   }
   return captures;
 }
