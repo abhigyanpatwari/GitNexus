@@ -29,6 +29,7 @@ import {
   EXCHANGE_CONFIDENCE,
 } from './spring-consumer-shared.js';
 import {
+  buildJavaConstantIndex,
   expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
   foldJavaOperands,
@@ -939,14 +940,17 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // a constants file, so it is necessarily a map entry — anything else
     // degrades to the fold's skip floor. In-place: each entry is owned by
     // this map, and every file is expanded exactly once.
+    const constantIndex = buildJavaConstantIndex(constants);
     for (const [rel, mc] of constants) {
-      expandJavaWildcardStaticImports(mc, rel, constants);
+      expandJavaWildcardStaticImports(mc, rel, constants, constantIndex);
     }
-    return { constants };
+    return { constants, constantIndex };
   },
   scan(tree, repoContext, fileRel) {
     const out: HttpDetection[] = [];
-    const javaCtx = repoContext as { constants: RepoConstants } | undefined;
+    const javaCtx = repoContext as
+      | { constants: RepoConstants; constantIndex: ReturnType<typeof buildJavaConstantIndex> }
+      | undefined;
 
     // ─── Spring providers + OpenFeign consumers (one query pass) ────
     // `scanRouteAnnotations` resolves every route-defining annotation —
@@ -986,7 +990,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         // bindings against the repo map before it becomes a fold target.
         if (mc.imports.size > 0 || (mc.wildcardImports?.length ?? 0) > 0) {
           const merged = new Map(javaCtx.constants);
-          expandJavaWildcardStaticImports(mc, fileRel, merged);
+          expandJavaWildcardStaticImports(mc, fileRel, merged, javaCtx.constantIndex);
           merged.set(fileRel, mc);
           foldConstants = merged;
         }

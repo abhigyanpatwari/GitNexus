@@ -481,6 +481,20 @@ jobs:
           node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
         working-directory: gitnexus
 
+      - name: Java wildcard-static route constant guards (#3110)
+        if: ${{ !cancelled() }}
+        # Build-free: named-import control vs wildcard materialization;
+        # fingerprints bindings and guards scaling + absolute wall time.
+        run: node --import tsx bench/java-wildcard-route-constants/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin package-star route constant guards (#3110)
+        if: ${{ !cancelled() }}
+        # Build-free: explicit-import control vs package-star folding;
+        # fingerprints route facts and guards scaling + widening overhead.
+        run: node --import tsx bench/kotlin-star-route-constants/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language scope-capture fingerprint + scaling guards
         # Runs even after an earlier guard fails (#2895). Every step here was
         # fail-fast, so the FIRST failing --check aborted the job and every guard

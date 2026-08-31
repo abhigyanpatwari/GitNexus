@@ -138,6 +138,33 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
+  it('folds declarations imported through a package star', () => {
+    expect(
+      providers({
+        [CONSTS]: `package com.example.app.api
+
+const val ORDERS = "/api/v1/orders"
+object ApiPaths {
+    const val ITEMS = "/api/v1/items"
+}
+`,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.*
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+
+    @GetMapping(ApiPaths.ITEMS)
+    fun items() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/items', 'GET /api/v1/orders']);
+  });
+
   it('folds a constant imported through a nested object', () => {
     expect(
       providers({

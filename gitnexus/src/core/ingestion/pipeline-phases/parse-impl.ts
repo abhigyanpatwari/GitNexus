@@ -93,7 +93,10 @@ import {
   resolveOperands,
   type ModuleConstants,
 } from '../route-extractors/python-const-resolver.js';
-import { expandJavaWildcardStaticImports } from '../route-extractors/java-const-resolver.js';
+import {
+  buildJavaConstantIndex,
+  expandJavaWildcardStaticImports,
+} from '../route-extractors/java-const-resolver.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -1278,8 +1281,9 @@ export async function runChunkedParseAndResolve(
     // view so wildcard-imported route constants fold like named ones — same
     // post-pass as the group-layer prepareRepo in http-patterns/java.ts; the
     // ingestion Route nodes and the group source-scan must not diverge.
+    const javaConstantIndex = buildJavaConstantIndex(repoConstants);
     for (const [fp, mc] of repoConstants) {
-      expandJavaWildcardStaticImports(mc, fp, repoConstants);
+      expandJavaWildcardStaticImports(mc, fp, repoConstants, javaConstantIndex);
     }
     const resolvedRoutes: ExtractedDecoratorRoute[] = [];
     let skipped = 0;

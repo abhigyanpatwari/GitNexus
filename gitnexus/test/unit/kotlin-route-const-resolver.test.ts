@@ -414,17 +414,91 @@ import com.example.app.api.ApiPaths
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBe('/api/v1/orders');
     });
 
-    it('returns null for a wildcard import', () => {
-      // `import com.example.app.api.*` binds no single name, so there is nothing
-      // to key the fold on and no honest way to pick a package member.
+    it('resolves top-level declarations through a package-star import', () => {
       const repo = repoOf({
-        [CONSTS_KEY]: CONSTS_SRC,
+        [CONSTS_KEY]: `package com.example.app.api
+
+const val ORDERS = "/api/v1/orders"
+object ApiPaths {
+    const val ITEMS = "/api/v1/items"
+}
+`,
         [CONTROLLER_KEY]: `package com.example.app.web
 
 import com.example.app.api.*
 `,
       });
+      const controller = repo.get(CONTROLLER_KEY);
+      expect(controller?.wildcardImports).toEqual(['com.example.app.api']);
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBe('/api/v1/orders');
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ITEMS', repo)).toBe('/api/v1/items');
+    });
+
+    it('does not treat an object-star import as a package-star import', () => {
+      const repo = repoOf({
+        [CONSTS_KEY]: CONSTS_SRC,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths.*
+`,
+      });
+      // Kotlin forbids star imports from objects. The resolver searches exact
+      // declared packages only, so it cannot fabricate this invalid binding.
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBeNull();
+    });
+
+    it('keeps package-star collisions unresolved and lets explicit imports win', () => {
+      const repo = repoOf({
+        'src/one/Routes.kt': `package one
+const val ROUTE = "/one"
+`,
+        'src/two/Routes.kt': `package two
+const val ROUTE = "/two"
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import one.*
+import two.*
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ROUTE', repo)).toBeNull();
+
+      const explicitRepo = repoOf({
+        'src/one/Routes.kt': `package one
+const val ROUTE = "/one"
+`,
+        'src/two/Routes.kt': `package two
+const val ROUTE = "/two"
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import one.*
+import two.*
+import two.ROUTE
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ROUTE', explicitRepo)).toBe('/two');
+    });
+
+    it('lets local non-constant declarations shadow package-star imports', () => {
+      const repo = repoOf({
+        [CONSTS_KEY]: `package com.example.app.api
+
+const val ROUTE = "/imported"
+object ApiPaths {
+    const val ITEMS = "/imported/items"
+}
+`,
+        [CONTROLLER_KEY]: `package com.example.app.web
+
+import com.example.app.api.*
+
+var ROUTE = runtimeRoute()
+class ApiPaths
+`,
+      });
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ROUTE', repo)).toBeNull();
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ITEMS', repo)).toBeNull();
     });
 
     it('returns null for an unknown reference rather than an empty path', () => {

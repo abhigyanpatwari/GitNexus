@@ -657,10 +657,52 @@ export function foldJavaOperands(
   return out === '' ? null : out;
 }
 
+/**
+ * Constant-defining file keys used by Java import resolution.
+ *
+ * Build once per repo pass. Recomputing this set for every wildcard-importing
+ * controller makes expansion quadratic in controller count.
+ */
+export function buildJavaConstantKeys(repo: RepoConstants): ReadonlySet<string> {
+  const repoKeys = new Set<string>();
+  for (const [key, target] of repo) {
+    if (target.literals.size > 0 || target.exprs.size > 0) repoKeys.add(key);
+  }
+  return repoKeys;
+}
+
+export interface JavaConstantIndex {
+  readonly keys: ReadonlySet<string>;
+  /** Every resolvable path suffix as a dotted module name; null means ambiguous. */
+  readonly byModule: ReadonlyMap<string, string | null>;
+}
+
+/**
+ * Build all Java import suffixes once, turning repeated wildcard target lookup
+ * from O(importers × constant files) into O(path segments + importers).
+ */
+export function buildJavaConstantIndex(repo: RepoConstants): JavaConstantIndex {
+  const keys = buildJavaConstantKeys(repo);
+  const byModule = new Map<string, string | null>();
+  for (const key of keys) {
+    const normalized = key.replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!normalized.endsWith('.java')) continue;
+    const segments = normalized.slice(0, -'.java'.length).split('/');
+    for (let start = 0; start < segments.length; start++) {
+      const moduleName = segments.slice(start).join('.');
+      const existing = byModule.get(moduleName);
+      if (existing === undefined) byModule.set(moduleName, key);
+      else if (existing !== key) byModule.set(moduleName, null);
+    }
+  }
+  return { keys, byModule };
+}
+
 export function expandJavaWildcardStaticImports(
   mc: ModuleConstants,
-  fileKey: string,
+  _fileKey: string,
   repo: RepoConstants,
+  index: JavaConstantIndex = buildJavaConstantIndex(repo),
 ): ModuleConstants {
   const wildcards = mc.wildcardImports;
   if (!wildcards || wildcards.length === 0) return mc;
@@ -668,12 +710,8 @@ export function expandJavaWildcardStaticImports(
   // also admits import-only files; measuring uniqueness over every key made
   // a duplicate empty FQN floor ingestion to skip while group still folded
   // (#2980 R4).
-  const repoKeys = new Set<string>();
-  for (const [key, target] of repo) {
-    if (target.literals.size > 0 || target.exprs.size > 0) repoKeys.add(key);
-  }
   for (const fqn of wildcards) {
-    const targetKey = resolveJavaImport(fileKey, fqn, repoKeys);
+    const targetKey = index.byModule.get(fqn) ?? null;
     if (targetKey === null) continue;
     const target = repo.get(targetKey);
     if (!target) continue;
