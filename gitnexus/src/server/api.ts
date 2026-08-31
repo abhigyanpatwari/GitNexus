@@ -363,7 +363,7 @@ const isMissingRouteRuntimePropertyError = (err: unknown): boolean => {
   );
 };
 
-const buildGraph = async (
+export const buildGraph = async (
   includeContent = false,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];

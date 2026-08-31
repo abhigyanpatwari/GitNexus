@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
+    executeQuery: vi.fn(),
     streamQuery: vi.fn(),
   },
 }));
@@ -12,7 +13,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   return { ...actual, ...lbugMocks };
 });
 
-import { ClientDisconnectedError, streamGraphNdjson } from '../../src/server/api.js';
+import { buildGraph, ClientDisconnectedError, streamGraphNdjson } from '../../src/server/api.js';
 
 const createMockResponse = (writeImpl?: (chunk: string) => boolean) => {
   const response = new EventEmitter() as any;
@@ -285,6 +286,45 @@ describe('streamGraphNdjson', () => {
     expect(routeRecord.data.properties).not.toHaveProperty('runtimeConfirmed');
     expect(routeRecord.data.properties).not.toHaveProperty('runtimeSource');
     expect(routeRecord.data.properties).not.toHaveProperty('runtimeStatus');
+  });
+
+  it('retries non-streaming Route loading with the legacy projection', async () => {
+    let modernRouteAttempts = 0;
+    let legacyRouteAttempts = 0;
+    lbugMocks.executeQuery.mockImplementation(async (query: string) => {
+      if (!query.includes('MATCH (n:`Route`)')) return [];
+      if (query.includes('runtimeConfirmed')) {
+        modernRouteAttempts++;
+        throw new Error('Binder exception: Cannot find property runtimeConfirmed for n.');
+      }
+      legacyRouteAttempts++;
+      return [
+        {
+          id: 'Route:GET /legacy',
+          name: '/legacy',
+          filePath: 'src/LegacyController.java',
+          responseKeys: [],
+          errorKeys: [],
+          middleware: [],
+        },
+      ];
+    });
+
+    const graph = await buildGraph(false);
+
+    expect(modernRouteAttempts).toBe(1);
+    expect(legacyRouteAttempts).toBe(1);
+    expect(graph.nodes).toContainEqual(
+      expect.objectContaining({
+        id: 'Route:GET /legacy',
+        label: 'Route',
+        properties: expect.not.objectContaining({
+          runtimeConfirmed: expect.anything(),
+          runtimeSource: expect.anything(),
+          runtimeStatus: expect.anything(),
+        }),
+      }),
+    );
   });
 
   // Taint/PDG substrate (#2080): BasicBlock has no name/content columns, so its
