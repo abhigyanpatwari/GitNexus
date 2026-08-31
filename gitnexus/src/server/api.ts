@@ -343,9 +343,11 @@ export const writeNdjsonRecord = async (
   }
 };
 
-const LEGACY_ROUTE_NODE_QUERY =
-  'MATCH (n:`Route`) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, ' +
+const ROUTE_NODE_CORE_PROJECTION =
+  'n.id AS id, n.name AS name, n.filePath AS filePath, ' +
   'n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware';
+
+const LEGACY_ROUTE_NODE_QUERY = `MATCH (n:\`Route\`) RETURN ${ROUTE_NODE_CORE_PROJECTION}`;
 
 const isMissingRouteRuntimePropertyError = (err: unknown): boolean => {
   const message = err instanceof Error ? err.message : String(err);
@@ -426,7 +428,7 @@ export const getNodeQuery = (table: string, includeContent: boolean): string => 
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
   }
   if (table === 'Route') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware, n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus`;
+    return `MATCH (n:${tableLabel}) RETURN ${ROUTE_NODE_CORE_PROJECTION}, n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus`;
   }
   if (table === 'Tool') {
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;

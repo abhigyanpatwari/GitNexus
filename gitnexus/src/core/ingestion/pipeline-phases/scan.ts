@@ -35,32 +35,68 @@ const SPRING_ACTUATOR_ENDPOINT_FILES = new Set([
  * Actuator env/configprops payloads: their values must never become File-node
  * content or enter FTS merely because the snapshot directory is in the repo.
  */
-function excludesRuntimeInput(repoPath: string, filePath: string, inputPath: string): boolean {
+type CompiledActuatorExclusion =
+  | { kind: 'repo-root-endpoints' }
+  | { kind: 'dir'; resolved: string };
+
+function compileActuatorExclusions(
+  repoPath: string,
+  inputPaths: readonly string[],
+): CompiledActuatorExclusion[] {
+  const repo = path.resolve(repoPath);
+  const compiled: CompiledActuatorExclusion[] = [];
+  const seen = new Set<string>();
+  for (const inputPath of inputPaths) {
+    const input = path.resolve(repoPath, inputPath);
+    const inputRelativeToRepo = path.relative(repo, input);
+    if (inputRelativeToRepo === '') {
+      if (seen.has('')) continue;
+      seen.add('');
+      compiled.push({ kind: 'repo-root-endpoints' });
+      continue;
+    }
+    if (
+      inputRelativeToRepo === '..' ||
+      inputRelativeToRepo.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(inputRelativeToRepo)
+    ) {
+      continue;
+    }
+    if (seen.has(input)) continue;
+    seen.add(input);
+    compiled.push({ kind: 'dir', resolved: input });
+  }
+  return compiled;
+}
+
+function matchesActuatorExclusion(
+  repoPath: string,
+  filePath: string,
+  exclusions: readonly CompiledActuatorExclusion[],
+): boolean {
+  if (exclusions.length === 0) return false;
   const repo = path.resolve(repoPath);
   const candidate = path.resolve(repoPath, filePath);
-  const input = path.resolve(repoPath, inputPath);
-
-  const inputRelativeToRepo = path.relative(repo, input);
-  if (inputRelativeToRepo === '') {
-    const candidateRelativeToRepo = path.relative(repo, candidate);
-    return (
-      path.dirname(candidateRelativeToRepo) === '.' &&
-      SPRING_ACTUATOR_ENDPOINT_FILES.has(path.basename(candidateRelativeToRepo).toLowerCase())
-    );
+  for (const exclusion of exclusions) {
+    if (exclusion.kind === 'repo-root-endpoints') {
+      const candidateRelativeToRepo = path.relative(repo, candidate);
+      if (
+        path.dirname(candidateRelativeToRepo) === '.' &&
+        SPRING_ACTUATOR_ENDPOINT_FILES.has(path.basename(candidateRelativeToRepo).toLowerCase())
+      ) {
+        return true;
+      }
+      continue;
+    }
+    const relative = path.relative(exclusion.resolved, candidate);
+    if (
+      relative === '' ||
+      (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    ) {
+      return true;
+    }
   }
-  if (
-    inputRelativeToRepo === '..' ||
-    inputRelativeToRepo.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(inputRelativeToRepo)
-  ) {
-    return false;
-  }
-
-  const relative = path.relative(input, candidate);
-  return (
-    relative === '' ||
-    (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
-  );
+  return false;
 }
 
 export const scanPhase: PipelinePhase<ScanOutput> = {
@@ -74,17 +110,15 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       message: 'Scanning repository...',
     });
 
-    const springActuatorPaths = [
+    const actuatorExclusions = compileActuatorExclusions(ctx.repoPath, [
       ...(ctx.options?.springActuatorPath === undefined ? [] : [ctx.options.springActuatorPath]),
       ...(ctx.options?.springActuatorScanExclusions ?? []),
-    ];
+    ]);
     let scannedFiles;
     try {
       scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
         const scanProgress = Math.round((current / total) * 15);
-        const isRuntimeInput = springActuatorPaths.some((inputPath) =>
-          excludesRuntimeInput(ctx.repoPath, filePath, inputPath),
-        );
+        const isRuntimeInput = matchesActuatorExclusion(ctx.repoPath, filePath, actuatorExclusions);
         ctx.onProgress({
           phase: 'extracting',
           percent: scanProgress,
@@ -107,12 +141,9 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       throw err;
     }
 
-    if (springActuatorPaths.length > 0) {
+    if (actuatorExclusions.length > 0) {
       scannedFiles = scannedFiles.filter(
-        (file) =>
-          !springActuatorPaths.some((inputPath) =>
-            excludesRuntimeInput(ctx.repoPath, file.path, inputPath),
-          ),
+        (file) => !matchesActuatorExclusion(ctx.repoPath, file.path, actuatorExclusions),
       );
     }
 

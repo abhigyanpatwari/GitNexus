@@ -36,7 +36,7 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type {
@@ -54,6 +54,7 @@ export type CaptureMap = Record<string, SyntaxNode | undefined>;
 export interface DefinitionPropertiesContext {
   readonly nodeLabel: NodeLabel;
   readonly nodeName: string;
+  readonly filePath: string;
   readonly definitionNode: SyntaxNode;
   readonly parsedImports: readonly ParsedImport[];
   readonly isExported: boolean;
@@ -62,6 +63,26 @@ export interface DefinitionPropertiesContext {
 export type DefinitionPropertiesExtractor = (
   context: DefinitionPropertiesContext,
 ) => Readonly<Record<string, unknown>> | undefined;
+
+export interface RuntimeCallableIdentity {
+  readonly name: string;
+  readonly descriptorParameterTypes: readonly string[] | undefined;
+}
+
+/**
+ * Optional language-owned bridge from runtime/compiler symbol identities to
+ * source graph symbols. Framework importers use this instead of naming
+ * languages or reproducing compiler conventions in shared ingestion code.
+ */
+export interface RuntimeSymbolStrategy {
+  /** Runtime owner names that may contain this callable/property. */
+  readonly callableOwnerAliases?: (
+    node: GraphNode,
+    owner: GraphNode | undefined,
+  ) => readonly string[];
+  /** Whether a runtime callable identity can conservatively identify a node. */
+  readonly matchesCallable: (node: GraphNode, runtime: RuntimeCallableIdentity) => boolean;
+}
 
 /** Run optional provider enrichment without allowing one hook failure to drop
  * the rest of the worker's language batch. */
@@ -191,6 +212,13 @@ interface LanguageProviderConfig {
    * Default: undefined (no preprocessing — `file.content` is parsed verbatim).
    */
   readonly preprocessSource?: (sourceText: string, filePath: string) => string;
+
+  /**
+   * Runtime/compiler identity reconciliation for framework metadata. The
+   * central importer owns ambiguity handling; providers only supply aliases
+   * and language-specific callable compatibility.
+   */
+  readonly runtimeSymbolStrategy?: RuntimeSymbolStrategy;
 
   // ── Core (required) ───────────────────────────────────────────────
   /** Type extraction: declarations, initializers, for-loop bindings */

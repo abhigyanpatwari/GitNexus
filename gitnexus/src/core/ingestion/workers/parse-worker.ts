@@ -2905,6 +2905,7 @@ const processFileGroup = (
           {
             nodeLabel,
             nodeName,
+            filePath: file.path,
             definitionNode,
             parsedImports: parsedFile?.parsedImports ?? [],
             isExported,
