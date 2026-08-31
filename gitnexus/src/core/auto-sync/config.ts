@@ -337,10 +337,12 @@ export function validateAutoSyncBranchName(branch: string): void {
   if (branch.includes('//')) throw new Error('must not contain consecutive slashes');
   if (branch.includes('@{')) throw new Error('must not contain "@{"');
   if (
-    branch.split('/').some(
-      (component) =>
-        component.startsWith('.') || component.endsWith('.') || component.endsWith('.lock'),
-    )
+    branch
+      .split('/')
+      .some(
+        (component) =>
+          component.startsWith('.') || component.endsWith('.') || component.endsWith('.lock'),
+      )
   )
     throw new Error('must not contain hidden, trailing-dot, or .lock path components');
 }
