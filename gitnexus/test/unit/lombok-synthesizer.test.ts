@@ -319,20 +319,18 @@ public class Order {
     it('ignores unproven experimental Accessors and still emits beanspec', () => {
       const tree = parse(`
 import lombok.Data;
-import lombok.experimental.Accessors;
 @Data
 @Accessors(fluent = true)
 public class Order {
     private String orderId;
 }
 `);
-      // lombok.experimental.Accessors IS proven via import
       const result = synthesizeLombokAccessors(
         tree,
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      expect(result.symbols).toHaveLength(0);
+      expect(result.symbols.map((s) => s.name).sort()).toEqual(['getOrderId', 'setOrderId']);
     });
 
     it('omits when proven Accessors fluent=true', () => {

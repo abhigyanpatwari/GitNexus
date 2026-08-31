@@ -3109,9 +3109,6 @@ const processFileGroup = (
       if (springTypes.length > 0) (result.springTypes ??= []).push(...springTypes);
     }
 
-    // Synthetic structure members with no AST method node (e.g. Lombok
-    // accessors). Language-owned via provider hook — same post-capture site
-    // as extractDecoratorRoutes. Owner map keys are in-memory AST ids only.
     if (provider.synthesizeStructureMembers) {
       const synthetic = provider.synthesizeStructureMembers(tree, file.path, classOwnersByNodeId);
       for (const node of synthetic.nodes) {

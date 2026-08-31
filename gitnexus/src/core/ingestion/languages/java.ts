@@ -223,9 +223,6 @@ export const javaProvider = defineLanguage({
   extractDecoratorRoutes: extractSpringRoutes,
   extractRouteInheritanceTypes: extractSpringTypes,
 
-  // Lombok accessors: post-capture structure members (no AST method node).
-  // Narrow provider hook at the extractDecoratorRoutes call site — not a
-  // generic lifecycle. Scope dual-path lives in emitJavaScopeCaptures.
   synthesizeStructureMembers: synthesizeLombokAccessors,
 
   // ── #2980: constant harvest + qualified-ref fold for non-literal mapping

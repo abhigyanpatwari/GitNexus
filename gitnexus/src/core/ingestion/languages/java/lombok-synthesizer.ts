@@ -88,8 +88,6 @@ export interface LombokSynthesisResult {
 export interface PlannedLombokAccessor {
   kind: 'getter' | 'setter';
   name: string;
-  fieldName: string;
-  fieldType: string;
   returnType: string;
   parameterTypes: string[];
   visibility: LombokVisibility;
@@ -98,8 +96,6 @@ export interface PlannedLombokAccessor {
   classNode: Parser.SyntaxNode;
   /** Field declaration used as the scope/structure anchor (no synthetic method AST). */
   fieldNode: Parser.SyntaxNode;
-  classSimpleName: string;
-  ownerIdPrefix: string;
 }
 
 export interface AccessorConfig {
@@ -180,59 +176,39 @@ function annotationSimpleName(nameText: string): string {
   return nameText.split('.').pop() ?? nameText;
 }
 
-function isLombokProven(nameText: string, lombokImports: Map<string, string>): boolean {
-  if (nameText === 'lombok' || nameText.startsWith('lombok.')) return true;
-  const simple = annotationSimpleName(nameText);
-  const bound = lombokImports.get(simple);
-  return (
-    bound === `lombok.${simple}` ||
-    bound === `lombok.experimental.${simple}` ||
-    bound === 'lombok.*' ||
-    bound === 'lombok.experimental.*'
-  );
+interface LombokImportIndex {
+  bySimple: Map<string, string>;
+  star: boolean;
 }
 
 /**
- * Collect proven Lombok simple-name bindings from import declarations.
- * `import lombok.Data` → Data→lombok.Data; `import lombok.*` → *→lombok.*.
+ * Compilation-unit imports only — Java `import` is never nested in a type body.
  */
-function collectLombokImports(root: Parser.SyntaxNode): Map<string, string> {
-  const map = new Map<string, string>();
-  const walk = (node: Parser.SyntaxNode): void => {
-    if (node.type === 'import_declaration') {
-      const text = node.text
-        .replace(/^import\s+/, '')
-        .replace(/;\s*$/, '')
-        .trim();
-      if (text === 'lombok.*' || text === 'lombok.experimental.*') {
-        map.set('*', text);
-      } else if (text.startsWith('lombok.')) {
-        const simple = annotationSimpleName(text);
-        if (simple.length > 0) {
-          map.set(simple, text);
-        }
-      }
+function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex {
+  const bySimple = new Map<string, string>();
+  let star = false;
+  for (const child of root.children) {
+    if (child.type !== 'import_declaration') continue;
+    const text = child.text
+      .replace(/^import\s+/, '')
+      .replace(/;\s*$/, '')
+      .trim();
+    if (text === 'lombok.*' || text === 'lombok.experimental.*') {
+      star = true;
+    } else if (text.startsWith('lombok.')) {
+      const simple = annotationSimpleName(text);
+      if (simple.length > 0) bySimple.set(simple, text);
     }
-    for (const child of node.children) walk(child);
-  };
-  walk(root);
-  return map;
-}
-
-function hasStarLombok(imports: Map<string, string>): boolean {
-  for (const v of imports.values()) {
-    if (v === 'lombok.*' || v === 'lombok.experimental.*') return true;
   }
-  return false;
+  return { bySimple, star };
 }
 
-function isProvenLombokAnnotation(nameText: string, imports: Map<string, string>): boolean {
-  if (isLombokProven(nameText, imports)) return true;
+function isProvenLombokAnnotation(nameText: string, imports: LombokImportIndex): boolean {
+  if (nameText === 'lombok' || nameText.startsWith('lombok.')) return true;
   const simple = annotationSimpleName(nameText);
   if (!LOMBOK_ANNOTATIONS.has(simple)) return false;
-  if (hasStarLombok(imports)) return true;
-  const bound = imports.get(simple);
-  return bound?.startsWith('lombok.') === true;
+  if (imports.star) return true;
+  return imports.bySimple.get(simple)?.startsWith('lombok.') === true;
 }
 
 // ── AccessLevel / Accessors structural parse ──────────────────────────────
@@ -293,14 +269,8 @@ function parseAccessorsAnnotation(ann: Parser.SyntaxNode): AccessorsOptions {
       if (key === 'chain' && valueNode?.type === 'true') opts.chain = true;
       if (key === 'prefix') opts.hasPrefix = true;
     }
-    // Bare @Accessors(true) does not occur; still scan identifiers for prefix= strings via array init
-    if (n.type === 'element_value_array_initializer' || n.type === 'string_literal') {
-      // Presence of any string/array under Accessors implies prefix configuration.
-      // Only mark hasPrefix when we already saw key=prefix; handled above.
-    }
     for (const c of n.children) stack.push(c);
   }
-  // Also detect `prefix = "m"` / `prefix = {"m","f"}` without relying solely on key field name
   const text = ann.text;
   if (/\bprefix\s*=/.test(text)) opts.hasPrefix = true;
   if (/\bfluent\s*=\s*true\b/.test(text)) opts.fluent = true;
@@ -311,19 +281,17 @@ function parseAccessorsAnnotation(ann: Parser.SyntaxNode): AccessorsOptions {
 interface ParsedAnnotations {
   getter: AccessorConfig | null;
   setter: AccessorConfig | null;
-  data: boolean;
   accessors: AccessorsOptions;
   tolerate: boolean;
 }
 
 function parseModifierAnnotations(
   modifiersNode: Parser.SyntaxNode | null,
-  imports: Map<string, string>,
+  imports: LombokImportIndex,
 ): ParsedAnnotations {
   const result: ParsedAnnotations = {
     getter: null,
     setter: null,
-    data: false,
     accessors: defaultAccessors(),
     tolerate: false,
   };
@@ -345,8 +313,6 @@ function parseModifierAnnotations(
       continue;
     }
     if (simple === 'Data') {
-      result.data = true;
-      // @Data implies public getters + setters
       result.getter = { enabled: true, visibility: 'public' };
       result.setter = { enabled: true, visibility: 'public' };
       continue;
@@ -387,7 +353,7 @@ function effectiveAccessor(
 
 function parseFieldDeclaration(
   fieldNode: Parser.SyntaxNode,
-  imports: Map<string, string>,
+  imports: LombokImportIndex,
 ): LombokField[] {
   const typeNode = fieldNode.childForFieldName('type');
   const fieldType = typeNode?.text ?? 'Object';
@@ -438,22 +404,14 @@ function methodArity(methodNode: Parser.SyntaxNode): number {
   if (!params) return 0;
   let count = 0;
   for (const child of params.namedChildren) {
-    if (
-      child.type === 'formal_parameter' ||
-      child.type === 'spread_parameter' ||
-      child.type === 'receiver_parameter'
-    ) {
-      // receiver_parameter is not a user arity slot for collision with Lombok
-      if (child.type === 'receiver_parameter') continue;
-      count += 1;
-    }
+    if (child.type === 'formal_parameter' || child.type === 'spread_parameter') count += 1;
   }
   return count;
 }
 
 function collectExistingMethods(
   classBody: Parser.SyntaxNode | null,
-  imports: Map<string, string>,
+  imports: LombokImportIndex,
 ): Map<string, Set<number>> {
   const names = new Map<string, Set<number>>();
   if (!classBody) return names;
@@ -480,13 +438,13 @@ function hasExisting(existing: Map<string, Set<number>>, name: string, arity: nu
   return existing.get(name.toLowerCase())?.has(arity) === true;
 }
 
-const TYPE_BODIES = new Set(['class_body', 'enum_body', 'interface_body']);
+const TYPE_BODIES = new Set(['class_body', 'enum_body']);
 
 function findTypeBody(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
   return node.children.find((c) => TYPE_BODIES.has(c.type)) ?? null;
 }
 
-function findLombokClasses(root: Parser.SyntaxNode, imports: Map<string, string>): LombokClass[] {
+function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex): LombokClass[] {
   const classes: LombokClass[] = [];
 
   function walk(node: Parser.SyntaxNode): void {
@@ -517,8 +475,7 @@ function findLombokClasses(root: Parser.SyntaxNode, imports: Map<string, string>
         const anyFieldEnable = fields.some(
           (f) => f.fieldGetter?.enabled === true || f.fieldSetter?.enabled === true,
         );
-        const classEnable =
-          classAnn.getter?.enabled === true || classAnn.setter?.enabled === true || classAnn.data;
+        const classEnable = classAnn.getter?.enabled === true || classAnn.setter?.enabled === true;
 
         // Class-level NONE alone is not enable — getter/setter configs may be disabled
         if (classEnable || anyFieldEnable) {
@@ -566,8 +523,6 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
         planned.push({
           kind: 'getter',
           name: gName,
-          fieldName: field.name,
-          fieldType: field.type,
           returnType: field.type,
           parameterTypes: [],
           visibility: getterCfg.visibility,
@@ -575,8 +530,6 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
           endLine: field.endLine,
           classNode: cls.node,
           fieldNode: field.fieldNode,
-          classSimpleName: cls.name,
-          ownerIdPrefix: cls.name,
         });
       }
     }
@@ -589,8 +542,6 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
         planned.push({
           kind: 'setter',
           name: sName,
-          fieldName: field.name,
-          fieldType: field.type,
           returnType,
           parameterTypes: [field.type],
           visibility: setterCfg.visibility,
@@ -598,8 +549,6 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
           endLine: field.endLine,
           classNode: cls.node,
           fieldNode: field.fieldNode,
-          classSimpleName: cls.name,
-          ownerIdPrefix: cls.name,
         });
       }
     }
@@ -692,14 +641,10 @@ export function synthesizeLombokAccessors(
   return result;
 }
 
-/**
- * Scope-declaration captures mirroring structure-phase synthetic accessors,
- * so ParsedFile.localDefs / MethodRegistry ownership stay aligned with records.
- */
-export function planLombokAccessorsForTree(tree: Parser.Tree): PlannedLombokAccessor[] {
-  const imports = collectLombokImports(tree.rootNode);
+function planLombokAccessorsForRoot(root: Parser.SyntaxNode): PlannedLombokAccessor[] {
+  const imports = collectLombokImports(root);
   const out: PlannedLombokAccessor[] = [];
-  for (const cls of findLombokClasses(tree.rootNode, imports)) {
+  for (const cls of findLombokClasses(root, imports)) {
     out.push(...planAccessors(cls));
   }
   return out;
@@ -707,8 +652,7 @@ export function planLombokAccessorsForTree(tree: Parser.Tree): PlannedLombokAcce
 
 /** Scope captures for Lombok accessors (dual-path parity with record components). */
 export function synthesizeLombokAccessorCaptures(rootNode: Parser.SyntaxNode): CaptureMatch[] {
-  const fakeTree = { rootNode } as Parser.Tree;
-  const planned = planLombokAccessorsForTree(fakeTree);
+  const planned = planLombokAccessorsForRoot(rootNode);
   const captures: CaptureMatch[] = [];
   for (const acc of planned) {
     // Distinct anchors: getter → variable_declarator; setter → field_declaration.

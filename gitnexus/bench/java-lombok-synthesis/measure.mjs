@@ -97,10 +97,6 @@ function fingerprint(ids) {
     .digest('hex');
 }
 
-function fastest(values) {
-  return Math.min(...values);
-}
-
 function measure(mode, fileCount) {
   const files = prepare(mode, fileCount);
   const run = () => runAll(files);
@@ -114,7 +110,7 @@ function measure(mode, fileCount) {
   }
   return {
     files: fileCount,
-    ms: fastest(samples),
+    ms: Math.min(...samples),
     methods: last.length,
     fingerprint: fingerprint(last),
   };
