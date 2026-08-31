@@ -9,17 +9,19 @@
  * ## Supported subset (v1)
  * - Class / data class / object / companion `val`/`var` properties.
  * - Primary-constructor `val`/`var` class parameters.
- * - Non-null `Boolean` uses the `is` prefix; `Boolean?` uses `get`.
- * - Explicit `fun getX` / custom `get()`/`set()` / `@JvmField` / `const` skip.
- * Unsupported: `@JvmName`, `@JvmStatic` renaming, file-facade top-level properties.
+ * - Names beginning with `is` + a non-lowercase character keep that getter name; all other
+ *   properties, including `Boolean`, use `get`.
+ * - Custom `get()`/`set()` bodies still emit their JVM accessor Methods.
+ * - Explicit `fun getX` / `@JvmField` / `const` skip synthesis.
+ * - `@JvmName`-renamed accessors are suppressed until custom-name emission lands.
+ * Unsupported: `@JvmStatic` renaming, file-facade top-level properties.
  */
 import type Parser from 'tree-sitter';
 import type { CaptureMatch } from 'gitnexus-shared';
 import {
   hasExistingAccessor,
-  jvmGetterName,
-  jvmSetterName,
-  kotlinUsesIsPrefix,
+  kotlinGetterName,
+  kotlinSetterName,
   rememberExistingAccessor,
 } from '../jvm/beanspec.js';
 import {
@@ -41,7 +43,8 @@ interface KtProperty {
   isVar: boolean;
   skipGetter: boolean;
   skipSetter: boolean;
-  visibility: SyntheticVisibility;
+  getterVisibility: SyntheticVisibility;
+  setterVisibility: SyntheticVisibility;
   startLine: number;
   endLine: number;
   declaratorNode: Parser.SyntaxNode;
@@ -54,25 +57,49 @@ interface KtClass {
   existingMethods: Map<string, Set<number>>;
 }
 
+function annotationUserTypeText(annotation: Parser.SyntaxNode): string {
+  const constructor = annotation.namedChildren.find((c) => c.type === 'constructor_invocation');
+  const userType =
+    constructor?.namedChildren.find((c) => c.type === 'user_type') ??
+    annotation.namedChildren.find((c) => c.type === 'user_type');
+  return userType?.text ?? '';
+}
+
+function isAnnotationNamed(annotation: Parser.SyntaxNode, name: string): boolean {
+  const typeText = annotationUserTypeText(annotation);
+  return typeText === name || typeText.endsWith(`.${name}`);
+}
+
 function kotlinVisibility(modifiers: Parser.SyntaxNode | null | undefined): SyntheticVisibility {
   if (!modifiers) return 'public';
-  const text = modifiers.text;
-  if (/\bprivate\b/.test(text)) return 'private';
-  if (/\bprotected\b/.test(text)) return 'protected';
-  if (/\binternal\b/.test(text)) return 'package';
+  for (const child of modifiers.namedChildren) {
+    if (child.type !== 'visibility_modifier') continue;
+    if (child.text === 'private') return 'private';
+    if (child.text === 'protected') return 'protected';
+    if (child.text === 'internal') return 'package';
+  }
   return 'public';
 }
 
 function hasJvmField(node: Parser.SyntaxNode): boolean {
   const mods = node.children.find((c) => c.type === 'modifiers');
-  if (!mods) return false;
-  return mods.text.includes('JvmField');
+  return (
+    mods?.namedChildren.some(
+      (child) => child.type === 'annotation' && isAnnotationNamed(child, 'JvmField'),
+    ) === true
+  );
 }
 
 function hasConst(node: Parser.SyntaxNode): boolean {
   const mods = node.children.find((c) => c.type === 'modifiers');
-  if (mods?.text.includes('const')) return true;
-  return node.children.some((c) => c.type === 'const' || c.text === 'const');
+  if (
+    mods?.namedChildren.some(
+      (child) => child.type === 'property_modifier' && child.text === 'const',
+    )
+  ) {
+    return true;
+  }
+  return node.namedChildren.some((child) => child.type === 'const');
 }
 
 function isVarBinding(node: Parser.SyntaxNode): boolean | null {
@@ -84,18 +111,14 @@ function isVarBinding(node: Parser.SyntaxNode): boolean | null {
 }
 
 function propertyTypeText(node: Parser.SyntaxNode): string {
-  const walk = (n: Parser.SyntaxNode): string | null => {
-    if (n.type === 'nullable_type') return n.text;
-    if (n.type === 'user_type' || n.type === 'type_identifier' || n.type === 'generic_type') {
-      return n.text;
-    }
-    for (const c of n.namedChildren) {
-      const inner = walk(c);
-      if (inner) return inner;
-    }
-    return null;
-  };
-  return walk(node) ?? 'Any';
+  const declarator =
+    node.type === 'class_parameter'
+      ? node
+      : (node.children.find((c) => c.type === 'variable_declaration') ?? node);
+  const colon = declarator.children.find((c) => c.type === ':');
+  let typeNode = colon?.nextNamedSibling ?? null;
+  while (typeNode?.type === 'type_modifiers') typeNode = typeNode.nextNamedSibling;
+  return typeNode?.text ?? 'Any';
 }
 
 function propertyNameNode(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
@@ -109,16 +132,50 @@ function propertyNameNode(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
   return node.children.find((c) => c.type === 'simple_identifier') ?? node;
 }
 
-function customAccessors(prop: Parser.SyntaxNode): { getter: boolean; setter: boolean } {
-  let getter = prop.children.some((c) => c.type === 'getter');
-  let setter = prop.children.some((c) => c.type === 'setter');
+function accessorMetadata(
+  prop: Parser.SyntaxNode,
+  propertyVisibility: SyntheticVisibility,
+): {
+  getterVisibility: SyntheticVisibility;
+  setterVisibility: SyntheticVisibility;
+  skipGetter: boolean;
+  skipSetter: boolean;
+} {
+  let getter = propertyVisibility;
+  let setter = propertyVisibility;
+  let skipGetter = false;
+  let skipSetter = false;
+  const propertyModifiers = prop.children.find((c) => c.type === 'modifiers');
+  for (const annotation of propertyModifiers?.namedChildren ?? []) {
+    if (annotation.type !== 'annotation' || !isAnnotationNamed(annotation, 'JvmName')) continue;
+    const target = annotation.children.find((c) => c.type === 'use_site_target')?.text;
+    if (target === 'get:') skipGetter = true;
+    if (target === 'set:') skipSetter = true;
+  }
+  const apply = (node: Parser.SyntaxNode): void => {
+    const modifiers = node.children.find((c) => c.type === 'modifiers');
+    if (!modifiers) return;
+    if (node.type === 'getter') getter = kotlinVisibility(modifiers);
+    if (node.type === 'setter') setter = kotlinVisibility(modifiers);
+    if (modifiers.namedChildren.some((annotation) => isAnnotationNamed(annotation, 'JvmName'))) {
+      if (node.type === 'getter') skipGetter = true;
+      if (node.type === 'setter') skipSetter = true;
+    }
+  };
+  for (const child of prop.children) {
+    if (child.type === 'getter' || child.type === 'setter') apply(child);
+  }
   let sib: Parser.SyntaxNode | null = prop.nextNamedSibling;
   while (sib && (sib.type === 'getter' || sib.type === 'setter')) {
-    if (sib.type === 'getter') getter = true;
-    if (sib.type === 'setter') setter = true;
+    apply(sib);
     sib = sib.nextNamedSibling;
   }
-  return { getter, setter };
+  return {
+    getterVisibility: getter,
+    setterVisibility: setter,
+    skipGetter,
+    skipSetter,
+  };
 }
 
 function functionName(node: Parser.SyntaxNode): string | undefined {
@@ -147,55 +204,36 @@ function collectExistingMethods(body: Parser.SyntaxNode | null): Map<string, Set
   return names;
 }
 
-function collectClassParameters(ctor: Parser.SyntaxNode | null): KtProperty[] {
-  if (!ctor) return [];
-  const out: KtProperty[] = [];
-  for (const child of ctor.namedChildren) {
-    if (child.type !== 'class_parameter') continue;
-    const isVar = isVarBinding(child);
-    if (isVar === null) continue;
-    if (hasJvmField(child) || hasConst(child)) continue;
-    const nameNode = propertyNameNode(child);
-    if (!nameNode) continue;
-    const mods = child.children.find((c) => c.type === 'modifiers') ?? null;
-    out.push({
-      name: nameNode.text,
-      type: propertyTypeText(child),
-      isVar,
-      skipGetter: false,
-      skipSetter: false,
-      visibility: kotlinVisibility(mods),
-      startLine: child.startPosition.row + 1,
-      endLine: child.endPosition.row + 1,
-      declaratorNode: nameNode,
-    });
-  }
-  return out;
+function toKtProperty(child: Parser.SyntaxNode): KtProperty | null {
+  const isVar = isVarBinding(child);
+  if (isVar === null) return null;
+  if (hasJvmField(child) || hasConst(child)) return null;
+  const nameNode = propertyNameNode(child);
+  if (!nameNode) return null;
+  const mods = child.children.find((c) => c.type === 'modifiers') ?? null;
+  const visibility = kotlinVisibility(mods);
+  const accessor = accessorMetadata(child, visibility);
+  return {
+    name: nameNode.text,
+    type: propertyTypeText(child),
+    isVar,
+    skipGetter: accessor.skipGetter,
+    skipSetter: accessor.skipSetter,
+    getterVisibility: accessor.getterVisibility,
+    setterVisibility: accessor.setterVisibility,
+    startLine: child.startPosition.row + 1,
+    endLine: child.endPosition.row + 1,
+    declaratorNode: nameNode,
+  };
 }
 
-function collectBodyProperties(body: Parser.SyntaxNode | null): KtProperty[] {
-  if (!body) return [];
+function collectTypedProperties(parent: Parser.SyntaxNode | null, type: string): KtProperty[] {
+  if (!parent) return [];
   const out: KtProperty[] = [];
-  for (const child of body.children) {
-    if (child.type !== 'property_declaration') continue;
-    const isVar = isVarBinding(child);
-    if (isVar === null) continue;
-    if (hasJvmField(child) || hasConst(child)) continue;
-    const nameNode = propertyNameNode(child);
-    if (!nameNode) continue;
-    const custom = customAccessors(child);
-    const mods = child.children.find((c) => c.type === 'modifiers') ?? null;
-    out.push({
-      name: nameNode.text,
-      type: propertyTypeText(child),
-      isVar,
-      skipGetter: custom.getter,
-      skipSetter: custom.setter,
-      visibility: kotlinVisibility(mods),
-      startLine: child.startPosition.row + 1,
-      endLine: child.endPosition.row + 1,
-      declaratorNode: nameNode,
-    });
+  for (const child of parent.namedChildren) {
+    if (child.type !== type) continue;
+    const prop = toKtProperty(child);
+    if (prop) out.push(prop);
   }
   return out;
 }
@@ -205,10 +243,13 @@ function findKtClasses(root: Parser.SyntaxNode): KtClass[] {
   const walk = (node: Parser.SyntaxNode): void => {
     if (KOTLIN_TYPE_DECLS.has(node.type)) {
       const name = jvmTypeSimpleName(node) ?? (node.type === 'companion_object' ? 'Companion' : '');
+      const ctor = node.children.find((c) => c.type === 'primary_constructor') ?? null;
+      const body = node.children.find((c) => c.type === 'class_body') ?? null;
       if (name) {
-        const ctor = node.children.find((c) => c.type === 'primary_constructor') ?? null;
-        const body = node.children.find((c) => c.type === 'class_body') ?? null;
-        const properties = [...collectClassParameters(ctor), ...collectBodyProperties(body)];
+        const properties = [
+          ...collectTypedProperties(ctor, 'class_parameter'),
+          ...collectTypedProperties(body, 'property_declaration'),
+        ];
         if (properties.length > 0) {
           classes.push({
             node,
@@ -218,8 +259,14 @@ function findKtClasses(root: Parser.SyntaxNode): KtClass[] {
           });
         }
       }
+      if (body) {
+        for (const child of body.namedChildren) {
+          if (KOTLIN_TYPE_DECLS.has(child.type)) walk(child);
+        }
+      }
+      return;
     }
-    for (const child of node.children) walk(child);
+    for (const child of node.namedChildren) walk(child);
   };
   walk(root);
   return classes;
@@ -228,32 +275,29 @@ function findKtClasses(root: Parser.SyntaxNode): KtClass[] {
 function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
   const planned: PlannedJvmAccessor[] = [];
   for (const prop of cls.properties) {
-    const useIs = kotlinUsesIsPrefix(prop.type);
-    if (!prop.skipGetter) {
-      const gName = jvmGetterName(prop.name, useIs);
-      if (!hasExistingAccessor(cls.existingMethods, gName, 0)) {
-        planned.push({
-          kind: 'getter',
-          name: gName,
-          returnType: prop.type,
-          parameterTypes: [],
-          visibility: prop.visibility,
-          startLine: prop.startLine,
-          endLine: prop.endLine,
-          classNode: cls.node,
-          declaratorNode: prop.declaratorNode,
-        });
-      }
+    const gName = kotlinGetterName(prop.name);
+    if (!prop.skipGetter && !hasExistingAccessor(cls.existingMethods, gName, 0)) {
+      planned.push({
+        kind: 'getter',
+        name: gName,
+        returnType: prop.type,
+        parameterTypes: [],
+        visibility: prop.getterVisibility,
+        startLine: prop.startLine,
+        endLine: prop.endLine,
+        classNode: cls.node,
+        declaratorNode: prop.declaratorNode,
+      });
     }
     if (prop.isVar && !prop.skipSetter) {
-      const sName = jvmSetterName(prop.name, useIs);
+      const sName = kotlinSetterName(prop.name);
       if (!hasExistingAccessor(cls.existingMethods, sName, 1)) {
         planned.push({
           kind: 'setter',
           name: sName,
           returnType: 'void',
           parameterTypes: [prop.type],
-          visibility: prop.visibility,
+          visibility: prop.setterVisibility,
           startLine: prop.startLine,
           endLine: prop.endLine,
           classNode: cls.node,

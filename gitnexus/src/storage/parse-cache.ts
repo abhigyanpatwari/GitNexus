@@ -679,7 +679,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // 83 -> 84: Kotlin val/var properties synthesize JVM get/set Method nodes
 // (same provider hook as Java Lombok). A warm v83 cache omits those callables.
 // origin/main at allocation is 83 (Java Lombok on this branch).
-const SCHEMA_BUMP = 84;
+// 84 -> 85: JVM synthetic accessor captures now use the declaration
+// qualified_name key consumed by scope extraction, and Kotlin accessor planning
+// follows JvmAbi naming plus conservative @JvmName suppression. A warm v84
+// cache can replay stale names and declaration metadata.
+const SCHEMA_BUMP = 85;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

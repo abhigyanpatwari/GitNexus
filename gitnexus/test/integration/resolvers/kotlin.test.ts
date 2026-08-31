@@ -30,9 +30,10 @@ describe('Kotlin heritage resolution', () => {
     expect(getNodesByLabel(result, 'Interface')).toEqual(['Serializable', 'Validatable']);
   });
 
-  it('detects 6 class/interface methods (processUser is inside UserService)', () => {
+  it('detects 6 declared methods plus the data-class JVM getter', () => {
     expect(getNodesByLabel(result, 'Function')).toEqual([]);
     expect(getNodesByLabel(result, 'Method')).toEqual([
+      'getName',
       'processUser',
       'save',
       'serialize',

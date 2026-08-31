@@ -16,7 +16,12 @@ import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import { synthesizeLombokAccessors } from '../../src/core/ingestion/languages/java/lombok-synthesizer.ts';
-import { fingerprintIds, minSample, runBaselineCheck } from '../lib/identity-guard.mjs';
+import {
+  fingerprintIds,
+  minSample,
+  runBaselineCheck,
+  runMethodCountCheck,
+} from '../lib/identity-guard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
@@ -113,6 +118,11 @@ report.widening_overhead = Number(
   (report.lombok_large.ms / Math.max(report.no_lombok_large.ms, 0.001)).toFixed(3),
 );
 report.fingerprint = report.lombok_large.fingerprint;
+
+runMethodCountCheck(report, {
+  no_lombok_large: 0,
+  lombok_large: 6400,
+});
 
 if (!process.argv.includes('--check')) {
   console.log(JSON.stringify(report, null, 2));

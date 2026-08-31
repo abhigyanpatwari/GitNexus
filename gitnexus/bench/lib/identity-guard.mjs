@@ -23,6 +23,20 @@ export function minSample(run, warmup, reps) {
   return { last, ms: Math.min(...samples) };
 }
 
+export function runMethodCountCheck(report, expectedCounts) {
+  const errors = [];
+  for (const [arm, expected] of Object.entries(expectedCounts)) {
+    const actual = report[arm]?.methods;
+    if (actual !== expected) {
+      errors.push(`${arm}.methods ${String(actual)} != ${expected}`);
+    }
+  }
+  if (errors.length) {
+    console.error(JSON.stringify({ report, errors }, null, 2));
+    process.exit(1);
+  }
+}
+
 export function runBaselineCheck(report, baselinePath) {
   const baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf-8'));
   const errors = [];

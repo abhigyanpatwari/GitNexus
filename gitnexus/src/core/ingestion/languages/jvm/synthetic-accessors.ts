@@ -4,6 +4,7 @@
  */
 import type Parser from 'tree-sitter';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { toZeroBasedLine } from '../../utils/line-base.js';
 
 export type SyntheticVisibility = 'public' | 'protected' | 'private' | 'package';
 
@@ -132,8 +133,8 @@ export function emitPlannedAccessors(args: {
       properties: {
         name: acc.name,
         filePath: args.filePath,
-        startLine: acc.startLine,
-        endLine: acc.endLine,
+        startLine: toZeroBasedLine(acc.startLine),
+        endLine: toZeroBasedLine(acc.endLine),
         language: args.language,
         isExported: false,
         synthetic: args.synthetic,
@@ -200,8 +201,8 @@ export function capturesForPlannedAccessors(
     captures.push({
       '@declaration.method': accessorCapture('@declaration.method', acc, acc.name),
       '@declaration.name': accessorCapture('@declaration.name', acc, acc.name),
-      '@declaration.qualified-name': accessorCapture(
-        '@declaration.qualified-name',
+      '@declaration.qualified_name': accessorCapture(
+        '@declaration.qualified_name',
         acc,
         qualifiedName,
       ),

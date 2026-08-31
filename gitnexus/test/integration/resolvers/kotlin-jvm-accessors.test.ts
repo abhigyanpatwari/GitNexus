@@ -13,12 +13,15 @@ import {
 } from './helpers.js';
 
 describe('Kotlin JVM accessor synthesis (pipeline)', () => {
-  it('emits getName on a data class and resolves a same-language call', async () => {
+  it('emits generated and custom getters and resolves same-language calls', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kt-jvm-acc-'));
     try {
       writeFixtureRepo(root, {
-        'User.kt': `data class User(val name: String)
+        'User.kt': `data class User(val name: String) {
+  val display: String get() = name
+}
 fun read(user: User): String = user.getName()
+fun readDisplay(user: User): String = user.getDisplay()
 `,
       });
       const linked = await runPipelineFromRepo(root, () => {});
@@ -40,12 +43,50 @@ fun read(user: User): String = user.getName()
         (e) => e.source === 'read' && e.target === 'getName',
       );
       expect(calls.some((e) => e.targetFilePath.endsWith('User.kt'))).toBe(true);
+      const getDisplay = getNodesByLabelFull(linked, 'Method').find(
+        (m) => m.name === 'getDisplay' && m.properties.filePath.endsWith('User.kt'),
+      );
+      expect(getDisplay?.properties).toMatchObject({
+        returnType: 'String',
+        synthetic: 'kotlin-jvm',
+        qualifiedName: 'User.getDisplay',
+      });
+      const displayCalls = getRelationships(linked, 'CALLS').filter(
+        (e) => e.source === 'readDisplay' && e.target === 'getDisplay',
+      );
+      expect(displayCalls.some((e) => e.targetFilePath.endsWith('User.kt'))).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 60000);
 
-  it('Java Consumer.consume -> Kotlin data class getName', async () => {
+  it('resolves same-named synthetic accessors to the receiver class', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kt-jvm-owner-'));
+    try {
+      writeFixtureRepo(root, {
+        'Models.kt': `class Alpha(val name: String)
+class Beta(val name: String)
+fun readAlpha(alpha: Alpha): String = alpha.getName()
+fun readBeta(beta: Beta): String = beta.getName()
+`,
+      });
+      const linked = await runPipelineFromRepo(root, () => {});
+      const ownerByMethod = new Map(
+        getRelationships(linked, 'HAS_METHOD').map((edge) => [edge.rel.targetId, edge.source]),
+      );
+      const calls = getRelationships(linked, 'CALLS').filter((edge) => edge.target === 'getName');
+      const alphaCall = calls.find((edge) => edge.source === 'readAlpha');
+      const betaCall = calls.find((edge) => edge.source === 'readBeta');
+      expect(alphaCall).toBeDefined();
+      expect(betaCall).toBeDefined();
+      expect(ownerByMethod.get(alphaCall?.rel.targetId ?? '')).toBe('Alpha');
+      expect(ownerByMethod.get(betaCall?.rel.targetId ?? '')).toBe('Beta');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('emits Kotlin getName while Java-to-Kotlin member CALLS remains unsupported', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-kt-acc-'));
     try {
       writeFixtureRepo(root, {
@@ -69,12 +110,10 @@ class Consumer {
       const calls = getRelationships(linked, 'CALLS').filter(
         (e) => e.source === 'consume' && e.target === 'getName',
       );
-      // Same JVM interop caveat as Kotlin→Java: document if CALLS is empty.
-      if (calls.length === 0) {
-        expect(getName?.properties.synthetic).toBe('kotlin-jvm');
-      } else {
-        expect(calls.some((e) => e.targetFilePath.endsWith('User.kt'))).toBe(true);
-      }
+      // Pre-existing cross-language resolver gap: this feature adds the target
+      // Method but does not claim Java→Kotlin member CALLS support.
+      expect(getName?.properties.synthetic).toBe('kotlin-jvm');
+      expect(calls).toEqual([]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }
