@@ -103,6 +103,23 @@ export interface SyncResult {
    * none of that repo's contracts are in `contracts`.
    */
   unreadableRepos: string[];
+/**
+   * Cross-links whose provider endpoint has no resolved graph symbol
+   * (`degraded: true` on the link — see `isUnresolvedEndpoint`). The boundary
+   * is proven but cross-impact fan-out cannot anchor it; the usual remedy is
+   * re-analyzing the provider repo so its handlers resolve.
+   */
+  degradedLinks: number;
+  /**
+   * Repos whose per-repo extraction threw (init, an extractor, or the
+   * snapshot read). Each still lands in `missingRepos` — unchanged downstream
+   * semantics — but carries its failure reason here: the catch used to
+   * swallow the exception, leaving contracts already pushed by earlier
+   * extractors in this iteration as silent half-repo data.
+   */
+  failedRepos: Array<{ repo: string; reason: string }>;
+  /** Operator-facing run warnings (e.g. bridge.lbug write failed after contracts.json was written). */
+  warnings: string[];
   repoSnapshots: Record<string, RepoSnapshot>;
   /**
    * Matching stages this run was asked to skip. Populated on EVERY outcome,
@@ -275,6 +292,8 @@ export function partitionManifestWindows(
 
 export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promise<SyncResult> {
   const missingRepos: string[] = [];
+  const failedRepos: Array<{ repo: string; reason: string }> = [];
+  const warnings: string[] = [];
   // Repos that ARE registered but that we could not extract from — the index
   // would not open, or an extractor threw partway and the repo's staged
   // contracts were dropped. Kept separate from `missingRepos` because the two
@@ -472,6 +491,10 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             "⚠️ Could not read this repo's index; its contracts are omitted from this sync.",
           );
           unreadableRepos.push(groupPath);
+          failedRepos.push({
+            repo: regName,
+            reason: err instanceof Error ? err.message : String(err),
+          });
           // Forget the handle recorded above (present only if the failure came
           // after initLbug). Deferred manifest resolution derives its known-repo
           // set from this map, so leaving the entry here re-opens a repo this
@@ -886,6 +909,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     unmatched: wildcard.remaining,
     missingRepos,
     unreadableRepos,
+    failedRepos,
+    warnings,
+    degradedLinks: crossLinks.filter((l) => (l as { degraded?: boolean }).degraded === true).length,
     repoSnapshots,
     registryOutcome,
   };

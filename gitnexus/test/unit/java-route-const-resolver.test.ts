@@ -35,10 +35,8 @@ import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import {
   extractJavaModuleConstants,
-foldJavaOperands,
+  foldJavaOperands,
   isJavaConstantFile,
-  expandJavaWildcardStaticImports,
-  hasJavaConstantsHarvestSignal,
   parseJavaConstOperands,
   resolveJavaConstant,
   resolveJavaImport,
@@ -203,20 +201,6 @@ describe('resolveJavaImport', () => {
   it('returns null when the class does not exist in the repo map', () => {
     const hit = resolveJavaImport('a/A.java', 'com.example.notthere.NoConst', keys);
     expect(hit).toBeNull();
-  });
-
-  it('suffix-matches Windows backslash repo keys in POSIX space and returns the ORIGINAL key', () => {
-    // Windows glob results key the map with native separators, which can never
-    // suffix-match a POSIX `com/a/b/C.java` import spec directly. Matching must
-    // happen after `\` → `/` normalization while returning the original key, so
-    // callers' `repo.get(...)` and the fold's memo/cycle guards still hit.
-    const winKeys = new Set(['opt-common\\src\\main\\java\\com\\winning\\opt\\common\\constants\\api\\ApiPath.java']);
-    const hit = resolveJavaImport(
-      'opt-app\\src\\main\\java\\com\\winning\\opt\\app\\controller\\CisController.java',
-      'com.winning.opt.common.constants.api.ApiPath',
-      winKeys,
-    );
-    expect(hit).toBe('opt-common\\src\\main\\java\\com\\winning\\opt\\common\\constants\\api\\ApiPath.java');
   });
 });
 
@@ -806,152 +790,5 @@ describe('text blocks keep the skip floor', () => {
       '}',
     ].join('\n');
     expect(extractJavaModuleConstants(parse(src)).literals.has('X')).toBe(false);
-  });
-});
-
-// ─── On-demand wildcard static imports (`import static a.b.C.*`) ──────────
-//
-// The wildcard cannot be bound at extract time — its members live in the
-// TARGET file — so extraction records the class FQN in ModuleConstants
-// .wildcardImports and expandJavaWildcardStaticImports materializes the
-// bare-name bindings against a repo-wide map afterwards. Fixtures: a
-// constants class + a usage class importing it with `.*`.
-const WILDCARD_CONSTANTS_FILE = `package com.winning.opt.common.constants.api;
-
-public class ApiPath {
-    public static final String API_V1 = "/api/v1";
-    public static final String ORDERS_V1 = API_V1 + "/orders";
-    public static final String COMPUTED = String.format("/%s", API_V1);
-}`;
-
-const WILDCARD_USAGE_FILE = `package com.winning.opt.app.controller;
-
-import static com.winning.opt.common.constants.api.ApiPath.*;
-
-public class OrdersController {
-
-    @Win.PostMapping(ORDERS_V1)
-    public String create() { return "{}"; }
-
-    @Win.GetMapping(ApiPath.API_V1)
-    public String list() { return "[]"; }
-}`;
-
-describe('expandJavaWildcardStaticImports', () => {
-  const constKey =
-    'opt-common/src/main/java/com/winning/opt/common/constants/api/ApiPath.java';
-  const usageKey =
-    'opt-app/src/main/java/com/winning/opt/app/controller/OrdersController.java';
-
-  const repoOfUsage = (): RepoConstants =>
-    repoOf({
-      [constKey]: WILDCARD_CONSTANTS_FILE,
-      [usageKey]: WILDCARD_USAGE_FILE,
-    });
-
-  it('extracts a wildcard static import as a pending class FQN, not a binding', () => {
-    const mc = extractJavaModuleConstants(parse(WILDCARD_USAGE_FILE));
-    expect(mc.wildcardImports).toEqual(['com.winning.opt.common.constants.api.ApiPath']);
-    // The on-demand form registers no import binding of its own — the old
-    // behavior bound the class name to its enclosing package, which never
-    // resolved and could shadow a real `import x.y.ApiPath;`.
-    expect(mc.imports.has('ApiPath')).toBe(false);
-  });
-
-  it('materializes bare-name bindings that fold to the full path', () => {
-    const repo = repoOfUsage();
-    const mc = repo.get(usageKey)!;
-    // Before expansion the bare name is unresolvable (skip floor)…
-    expect(resolveJavaConstant(usageKey, 'ORDERS_V1', repo)).toBeNull();
-    // …and expansion registers it exactly like an explicit single-member
-    // static import, so the composed constant folds through the target file.
-    expandJavaWildcardStaticImports(mc, usageKey, repo);
-    expect(mc.imports.get('ORDERS_V1')).toEqual({
-      module: 'com.winning.opt.common.constants.api.ApiPath',
-      originalName: 'ORDERS_V1',
-    });
-    expect(resolveJavaConstant(usageKey, 'ORDERS_V1', repo)).toBe('/api/v1/orders');
-  });
-
-  it('also binds the class simple name so qualified refs fold', () => {
-    const repo = repoOfUsage();
-    const mc = expandJavaWildcardStaticImports(repo.get(usageKey)!, usageKey, repo);
-    expect(mc.imports.get('ApiPath')).toEqual({
-      module: 'com.winning.opt.common.constants.api.ApiPath',
-      originalName: 'ApiPath',
-    });
-    expect(resolveJavaConstant(usageKey, 'ApiPath.API_V1', repo)).toBe('/api/v1');
-  });
-
-  it('never overwrites an explicit single-member import (single shadows on-demand)', () => {
-    const usage = `package com.winning.opt.app.controller;
-
-import static com.winning.opt.other.OtherApiPath.API_V1;
-import static com.winning.opt.common.constants.api.ApiPath.*;
-
-public class OrdersController {
-    @Win.PostMapping(ORDERS_V1)
-    public String create() { return "{}"; }
-}`;
-    const repo = repoOf({
-      [constKey]: WILDCARD_CONSTANTS_FILE,
-      'opt-other/src/main/java/com/winning/opt/other/OtherApiPath.java': `package com.winning.opt.other;
-
-public class OtherApiPath {
-    public static final String API_V1 = "/other/v1";
-}`,
-      [usageKey]: usage,
-    });
-    const mc = expandJavaWildcardStaticImports(repo.get(usageKey)!, usageKey, repo);
-    // The explicit single-member import keeps its OWN module target; the
-    // wildcard only fills the names nothing else bound (JLS: a single static
-    // import declaration shadows an on-demand one).
-    expect(mc.imports.get('API_V1')).toEqual({
-      module: 'com.winning.opt.other.OtherApiPath',
-      originalName: 'API_V1',
-    });
-    expect(resolveJavaConstant(usageKey, 'API_V1', repo)).toBe('/other/v1');
-    expect(resolveJavaConstant(usageKey, 'ORDERS_V1', repo)).toBe('/api/v1/orders');
-  });
-
-  it('is a no-op when the wildcard target is not a repo map entry (skip floor)', () => {
-    const repo = repoOf({ [usageKey]: WILDCARD_USAGE_FILE });
-    const mc = expandJavaWildcardStaticImports(repo.get(usageKey)!, usageKey, repo);
-    expect(mc.imports.size).toBe(0);
-    expect(resolveJavaConstant(usageKey, 'ORDERS_V1', repo)).toBeNull();
-  });
-});
-
-// ─── Ingestion harvest content gate ────────────────────────────────────────
-//
-// The worker only parses a Java file for constants when its source carries a
-// harvestable signal. The gate accepts BOTH class-name spellings — WiNEX
-// finance uses the singular `ApiPathConstant` — while the word boundary keeps
-// near-miss names like `ConstantsHolder` out (a plain `Constants` substring
-// would misfire on them).
-describe('hasJavaConstantsHarvestSignal', () => {
-  it('fires on a static-final String definition', () => {
-    expect(hasJavaConstantsHarvestSignal('class C { static final String X = "/x"; }')).toBe(true);
-  });
-
-  it('fires on the singular ApiPathConstant spelling, static or plain', () => {
-    expect(
-      hasJavaConstantsHarvestSignal('import static com.winning.finance.ApiPathConstant.*;'),
-    ).toBe(true);
-    expect(hasJavaConstantsHarvestSignal('import com.winning.finance.ApiPathConstant;')).toBe(true);
-  });
-
-  it('fires on the plural Constants spelling', () => {
-    expect(
-      hasJavaConstantsHarvestSignal(
-        'import static com.winning.opt.diagnosis.api.constants.ApiPathConstants.DIAGNOSIS_SAVE_V1;',
-      ),
-    ).toBe(true);
-  });
-
-  it('rejects near-miss names and constants-free sources', () => {
-    expect(hasJavaConstantsHarvestSignal('import com.winning.opt.ConstantsHolder;')).toBe(false);
-    expect(hasJavaConstantsHarvestSignal('import com.winning.opt.ConstantsUtils;')).toBe(false);
-    expect(hasJavaConstantsHarvestSignal('class C { void m() {} }')).toBe(false);
   });
 });

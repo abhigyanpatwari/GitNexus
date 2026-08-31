@@ -398,6 +398,7 @@ describe('cross-impact', () => {
       riskSharedAxes: 'MEDIUM',
       riskScale,
     });
+  });
   it('test_runGroupImpact_threads_target_selectors_to_member_impact', async () => {
     // The target_uid disambiguation loop is a three-segment chain: the MCP
     // boundary forwards target_uid/file_path/kind, the GroupToolPort.impact

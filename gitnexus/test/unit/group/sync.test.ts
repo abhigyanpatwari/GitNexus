@@ -98,6 +98,7 @@ describe('syncGroup', () => {
         matchType: 'exact',
       }),
     ]);
+  });
   it('marks a cross-link degraded when the PROVIDER endpoint carries no resolved symbolUid', async () => {
     // A provider whose symbol never resolved (empty symbolUid — e.g. a
     // source-scan provider in a repo without graph symbols) still proves the
