@@ -18,7 +18,10 @@ import {
   DART_QUERIES,
   LUA_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
-import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import {
+  createParserForLanguage,
+  isLanguageAvailable,
+} from '../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 function capturedDefinitionFunctionNames(
@@ -383,6 +386,7 @@ describe('tree-sitter queries', () => {
 
   describe('Lua queries', () => {
     it('captures a bare middleclass local as a Class definition', async () => {
+      if (!isLanguageAvailable(SupportedLanguages.Lua)) return;
       const parser = await createParserForLanguage(SupportedLanguages.Lua);
       const language = parser.getLanguage();
       const query = new Parser.Query(language, LUA_QUERIES);

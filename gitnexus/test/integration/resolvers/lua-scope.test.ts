@@ -574,6 +574,30 @@ return Dog
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 60000);
+
+  it('does not fall back to the only class when a dotted export is missing', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-missing-table-export-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+return { Cat = Animal }
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base.Animal)
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'EXTENDS').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'Animal',
+        ),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 describe('Lua scope: middleclass inherited dispatch', () => {

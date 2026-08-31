@@ -69,8 +69,8 @@ const LUA_SCOPE_QUERY = `
 
 ;; ── References — free calls: foo() ───────────────────────────────────────────
 ;;   Also matches the require call — harmless: require has no def, so it stays an
-;;   unresolved reference (no CALLS edge) while the @import.statement pattern
-;;   above emits the IMPORTS edge.
+;;   unresolved reference (no CALLS edge) while the structural capture hook
+;;   emits the IMPORTS edge.
 (call
   function: (variable
     name: (identifier) @reference.name)) @reference.call.free

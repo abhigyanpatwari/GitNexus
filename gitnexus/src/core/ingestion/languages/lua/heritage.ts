@@ -66,6 +66,9 @@ export function emitLuaHeritageEdges(
         ),
       )
       .filter((def, index, all) => all.indexOf(def) === index);
+    if (exportName !== undefined) {
+      return returnedClasses.length === 1 ? returnedClasses[0] : undefined;
+    }
     if (returnedClasses.length === 1) return returnedClasses[0];
     return classes.length === 1 ? classes[0] : undefined;
   };
