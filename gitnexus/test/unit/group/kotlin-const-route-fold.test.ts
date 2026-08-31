@@ -165,6 +165,24 @@ class OrderController {
     ).toEqual(['GET /api/v1/items', 'GET /api/v1/orders']);
   });
 
+  it('folds object members imported through a classifier star', () => {
+    expect(
+      providers({
+        [CONSTS]: CONSTS_SRC,
+        [CONTROLLER]: `package com.example.app.web
+
+import com.example.app.api.ApiPaths.*
+
+@RestController
+class OrderController {
+    @GetMapping(ORDERS)
+    fun list() {}
+}
+`,
+      }),
+    ).toEqual(['GET /api/v1/orders']);
+  });
+
   it('prefers same-package sibling declarations over package-star imports', () => {
     expect(
       providers({

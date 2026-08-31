@@ -434,7 +434,7 @@ import com.example.app.api.*
       expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ITEMS', repo)).toBe('/api/v1/items');
     });
 
-    it('does not treat an object-star import as a package-star import', () => {
+    it('resolves object members through a classifier-star import', () => {
       const repo = repoOf({
         [CONSTS_KEY]: CONSTS_SRC,
         [CONTROLLER_KEY]: `package com.example.app.web
@@ -442,9 +442,10 @@ import com.example.app.api.*
 import com.example.app.api.ApiPaths.*
 `,
       });
-      // Kotlin forbids star imports from objects. The resolver searches exact
-      // declared packages only, so it cannot fabricate this invalid binding.
-      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBeNull();
+      expect(repo.get(CONTROLLER_KEY)?.wildcardImports).toEqual(['com.example.app.api.ApiPaths']);
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ORDERS', repo)).toBe('/api/v1/orders');
+      // A classifier star imports members, not the type name itself.
+      expect(resolveKotlinConstant(CONTROLLER_KEY, 'ApiPaths.ORDERS', repo)).toBeNull();
     });
 
     it('keeps package-star collisions unresolved and lets explicit imports win', () => {

@@ -989,10 +989,8 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
           .filter((c) => c.type === 'simple_identifier')
           .map((c) => unquoteKotlinIdentifier(c.text));
         if (isWildcard) {
-          // Kotlin permits star imports from packages, but not from Kotlin
-          // objects. Keep the scope as written; resolution below only accepts
-          // exact declared-package buckets, so an invalid `Object.*` import
-          // cannot accidentally expose object members.
+          // Package star (`pkg.*`) or classifier star (`Type.*`). Resolution
+          // decides which reading the specifier actually names.
           const scope = segments.join('.');
           if (scope.length > 0 && !wildcardImports.includes(scope)) wildcardImports.push(scope);
         } else if (segments.length >= 2) {
@@ -1306,17 +1304,16 @@ function resolveImportedName(
 }
 
 /**
- * Resolve one name contributed by Kotlin package-star imports.
+ * Resolve one name contributed by Kotlin star imports.
  *
  * Star imports have lower priority than local declarations and explicit
  * imports; callers enforce that ordering before reaching this helper. A name
- * must identify one declaration across every imported package. Two packages
- * exporting the same name, or a duplicated FQN inside one package, floor to
- * null rather than guessing.
+ * must identify one declaration across every imported scope. Two stars
+ * exporting the same name, a duplicated FQN, or a package and a classifier
+ * that disagree on the target, floor to null rather than guessing.
  *
- * Kotlin forbids star imports from objects. Looking only in `byPackage` enforces
- * that rule naturally: `import a.b.ApiPaths.*` searches for the exact declared
- * package `a.b.ApiPaths`, never members of object `ApiPaths` in package `a.b`.
+ * A specifier is tried as a package (`import pkg.*`) and as a classifier
+ * (`import Type.*` — object, class, or companion members). Kotlin allows both.
  */
 function resolveKotlinWildcardImportTarget(
   mc: ModuleConstants,
@@ -1329,13 +1326,39 @@ function resolveKotlinWildcardImportTarget(
   let resolved: KotlinImportTarget | null = null;
   for (const rawScope of scopes) {
     const scope = unquoteKotlinDottedName(rawScope);
+    const candidates: KotlinImportTarget[] = [];
+
     const bucket = index.byPackage.get(scope);
-    if (!bucket || !bucket.declarers.has(name)) continue;
-    const fileKey = bucket.declarers.get(name);
-    if (fileKey === null || fileKey === undefined) return null;
-    const candidate = { fileKey, localName: name };
-    if (resolved !== null && resolved.fileKey !== candidate.fileKey) return null;
-    resolved = candidate;
+    if (bucket?.declarers.has(name)) {
+      const fileKey = bucket.declarers.get(name);
+      if (fileKey === null || fileKey === undefined) return null;
+      candidates.push({ fileKey, localName: name });
+    }
+
+    const owner = index.byFqn.get(scope);
+    if (owner === null) return null;
+    if (owner !== undefined) {
+      const localName = `${owner.localName}.${name}`;
+      const target = index.repo.get(owner.fileKey);
+      if (
+        target &&
+        (target.literals.has(localName) ||
+          target.exprs.has(localName) ||
+          unfoldableDeclarationsOf(target).has(localName))
+      ) {
+        candidates.push({ fileKey: owner.fileKey, localName });
+      }
+    }
+
+    for (const candidate of candidates) {
+      if (
+        resolved !== null &&
+        (resolved.fileKey !== candidate.fileKey || resolved.localName !== candidate.localName)
+      ) {
+        return null;
+      }
+      resolved = candidate;
+    }
   }
   return resolved;
 }
