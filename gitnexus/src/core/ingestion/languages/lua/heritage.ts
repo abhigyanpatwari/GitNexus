@@ -17,7 +17,7 @@
  * through `parsedImports` — middleclass's single-arg form needs no marker
  * decomposition, and the parent is a bare identifier in the source.
  */
-import { type ParsedFile, type NodeLabel } from 'gitnexus-shared';
+import { type ParsedFile, type NodeLabel, type SymbolDefinition } from 'gitnexus-shared';
 import {
   isClassLike,
   resolveInheritanceBaseInScope,
@@ -38,6 +38,38 @@ export function emitLuaHeritageEdges(
   nodeLookup: GraphNodeLookup,
   scopes?: ScopeResolutionIndexes,
 ): void {
+  const parsedByFile = new Map(parsedFiles.map((parsed) => [parsed.filePath, parsed]));
+
+  const resolveImportedClass = (
+    parsed: ParsedFile,
+    parent: string,
+  ): SymbolDefinition | undefined => {
+    if (scopes === undefined) return undefined;
+    const [importName, exportName] = parent.split('.', 2);
+    const matches = (scopes.imports.get(parsed.moduleScope) ?? []).filter(
+      (edge) => edge.localName === importName && edge.targetFile !== null,
+    );
+    if (matches.length !== 1) return undefined;
+    const target = parsedByFile.get(matches[0].targetFile!);
+    if (target === undefined) return undefined;
+    const classes = target.localDefs.filter((def) => isClassLike(def.type));
+    const returnedNames = target.captureSideChannel as LuaCaptureSideChannel | undefined;
+    const returnedClassNames = exportName
+      ? (returnedNames?.returnedFields ?? [])
+          .filter((field) => field.exportName === exportName)
+          .map((field) => field.localName)
+      : (returnedNames?.returnedNames ?? []);
+    const returnedClasses = returnedClassNames
+      .flatMap((name) =>
+        classes.filter(
+          (def) => def.qualifiedName === name || def.qualifiedName?.endsWith(`.${name}`),
+        ),
+      )
+      .filter((def, index, all) => all.indexOf(def) === index);
+    if (returnedClasses.length === 1) return returnedClasses[0];
+    return classes.length === 1 ? classes[0] : undefined;
+  };
+
   // (filePath, name) → graphId (per-file, for child resolution).
   const graphIdByFileAndName = new Map<string, string>();
   for (const parsed of parsedFiles) {
@@ -62,7 +94,10 @@ export function emitLuaHeritageEdges(
     for (const { child, parent } of channel.extendsPairs) {
       const childGid = graphIdByFileAndName.get(`${parsed.filePath}::${child}`);
       if (childGid === undefined || scopes === undefined) continue;
-      const parentDef = resolveInheritanceBaseInScope(parsed.moduleScope, parent, scopes);
+      const parentDef = parent.includes('.')
+        ? resolveImportedClass(parsed, parent)
+        : (resolveInheritanceBaseInScope(parsed.moduleScope, parent, scopes) ??
+          resolveImportedClass(parsed, parent));
       if (parentDef === undefined) continue;
       const parentGid = resolveDefGraphId(parentDef.filePath, parentDef, nodeLookup);
       if (parentGid === undefined) continue;
@@ -87,14 +122,30 @@ export function emitLuaHeritageEdges(
       const methodGid = nodeLookup.get(
         positionKey(parsed.filePath, 'Method' as NodeLabel, defRow, method),
       );
-      if (methodGid === undefined) continue;
-      const edgeKey = `${classGid}->${methodGid}`;
+      const resolvedMethodGid =
+        methodGid ?? generateId('Method', `${parsed.filePath}:${owner}.${method}`);
+      if (methodGid === undefined) {
+        graph.addNode({
+          id: resolvedMethodGid,
+          label: 'Method',
+          properties: {
+            name: method,
+            filePath: parsed.filePath,
+            qualifiedName: `${owner}.${method}`,
+            startLine: defRow,
+            endLine: defRow,
+            language: 'lua',
+            isExported: true,
+          },
+        });
+      }
+      const edgeKey = `${classGid}->${resolvedMethodGid}`;
       if (emittedHasMethod.has(edgeKey)) continue;
       emittedHasMethod.add(edgeKey);
       graph.addRelationship({
         id: generateId('HAS_METHOD', edgeKey),
         sourceId: classGid,
-        targetId: methodGid,
+        targetId: resolvedMethodGid,
         type: 'HAS_METHOD',
         confidence: 0.85,
         reason: 'lua-scope: middleclass method owner',

@@ -24,10 +24,19 @@ export interface LuaMethodOwnerPair {
   readonly defRow: number;
 }
 
+export interface LuaReturnedField {
+  readonly exportName: string;
+  readonly localName: string;
+}
+
 export interface LuaCaptureSideChannel {
   readonly kind: 'lua';
   readonly extendsPairs: readonly LuaExtendsPair[];
   readonly methodOwners: readonly LuaMethodOwnerPair[];
+  /** Bare class/value names returned directly by the module. */
+  readonly returnedNames: readonly string[];
+  /** Static fields returned from a table literal, e.g. `{ Animal = Animal }`. */
+  readonly returnedFields: readonly LuaReturnedField[];
 }
 
 const _facts = new Map<string, LuaCaptureSideChannel>();
