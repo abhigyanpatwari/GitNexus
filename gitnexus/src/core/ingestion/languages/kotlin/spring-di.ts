@@ -1,5 +1,6 @@
 import { makeScopeId } from 'gitnexus-shared';
 import { parseSpringInjectionType } from '../../di-extractors/spring.js';
+import type { SpringArgumentFact } from '../../frameworks/spring/argument-facts.js';
 import {
   createSpringDiMetadataAttacher,
   hasSpringDiRelevantAnnotation,
@@ -20,6 +21,20 @@ import { isKotlinPackageSiblingVisibilityIncomplete } from './package-siblings.j
 export interface KotlinAnnotationSyntaxFact extends SpringDiAnnotationFact {
   readonly useSiteTarget?: string;
   readonly line: number;
+  /** Present only for callers that opt in via `kotlinSpringAnnotationFacts`. */
+  readonly args?: readonly SpringArgumentFact[];
+}
+
+/**
+ * Options for `kotlinSpringAnnotationFacts`.
+ *
+ * Arguments are opt-in because DI captures every annotated constructor
+ * parameter, property, and function in the repository; carrying their
+ * arguments would grow the worker to main-thread side-channel payload for
+ * facts that never read them.
+ */
+export interface KotlinSpringAnnotationFactOptions {
+  readonly includeArguments?: boolean;
 }
 
 export type KotlinSpringDependencyFact = SpringDiDependencyFact<KotlinAnnotationSyntaxFact>;
@@ -53,36 +68,97 @@ function firstDescendantOfType(node: SyntaxNode, type: string): SyntaxNode | und
   return undefined;
 }
 
-function annotationFact(annotation: SyntaxNode): KotlinAnnotationSyntaxFact | null {
+const KOTLIN_COMMENT_NODE_TYPES = new Set(['line_comment', 'multiline_comment']);
+
+/**
+ * Kotlin writes annotation arguments and call arguments with the same
+ * `value_arguments` node, so one reader serves `@KafkaListener(topics = [...])`
+ * and `kafkaTemplate.send(topic, payload)`.
+ *
+ * A named argument keeps its key; everything else — positional values, spreads,
+ * collection literals, and interpolated strings — is kept as raw text, because
+ * evaluating it would be resolution.
+ */
+export function kotlinValueArgumentFacts(valueArguments: SyntaxNode): SpringArgumentFact[] {
+  const args: SpringArgumentFact[] = [];
+  for (const argument of valueArguments.namedChildren) {
+    if (argument.type !== 'value_argument') continue;
+    const parts = argument.namedChildren.filter(
+      (child) => !KOTLIN_COMMENT_NODE_TYPES.has(child.type),
+    );
+    const named = argument.children.some((child) => child.type === '=');
+    const name = parts[0];
+    const value = parts[1];
+    if (named && parts.length === 2 && name !== undefined && value !== undefined) {
+      args.push({ name: name.text.trim(), text: value.text.trim() });
+      continue;
+    }
+    args.push({ text: argument.text.trim() });
+  }
+  return args;
+}
+
+/**
+ * Arguments of one annotation, or `undefined` when it was written without an
+ * argument list (`@Scheduled`); `@Scheduled()` yields `[]` instead.
+ *
+ * Only the annotation's FIRST `user_type` / `constructor_invocation` child is
+ * read, which is the same element `annotationFact` names. That matters for the
+ * multi-annotation form `@field:[Alpha Beta("x")]`, where naively taking the
+ * first constructor invocation would hand Beta's arguments to Alpha.
+ */
+function kotlinAnnotationArgumentFacts(annotation: SyntaxNode): SpringArgumentFact[] | undefined {
+  const named = annotation.namedChildren.find(
+    (child) => child.type === 'user_type' || child.type === 'constructor_invocation',
+  );
+  if (named === undefined || named.type !== 'constructor_invocation') return undefined;
+  const valueArguments = named.namedChildren.find((child) => child.type === 'value_arguments');
+  if (valueArguments === undefined) return undefined;
+  return kotlinValueArgumentFacts(valueArguments);
+}
+
+function annotationFact(
+  annotation: SyntaxNode,
+  options: KotlinSpringAnnotationFactOptions,
+): KotlinAnnotationSyntaxFact | null {
   const nameNode = firstDescendantOfType(annotation, 'user_type');
   if (nameNode === undefined) return null;
   const useSiteTarget = annotation.namedChildren
     .find((child) => child.type === 'use_site_target')
     ?.text.replace(/:\s*$/, '')
     .trim();
+  const args =
+    options.includeArguments === true ? kotlinAnnotationArgumentFacts(annotation) : undefined;
   return {
     name: nameNode.text.trim(),
     text: annotation.text.trim(),
     line: annotation.startPosition.row + 1,
     ...(useSiteTarget === undefined || useSiteTarget.length === 0 ? {} : { useSiteTarget }),
+    ...(args === undefined ? {} : { args }),
   };
 }
 
-function annotationsFromModifierContainer(node: SyntaxNode): KotlinAnnotationSyntaxFact[] {
+function annotationsFromModifierContainer(
+  node: SyntaxNode,
+  options: KotlinSpringAnnotationFactOptions = {},
+): KotlinAnnotationSyntaxFact[] {
   const facts: KotlinAnnotationSyntaxFact[] = [];
   for (const child of node.namedChildren) {
     if (child.type !== 'annotation') continue;
-    const fact = annotationFact(child);
+    const fact = annotationFact(child, options);
     if (fact !== null) facts.push(fact);
   }
   return facts;
 }
 
-export function kotlinSpringAnnotationFacts(node: SyntaxNode): KotlinAnnotationSyntaxFact[] {
+export function kotlinSpringAnnotationFacts(
+  node: SyntaxNode,
+  options: KotlinSpringAnnotationFactOptions = {},
+): KotlinAnnotationSyntaxFact[] {
   const facts: KotlinAnnotationSyntaxFact[] = [];
   for (const child of node.namedChildren) {
     if (child.type !== 'modifiers' && child.type !== 'parameter_modifiers') continue;
-    facts.push(...annotationsFromModifierContainer(child));
+    facts.push(...annotationsFromModifierContainer(child, options));
   }
   return facts;
 }

@@ -3,6 +3,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { resolveCallerGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import type { SpringArgumentFact } from './argument-facts.js';
 import { createSpringAnnotationNameResolver } from './bean-candidates.js';
 import { SPRING_BEAN_ANNOTATION } from './bean-factories.js';
 
@@ -14,6 +15,17 @@ export interface SpringNonHttpHandlerAnnotationFact {
   readonly name: string;
   /** Kotlin use-site targets describe generated/property elements, not the callable. */
   readonly useSiteTarget?: string;
+  /**
+   * Annotation arguments in source order, or absent when the annotation was
+   * written without an argument list (`@Scheduled`). An empty array means an
+   * empty list was written (`@Scheduled()`), which is a different fact.
+   *
+   * The values stay exactly as written: `@KafkaListener(topics = ...)` and
+   * `@RabbitListener(queues = ...)` name the destination differently, and a
+   * destination may be a literal, a constant reference, or a `${...}`
+   * placeholder. Resolving any of those belongs to a later phase.
+   */
+  readonly args?: readonly SpringArgumentFact[];
 }
 
 export interface SpringNonHttpHandlerFact<

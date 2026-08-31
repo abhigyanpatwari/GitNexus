@@ -5,6 +5,14 @@ import type { GraphNode } from 'gitnexus-shared';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import {
+  getJavaSpringMessageProducerFacts,
+  getJavaSpringNonHttpHandlerFacts,
+} from '../../src/core/ingestion/languages/java/capture-side-channel.js';
+import {
+  getKotlinSpringMessageProducerFacts,
+  getKotlinSpringNonHttpHandlerFacts,
+} from '../../src/core/ingestion/languages/kotlin/capture-side-channel.js';
+import {
   loadParseCache,
   PARSE_CACHE_VERSION,
   pruneCache,
@@ -95,6 +103,64 @@ describe('Spring non-HTTP handler entry points (#2417)', () => {
     expect(method.properties.astFrameworkReason).toBe('jaxrs-annotation');
   });
 
+  /** Capture facts are keyed by the same file path the graph records. */
+  function filePathOf(methodName: string, fileSuffix: string): string {
+    return String(methodNamed(methodName, fileSuffix).properties.filePath);
+  }
+
+  it('carries Java annotation arguments across the worker boundary', () => {
+    const facts = getJavaSpringNonHttpHandlerFacts(
+      filePathOf('consumeOrder', 'MessageConsumers.java'),
+    );
+    expect(facts.flatMap((fact) => fact.annotations.map((a) => [a.name, a.args]))).toEqual(
+      expect.arrayContaining([['KafkaListener', [{ name: 'topics', text: '"orders"' }]]]),
+    );
+  });
+
+  it('carries Kotlin annotation arguments across the worker boundary', () => {
+    const facts = getKotlinSpringNonHttpHandlerFacts(
+      filePathOf('consumeEnumMessage', 'SingletonHandlers.kt'),
+    );
+    expect(facts.flatMap((fact) => fact.annotations.map((a) => [a.name, a.args]))).toEqual(
+      expect.arrayContaining([
+        ['KafkaListener', [{ name: 'topics', text: '["enum-orders"]' }]],
+        // A marker annotation ships no argument list at all.
+        ['EventListener', undefined],
+      ]),
+    );
+  });
+
+  it.each([
+    [
+      'OrderPublishers.java',
+      'publishLiteralDestination',
+      getJavaSpringMessageProducerFacts,
+      ['"orders"', 'SHIPMENTS_TOPIC', 'ordersTopic', 'exchange', '"queue.orders"', '"orders-out-0"'],
+    ],
+    [
+      'OrderPublishers.kt',
+      'publishLiteralDestination',
+      getKotlinSpringMessageProducerFacts,
+      [
+        '"orders"',
+        'Destinations.SHIPMENTS',
+        'ordersTopic',
+        '"orders"',
+        'exchange',
+        '"queue.orders"',
+        '"orders-out-0"',
+      ],
+    ],
+  ])('carries %s producer facts across the worker boundary', (file, method, getFacts, expected) => {
+    const facts = getFacts(filePathOf(method, file));
+    expect(facts.map((fact) => fact.template)).toEqual(
+      expect.arrayContaining(['kafka', 'rabbit', 'jms', 'stream-bridge']),
+    );
+    // A literal, a constant, and a configuration-backed name all yield a fact,
+    // and none of them is resolved at capture time.
+    expect(facts.map((fact) => fact.args?.[0]?.text)).toEqual(expected);
+  });
+
   it('does not model non-HTTP framework handlers as HTTP routes', () => {
     const routes: GraphNode[] = [];
     result.graph.forEachNode((node) => {
@@ -134,6 +200,61 @@ describe('Spring non-HTTP handler entry points (#2417)', () => {
   });
 });
 
+interface MessagingRow {
+  readonly kind: 'producer' | 'annotation';
+  readonly file: string;
+  readonly detail: string;
+  readonly args?: readonly { name?: string; text: string }[];
+}
+
+/**
+ * Every Spring messaging fact the capture side channels hold for a pipeline
+ * run, keyed by the file paths that run actually produced.
+ *
+ * Deliberately covers BOTH fact families. A snapshot of only the new producer
+ * list would still match after a change that stopped capturing the handler
+ * annotations it sits next to.
+ */
+function messagingSnapshot(pipeline: PipelineResult): MessagingRow[] {
+  const filePaths = new Set<string>();
+  for (const node of pipeline.graph.iterNodes()) {
+    const filePath = node.properties.filePath;
+    if (typeof filePath === 'string') filePaths.add(filePath);
+  }
+  const rows: MessagingRow[] = [];
+  for (const filePath of [...filePaths].sort()) {
+    const java = filePath.endsWith('.java');
+    const kotlin = filePath.endsWith('.kt');
+    if (!java && !kotlin) continue;
+    const file = path.basename(filePath);
+    const producers = java
+      ? getJavaSpringMessageProducerFacts(filePath)
+      : getKotlinSpringMessageProducerFacts(filePath);
+    for (const producer of producers) {
+      rows.push({
+        kind: 'producer',
+        file,
+        detail: `${producer.template} ${producer.receiverName}.${producer.methodName}`,
+        ...(producer.args === undefined ? {} : { args: producer.args }),
+      });
+    }
+    const handlers = java
+      ? getJavaSpringNonHttpHandlerFacts(filePath)
+      : getKotlinSpringNonHttpHandlerFacts(filePath);
+    for (const handler of handlers) {
+      for (const annotation of handler.annotations) {
+        rows.push({
+          kind: 'annotation',
+          file,
+          detail: annotation.name,
+          ...(annotation.args === undefined ? {} : { args: annotation.args }),
+        });
+      }
+    }
+  }
+  return rows;
+}
+
 describe('Spring non-HTTP handler durable warm parse cache (#2417)', () => {
   it('replays identical Java/Kotlin handler metadata without spawning workers', async () => {
     const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-non-http-warm-'));
@@ -152,6 +273,10 @@ describe('Spring non-HTTP handler durable warm parse cache (#2417)', () => {
         parseCache: coldCache,
       });
       expect(cold.usedWorkerPool).toBe(true);
+      // The side-channel stores are keyed by file path and hold only the most
+      // recent run, so the cold snapshot has to be taken before the warm run
+      // overwrites them.
+      const coldMessaging = messagingSnapshot(cold);
 
       pruneCache(coldCache, coldCache.usedKeys);
       const savedKeys = await saveParseCache(storage, coldCache);
@@ -170,6 +295,55 @@ describe('Spring non-HTTP handler durable warm parse cache (#2417)', () => {
         parseCache: warmCache,
       });
       expect(warm.usedWorkerPool).toBe(false);
+
+      // A warm run replays worker output verbatim, so the messaging facts have
+      // to survive the ParsedFile round trip exactly.
+      expect(messagingSnapshot(warm)).toEqual(coldMessaging);
+
+      // Equality alone would also hold for two empty snapshots, and a snapshot
+      // pooled across languages would let a Java regression hide behind Kotlin
+      // rows, so each family is pinned per language and by content.
+      const rowsIn = (file: string, kind: MessagingRow['kind']): MessagingRow[] =>
+        coldMessaging.filter((row) => row.file === file && row.kind === kind);
+      expect(rowsIn('OrderPublishers.java', 'producer').map((row) => row.detail)).toEqual([
+        'kafka kafkaTemplate.send',
+        'kafka this.kafkaTemplate.send',
+        'kafka kafkaTemplate.send',
+        'rabbit rabbitTemplate.convertAndSend',
+        'jms jmsTemplate.convertAndSend',
+        'stream-bridge streamBridge.send',
+      ]);
+      expect(rowsIn('OrderPublishers.kt', 'producer').map((row) => row.detail)).toEqual([
+        'kafka kafkaTemplate.send',
+        'kafka this.kafkaTemplate.send',
+        'kafka kafkaTemplate.send',
+        'kafka kafkaTemplate.send',
+        'rabbit rabbitTemplate.convertAndSend',
+        'jms jmsTemplate.convertAndSend',
+        'stream-bridge streamBridge.send',
+      ]);
+      // A literal, a constant, and a configuration-backed name all survive the
+      // round trip unresolved.
+      expect(rowsIn('OrderPublishers.java', 'producer').map((row) => row.args?.[0]?.text)).toEqual([
+        '"orders"',
+        'SHIPMENTS_TOPIC',
+        'ordersTopic',
+        'exchange',
+        '"queue.orders"',
+        '"orders-out-0"',
+      ]);
+      // Both languages must still carry annotation arguments, and an annotation
+      // written without an argument list stays distinguishable from one written
+      // with an empty list.
+      expect(
+        rowsIn('MessageConsumers.java', 'annotation').some((row) => row.args !== undefined),
+      ).toBe(true);
+      expect(
+        rowsIn('SingletonHandlers.kt', 'annotation').some((row) => row.args !== undefined),
+      ).toBe(true);
+      expect(
+        rowsIn('SingletonHandlers.kt', 'annotation').some((row) => row.args === undefined),
+      ).toBe(true);
 
       const project = (pipeline: PipelineResult) =>
         [...pipeline.graph.iterNodes()]

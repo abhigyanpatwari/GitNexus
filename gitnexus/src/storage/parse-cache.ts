@@ -692,7 +692,20 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // 87 -> 88: Java ModuleConstants now preserves unfoldable declaration names
 // across worker/cache replay so wildcard expansion cannot resurrect an imported
 // member hidden by a local field. A warm v87 cache lacks that shadow metadata.
-const SCHEMA_BUMP = 88;
+// 88 -> 89: the same side channels now carry Spring messaging facts — the
+// arguments of non-HTTP handler annotations (`@KafkaListener(topics = ...)`)
+// and a new `springMessageProducerFacts` list for template publishes
+// (`KafkaTemplate.send`, `RabbitTemplate`/`JmsTemplate.convertAndSend`,
+// `StreamBridge.send`). Both are parse-time worker output replayed verbatim
+// from `ParsedFile.captureSideChannel`, so a warm v88 cache would skip workers
+// and hand the annotation facts back with no `args` and the producer list
+// empty. Measured on the fixture app: a warm all-cache-hit run
+// (`usedWorkerPool=false`, `reparsedFileCount=0`) reproduces 6 Java and 7
+// Kotlin producer facts purely from the store, which is exactly the state a
+// pre-change cache would have served as zero. origin/main at allocation is 88.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING — this
+// entry was allocated 83 first, and five bumps landed upstream before it merged.
+const SCHEMA_BUMP = 89;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

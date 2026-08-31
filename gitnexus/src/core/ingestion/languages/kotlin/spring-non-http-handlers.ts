@@ -28,7 +28,7 @@ export function captureKotlinSpringNonHttpHandlerFacts(
   if (body === undefined) return facts;
   for (const member of body.namedChildren) {
     if (member.type !== 'function_declaration') continue;
-    const annotations = kotlinSpringAnnotationFacts(member);
+    const annotations = kotlinSpringAnnotationFacts(member, { includeArguments: true });
     if (annotations.length === 0) continue;
     const ownerRange = nodeToCapture('@spring-non-http-handler.owner', member).range;
     facts.push({
@@ -40,6 +40,7 @@ export function captureKotlinSpringNonHttpHandlerFacts(
         ...(annotation.useSiteTarget === undefined
           ? {}
           : { useSiteTarget: annotation.useSiteTarget }),
+        ...(annotation.args === undefined ? {} : { args: annotation.args }),
       })),
     });
   }

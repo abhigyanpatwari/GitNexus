@@ -11,7 +11,14 @@ import { javaSpringAnnotationFacts, type JavaAnnotationSyntaxFact } from './spri
 
 export type JavaSpringNonHttpHandlerFact = SpringNonHttpHandlerFact<JavaAnnotationSyntaxFact>;
 
-/** Capture callable syntax while the Java class AST is already in hand. */
+/**
+ * Capture callable syntax while the Java class AST is already in hand.
+ *
+ * Annotation arguments are read in a second pass, only for callables that
+ * already carry a handler annotation, so the destination-bearing arguments
+ * (`topics`, `queues`, `destination`, `cron`) reach the fact without adding
+ * argument text to every annotation in the repository.
+ */
 export function captureJavaSpringNonHttpHandlerFacts(
   classNode: SyntaxNode,
   filePath: string,
@@ -21,8 +28,8 @@ export function captureJavaSpringNonHttpHandlerFacts(
   if (body === null) return facts;
   for (const member of body.namedChildren) {
     if (member.type !== 'method_declaration') continue;
-    const annotations = javaSpringAnnotationFacts(member);
-    if (!hasSpringNonHttpHandlerRelevantAnnotation(annotations)) continue;
+    if (!hasSpringNonHttpHandlerRelevantAnnotation(javaSpringAnnotationFacts(member))) continue;
+    const annotations = javaSpringAnnotationFacts(member, { includeArguments: true });
     const ownerRange = nodeToCapture('@spring-non-http-handler.owner', member).range;
     facts.push({
       ownerScopeId: makeScopeId({ filePath, range: ownerRange, kind: 'Function' }),
