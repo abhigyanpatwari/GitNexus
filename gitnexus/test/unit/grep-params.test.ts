@@ -112,8 +112,8 @@ describe('parseGrepQuery — limit clamping', () => {
 
 describe('parseGrepQuery — error paths (→ 400 via statusFromError)', () => {
   it('rejects a missing pattern', () => {
-    expect(() => parseGrepQuery({})).toThrow(BadRequestError);
-    expect(() => parseGrepQuery({ pattern: '' })).toThrow(BadRequestError);
+    expect(() => parseGrepQuery({})).toThrow(/Missing "pattern" query parameter/);
+    expect(() => parseGrepQuery({ pattern: '' })).toThrow(/Missing "pattern" query parameter/);
   });
 
   it('rejects array-form patterns (type-confusion guard unchanged)', () => {

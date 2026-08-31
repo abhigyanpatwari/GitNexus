@@ -5,19 +5,39 @@ import path from 'node:path';
 import { runGrepScanInWorker, scanGrepFiles } from '../../src/server/grep-scan.js';
 
 describe('scanGrepFiles', () => {
-  it('matches regex lines and respects the path-traversal guard', async () => {
+  it('matches regex lines and skips an existing file outside the repo root', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grep-scan-'));
+    const outside = path.join(path.dirname(dir), `outside-${path.basename(dir)}.ts`);
     await fs.writeFile(path.join(dir, 'hit.ts'), 'signOrder()\nnoop\n', 'utf-8');
+    await fs.writeFile(outside, 'outsideHit()\n', 'utf-8');
+    try {
+      const out = await scanGrepFiles({
+        repoRoot: dir,
+        filePaths: ['hit.ts', `../${path.basename(outside)}`],
+        pattern: 'outsideHit|signOrder',
+        flags: 'i',
+        limit: 10,
+        deadlineMs: Date.now() + 5_000,
+      });
+      expect(out.timedOut).toBe(false);
+      expect(out.results).toEqual([{ filePath: 'hit.ts', line: 1, text: 'signOrder()' }]);
+    } finally {
+      await fs.unlink(outside).catch(() => undefined);
+    }
+  });
+
+  it('does not skip later lines when the regex is global', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'grep-gflag-'));
+    await fs.writeFile(path.join(dir, 'g.ts'), 'aa\naa\n', 'utf-8');
     const out = await scanGrepFiles({
       repoRoot: dir,
-      filePaths: ['hit.ts', '../outside.ts'],
-      pattern: 'sign|Sign',
-      flags: 'i',
+      filePaths: ['g.ts'],
+      pattern: 'a',
+      flags: 'g',
       limit: 10,
       deadlineMs: Date.now() + 5_000,
     });
-    expect(out.timedOut).toBe(false);
-    expect(out.results).toEqual([{ filePath: 'hit.ts', line: 1, text: 'signOrder()' }]);
+    expect(out.results.map((r) => r.line)).toEqual([1, 2]);
   });
 });
 

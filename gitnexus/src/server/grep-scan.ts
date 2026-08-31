@@ -68,6 +68,7 @@ export async function scanGrepFiles(
         timedOut = true;
         break files;
       }
+      regex.lastIndex = 0;
       if (regex.test(lines[i])) {
         results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
       }

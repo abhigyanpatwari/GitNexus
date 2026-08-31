@@ -50,6 +50,9 @@ const isFlagTrue = (value: unknown, name: string): boolean => {
  * missing/over-long patterns or invalid regex syntax.
  */
 export function parseGrepQuery(query: Record<string, unknown>): ParsedGrepQuery {
+  if (query.pattern === undefined) {
+    throw new BadRequestError('Missing "pattern" query parameter');
+  }
   const pattern = assertString(query.pattern, 'pattern');
   if (pattern.length === 0) {
     throw new BadRequestError('Missing "pattern" query parameter');
