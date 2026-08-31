@@ -602,6 +602,43 @@ dependencies {
     expect(result.links).toHaveLength(4);
   });
 
+  it('resolves version-catalog aliases that contain underscores', async () => {
+    await writeFile('shared-lib/build.gradle.kts', 'group = "com.example"\n');
+    await writeFile(
+      'shared-lib/src/main/java/com/example/shared/lib/SharedType.java',
+      'package com.example.shared.lib;\npublic class SharedType {}\n',
+    );
+    await writeFile(
+      'app/gradle/libs.versions.toml',
+      `[libraries]
+foo_bar = { module = "com.example:shared-lib", version = "1.0" }
+`,
+    );
+    await writeFile(
+      'app/build.gradle.kts',
+      `group = "com.example"
+dependencies {
+  implementation(libs.foo_bar)
+}
+`,
+    );
+    await writeFile(
+      'app/src/main/kotlin/com/example/app/App.kt',
+      'package com.example.app\nimport com.example.shared.lib.SharedType\nclass App\n',
+    );
+
+    const result = await extractNamed(['shared-lib', 'app']);
+
+    expect(result.discoveredProjects.get('app')?.deps).toEqual(['com.example:shared-lib']);
+    expect(result.links).toEqual([
+      expect.objectContaining({
+        from: 'shared-lib',
+        to: 'app',
+        contract: 'shared-lib::SharedType',
+      }),
+    ]);
+  });
+
   it('resolves Kotlin DSL named args, catalog get(), and type-safe project accessors', async () => {
     await writeFile('shared-lib/build.gradle.kts', 'group = "com.example"\n');
     await writeFile(
