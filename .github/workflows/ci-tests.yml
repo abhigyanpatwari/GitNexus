@@ -509,6 +509,13 @@ jobs:
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Java Lombok accessor synthesis guards (#2885)
+        if: ${{ !cancelled() }}
+        # Build-free: no-Lombok vs Lombok-heavy corpora; fingerprint over
+        # synthetic Method ids; scaling + widening overhead budgets.
+        run: node --import tsx bench/java-lombok-synthesis/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Re-export closure scaling guards (#2864)
         # Build-free: asserts buildReexportClosures stays linear in chain depth
         # and within an absolute ceiling on a wide package corpus. #2864 changed
