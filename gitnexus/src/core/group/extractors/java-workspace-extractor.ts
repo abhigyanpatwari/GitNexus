@@ -257,7 +257,11 @@ function collectProjectDependencies(project: XmlNode, deps: string[]): void {
 function parsePom(content: string): { groupId: string; artifactId: string; deps: string[] } | null {
   let parsed: unknown;
   try {
-    parsed = parseSourceSafe(pomParser, content);
+    // parseSourceSafe guards tree-sitter's Windows SIGSEGV by switching to a
+    // chunked input callback above 16 KB; XMLParser only accepts XML text, so
+    // routing POMs through it silently yields an empty document.
+    // eslint-disable-next-line gitnexus/require-safe-parse
+    parsed = pomParser.parse(content);
   } catch {
     return null;
   }
