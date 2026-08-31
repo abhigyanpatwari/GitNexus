@@ -8252,6 +8252,14 @@ export class LocalBackend {
         target: params.target,
         direction: params.direction,
       };
+      // Forward the target-selector params like the trace branch above.
+      // @group impact used to drop target_uid/file_path/kind here, so a name
+      // shared by same-named Api/Impl/Controller layers resolved ambiguously
+      // in the member repo and the documented "re-call with target_uid"
+      // disambiguation loop (impact tool schema) never worked in group mode.
+      if (typeof params.target_uid === 'string') impactArgs.target_uid = params.target_uid;
+      if (typeof params.file_path === 'string') impactArgs.file_path = params.file_path;
+      if (typeof params.kind === 'string') impactArgs.kind = params.kind;
       if (params.maxDepth !== undefined) impactArgs.maxDepth = params.maxDepth;
       if (params.crossDepth !== undefined) impactArgs.crossDepth = params.crossDepth;
       if (params.relationTypes !== undefined) impactArgs.relationTypes = params.relationTypes;

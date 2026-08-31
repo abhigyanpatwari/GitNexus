@@ -274,6 +274,7 @@ describe('syncGroup with an unreadable index', () => {
     });
 
     expect(result.unreadableRepos).toEqual(['app/backend']);
+    expect(result.failedRepos).toEqual([{ repo: 'app/backend', reason: LBUG_VERSION_ERROR }]);
     // The repo IS registered — calling it "missing" sends the operator to
     // `gitnexus analyze` for a problem that indexing will not fix.
     expect(result.missingRepos).toEqual([]);
@@ -1058,6 +1059,8 @@ describe('the warning after a failed bridge write', () => {
     expect(String(warning?.msg)).toContain('group sync');
     // ...and the underlying failure still reaches the operator.
     expect(String(warning?.err)).toContain('ENOSPC');
+    expect(result.warnings).toEqual([expect.stringContaining('writeBridge failed')]);
+    expect(result.warnings[0]).toMatch(/previous sync/i);
   });
 
   it('control: a sync whose bridge write succeeds emits no such warning', async () => {
