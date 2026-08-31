@@ -564,12 +564,14 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       const { storagePath } = getStoragePaths(repo.dbPath);
       const enabledMeta = await loadMeta(storagePath);
-      expect(enabledMeta?.springActuator).toEqual({
+      if (enabledMeta === null)
+        throw new Error('Expected Actuator metadata after enabled analysis');
+      expect(enabledMeta.springActuator).toEqual({
         enabled: true,
         repoRelativeInputs: [runtimeInput],
       });
       expect(JSON.stringify(enabledMeta)).not.toContain(secretValue);
-      expect(Object.keys(enabledMeta?.fileHashes ?? {})).not.toContain(`${runtimeInput}/env.json`);
+      expect(Object.keys(enabledMeta.fileHashes ?? {})).not.toContain(`${runtimeInput}/env.json`);
       expect(await readRuntimePropertyEvidence(repo.dbPath)).toEqual({
         description: expect.stringContaining('Spring Actuator env runtime-confirmed'),
         reasons: ['spring-actuator:env:runtime-confirmed'],
@@ -577,6 +579,18 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(
         await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
       ).toEqual([]);
+
+      await saveMeta(storagePath, {
+        ...enabledMeta,
+        springActuator: {
+          enabled: true,
+          repoRelativeInputs: [runtimeInput, 42],
+        },
+      } as RepoMeta);
+      await expect(
+        runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} }),
+      ).rejects.toThrow('Cannot safely disable Spring Actuator runtime enrichment');
+      await saveMeta(storagePath, enabledMeta);
 
       const disableLogs: string[] = [];
       const disabled = await runFullAnalysis(

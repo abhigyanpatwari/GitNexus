@@ -10,6 +10,10 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 const RUNTIME_OWNER_ALIASES = 'runtimeOwnerAliases';
 const RUNTIME_CALLABLE_ALIASES = 'runtimeCallableAliases';
 const KOTLIN_SUSPEND = 'kotlinSuspend';
+const fileFacadeMetadataCache = new WeakMap<
+  SyntaxNode,
+  { readonly packageName: string; readonly customFacade: string | undefined }
+>();
 
 function rootNode(node: SyntaxNode): SyntaxNode {
   let current = node;
@@ -35,6 +39,20 @@ function annotationJvmName(source: string, target = ''): string | undefined {
   const escapedTarget = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const prefix = target.length === 0 ? '' : `${escapedTarget}:`;
   return new RegExp(`@${prefix}JvmName\\s*\\(\\s*["']([^"']+)["']\\s*\\)`).exec(source)?.[1];
+}
+
+function fileFacadeMetadata(root: SyntaxNode): {
+  readonly packageName: string;
+  readonly customFacade: string | undefined;
+} {
+  const cached = fileFacadeMetadataCache.get(root);
+  if (cached !== undefined) return cached;
+  const metadata = {
+    packageName: packageName(root),
+    customFacade: annotationJvmName(root.text, 'file'),
+  };
+  fileFacadeMetadataCache.set(root, metadata);
+  return metadata;
 }
 
 function hasEnclosingType(node: SyntaxNode): boolean {
@@ -72,10 +90,9 @@ export function extractKotlinRuntimeSymbolProperties(
     }
     if (!hasEnclosingType(context.definitionNode)) {
       const root = rootNode(context.definitionNode);
-      const pkg = packageName(root);
-      const customFacade = annotationJvmName(root.text, 'file');
+      const facade = fileFacadeMetadata(root);
       properties[RUNTIME_OWNER_ALIASES] = [
-        qualify(pkg, customFacade ?? standardFacadeName(context.filePath)),
+        qualify(facade.packageName, facade.customFacade ?? standardFacadeName(context.filePath)),
       ];
     }
   } else if (context.nodeLabel === 'Property') {
@@ -115,6 +132,11 @@ function sourceCallableName(runtimeName: string): string {
 }
 
 function matchesKotlinCallable(node: GraphNode, runtime: RuntimeCallableIdentity): boolean {
+  // Kotlin property declarations and their synthesized JVM accessor Methods
+  // coexist in the graph. Bind runtime getters to the source Property so the
+  // synthetic accessor cannot turn an otherwise exact match into ambiguity.
+  if (node.properties.synthetic === 'kotlin-jvm') return false;
+
   const runtimeName = sourceCallableName(runtime.name);
   if (node.label === 'Property') {
     const names = propertyGetterNames(node);

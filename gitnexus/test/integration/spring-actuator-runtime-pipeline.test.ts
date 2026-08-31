@@ -149,6 +149,9 @@ class BillingProperties {
           'com.example.RuntimeConfig#billingService': [
             { condition: 'OnPropertyCondition', message: SECRET_CONDITION_MESSAGE },
           ],
+          'com.example.RuntimeConfig': [
+            { condition: 'OnClassCondition', message: 'runtime configuration matched' },
+          ],
         },
         negativeMatches: {},
       },
@@ -253,6 +256,7 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
       'Spring Actuator beans runtime-confirmed',
     );
     const configOwner = nodeNamed('RuntimeConfig', 'Class');
+    expect(configOwner?.properties.description).toContain('Spring Actuator conditions matched');
     const configMethodId = [...result.graph.iterRelationshipsByType('HAS_METHOD')].find(
       (edge) =>
         edge.sourceId === configOwner?.id &&
@@ -295,6 +299,45 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
     expect(
       [...result.graph.iterRelationshipsByType('DECLARES')].some((edge) =>
         edge.reason.startsWith('spring-actuator:mappings:'),
+      ),
+    ).toBe(true);
+  }, 60_000);
+
+  it('does not runtime-confirm a named provider whose declared type disagrees', async () => {
+    const { repo, actuatorDir } = runtimeFixture();
+    tempRepos.push(repo);
+    writeJson(repo, 'runtime-actuator/beans.json', {
+      contexts: {
+        application: {
+          beans: {
+            billingService: {
+              type: 'com.vendor.StaleBillingService',
+              scope: 'singleton',
+              dependencies: [],
+            },
+          },
+        },
+      },
+    });
+
+    const result = await runPipelineFromRepo(repo, () => {}, {
+      skipGraphPhases: true,
+      springActuatorPath: actuatorDir,
+    });
+    const nodes = [...result.graph.iterNodes()];
+    const declaredProvider = nodes.find(
+      (node) =>
+        node.properties.name === 'billingService' && node.properties.springDiProvider !== undefined,
+    );
+    expect(declaredProvider?.properties.description).not.toContain(
+      'Spring Actuator beans runtime-confirmed',
+    );
+    expect(
+      nodes.some(
+        (node) =>
+          node.properties.name === 'billingService' &&
+          node.properties.qualifiedName === 'com.vendor.StaleBillingService' &&
+          String(node.properties.description).includes('Spring Actuator beans runtime-confirmed'),
       ),
     ).toBe(true);
   }, 60_000);

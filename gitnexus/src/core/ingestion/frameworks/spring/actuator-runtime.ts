@@ -360,6 +360,32 @@ function resolveClass(
   return fallback === null ? undefined : fallback;
 }
 
+function providerMatchesRuntimeType(
+  indexes: RuntimeNodeIndexes,
+  providerNode: GraphNode,
+  runtimeType: string | undefined,
+): boolean {
+  if (runtimeType === undefined) return true;
+  const provider = objectValue(providerNode.properties[SPRING_DI_PROVIDER_PROPERTY]);
+  const providerType =
+    safeText(provider?.providedTypeName) ??
+    (providerNode.label === 'Class' || providerNode.label === 'Record'
+      ? safeText(providerNode.properties.qualifiedName)
+      : undefined);
+  if (providerType === undefined) return true;
+
+  const providerClass = resolveClass(indexes, providerType);
+  const runtimeClass = resolveClass(indexes, runtimeType);
+  if (providerClass !== undefined && runtimeClass !== undefined) {
+    return providerClass.id === runtimeClass.id;
+  }
+
+  const normalizedProvider = normalizedQualifiedName(providerType);
+  const normalizedRuntime = normalizedQualifiedName(runtimeType);
+  if (normalizedProvider.includes('.')) return normalizedProvider === normalizedRuntime;
+  return normalizedProvider === normalizedRuntime.slice(normalizedRuntime.lastIndexOf('.') + 1);
+}
+
 function descriptorParameterTypes(descriptor: string | undefined): string[] | undefined {
   if (descriptor === undefined || descriptor.charAt(0) !== '(') return undefined;
   const types: string[] = [];
@@ -576,6 +602,9 @@ function importBeans(
       const type = safeText(bean.type, 1024);
       const named = indexes.beanProvidersByName.get(beanName);
       let target = named === null ? undefined : named;
+      if (target !== undefined && !providerMatchesRuntimeType(indexes, target, type)) {
+        target = undefined;
+      }
       target ??= resolveClass(indexes, type);
       if (target === undefined) {
         const id = generateId('CodeElement', `spring-runtime-bean:${identity}`);

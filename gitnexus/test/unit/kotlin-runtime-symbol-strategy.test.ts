@@ -50,6 +50,17 @@ describe('kotlinRuntimeSymbolStrategy', () => {
         { name: 'getIsReady', descriptorParameterTypes: [] },
       ),
     ).toBe(false);
+    expect(
+      kotlinRuntimeSymbolStrategy.matchesCallable(
+        node('Method', {
+          name: 'getStatus',
+          filePath: 'a.kt',
+          parameterCount: 0,
+          synthetic: 'kotlin-jvm',
+        }),
+        { name: 'getStatus', descriptorParameterTypes: [] },
+      ),
+    ).toBe(false);
   });
 
   it('strips $default names and skips arity when the synthetic default bridge is unique', () => {
