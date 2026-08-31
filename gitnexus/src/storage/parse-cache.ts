@@ -31,6 +31,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
+import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sidecar.js';
 
 /**
  * Cache version composed of:
@@ -663,7 +664,15 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // `route-extractors/` and `workers/` module content — would close the missing-
 // bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 80;
+// 80 -> 81: ParsedFile and parse-cache shards are one immutable `.v8` envelope
+// each (no JSON/path/generation siblings). A v80 index still names `.json`
+// keys and would skip workers while scope-resolution found nothing — the
+// #1983 main-thread reparse. origin/main at allocation is 80.
+// 81 -> 82: Java and Kotlin ParsedFile capture side channels now carry
+// programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
+// would skip workers and silently omit the new INJECTS edges. origin/main at
+// allocation is 81.
+const SCHEMA_BUMP = 82;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -899,7 +908,7 @@ const getCacheIndexPath = (storagePath: string): string =>
   path.join(getCacheDirPath(storagePath), CACHE_INDEX_FILENAME);
 
 const getCacheChunkPath = (storagePath: string, chunkHash: string): string =>
-  path.join(getCacheDirPath(storagePath), `${chunkHash}.json`);
+  path.join(getCacheDirPath(storagePath), `${chunkHash}.v8`);
 
 /**
  * Drop fields that are not replayed by `mergeChunkResults` / parse-impl after
@@ -930,9 +939,12 @@ const readParseCacheChunkFromDisk = async (
 ): Promise<ParseWorkerResult[] | undefined> => {
   if (!isValidChunkCacheKey(chunkHash)) return undefined;
   try {
-    const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
-    const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
-    return Array.isArray(chunkData) ? chunkData : undefined;
+    const chunkPath = getCacheChunkPath(storagePath, chunkHash);
+    const v8Hit = await tryLoadV8Cache(chunkPath);
+    if (v8Hit?.kind === 'hit' && Array.isArray(v8Hit.value)) {
+      return v8Hit.value as ParseWorkerResult[];
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -975,17 +987,16 @@ export const persistParseCacheChunk = async (
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
     }
-    const payload = JSON.stringify(slim, mapReplacer);
     const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
-    try {
-      await fs.writeFile(chunkPath, payload, 'utf-8');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      // Long-lived analyze --watch processes can replace the sharded cache
-      // directory after this process-local memo recorded it as created.
+    let ok = await writeV8CacheFile(chunkPath, slim);
+    if (!ok) {
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
-      await fs.writeFile(chunkPath, payload, 'utf-8');
+      ok = await writeV8CacheFile(chunkPath, slim);
+    }
+    if (!ok) {
+      cache.entries.set(chunkHash, slim);
+      return;
     }
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
@@ -1089,25 +1100,17 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   // index from what we persisted, not from the raw usedKeys snapshot.
   const writtenKeys: string[] = [];
   for (const chunkHash of keys) {
-    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
+    const chunkPath = path.join(tmpDir, `${chunkHash}.v8`);
     const inMemory = cache.entries.get(chunkHash);
     if (inMemory !== undefined) {
-      let payload: string;
-      try {
-        payload = JSON.stringify(inMemory, mapReplacer);
-      } catch {
-        continue;
+      if (await writeV8CacheFile(chunkPath, inMemory)) {
+        writtenKeys.push(chunkHash);
       }
-      await fs.writeFile(chunkPath, payload, 'utf-8');
-      writtenKeys.push(chunkHash);
       continue;
     }
     const existingPath = getCacheChunkPath(storagePath, chunkHash);
-    try {
-      await fs.copyFile(existingPath, chunkPath);
+    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
       writtenKeys.push(chunkHash);
-    } catch {
-      /* shard missing — skip; next run treats as cache miss */
     }
   }
 
