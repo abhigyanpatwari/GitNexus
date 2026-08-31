@@ -152,6 +152,7 @@ export async function startAutoSyncWatch(
       );
     };
     const runSafely = () => {
+      if (stopping) return;
       if (activeRun) {
         stderr.write('[auto-sync] Previous run is still active; skipping overlapping run.\n');
         return;

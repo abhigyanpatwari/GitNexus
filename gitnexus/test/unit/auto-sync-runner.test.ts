@@ -1336,6 +1336,58 @@ describe('auto-sync starter', () => {
     }
   });
 
+  it('does not start a new run from a queued interval tick after stop', async () => {
+    const previousHome = process.env.GITNEXUS_HOME;
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-starter-'));
+    const timer = { unref: vi.fn() };
+    let scheduled: (() => void) | undefined;
+    const setIntervalFn = vi.fn((fn: () => void) => {
+      scheduled = fn;
+      return timer;
+    }) as unknown as typeof setInterval;
+    const stderr = { write: vi.fn() };
+    let releaseRun: (() => void) | undefined;
+    const runOnce = vi.fn(
+      () =>
+        new Promise<any>((resolve) => {
+          releaseRun = () => resolve({ synced: 0, analyzed: 0, skippedAnalysis: 0, failed: 0 });
+        }),
+    );
+    let handle: Awaited<ReturnType<typeof startAutoSyncWatch>> | undefined;
+
+    try {
+      process.env.GITNEXUS_HOME = tempDir;
+      await fs.writeFile(
+        path.join(tempDir, 'watch_config.yml'),
+        [
+          'sync_interval_minutes: 5',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    remote_urls:',
+          '      - git@github.com:team/repo.git',
+        ].join('\n'),
+      );
+
+      handle = await startAutoSyncWatch({ setIntervalFn, runOnce, stderr });
+      expect(runOnce).toHaveBeenCalledTimes(1);
+
+      const stopping = handle!.stop();
+      releaseRun?.();
+      await stopping;
+      handle = undefined;
+      scheduled?.();
+
+      expect(runOnce).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseRun?.();
+      await handle?.stop();
+      if (previousHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = previousHome;
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('cancels the active run before removing watch ownership files', async () => {
     const previousHome = process.env.GITNEXUS_HOME;
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-starter-'));
