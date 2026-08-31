@@ -28,6 +28,7 @@ import {
 } from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeKotlinJvmAccessorCaptures } from './jvm-accessors.js';
 import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
 import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
 import { captureKotlinSpringDynamicLookupFact } from './spring-dynamic-lookup.js';
@@ -371,6 +372,7 @@ export function emitKotlinScopeCaptures(
   setKotlinSpringDiFacts(filePath, springDiFacts);
   setKotlinSpringDynamicLookupFacts(filePath, springDynamicLookupFacts);
   setKotlinSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
+  out.push(...synthesizeKotlinJvmAccessorCaptures(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;
 }

@@ -11,13 +11,12 @@
  *   node --import tsx bench/java-lombok-synthesis/measure.mjs
  *   node --import tsx bench/java-lombok-synthesis/measure.mjs --check
  */
-import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import { synthesizeLombokAccessors } from '../../src/core/ingestion/languages/java/lombok-synthesizer.ts';
+import { fingerprintIds, minSample, runBaselineCheck } from '../lib/identity-guard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
@@ -76,7 +75,7 @@ function prepare(mode, fileCount) {
     parser.setLanguage(Java);
     const filePath = `bench/${mode}/Entity${i}.java`;
     const tree = parser.parse(entitySource(i, mode));
-    files.push({ tree, filePath, owners: ownerMap(tree, filePath), parser });
+    files.push({ tree, filePath, owners: ownerMap(tree, filePath) });
   }
   return files;
 }
@@ -90,29 +89,14 @@ function runAll(files) {
   return nodes;
 }
 
-function fingerprint(ids) {
-  return crypto
-    .createHash('sha256')
-    .update([...ids].sort().join('\n'))
-    .digest('hex');
-}
-
 function measure(mode, fileCount) {
   const files = prepare(mode, fileCount);
-  const run = () => runAll(files);
-  for (let w = 0; w < WARMUP; w++) run();
-  const samples = [];
-  let last;
-  for (let r = 0; r < REPS; r++) {
-    const t0 = performance.now();
-    last = run();
-    samples.push(performance.now() - t0);
-  }
+  const { last, ms } = minSample(() => runAll(files), WARMUP, REPS);
   return {
     files: fileCount,
-    ms: Math.min(...samples),
+    ms,
     methods: last.length,
-    fingerprint: fingerprint(last),
+    fingerprint: fingerprintIds(last),
   };
 }
 
@@ -135,21 +119,4 @@ if (!process.argv.includes('--check')) {
   process.exit(0);
 }
 
-const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
-const errors = [];
-if (report.fingerprint !== baseline.fingerprint) {
-  errors.push(`fingerprint drift: ${report.fingerprint} != ${baseline.fingerprint}`);
-}
-if (report.scaling_ratio > baseline.scaling_budget) {
-  errors.push(`scaling_ratio ${report.scaling_ratio} > ${baseline.scaling_budget}`);
-}
-if (report.widening_overhead > baseline.widening_overhead_budget) {
-  errors.push(
-    `widening_overhead ${report.widening_overhead} > ${baseline.widening_overhead_budget}`,
-  );
-}
-if (errors.length) {
-  console.error(JSON.stringify({ report, errors }, null, 2));
-  process.exit(1);
-}
-console.log(JSON.stringify({ ok: true, report }, null, 2));
+runBaselineCheck(report, BASELINE_PATH);

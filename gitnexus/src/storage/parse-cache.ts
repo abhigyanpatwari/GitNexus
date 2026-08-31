@@ -676,7 +676,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // synthetic Method nodes, HAS_METHOD edges, and matching scope captures into
 // ParseWorkerResult / ParsedFile. A warm v82 cache replays pre-Lombok worker
 // output and silently omits those callables. origin/main at allocation is 82.
-const SCHEMA_BUMP = 83;
+// 83 -> 84: Kotlin val/var properties synthesize JVM get/set Method nodes
+// (same provider hook as Java Lombok). A warm v83 cache omits those callables.
+// origin/main at allocation is 83 (Java Lombok on this branch).
+const SCHEMA_BUMP = 84;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

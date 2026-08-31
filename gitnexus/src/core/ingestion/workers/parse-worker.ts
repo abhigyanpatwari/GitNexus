@@ -2993,7 +2993,7 @@ const processFileGroup = (
       });
 
       // Class-like definitions register their AST node id → graph node id for
-      // the Lombok synthesis pass below. The definition node IS the class
+      // provider.synthesizeStructureMembers (Lombok / Kotlin JVM accessors).
       // declaration for these labels (see getDefinitionNodeFromCaptures), so
       // the key is the same node findLombokClasses will walk to.
       if (

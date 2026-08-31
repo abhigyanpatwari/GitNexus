@@ -24,78 +24,38 @@
  */
 
 import type Parser from 'tree-sitter';
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { CaptureMatch } from 'gitnexus-shared';
+import {
+  hasExistingAccessor,
+  javaUsesIsPrefix,
+  jvmGetterName,
+  jvmSetterName,
+} from '../jvm/beanspec.js';
+import {
+  capturesForPlannedAccessors,
+  emitPlannedAccessors,
+  emptySyntheticAccessorResult,
+  ownerIdNamePrefix,
+  type PlannedJvmAccessor,
+  type SyntheticAccessorResult,
+  type SyntheticVisibility,
+} from '../jvm/synthetic-accessors.js';
+
+const JAVA_TYPE_DECLS = new Set([
+  'class_declaration',
+  'enum_declaration',
+  'interface_declaration',
+  'record_declaration',
+]);
 
 // ── Public result types (ParsedSymbol / ParsedNode compatible) ────────────
 
-export type LombokVisibility = 'public' | 'protected' | 'private' | 'package';
-
-export interface SyntheticSymbol {
-  filePath: string;
-  name: string;
-  nodeId: string;
-  type: 'Method';
-  ownerId: string;
-  /** Required for resolveDefGraphId → CALLS emission (ClassName.method). */
-  qualifiedName: string;
-  parameterCount: number;
-  requiredParameterCount: number;
-  parameterTypes: string[];
-  returnType: string;
-  visibility: LombokVisibility;
-  isStatic: boolean;
-  isAbstract: boolean;
-  isFinal: boolean;
-}
-
-export interface SyntheticNode {
-  id: string;
-  label: 'Method';
-  properties: {
-    name: string;
-    filePath: string;
-    startLine: number;
-    endLine: number;
-    language: string;
-    isExported: boolean;
-    synthetic: 'lombok';
-    visibility: LombokVisibility;
-    isStatic: boolean;
-    returnType: string;
-    parameterTypes: string[];
-    parameterCount: number;
-    qualifiedName: string;
-  };
-}
-
-export interface SyntheticRelationship {
-  id: string;
-  sourceId: string;
-  targetId: string;
-  type: 'HAS_METHOD';
-  confidence: number;
-  reason: string;
-}
-
-export interface LombokSynthesisResult {
-  symbols: SyntheticSymbol[];
-  nodes: SyntheticNode[];
-  relationships: SyntheticRelationship[];
-}
-
-/** One planned accessor before collision / Accessors filtering. */
-export interface PlannedLombokAccessor {
-  kind: 'getter' | 'setter';
-  name: string;
-  returnType: string;
-  parameterTypes: string[];
-  visibility: LombokVisibility;
-  startLine: number;
-  endLine: number;
-  classNode: Parser.SyntaxNode;
-  /** Per-field declarator — unique even when `int first, second;` shares one declaration. */
-  declaratorNode: Parser.SyntaxNode;
-}
+export type LombokVisibility = SyntheticVisibility;
+export type SyntheticSymbol = SyntheticAccessorResult['symbols'][number];
+export type SyntheticNode = SyntheticAccessorResult['nodes'][number];
+export type SyntheticRelationship = SyntheticAccessorResult['relationships'][number];
+export type LombokSynthesisResult = SyntheticAccessorResult;
+export type PlannedLombokAccessor = PlannedJvmAccessor;
 
 export interface AccessorConfig {
   enabled: boolean;
@@ -137,36 +97,12 @@ interface LombokClass {
 
 const LOMBOK_ANNOTATIONS = new Set(['Data', 'Getter', 'Setter', 'Accessors', 'Tolerate']);
 
-// ── Naming (Lombok HandlerUtil / beanspec) ────────────────────────────────
-
-function capitalize(s: string): string {
-  return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s;
-}
-
-/**
- * Primitive boolean fields whose name already starts with `is` + uppercase
- * keep that name for the getter and drop the `is` prefix for the setter base
- * (`boolean isEnabled` → `isEnabled()` / `setEnabled(...)`).
- */
-function booleanIsPrefixBase(fieldName: string, fieldType: string): string | null {
-  if (fieldType !== 'boolean') return null;
-  if (fieldName.length < 3) return null;
-  if (!fieldName.startsWith('is')) return null;
-  const third = fieldName.charAt(2);
-  if (third !== third.toUpperCase() || third === third.toLowerCase()) return null;
-  return fieldName.slice(2);
-}
-
 export function getterName(fieldName: string, fieldType: string): string {
-  if (booleanIsPrefixBase(fieldName, fieldType) !== null) return fieldName;
-  if (fieldType === 'boolean') return `is${capitalize(fieldName)}`;
-  return `get${capitalize(fieldName)}`;
+  return jvmGetterName(fieldName, javaUsesIsPrefix(fieldType));
 }
 
 export function setterName(fieldName: string, fieldType: string): string {
-  const stripped = booleanIsPrefixBase(fieldName, fieldType);
-  if (stripped !== null) return `set${stripped}`;
-  return `set${capitalize(fieldName)}`;
+  return jvmSetterName(fieldName, javaUsesIsPrefix(fieldType));
 }
 
 // ── Provenance / imports ──────────────────────────────────────────────────
@@ -434,7 +370,7 @@ function collectExistingMethods(
 }
 
 function hasExisting(existing: Map<string, Set<number>>, name: string, arity: number): boolean {
-  return existing.get(name.toLowerCase())?.has(arity) === true;
+  return hasExistingAccessor(existing, name, arity);
 }
 
 const TYPE_BODIES = new Set(['class_body', 'enum_body']);
@@ -497,15 +433,6 @@ function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex):
   return classes;
 }
 
-function ownerIdNamePrefix(ownerId: string, filePath: string, fallback: string): string {
-  const needle = `Class:${filePath}:`;
-  if (ownerId.startsWith(needle)) return ownerId.slice(needle.length);
-  // Enum owners use Enum:… in some paths; accept either
-  const enumNeedle = `Enum:${filePath}:`;
-  if (ownerId.startsWith(enumNeedle)) return ownerId.slice(enumNeedle.length);
-  return fallback;
-}
-
 function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
   const planned: PlannedLombokAccessor[] = [];
   for (const field of cls.fields) {
@@ -562,79 +489,21 @@ export function synthesizeLombokAccessors(
   filePath: string,
   classOwnersById: ReadonlyMap<number, string>,
 ): LombokSynthesisResult {
-  const result: LombokSynthesisResult = {
-    symbols: [],
-    nodes: [],
-    relationships: [],
-  };
-
+  const result = emptySyntheticAccessorResult();
   const imports = collectLombokImports(tree.rootNode);
-  const lombokClasses = findLombokClasses(tree.rootNode, imports);
 
-  for (const cls of lombokClasses) {
+  for (const cls of findLombokClasses(tree.rootNode, imports)) {
     const ownerId = classOwnersById.get(cls.node.id);
     if (!ownerId) continue;
-
-    const idPrefix = ownerIdNamePrefix(ownerId, filePath, cls.name);
-    const planned = planAccessors(cls);
-    // Dedupe by Method identity — multi-declarator collection bugs or
-    // overlapping enable paths must not emit two Method nodes for one signature.
-    const emittedIds = new Set<string>();
-
-    for (const acc of planned) {
-      const arity = acc.parameterTypes.length;
-      // Match structure-phase method qualification: `ClassName.method` (or
-      // `Outer.Inner.method` when the owner key is nested). resolveDefGraphId
-      // requires a non-empty qualifiedName; without it CALLS emission fails
-      // even though MethodRegistry and graph nodes are present.
-      const qualifiedName = `${idPrefix}.${acc.name}`;
-      const nodeId = `Method:${filePath}:${qualifiedName}#${arity}`;
-      if (emittedIds.has(nodeId)) continue;
-      emittedIds.add(nodeId);
-      result.nodes.push({
-        id: nodeId,
-        label: 'Method',
-        properties: {
-          name: acc.name,
-          filePath,
-          startLine: acc.startLine,
-          endLine: acc.endLine,
-          language: 'java',
-          isExported: false,
-          synthetic: 'lombok',
-          visibility: acc.visibility,
-          isStatic: false,
-          returnType: acc.returnType,
-          parameterTypes: acc.parameterTypes,
-          parameterCount: arity,
-          qualifiedName,
-        },
-      });
-      result.symbols.push({
-        filePath,
-        name: acc.name,
-        nodeId,
-        type: 'Method',
-        ownerId,
-        qualifiedName,
-        parameterCount: arity,
-        requiredParameterCount: arity,
-        parameterTypes: acc.parameterTypes,
-        returnType: acc.returnType,
-        visibility: acc.visibility,
-        isStatic: false,
-        isAbstract: false,
-        isFinal: false,
-      });
-      result.relationships.push({
-        id: `HAS_METHOD:${ownerId}->${nodeId}`,
-        sourceId: ownerId,
-        targetId: nodeId,
-        type: 'HAS_METHOD',
-        confidence: 1.0,
-        reason: acc.kind === 'getter' ? 'lombok-getter' : 'lombok-setter',
-      });
-    }
+    emitPlannedAccessors({
+      planned: planAccessors(cls),
+      filePath,
+      ownerId,
+      idPrefix: ownerIdNamePrefix(ownerId, filePath, cls.name),
+      language: 'java',
+      synthetic: 'lombok',
+      result,
+    });
   }
 
   return result;
@@ -649,70 +518,7 @@ function planLombokAccessorsForRoot(root: Parser.SyntaxNode): PlannedLombokAcces
   return out;
 }
 
-/**
- * Unique capture range per planned accessor. `makeScopeId` is
- * file+range+kind only, so two Function scopes that share a range collapse.
- * Multi-declarator `int first, second;` shares one field_declaration; a bare
- * identifier declarator also shares its range with the name node (so getter vs
- * setter cannot both use that node). Getter = full declarator; setter =
- * zero-width at the declarator start.
- */
-function accessorCapture(name: string, acc: PlannedLombokAccessor, text: string): Capture {
-  const node = acc.declaratorNode;
-  const startLine = node.startPosition.row + 1;
-  const startCol = node.startPosition.column;
-  const endLine = node.endPosition.row + 1;
-  const endCol = acc.kind === 'getter' ? node.endPosition.column : startCol;
-  return { name, range: { startLine, startCol, endLine, endCol }, text };
-}
-
 /** Scope captures for Lombok accessors (dual-path parity with record components). */
 export function synthesizeLombokAccessorCaptures(rootNode: Parser.SyntaxNode): CaptureMatch[] {
-  const planned = planLombokAccessorsForRoot(rootNode);
-  const captures: CaptureMatch[] = [];
-  for (const acc of planned) {
-    const arity = String(acc.parameterTypes.length);
-    const enclosing = ownerQualifiedSimpleName(acc.classNode);
-    const qualifiedName = `${enclosing}.${acc.name}`;
-    captures.push({
-      '@scope.function': accessorCapture('@scope.function', acc, acc.name),
-    });
-    captures.push({
-      '@declaration.method': accessorCapture('@declaration.method', acc, acc.name),
-      '@declaration.name': accessorCapture('@declaration.name', acc, acc.name),
-      '@declaration.qualified-name': accessorCapture(
-        '@declaration.qualified-name',
-        acc,
-        qualifiedName,
-      ),
-      '@declaration.parameter-count': accessorCapture('@declaration.parameter-count', acc, arity),
-      '@declaration.required-parameter-count': accessorCapture(
-        '@declaration.required-parameter-count',
-        acc,
-        arity,
-      ),
-      '@declaration.return-type': accessorCapture('@declaration.return-type', acc, acc.returnType),
-      '@declaration.is-synthetic': accessorCapture('@declaration.is-synthetic', acc, 'true'),
-    });
-  }
-  return captures;
-}
-
-/** Immediate nested type path: `Outer.Inner` or top-level `User`. */
-function ownerQualifiedSimpleName(classNode: Parser.SyntaxNode): string {
-  const parts: string[] = [];
-  let current: Parser.SyntaxNode | null = classNode;
-  while (current) {
-    if (
-      current.type === 'class_declaration' ||
-      current.type === 'enum_declaration' ||
-      current.type === 'interface_declaration' ||
-      current.type === 'record_declaration'
-    ) {
-      const name = current.childForFieldName('name')?.text;
-      if (name) parts.unshift(name);
-    }
-    current = current.parent;
-  }
-  return parts.join('.') || 'Unknown';
+  return capturesForPlannedAccessors(planLombokAccessorsForRoot(rootNode), JAVA_TYPE_DECLS);
 }
