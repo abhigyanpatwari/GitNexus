@@ -331,21 +331,30 @@ export async function startWatchFileLoop(
     onWatcherError(error);
   });
 
+  const close = (() => {
+    let closing: Promise<void> | undefined;
+    return () => {
+      closing ??= (async () => {
+        // Close the queue first so a fatal refresh cannot schedule a retry
+        // while a slow chokidar `close()` is still in flight.
+        await queue.close();
+        await watcher.close();
+      })();
+      return closing;
+    };
+  })();
+
   try {
     await waitUntilReady(watcher);
     await queue.runInitial();
   } catch (error) {
-    await watcher.close();
-    await queue.close();
+    await close();
     throw error;
   }
 
   return {
     waitForIdle: () => queue.waitForIdle(),
-    close: async () => {
-      await watcher.close();
-      await queue.close();
-    },
+    close,
   };
 }
 
@@ -470,6 +479,7 @@ export async function watchCommandWithRunnerIdentity(
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
               cliError(formatFatalWatchRefreshFailure(error, paths));
+              void loop.close();
               stopWatching();
               return;
             }
@@ -486,6 +496,7 @@ export async function watchCommandWithRunnerIdentity(
               `Watcher failed: ${error instanceof Error ? error.message : String(error)}. ` +
                 'Watch mode is stopping.',
             );
+            void loop.close();
             stopWatching();
           },
         );
