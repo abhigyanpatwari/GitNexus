@@ -103,7 +103,7 @@ export interface SyncResult {
    * none of that repo's contracts are in `contracts`.
    */
   unreadableRepos: string[];
-/**
+  /**
    * Cross-links whose provider endpoint has no resolved graph symbol
    * (`degraded: true` on the link — see `isUnresolvedEndpoint`). The boundary
    * is proven but cross-impact fan-out cannot anchor it; the usual remedy is
