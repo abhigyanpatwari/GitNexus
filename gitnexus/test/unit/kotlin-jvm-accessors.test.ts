@@ -83,6 +83,16 @@ data class User(val name: String) {
     expect(result.symbols.map((s) => s.name)).toEqual([]);
   });
 
+  it('still emits getName when only a differently-cased GetName exists', () => {
+    const tree = parse(`
+data class User(val name: String) {
+  fun GetName(): String = name
+}
+`);
+    const result = synthesizeKotlinJvmAccessors(tree, FILE_PATH, ownerMap(tree, FILE_PATH));
+    expect(result.symbols.map((s) => s.name)).toEqual(['getName']);
+  });
+
   it('emits custom get/set JVM methods but skips @JvmField', () => {
     const tree = parse(`
 class User {

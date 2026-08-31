@@ -130,20 +130,26 @@ function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex {
       .trim();
     if (text === 'lombok.*' || text === 'lombok.experimental.*') {
       star = true;
-    } else if (text.startsWith('lombok.')) {
-      const simple = annotationSimpleName(text);
-      if (simple.length > 0) bySimple.set(simple, text);
+    } else if (isCanonicalLombokFqn(text)) {
+      bySimple.set(annotationSimpleName(text), text);
     }
   }
   return { bySimple, star };
 }
 
-function isProvenLombokAnnotation(nameText: string, imports: LombokImportIndex): boolean {
-  if (nameText === 'lombok' || nameText.startsWith('lombok.')) return true;
+function isCanonicalLombokFqn(nameText: string): boolean {
   const simple = annotationSimpleName(nameText);
   if (!LOMBOK_ANNOTATIONS.has(simple)) return false;
+  return nameText === `lombok.${simple}` || nameText === `lombok.experimental.${simple}`;
+}
+
+function isProvenLombokAnnotation(nameText: string, imports: LombokImportIndex): boolean {
+  const simple = annotationSimpleName(nameText);
+  if (!LOMBOK_ANNOTATIONS.has(simple)) return false;
+  if (nameText.includes('.')) return isCanonicalLombokFqn(nameText);
   if (imports.star) return true;
-  return imports.bySimple.get(simple)?.startsWith('lombok.') === true;
+  const imported = imports.bySimple.get(simple);
+  return imported !== undefined && isCanonicalLombokFqn(imported);
 }
 
 // ── AccessLevel / Accessors structural parse ──────────────────────────────

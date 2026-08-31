@@ -70,6 +70,15 @@ export function kotlinSetterName(propertyName: string): string {
   return remainder !== null ? `set${remainder}` : jvmSetterName(propertyName, false);
 }
 
+function rememberMethodArity(existing: Map<string, Set<number>>, key: string, arity: number): void {
+  let set = existing.get(key);
+  if (!set) {
+    set = new Set();
+    existing.set(key, set);
+  }
+  set.add(arity);
+}
+
 /** Lombok: case-insensitive name + arity. */
 export function hasExistingAccessor(
   existing: Map<string, Set<number>>,
@@ -84,11 +93,22 @@ export function rememberExistingAccessor(
   name: string,
   arity: number,
 ): void {
-  const key = name.toLowerCase();
-  let set = existing.get(key);
-  if (!set) {
-    set = new Set();
-    existing.set(key, set);
-  }
-  set.add(arity);
+  rememberMethodArity(existing, name.toLowerCase(), arity);
+}
+
+/** Kotlin/JVM: identifiers are case-sensitive. */
+export function hasExactAccessor(
+  existing: Map<string, Set<number>>,
+  name: string,
+  arity: number,
+): boolean {
+  return existing.get(name)?.has(arity) === true;
+}
+
+export function rememberExactAccessor(
+  existing: Map<string, Set<number>>,
+  name: string,
+  arity: number,
+): void {
+  rememberMethodArity(existing, name, arity);
 }

@@ -167,6 +167,34 @@ public class Order {
       );
       expect(result.symbols).toHaveLength(0);
     });
+
+    it('skips lombok subpackages that are not lombok or lombok.experimental', () => {
+      const nestedFqn = parse(`
+@lombok.foo.Data
+public class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(nestedFqn, FILE_PATH, ownerMapBySimpleName(nestedFqn, FILE_PATH))
+          .symbols,
+      ).toHaveLength(0);
+
+      const nestedImport = parse(`
+import lombok.foo.Data;
+@Data
+public class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(
+          nestedImport,
+          FILE_PATH,
+          ownerMapBySimpleName(nestedImport, FILE_PATH),
+        ).symbols,
+      ).toHaveLength(0);
+    });
   });
 
   describe('boolean naming', () => {

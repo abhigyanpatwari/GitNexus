@@ -19,10 +19,10 @@
 import type Parser from 'tree-sitter';
 import type { CaptureMatch } from 'gitnexus-shared';
 import {
-  hasExistingAccessor,
+  hasExactAccessor,
   kotlinGetterName,
   kotlinSetterName,
-  rememberExistingAccessor,
+  rememberExactAccessor,
 } from '../jvm/beanspec.js';
 import {
   capturesForPlannedAccessors,
@@ -199,7 +199,7 @@ function collectExistingMethods(body: Parser.SyntaxNode | null): Map<string, Set
     if (child.type !== 'function_declaration') continue;
     const name = functionName(child);
     if (!name) continue;
-    rememberExistingAccessor(names, name, functionArity(child));
+    rememberExactAccessor(names, name, functionArity(child));
   }
   return names;
 }
@@ -276,7 +276,7 @@ function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
   const planned: PlannedJvmAccessor[] = [];
   for (const prop of cls.properties) {
     const gName = kotlinGetterName(prop.name);
-    if (!prop.skipGetter && !hasExistingAccessor(cls.existingMethods, gName, 0)) {
+    if (!prop.skipGetter && !hasExactAccessor(cls.existingMethods, gName, 0)) {
       planned.push({
         kind: 'getter',
         name: gName,
@@ -291,7 +291,7 @@ function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
     }
     if (prop.isVar && !prop.skipSetter) {
       const sName = kotlinSetterName(prop.name);
-      if (!hasExistingAccessor(cls.existingMethods, sName, 1)) {
+      if (!hasExactAccessor(cls.existingMethods, sName, 1)) {
         planned.push({
           kind: 'setter',
           name: sName,
