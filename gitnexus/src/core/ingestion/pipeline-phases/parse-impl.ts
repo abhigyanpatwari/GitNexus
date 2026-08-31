@@ -36,7 +36,7 @@ import {
   getDurableParsedFileDir,
   loadDurableParsedFileIndex,
   prepareDurableParsedFileChunk,
-  restoreDurableParsedFileShard,
+  durableChunkHasShards,
 } from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
@@ -739,15 +739,15 @@ export async function runChunkedParseAndResolve(
   // a sibling of the run-scoped store, NOT cleared per run. Workers write a
   // shard per chunk hash; on a warm parse-cache hit we restore the chunk's
   // shards into the run-scoped store so scope-resolution streams them without
-  // re-parsing. `durableHitKeys` is the prior run's index, version-gated by
-  // PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk re-dispatches, which
-  // repopulates the durable store — never the main-thread extract fallback).
+  // re-parsing. `durableHitEntries` is the prior run's path-coverage index,
+  // version-gated by PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk
+  // re-dispatches, which repopulates the durable store).
   const durableParsedFileDir =
     parsedFileStorePath !== undefined ? getDurableParsedFileDir(parsedFileStorePath) : undefined;
-  const durableHitKeys =
+  const durableHitEntries =
     durableParsedFileDir !== undefined
       ? await loadDurableParsedFileIndex(durableParsedFileDir, PARSE_CACHE_VERSION)
-      : new Set<string>();
+      : new Map<string, ReadonlySet<string>>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
   let reparsedFileCount = 0;
@@ -825,11 +825,14 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.parsedFiles?.length) {
           if (parsedFileStorePath) {
-            await persistParsedFileChunk(
+            const wrote = await persistParsedFileChunk(
               parsedFileStorePath,
               `chunk-${chunkIdx}`,
               chunkWorkerData.parsedFiles,
             );
+            if (!wrote) {
+              for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
+            }
           } else {
             for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
           }
@@ -1019,8 +1022,16 @@ export async function runChunkedParseAndResolve(
       // store was introduced, or a pruned/version-stale shard — fall through to
       // a worker re-dispatch to repopulate them. NEVER let scope-resolution
       // re-extract on the main thread (the #1983 OOM the durable store closes).
+      const durableExpectedPaths =
+        chunkHash === null ? undefined : durableHitEntries.get(chunkHash);
       const durableHit =
-        chunkHash !== null && durableParsedFileDir !== undefined && durableHitKeys.has(chunkHash);
+        cachedRaw !== undefined &&
+        cachedRaw.length > 0 &&
+        chunkHash !== null &&
+        durableParsedFileDir !== undefined &&
+        parsedFileStorePath !== undefined &&
+        durableExpectedPaths !== undefined &&
+        (await durableChunkHasShards(parsedFileStorePath, chunkHash, durableExpectedPaths));
 
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
@@ -1053,22 +1064,8 @@ export async function runChunkedParseAndResolve(
             nodesCreated: graph.nodeCount,
           },
         });
-        // Restore the chunk's durable ParsedFile shards into the run-scoped
-        // store so scope-resolution finds full coverage with ZERO main-thread
-        // re-parse. A verbatim byte copy — byte-identical to a cold run.
-        if (durableHit && durableParsedFileDir && parsedFileStorePath && chunkHash) {
-          const restored = await restoreDurableParsedFileShard(
-            durableParsedFileDir,
-            parsedFileStorePath,
-            chunkHash,
-          );
-          if (restored === 0) {
-            logger.warn(
-              `parsedfile-cache: durable shards missing for cached chunk ` +
-                `${chunkHash.slice(0, 8)} — scope-resolution will re-extract these files`,
-            );
-          }
-        }
+        // The durable gate already snapshotted warm `.v8` shards into the
+        // run-scoped store for scope resolution.
         await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
       } else {
         // Cache miss: dispatch to workers, capture the raw results, store

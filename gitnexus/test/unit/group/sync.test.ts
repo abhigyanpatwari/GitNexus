@@ -913,6 +913,86 @@ service OrderService {
       expect(manifestLinks[0].to.repo).toBe('parser/mathlex');
     });
 
+    it('builds Maven manifest links when independent repositories share a parent POM', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-maven-parent-'));
+
+      const parentCoordinates = `<parent>
+        <groupId>com.example</groupId>
+        <artifactId>parent</artifactId>
+        <version>1</version>
+      </parent>`;
+      const childPom = (artifactId: string, dependency = '') => `<project>
+        ${parentCoordinates}
+        <artifactId>${artifactId}</artifactId>
+        <dependencies>${dependency}</dependencies>
+      </project>`;
+      const sharedDependency =
+        '<dependency><groupId>com.example</groupId><artifactId>shared-lib</artifactId></dependency>';
+
+      writeFileSync(
+        'parent/pom.xml',
+        '<project><groupId>com.example</groupId><artifactId>parent</artifactId><packaging>pom</packaging></project>',
+      );
+      writeFileSync('shared-lib/pom.xml', childPom('shared-lib'));
+      writeFileSync('service-a/pom.xml', childPom('service-a', sharedDependency));
+      writeFileSync(
+        'service-a/src/main/java/com/example/service/a/App.java',
+        'package com.example.service.a;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
+      );
+      writeFileSync('service-b/pom.xml', childPom('service-b', sharedDependency));
+      writeFileSync(
+        'service-b/src/main/kotlin/com/example/service/b/App.kt',
+        'package com.example.service.b\nimport com.example.shared.lib.SharedType\nclass App\n',
+      );
+
+      const repoPaths = ['parent', 'shared-lib', 'service-a', 'service-b'];
+      const mockEntries: RegistryEntry[] = repoPaths.map((repoPath) => ({
+        name: repoPath,
+        path: path.join(tmpDir, repoPath),
+        storagePath: path.join(tmpDir, repoPath, '.gitnexus'),
+        indexedAt: '',
+        lastCommit: '',
+      }));
+
+      const repoManager = await import('../../../src/storage/repo-manager.js');
+      vi.spyOn(repoManager, 'readRegistry').mockResolvedValue(mockEntries);
+
+      const config = makeWsConfig(
+        {
+          parent: 'parent',
+          'libs/shared-lib': 'shared-lib',
+          'services/service-a': 'service-a',
+          'services/service-b': 'service-b',
+        },
+        true,
+      );
+
+      const result = await syncGroup(config, {
+        extractorOverride: async () => [],
+        skipWrite: true,
+      });
+
+      const manifestLinks = result.crossLinks.filter((link) => link.matchType === 'manifest');
+      expect(
+        manifestLinks.map((link) => ({
+          from: link.from.repo,
+          to: link.to.repo,
+          contractId: link.contractId,
+        })),
+      ).toEqual([
+        {
+          from: 'services/service-a',
+          to: 'libs/shared-lib',
+          contractId: 'custom::shared-lib::SharedType',
+        },
+        {
+          from: 'services/service-b',
+          to: 'libs/shared-lib',
+          contractId: 'custom::shared-lib::SharedType',
+        },
+      ]);
+    });
+
     it('workspace_deps: false skips workspace extraction entirely', async () => {
       tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-off-'));
 
