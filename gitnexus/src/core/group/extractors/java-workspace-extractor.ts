@@ -47,17 +47,162 @@ async function parseJavaManifest(
     // Missing pom.xml — fall through to Gradle.
   }
 
+  const gradleSidecars = await readGradleSidecars(repoPath);
   for (const name of ['build.gradle.kts', 'build.gradle']) {
     const gradlePath = path.join(repoPath, name);
     try {
       const content = await fs.readFile(gradlePath, 'utf-8');
-      return parseGradle(content, repoPath);
+      return parseGradle(content, repoPath, gradleSidecars);
     } catch {
       continue;
     }
   }
 
   return null;
+}
+
+interface GradleSidecars {
+  propertiesGroup?: string;
+  rootProjectName?: string;
+  catalogLibraries: Map<string, string>;
+  catalogBundles: Map<string, string[]>;
+}
+
+async function readGradleSidecars(repoPath: string): Promise<GradleSidecars> {
+  const sidecars: GradleSidecars = {
+    catalogLibraries: new Map(),
+    catalogBundles: new Map(),
+  };
+  try {
+    const properties = await fs.readFile(path.join(repoPath, 'gradle.properties'), 'utf-8');
+    const groupMatch = properties.match(/(?:^|\n)\s*group\s*=\s*([^\s#]+)/);
+    if (groupMatch) sidecars.propertiesGroup = groupMatch[1];
+  } catch {
+    // gradle.properties is optional
+  }
+
+  for (const name of ['settings.gradle.kts', 'settings.gradle']) {
+    try {
+      const settings = await fs.readFile(path.join(repoPath, name), 'utf-8');
+      const nameMatch = settings.match(/rootProject\.name\s*=\s*['"]([^'"]+)['"]/);
+      if (nameMatch) sidecars.rootProjectName = nameMatch[1];
+      break;
+    } catch {
+      continue;
+    }
+  }
+
+  try {
+    const catalog = await fs.readFile(path.join(repoPath, 'gradle', 'libs.versions.toml'), 'utf-8');
+    const parsed = parseGradleVersionCatalog(catalog);
+    sidecars.catalogLibraries = parsed.libraries;
+    sidecars.catalogBundles = parsed.bundles;
+  } catch {
+    // Default catalog path is optional.
+  }
+
+  return sidecars;
+}
+
+function catalogAccessors(alias: string): string[] {
+  const dotted = alias.replace(/[-_]/g, '.');
+  const camel = alias.replace(/[-_]+([A-Za-z0-9])/g, (_, char: string) => char.toUpperCase());
+  return [...new Set([alias, dotted, camel])];
+}
+
+function moduleToGa(module: string): string | undefined {
+  const parts = module.split(':');
+  return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : undefined;
+}
+
+function parseInlineTomlTable(rhs: string): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const match of rhs.matchAll(/([A-Za-z0-9_-]+)\s*=\s*['"]([^'"]+)['"]/g)) {
+    fields[match[1]] = match[2];
+  }
+  return fields;
+}
+
+/** Default Gradle catalog (`gradle/libs.versions.toml`) — aliases only, no version resolution. */
+function parseGradleVersionCatalog(toml: string): {
+  libraries: Map<string, string>;
+  bundles: Map<string, string[]>;
+} {
+  const libraries = new Map<string, string>();
+  const bundles = new Map<string, string[]>();
+  let section: 'libraries' | 'bundles' | 'other' = 'other';
+
+  const addLibrary = (alias: string, ga: string) => {
+    for (const accessor of catalogAccessors(alias)) libraries.set(accessor, ga);
+  };
+
+  for (const raw of toml.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim();
+    if (!line) continue;
+    const header = line.match(/^\[([^\]]+)\]$/);
+    if (header) {
+      const name = header[1];
+      section =
+        name === 'libraries' || name.endsWith('.libraries')
+          ? 'libraries'
+          : name === 'bundles' || name.endsWith('.bundles')
+            ? 'bundles'
+            : 'other';
+      continue;
+    }
+
+    if (section === 'libraries') {
+      const dottedModule = line.match(/^([A-Za-z0-9._-]+)\.module\s*=\s*['"]([^'"]+)['"]$/);
+      if (dottedModule) {
+        const ga = moduleToGa(dottedModule[2]);
+        if (ga) addLibrary(dottedModule[1], ga);
+        continue;
+      }
+      const assignment = line.match(/^([A-Za-z0-9._-]+)\s*=\s*(.+)$/);
+      if (!assignment) continue;
+      const alias = assignment[1];
+      const rhs = assignment[2].trim();
+      const quoted = rhs.match(/^['"]([^'"]+)['"]$/);
+      if (quoted) {
+        const ga = moduleToGa(quoted[1]);
+        if (ga) addLibrary(alias, ga);
+        continue;
+      }
+      const table = parseInlineTomlTable(rhs);
+      const ga = table.module
+        ? moduleToGa(table.module)
+        : table.group && table.name
+          ? `${table.group}:${table.name}`
+          : undefined;
+      if (ga) addLibrary(alias, ga);
+      continue;
+    }
+
+    if (section === 'bundles') {
+      const assignment = line.match(/^([A-Za-z0-9._-]+)\s*=\s*\[([^\]]*)\]$/);
+      if (!assignment) continue;
+      const members = [...assignment[2].matchAll(/['"]([^'"]+)['"]/g)].map((match) => match[1]);
+      for (const accessor of catalogAccessors(assignment[1])) bundles.set(accessor, members);
+    }
+  }
+
+  return { libraries, bundles };
+}
+
+const GRADLE_GROUP_PATTERNS = [
+  /(?:^|\n)\s*(?:rootProject\.)?group\s*=\s*['"]([^'"]+)['"]/,
+  /(?:^|\n)\s*group\s+['"]([^'"]+)['"]/,
+];
+
+const GRADLE_COORD_CONFIGS =
+  'implementation|api|compileOnly|runtimeOnly|testImplementation|testApi|testCompileOnly|compile';
+
+function parseGradleGroup(content: string): string | undefined {
+  for (const pattern of GRADLE_GROUP_PATTERNS) {
+    const match = content.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return undefined;
 }
 
 function asXmlNode(value: unknown): XmlNode | undefined {
@@ -123,33 +268,68 @@ function parsePom(content: string): { groupId: string; artifactId: string; deps:
 function parseGradle(
   content: string,
   repoPath: string,
+  sidecars: GradleSidecars = { catalogLibraries: new Map(), catalogBundles: new Map() },
 ): { groupId: string; artifactId: string; deps: string[] } | null {
-  const groupMatch = content.match(/group\s*=\s*['"]([^'"]+)['"]/);
-  const dirName = path.basename(repoPath);
-  const groupId = groupMatch ? groupMatch[1] : '';
+  // Static text + default catalog file. Do not execute Gradle.
+  const groupId = parseGradleGroup(content) ?? sidecars.propertiesGroup ?? '';
   if (!groupId) return null;
 
-  const artifactId = dirName;
+  const artifactId = sidecars.rootProjectName ?? path.basename(repoPath);
+  const catalogLibraries = sidecars.catalogLibraries ?? new Map<string, string>();
+  const catalogBundles = sidecars.catalogBundles ?? new Map<string, string[]>();
 
   const deps: string[] = [];
-  // implementation("group:artifact:version") or api("group:artifact:version")
-  const depMatches = content.matchAll(
-    /(?:implementation|api|compileOnly|runtimeOnly)\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+  const pushCatalogAlias = (alias: string) => {
+    const ga = catalogLibraries.get(alias);
+    if (ga) deps.push(ga);
+  };
+
+  const namedPattern = new RegExp(
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*group\\s*=\\s*['"]([^'"]+)['"]\\s*,\\s*name\\s*=\\s*['"]([^'"]+)['"]|\\(?\\s*group:\\s*['"]([^'"]+)['"]\\s*,\\s*name:\\s*['"]([^'"]+)['"])`,
+    'g',
   );
-  for (const m of depMatches) {
-    const parts = m[1].split(':');
-    if (parts.length >= 2) {
-      deps.push(`${parts[0]}:${parts[1]}`);
+  for (const match of content.matchAll(namedPattern)) {
+    const group = match[1] ?? match[3];
+    const name = match[2] ?? match[4];
+    if (group && name) deps.push(`${group}:${name}`);
+  }
+
+  const catalogLibPattern = new RegExp(
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?libs(?:\\.libraries)?\\.(?!bundles\\.|plugins\\.)([A-Za-z0-9_.]+)`,
+    'g',
+  );
+  for (const match of content.matchAll(catalogLibPattern)) {
+    pushCatalogAlias(match[1]);
+  }
+
+  const catalogBundlePattern = new RegExp(
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?libs\\.bundles\\.([A-Za-z0-9_.]+)`,
+    'g',
+  );
+  for (const match of content.matchAll(catalogBundlePattern)) {
+    for (const member of catalogBundles.get(match[1]) ?? []) {
+      pushCatalogAlias(member);
+      for (const accessor of catalogAccessors(member)) pushCatalogAlias(accessor);
     }
   }
 
-  // implementation(project(":subproject"))
-  const projDeps = content.matchAll(
-    /(?:implementation|api)\s*\(\s*project\s*\(\s*['"]([^'"]+)['"]\s*\)\s*\)/g,
+  const coordPattern = new RegExp(
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*['"]([^'"]+)['"]\\s*\\)|['"]([^'"]+)['"])`,
+    'g',
   );
-  for (const m of projDeps) {
-    const subName = m[1].replace(/^:/, '');
-    deps.push(`${groupId}:${subName}`);
+  for (const match of content.matchAll(coordPattern)) {
+    const coord = match[1] ?? match[2];
+    if (!coord) continue;
+    const parts = coord.split(':');
+    if (parts.length >= 2) deps.push(`${parts[0]}:${parts[1]}`);
+  }
+
+  const projectPattern = new RegExp(
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?project\\s*\\(\\s*['"]([^'"]+)['"]\\s*\\)`,
+    'g',
+  );
+  for (const match of content.matchAll(projectPattern)) {
+    deps.push(`${groupId}:${match[1].replace(/^:/, '')}`);
   }
 
   return { groupId, artifactId, deps: [...new Set(deps)] };

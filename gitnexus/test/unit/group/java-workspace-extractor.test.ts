@@ -419,6 +419,141 @@ describe('JavaWorkspaceExtractor', () => {
     expect(result.links[0].contract).toBe('common::Entity');
   });
 
+  it('reads Gradle group from gradle.properties and Groovy setter syntax', async () => {
+    await writeFile('core/gradle.properties', 'group=com.acme\n');
+    await writeFile('core/build.gradle', 'plugins { id "java" }\n');
+    await writeFile(
+      'core/src/main/java/com/acme/core/Config.java',
+      'package com.acme.core;\npublic class Config {}\n',
+    );
+
+    await writeFile(
+      'svc/build.gradle',
+      "group 'com.acme'\ndependencies {\n  testImplementation 'com.acme:core:1.0'\n}\n",
+    );
+    await writeFile(
+      'svc/src/test/kotlin/com/acme/svc/AppTest.kt',
+      'package com.acme.svc\nimport com.acme.core.Config\nclass AppTest\n',
+    );
+
+    const result = await extractNamed(['core', 'svc']);
+
+    expect(result.discoveredProjects.get('core')).toMatchObject({
+      groupId: 'com.acme',
+      artifactId: 'core',
+    });
+    expect(result.links).toEqual([
+      {
+        from: 'core',
+        to: 'svc',
+        type: 'custom',
+        contract: 'core::Config',
+        role: 'provider',
+      },
+    ]);
+  });
+
+  it('uses settings.gradle rootProject.name as the Gradle artifactId', async () => {
+    await writeFile('checkout/settings.gradle.kts', 'rootProject.name = "shared-core"\n');
+    await writeFile('checkout/build.gradle.kts', 'group = "com.acme"\n');
+    await writeFile(
+      'checkout/src/main/java/com/acme/shared/core/Flag.java',
+      'package com.acme.shared.core;\npublic class Flag {}\n',
+    );
+    await writeFile(
+      'app/build.gradle.kts',
+      'group = "com.acme"\ndependencies {\n  implementation("com.acme:shared-core:1.0")\n}\n',
+    );
+    await writeFile(
+      'app/src/main/kotlin/com/acme/app/Main.kt',
+      'package com.acme.app\nimport com.acme.shared.core.Flag\nclass Main\n',
+    );
+
+    const result = await extractJavaWorkspaceLinks(
+      { checkout: 'checkout', app: 'app' },
+      new Map([
+        ['checkout', path.join(tmpDir, 'checkout')],
+        ['app', path.join(tmpDir, 'app')],
+      ]),
+    );
+
+    expect(result.discoveredProjects.get('checkout')?.artifactId).toBe('shared-core');
+    expect(result.links).toEqual([
+      {
+        from: 'checkout',
+        to: 'app',
+        type: 'custom',
+        contract: 'shared-core::Flag',
+        role: 'provider',
+      },
+    ]);
+  });
+
+  it('resolves Gradle version-catalog and named group/name coordinates', async () => {
+    await writeFile('shared-lib/build.gradle.kts', 'group = "com.example"\n');
+    await writeFile(
+      'shared-lib/src/main/java/com/example/shared/lib/SharedType.java',
+      'package com.example.shared.lib;\npublic class SharedType {}\n',
+    );
+    await writeFile('models/build.gradle.kts', 'group = "com.example"\n');
+    await writeFile(
+      'models/src/main/java/com/example/models/User.java',
+      'package com.example.models;\npublic class User {}\n',
+    );
+
+    await writeFile(
+      'app/gradle/libs.versions.toml',
+      `[libraries]
+shared-lib = { module = "com.example:shared-lib", version = "1.0" }
+models = { group = "com.example", name = "models", version.ref = "unused" }
+
+[bundles]
+workspace = ["shared-lib", "models"]
+`,
+    );
+    await writeFile(
+      'app/build.gradle.kts',
+      `group = "com.example"
+dependencies {
+  implementation(libs.shared.lib)
+  implementation(libs.bundles.workspace)
+}
+`,
+    );
+    await writeFile(
+      'app/src/main/kotlin/com/example/app/App.kt',
+      'package com.example.app\nimport com.example.shared.lib.SharedType\nimport com.example.models.User\nclass App\n',
+    );
+
+    await writeFile(
+      'named/build.gradle',
+      `group = 'com.example'
+dependencies {
+  implementation group: 'com.example', name: 'shared-lib', version: '1.0'
+}
+`,
+    );
+    await writeFile(
+      'named/src/main/java/com/example/named/App.java',
+      'package com.example.named;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
+    );
+
+    const result = await extractNamed(['shared-lib', 'models', 'app', 'named']);
+
+    expect(result.discoveredProjects.get('app')?.deps.sort()).toEqual([
+      'com.example:models',
+      'com.example:shared-lib',
+    ]);
+    expect(result.links).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: 'shared-lib', to: 'app', contract: 'shared-lib::SharedType' }),
+        expect.objectContaining({ from: 'models', to: 'app', contract: 'models::User' }),
+        expect.objectContaining({ from: 'shared-lib', to: 'named', contract: 'shared-lib::SharedType' }),
+      ]),
+    );
+    expect(result.links).toHaveLength(3);
+  });
+
   it('discovers Maven and Gradle projects together without changing Gradle identity', async () => {
     await writeFile('shared-lib/pom.xml', pomTemplate('com.example', 'shared-lib'));
     await writeFile(
