@@ -13,9 +13,9 @@ vi.mock('../../src/core/auto-sync/index.js', () => ({
   stopAutoSyncWatch: vi.fn(),
 }));
 
-import { watchCommand } from '../../src/cli/watch.js';
+import { autoSyncCommand } from '../../src/cli/auto-sync.js';
 
-describe('watch command', () => {
+describe('auto-sync command', () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
@@ -32,7 +32,7 @@ describe('watch command', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
 
-    await watchCommand('start');
+    await autoSyncCommand('start');
     signalHandler?.();
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
 

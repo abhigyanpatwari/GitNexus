@@ -14,6 +14,7 @@ const COMMAND_DESCRIPTION_KEYS = {
   setup: 'help.command.setup.description',
   uninstall: 'help.command.uninstall.description',
   watch: 'help.command.watch.description',
+  'auto-sync': 'help.command.autoSync.description',
   analyze: 'help.command.analyze.description',
   index: 'help.command.index.description',
   serve: 'help.command.serve.description',

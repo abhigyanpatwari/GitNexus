@@ -468,20 +468,20 @@ If embeddings are skipped on a large repository, the indexed graph likely exceed
 </details>
 
 <details>
-<summary><strong>Keep remote repositories indexed with <code>gitnexus watch</code></strong></summary>
+<summary><strong>Keep remote repositories indexed with <code>gitnexus auto-sync</code></strong></summary>
 
-`gitnexus watch` clones or pulls configured repositories, analyzes new commits, and optionally syncs their group. It runs once immediately, then repeats on the configured interval. It runs in the foreground; use your process manager if it must survive a shell session.
+`gitnexus auto-sync` clones or pulls configured repositories, analyzes new commits, and optionally syncs their group. It runs once immediately, then repeats on the configured interval. It runs in the foreground; use your process manager if it must survive a shell session. `gitnexus watch` is reserved and prints this split; it does not start auto-sync or local file watching.
 
 ```bash
 # 1. Create the config once. It never overwrites an existing file.
-gitnexus watch init
+gitnexus auto-sync init
 
 # 2. Edit $GITNEXUS_HOME/watch_config.yml, then start it.
-gitnexus watch start              # `gitnexus watch` is equivalent
-gitnexus watch status
-gitnexus watch restart            # Required after config changes
-gitnexus watch stop
-gitnexus watch reset             # Clear failure state; leaves clones and indexes intact
+gitnexus auto-sync start              # `gitnexus auto-sync` is equivalent
+gitnexus auto-sync status
+gitnexus auto-sync restart            # Required after config changes
+gitnexus auto-sync stop
+gitnexus auto-sync reset             # Clear failure state; leaves clones and indexes intact
 ```
 
 `GITNEXUS_HOME` defaults to `~/.gitnexus`. A minimal configuration:
@@ -500,10 +500,10 @@ projects:
 - `sync_interval_minutes` must be at least `5`; `local_path` must be an absolute path. Clones are stored below it as `host/namespace/repo`.
 - Remote URLs must use SSH SCP form and are limited to GitHub, GitLab, or Gitee.
 - `branches` are tried in order. The legacy `branch` field is supported, but do not set both.
-- Analysis runs in an isolated worker; `analyze_timeout` defaults to, and cannot exceed, half of `sync_interval_minutes`. Timeout and `watch stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, watch reports `cancelling` or `stopping` and retains ownership so another watch cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.
+- Analysis runs in an isolated worker; `analyze_timeout` defaults to, and cannot exceed, half of `sync_interval_minutes`. Timeout and `auto-sync stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, auto-sync reports `cancelling` or `stopping` and retains ownership so another auto-sync cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.
 - Add `group_name` only after creating that group with `gitnexus group create <name>`. Partial clone output is isolated and removed after 14 days.
 
-See the [full watch configuration and runtime reference](gitnexus/README.md#gitnexus-watch) for concurrency, timeouts, failure thresholds, and runtime files.
+See the [full auto-sync configuration and runtime reference](gitnexus/README.md#gitnexus-auto-sync) for concurrency, timeouts, failure thresholds, and runtime files.
 
 </details>
 

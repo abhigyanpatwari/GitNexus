@@ -247,21 +247,40 @@ describe('CLI help surface', () => {
     }
   });
 
-  it('watch help exposes lifecycle actions and state files', () => {
-    const result = runHelp('watch');
+  it('auto-sync help exposes lifecycle actions and state files', () => {
+    const result = runHelp('auto-sync');
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('gitnexus watch [options] [action]');
+    expect(result.stdout).toContain('gitnexus auto-sync [options] [action]');
     expect(result.stdout).toContain('Actions: init, start (default), restart, stop, status, reset');
     expect(result.stdout).toContain('GITNEXUS_HOME/watch_config.yml');
     expect(result.stdout).toContain('GITNEXUS_HOME/watch/watch.pid');
     expect(result.stdout).toContain('GITNEXUS_HOME/watch/project_commit_info.txt');
   });
 
-  it('watch init creates the default watch_config.yml and does not overwrite it', () => {
+  it('watch is reserved and does not start auto-sync or local watch', () => {
+    const help = runHelp('watch');
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('gitnexus watch [options] [action]');
+    expect(help.stdout).toContain('gitnexus analyze --watch');
+    expect(help.stdout).toContain('gitnexus auto-sync start');
+    expect(help.stdout).not.toContain('GITNEXUS_HOME/watch_config.yml');
+
+    const started = runCliArgs(['watch'], {});
+    expect(started.status).toBe(1);
+    expect(started.stderr).toContain('gitnexus watch');
+    expect(started.stderr).toContain('gitnexus analyze --watch');
+    expect(started.stderr).toContain('gitnexus auto-sync start');
+
+    const startAction = runCliArgs(['watch', 'start'], {});
+    expect(startAction.status).toBe(1);
+    expect(startAction.stderr).toContain('gitnexus auto-sync start');
+  });
+
+  it('auto-sync init creates the default watch_config.yml and does not overwrite it', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-init-'));
     try {
-      const first = runCliArgs(['watch', 'init'], { GITNEXUS_HOME: home });
+      const first = runCliArgs(['auto-sync', 'init'], { GITNEXUS_HOME: home });
       const configPath = path.join(home, 'watch_config.yml');
 
       expect(first.status).toBe(0);
@@ -276,7 +295,7 @@ describe('CLI help surface', () => {
       expect(config).toContain('git@github.com:owner/repo.git');
       expect(config).not.toContain('group_name:');
 
-      const second = runCliArgs(['watch', 'init'], { GITNEXUS_HOME: home });
+      const second = runCliArgs(['auto-sync', 'init'], { GITNEXUS_HOME: home });
 
       expect(second.status).toBe(1);
       expect(second.stderr).toContain(`Config already exists: ${configPath}`);
@@ -286,7 +305,7 @@ describe('CLI help surface', () => {
     }
   });
 
-  it('watch reset removes only derived auto-sync state files', () => {
+  it('auto-sync reset removes only derived auto-sync state files', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-reset-'));
     const watchDir = path.join(home, 'watch');
     const cloneMarker = path.join(home, 'repos', 'repo', 'keep.txt');
@@ -297,7 +316,7 @@ describe('CLI help surface', () => {
       fs.writeFileSync(path.join(watchDir, 'auto-sync-state.json'), '{}');
       fs.writeFileSync(path.join(watchDir, 'project_commit_info.txt'), 'derived');
 
-      const result = runCliArgs(['watch', 'reset'], { GITNEXUS_HOME: home });
+      const result = runCliArgs(['auto-sync', 'reset'], { GITNEXUS_HOME: home });
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('Reset analysis state');
@@ -309,10 +328,10 @@ describe('CLI help surface', () => {
     }
   });
 
-  it('watch stop exits non-zero when no watch was stopped', () => {
+  it('auto-sync stop exits non-zero when no watch was stopped', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-stop-'));
     try {
-      const result = runCliArgs(['watch', 'stop'], { GITNEXUS_HOME: home });
+      const result = runCliArgs(['auto-sync', 'stop'], { GITNEXUS_HOME: home });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('Watch is not running');
     } finally {
@@ -320,10 +339,10 @@ describe('CLI help surface', () => {
     }
   });
 
-  it('watch restart starts when the watch is not running', () => {
+  it('auto-sync restart starts when the watch is not running', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-restart-'));
     try {
-      const result = runCliArgs(['watch', 'restart'], { GITNEXUS_HOME: home });
+      const result = runCliArgs(['auto-sync', 'restart'], { GITNEXUS_HOME: home });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('Watch is not running');
       expect(result.stderr).toContain('Missing config file');

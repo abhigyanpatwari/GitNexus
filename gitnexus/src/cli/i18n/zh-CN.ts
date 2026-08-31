@@ -142,10 +142,16 @@ export const zhCN = {
     '一次性设置：为 Cursor、Claude Code、Antigravity、OpenCode、CodeBuddy、Qoder、Codex 配置 MCP',
   'help.command.uninstall.description':
     '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
-  'help.command.watch.description':
+  'help.command.autoSync.description':
     '控制基于 GITNEXUS_HOME/watch_config.yml 的定时 clone/pull 和分析',
-  'help.watch.details':
+  'help.autoSync.details':
     '\n操作：init、start（默认）、restart、stop、status、reset\n配置：GITNEXUS_HOME/watch_config.yml\n运行时文件：GITNEXUS_HOME/watch/watch.pid、watch.mutex、watch.owner.json、watch.status.json、auto-sync-state.json\n恢复：已验证 owner 退出的 mutex 会自动回收；无效或旧版 mutex 会安全拒绝，确认没有 watch 进程运行后再手动删除。\n写入：GITNEXUS_HOME/watch/project_commit_info.txt\n远程地址：仅允许 github.com、gitlab.com 和 gitee.com 上的 SSH 地址。\n启动后立即运行一次，之后按 sync_interval_minutes 重复。',
+  'help.command.watch.description':
+    '含义不明确：本地文件请用 `analyze --watch`，定时远程同步请用 `auto-sync`',
+  'help.watch.details':
+    '\n`gitnexus watch` 不会启动监视器。\n  本地工作区增量索引：gitnexus analyze --watch\n  定时远程 clone/pull 并分析：gitnexus auto-sync start\n',
+  'error.watch.ambiguous':
+    '`gitnexus watch` 含义不明确。\n  本地工作区增量索引：gitnexus analyze --watch\n  定时远程 clone/pull 并分析：gitnexus auto-sync start\n',
   'help.command.analyze.description': '索引仓库（完整分析）',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',

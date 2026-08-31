@@ -1,4 +1,4 @@
-/** Local incremental watch (`gitnexus analyze --watch`). Remote auto-sync lives in `watch.ts`. */
+/** Local incremental watch (`gitnexus analyze --watch`). Remote auto-sync lives in `auto-sync.ts`. */
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { watch, type FSWatcher } from 'chokidar';
