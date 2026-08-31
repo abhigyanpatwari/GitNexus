@@ -147,9 +147,7 @@ export async function startAutoSyncWatch(
       return write;
     };
     const reportStatusWriteFailure = (error: unknown) => {
-      stderr.write(
-        `[auto-sync] Failed to publish watch status: ${(error as Error).message}\n`,
-      );
+      stderr.write(`[auto-sync] Failed to publish watch status: ${(error as Error).message}\n`);
     };
     const runSafely = () => {
       if (stopping) return;
