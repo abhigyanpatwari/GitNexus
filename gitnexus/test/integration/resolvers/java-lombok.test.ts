@@ -87,7 +87,7 @@ class Consumer {
     }
   }, 60000);
 
-  it('Kotlin explicit getName(): same Java synthetic Method exists; CALLS blocked by pre-existing JVM interop', async () => {
+  it('Kotlin caller of Java getName(): synthetic Method exists; CALLS blocked by pre-existing JVM interop', async () => {
     // Control: hand-written Java getName is also unreachable from Kotlin callers
     // in this pipeline (Kotlin→Kotlin member CALLS work; Kotlin→Java do not).
     // Lombok must not invent a second interop feature — only prove the Method

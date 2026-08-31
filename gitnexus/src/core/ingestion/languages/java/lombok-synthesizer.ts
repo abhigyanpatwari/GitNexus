@@ -24,8 +24,7 @@
  */
 
 import type Parser from 'tree-sitter';
-import type { CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import type { Capture, CaptureMatch } from 'gitnexus-shared';
 
 // ── Public result types (ParsedSymbol / ParsedNode compatible) ────────────
 
@@ -94,8 +93,8 @@ export interface PlannedLombokAccessor {
   startLine: number;
   endLine: number;
   classNode: Parser.SyntaxNode;
-  /** Field declaration used as the scope/structure anchor (no synthetic method AST). */
-  fieldNode: Parser.SyntaxNode;
+  /** Per-field declarator — unique even when `int first, second;` shares one declaration. */
+  declaratorNode: Parser.SyntaxNode;
 }
 
 export interface AccessorConfig {
@@ -119,7 +118,7 @@ interface LombokField {
   isFinal: boolean;
   startLine: number;
   endLine: number;
-  fieldNode: Parser.SyntaxNode;
+  declaratorNode: Parser.SyntaxNode;
   fieldGetter: AccessorConfig | null;
   fieldSetter: AccessorConfig | null;
   accessors: AccessorsOptions;
@@ -390,7 +389,7 @@ function parseFieldDeclaration(
       isFinal,
       startLine,
       endLine,
-      fieldNode,
+      declaratorNode,
       fieldGetter: fieldAnn.getter,
       fieldSetter: fieldAnn.setter,
       accessors: fieldAnn.accessors,
@@ -529,7 +528,7 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
           startLine: field.startLine,
           endLine: field.endLine,
           classNode: cls.node,
-          fieldNode: field.fieldNode,
+          declaratorNode: field.declaratorNode,
         });
       }
     }
@@ -548,7 +547,7 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
           startLine: field.startLine,
           endLine: field.endLine,
           classNode: cls.node,
-          fieldNode: field.fieldNode,
+          declaratorNode: field.declaratorNode,
         });
       }
     }
@@ -561,7 +560,7 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
 export function synthesizeLombokAccessors(
   tree: Parser.Tree,
   filePath: string,
-  classOwnersById: Map<number, string>,
+  classOwnersById: ReadonlyMap<number, string>,
 ): LombokSynthesisResult {
   const result: LombokSynthesisResult = {
     symbols: [],
@@ -650,48 +649,50 @@ function planLombokAccessorsForRoot(root: Parser.SyntaxNode): PlannedLombokAcces
   return out;
 }
 
+/**
+ * Unique capture range per planned accessor. `makeScopeId` is
+ * file+range+kind only, so two Function scopes that share a range collapse.
+ * Multi-declarator `int first, second;` shares one field_declaration; a bare
+ * identifier declarator also shares its range with the name node (so getter vs
+ * setter cannot both use that node). Getter = full declarator; setter =
+ * zero-width at the declarator start.
+ */
+function accessorCapture(name: string, acc: PlannedLombokAccessor, text: string): Capture {
+  const node = acc.declaratorNode;
+  const startLine = node.startPosition.row + 1;
+  const startCol = node.startPosition.column;
+  const endLine = node.endPosition.row + 1;
+  const endCol = acc.kind === 'getter' ? node.endPosition.column : startCol;
+  return { name, range: { startLine, startCol, endLine, endCol }, text };
+}
+
 /** Scope captures for Lombok accessors (dual-path parity with record components). */
 export function synthesizeLombokAccessorCaptures(rootNode: Parser.SyntaxNode): CaptureMatch[] {
   const planned = planLombokAccessorsForRoot(rootNode);
   const captures: CaptureMatch[] = [];
   for (const acc of planned) {
-    // Distinct anchors: getter → variable_declarator; setter → field_declaration.
-    // Sharing one node for both would collide makeDefId ranges and @scope.function.
-    const declarator =
-      acc.fieldNode.childForFieldName('declarator') ??
-      acc.fieldNode.children.find((c) => c.type === 'variable_declarator') ??
-      acc.fieldNode;
-    const anchor = acc.kind === 'getter' ? declarator : acc.fieldNode;
     const arity = String(acc.parameterTypes.length);
     const enclosing = ownerQualifiedSimpleName(acc.classNode);
     const qualifiedName = `${enclosing}.${acc.name}`;
     captures.push({
-      '@scope.function': nodeToCapture('@scope.function', anchor),
+      '@scope.function': accessorCapture('@scope.function', acc, acc.name),
     });
     captures.push({
-      '@declaration.method': nodeToCapture('@declaration.method', anchor),
-      '@declaration.name': syntheticCapture('@declaration.name', anchor, acc.name),
-      '@declaration.qualified-name': syntheticCapture(
+      '@declaration.method': accessorCapture('@declaration.method', acc, acc.name),
+      '@declaration.name': accessorCapture('@declaration.name', acc, acc.name),
+      '@declaration.qualified-name': accessorCapture(
         '@declaration.qualified-name',
-        anchor,
+        acc,
         qualifiedName,
       ),
-      '@declaration.parameter-count': syntheticCapture(
-        '@declaration.parameter-count',
-        anchor,
-        arity,
-      ),
-      '@declaration.required-parameter-count': syntheticCapture(
+      '@declaration.parameter-count': accessorCapture('@declaration.parameter-count', acc, arity),
+      '@declaration.required-parameter-count': accessorCapture(
         '@declaration.required-parameter-count',
-        anchor,
+        acc,
         arity,
       ),
-      '@declaration.return-type': syntheticCapture(
-        '@declaration.return-type',
-        anchor,
-        acc.returnType,
-      ),
-      '@declaration.is-synthetic': syntheticCapture('@declaration.is-synthetic', anchor, 'true'),
+      '@declaration.return-type': accessorCapture('@declaration.return-type', acc, acc.returnType),
+      '@declaration.is-synthetic': accessorCapture('@declaration.is-synthetic', acc, 'true'),
     });
   }
   return captures;

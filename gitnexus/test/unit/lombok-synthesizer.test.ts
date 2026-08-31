@@ -12,6 +12,7 @@ import {
   getterName,
   setterName,
   synthesizeLombokAccessors,
+  synthesizeLombokAccessorCaptures,
 } from '../../src/core/ingestion/languages/java/lombok-synthesizer.js';
 
 function parse(code: string): Parser.Tree {
@@ -103,6 +104,35 @@ public class Order {
       const setter = result.symbols.find((s) => s.name === 'setOrderId')!;
       expect(setter.returnType).toBe('void');
       expect(setter.parameterTypes).toEqual(['String']);
+    });
+
+    it('uses unique scope ranges for multi-declarator getters and setters', () => {
+      const tree = parse(`
+import lombok.Data;
+@Data
+public class Pair {
+    private int first, second;
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols.map((s) => s.name).sort()).toEqual([
+        'getFirst',
+        'getSecond',
+        'setFirst',
+        'setSecond',
+      ]);
+      const scopes = synthesizeLombokAccessorCaptures(tree.rootNode)
+        .map((m) => m['@scope.function'])
+        .filter((c): c is NonNullable<typeof c> => c !== undefined)
+        .map(
+          (c) => `${c.range.startLine}:${c.range.startCol}-${c.range.endLine}:${c.range.endCol}`,
+        );
+      expect(scopes).toHaveLength(4);
+      expect(new Set(scopes).size).toBe(4);
     });
 
     it('creates HAS_METHOD relationships linking to the class', () => {
