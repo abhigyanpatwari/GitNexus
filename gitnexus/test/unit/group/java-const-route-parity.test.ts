@@ -211,3 +211,46 @@ public class OrderController {
     expect(ingestionRoutes(files)).toEqual(['POST /api/v1/orders']);
   });
 });
+
+describe('an empty-valued constant route matches its literal spelling', () => {
+  // Before this fix the two spellings diverged: `@GetMapping("")` was kept and
+  // `@GetMapping(ApiPaths.ROOT)` with `ROOT = ""` was dropped, because the fold
+  // collapsed a resolved-empty result into the skip floor. The class-level
+  // prefix is what makes an empty method path meaningful, so the parity is
+  // asserted with one present.
+  const ROOT_CONSTS = `package com.example;
+public class ApiPaths {
+  public static final String ROOT = "";
+}`;
+
+  const controller = (mapping: string): string => `package com.example;
+import com.example.ApiPaths;
+@RequestMapping("/api/v1")
+public class RootController {
+  @GetMapping(${mapping})
+  public void root() {}
+}`;
+
+  it('resolves the constant spelling to the same path as the literal one', () => {
+    const literal = { [CTL]: controller('""') };
+    const constant = { [CONSTS]: ROOT_CONSTS, [CTL]: controller('ApiPaths.ROOT') };
+
+    expect(groupProviders(constant)).toEqual(groupProviders(literal));
+    expect(ingestionRoutes(constant)).toEqual(ingestionRoutes(literal));
+  });
+
+  it('emits the route on both sides rather than dropping it', () => {
+    // Deliberately NOT asserting the two sides produce the same string here.
+    // They do not, and they did not before this change either: measured on the
+    // LITERAL spelling, which no part of this change touches, the group side
+    // emits `/api/v1/` (`joinPath` appends `/` before an empty method path)
+    // while ingestion emits `/api/v1`. That trailing-slash divergence is a
+    // separate pre-existing defect; the fix here only makes the constant
+    // spelling reach it too, instead of silently dropping the route. The test
+    // above is what pins the parity that this change is responsible for —
+    // constant behaves as literal, on each side.
+    const files = { [CONSTS]: ROOT_CONSTS, [CTL]: controller('ApiPaths.ROOT') };
+    expect(groupProviders(files)).toEqual(['GET /api/v1/']);
+    expect(ingestionRoutes(files)).toEqual(['GET /api/v1']);
+  });
+});

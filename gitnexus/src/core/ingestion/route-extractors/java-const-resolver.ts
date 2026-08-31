@@ -619,12 +619,20 @@ function foldOperands(
 /**
  * Fold an inline operand list (e.g. `API_CIS_V1 + "summary/save"`) against
  * `fileKey`, or null when any piece is unresolvable (skip floor).
+ *
+ * An empty result is a SUCCESS, not a skip. `static final String ROOT = "";`
+ * folds to `""`, which `joinPath` then resolves against the type-level prefix
+ * exactly as it resolves the literal `@GetMapping("")`. Collapsing it into
+ * `null` would make a resolved-empty path indistinguishable from an
+ * unresolvable one — the skip floor is reserved for "could not fold", and
+ * nothing else in the resolver conflates the two: `resolveOperands` in the
+ * shared core returns `foldExpr` unfiltered, and `resolveJavaConstant` returns
+ * `""` for an empty constant.
  */
 export function foldJavaOperands(
   fileKey: string,
   operands: readonly Operand[],
   repo: RepoConstants,
 ): string | null {
-  const out = foldOperands(fileKey, operands, newFoldState(repo), 0);
-  return out === '' ? null : out;
+  return foldOperands(fileKey, operands, newFoldState(repo), 0);
 }

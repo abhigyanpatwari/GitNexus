@@ -792,3 +792,66 @@ describe('text blocks keep the skip floor', () => {
     expect(extractJavaModuleConstants(parse(src)).literals.has('X')).toBe(false);
   });
 });
+
+describe('an empty fold is a success, not a skip', () => {
+  // `null` from this fold is the SKIP FLOOR: it means "a piece was
+  // unresolvable", and every caller acts on it by dropping the route. An
+  // empty-valued constant is not that case — it resolved, to the empty string.
+  // Spring reads `@GetMapping(ROOT)` with `ROOT = ""` exactly as it reads
+  // `@GetMapping("")`, and the group extractor's literal branch already keeps
+  // the latter. Collapsing the two silently lost the route for the constant
+  // spelling alone.
+  const EMPTY = 'src/main/java/com/example/Paths.java';
+
+  it('folds a constant whose value is the empty string', () => {
+    const repo = repoOf({
+      [EMPTY]: `package com.example;
+public class Paths { public static final String ROOT = ""; }`,
+    });
+    expect(foldJavaOperands(EMPTY, [{ kind: 'ref', name: 'ROOT' }], repo)).toBe('');
+  });
+
+  it('concatenating empty constants folds to the empty string', () => {
+    const repo = repoOf({
+      [EMPTY]: `package com.example;
+public class Paths {
+  public static final String A = "";
+  public static final String B = "";
+}`,
+    });
+    expect(
+      foldJavaOperands(
+        EMPTY,
+        [
+          { kind: 'ref', name: 'A' },
+          { kind: 'ref', name: 'B' },
+        ],
+        repo,
+      ),
+    ).toBe('');
+  });
+
+  it('still floors to skip when a piece is genuinely unresolvable', () => {
+    // The control: the two outcomes have to stay distinguishable, or the fix
+    // would trade one conflation for another.
+    const repo = repoOf({
+      [EMPTY]: `package com.example;
+public class Paths { public static final String ROOT = compute(); }`,
+    });
+    expect(foldJavaOperands(EMPTY, [{ kind: 'ref', name: 'ROOT' }], repo)).toBeNull();
+  });
+
+  it('agrees with resolveJavaConstant, which never collapsed empty to null', () => {
+    // The binding used to disagree with itself: the single-constant resolver
+    // returns `""` (pinned by the 30-level DAG case above, whose every
+    // intermediate value is empty), and `resolveOperands` in the shared
+    // language-agnostic core returns `foldExpr` unfiltered. Only this fold
+    // collapsed.
+    const repo = repoOf({
+      [EMPTY]: `package com.example;
+public class Paths { public static final String ROOT = ""; }`,
+    });
+    expect(resolveJavaConstant(EMPTY, 'ROOT', repo)).toBe('');
+    expect(foldJavaOperands(EMPTY, [{ kind: 'ref', name: 'ROOT' }], repo)).toBe('');
+  });
+});
