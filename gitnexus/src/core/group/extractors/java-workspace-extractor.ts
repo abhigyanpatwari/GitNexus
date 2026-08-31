@@ -257,7 +257,7 @@ function collectProjectDependencies(project: XmlNode, deps: string[]): void {
 function parsePom(content: string): { groupId: string; artifactId: string; deps: string[] } | null {
   let parsed: unknown;
   try {
-    parsed = pomParser.parse(content);
+    parsed = parseSourceSafe(pomParser, content);
   } catch {
     return null;
   }
@@ -312,15 +312,15 @@ function parseGradle(
     pushCatalogAlias(match[1]);
   }
 
-  for (const match of content.matchAll(gradleDepRe(`(?:\\(\\s*)?libs\\.bundles\\.${CATALOG_ALIAS}`))) {
+  for (const match of content.matchAll(
+    gradleDepRe(`(?:\\(\\s*)?libs\\.bundles\\.${CATALOG_ALIAS}`),
+  )) {
     for (const member of catalogBundles.get(match[1]) ?? []) {
       for (const accessor of catalogAccessors(member)) pushCatalogAlias(accessor);
     }
   }
 
-  for (const match of content.matchAll(
-    gradleDepRe(`\\(\\s*projects\\.([A-Za-z][A-Za-z0-9.]*)`),
-  )) {
+  for (const match of content.matchAll(gradleDepRe(`\\(\\s*projects\\.([A-Za-z][A-Za-z0-9.]*)`))) {
     deps.push(`${groupId}:${projectAccessorToArtifactId(match[1])}`);
   }
 

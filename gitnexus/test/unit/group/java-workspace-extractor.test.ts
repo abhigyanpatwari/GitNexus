@@ -162,18 +162,9 @@ describe('JavaWorkspaceExtractor', () => {
         </parent>
       </project>`,
     );
-    await writeFile(
-      'no-group/pom.xml',
-      '<project><artifactId>orphan</artifactId></project>',
-    );
+    await writeFile('no-group/pom.xml', '<project><artifactId>orphan</artifactId></project>');
 
-    const result = await extractNamed([
-      'broken',
-      'not-maven',
-      'empty',
-      'parent-only',
-      'no-group',
-    ]);
+    const result = await extractNamed(['broken', 'not-maven', 'empty', 'parent-only', 'no-group']);
 
     expect(result.discoveredProjects.size).toBe(0);
     expect(result.links).toHaveLength(0);
@@ -590,9 +581,17 @@ dependencies {
     ]);
     expect(result.links).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ from: 'shared-lib', to: 'app', contract: 'shared-lib::SharedType' }),
+        expect.objectContaining({
+          from: 'shared-lib',
+          to: 'app',
+          contract: 'shared-lib::SharedType',
+        }),
         expect.objectContaining({ from: 'models', to: 'app', contract: 'models::User' }),
-        expect.objectContaining({ from: 'shared-lib', to: 'named', contract: 'shared-lib::SharedType' }),
+        expect.objectContaining({
+          from: 'shared-lib',
+          to: 'named',
+          contract: 'shared-lib::SharedType',
+        }),
         expect.objectContaining({
           from: 'shared-lib',
           to: 'named-first',
@@ -649,7 +648,11 @@ kotlin {
     ]);
     expect(result.links).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ from: 'shared-lib', to: 'app', contract: 'shared-lib::SharedType' }),
+        expect.objectContaining({
+          from: 'shared-lib',
+          to: 'app',
+          contract: 'shared-lib::SharedType',
+        }),
         expect.objectContaining({ from: 'models', to: 'app', contract: 'models::User' }),
       ]),
     );
