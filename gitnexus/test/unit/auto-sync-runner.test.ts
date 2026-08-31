@@ -1001,7 +1001,7 @@ describe('auto-sync runner', () => {
     expect(deps.cloneOrPull).not.toHaveBeenCalled();
   });
 
-  it('increments analyze failure count and writes threshold details', async () => {
+  it('resets consecutive analyze failures when the code commit changes, then records this failure', async () => {
     const errorLogger = vi.fn();
     const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
       cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
@@ -1016,6 +1016,7 @@ describe('auto-sync runner', () => {
           codeCommitId: 'commit-1',
           analyzedCommitId: 'commit-1',
           lastAnalyzeStatus: 'failed',
+          // New code commit (commit-1 → commit-2) zeros this before the failed analysis increments to 1.
           analyzeConsecutiveFailures: 1,
           lastAnalyzeError: 'old error',
           lastSyncTime: '2026-01-01T00:00:00.000Z',
@@ -1691,6 +1692,7 @@ describe('auto-sync starter', () => {
         state: 'error',
         pid: 12345,
         message: expect.stringContaining('not a GitNexus auto-sync process'),
+        updatedAt: '2026-06-30T00:00:00.000Z',
       });
       await expect(fs.readdir(path.dirname(paths.pidPath))).resolves.not.toContainEqual(
         expect.stringMatching(/^watch\.stop\./),
@@ -1750,6 +1752,26 @@ describe('auto-sync starter', () => {
         state: 'error',
         pid: 12345,
         message: expect.stringContaining('not a GitNexus auto-sync process'),
+        updatedAt: '2026-06-30T00:00:00.000Z',
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves stored updatedAt when the watch pid is stale', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
+    const paths = getAutoSyncWatchPaths(tempDir);
+    try {
+      await writeWatchOwner(paths, 12345);
+      await expect(
+        readAutoSyncWatchStatus(paths, {
+          isProcessAlive: vi.fn(() => false),
+        }),
+      ).resolves.toMatchObject({
+        state: 'stale',
+        pid: 12345,
+        updatedAt: '2026-06-30T00:00:00.000Z',
       });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });

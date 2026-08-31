@@ -359,16 +359,18 @@ export async function readAutoSyncWatchStatus(
 ): Promise<WatchStatusRecord> {
   const resolvedDeps = resolveWatchDeps(deps);
   const pid = await readPid(paths.pidPath);
+  const stored = await readStatusFile(paths.statusPath);
+  const updatedAt = stored?.updatedAt ?? new Date().toISOString();
   if (pid && !resolvedDeps.isProcessAlive(pid)) {
     return {
+      ...stored,
       state: 'stale',
       pid,
       message: 'pid file exists but process is not running',
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     };
   }
   if (pid) {
-    const stored = await readStatusFile(paths.statusPath);
     const owner = await readVerifiedWatchOwner(paths, pid, resolvedDeps);
     if (owner.ok === false) {
       return {
@@ -376,7 +378,7 @@ export async function readAutoSyncWatchStatus(
         state: 'error',
         pid,
         message: owner.reason,
-        updatedAt: new Date().toISOString(),
+        updatedAt,
       };
     }
     if (stored?.state === 'error') {
@@ -384,7 +386,7 @@ export async function readAutoSyncWatchStatus(
         ...stored,
         pid,
         ownerId: owner.owner.ownerId,
-        updatedAt: new Date().toISOString(),
+        updatedAt,
       };
     }
     return {
@@ -393,11 +395,10 @@ export async function readAutoSyncWatchStatus(
         stored?.state === 'cancelling' || stored?.state === 'stopping' ? stored.state : 'running',
       pid,
       ownerId: owner.owner.ownerId,
-      updatedAt: new Date().toISOString(),
+      updatedAt,
     };
   }
-  const stored = await readStatusFile(paths.statusPath);
-  return stored ?? { state: 'stopped', updatedAt: new Date().toISOString() };
+  return stored ?? { state: 'stopped', updatedAt };
 }
 
 function isSafeWatchOwnerId(ownerId: string): boolean {
