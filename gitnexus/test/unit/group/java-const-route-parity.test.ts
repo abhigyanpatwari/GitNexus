@@ -26,6 +26,7 @@ import type { HttpDetection } from '../../../src/core/group/extractors/http-patt
 import { extractSpringRoutes } from '../../../src/core/ingestion/route-extractors/spring.js';
 import { javaProvider } from '../../../src/core/ingestion/languages/java.js';
 import {
+  expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
   foldJavaOperands,
   type RepoConstants,
@@ -61,6 +62,9 @@ function ingestionRoutes(files: Record<string, string>): string[] {
   const repo: RepoConstants = new Map();
   for (const [rel, src] of Object.entries(files)) {
     repo.set(rel, extractJavaModuleConstants(parse(src)));
+  }
+  for (const [rel, mc] of repo) {
+    expandJavaWildcardStaticImports(mc, rel, repo);
   }
   const out: string[] = [];
   for (const [rel, src] of Object.entries(files)) {
@@ -197,6 +201,84 @@ public class OrderController {
     expect(ingestionKeys).toBe(3);
     expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
     expect(ingestionRoutes(files)).toEqual(['GET /api/v1/orders']);
+  });
+
+  it('resolves a wildcard-static-imported mapping on both sides', () => {
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CTL]: `package com.example;
+import static com.example.ApiPaths.*;
+public class OrderController {
+  @GetMapping(ORDERS)
+  public void list() {}
+}`,
+    };
+    expect(javaProvider.moduleConstantHeuristic?.(files[CTL])).toBe(true);
+    expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
+    expect(ingestionRoutes(files)).toEqual(groupProviders(files));
+  });
+
+  it('keeps an unfoldable local field above a wildcard member on both sides', () => {
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CTL]: `package com.example;
+import static com.example.ApiPaths.*;
+public class OrderController {
+  static final String ORDERS = runtimePath();
+  @GetMapping(ORDERS)
+  public void list() {}
+}`,
+    };
+    expect(groupProviders(files)).toEqual([]);
+    expect(ingestionRoutes(files)).toEqual([]);
+  });
+
+  it('imports only members owned by the wildcard target type on both sides', () => {
+    const files = {
+      [CONSTS]: `package com.example;
+public class ApiPaths { public static final String ORDERS = "/right"; }
+class Other { public static final String ORDERS = "/wrong"; }`,
+      [CTL]: `package com.example;
+import static com.example.ApiPaths.*;
+public class OrderController {
+  @GetMapping(ORDERS)
+  public void list() {}
+}`,
+    };
+    expect(groupProviders(files)).toEqual(['GET /right']);
+    expect(ingestionRoutes(files)).toEqual(['GET /right']);
+  });
+
+  it('floors duplicate wildcard members on both sides', () => {
+    const files = {
+      'src/main/java/a/A.java': `package a;
+public class A { public static final String ROUTE = "/a"; }`,
+      'src/main/java/b/B.java': `package b;
+public class B { public static final String ROUTE = "/b"; }`,
+      [CTL]: `package com.example;
+import static a.A.*;
+import static b.B.*;
+public class OrderController {
+  @GetMapping(ROUTE)
+  public void list() {}
+}`,
+    };
+    expect(groupProviders(files)).toEqual([]);
+    expect(ingestionRoutes(files)).toEqual([]);
+  });
+
+  it('does not fold a type-qualified ref from a static wildcard alone', () => {
+    const files = {
+      [CONSTS]: CONSTS_SRC,
+      [CTL]: `package com.example;
+import static com.example.ApiPaths.*;
+public class OrderController {
+  @GetMapping(ApiPaths.ORDERS)
+  public void list() {}
+}`,
+    };
+    expect(groupProviders(files)).toEqual([]);
+    expect(ingestionRoutes(files)).toEqual([]);
   });
 
   it('leaves literal routes unchanged with no constant map at all', () => {
