@@ -52,6 +52,12 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 - **Do:** Re-run plain `npx gitnexus analyze` — no `--embeddings` flag needed. A retained `embeddingCheckpoint` in the index metadata forces embedding generation for exactly the pending nodes regardless of flags, and clears once they succeed. `--drop-embeddings` abandons the pending nodes instead of retrying them; `--force` also discards the checkpoint (with a warning) and rebuilds without resuming it.
 - **Why:** A long analyze run against a flaky HTTP embedding endpoint tolerates bounded sub-batch failures instead of aborting the whole run: it deletes the affected nodes' embedding rows (so they hold zero rows, never a partial set) and records those nodes as pending in `embeddingCheckpoint`. `stats.embeddings` stays an honest, non-zero count of everything that did succeed, so this state never trips the "Embeddings vanished" Sign above — `embedding-checkpoint-pending` is the only reliable signal.
 
+### Scope extraction is incomplete
+
+- **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["scope-extraction-failed"]` when files were omitted, or `incompleteReasons: ["scope-extraction-unverified"]` when the index predates the completeness receipt or its metadata is unreadable. `impact`/`context` reports the same uncertainty as `epistemic: "lower-bound"`; confirmed omissions set `causes.scopeExtractionFiles > 0`.
+- **Do:** Re-run `npx gitnexus analyze` (`--force` for a full graph rebuild). If the reason persists, inspect the scope-extraction warnings and treat impact counts as floors until the affected source is supported or corrected.
+- **Why:** Parsing continued, but scope captures for the reported file count could not be produced even after the main-thread fallback. Calls, inheritance, imports, or accesses originating there may therefore be absent from the graph.
+
 ### Analyze reports INCOMPLETE with a collapsed graph write
 
 - **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["graph-write-collapsed"]`; the analyze summary printed `Repository indexed INCOMPLETELY` naming an expected and a persisted relationship count, and the CLI exited non-zero.
@@ -67,8 +73,8 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Wrong repo in multi-repo setups
 
 - **Trigger:** Query/impact results belong to another project.
-- **Do:** Call `list_repos`, then pass `repo` on subsequent tools.
-- **Why:** Default target is ambiguous when multiple repos are registered.
+- **Do:** Confirm an MCP default is configured or the GitNexus process was launched inside the intended registered path without crossing into an unindexed nested Git checkout. Otherwise call `list_repos`, then pass `repo` on subsequent tools; pass it for mutating tools when multiple repos are registered and no MCP default exists.
+- **Why:** Read-only tools derive their default from MCP configuration or a process cwd that stays within one registered Git boundary. Outside those paths the target remains ambiguous, and mutating tools stay explicit unless configuration supplies the target.
 
 ### LadybugDB lock / "database busy"
 

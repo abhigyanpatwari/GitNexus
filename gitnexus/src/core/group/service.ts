@@ -479,8 +479,9 @@ export class GroupService {
     // group tools never need it — so deferring it here keeps that closure off
     // MCP server startup entirely and off every non-sync group call. The CLI
     // already does exactly this at `cli/group.ts`'s sync command.
-    const { syncGroup } = await import('./sync.js');
+    const { syncGroup, formatGroupSyncAmbiguousError } = await import('./sync.js');
     const { GroupSyncLockError } = await import('./group-lock.js');
+    const { RegistryAmbiguousTargetError } = await import('../../storage/repo-manager.js');
     let result: Awaited<ReturnType<typeof syncGroup>>;
     try {
       result = await syncGroup(config, {
@@ -492,6 +493,9 @@ export class GroupService {
         // expects. `SyncOptions.verbose` stays for the CLI, which can see them.
       });
     } catch (err) {
+      if (err instanceof RegistryAmbiguousTargetError) {
+        return { error: formatGroupSyncAmbiguousError(err) };
+      }
       // Fails closed (R9): this sync could not be protected against a concurrent
       // one, so it did not run and wrote nothing. Return it through the same
       // error channel a missing group uses — NEVER as a success payload of zeroes,

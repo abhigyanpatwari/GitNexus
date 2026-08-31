@@ -204,7 +204,7 @@ Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 | `group_list`     | List configured repository groups                                      |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
 
-> With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`; omitting it queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Read-only tools can omit `repo` when one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Otherwise—and for mutating tools with multiple indexed repos and no MCP default—specify it explicitly: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`; omitting it queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ## MCP Resources
 
@@ -234,6 +234,7 @@ Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 gitnexus setup                   # Configure MCP for detected editors (one-time; use -c to select)
 gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (add --force to apply)
 gitnexus analyze [path]          # Index a repository (or update stale index)
+gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
@@ -257,6 +258,7 @@ gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
 gitnexus wiki --model <model>    # Wiki with custom LLM model (default: minimax/minimax-m2.5)
+gitnexus wiki --provider grok    # Local Grok Build CLI (uses `grok login`, no API key)
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
                                   # Allow an exact LAN/self-hosted HTTP LLM host; env: GITNEXUS_ALLOW_INSECURE_CONNECTION
 gitnexus doctor                  # Show runtime platform capabilities and embedding configuration
@@ -282,9 +284,34 @@ gitnexus group status <name>     # Check staleness of repos in a group
 gitnexus group impact <name> --target <symbol> --repo <groupPath>  # Cross-repo blast radius
 ```
 
+`gitnexus analyze --watch` requires a Git repository. It performs an initial
+analysis and then debounces scanner-admitted working-tree changes for 300 ms by
+default into serialized incremental refreshes. Events arriving during a run
+remain queued, and retryable failures retain the same batch with bounded
+backoff. Invalid `.gitnexusrc` or ignore-file reloads pause ordinary refreshes
+until the control file is fixed. Watch refreshes update only the graph: they
+intentionally skip AGENTS.md / CLAUDE.md injection and standard skill
+installation. Run a one-shot `gitnexus analyze` when those generated files need
+updating. Stop watch mode with Ctrl+C.
+
+Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
+`--max-file-size`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
+`--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
+embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`,
+`--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`
+are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a warning.
+
+POSIX requests clone-first copy-and-swap publication when the live index has no
+orphan sidecars. Windows and sidecar fallback runs update in place: failures
+known to occur before writes are retried, while a failure that may have mutated
+the live index stops the watcher. Watch mode does not pull remotes. Running MCP
+and `serve` processes periodically check for a newly published index and reopen
+it without a restart. MCP checks are throttled to once every five seconds, so a
+tool call before the next check can briefly use the previous index.
+
 ### `gitnexus watch`
 
-`gitnexus watch` is the explicit long-running auto-sync entrypoint. `GITNEXUS_HOME` defaults to `~/.gitnexus`; `gitnexus watch init` creates its default `$GITNEXUS_HOME/watch_config.yml`. Bare `gitnexus watch` is the same as `gitnexus watch start`; `restart`, `stop`, `status`, and `reset` manage the same `GITNEXUS_HOME` instance. `reset` removes only the derived analysis state and commit snapshot; clones, indexes, and registry entries are untouched. `start` runs in the foreground, reads the configuration once at startup, runs once immediately, then repeats on `sync_interval_minutes`; restart it after changing the configuration. Watch runtime artifacts live under `$GITNEXUS_HOME/watch/`: `project_commit_info.txt` is the human-readable per-loop snapshot, `auto-sync-state.json` is the machine state used for commit skipping and analyze failure thresholds, `watch.mutex` prevents multiple watch processes for one home, `watch.owner.json` records ownership metadata, `watch.pid` plus `watch.status.json` expose process state, `watch.stop.<ownerId>.json` is a temporary owner-fenced stop request, and `quarantine/` stores partial clone output before entries are removed after 14 days, keeping at most the five newest entries per repository regardless of age. Mutexes with verified dead owners are reclaimed automatically after an abnormal exit. Invalid or legacy mutexes fail closed; confirm no watch process is running before manually removing `watch.mutex` and stale `watch.pid` / `watch.owner.json`.
+`gitnexus watch` is a different product from `gitnexus analyze --watch`. It is the explicit long-running auto-sync entrypoint that clones or pulls configured remotes. `GITNEXUS_HOME` defaults to `~/.gitnexus`; `gitnexus watch init` creates its default `$GITNEXUS_HOME/watch_config.yml`. Bare `gitnexus watch` is the same as `gitnexus watch start`; `restart`, `stop`, `status`, and `reset` manage the same `GITNEXUS_HOME` instance. `reset` removes only the derived analysis state and commit snapshot; clones, indexes, and registry entries are untouched. `start` runs in the foreground, reads the configuration once at startup, runs once immediately, then repeats on `sync_interval_minutes`; restart it after changing the configuration. Watch runtime artifacts live under `$GITNEXUS_HOME/watch/`: `project_commit_info.txt` is the human-readable per-loop snapshot, `auto-sync-state.json` is the machine state used for commit skipping and analyze failure thresholds, `watch.mutex` prevents multiple watch processes for one home, `watch.owner.json` records ownership metadata, `watch.pid` plus `watch.status.json` expose process state, `watch.stop.<ownerId>.json` is a temporary owner-fenced stop request, and `quarantine/` stores partial clone output before entries are removed after 14 days, keeping at most the five newest entries per repository regardless of age. Mutexes with verified dead owners are reclaimed automatically after an abnormal exit. Invalid or legacy mutexes fail closed; confirm no watch process is running before manually removing `watch.mutex` and stale `watch.pid` / `watch.owner.json`.
 
 ```yaml
 sync_interval_minutes: 10
@@ -303,6 +330,21 @@ projects:
 ```
 
 `sync_interval_minutes` must be an integer of at least `5`. `local_path` must be an absolute path without traversal; each remote is cloned below it as `host/namespace/repo`, preventing same-basename repositories from colliding. `remote_urls` must use SSH SCP form for github.com, gitlab.com, or gitee.com. `repo_git_timeout` applies to each repo clone/pull and defaults to `10s`; a bare number such as `10` is interpreted as seconds, while `10000ms`, `10s`, and `1m` keep their explicit units. It must not exceed one hour or `sync_interval_minutes`, whichever is smaller — so a bare `600000` is rejected, because it means 600000 seconds rather than milliseconds. `analyze_timeout` applies to each isolated analysis worker, defaults to half of `sync_interval_minutes`, and cannot exceed that value; this keeps it within Node's timer range. Timeout and `watch stop` request safe cancellation; a worker already in native work exits after it returns to a JS-visible safe point. While waiting, watch reports `cancelling` or `stopping` and keeps its ownership files so another watch cannot take over. The parent waits up to 5 seconds for the worker to exit; after that it stops waiting, releases its ownership files, and leaves the worker to finish and exit on its own rather than killing it mid-write. `watch stop` uses this same control path on macOS and Windows. `overwrite_local_changes` defaults to `false`; a dirty local clone is skipped with an error log, while `true` allows branch fallback to replace local changes and additionally discards untracked files and directories in the clone after checkout — ignored paths, including GitNexus's own `.gitnexus/` storage, are preserved. `max_concurrency` defaults to `1` and is capped at runtime by `floor(availableMemoryGB / 2)` with a minimum of `1`; the effective value is printed at the start of each loop. Each analysis worker's heap cap is the machine-wide cap divided by the number of repositories analyzed in parallel, so concurrent workers share one memory budget instead of each claiming the whole machine. `analyze_failure_threshold` defaults to `3`, must be at least `2`, and pauses repeated failures only for the same repo branch and commit; a new commit or `gitnexus watch reset` clears the block and allows analysis again. Repositories are registered and added to groups by their full remote identity (`host/namespace/repo`), so repositories with the same basename remain distinct. Use `branches` to try branches in order; legacy `branch` remains supported, but the two fields cannot be set together. If all branches are unavailable or time out, watch logs an error, records the repo status, and skips that repo for the loop. Leave `group_name` empty or omit it to skip group add/sync for that project; otherwise create the group first with `gitnexus group create <name>`. `$GITNEXUS_HOME/watch/project_commit_info.txt` is for inspection only; GitNexus stores machine state separately in `$GITNEXUS_HOME/watch/auto-sync-state.json`.
+
+GraphQL contract matching is opt-in in the group's `group.yaml`:
+
+```yaml
+detect:
+  graphql: true
+```
+
+The initial exact-only slice matches methods and properties on top-level NestJS `@Resolver`
+classes using imported `@Query`, `@Mutation`, and `@Subscription` decorators. Named
+`.graphql`/`.gql` operations are anchored by generated `<OperationName>Document` declarations;
+object, static `gql` template, and `TypedDocumentString` initializers must prove the operation name
+and root fields. Dynamic decorator names, anonymous operations, and ambiguous or missing graph
+anchors are deliberately omitted. Add common infrastructure fields such as `/health` to
+`matching.exclude_links_paths` to keep those GraphQL contracts visible without cross-linking them.
 
 > **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 

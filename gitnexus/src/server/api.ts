@@ -39,7 +39,7 @@ import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
-import { mountMCPEndpoints } from './mcp-http.js';
+import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
 import { isTerminalJobStatus, JobManager, type AnalyzeJobPartialOutcome } from './analyze-job.js';
 import { mountSSEProgress } from './sse-progress.js';
@@ -755,6 +755,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       },
     }),
   );
+  // Optional protocol-layer auth for the MCP route. Keep this before the
+  // global body parser so rejected requests do not consume the JSON budget.
+  installServeMcpAuth(app);
   app.use(express.json({ limit: '10mb' }));
 
   // Origin guard for write routes: loopback, the server's own bound host, and

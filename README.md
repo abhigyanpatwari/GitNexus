@@ -179,7 +179,7 @@ flowchart TB
 | `group_list`     | List configured repository groups                                      |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
 
-> Per-repo tools take an optional `repo` parameter (omit it when only one repo is indexed) and an optional `branch` for indexes pinned with `gitnexus analyze --branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ### Resources for instant context
 
@@ -384,6 +384,7 @@ Everyday commands:
 ```bash
 gitnexus setup                   # Configure MCP for detected editors (one-time; -c to select)
 gitnexus analyze [path]          # Index a repository (or update a stale index)
+gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus mcp                     # Start MCP server (stdio) — serves all indexed repos
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI connection
 gitnexus eval-server             # Start lightweight evaluation HTTP tools (loopback by default)
@@ -395,6 +396,28 @@ gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks 
 ```
 
 You can also query the graph directly from the terminal — `gitnexus query`, `context`, `impact`, `trace`, `cypher`, `detect-changes`, and `check` mirror the MCP tools of the same names, and `gitnexus doctor` prints runtime platform capabilities.
+
+`gitnexus analyze --watch` requires a Git repository. It runs one initial
+analysis, then debounces scanner-admitted working-tree changes for 300 ms by
+default and applies serialized incremental refreshes. Events arriving during a
+refresh remain queued, and retryable failures retain the same batch with bounded
+backoff. Invalid `.gitnexusrc` or ignore-file reloads pause ordinary refreshes
+until the control file is fixed. Stop the watcher with Ctrl+C.
+
+Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
+`--max-file-size`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
+`--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
+embedding flags, `--skills`, `--self-commit`, `--index-only`, and `--skip-git`
+are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a
+warning rather than making an otherwise valid repository unwatchable.
+
+POSIX requests clone-first copy-and-swap publication when the live index has no
+orphan sidecars. Windows and sidecar fallback runs update in place: failures
+known to occur before writes are retried, while a failure that may have mutated
+the live index stops the watcher. Watch mode does not pull remotes. Running MCP
+and `serve` processes reopen a newly published index automatically; MCP observes
+the replacement on its next tool call, typically within five seconds, so no
+restart is required.
 
 <details>
 <summary><strong>Authenticated <code>eval-server</code> binding</strong></summary>
@@ -547,6 +570,7 @@ Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max
 | `GITNEXUS_PARSE_CHUNK_CONCURRENCY`              | `2`                       | Number of chunks whose file contents may be read into memory in parallel while the pool dispatches the current chunk. Worker dispatch itself stays serial.                                                                                                                                                  | Repos large enough to chunk (multi-MB total source) where disk I/O is a measurable fraction of analyze wall-clock.                                                                    |
 | `GITNEXUS_VERBOSE`                              | unset                     | When `1`, enables verbose ingestion logs (skipped-file warnings, per-chunk throughput, parse-cache stats). Equivalent to `--verbose`.                                                                                                                                                                       | Debugging an analyze that "completed" but seems to have missed files; tuning `--workers` / chunk concurrency against observable throughput.                                           |
 | `GITNEXUS_AUTH_TOKEN`                           | unset                     | Bearer token required when `eval-server` binds beyond loopback. May also be read from `.env.local` or `.env`; shell values take precedence.                                                                                                                                                                 | Exposing the evaluation HTTP tools to a container, VM, or LAN.                                                                                                                        |
+| `GITNEXUS_MCP_AUTH_TOKEN`                       | unset                     | Bearer token for the dedicated `gitnexus mcp --http` server, for a **directly reachable** `gitnexus serve` `/api/mcp` route, and for the `docker-server` / web proxy in front of one. A non-loopback dedicated MCP bind requires it; `serve` enables protocol-layer MCP auth when it is set. Behind a proxy, set the **same** value on both services: the proxy spends the edge `GITNEXUS_SERVE_AUTH_TOKEN`, then replaces `Authorization` with this token on `/api/mcp` only.                                            | Dedicated MCP, a `serve` the client can reach directly, or a proxied deploy (Render Blueprint) where the backend runs protocol-layer MCP auth — configure it on the proxy too.        |
 | `GITNEXUS_PROFILE_DEFERRED`                     | unset                     | When `1`, emits `[deferred-profile]` timing/progress logs for the post-chunk deferred resolution band (imports → heritage → buildHeritageMap → legacy call resolution). Implied by `GITNEXUS_VERBOSE`.                                                                                                      | Diagnosing analyze stalls in "Resolving calls (all chunks)" on large Java/Kotlin repos (issue #1741) without the full verbose ingestion noise.                                        |
 | `GITNEXUS_PROFILE_DEFERRED_SLOW_MS`             | `3000` (verbose) / `5000` | Per-file threshold in ms above which `processCallsFromExtracted` emits a `slow file …` log line. Parsed via `Number()`: accepts integers (`5000`), scientific notation (`2.5e3`), decimals (`.5`), and hex (`0x10`). Non-finite or non-positive values fall back to the default.                            | Hunting a few outlier files dominating the deferred call-resolution stage; lower to surface more, raise to focus only on the worst.                                                   |
 | `PROF_LBUG_LOAD`                                | unset                     | When `1`, emits one `[lbug-load prof]` summary line per `loadGraphToLbug` call breaking the graph-DB persistence wall into stages (`csv-emit` / `copy-nodes` / `copy-rels` / `fallback` / `total`) plus node & edge counts. Zero-cost when unset.                                                           | Attributing large-repo analyze wall time across CSV generation vs. LadybugDB `COPY` (issue #2203) — the analyze "emit" timing is the scope-resolution bucket, not this DB-write path. |
@@ -563,7 +587,7 @@ Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max
 | `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`        | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, every subsequent dispatch rejects until a fresh pool is created.                                                                                                                                                       | Hosts where a SIGSEGV-prone native grammar should trip the breaker sooner; CI runners that should fail loudly.                                                                        |
 | `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                   | Max wait at pool shutdown for a retired worker still inside native code. The worker is terminated at its next JS-safe point instead of mid-native-call (which aborts the whole process with `Napi::Error`, #2432); on expiry it is left running, unref'd, and terminated when it surfaces.                  | Shutdown latency matters more than draining a wedged worker (lower), or a legitimately-slow native grammar needs longer to surface (raise).                                           |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                   | Per-file wall-clock budget for C++ capture extraction. On breach the file keeps the captures accumulated so far and logs a warning — the worker returns to JS instead of stalling in native-heavy loops (#2432). `0` expires immediately.                                                                   | Pathological generated C++ that still exceeds the budget after the indexed lookups; raise for completeness, lower to fail-fast.                                                       |
-| `GITNEXUS_CHUNK_BYTE_BUDGET`                    | `2097152` (2 MB)          | Chunk boundary used for cache-key composition and dispatch. Smaller = finer-grained cache hits but more dispatch overhead.                                                                                                                                                                                  | Tuning incremental-analyze cache behavior on monorepos.                                                                                                                               |
+| `GITNEXUS_CHUNK_BYTE_BUDGET`                    | `2097152` (2 MB)          | Per-bucket byte budget for parse-cache packing. Files are grouped by `(language, hash(path) mod 128)`; packs inside a bucket are cut at this limit. Smaller = finer-grained invalidation and more dispatch. Default is always 2 MiB and no longer scales with worker count. | Tuning incremental-analyze cache invalidation on monorepos without changing `--workers`.                                                                                               |
 | `GITNEXUS_NO_GITIGNORE`                         | unset                     | When set, skips `.gitignore` parsing. `.gitnexusignore` is still honored.                                                                                                                                                                                                                                   | Indexing a repo whose `.gitignore` excludes files you actually want indexed (e.g., generated code committed for cross-repo lookup).                                                   |
 | `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`               | unset                     | When `=1` strictly, skips the vendored grammar materialize for `tree-sitter-dart`, `tree-sitter-proto`, `tree-sitter-swift`, and `tree-sitter-kotlin` at install time (and the Dart/Proto source builds). Those four won't be parsed; the install still succeeds.                                           | Installing on a host without a C++ toolchain or where the vendored prebuilds don't match; willing to skip Dart/Proto/Swift/Kotlin parsing.                                            |
 | `GITNEXUS_MCP_READ_ONLY`                        | unset                     | Set to `1` to expose only proven single-repository read tools and resources; `0` disables the policy and any other value fails startup.                                                                                                                                                                     | The MCP server runs in an environment where graph mutation, raw Cypher, and cross-repository group routing must be unavailable.                                                       |
@@ -629,7 +653,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 GitNexus uses a **global registry** so one MCP server can serve multiple indexed repos. No per-project MCP config needed — set it up once and it works everywhere.
 
-Each `gitnexus analyze` stores the index in `.gitnexus/` inside the repo (portable, gitignored) and registers a pointer in `~/.gitnexus/registry.json`. When an AI agent starts, the MCP server reads the registry and can serve any indexed repo. LadybugDB connections are opened lazily on first query and evicted after 5 minutes of inactivity (max 5 concurrent). If only one repo is indexed, the `repo` parameter is optional on all tools — agents don't need to change anything.
+Each `gitnexus analyze` stores the index in `.gitnexus/` inside the repo (portable, gitignored) and registers a pointer in `~/.gitnexus/registry.json`. When an AI agent starts, the MCP server reads the registry and can serve any indexed repo. LadybugDB connections are opened lazily on first query and evicted after 5 minutes of inactivity (max 5 concurrent). Read-only tools can omit `repo` when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout. Outside those paths—and for mutating tools with multiple indexed repos and no MCP default—pass `repo` explicitly.
 
 <details>
 <summary><strong>Architecture diagram</strong></summary>
@@ -807,6 +831,7 @@ gitnexus wiki
 # Use a custom model or provider (default model: minimax/minimax-m2.5)
 gitnexus wiki --model gpt-4o
 gitnexus wiki --base-url https://api.anthropic.com/v1
+gitnexus wiki --provider grok   # local Grok Build CLI (uses `grok login`, no API key)
 
 # Force full regeneration
 gitnexus wiki --force

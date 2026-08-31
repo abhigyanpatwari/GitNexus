@@ -71,6 +71,8 @@ export interface ParseOutput {
    * is no sequential parser; the pool is the sole parse path on a cache miss.
    */
   readonly usedWorkerPool: boolean;
+  /** Files actually dispatched to parser workers after parse-cache lookup. */
+  readonly reparsedFileCount: number;
   /**
    * Per-file `ParsedFile` artifacts produced by workers' calls to
    * `extractParsedFile`. Threaded through to `scopeResolutionPhase`
@@ -80,6 +82,10 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /** Files whose scope extraction failed while legacy parsing continued. */
+  readonly scopeExtractionFailures: readonly string[];
+  /** Files omitted because their non-standalone language parser was unavailable. */
+  readonly unavailableScopeLanguageFiles: number;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

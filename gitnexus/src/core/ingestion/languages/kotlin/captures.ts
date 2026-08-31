@@ -23,11 +23,14 @@ import {
   setKotlinSpringAopFacts,
   setKotlinSpringConditionalFacts,
   setKotlinSpringDiFacts,
+  setKotlinSpringDynamicLookupFacts,
   setKotlinSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
+import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
+import { captureKotlinSpringDynamicLookupFact } from './spring-dynamic-lookup.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { captureKotlinSpringAopFacts, type KotlinSpringAopFact } from './spring-aop.js';
 import {
@@ -107,6 +110,8 @@ export function emitKotlinScopeCaptures(
   const springNonHttpHandlerFacts: KotlinSpringNonHttpHandlerFact[] = [];
   const springNonHttpHandlerTypeNodeIds = new Set<number>();
   const springDiClassNodeIds = new Set<number>();
+  const springDynamicLookupFacts: SpringDynamicLookupFact[] = [];
+  const springDynamicLookupNodeIds = new Set<number>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
@@ -129,6 +134,13 @@ export function emitKotlinScopeCaptures(
       groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const dynamicLookupNode = nodeIfType(groupedNodes['@reference.call.member'], 'call_expression');
+    if (dynamicLookupNode !== null && !springDynamicLookupNodeIds.has(dynamicLookupNode.id)) {
+      springDynamicLookupNodeIds.add(dynamicLookupNode.id);
+      const fact = captureKotlinSpringDynamicLookupFact(dynamicLookupNode, filePath);
+      if (fact !== null) springDynamicLookupFacts.push(fact);
+    }
 
     // tree-sitter-kotlin represents both classes and interfaces with
     // `class_declaration`; `object_declaration` is the separate object form.
@@ -357,6 +369,7 @@ export function emitKotlinScopeCaptures(
   setKotlinSpringAopFacts(filePath, springAopFacts);
   setKotlinSpringConditionalFacts(filePath, springConditionalFacts);
   setKotlinSpringDiFacts(filePath, springDiFacts);
+  setKotlinSpringDynamicLookupFacts(filePath, springDynamicLookupFacts);
   setKotlinSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;

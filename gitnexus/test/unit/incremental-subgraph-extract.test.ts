@@ -74,6 +74,19 @@ describe('extractChangedSubgraph', () => {
     expect(sub.nodes.map((n) => n.id).sort()).toEqual(['comm-1', 'proc-1']);
   });
 
+  it('omits Community/Process when includeDerivedGraphWide is false (#3016)', () => {
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('a', '/repo/a.ts'));
+    g.addNode(makeWideNode('comm-1', 'Community'));
+    g.addNode(makeWideNode('proc-1', 'Process'));
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/a.ts']), {
+      includeDerivedGraphWide: false,
+    });
+
+    expect(sub.nodes.map((n) => n.id).sort()).toEqual(['a']);
+  });
+
   it('always includes Spring auto-configuration synthetic Class nodes', () => {
     const g = createKnowledgeGraph();
     g.addNode({

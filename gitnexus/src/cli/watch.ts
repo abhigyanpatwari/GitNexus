@@ -1,3 +1,4 @@
+/** Remote auto-sync CLI (`gitnexus watch`). Local incremental watch lives in `analyze-watch.ts`. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
