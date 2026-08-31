@@ -12,7 +12,7 @@
  * 3. End-to-end `extractSpringRoutes` with a fixture using vendor annotations
  * 4. Parity: both ingestion and group extractors surface the same routes
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import {
@@ -59,12 +59,15 @@ describe('resolveSpringAnnotationAlias', () => {
 
   it('resolves vendor RequestMapping variants', () => {
     expect(resolveSpringAnnotationAlias('WinRequestMapping')).toBe('RequestMapping');
-    expect(resolveSpringAnnotationAlias('CustomRequestMapping')).toBe('RequestMapping');
   });
 
-  it('works with arbitrary vendor prefixes', () => {
-    expect(resolveSpringAnnotationAlias('CompanyPostMapping')).toBe('PostMapping');
-    expect(resolveSpringAnnotationAlias('XyzGetMapping')).toBe('GetMapping');
+  it('ignores unregistered vendor prefixes (review: suffix-only accepted @AuditPostMapping)', () => {
+    // Suffix matching alone produced phantom routes from unrelated
+    // annotations like @AuditPostMapping — resolution now requires a
+    // registered prefix (Win by default).
+    expect(resolveSpringAnnotationAlias('AuditPostMapping')).toBeUndefined();
+    expect(resolveSpringAnnotationAlias('CompanyPostMapping')).toBeUndefined();
+    expect(resolveSpringAnnotationAlias('XyzGetMapping')).toBeUndefined();
   });
 
   it('does not match annotations that merely contain a mapping name', () => {
@@ -196,5 +199,61 @@ public class ParityController {
       'GET /api/parity/query',
       'POST /api/parity/create',
     ]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Review regressions (magyargergo, 2026-08-29)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('review regressions: class-level aliases', () => {
+  it('P1: isClassLevelMappingAnnotation accepts @WinRequestMapping like @RequestMapping', async () => {
+    const { isClassLevelMappingAnnotation } = await import(
+      '../../src/core/ingestion/route-extractors/spring-shared.js'
+    );
+    expect(isClassLevelMappingAnnotation('RequestMapping')).toBe(true);
+    expect(isClassLevelMappingAnnotation('WinRequestMapping')).toBe(true);
+    expect(isClassLevelMappingAnnotation('WinPostMapping')).toBe(false);
+    expect(isClassLevelMappingAnnotation('AuditRequestMapping')).toBe(false);
+    expect(isClassLevelMappingAnnotation('GetMapping')).toBe(false);
+  });
+
+  it('P1: vendor class prefix flows into route paths (@WinRequestMapping + @WinGetMapping)', () => {
+    const tree = parse(`
+@WinRequestMapping("/vendor")
+public class VendorController {
+    @WinGetMapping("/users")
+    public String list() { return "ok"; }
+}
+`);
+    const routes = extractSpringRoutes(tree, 'VendorController.java');
+    expect(routes).toHaveLength(1);
+    // Class prefix /vendor comes from the aliased @WinRequestMapping — the
+    // exact path the old exact-match-only class handling missed (review P1).
+    expect(routes[0].prefix).toBe('/vendor');
+    expect(routes[0].routePath).toBe('/users');
+    expect(routes[0].httpMethod).toBe('GET');
+  });
+
+  it('P2: unregistered suffix no longer emits a phantom route (end-to-end)', () => {
+    const tree = parse(`
+public class AuditController {
+    @AuditPostMapping("/audit")
+    public String audit() { return "x"; }
+}
+`);
+    const routes = extractSpringRoutes(tree, 'AuditController.java');
+    expect(routes).toHaveLength(0);
+  });
+
+  it('P2: extra vendor prefixes can be registered via env', async () => {
+    process.env.GITNEXUS_SPRING_VENDOR_PREFIXES = 'Win,Acme';
+    // Re-import a fresh copy of the module graph so the env is picked up.
+    vi.resetModules();
+    const fresh = await import('../../src/core/ingestion/route-extractors/spring-shared.js');
+    expect(fresh.resolveSpringAnnotationAlias('AcmePostMapping')).toBe('PostMapping');
+    expect(fresh.resolveSpringAnnotationAlias('OtherPostMapping')).toBeUndefined();
+    delete process.env.GITNEXUS_SPRING_VENDOR_PREFIXES;
+    vi.resetModules();
   });
 });

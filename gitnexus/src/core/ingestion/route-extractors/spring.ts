@@ -27,6 +27,7 @@ import {
   springAnnotationHttpMethods,
   isRouteMemberKey,
   findEnclosingType,
+  isClassLevelMappingAnnotation,
   unquoteSpringLiteral,
   type SharedSpringType,
 } from './spring-shared.js';
@@ -192,7 +193,7 @@ export function extractSpringRoutes(
     if (!annNode || !node || (!valueNode && !valueExprNode)) continue;
 
     const capturedAnnotationName = annNode.text.split('.').pop() ?? annNode.text;
-    if (node.type === 'class_declaration' && capturedAnnotationName === 'RequestMapping') {
+    if (node.type === 'class_declaration' && isClassLevelMappingAnnotation(capturedAnnotationName)) {
       if (!isRouteMemberKey(keyNode)) continue;
       if (!valueNode) {
         classesWithUnfoldablePrefix.add(node.id);
@@ -437,12 +438,12 @@ function annotationHasRouteMember(ann: Parser.SyntaxNode): boolean {
 
 /** Static class/interface-level RequestMapping method constraint, or wildcard by default. */
 function typeRequestMethods(typeNode: Parser.SyntaxNode): readonly string[] {
-  const mappings = declarationAnnotations(typeNode).filter(
-    (ann) => annotationName(ann) === 'RequestMapping',
+  const mappings = declarationAnnotations(typeNode).filter((ann) =>
+    isClassLevelMappingAnnotation(annotationName(ann)),
   );
   if (mappings.length === 0) return ['*'];
   if (mappings.length !== 1) return [];
-  return springAnnotationHttpMethods('RequestMapping', mappings[0].text);
+  return springAnnotationHttpMethods(annotationName(mappings[0]), mappings[0].text);
 }
 
 function annotationRoutePathsOrDefault(ann: Parser.SyntaxNode): string[] {
@@ -455,7 +456,7 @@ function annotationRoutePathsOrDefault(ann: Parser.SyntaxNode): string[] {
 function typeClassPrefixes(typeNode: Parser.SyntaxNode): string[] {
   const prefixes: string[] = [];
   for (const ann of declarationAnnotations(typeNode)) {
-    if (annotationName(ann) === 'RequestMapping') prefixes.push(...annotationRoutePaths(ann));
+    if (isClassLevelMappingAnnotation(annotationName(ann))) prefixes.push(...annotationRoutePaths(ann));
   }
   return prefixes;
 }

@@ -65,10 +65,32 @@ const SPRING_MAPPING_NAMES: readonly string[] = [
  * or `undefined` otherwise. Exact-known names (`PostMapping`, `RequestMapping`,
  * …) return `undefined` — callers handle those directly.
  */
+const REGISTERED_VENDOR_PREFIXES: ReadonlySet<string> = new Set(
+  (process.env.GITNEXUS_SPRING_VENDOR_PREFIXES ?? 'Win')
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean),
+);
+
+/**
+ * Resolve a REGISTERED vendor-derived Spring mapping annotation to its base.
+ *
+ * Suffix matching alone accepted unrelated annotations (`@AuditPostMapping`
+ * produced a phantom route — review P2). Resolution now requires the name to
+ * be `<registeredPrefix><base>` with the prefix drawn from a small registry:
+ * `Win` by default (Winning Health), extendable via
+ * `GITNEXUS_SPRING_VENDOR_PREFIXES=Win,Acme,Other` without a rebuild. The
+ * registry is deliberately tiny — vendors that meta-annotate with Spring's
+ * own `@*Mapping` need no entry at all (the suffix path never fires for
+ * them because the simple name IS the base).
+ */
 export function resolveSpringAnnotationAlias(annotationName: string): string | undefined {
   for (const base of SPRING_MAPPING_NAMES) {
     if (annotationName.length > base.length && annotationName.endsWith(base)) {
-      return base;
+      const prefix = annotationName.slice(0, annotationName.length - base.length);
+      if (REGISTERED_VENDOR_PREFIXES.has(prefix)) {
+        return base;
+      }
     }
   }
   return undefined;
@@ -160,6 +182,19 @@ export function springAnnotationHttpMethods(
   const methods = parseRequestMethodValues(methodArgs[0].value);
   if (methods === null) return [];
   return methods.length > 0 ? methods : ['*'];
+}
+
+/**
+ * True when an annotation name is a class-level request-mapping annotation —
+ * either Spring's own `@RequestMapping` or a registered vendor alias that
+ * resolves to it (`@WinRequestMapping`). Class-level handling in both the
+ * group extractor and the ingestion route extractor routes through this
+ * predicate so vendor aliases get the same prefix/constraint semantics as
+ * the base annotation (review P1).
+ */
+export function isClassLevelMappingAnnotation(annotationName: string): boolean {
+  if (annotationName === 'RequestMapping') return true;
+  return resolveSpringAnnotationAlias(annotationName) === 'RequestMapping';
 }
 
 /** Intersect class- and method-level Spring mapping constraints. */
