@@ -88,9 +88,7 @@ describe('parseGrepQuery — fileFilter', () => {
   });
 
   it('array-form fileFilter is type-confusion-rejected, not partially read', () => {
-    expect(() => parseGrepQuery({ pattern: 'x', fileFilter: ['a', 'b'] })).toThrow(
-      BadRequestError,
-    );
+    expect(() => parseGrepQuery({ pattern: 'x', fileFilter: ['a', 'b'] })).toThrow(BadRequestError);
   });
 });
 

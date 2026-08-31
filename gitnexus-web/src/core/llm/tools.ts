@@ -407,7 +407,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           .string()
           .optional()
           .nullable()
-          .describe('Only search files whose path contains this substring (e.g., ".ts", "src/api", "Controller.java")'),
+          .describe(
+            'Only search files whose path contains this substring (e.g., ".ts", "src/api", "Controller.java")',
+          ),
         caseSensitive: z
           .boolean()
           .optional()

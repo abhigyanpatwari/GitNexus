@@ -1345,9 +1345,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // backtracking regex.test() blocks the event loop synchronously and
       // cannot be interrupted (see grep-params.ts and SECURITY.md for the
       // accepted-risk rationale; literal=1 restores full immunity).
-      const { regex, fileFilter, limit } = parseGrepQuery(
-        req.query as Record<string, unknown>,
-      );
+      const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
       const deadline = Date.now() + GREP_TIME_BUDGET_MS;
 
       const results: { filePath: string; line: number; text: string }[] = [];
