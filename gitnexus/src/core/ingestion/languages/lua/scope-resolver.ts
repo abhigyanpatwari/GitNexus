@@ -21,9 +21,11 @@ import {
   type SuffixIndex,
 } from '../../import-resolvers/utils.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
+import { typescriptArityCompatibility } from '../typescript/arity.js';
 import { luaProvider } from '../lua.js';
 import { emitLuaHeritageEdges } from './heritage.js';
-import { clearLuaHeritageFacts } from './capture-side-channel.js';
+import { clearLuaHeritageFacts, type LuaCaptureSideChannel } from './capture-side-channel.js';
 
 // Cache the suffix index across calls within one analyze run — `allFilePaths`
 // is the same ReadonlySet for every Lua import in the run, so keying on its
@@ -32,6 +34,28 @@ import { clearLuaHeritageFacts } from './capture-side-channel.js';
 // suffix, which fails to match root-level files like `middleclass.lua`.
 let _cachedSet: ReadonlySet<string> | null = null;
 let _cachedIndex: SuffixIndex | null = null;
+
+function populateLuaOwners(parsed: ParsedFile): void {
+  const channel = parsed.captureSideChannel as LuaCaptureSideChannel | undefined;
+  if (channel?.kind === 'lua') {
+    const classes = new Map(
+      parsed.localDefs
+        .filter((def) => def.type === 'Class')
+        .map((def) => [def.qualifiedName ?? '', def]),
+    );
+    for (const pair of channel.methodOwners) {
+      const method = parsed.localDefs.find(
+        (def) =>
+          def.type === 'Method' &&
+          def.qualifiedName === pair.method &&
+          def.nodeId.includes(`#${pair.defRow + 1}:`),
+      );
+      const owner = classes.get(pair.owner);
+      if (method !== undefined && owner !== undefined) method.ownerId = owner.nodeId;
+    }
+  }
+  populateClassOwnedMembers(parsed);
+}
 
 const luaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Lua,
@@ -73,13 +97,15 @@ const luaScopeResolver: ScopeResolver = {
 
   // Lua varargs (...) + optional params make static arity checks unreliable —
   // 'unknown' (no signal) is the safe minimal choice.
-  arityCompatibility: () => 'unknown',
+  arityCompatibility: (callsite, def) => typescriptArityCompatibility(def, callsite),
 
-  // middleclass single inheritance — MRO populated in Phase B2 (buildMro +
-  // defaultLinearize). Empty for now (no Class scopes yet).
-  buildMro: () => new Map(),
+  // middleclass uses single inheritance; the generic breadth-first
+  // linearization is conservative and refuses no additional edges when the
+  // heritage graph is ambiguous or cyclic.
+  buildMro: (graph, parsedFiles, nodeLookup) =>
+    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
 
-  populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateOwners: populateLuaOwners,
 
   // Lua has no super-call construct (middleclass __base access is Phase B2).
   isSuperReceiver: () => false,

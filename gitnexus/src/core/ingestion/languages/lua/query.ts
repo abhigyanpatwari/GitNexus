@@ -4,7 +4,7 @@
  * Captures the structural skeleton the central ScopeExtractor consumes:
  *   - scopes: (chunk) root + function bodies
  *   - declarations: function / local function / method (function Obj:m())
- *   - imports: require("a.b.c") — the call + its string arg
+ *   - imports: Lua module-loading calls — the call + its string arg
  *   - references: free calls foo() + member calls obj:m() / obj.f()
  *
  * `tree-sitter-lua` is a vendored grammar (loaded lazily via parser-loader, NOT
@@ -58,36 +58,14 @@ const LUA_SCOPE_QUERY = `
   arguments: (argument_list (expression_list (string) @declaration.name))
   (#eq? @_class "class")) @declaration.class
 
-;; ── Imports — require("a.b.c") ──────────────────────────────────────────────
-;;   require is a plain (call) whose function is a (variable name: (identifier)).
-;;   Two forms:
-;;   1. local X = require("a.b.c") — @import.localName captures the LHS binding
-;;      so interpretLuaImport emits a namespace import. This makes X.foo()
-;;      receiver-linkable: collectNamespaceTargets registers X -> target file,
-;;      and the member call resolves via Case 1 (namespace).
-;;   2. bare require("a.b.c") (side-effect, no binding) — emits wildcard;
-;;      the IMPORTS edge still materializes but no receiver is bound. The
-;;      statement-level patterns below only accept direct chunk/block children,
-;;      so a bound require is not matched a second time through its nested call.
-(local_variable_declaration
-  (variable_list (variable name: (identifier) @import.localName))
-  (expression_list
-    (call
-      function: (variable name: (identifier) @_req)
-      arguments: (argument_list (expression_list (string) @import.source)))
-      (#eq? @_req "require"))) @import.statement
-
-(chunk
-  (call
-    function: (variable name: (identifier) @_req)
-    arguments: (argument_list (expression_list (string) @import.source))
-    (#eq? @_req "require")) @import.statement)
-
-(block
-  (call
-    function: (variable name: (identifier) @_req)
-    arguments: (argument_list (expression_list (string) @import.source))
-    (#eq? @_req "require")) @import.statement)
+;; ── Imports — Lua module-loading calls ───────────────────────────────────────
+;;   Import captures are emitted by captures.ts rather than this query. A
+;;   query match cannot preserve positional pairing for
+;;   a multi-variable declaration with two module-loading calls: it would
+;;   cross-pair every
+;;   local name with every source. The capture hook walks the two lists by
+;;   index and emits one logical match per require. It also handles Lua's
+;;   parenthesis-free 'require "mod"' and 'require [[mod]]' forms.
 
 ;; ── References — free calls: foo() ───────────────────────────────────────────
 ;;   Also matches the require call — harmless: require has no def, so it stays an
@@ -125,6 +103,16 @@ const HERITAGE_QUERY = `
       (string) @child.name
       (variable name: (identifier) @parent.name)))
   (#eq? @_class "class")) @heritage
+
+(call
+  function: (variable name: (identifier) @_class)
+  arguments: (argument_list
+    (expression_list
+      (string) @child.name
+      (variable
+        table: (identifier) @parent.module
+        field: (identifier) @parent.field)))
+  (#eq? @_class "class")) @heritage
 `;
 
 // function ClassName:method() (colon) and function ClassName.method() (dot).
@@ -141,6 +129,14 @@ const METHOD_OWNER_QUERY = `
   name: (variable
     table: (identifier) @method.owner
     field: (identifier) @method.name)) @method.def
+
+(variable_assignment
+  (variable_list
+    (variable
+      table: (identifier) @method.owner
+      field: (identifier) @method.name))
+  (expression_list
+    value: (function_definition) @method.def))
 `;
 
 let _parser: Parser | null = null;
