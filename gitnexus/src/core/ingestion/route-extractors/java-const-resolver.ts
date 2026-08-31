@@ -644,7 +644,6 @@ export function foldJavaOperands(
   return out === '' ? null : out;
 }
 
-
 export function expandJavaWildcardStaticImports(
   mc: ModuleConstants,
   fileKey: string,

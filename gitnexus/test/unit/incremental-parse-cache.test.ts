@@ -248,7 +248,8 @@ describe('PARSE_CACHE_VERSION', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(83);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
-      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82,
+      59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
+      82,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
