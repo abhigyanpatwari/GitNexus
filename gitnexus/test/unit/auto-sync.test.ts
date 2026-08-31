@@ -156,6 +156,23 @@ describe('auto-sync', () => {
     expect(loaded.config.projects[0].overwriteLocalChanges).toBe(false);
   });
 
+  it('rejects boolean max_concurrency instead of coercing it to 1', () => {
+    expect(() =>
+      parseAutoSyncConfig(
+        [
+          'sync_interval_minutes: 10',
+          'max_concurrency: true',
+          'projects:',
+          '  - local_path: /tmp/repos',
+          '    branch: master',
+          '    remote_urls:',
+          '      - git@github.com:owner/repo.git',
+        ].join('\n'),
+        '/tmp/watch_config.yml',
+      ),
+    ).toThrow('max_concurrency must be a positive integer');
+  });
+
   it('rejects repo_git_timeout values above the Node timer limit', () => {
     expect(() =>
       parseAutoSyncConfig(

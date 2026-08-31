@@ -124,10 +124,17 @@ export function parseAutoSyncConfig(content: string, configPath: string): AutoSy
     errors.push(`sync_interval_minutes must not exceed ${MAX_SYNC_INTERVAL_MINUTES}`);
   }
 
-  const maxConcurrency =
-    raw.max_concurrency === undefined ? DEFAULT_MAX_CONCURRENCY : Number(raw.max_concurrency);
-  if (!Number.isInteger(maxConcurrency) || maxConcurrency <= 0) {
-    errors.push('max_concurrency must be a positive integer');
+  // YAML booleans survive JSON_SCHEMA (`true`/`false`). `Number(true) === 1`
+  // would otherwise pass the integer check and silently mean concurrency 1.
+  let maxConcurrency = DEFAULT_MAX_CONCURRENCY;
+  if (raw.max_concurrency !== undefined) {
+    if (typeof raw.max_concurrency !== 'number' || !Number.isInteger(raw.max_concurrency)) {
+      errors.push('max_concurrency must be a positive integer');
+    } else if (raw.max_concurrency <= 0) {
+      errors.push('max_concurrency must be a positive integer');
+    } else {
+      maxConcurrency = raw.max_concurrency;
+    }
   }
 
   const repoGitTimeoutMs =
