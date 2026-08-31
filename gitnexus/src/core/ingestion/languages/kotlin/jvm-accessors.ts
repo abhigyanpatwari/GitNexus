@@ -4,7 +4,7 @@
  * kotlinc emits JavaBeans getters/setters for `val`/`var` properties. Those
  * methods are absent from the tree-sitter AST, so Java (and Kotlin) calls
  * like `user.getName()` miss CALLS edges. Planning is Kotlin-specific;
- * naming and Method emission share `jvm/beanspec` + `jvm/synthetic-accessors`.
+ * naming and Method emission share `jvm/beanspec` + `jvm/accessor-synthesis`.
  *
  * ## Supported subset (v1)
  * - Class / data class / object / companion `val`/`var` properties.
@@ -18,22 +18,19 @@
  */
 import type Parser from 'tree-sitter';
 import type { CaptureMatch } from 'gitnexus-shared';
+import { kotlinGetterName, kotlinSetterName } from '../jvm/beanspec.js';
 import {
-  hasExactAccessor,
-  kotlinGetterName,
-  kotlinSetterName,
-  rememberExactAccessor,
-} from '../jvm/beanspec.js';
-import {
-  capturesForPlannedAccessors,
-  emitPlannedAccessors,
-  emptySyntheticAccessorResult,
+  createExistingMethodIndex,
+  createJvmAccessorSynthesis,
+  hasExistingMethod,
   jvmTypeSimpleName,
-  ownerIdNamePrefix,
+  rememberExistingMethod,
+  type ExistingMethodIndex,
   type PlannedJvmAccessor,
+  type PlannedJvmAccessorOwner,
   type SyntheticAccessorResult,
   type SyntheticVisibility,
-} from '../jvm/synthetic-accessors.js';
+} from '../jvm/accessor-synthesis.js';
 
 const KOTLIN_TYPE_DECLS = new Set(['class_declaration', 'object_declaration', 'companion_object']);
 
@@ -54,7 +51,7 @@ interface KtClass {
   node: Parser.SyntaxNode;
   name: string;
   properties: KtProperty[];
-  existingMethods: Map<string, Set<number>>;
+  existingMethods: ExistingMethodIndex;
 }
 
 function annotationUserTypeText(annotation: Parser.SyntaxNode): string {
@@ -192,16 +189,16 @@ function functionArity(node: Parser.SyntaxNode): number {
   return n;
 }
 
-function collectExistingMethods(body: Parser.SyntaxNode | null): Map<string, Set<number>> {
-  const names = new Map<string, Set<number>>();
-  if (!body) return names;
+function collectExistingMethods(body: Parser.SyntaxNode | null): ExistingMethodIndex {
+  const index = createExistingMethodIndex('exact');
+  if (!body) return index;
   for (const child of body.children) {
     if (child.type !== 'function_declaration') continue;
     const name = functionName(child);
     if (!name) continue;
-    rememberExactAccessor(names, name, functionArity(child));
+    rememberExistingMethod(index, name, functionArity(child));
   }
-  return names;
+  return index;
 }
 
 function toKtProperty(child: Parser.SyntaxNode): KtProperty | null {
@@ -276,7 +273,7 @@ function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
   const planned: PlannedJvmAccessor[] = [];
   for (const prop of cls.properties) {
     const gName = kotlinGetterName(prop.name);
-    if (!prop.skipGetter && !hasExactAccessor(cls.existingMethods, gName, 0)) {
+    if (!prop.skipGetter && !hasExistingMethod(cls.existingMethods, gName, 0)) {
       planned.push({
         kind: 'getter',
         name: gName,
@@ -291,7 +288,7 @@ function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
     }
     if (prop.isVar && !prop.skipSetter) {
       const sName = kotlinSetterName(prop.name);
-      if (!hasExactAccessor(cls.existingMethods, sName, 1)) {
+      if (!hasExistingMethod(cls.existingMethods, sName, 1)) {
         planned.push({
           kind: 'setter',
           name: sName,
@@ -309,30 +306,29 @@ function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
   return planned;
 }
 
+function planKotlinAccessorOwners(rootNode: Parser.SyntaxNode): PlannedJvmAccessorOwner[] {
+  return findKtClasses(rootNode).map((cls) => ({
+    node: cls.node,
+    name: cls.name,
+    accessors: planAccessors(cls),
+  }));
+}
+
+const kotlinAccessorSynthesis = createJvmAccessorSynthesis({
+  language: 'kotlin',
+  synthetic: 'kotlin-jvm',
+  typeDeclarationTypes: KOTLIN_TYPE_DECLS,
+  planOwners: planKotlinAccessorOwners,
+});
+
 export function synthesizeKotlinJvmAccessors(
   tree: Parser.Tree,
   filePath: string,
   classOwnersById: ReadonlyMap<number, string>,
 ): SyntheticAccessorResult {
-  const result = emptySyntheticAccessorResult();
-  for (const cls of findKtClasses(tree.rootNode)) {
-    const ownerId = classOwnersById.get(cls.node.id);
-    if (!ownerId) continue;
-    emitPlannedAccessors({
-      planned: planAccessors(cls),
-      filePath,
-      ownerId,
-      idPrefix: ownerIdNamePrefix(ownerId, filePath, cls.name),
-      language: 'kotlin',
-      synthetic: 'kotlin-jvm',
-      result,
-    });
-  }
-  return result;
+  return kotlinAccessorSynthesis.synthesize(tree, filePath, classOwnersById);
 }
 
 export function synthesizeKotlinJvmAccessorCaptures(rootNode: Parser.SyntaxNode): CaptureMatch[] {
-  const planned: PlannedJvmAccessor[] = [];
-  for (const cls of findKtClasses(rootNode)) planned.push(...planAccessors(cls));
-  return capturesForPlannedAccessors(planned, KOTLIN_TYPE_DECLS);
+  return kotlinAccessorSynthesis.captures(rootNode);
 }

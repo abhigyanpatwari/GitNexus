@@ -1,12 +1,50 @@
 /**
- * Shared emission of synthetic JVM accessor Method nodes + scope captures.
- * Language providers plan accessors; this module does not name languages.
+ * Shared planning orchestration and emission for synthetic JVM accessors.
+ *
+ * Language adapters discover accessor plans. This module owns method-collision
+ * policy, graph emission, and scope captures without naming any language.
  */
 import type Parser from 'tree-sitter';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { toZeroBasedLine } from '../../utils/line-base.js';
 
 export type SyntheticVisibility = 'public' | 'protected' | 'private' | 'package';
+export type MethodNameMatching = 'exact' | 'case-folded';
+
+export interface ExistingMethodIndex {
+  readonly matching: MethodNameMatching;
+  readonly aritiesByName: Map<string, Set<number>>;
+}
+
+export function createExistingMethodIndex(matching: MethodNameMatching): ExistingMethodIndex {
+  return { matching, aritiesByName: new Map() };
+}
+
+function methodKey(index: ExistingMethodIndex, name: string): string {
+  return index.matching === 'case-folded' ? name.toLowerCase() : name;
+}
+
+export function rememberExistingMethod(
+  index: ExistingMethodIndex,
+  name: string,
+  arity: number,
+): void {
+  const key = methodKey(index, name);
+  let arities = index.aritiesByName.get(key);
+  if (!arities) {
+    arities = new Set();
+    index.aritiesByName.set(key, arities);
+  }
+  arities.add(arity);
+}
+
+export function hasExistingMethod(
+  index: ExistingMethodIndex,
+  name: string,
+  arity: number,
+): boolean {
+  return index.aritiesByName.get(methodKey(index, name))?.has(arity) === true;
+}
 
 export interface SyntheticAccessorSymbol {
   filePath: string;
@@ -72,11 +110,61 @@ export interface PlannedJvmAccessor {
   declaratorNode: Parser.SyntaxNode;
 }
 
-export function emptySyntheticAccessorResult(): SyntheticAccessorResult {
+export interface PlannedJvmAccessorOwner {
+  node: Parser.SyntaxNode;
+  name: string;
+  accessors: readonly PlannedJvmAccessor[];
+}
+
+interface JvmAccessorSynthesisConfig {
+  language: string;
+  synthetic: string;
+  typeDeclarationTypes: ReadonlySet<string>;
+  planOwners(rootNode: Parser.SyntaxNode): readonly PlannedJvmAccessorOwner[];
+}
+
+export interface JvmAccessorSynthesis {
+  synthesize(
+    tree: Parser.Tree,
+    filePath: string,
+    classOwnersById: ReadonlyMap<number, string>,
+  ): SyntheticAccessorResult;
+  captures(rootNode: Parser.SyntaxNode): CaptureMatch[];
+}
+
+export function createJvmAccessorSynthesis(
+  config: JvmAccessorSynthesisConfig,
+): JvmAccessorSynthesis {
+  return {
+    synthesize(tree, filePath, classOwnersById) {
+      const result = emptySyntheticAccessorResult();
+      for (const owner of config.planOwners(tree.rootNode)) {
+        const ownerId = classOwnersById.get(owner.node.id);
+        if (!ownerId) continue;
+        emitPlannedAccessors({
+          planned: owner.accessors,
+          filePath,
+          ownerId,
+          idPrefix: ownerIdNamePrefix(ownerId, filePath, owner.name),
+          language: config.language,
+          synthetic: config.synthetic,
+          result,
+        });
+      }
+      return result;
+    },
+    captures(rootNode) {
+      const planned = config.planOwners(rootNode).flatMap((owner) => [...owner.accessors]);
+      return capturesForPlannedAccessors(planned, config.typeDeclarationTypes);
+    },
+  };
+}
+
+function emptySyntheticAccessorResult(): SyntheticAccessorResult {
   return { symbols: [], nodes: [], relationships: [] };
 }
 
-export function ownerIdNamePrefix(ownerId: string, filePath: string, fallback: string): string {
+function ownerIdNamePrefix(ownerId: string, filePath: string, fallback: string): string {
   const needle = `Class:${filePath}:`;
   if (ownerId.startsWith(needle)) return ownerId.slice(needle.length);
   const enumNeedle = `Enum:${filePath}:`;
@@ -95,7 +183,7 @@ export function jvmTypeSimpleName(node: Parser.SyntaxNode): string | undefined {
   return undefined;
 }
 
-export function ownerQualifiedSimpleName(
+function ownerQualifiedSimpleName(
   classNode: Parser.SyntaxNode,
   typeDeclTypes: ReadonlySet<string>,
 ): string {
@@ -111,7 +199,7 @@ export function ownerQualifiedSimpleName(
   return parts.join('.') || 'Unknown';
 }
 
-export function emitPlannedAccessors(args: {
+function emitPlannedAccessors(args: {
   planned: readonly PlannedJvmAccessor[];
   filePath: string;
   ownerId: string;
@@ -173,11 +261,7 @@ export function emitPlannedAccessors(args: {
   }
 }
 
-/**
- * Unique capture range per planned accessor. `makeScopeId` is
- * file+range+kind only, so two Function scopes that share a range collapse.
- */
-export function accessorCapture(name: string, acc: PlannedJvmAccessor, text: string): Capture {
+function accessorCapture(name: string, acc: PlannedJvmAccessor, text: string): Capture {
   const node = acc.declaratorNode;
   const startLine = node.startPosition.row + 1;
   const startCol = node.startPosition.column;
@@ -186,7 +270,7 @@ export function accessorCapture(name: string, acc: PlannedJvmAccessor, text: str
   return { name, range: { startLine, startCol, endLine, endCol }, text };
 }
 
-export function capturesForPlannedAccessors(
+function capturesForPlannedAccessors(
   planned: readonly PlannedJvmAccessor[],
   typeDeclTypes: ReadonlySet<string>,
 ): CaptureMatch[] {

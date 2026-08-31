@@ -25,21 +25,18 @@
 
 import type Parser from 'tree-sitter';
 import type { CaptureMatch } from 'gitnexus-shared';
+import { javaUsesIsPrefix, jvmGetterName, jvmSetterName } from '../jvm/beanspec.js';
 import {
-  hasExistingAccessor,
-  javaUsesIsPrefix,
-  jvmGetterName,
-  jvmSetterName,
-} from '../jvm/beanspec.js';
-import {
-  capturesForPlannedAccessors,
-  emitPlannedAccessors,
-  emptySyntheticAccessorResult,
-  ownerIdNamePrefix,
+  createExistingMethodIndex,
+  createJvmAccessorSynthesis,
+  hasExistingMethod,
+  rememberExistingMethod,
+  type ExistingMethodIndex,
   type PlannedJvmAccessor,
+  type PlannedJvmAccessorOwner,
   type SyntheticAccessorResult,
   type SyntheticVisibility,
-} from '../jvm/synthetic-accessors.js';
+} from '../jvm/accessor-synthesis.js';
 
 const JAVA_TYPE_DECLS = new Set([
   'class_declaration',
@@ -92,7 +89,7 @@ interface LombokClass {
   classAccessors: AccessorsOptions;
   fields: LombokField[];
   /** lowercase method name → set of arities already present (non-@Tolerate). */
-  existingMethods: Map<string, Set<number>>;
+  existingMethods: ExistingMethodIndex;
 }
 
 const LOMBOK_ANNOTATIONS = new Set(['Data', 'Getter', 'Setter', 'Accessors', 'Tolerate']);
@@ -353,9 +350,9 @@ function methodArity(methodNode: Parser.SyntaxNode): number {
 function collectExistingMethods(
   classBody: Parser.SyntaxNode | null,
   imports: LombokImportIndex,
-): Map<string, Set<number>> {
-  const names = new Map<string, Set<number>>();
-  if (!classBody) return names;
+): ExistingMethodIndex {
+  const index = createExistingMethodIndex('case-folded');
+  if (!classBody) return index;
   for (const child of classBody.children) {
     if (child.type !== 'method_declaration') continue;
     const mods = child.children.find((c) => c.type === 'modifiers') ?? null;
@@ -363,20 +360,9 @@ function collectExistingMethods(
     if (ann.tolerate) continue;
     const nameNode = child.childForFieldName('name');
     if (!nameNode) continue;
-    const key = nameNode.text.toLowerCase();
-    const arity = methodArity(child);
-    let set = names.get(key);
-    if (!set) {
-      set = new Set();
-      names.set(key, set);
-    }
-    set.add(arity);
+    rememberExistingMethod(index, nameNode.text, methodArity(child));
   }
-  return names;
-}
-
-function hasExisting(existing: Map<string, Set<number>>, name: string, arity: number): boolean {
-  return hasExistingAccessor(existing, name, arity);
+  return index;
 }
 
 const TYPE_BODIES = new Set(['class_body', 'enum_body']);
@@ -451,7 +437,7 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
 
     if (getterCfg?.enabled) {
       const gName = getterName(field.name, field.type);
-      if (!hasExisting(cls.existingMethods, gName, 0)) {
+      if (!hasExistingMethod(cls.existingMethods, gName, 0)) {
         planned.push({
           kind: 'getter',
           name: gName,
@@ -468,7 +454,7 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
 
     if (setterCfg?.enabled && !field.isFinal) {
       const sName = setterName(field.name, field.type);
-      if (!hasExisting(cls.existingMethods, sName, 1)) {
+      if (!hasExistingMethod(cls.existingMethods, sName, 1)) {
         // chain=true → setter returns declaring type; never emit void in that case
         const returnType = accessors.chain ? cls.name : 'void';
         planned.push({
@@ -488,6 +474,22 @@ function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
   return planned;
 }
 
+function planLombokAccessorOwners(root: Parser.SyntaxNode): PlannedJvmAccessorOwner[] {
+  const imports = collectLombokImports(root);
+  return findLombokClasses(root, imports).map((cls) => ({
+    node: cls.node,
+    name: cls.name,
+    accessors: planAccessors(cls),
+  }));
+}
+
+const lombokAccessorSynthesis = createJvmAccessorSynthesis({
+  language: 'java',
+  synthetic: 'lombok',
+  typeDeclarationTypes: JAVA_TYPE_DECLS,
+  planOwners: planLombokAccessorOwners,
+});
+
 // ── Main API ──────────────────────────────────────────────────────────────
 
 export function synthesizeLombokAccessors(
@@ -495,36 +497,10 @@ export function synthesizeLombokAccessors(
   filePath: string,
   classOwnersById: ReadonlyMap<number, string>,
 ): LombokSynthesisResult {
-  const result = emptySyntheticAccessorResult();
-  const imports = collectLombokImports(tree.rootNode);
-
-  for (const cls of findLombokClasses(tree.rootNode, imports)) {
-    const ownerId = classOwnersById.get(cls.node.id);
-    if (!ownerId) continue;
-    emitPlannedAccessors({
-      planned: planAccessors(cls),
-      filePath,
-      ownerId,
-      idPrefix: ownerIdNamePrefix(ownerId, filePath, cls.name),
-      language: 'java',
-      synthetic: 'lombok',
-      result,
-    });
-  }
-
-  return result;
-}
-
-function planLombokAccessorsForRoot(root: Parser.SyntaxNode): PlannedLombokAccessor[] {
-  const imports = collectLombokImports(root);
-  const out: PlannedLombokAccessor[] = [];
-  for (const cls of findLombokClasses(root, imports)) {
-    out.push(...planAccessors(cls));
-  }
-  return out;
+  return lombokAccessorSynthesis.synthesize(tree, filePath, classOwnersById);
 }
 
 /** Scope captures for Lombok accessors (dual-path parity with record components). */
 export function synthesizeLombokAccessorCaptures(rootNode: Parser.SyntaxNode): CaptureMatch[] {
-  return capturesForPlannedAccessors(planLombokAccessorsForRoot(rootNode), JAVA_TYPE_DECLS);
+  return lombokAccessorSynthesis.captures(rootNode);
 }
