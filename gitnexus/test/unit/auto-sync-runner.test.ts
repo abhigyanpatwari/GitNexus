@@ -43,7 +43,7 @@ const cloneRoot = {
   quarantineRoot: '/tmp/.gitnexus/watch/quarantine',
   quarantineRetentionDays: 14,
 };
-const verifiedWatchCommand = 'node /gitnexus/dist/cli/index.js watch';
+const verifiedWatchCommand = 'node /gitnexus/dist/cli/index.js auto-sync start';
 const verifiedProcessStartTime = 'Tue Aug  4 12:00:00 2026';
 
 function withCloneRoot(deps: Partial<AutoSyncRunDeps>): Partial<AutoSyncRunDeps> {
@@ -1638,7 +1638,7 @@ describe('auto-sync starter', () => {
       ).resolves.toMatchObject({
         state: 'error',
         pid: 12345,
-        message: expect.stringContaining('not a GitNexus watch process'),
+        message: expect.stringContaining('not a GitNexus auto-sync process'),
       });
       await expect(fs.readdir(path.dirname(paths.pidPath))).resolves.not.toContainEqual(
         expect.stringMatching(/^watch\.stop\./),
@@ -1697,7 +1697,7 @@ describe('auto-sync starter', () => {
       ).resolves.toMatchObject({
         state: 'error',
         pid: 12345,
-        message: expect.stringContaining('not a GitNexus watch process'),
+        message: expect.stringContaining('not a GitNexus auto-sync process'),
       });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });

@@ -456,10 +456,10 @@ function getWatchProcessIdentityError(
   const command = deps.readProcessCommand(owner.pid);
   if (!command) return 'unable to verify process command';
   if (
-    !/(?:^|\s)watch(?:\s|$)/.test(command) ||
+    !/(?:^|\s)(?:watch|auto-sync)(?:\s|$)/.test(command) ||
     !/(?:gitnexus|[\\/]cli[\\/]index\.(?:ts|[cm]?js))/.test(command)
   ) {
-    return 'pid command is not a GitNexus watch process';
+    return 'pid command is not a GitNexus auto-sync process';
   }
   return undefined;
 }
