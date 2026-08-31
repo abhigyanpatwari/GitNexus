@@ -146,6 +146,11 @@ export async function startAutoSyncWatch(
       statusWrite = write.catch(() => {});
       return write;
     };
+    const reportStatusWriteFailure = (error: unknown) => {
+      stderr.write(
+        `[auto-sync] Failed to publish watch status: ${(error as Error).message}\n`,
+      );
+    };
     const runSafely = () => {
       if (activeRun) {
         stderr.write('[auto-sync] Previous run is still active; skipping overlapping run.\n');
@@ -161,7 +166,7 @@ export async function startAutoSyncWatch(
             void updateStatus(
               'cancelling',
               'Analysis cancellation requested; waiting for the worker to reach a safe shutdown point.',
-            );
+            ).catch(reportStatusWriteFailure);
           }
         },
       })
@@ -180,11 +185,7 @@ export async function startAutoSyncWatch(
             activeAbortController = undefined;
           }
           if (!stopping) {
-            await updateStatus('running').catch((error: unknown) => {
-              stderr.write(
-                `[auto-sync] Failed to publish watch status: ${(error as Error).message}\n`,
-              );
-            });
+            await updateStatus('running').catch(reportStatusWriteFailure);
           }
         });
       activeRun = run;
