@@ -79,6 +79,7 @@ interface LombokField {
   fieldGetter: AccessorConfig | null;
   fieldSetter: AccessorConfig | null;
   accessors: AccessorsOptions;
+  accessorsPresent: boolean;
 }
 
 interface LombokClass {
@@ -218,8 +219,12 @@ function parseAccessorsAnnotation(ann: Parser.SyntaxNode): AccessorsOptions {
           (c) =>
             c.type === 'true' || c.type === 'false' || c.type === 'element_value_array_initializer',
         );
-      if (key === 'fluent' && valueNode?.type === 'true') opts.fluent = true;
-      if (key === 'chain' && valueNode?.type === 'true') opts.chain = true;
+      if (key === 'fluent' && (valueNode?.type === 'true' || valueNode?.type === 'false')) {
+        opts.fluent = valueNode.type === 'true';
+      }
+      if (key === 'chain' && (valueNode?.type === 'true' || valueNode?.type === 'false')) {
+        opts.chain = valueNode.type === 'true';
+      }
       if (key === 'prefix') opts.hasPrefix = true;
     }
     for (const c of n.children) stack.push(c);
@@ -227,7 +232,9 @@ function parseAccessorsAnnotation(ann: Parser.SyntaxNode): AccessorsOptions {
   const text = ann.text;
   if (/\bprefix\s*=/.test(text)) opts.hasPrefix = true;
   if (/\bfluent\s*=\s*true\b/.test(text)) opts.fluent = true;
+  if (/\bfluent\s*=\s*false\b/.test(text)) opts.fluent = false;
   if (/\bchain\s*=\s*true\b/.test(text)) opts.chain = true;
+  if (/\bchain\s*=\s*false\b/.test(text)) opts.chain = false;
   return opts;
 }
 
@@ -235,6 +242,7 @@ interface ParsedAnnotations {
   getter: AccessorConfig | null;
   setter: AccessorConfig | null;
   accessors: AccessorsOptions;
+  accessorsPresent: boolean;
   tolerate: boolean;
 }
 
@@ -246,6 +254,7 @@ function parseModifierAnnotations(
     getter: null,
     setter: null,
     accessors: defaultAccessors(),
+    accessorsPresent: false,
     tolerate: false,
   };
   if (!modifiersNode) return result;
@@ -263,11 +272,12 @@ function parseModifierAnnotations(
     }
     if (simple === 'Accessors') {
       result.accessors = parseAccessorsAnnotation(child);
+      result.accessorsPresent = true;
       continue;
     }
     if (simple === 'Data') {
-      result.getter = { enabled: true, visibility: 'public' };
-      result.setter = { enabled: true, visibility: 'public' };
+      result.getter ??= { enabled: true, visibility: 'public' };
+      result.setter ??= { enabled: true, visibility: 'public' };
       continue;
     }
     if (simple === 'Getter' || simple === 'Setter') {
@@ -286,12 +296,9 @@ function parseModifierAnnotations(
 function mergeAccessors(
   classOpts: AccessorsOptions,
   fieldOpts: AccessorsOptions,
+  fieldAccessorsPresent: boolean,
 ): AccessorsOptions {
-  return {
-    fluent: classOpts.fluent || fieldOpts.fluent,
-    hasPrefix: classOpts.hasPrefix || fieldOpts.hasPrefix,
-    chain: classOpts.chain || fieldOpts.chain,
-  };
+  return fieldAccessorsPresent ? fieldOpts : classOpts;
 }
 
 function effectiveAccessor(
@@ -347,6 +354,7 @@ function parseFieldDeclaration(
       fieldGetter: fieldAnn.getter,
       fieldSetter: fieldAnn.setter,
       accessors: fieldAnn.accessors,
+      accessorsPresent: fieldAnn.accessorsPresent,
     });
   }
   return out;
@@ -452,7 +460,7 @@ function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex):
 function planAccessors(cls: LombokClass): PlannedLombokAccessor[] {
   const planned: PlannedLombokAccessor[] = [];
   for (const field of cls.fields) {
-    const accessors = mergeAccessors(cls.classAccessors, field.accessors);
+    const accessors = mergeAccessors(cls.classAccessors, field.accessors, field.accessorsPresent);
     // fluent/prefix change names — omit rather than invent wrong names
     if (accessors.fluent || accessors.hasPrefix) continue;
 

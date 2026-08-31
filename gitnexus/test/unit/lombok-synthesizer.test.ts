@@ -383,6 +383,25 @@ public class Order {
       expect(result.symbols).toHaveLength(0);
     });
 
+    it('keeps class @Getter(NONE) when @Data follows it', () => {
+      const tree = parse(`
+import lombok.Data;
+import lombok.Getter;
+import lombok.AccessLevel;
+@Getter(AccessLevel.NONE)
+@Data
+public class Order {
+    private String orderId;
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols.map((s) => s.name)).toEqual(['setOrderId']);
+    });
+
     it('field @Setter(AccessLevel.NONE) suppresses setter under @Data', () => {
       const tree = parse(`
 import lombok.Data;
@@ -620,6 +639,45 @@ public class Order {
         ownerMapBySimpleName(tree, FILE_PATH),
       );
       expect(result.symbols).toHaveLength(0);
+    });
+
+    it('lets field @Accessors(fluent=false) restore beanspec under class fluent=true', () => {
+      const tree = parse(`
+import lombok.Data;
+import lombok.experimental.Accessors;
+@Data
+@Accessors(fluent = true)
+public class Order {
+    @Accessors(fluent = false)
+    private String orderId;
+    private String other;
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols.map((s) => s.name).sort()).toEqual(['getOrderId', 'setOrderId']);
+    });
+
+    it('lets field @Accessors(chain=false) restore void setters under class chain=true', () => {
+      const tree = parse(`
+import lombok.Data;
+import lombok.experimental.Accessors;
+@Data
+@Accessors(chain = true)
+public class Order {
+    @Accessors(chain = false)
+    private String orderId;
+}
+`);
+      const result = synthesizeLombokAccessors(
+        tree,
+        FILE_PATH,
+        ownerMapBySimpleName(tree, FILE_PATH),
+      );
+      expect(result.symbols.find((s) => s.name === 'setOrderId')!.returnType).toBe('void');
     });
   });
 
