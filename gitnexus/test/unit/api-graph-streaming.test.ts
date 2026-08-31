@@ -146,6 +146,9 @@ describe('streamGraphNdjson', () => {
       async (query: string, onRow: (row: any) => Promise<void>) => {
         if (query.includes('MATCH (n:`Route`)')) {
           expect(query).not.toContain('startLine');
+          expect(query).toContain('runtimeConfirmed');
+          expect(query).toContain('runtimeSource');
+          expect(query).toContain('runtimeStatus');
           await onRow({
             id: 'Route:/api/graph:GET',
             name: 'GET /api/graph',
@@ -153,6 +156,9 @@ describe('streamGraphNdjson', () => {
             responseKeys: ['nodes', 'relationships'],
             errorKeys: ['error'],
             middleware: ['withAuth'],
+            runtimeConfirmed: true,
+            runtimeSource: 'spring-actuator',
+            runtimeStatus: 'runtime-confirmed',
           });
           return 1;
         }
@@ -193,6 +199,9 @@ describe('streamGraphNdjson', () => {
           responseKeys: ['nodes', 'relationships'],
           errorKeys: ['error'],
           middleware: ['withAuth'],
+          runtimeConfirmed: true,
+          runtimeSource: 'spring-actuator',
+          runtimeStatus: 'runtime-confirmed',
           heuristicLabel: undefined,
           cohesion: undefined,
           symbolCount: undefined,

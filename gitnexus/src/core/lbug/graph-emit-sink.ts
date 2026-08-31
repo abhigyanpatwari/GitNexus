@@ -125,6 +125,7 @@ import { PDG_EDGE_TYPES } from './pdg-emit-sink.js';
  *   METHOD_IMPLEMENTS    - mro-processor
  *   DEFINES              - local-symbol-pruner's isFileDefinesEdge test
  *   INJECTS              - di phase fan-out
+ *   CONDITIONAL_ON       - Spring Actuator runtime condition enrichment
  *
  * Deliberately NOT retained: STEP_IN_PROCESS / ENTRY_POINT_OF / MEMBER_OF
  * (written only by the `processes` / `communities` phases, which the streaming
@@ -150,6 +151,7 @@ export const RETAINED_REL_TYPES: ReadonlySet<RelationshipType> = new Set<Relatio
   'METHOD_IMPLEMENTS',
   'DEFINES',
   'INJECTS',
+  'CONDITIONAL_ON',
   // springAopInheritance reads direct behavior evidence after MRO.
   'ADVISED_BY',
 ]);

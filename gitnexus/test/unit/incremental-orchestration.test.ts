@@ -486,6 +486,65 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('rebuilds for Actuator snapshots and once more when runtime enrichment is disabled', async () => {
+    const repo = await setupMiniRepo();
+    const runtimeInput = 'runtime-actuator';
+    const runtimeInputDir = path.join(repo.dbPath, runtimeInput);
+    const secretValue = 'ACTUATOR_META_SECRET_2418';
+    try {
+      await mkdir(runtimeInputDir, { recursive: true });
+      await writeFile(
+        path.join(runtimeInputDir, 'env.json'),
+        JSON.stringify({
+          propertySources: [
+            {
+              name: 'systemEnvironment',
+              properties: { 'runtime.secret': { value: secretValue, origin: 'env' } },
+            },
+          ],
+        }),
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add actuator runtime snapshot');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const enabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, springActuatorPath: runtimeInput },
+        { onProgress: () => {} },
+      );
+      expect(enabled.alreadyUpToDate).toBeUndefined();
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const enabledMeta = await loadMeta(storagePath);
+      expect(enabledMeta?.springActuator).toEqual({ enabled: true });
+      expect(JSON.stringify(enabledMeta)).not.toContain(runtimeInput);
+      expect(JSON.stringify(enabledMeta)).not.toContain(secretValue);
+      expect(Object.keys(enabledMeta?.fileHashes ?? {})).not.toContain(`${runtimeInput}/env.json`);
+
+      const disableLogs: string[] = [];
+      const disabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => disableLogs.push(message) },
+      );
+      expect(disabled.alreadyUpToDate).toBeUndefined();
+      expect(disableLogs.join('\n')).toContain(
+        'Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.',
+      );
+      expect((await loadMeta(storagePath))?.springActuator).toBeUndefined();
+
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('a same-commit v8 index missing the global Class capability rebuilds before the fast path', async () => {
     const repo = await setupMiniRepo();
     try {

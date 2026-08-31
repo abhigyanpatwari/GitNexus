@@ -478,6 +478,11 @@ export interface AnalyzeOptions {
    */
   fetchWrappers?: string[];
   /**
+   * Explicit local Spring Boot Actuator snapshot input (#2418), forwarded to
+   * the Spring enrichment phase. Undefined keeps static-only analysis.
+   */
+  springActuatorPath?: string;
+  /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
    * durability but skips the native `conn.close()`/`db.close()`, which can
@@ -1653,6 +1658,22 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Actuator snapshots are external runtime inputs and are intentionally not
+  // hashed or persisted. Rebuild on every enabled run so updated snapshots
+  // cannot hit the git freshness fast path; rebuild once when the option is
+  // removed so stale runtime-only evidence is cleared from the index.
+  const springActuatorRequested = options.springActuatorPath !== undefined;
+  const springActuatorPreviouslyEnabled = existingMeta?.springActuator?.enabled === true;
+  if (springActuatorRequested) {
+    if (!options.force) {
+      log('Spring Actuator runtime enrichment requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (springActuatorPreviouslyEnabled) {
+    log('Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.');
+    options = { ...options, force: true };
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1958,6 +1979,7 @@ async function runFullAnalysisInner(
         : undefined,
       fetchWrappers: options.fetchWrappers,
       skipDerivedGraphPhases,
+      springActuatorPath: options.springActuatorPath,
     },
   );
 
@@ -3685,6 +3707,9 @@ async function runFullAnalysisInner(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       runnerIdentity,
+      // Records only the mode, never the input path or payload. The next run
+      // uses this to remove runtime evidence when the opt-in is omitted.
+      ...(springActuatorRequested ? { springActuator: { enabled: true as const } } : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an

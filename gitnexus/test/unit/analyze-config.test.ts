@@ -262,6 +262,26 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/at least one string/);
   });
 
+  // ── Spring Actuator runtime enrichment (#2418) ────────────────────
+
+  it('normalizes a Spring Actuator snapshot path', async () => {
+    await writeRc(JSON.stringify({ springActuator: ' fixtures/actuator snapshots ' }));
+    expect(loadAnalyzeConfig(dir)).toEqual({
+      springActuator: 'fixtures/actuator snapshots',
+    });
+  });
+
+  it('rejects empty, non-string, and hidden-character Actuator paths', async () => {
+    await writeRc(JSON.stringify({ springActuator: '   ' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must not be empty/);
+
+    await writeRc(JSON.stringify({ springActuator: 42 }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/file or directory path/);
+
+    await writeRc('{"springActuator":"actuator\\u0007"}');
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/control or hidden/);
+  });
+
   // ── validateBranchName ─────────────────────────────────────────────
 
   it('validateBranchName trims and accepts normal branch names', () => {

@@ -12,11 +12,46 @@
 
 import type { PipelinePhase, PipelineContext } from './types.js';
 import { walkRepositoryPaths } from '../filesystem-walker.js';
+import path from 'node:path';
 
 export interface ScanOutput {
   scannedFiles: { path: string; size: number }[];
   allPaths: string[];
   totalFiles: number;
+}
+
+const SPRING_ACTUATOR_ENDPOINT_FILES = new Set([
+  'mappings.json',
+  'beans.json',
+  'conditions.json',
+  'configprops.json',
+  'env.json',
+]);
+
+/**
+ * Runtime snapshots are external analysis inputs, not repository source. When
+ * a configured input lives below the repository root, exclude it before any
+ * downstream phase reads file contents. This is especially important for
+ * Actuator env/configprops payloads: their values must never become File-node
+ * content or enter FTS merely because the snapshot directory is in the repo.
+ */
+function excludesRuntimeInput(repoPath: string, filePath: string, inputPath: string): boolean {
+  const repo = path.resolve(repoPath);
+  const candidate = path.resolve(repoPath, filePath);
+  const input = path.resolve(repoPath, inputPath);
+
+  const inputRelativeToRepo = path.relative(repo, input);
+  if (inputRelativeToRepo === '') {
+    const candidateRelativeToRepo = path.relative(repo, candidate);
+    return (
+      path.dirname(candidateRelativeToRepo) === '.' &&
+      SPRING_ACTUATOR_ENDPOINT_FILES.has(path.basename(candidateRelativeToRepo).toLowerCase())
+    );
+  }
+  if (inputRelativeToRepo.startsWith('..') || path.isAbsolute(inputRelativeToRepo)) return false;
+
+  const relative = path.relative(input, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
 export const scanPhase: PipelinePhase<ScanOutput> = {
@@ -30,15 +65,19 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
       message: 'Scanning repository...',
     });
 
+    const springActuatorPath = ctx.options?.springActuatorPath;
     let scannedFiles;
     try {
       scannedFiles = await walkRepositoryPaths(ctx.repoPath, (current, total, filePath) => {
         const scanProgress = Math.round((current / total) * 15);
+        const isRuntimeInput =
+          springActuatorPath !== undefined &&
+          excludesRuntimeInput(ctx.repoPath, filePath, springActuatorPath);
         ctx.onProgress({
           phase: 'extracting',
           percent: scanProgress,
           message: 'Scanning repository...',
-          detail: filePath,
+          ...(isRuntimeInput ? {} : { detail: filePath }),
           stats: {
             filesProcessed: current,
             totalFiles: total,
@@ -54,6 +93,12 @@ export const scanPhase: PipelinePhase<ScanOutput> = {
         return { scannedFiles: [], allPaths: [], totalFiles: 0 };
       }
       throw err;
+    }
+
+    if (springActuatorPath !== undefined) {
+      scannedFiles = scannedFiles.filter(
+        (file) => !excludesRuntimeInput(ctx.repoPath, file.path, springActuatorPath),
+      );
     }
 
     const totalFiles = scannedFiles.length;

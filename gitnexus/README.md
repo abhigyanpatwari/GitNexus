@@ -244,6 +244,7 @@ gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexu
 gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
 gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16)
+gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot Actuator JSON snapshots
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
@@ -322,6 +323,8 @@ object, static `gql` template, and `TypedDocumentString` initializers must prove
 and root fields. Dynamic decorator names, anonymous operations, and ambiguous or missing graph
 anchors are deliberately omitted. Add common infrastructure fields such as `/health` to
 `matching.exclude_links_paths` to keep those GraphQL contracts visible without cross-linking them.
+
+`--spring-actuator` is explicitly opt-in. The path may be a JSON bundle keyed by `mappings`, `beans`, `conditions`, `configprops`, and/or `env`, or a directory containing endpoint-named JSON files. Runtime mappings and beans confirm matching static nodes; conditions and configuration property keys enrich existing evidence, with conservative runtime-only nodes added when no match exists. The configured input is excluded from source scanning and its path is not persisted; env/configprops values, origins, condition messages, and source names are never persisted or printed. Enabled runs always rebuild because runtime snapshots are external to git freshness; omitting the option later rebuilds once to remove runtime evidence. Project config can set the same path with `springActuator` in `.gitnexusrc`.
 
 > **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
 
@@ -431,7 +434,7 @@ Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setu
   LadybugDB native binary ships as a prebuild against that floor, so on an older host it cannot
   load and reinstalling does not help — see
   [Linux: `GLIBC_2.34' not found`](#linux-glibc_234-not-found).
-- **Windows, for full-text search:** the Microsoft Visual C++ 2015-2022 Redistributable (x64) *and*
+- **Windows, for full-text search:** the Microsoft Visual C++ 2015-2022 Redistributable (x64) _and_
   OpenSSL 3 (`libssl-3-x64.dll`, `libcrypto-3-x64.dll`) resolvable on `PATH` — see
   [Windows: full-text search unavailable](#windows-full-text-search-unavailable).
 
@@ -708,17 +711,17 @@ For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BY
 
 Four env vars expose the pool's resilience layers (respawn budget, cumulative-timeout cap, circuit breaker, startup handshake). Defaults are tuned for typical repos; bump them when an analyze legitimately needs more retries, or lower them to fail-fast on a known-bad shape.
 
-| Variable                                        | Default                 | Effect                                                                                                                                                                                                                                                    |
-| ----------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                     | Max replacement spawns per slot before the slot is dropped from the active rotation.                                                                                                                                                                      |
-| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                                                                                                                                                       |
-| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                                                                                     |
-| `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432).                                                          |
-| `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                  | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
-| `GITNEXUS_MEMORY`                            | `off`                          | unset (autopilot on) | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
-| `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                    |
-| `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`   | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
-| `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                 | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                |
+| Variable                                        | Default                            | Effect                                                                                                                                                                                                                                                    |
+| ----------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                                | Max replacement spawns per slot before the slot is dropped from the active rotation.                                                                                                                                                                      |
+| `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs`            | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                                                                                                                                                       |
+| `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`                 | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                                                                                     |
+| `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                            | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432).                                                          |
+| `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                             | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
+| `GITNEXUS_MEMORY`                               | `off`                              | unset (autopilot on)                                                                                                                                                                                                                                      | `off` declines GitNexus's memory autopilot: analyze will neither re-run itself with a RAM-aware heap cap nor abort the parse before V8 enters its ineffective-mark-compact death spiral. Use it when you want to drive memory manually; to simply pin a heap size, pass Node's own `--max-old-space-size`, which is already honoured as your decision. |
+| `GITNEXUS_WORKER_HEAP_MB`                       | `clamp(512, RAM/2/poolSize, 4096)` | Per-worker V8 old-generation heap cap (#2649). Bounds pool RSS on large repos; a worker exceeding it dies with a real heap error handled by quarantine/respawn.                                                                                           |
+| `GITNEXUS_SERVER_ANALYZE_HEAP_MB`               | `min(8192, auto cap)`              | Heap for the web/MCP server's forked analyze worker (#2649). Defaults to the historical 8192 MB bounded by the machine/container's RAM-aware auto cap; set an absolute MB value to override.                                                              |
+| `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                            | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                                                                         |
 
 ### Graph cleanup tuning
 
@@ -732,8 +735,8 @@ Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions`
 
 ### Scope-resolution property-key dispatch cap
 
-During scope resolution GitNexus synthesizes CALLS edges through *property-key
-dispatch* — call sites like `hooks.emitScopeCaptures()` where a property key is
+During scope resolution GitNexus synthesizes CALLS edges through _property-key
+dispatch_ — call sites like `hooks.emitScopeCaptures()` where a property key is
 registered by multiple definitions across the codebase. To keep this fan-in
 bounded, each property key is capped at **32 registrations**: a key registered
 by more than 32 distinct functions is skipped entirely (no CALLS are synthesized
@@ -741,8 +744,8 @@ through it), and the dropped key names are surfaced in the analyze log for
 operator visibility. The cap is calibrated at 2× this repo's own provider table
 (16 legitimate registrations, one per language provider).
 
-| Variable                                | Default | Effect                                                                                                                                                                                                                                                                                                                |
-| --------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable                                | Default | Effect                                                                                                                                                                                                                                                                                                                       |
+| --------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT` | `32`    | Per-property-key registration cap in the property-dispatch scope-resolution pass. Set to a positive integer to raise it for repositories whose provider/hook tables exceed the default and lose CALLS coverage on a legitimate key; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
 
 ```bash
@@ -755,11 +758,11 @@ npx gitnexus analyze --force
 
 ### Scope-resolution dispatch-target cap
 
-During scope resolution GitNexus resolves calls that flow through *callable
-values* — function/method references bound to variables, passed as arguments,
+During scope resolution GitNexus resolves calls that flow through _callable
+values_ — function/method references bound to variables, passed as arguments,
 or stored in maps/tables. To keep that inclusion-based resolution finite, each
 callable site is capped at **32 dispatch targets**. When a site gathers more
-candidates than the cap it is treated as **overflowed** and *all* of its call
+candidates than the cap it is treated as **overflowed** and _all_ of its call
 edges are dropped — a cliff, not a tail, so a repository with a legitimately
 wide dispatch table (a single callable site resolving to 33+ targets) loses
 that site's whole call chain. In that case `analyze` logs
@@ -769,8 +772,8 @@ candidate count, and the cap (32).
 
 Raise the cap for such repositories:
 
-| Variable                              | Default | Effect                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Variable                              | Default | Effect                                                                                                                                                                                                                                                                                                               |
+| ------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GITNEXUS_MAX_CALLABLE_VALUE_TARGETS` | `32`    | Per-callable-site dispatch-target cap in the callable-value-flow scope-resolution pass. Set to a positive integer to raise it for repositories whose wide dispatch tables overflow the default and lose a whole call chain; non-integer or `< 1` values fall back to `32`. Lowering it tightens the overflow budget. |
 
 ```bash

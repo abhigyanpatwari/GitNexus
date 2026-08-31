@@ -137,8 +137,8 @@ describe('buildPhaseList under streamGraphEmit', () => {
 });
 
 describe('RETAINED_REL_TYPES tracks its readers', () => {
-  it('streams write-only conditional and declaration evidence', () => {
-    expect(RETAINED_REL_TYPES.has('CONDITIONAL_ON')).toBe(false);
+  it('retains runtime-read conditional evidence and streams write-only declarations', () => {
+    expect(RETAINED_REL_TYPES.has('CONDITIONAL_ON')).toBe(true);
     expect(RETAINED_REL_TYPES.has('DECLARES')).toBe(false);
   });
 

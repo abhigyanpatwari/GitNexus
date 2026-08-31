@@ -401,7 +401,7 @@ export const getNodeQuery = (table: string, includeContent: boolean): string => 
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
   }
   if (table === 'Route') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware, n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus`;
   }
   if (table === 'Tool') {
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
@@ -430,6 +430,9 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     responseKeys: row.responseKeys,
     errorKeys: row.errorKeys,
     middleware: row.middleware,
+    runtimeConfirmed: row.runtimeConfirmed,
+    runtimeSource: row.runtimeSource,
+    runtimeStatus: row.runtimeStatus,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,
