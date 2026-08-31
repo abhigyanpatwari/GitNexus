@@ -16,7 +16,10 @@ import {
   RUBY_QUERIES,
   SWIFT_QUERIES,
   DART_QUERIES,
+  LUA_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
+import { createParserForLanguage } from '../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 function capturedDefinitionFunctionNames(
   language: Parameters<Parser['setLanguage']>[0],
@@ -375,6 +378,24 @@ describe('tree-sitter queries', () => {
 
     it('captures lambda body calls (() => expr)', () => {
       expect(DART_QUERIES).toContain('function_expression_body');
+    });
+  });
+
+  describe('Lua queries', () => {
+    it('captures a bare middleclass local as a Class definition', async () => {
+      const parser = await createParserForLanguage(SupportedLanguages.Lua);
+      const language = parser.getLanguage();
+      const query = new Parser.Query(language, LUA_QUERIES);
+      const source = 'local Foo = class("Foo")';
+      const matches = query.matches(parser.parse(source).rootNode);
+
+      expect(
+        matches.some((match) =>
+          match.captures.some(
+            (capture) => capture.name === 'definition.class' && capture.node.text === source,
+          ),
+        ),
+      ).toBe(true);
     });
   });
 

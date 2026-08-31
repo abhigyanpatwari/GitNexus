@@ -75,6 +75,103 @@ describe('Lua scope resolver import extensions', () => {
   });
 });
 
+describe('Lua scope resolver arity compatibility', () => {
+  it('accepts fixed arity and rejects impossible argument counts', () => {
+    const def = {
+      nodeId: 'fixed',
+      filePath: 'x.lua',
+      type: 'Function',
+      qualifiedName: 'fixed',
+      parameterCount: 2,
+      requiredParameterCount: 2,
+      parameterTypes: [],
+    } as const;
+    expect(luaScopeResolver.arityCompatibility({ arity: 2 }, def)).toBe('compatible');
+    expect(luaScopeResolver.arityCompatibility({ arity: 1 }, def)).toBe('incompatible');
+    expect(luaScopeResolver.arityCompatibility({ arity: 3 }, def)).toBe('incompatible');
+  });
+
+  it('accepts extra arguments for a vararg definition', () => {
+    const def = {
+      nodeId: 'variadic',
+      filePath: 'x.lua',
+      type: 'Function',
+      qualifiedName: 'variadic',
+      requiredParameterCount: 1,
+      parameterTypes: ['params'],
+    } as const;
+    expect(luaScopeResolver.arityCompatibility({ arity: 1 }, def)).toBe('compatible');
+    expect(luaScopeResolver.arityCompatibility({ arity: 5 }, def)).toBe('compatible');
+    expect(luaScopeResolver.arityCompatibility({ arity: 0 }, def)).toBe('incompatible');
+  });
+});
+
+describe('Lua scope resolver require syntax and positional bindings', () => {
+  it('pairs multi-assignment requires by position without cross-binding', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-multi-require-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'x.lua': 'return {}\n',
+        'y.lua': 'return {}\n',
+        'main.lua': 'local a, b = require("x"), require("y")\n',
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const imports = getRelationships(result, 'IMPORTS').filter((e) =>
+        e.sourceFilePath?.endsWith('main.lua'),
+      );
+      expect(imports.map((e) => e.targetFilePath).sort()).toEqual(['x.lua', 'y.lua']);
+      expect(imports).toHaveLength(2);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('recognizes parenthesis-free short and long-bracket requires', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-require-forms-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'short.lua': 'return {}\n',
+        'long.lua': 'return {}\n',
+        'main.lua': 'local short = require "short"\nrequire [[long]]\n',
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const imports = getRelationships(result, 'IMPORTS').filter((e) =>
+        e.sourceFilePath?.endsWith('main.lua'),
+      );
+      expect(imports.map((e) => e.targetFilePath).sort()).toEqual(['long.lua', 'short.lua']);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('finds requires nested in local initializers without duplicating direct bindings', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-nested-require-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'direct.lua': 'return {}\n',
+        'function.lua': 'return {}\n',
+        'wrapped.lua': 'return {}\n',
+        'main.lua': `local direct = require("direct")
+local loader = function() require("function") end
+local value = wrap(require("wrapped"))
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const imports = getRelationships(result, 'IMPORTS').filter((e) =>
+        e.sourceFilePath?.endsWith('main.lua'),
+      );
+      expect(imports.map((e) => e.targetFilePath).sort()).toEqual([
+        'direct.lua',
+        'function.lua',
+        'wrapped.lua',
+      ]);
+      expect(imports).toHaveLength(3);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
 // ---------------------------------------------------------------------------
 // require("lib.util") + member call util.answer() across files
 // ---------------------------------------------------------------------------
@@ -126,6 +223,32 @@ run()
     expect(getNodesByLabel(result, 'Method')).toContain('answer');
     expect(getNodesByLabel(result, 'Function')).toContain('run');
   });
+
+  it('resolves a local alias of a statically known callable value', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-callable-alias-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'lib/util.lua': `local M = {}
+function M.answer()
+  return 42
+end
+return M
+`,
+        'main.lua': `local util = require("lib.util")
+local answer = util.answer
+answer()
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').some(
+          (edge) => edge.sourceFilePath?.endsWith('main.lua') && edge.target === 'answer',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 describe('Lua scope: bare require import', () => {
@@ -158,6 +281,24 @@ describe('Lua scope: bare require import', () => {
         (e) => e.sourceFilePath?.includes('main.lua') && e.targetFilePath?.includes('util.lua'),
       );
       expect(imports).toHaveLength(1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('leaves computed module names unresolved', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-dynamic-require-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'lib/util.lua': 'return {}\n',
+        'main.lua': 'local name = "lib.util"\nrequire(name)\nrequire("lib." .. "util")\n',
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'IMPORTS').some((edge) =>
+          edge.sourceFilePath?.endsWith('main.lua'),
+        ),
+      ).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -246,7 +387,56 @@ return Dog
         (edge) => edge.source === 'Dog' && edge.target === 'Animal',
       );
       expect(dogExtendsAnimal).toBeDefined();
-      expect(dogExtendsAnimal?.targetFilePath).toContain(path.join('lib', 'a.lua'));
+      expect(dogExtendsAnimal?.targetFilePath?.replaceAll('\\', '/')).toContain('lib/a.lua');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('resolves an aliased imported parent to the returned class', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-heritage-alias-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+return Animal
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base)
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const edge = getRelationships(result, 'EXTENDS').find(
+        (candidate) => candidate.source === 'Dog' && candidate.target === 'Animal',
+      );
+      expect(edge).toBeDefined();
+      expect(edge?.targetFilePath).toContain('base.lua');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('resolves an aliased parent when the imported module defines multiple classes', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-heritage-multi-class-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+local Cat = class("Cat")
+return Animal
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base)
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const edge = getRelationships(result, 'EXTENDS').find(
+        (candidate) => candidate.source === 'Dog' && candidate.target === 'Animal',
+      );
+      expect(edge).toBeDefined();
+      expect(edge?.targetFilePath).toContain('base.lua');
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -276,6 +466,141 @@ return Dog
           (edge) => edge.source === 'Dog' && edge.target === 'Animal',
         ),
       ).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+describe('Lua scope: middleclass method ownership boundaries', () => {
+  it('captures assignment-form methods when the owner is a known class', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-assignment-method-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'dog.lua': `local Dog = class("Dog")
+Dog.bark = function(self)
+  return "woof"
+end
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'HAS_METHOD').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'bark',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not attach a nested function method to a middleclass owner', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-nested-method-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'dog.lua': `local Dog = class("Dog")
+local function factory()
+  function Dog:helper()
+    return true
+  end
+end
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'HAS_METHOD').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'helper',
+        ),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+describe('Lua scope: explicit table exports', () => {
+  it('selects the imported parent from a named table export', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-table-export-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+local Cat = class("Cat")
+return { Animal = Animal, Cat = Cat }
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base.Animal)
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const edge = getRelationships(result, 'EXTENDS').find(
+        (candidate) => candidate.source === 'Dog' && candidate.target === 'Animal',
+      );
+      expect(edge).toBeDefined();
+      expect(edge?.targetFilePath).toContain('base.lua');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not treat a nested function return as a module export', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-nested-export-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+local Cat = class("Cat")
+local function make()
+  return Animal
+end
+return { Cat = Cat }
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base.Animal)
+return Dog
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'EXTENDS').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'Animal',
+        ),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+});
+
+describe('Lua scope: middleclass inherited dispatch', () => {
+  it('resolves a call on a child class to an inherited parent method', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-mro-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+function Animal:speak()
+  return "..."
+end
+return Animal
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base)
+Dog.speak()
+return Dog
+`,
+        'main.lua': 'local Dog = require("dog")\n',
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').some(
+          (edge) => edge.sourceFilePath?.endsWith('dog.lua') && edge.target === 'speak',
+        ),
+      ).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
