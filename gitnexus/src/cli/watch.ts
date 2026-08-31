@@ -413,7 +413,7 @@ export async function watchCommandWithRunnerIdentity(
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
     try {
-      let loop: WatchFileLoop;
+      let loop: WatchFileLoop | undefined;
       let fatalRefreshError: unknown;
       let configControlValid = true;
       let lastSuccessfulRefreshAt: string | undefined;
@@ -476,7 +476,7 @@ export async function watchCommandWithRunnerIdentity(
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
               cliError(formatFatalWatchRefreshFailure(error, paths));
-              void loop.close();
+              void loop?.close();
               stopWatching();
               return;
             }
@@ -493,7 +493,7 @@ export async function watchCommandWithRunnerIdentity(
               `Watcher failed: ${error instanceof Error ? error.message : String(error)}. ` +
                 'Watch mode is stopping.',
             );
-            void loop.close();
+            void loop?.close();
             stopWatching();
           },
         );
@@ -506,6 +506,7 @@ export async function watchCommandWithRunnerIdentity(
       }
 
       await stopped;
+      if (loop === undefined) return;
       await loop.close();
       if (fatalRefreshError !== undefined) process.exitCode = 1;
     } finally {

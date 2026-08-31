@@ -13,6 +13,9 @@ type MockWatcher = EventEmitter & {
 
 let pendingClose: Promise<void> | undefined;
 let releaseClose: (() => void) | undefined;
+const { delayWatcherClose } = vi.hoisted(() => ({
+  delayWatcherClose: { current: false },
+}));
 let lastWatcher: MockWatcher | undefined;
 
 vi.mock('chokidar', () => ({
@@ -23,10 +26,9 @@ vi.mock('chokidar', () => ({
     });
     emitter.add = vi.fn();
     emitter.close = vi.fn(async () => {
-      await pendingClose;
+      if (delayWatcherClose.current) await pendingClose;
     });
     lastWatcher = emitter;
-    queueMicrotask(() => emitter.emit('ready'));
     return emitter;
   },
 }));
@@ -51,13 +53,15 @@ afterEach(async () => {
   pendingClose = undefined;
   releaseClose = undefined;
   lastWatcher = undefined;
+  delayWatcherClose.current = false;
 });
 
 describe('watch loop fatal shutdown', () => {
   it('does not start another refresh while a slow watcher.close is in flight', async () => {
     const repo = await makeRepo();
+    delayWatcherClose.current = true;
     const refreshCalls: string[][] = [];
-    const loop: WatchFileLoop = await startWatchFileLoop(
+    const loopPromise = startWatchFileLoop(
       repo,
       10,
       async (paths) => {
@@ -70,6 +74,11 @@ describe('watch loop fatal shutdown', () => {
         void loop.close();
       },
     );
+    await vi.waitFor(() => {
+      expect(lastWatcher).toBeDefined();
+    });
+    lastWatcher.emit('ready');
+    const loop: WatchFileLoop = await loopPromise;
     loops.push(loop);
 
     expect(refreshCalls).toEqual([[]]);
@@ -86,5 +95,33 @@ describe('watch loop fatal shutdown', () => {
 
     releaseClose?.();
     await loop.close();
+  });
+
+  it('reports a watcher error during startup even if the caller has not assigned loop yet', async () => {
+    const repo = await makeRepo();
+    let loop: WatchFileLoop | undefined;
+    const onWatcherError = vi.fn((error: unknown) => {
+      void loop?.close();
+      expect(error).toBeInstanceOf(Error);
+    });
+
+    const started = startWatchFileLoop(
+      repo,
+      10,
+      async () => {},
+      () => {},
+      onWatcherError,
+    ).then((assigned) => {
+      loop = assigned;
+      return assigned;
+    });
+    await vi.waitFor(() => {
+      expect(lastWatcher).toBeDefined();
+    });
+    lastWatcher.emit('error', new Error('startup watcher failed'));
+
+    await expect(started).rejects.toThrow('startup watcher failed');
+    expect(onWatcherError).toHaveBeenCalledOnce();
+    expect(loop).toBeUndefined();
   });
 });
