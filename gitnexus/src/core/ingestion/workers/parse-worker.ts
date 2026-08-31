@@ -119,7 +119,6 @@ import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
 import { defaultExportNameCollides } from '../languages/typescript/cjs-export-assignment.js';
-import { synthesizeLombokAccessors } from '../languages/java/lombok-synthesizer.js';
 import {
   extractVueScript,
   extractTemplateComponents,
@@ -1579,13 +1578,9 @@ const processFileGroup = (
     }
     const provider = getProvider(language);
 
-    // Lombok synthesis owner map: class_declaration AST node id → graph node
-    // id for the classes THIS file's capture loop materialized. Keyed by AST
-    // node identity (SyntaxNode.id is a stable per-tree integer), never by
-    // simple name — simple names collide across files (the map is per-file but
-    // the capture loop's symbols share `result.symbols` with the whole batch)
-    // and among same-tailed nested classes. Filled in the capture loop below;
-    // consumed by synthesizeLombokAccessors after it (Java only).
+    // Owner map for provider.synthesizeStructureMembers: type-declaration AST
+    // node id → graph node id for classes THIS file's capture loop materialized.
+    // Keyed by in-memory AST identity (never persisted); filled below.
     const classOwnersByNodeId = new Map<number, string>();
 
     // #2687: ONE pass over `matches` yields both suppression sets — the
@@ -3114,15 +3109,19 @@ const processFileGroup = (
       if (springTypes.length > 0) (result.springTypes ??= []).push(...springTypes);
     }
 
-    // Lombok accessor synthesis: generate virtual Method nodes for getter/setter
-    // methods that Lombok generates at compile time (@Data/@Getter/@Setter).
-    // Java only — the synthesizer walks the AST for annotated classes.
-    if (language === SupportedLanguages.Java) {
-      const lombok = synthesizeLombokAccessors(tree, file.path, classOwnersByNodeId);
-      if (lombok.symbols.length > 0) {
-        for (const node of lombok.nodes) result.nodes.push(node as never);
-        for (const sym of lombok.symbols) result.symbols.push(sym as never);
-        for (const rel of lombok.relationships) result.relationships.push(rel as never);
+    // Synthetic structure members with no AST method node (e.g. Lombok
+    // accessors). Language-owned via provider hook — same post-capture site
+    // as extractDecoratorRoutes. Owner map keys are in-memory AST ids only.
+    if (provider.synthesizeStructureMembers) {
+      const synthetic = provider.synthesizeStructureMembers(tree, file.path, classOwnersByNodeId);
+      for (const node of synthetic.nodes) {
+        result.nodes.push(node as ParsedNode);
+      }
+      for (const sym of synthetic.symbols) {
+        result.symbols.push(sym as ParsedSymbol);
+      }
+      for (const rel of synthetic.relationships) {
+        result.relationships.push(rel as ParsedRelationship);
       }
     }
 

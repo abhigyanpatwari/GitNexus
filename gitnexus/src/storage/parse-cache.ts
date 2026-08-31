@@ -672,7 +672,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
 // would skip workers and silently omit the new INJECTS edges. origin/main at
 // allocation is 81.
-const SCHEMA_BUMP = 82;
+// 82 -> 83: Java Lombok @Data/@Getter/@Setter accessor synthesis emits
+// synthetic Method nodes, HAS_METHOD edges, and matching scope captures into
+// ParseWorkerResult / ParsedFile. A warm v82 cache replays pre-Lombok worker
+// output and silently omits those callables. origin/main at allocation is 82.
+const SCHEMA_BUMP = 83;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
