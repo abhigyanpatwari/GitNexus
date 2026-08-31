@@ -89,10 +89,9 @@ import type {
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
-import {
-  resolveOperands,
-  type ModuleConstants,
-} from '../route-extractors/python-const-resolver.js';
+import { resolveOperands } from '../route-extractors/python-const-resolver.js';
+import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
+import { prepareRouteConstantsByProvider } from '../language-provider.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -1273,6 +1272,10 @@ export async function runChunkedParseAndResolve(
     for (const { filePath, constants } of allModuleConstants) {
       repoConstants.set(filePath, constants);
     }
+    // Let each language prepare only its own constants slice before folding.
+    // This is where deferred wildcard bindings can be materialized once per
+    // provider without naming a language in the shared parse phase.
+    prepareRouteConstantsByProvider(repoConstants, getProviderForFile);
     const resolvedRoutes: ExtractedDecoratorRoute[] = [];
     let skipped = 0;
     for (const dr of allDecoratorRoutes) {
