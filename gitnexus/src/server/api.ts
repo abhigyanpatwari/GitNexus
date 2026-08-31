@@ -54,7 +54,8 @@ import {
   persistedEmbeddingCountOrUndefined,
   type PersistedEmbeddingCount,
 } from '../core/embedding-count.js';
-import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
+import { assertString, BadRequestError, createRouteLimiter } from './validation.js';
+import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
 import {
   extractRepoName,
   getCloneDir,
@@ -1334,45 +1335,20 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      // Type-confusion guard (CodeQL js/type-confusion-through-parameter-tampering):
-      // req.query.pattern is `string | string[] | ParsedQs` — without an explicit
-      // type check, the `.length` guard below counts array elements instead of
-      // characters, allowing arbitrarily long patterns through.
-      const rawPattern = req.query.pattern;
-      if (rawPattern === undefined) {
-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
-        return;
-      }
-      const pattern = assertString(rawPattern, 'pattern');
-      if (pattern.length === 0) {
-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
-        return;
-      }
-
-      // Length cap: applies to both literal and regex modes as a defense-in-depth
-      // bound against pathological input.
-      if (pattern.length > 200) {
-        res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
-        return;
-      }
-
-      // Treat user input as a literal substring in all cases to prevent
-      // regex-injection/ReDoS via attacker-controlled regex syntax.
-      const effectivePattern = escapeRegExp(pattern);
-
-      // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
-      let regex: RegExp;
-      try {
-        regex = new RegExp(effectivePattern, 'gim');
-      } catch {
-        res.status(400).json({ error: 'Invalid regex pattern' });
-        return;
-      }
-
-      const parsedLimit = Number(req.query.limit ?? 50);
-      const limit = Number.isFinite(parsedLimit)
-        ? Math.max(1, Math.min(200, Math.trunc(parsedLimit)))
-        : 50;
+      // Pattern parsing (regex construction, fileFilter, case flag, limit
+      // clamping) lives in grep-params.ts so the contract is unit-testable
+      // without this module's native imports. BadRequestError thrown there is
+      // mapped to 400 by statusFromError in the catch below — including the
+      // CodeQL js/type-confusion-through-parameter-tampering guard for
+      // array-form query params. ReDoS caveat: the wall-clock budget below
+      // is checked BETWEEN files only — a single catastrophically
+      // backtracking regex.test() blocks the event loop synchronously and
+      // cannot be interrupted (see grep-params.ts and SECURITY.md for the
+      // accepted-risk rationale; literal=1 restores full immunity).
+      const { regex, fileFilter, limit } = parseGrepQuery(
+        req.query as Record<string, unknown>,
+      );
+      const deadline = Date.now() + GREP_TIME_BUDGET_MS;
 
       const results: { filePath: string; line: number; text: string }[] = [];
       const repoRoot = path.resolve(entry.path);
@@ -1386,10 +1362,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         { readOnly: true },
       );
 
-      // Search files on disk one at a time (constant memory)
+      // Search files on disk one at a time (constant memory); the wall-clock
+      // budget stops the scan between files on large repos and reports
+      // timedOut so callers can distinguish truncation from a full scan.
+      // It is NOT a per-test circuit breaker — see the caveat above.
+      let timedOut = false;
       for (const row of fileRows) {
         if (results.length >= limit) break;
+        if (Date.now() > deadline) {
+          timedOut = true;
+          break;
+        }
         const filePath: string = row.filePath || '';
+        if (fileFilter && !filePath.toLowerCase().includes(fileFilter)) continue;
         const fullPath = path.resolve(repoRoot, filePath);
 
         // Path traversal guard
@@ -1409,11 +1394,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           if (regex.test(lines[i])) {
             results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
           }
-          regex.lastIndex = 0;
         }
       }
 
-      res.json({ results });
+      res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
     } catch (err: any) {
       res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
     }

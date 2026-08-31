@@ -671,7 +671,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const backend = {
           executeQuery,
           search: (query: string, opts?: any) => backendSearch(query, { ...opts, repo }),
-          grep: (pattern: string, limit?: number) => backendGrep(pattern, repo, limit),
+          grep: (
+            pattern: string,
+            limit?: number,
+            opts?: { fileFilter?: string; caseSensitive?: boolean },
+          ) => backendGrep(pattern, repo, limit, opts),
           readFile: (filePath: string) =>
             backendReadFile(filePath, { repo }).then((r) => r.content),
         };

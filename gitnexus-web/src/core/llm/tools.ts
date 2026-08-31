@@ -44,7 +44,11 @@ export interface GraphRAGBackend {
     query: string,
     opts?: { limit?: number; mode?: 'hybrid' | 'semantic' | 'bm25'; enrich?: boolean },
   ) => Promise<EnrichedSearchResult[]>;
-  grep: (pattern: string, limit?: number) => Promise<GrepResult[]>;
+  grep: (
+    pattern: string,
+    limit?: number,
+    opts?: { fileFilter?: string; caseSensitive?: boolean },
+  ) => Promise<GrepResult[]>;
   readFile: (filePath: string) => Promise<string>;
 }
 
@@ -375,11 +379,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         }
 
         const limit = maxResults ?? 100;
-        const fullPattern = fileFilter
-          ? `(?=.*${fileFilter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}).*${pattern}`
-          : pattern;
-
-        const results = await backendGrep(fullPattern, limit);
+        const results = await backendGrep(pattern, limit, { fileFilter, caseSensitive });
 
         if (results.length === 0) {
           return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}`;
@@ -396,16 +396,18 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
     {
       name: 'grep',
       description:
-        'Search for exact text patterns across all files using regex. Use for finding specific strings, error messages, TODOs, variable names, etc.',
+        'Search file contents with a regular expression (server executes it as a real regex — alternation like "sign|Sign" works). Matches are case-insensitive unless caseSensitive is set. fileFilter keeps only files whose path contains the substring. Each call caps at maxResults matches (default 100) and the server stops after a few seconds, so prefer precise patterns over catch-alls.',
       schema: z.object({
         pattern: z
           .string()
-          .describe('Regex pattern to search for (e.g., "TODO", "console\\.log", "API_KEY")'),
+          .describe(
+            'Regex pattern to search for (e.g., "TODO|FIXME", "console\\.log", "signOrder")',
+          ),
         fileFilter: z
           .string()
           .optional()
           .nullable()
-          .describe('Only search files containing this string (e.g., ".ts", "src/api")'),
+          .describe('Only search files whose path contains this substring (e.g., ".ts", "src/api", "Controller.java")'),
         caseSensitive: z
           .boolean()
           .optional()

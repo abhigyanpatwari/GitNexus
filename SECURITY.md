@@ -64,6 +64,10 @@ The `render.yaml` Blueprint (see the README's **Deploy to Render**) puts `gitnex
 
 Do not hand the URL out as a public demo. A token holder has read access to everything the deploy has indexed.
 
+### `/api/grep` regex semantics and residual ReDoS exposure
+
+`GET /api/grep` executes caller-supplied patterns as real regular expressions (with an optional path-substring `fileFilter` and `caseSensitive` flag) to honor the web chat's grep tool contract; `literal=1` restores the older escaped-substring mode that was accidentally ReDoS-immune. Mitigations: a 200-character pattern cap, line-by-line matching, a max-200 result cap, and a 5-second wall-clock budget enforced **between files** (a timed-out scan returns partial results with `timedOut: true`). **What these do not cover:** a single catastrophically backtracking pattern (e.g. `(a+)+$`) blocks the Node event loop synchronously inside one `regex.test()` call — the budget cannot interrupt it, and during that window the whole server is unresponsive (measured: a 35-character line exceeds 120s). Exposure is accepted because loopback-bound local serves see only trusted input, hosted deploys gate the route behind the edge token, and agent-generated patterns are length-capped; a proper worker-thread sandbox with `terminate()` (or an optional `re2` dependency) is the known follow-up. If you expose `serve` beyond loopback to parties you do not fully trust, prefer keeping literal mode for untrusted callers.
+
 ## Automated Scans Running in CI
 
 This repository runs the following scans automatically. Findings appear under the repository's **Security → Code scanning** tab.
