@@ -91,7 +91,14 @@ async function readPayloadFile(filePath: string, label: string): Promise<JsonObj
         `Spring Actuator ${label} payload exceeds the ${MAX_ACTUATOR_PAYLOAD_BYTES / 1024 / 1024} MiB limit.`,
       );
     }
-    raw = await handle.readFile('utf8');
+    const buffer = Buffer.alloc(MAX_ACTUATOR_PAYLOAD_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MAX_ACTUATOR_PAYLOAD_BYTES) {
+      throw new SpringActuatorImportError(
+        `Spring Actuator ${label} payload exceeds the ${MAX_ACTUATOR_PAYLOAD_BYTES / 1024 / 1024} MiB limit.`,
+      );
+    }
+    raw = buffer.subarray(0, bytesRead).toString('utf8');
   } catch (err) {
     if (err instanceof SpringActuatorImportError) throw err;
     throw new SpringActuatorImportError(`Spring Actuator ${label} input could not be read.`);
@@ -444,8 +451,10 @@ function predicateParts(predicate: string | undefined): {
   readonly patterns: string[];
 } {
   if (predicate === undefined) return { methods: [], patterns: [] };
+  const methodListEnd = predicate.indexOf('[');
+  const methodRegion = methodListEnd === -1 ? predicate : predicate.slice(0, methodListEnd);
   const methods = [
-    ...predicate.matchAll(/\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\b/g),
+    ...methodRegion.matchAll(/\b(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)\b/g),
   ]
     .map((match) => match[1])
     .filter((method): method is string => method !== undefined);

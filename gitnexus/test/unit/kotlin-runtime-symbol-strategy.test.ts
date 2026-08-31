@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
-import { kotlinRuntimeSymbolStrategy } from '../../src/core/ingestion/languages/kotlin/spring-actuator.js';
+import {
+  extractKotlinRuntimeSymbolProperties,
+  kotlinRuntimeSymbolStrategy,
+} from '../../src/core/ingestion/languages/kotlin/spring-actuator.js';
+import { getKotlinParser } from '../../src/core/ingestion/languages/kotlin/query.js';
+import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 
 function node(label: NodeLabel, properties: GraphNode['properties']): GraphNode {
   return { id: `n:${String(properties.name)}`, label, properties };
@@ -96,5 +101,64 @@ describe('kotlinRuntimeSymbolStrategy', () => {
         undefined,
       ),
     ).toEqual(['com.example.CustomHandlers']);
+  });
+
+  it('assigns file-facade owners to top-level properties and honors aliased JvmName', () => {
+    const source = `package com.example
+import kotlin.jvm.JvmName as Rename
+
+val facadeStatus: String get() = "ok"
+
+@get:Rename("fetchName")
+val renamed: String get() = "ok"
+`;
+    const root = getKotlinParser().parse(source).rootNode as unknown as SyntaxNode;
+    const properties: SyntaxNode[] = [];
+    const visit = (node: SyntaxNode): void => {
+      if (node.type === 'property_declaration') properties.push(node);
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child) visit(child);
+      }
+    };
+    visit(root);
+    expect(properties).toHaveLength(2);
+    const facadeNode = properties[0];
+    const renamedNode = properties[1];
+    if (facadeNode === undefined || renamedNode === undefined) {
+      throw new Error('expected two top-level property declarations');
+    }
+    const imports = [
+      {
+        kind: 'alias' as const,
+        localName: 'Rename',
+        importedName: 'JvmName',
+        alias: 'Rename',
+        targetRaw: 'kotlin.jvm',
+      },
+    ];
+    expect(
+      extractKotlinRuntimeSymbolProperties({
+        nodeLabel: 'Property',
+        nodeName: 'facadeStatus',
+        filePath: 'Handlers.kt',
+        definitionNode: facadeNode,
+        parsedImports: imports,
+        isExported: true,
+      }),
+    ).toMatchObject({ runtimeOwnerAliases: ['com.example.HandlersKt'] });
+    expect(
+      extractKotlinRuntimeSymbolProperties({
+        nodeLabel: 'Property',
+        nodeName: 'renamed',
+        filePath: 'Handlers.kt',
+        definitionNode: renamedNode,
+        parsedImports: imports,
+        isExported: true,
+      }),
+    ).toMatchObject({
+      runtimeCallableAliases: ['fetchName'],
+      runtimeOwnerAliases: ['com.example.HandlersKt'],
+    });
   });
 });

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { GraphNode } from 'gitnexus-shared';
+import type { GraphNode, ParsedImport } from 'gitnexus-shared';
 import type {
   DefinitionPropertiesContext,
   RuntimeCallableIdentity,
@@ -35,13 +35,45 @@ function standardFacadeName(filePath: string): string {
   return `${stem.charAt(0).toUpperCase()}${stem.slice(1)}Kt`;
 }
 
-function annotationJvmName(source: string, target = ''): string | undefined {
-  const escapedTarget = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const prefix = target.length === 0 ? '' : `${escapedTarget}:`;
-  return new RegExp(`@${prefix}JvmName\\s*\\(\\s*["']([^"']+)["']\\s*\\)`).exec(source)?.[1];
+function jvmNameIdentifiers(
+  imports: readonly ParsedImport[],
+  allowUnqualified: boolean,
+): readonly string[] {
+  const names = new Set<string>(allowUnqualified ? ['JvmName'] : []);
+  for (const parsedImport of imports) {
+    if (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') continue;
+    if (parsedImport.importedName !== 'JvmName') continue;
+    const target = parsedImport.targetRaw.replace(/\\/g, '/');
+    if (target === 'kotlin.jvm' || target === 'kotlin.jvm.JvmName') {
+      names.add(parsedImport.localName);
+    }
+  }
+  return [...names];
 }
 
-function fileFacadeMetadata(root: SyntaxNode): {
+function annotationJvmName(
+  source: string,
+  target = '',
+  imports: readonly ParsedImport[] = [],
+  allowUnqualified = true,
+): string | undefined {
+  const names = jvmNameIdentifiers(imports, allowUnqualified);
+  if (names.length === 0) return undefined;
+  const escapedTarget = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const prefix = target.length === 0 ? '' : `${escapedTarget}:`;
+  const namePattern = [...names]
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|');
+  return new RegExp(`@${prefix}(?:${namePattern})\\s*\\(\\s*["']([^"']+)["']\\s*\\)`).exec(
+    source,
+  )?.[1];
+}
+
+function fileFacadeMetadata(
+  root: SyntaxNode,
+  imports: readonly ParsedImport[],
+  allowUnqualified: boolean,
+): {
   readonly packageName: string;
   readonly customFacade: string | undefined;
 } {
@@ -49,7 +81,7 @@ function fileFacadeMetadata(root: SyntaxNode): {
   if (cached !== undefined) return cached;
   const metadata = {
     packageName: packageName(root),
-    customFacade: annotationJvmName(root.text, 'file'),
+    customFacade: annotationJvmName(root.text, 'file', imports, allowUnqualified),
   };
   fileFacadeMetadataCache.set(root, metadata);
   return metadata;
@@ -76,6 +108,8 @@ export function extractKotlinRuntimeSymbolProperties(
 ): Readonly<Record<string, unknown>> | undefined {
   const properties: Record<string, unknown> = {};
   const source = context.definitionNode.text;
+  const root = rootNode(context.definitionNode);
+  const allowUnqualifiedJvmName = !/\bannotation\s+class\s+JvmName\b/.test(root.text);
 
   if (
     (context.nodeLabel === 'Function' || context.nodeLabel === 'Method') &&
@@ -84,21 +118,36 @@ export function extractKotlinRuntimeSymbolProperties(
     if (/\bsuspend\b/.test(source.slice(0, source.indexOf('fun') + 3))) {
       properties[KOTLIN_SUSPEND] = true;
     }
-    const callableJvmName = annotationJvmName(source);
+    const callableJvmName = annotationJvmName(
+      source,
+      '',
+      context.parsedImports,
+      allowUnqualifiedJvmName,
+    );
     if (callableJvmName !== undefined) {
       properties[RUNTIME_CALLABLE_ALIASES] = [callableJvmName];
     }
     if (!hasEnclosingType(context.definitionNode)) {
-      const root = rootNode(context.definitionNode);
-      const facade = fileFacadeMetadata(root);
+      const facade = fileFacadeMetadata(root, context.parsedImports, allowUnqualifiedJvmName);
       properties[RUNTIME_OWNER_ALIASES] = [
         qualify(facade.packageName, facade.customFacade ?? standardFacadeName(context.filePath)),
       ];
     }
   } else if (context.nodeLabel === 'Property') {
-    const getterJvmName = annotationJvmName(source, 'get');
+    const getterJvmName = annotationJvmName(
+      source,
+      'get',
+      context.parsedImports,
+      allowUnqualifiedJvmName,
+    );
     if (getterJvmName !== undefined) {
       properties[RUNTIME_CALLABLE_ALIASES] = [getterJvmName];
+    }
+    if (!hasEnclosingType(context.definitionNode)) {
+      const facade = fileFacadeMetadata(root, context.parsedImports, allowUnqualifiedJvmName);
+      properties[RUNTIME_OWNER_ALIASES] = [
+        qualify(facade.packageName, facade.customFacade ?? standardFacadeName(context.filePath)),
+      ];
     }
   }
 

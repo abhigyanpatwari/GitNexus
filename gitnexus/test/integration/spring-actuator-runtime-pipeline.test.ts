@@ -118,6 +118,16 @@ class BillingProperties {
                   },
                 },
               },
+              {
+                predicate: '{ [/GET]}',
+                details: {
+                  handlerMethod: {
+                    className: 'com.vendor.RuntimeController',
+                    name: 'create',
+                    descriptor: '()V',
+                  },
+                },
+              },
             ],
           },
         },
@@ -238,6 +248,8 @@ describe('Spring Boot Actuator runtime enrichment (#2418)', () => {
       method: 'POST',
       runtimeConfirmed: true,
     });
+    expect(nodeNamed('/GET', 'Route')?.properties.method).toBeUndefined();
+    expect(nodeNamed('/GET', 'Route')?.properties.runtimeConfirmed).toBe(true);
     const owner = nodeNamed('OrderController', 'Class');
     const ownerMethodId = [...result.graph.iterRelationshipsByType('HAS_METHOD')].find(
       (edge) =>
