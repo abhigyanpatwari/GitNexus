@@ -39,12 +39,15 @@ import {
   setJavaSpringConfigConsumerFacts,
   setJavaSpringConditionalFacts,
   setJavaSpringDiFacts,
+  setJavaSpringDynamicLookupFacts,
   setJavaSpringNonHttpHandlerFacts,
 } from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 import { captureJavaSpringDiClassFact, type JavaSpringDiClassFact } from './spring-di.js';
+import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
+import { captureJavaSpringDynamicLookupFact } from './spring-dynamic-lookup.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { captureJavaSpringAopFacts, type JavaSpringAopFact } from './spring-aop.js';
 import {
@@ -146,6 +149,8 @@ export function emitJavaScopeCaptures(
   const springDiFacts: JavaSpringDiClassFact[] = [];
   const springNonHttpHandlerFacts: JavaSpringNonHttpHandlerFact[] = [];
   const springDiClassNodeIds = new Set<number>();
+  const springDynamicLookupFacts: SpringDynamicLookupFact[] = [];
+  const springDynamicLookupNodeIds = new Set<number>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -164,6 +169,13 @@ export function emitJavaScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const dynamicLookupNode = nodeIfType(nodeMap['@reference.call.member'], 'method_invocation');
+    if (dynamicLookupNode !== null && !springDynamicLookupNodeIds.has(dynamicLookupNode.id)) {
+      springDynamicLookupNodeIds.add(dynamicLookupNode.id);
+      const fact = captureJavaSpringDynamicLookupFact(dynamicLookupNode, filePath);
+      if (fact !== null) springDynamicLookupFacts.push(fact);
+    }
 
     const springAopTypeNode = [
       nodeIfType(nodeMap['@scope.class'], 'class_declaration'),
@@ -401,6 +413,7 @@ export function emitJavaScopeCaptures(
   setJavaSpringAopFacts(filePath, springAopFacts);
   setJavaSpringConditionalFacts(filePath, springConditionalFacts);
   setJavaSpringDiFacts(filePath, springDiFacts);
+  setJavaSpringDynamicLookupFacts(filePath, springDynamicLookupFacts);
   setJavaSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
 
   return [

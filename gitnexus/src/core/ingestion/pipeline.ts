@@ -46,6 +46,7 @@ import {
   PhaseRegistry,
   type ScopeResolutionOutput,
   type PipelinePhase,
+  type PipelineContext,
   type CommunitiesOutput,
   type ProcessesOutput,
 } from './pipeline-phases/index.js';
@@ -58,6 +59,12 @@ export interface PipelineOptions {
    * to retain those nodes under `skipGraphPhases`.
    */
   skipGraphPhases?: boolean;
+  /**
+   * Skip only Leiden community detection and process/flow extraction (#3016).
+   * MRO/DI still run. Used on warm incremental analyze so persisted
+   * Community/Process rows can be kept instead of wipe+rewrite.
+   */
+  skipDerivedGraphPhases?: boolean;
   /** Per-advice Spring AOP candidate inspection cap. `0` disables this cap. */
   springAopMaxCandidateInspectionsPerAdvice?: number;
   /** Aggregate Spring AOP candidate inspection cap for one analysis. `0` disables this cap. */
@@ -310,8 +317,12 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(springAopInheritancePhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(communitiesPhase, {
+        enabledWhen: (o) => !o.skipGraphPhases && o.skipDerivedGraphPhases !== true,
+      })
+      .register(processesPhase, {
+        enabledWhen: (o) => !o.skipGraphPhases && o.skipDerivedGraphPhases !== true,
+      })
       // Normalize a missing options object once here so phase predicates above
       // take a required PipelineOptions and need no `?.` guard (#2080 review S1).
       .build(options ?? {})
@@ -351,18 +362,19 @@ export const runPipelineFromRepo = async (
   }
 
   const phases = buildPhaseList(options);
+  const ctx: PipelineContext = {
+    repoPath,
+    graph: graphEmitSink ?? graph,
+    onProgress,
+    options,
+    pipelineStart,
+    graphEmit: graphEmitSink,
+  };
 
   let graphEmitManifest: GraphEmitManifest | undefined;
   let results;
   try {
-    results = await runPipeline(phases, {
-      repoPath,
-      graph: graphEmitSink ?? graph,
-      onProgress,
-      options,
-      pipelineStart,
-      graphEmit: graphEmitSink,
-    });
+    results = await runPipeline(phases, ctx);
     graphEmitManifest = graphEmitSink?.finalize();
   } finally {
     // Release per-pair fds when the pipeline threw before finalize ran.
@@ -412,7 +424,7 @@ export const runPipelineFromRepo = async (
     },
   });
 
-  return {
+  const result: PipelineResult = {
     // The RAW graph, deliberately — NOT `graphEmitSink`. Phases above received
     // the sink so their reads are complete, but `loadGraphToLbug` feeds this to
     // `streamAllCSVsToDisk`, and the sink's complete iterator would then emit
@@ -434,4 +446,39 @@ export const runPipelineFromRepo = async (
     pdgEmitManifest,
     propertyInference,
   };
+
+  // #3016: hand back a way to run the derived phases `skipDerivedGraphPhases`
+  // held back. Which phases those are is answered by re-asking the registry
+  // with only that flag cleared — the one form of the question that stays
+  // correct when a different predicate (`skipGraphPhases`) also disables them,
+  // since then they are absent for a reason a deferred run cannot fix and the
+  // filter yields nothing. The sink guard mirrors the `graph` note above: a
+  // streaming run is a full rebuild, which never sets the skip flag, so an
+  // active sink here means the two got combined by mistake — and deferred
+  // phases writing into a finalized sink would emit past its manifest.
+  const deferredDerivedPhases =
+    options?.skipDerivedGraphPhases === true && graphEmitSink === undefined
+      ? buildPhaseList({ ...options, skipDerivedGraphPhases: false }).filter(
+          (p) => (p.name === 'communities' || p.name === 'processes') && !results.has(p.name),
+        )
+      : [];
+
+  if (deferredDerivedPhases.length > 0) {
+    result.runDeferredDerivedPhases = async () => {
+      const derived = await runPipeline(deferredDerivedPhases, ctx, results);
+      // Presence-checked for the same reason as the block above: a phase the
+      // registry filtered out is absent, and `getPhaseOutput` throws on absent.
+      if (derived.has('communities')) {
+        result.communityResult = getPhaseOutput<CommunitiesOutput>(
+          derived,
+          'communities',
+        ).communityResult;
+      }
+      if (derived.has('processes')) {
+        result.processResult = getPhaseOutput<ProcessesOutput>(derived, 'processes').processResult;
+      }
+    };
+  }
+
+  return result;
 };
