@@ -38,6 +38,7 @@ import {
   javaRecordMethodExtractor,
   shouldSkipJavaRecordComponentDefinition,
 } from './java/record-components.js';
+import { synthesizeLombokAccessors } from './java/lombok-synthesizer.js';
 import {
   emitJavaScopeCaptures,
   interpretJavaImport,
@@ -221,6 +222,8 @@ export const javaProvider = defineLanguage({
   // ── Route extraction ──
   extractDecoratorRoutes: extractSpringRoutes,
   extractRouteInheritanceTypes: extractSpringTypes,
+
+  synthesizeStructureMembers: synthesizeLombokAccessors,
 
   // ── #2980: constant harvest + qualified-ref fold for non-literal mapping
   // paths (`@PostMapping(ApiPaths.SAVE_V1)`) — kept behind provider hooks so

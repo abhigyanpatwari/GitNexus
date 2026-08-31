@@ -1775,6 +1775,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.is-synthetic',
   '@import.name',
   '@import.source',
   '@import.alias',
