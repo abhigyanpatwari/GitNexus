@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import { watch, type FSWatcher } from 'chokidar';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
 import {
+  StreamedIncrementalWritebackError,
   analyzeFailureMayHaveMutatedLiveIndex,
   runFullAnalysis,
   type AnalyzeOptions as CoreAnalyzeOptions,
@@ -235,8 +236,21 @@ export function shouldStopAfterWatchRefreshFailure(
   return (
     paths.length > 0 &&
     !(error instanceof WatchControlReloadError) &&
-    analyzeFailureMayHaveMutatedLiveIndex(error)
+    (error instanceof StreamedIncrementalWritebackError ||
+      analyzeFailureMayHaveMutatedLiveIndex(error))
   );
+}
+
+export function formatFatalWatchRefreshFailure(
+  error: unknown,
+  paths: readonly string[],
+): string {
+  const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
+  const reason =
+    error instanceof StreamedIncrementalWritebackError
+      ? 'Watch mode is stopping; the live index was not changed.'
+      : 'Watch mode is stopping because the live index may have been updated in place.';
+  return `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ${reason}`;
 }
 
 /** Start the real filesystem watcher with bounded, serialized refreshes. */
@@ -456,10 +470,7 @@ export async function watchCommandWithRunnerIdentity(
             const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
-              cliError(
-                `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-                  'Watch mode is stopping because the live index may have been updated in place.',
-              );
+              cliError(formatFatalWatchRefreshFailure(error, paths));
               stopWatching();
               return;
             }
