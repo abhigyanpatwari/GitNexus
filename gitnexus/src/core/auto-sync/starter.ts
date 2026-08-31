@@ -361,9 +361,6 @@ export async function readAutoSyncWatchStatus(
   }
   if (pid) {
     const stored = await readStatusFile(paths.statusPath);
-    if (stored?.state === 'error') {
-      return { ...stored, pid, updatedAt: new Date().toISOString() };
-    }
     const owner = await readVerifiedWatchOwner(paths, pid, resolvedDeps);
     if (owner.ok === false) {
       return {
@@ -371,6 +368,14 @@ export async function readAutoSyncWatchStatus(
         state: 'error',
         pid,
         message: owner.reason,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    if (stored?.state === 'error') {
+      return {
+        ...stored,
+        pid,
+        ownerId: owner.owner.ownerId,
         updatedAt: new Date().toISOString(),
       };
     }

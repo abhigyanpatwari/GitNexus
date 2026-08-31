@@ -1648,6 +1648,38 @@ describe('auto-sync starter', () => {
     }
   });
 
+  it('does not trust a stored error status for an unverified live pid', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));
+    const paths = getAutoSyncWatchPaths(tempDir);
+    try {
+      const ownerId = await writeWatchOwner(paths, 12345);
+      await fs.writeFile(
+        paths.statusPath,
+        `${JSON.stringify({
+          state: 'error',
+          pid: 12345,
+          ownerId,
+          message: 'stale stored failure',
+          updatedAt: '2026-06-30T00:00:00.000Z',
+        })}\n`,
+      );
+
+      await expect(
+        readAutoSyncWatchStatus(paths, {
+          isProcessAlive: vi.fn(() => true),
+          readProcessCommand: vi.fn(() => 'node unrelated-service.js'),
+          readProcessStartTime: vi.fn(() => verifiedProcessStartTime),
+        }),
+      ).resolves.toMatchObject({
+        state: 'error',
+        pid: 12345,
+        message: expect.stringContaining('not a GitNexus watch process'),
+      });
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('stops a watch only when its own owner-fenced request is polled', async () => {
     const previousHome = process.env.GITNEXUS_HOME;
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-auto-sync-watch-'));

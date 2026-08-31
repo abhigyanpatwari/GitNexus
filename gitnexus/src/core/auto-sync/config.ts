@@ -330,15 +330,19 @@ export function validateAutoSyncBranchName(branch: string): void {
     throw new Error('must not contain whitespace or control characters');
   if (/[~^:?*[\\]/.test(branch)) throw new Error('contains characters not allowed in a git ref');
   if (branch.startsWith('-')) throw new Error('must not start with "-"');
+  if (branch.startsWith('/')) throw new Error('must not start with "/"');
   if (branch.includes('..')) throw new Error('must not contain ".."');
   if (branch.includes('`')) throw new Error('must not contain backticks');
   if (branch.endsWith('/') || branch.endsWith('.')) throw new Error('must not end with "/" or "."');
   if (branch.includes('//')) throw new Error('must not contain consecutive slashes');
   if (branch.includes('@{')) throw new Error('must not contain "@{"');
   if (
-    branch.split('/').some((component) => component.startsWith('.') || component.endsWith('.lock'))
+    branch.split('/').some(
+      (component) =>
+        component.startsWith('.') || component.endsWith('.') || component.endsWith('.lock'),
+    )
   )
-    throw new Error('must not contain hidden or .lock path components');
+    throw new Error('must not contain hidden, trailing-dot, or .lock path components');
 }
 
 export function parseDurationMs(value: unknown): number {

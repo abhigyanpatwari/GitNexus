@@ -459,7 +459,8 @@ describe('auto-sync', () => {
 
   it('rejects unsafe auto-sync branch names', () => {
     expect(() => validateAutoSyncBranchName('feature/good-branch')).not.toThrow();
-    expect(() => validateAutoSyncBranchName('foo./bar')).not.toThrow();
+    expect(() => validateAutoSyncBranchName('foo./bar')).toThrow('trailing-dot');
+    expect(() => validateAutoSyncBranchName('/main')).toThrow('must not start');
     expect(() => validateAutoSyncBranchName('-upload-pack=evil')).toThrow('must not start');
     expect(() => validateAutoSyncBranchName('feature bad')).toThrow('whitespace');
     expect(() => validateAutoSyncBranchName('feature..bad')).toThrow('must not contain ".."');
@@ -469,7 +470,7 @@ describe('auto-sync', () => {
     expect(() => validateAutoSyncBranchName('feature//branch')).toThrow('consecutive');
     expect(() => validateAutoSyncBranchName('feature@{x')).toThrow('must not contain "@{"');
     expect(() => validateAutoSyncBranchName('.hidden')).toThrow('hidden');
-    expect(() => validateAutoSyncBranchName('foo/bar.lock')).toThrow('hidden or .lock');
+    expect(() => validateAutoSyncBranchName('foo/bar.lock')).toThrow('.lock');
   });
 
   it('extracts safe repository names from remote URLs', () => {
