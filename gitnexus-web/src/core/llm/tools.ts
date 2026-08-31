@@ -14,7 +14,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
-import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
+import type { EnrichedSearchResult, GrepResponse } from '../../services/backend-client';
 
 /**
  * Tool names registered by createGraphRAGTools — kept in sync with each tool's `name`
@@ -48,7 +48,7 @@ export interface GraphRAGBackend {
     pattern: string,
     limit?: number,
     opts?: { fileFilter?: string; caseSensitive?: boolean },
-  ) => Promise<GrepResult[]>;
+  ) => Promise<GrepResponse>;
   readFile: (filePath: string) => Promise<string>;
 }
 
@@ -379,16 +379,22 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         }
 
         const limit = maxResults ?? 100;
-        const results = await backendGrep(pattern, limit, { fileFilter, caseSensitive });
+        const { results, timedOut } = await backendGrep(pattern, limit, {
+          fileFilter: fileFilter ?? undefined,
+          caseSensitive,
+        });
+        const timeoutMsg = timedOut
+          ? '\n\n(Scan timed out after a few seconds — results may be incomplete)'
+          : '';
 
         if (results.length === 0) {
-          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}`;
+          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}${timeoutMsg}`;
         }
 
         const formatted = results.map((r) => `${r.filePath}:${r.line}: ${r.text}`).join('\n');
         const truncatedMsg = results.length >= limit ? `\n\n(Showing first ${limit} results)` : '';
 
-        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}`;
+        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}${timeoutMsg}`;
       } catch (error) {
         return `Grep error: ${error instanceof Error ? error.message : String(error)}`;
       }
@@ -396,7 +402,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
     {
       name: 'grep',
       description:
-        'Search file contents with a regular expression (server executes it as a real regex — alternation like "sign|Sign" works). Matches are case-insensitive unless caseSensitive is set. fileFilter keeps only files whose path contains the substring. Each call caps at maxResults matches (default 100) and the server stops after a few seconds, so prefer precise patterns over catch-alls.',
+        'Search file contents with a regular expression (server executes it as a real regex — alternation like "sign|Sign" works). Matches are case-insensitive unless caseSensitive is set. fileFilter keeps only files whose path contains the substring. Each call caps at maxResults matches (default 100) and the server stops after a few seconds (the tool will say so if the scan was incomplete), so prefer precise patterns over catch-alls.',
       schema: z.object({
         pattern: z
           .string()
@@ -1223,7 +1229,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           const targetFileName = (targetFilePath || target).split('/').pop() || target;
           const baseName = targetFileName.replace(/\.[^/.]+$/, '');
           try {
-            const hints = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
+            const { results: hints } = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
             const filtered = hints.filter((h) => h.filePath !== targetFilePath);
 
             if (filtered.length > 0) {

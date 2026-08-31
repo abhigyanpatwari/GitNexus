@@ -43,7 +43,7 @@ const FORBIDDEN_TOOL_NAMES = [
 const stubBackend: GraphRAGBackend = {
   executeQuery: async () => [],
   search: async () => [],
-  grep: async () => [],
+  grep: async () => ({ results: [] }),
   readFile: async () => '',
 };
 

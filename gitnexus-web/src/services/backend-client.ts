@@ -64,6 +64,12 @@ export interface GrepResult {
   text: string;
 }
 
+/** Full `/api/grep` payload — `timedOut` means the 5s budget cut the scan short. */
+export interface GrepResponse {
+  results: GrepResult[];
+  timedOut?: boolean;
+}
+
 export interface JobProgress {
   phase: string;
   percent: number;
@@ -883,7 +889,7 @@ export const grep = async (
   repo?: string,
   limit?: number,
   opts?: GrepOptions,
-): Promise<GrepResult[]> => {
+): Promise<GrepResponse> => {
   const params = [
     `pattern=${encodeURIComponent(pattern)}`,
     repoParam(repo),
@@ -895,8 +901,11 @@ export const grep = async (
     .join('&');
   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
   await assertOk(response);
-  const body = await response.json();
-  return (body.results ?? []) as GrepResult[];
+  const body = (await response.json()) as { results?: GrepResult[]; timedOut?: unknown };
+  return {
+    results: (body.results ?? []) as GrepResult[],
+    ...(body.timedOut === true ? { timedOut: true as const } : {}),
+  };
 };
 
 /** Result from reading a file, optionally with line range. */

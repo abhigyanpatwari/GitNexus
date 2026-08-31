@@ -1392,10 +1392,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const lines = content.split('\n');
         for (let i = 0; i < lines.length; i++) {
           if (results.length >= limit) break;
+          if (Date.now() > deadline) {
+            timedOut = true;
+            break;
+          }
           if (regex.test(lines[i])) {
             results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
           }
         }
+        if (timedOut) break;
       }
 
       res.json({ results, ...(timedOut ? { timedOut: true } : {}) });

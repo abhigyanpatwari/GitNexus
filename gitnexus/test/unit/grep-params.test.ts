@@ -155,6 +155,7 @@ describe('/api/grep handler wiring (source-level, api-readonly-wiring.test.ts st
     expect(section).toMatch(/Date\.now\(\) > deadline/);
     expect(section).toMatch(/filePath\.toLowerCase\(\)\.includes\(fileFilter\)/);
     expect(section).toContain('timedOut: true');
+    expect(section).toContain('if (timedOut) break');
     expect(section).toContain('readOnly: true'); // unchanged read-only DB open
   });
 });
