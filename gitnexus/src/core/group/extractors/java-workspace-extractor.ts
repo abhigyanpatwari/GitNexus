@@ -110,6 +110,11 @@ function catalogAccessors(alias: string): string[] {
   return [...new Set([alias, dotted, camel])];
 }
 
+function projectAccessorToArtifactId(accessor: string): string {
+  const last = accessor.split('.').pop() ?? accessor;
+  return last.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`).replace(/^-/, '');
+}
+
 function moduleToGa(module: string): string | undefined {
   const parts = module.split(':');
   return parts.length >= 2 ? `${parts[0]}:${parts[1]}` : undefined;
@@ -195,7 +200,7 @@ const GRADLE_GROUP_PATTERNS = [
 ];
 
 const GRADLE_COORD_CONFIGS =
-  'implementation|api|compileOnly|runtimeOnly|testImplementation|testApi|testCompileOnly|compile';
+  'implementation|api|compileOnly|runtimeOnly|testImplementation|testApi|testCompileOnly|compile|kapt|ksp|commonMainImplementation|commonMainApi';
 
 function parseGradleGroup(content: string): string | undefined {
   for (const pattern of GRADLE_GROUP_PATTERNS) {
@@ -285,17 +290,17 @@ function parseGradle(
   };
 
   const namedPattern = new RegExp(
-    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*group\\s*=\\s*['"]([^'"]+)['"]\\s*,\\s*name\\s*=\\s*['"]([^'"]+)['"]|\\(?\\s*group:\\s*['"]([^'"]+)['"]\\s*,\\s*name:\\s*['"]([^'"]+)['"])`,
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?(?:group\\s*=\\s*['"]([^'"]+)['"]\\s*,\\s*name\\s*=\\s*['"]([^'"]+)['"]|name\\s*=\\s*['"]([^'"]+)['"]\\s*,\\s*group\\s*=\\s*['"]([^'"]+)['"]|group:\\s*['"]([^'"]+)['"]\\s*,\\s*name:\\s*['"]([^'"]+)['"])`,
     'g',
   );
   for (const match of content.matchAll(namedPattern)) {
-    const group = match[1] ?? match[3];
-    const name = match[2] ?? match[4];
+    const group = match[1] ?? match[4] ?? match[5];
+    const name = match[2] ?? match[3] ?? match[6];
     if (group && name) deps.push(`${group}:${name}`);
   }
 
   const catalogLibPattern = new RegExp(
-    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?libs(?:\\.libraries)?\\.(?!bundles\\.|plugins\\.)([A-Za-z0-9_.]+)`,
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?libs(?:\\.libraries)?\\.(?!bundles\\.|plugins\\.)([A-Za-z0-9]+(?:\\.[A-Za-z0-9]+)*)(?:\\.get\\(\\)|\\.asProvider\\(\\))?`,
     'g',
   );
   for (const match of content.matchAll(catalogLibPattern)) {
@@ -303,7 +308,7 @@ function parseGradle(
   }
 
   const catalogBundlePattern = new RegExp(
-    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?libs\\.bundles\\.([A-Za-z0-9_.]+)`,
+    `(?:${GRADLE_COORD_CONFIGS})\\s*(?:\\(\\s*)?libs\\.bundles\\.([A-Za-z0-9]+(?:\\.[A-Za-z0-9]+)*)(?:\\.get\\(\\)|\\.asProvider\\(\\))?`,
     'g',
   );
   for (const match of content.matchAll(catalogBundlePattern)) {
@@ -311,6 +316,14 @@ function parseGradle(
       pushCatalogAlias(member);
       for (const accessor of catalogAccessors(member)) pushCatalogAlias(accessor);
     }
+  }
+
+  const kotlinProjectsPattern = new RegExp(
+    `(?:${GRADLE_COORD_CONFIGS})\\s*\\(\\s*projects\\.([A-Za-z][A-Za-z0-9.]*)`,
+    'g',
+  );
+  for (const match of content.matchAll(kotlinProjectsPattern)) {
+    deps.push(`${groupId}:${projectAccessorToArtifactId(match[1])}`);
   }
 
   const coordPattern = new RegExp(

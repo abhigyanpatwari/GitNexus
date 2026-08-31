@@ -554,6 +554,59 @@ dependencies {
     expect(result.links).toHaveLength(3);
   });
 
+  it('resolves Kotlin DSL named args, catalog get(), and type-safe project accessors', async () => {
+    await writeFile('shared-lib/build.gradle.kts', 'group = "com.example"\n');
+    await writeFile(
+      'shared-lib/src/main/kotlin/com/example/shared/lib/SharedType.kt',
+      'package com.example.shared.lib\nclass SharedType\n',
+    );
+    await writeFile('models/build.gradle.kts', 'group = "com.example"\n');
+    await writeFile(
+      'models/src/main/kotlin/com/example/models/User.kt',
+      'package com.example.models\ndata class User(val id: Int)\n',
+    );
+
+    await writeFile(
+      'app/gradle/libs.versions.toml',
+      '[libraries]\nmodels = { group = "com.example", name = "models" }\n',
+    );
+    await writeFile(
+      'app/build.gradle.kts',
+      `group = "com.example"
+kotlin {
+  sourceSets {
+    commonMain {
+      dependencies {
+        implementation(name = "shared-lib", group = "com.example", version = "1.0")
+        implementation(projects.sharedLib)
+        implementation(libs.models.get())
+        ksp(libs.models)
+      }
+    }
+  }
+}
+`,
+    );
+    await writeFile(
+      'app/src/commonMain/kotlin/com/example/app/App.kt',
+      'package com.example.app\nimport com.example.shared.lib.SharedType as ST\nimport com.example.models.User\nclass App(val user: User, val shared: ST)\n',
+    );
+
+    const result = await extractNamed(['shared-lib', 'models', 'app']);
+
+    expect(result.discoveredProjects.get('app')?.deps.sort()).toEqual([
+      'com.example:models',
+      'com.example:shared-lib',
+    ]);
+    expect(result.links).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: 'shared-lib', to: 'app', contract: 'shared-lib::SharedType' }),
+        expect.objectContaining({ from: 'models', to: 'app', contract: 'models::User' }),
+      ]),
+    );
+    expect(result.links).toHaveLength(2);
+  });
+
   it('discovers Maven and Gradle projects together without changing Gradle identity', async () => {
     await writeFile('shared-lib/pom.xml', pomTemplate('com.example', 'shared-lib'));
     await writeFile(
