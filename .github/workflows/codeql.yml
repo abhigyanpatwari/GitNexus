@@ -71,6 +71,12 @@ jobs:
               # deliberately contain use-before-init / unused-variable shapes).
               - '**/test/fixtures/**'
               - '**/test/**/fixtures/**'
+              # GET /api/grep intentionally builds RegExp from the query string
+              # (literal=1 escapes). ReDoS is handled by worker terminate() —
+              # see SECURITY.md. Inline codeql[] comments do not clear the
+              # GitHub PR CodeQL gate, so this file is excluded to avoid
+              # re-filing js/regex-injection on every push of the same line.
+              - 'gitnexus/src/server/grep-params.ts'
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
