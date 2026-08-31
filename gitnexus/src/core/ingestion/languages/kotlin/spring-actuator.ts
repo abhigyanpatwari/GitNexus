@@ -39,7 +39,8 @@ function jvmNameIdentifiers(
   imports: readonly ParsedImport[],
   allowUnqualified: boolean,
 ): readonly string[] {
-  const names = new Set<string>(allowUnqualified ? ['JvmName'] : []);
+  const names = new Set<string>(['kotlin.jvm.JvmName']);
+  if (allowUnqualified) names.add('JvmName');
   for (const parsedImport of imports) {
     if (parsedImport.kind !== 'named' && parsedImport.kind !== 'alias') continue;
     if (parsedImport.importedName !== 'JvmName') continue;

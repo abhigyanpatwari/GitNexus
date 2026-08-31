@@ -92,7 +92,12 @@ async function readPayloadFile(filePath: string, label: string): Promise<JsonObj
       );
     }
     const buffer = Buffer.alloc(MAX_ACTUATOR_PAYLOAD_BYTES + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
     if (bytesRead > MAX_ACTUATOR_PAYLOAD_BYTES) {
       throw new SpringActuatorImportError(
         `Spring Actuator ${label} payload exceeds the ${MAX_ACTUATOR_PAYLOAD_BYTES / 1024 / 1024} MiB limit.`,

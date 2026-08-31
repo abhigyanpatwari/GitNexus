@@ -161,4 +161,41 @@ val renamed: String get() = "ok"
       runtimeOwnerAliases: ['com.example.HandlersKt'],
     });
   });
+
+  it('recognizes fully-qualified kotlin.jvm.JvmName without an import', () => {
+    const source = `package com.example
+
+@file:kotlin.jvm.JvmName("CustomHandlers")
+
+@get:kotlin.jvm.JvmName("fetchName")
+val renamed: String get() = "ok"
+`;
+    const root = getKotlinParser().parse(source).rootNode as unknown as SyntaxNode;
+    const properties: SyntaxNode[] = [];
+    const visit = (node: SyntaxNode): void => {
+      if (node.type === 'property_declaration') properties.push(node);
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const child = node.namedChild(i);
+        if (child) visit(child);
+      }
+    };
+    visit(root);
+    const renamedNode = properties[0];
+    if (renamedNode === undefined) {
+      throw new Error('expected a top-level property declaration');
+    }
+    expect(
+      extractKotlinRuntimeSymbolProperties({
+        nodeLabel: 'Property',
+        nodeName: 'renamed',
+        filePath: 'Handlers.kt',
+        definitionNode: renamedNode,
+        parsedImports: [],
+        isExported: true,
+      }),
+    ).toMatchObject({
+      runtimeCallableAliases: ['fetchName'],
+      runtimeOwnerAliases: ['com.example.CustomHandlers'],
+    });
+  });
 });
