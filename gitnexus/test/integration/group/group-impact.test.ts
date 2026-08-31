@@ -49,7 +49,7 @@ describe('group impact integration', () => {
   it('returns validation error when parameters are incomplete', async () => {
     const svc = new GroupService(stubPort());
     const r = (await svc.groupImpact({ name: 'x', direction: 'upstream' })) as { error: string };
-    expect(r.error).toMatch(/repo is required|target is required/);
+    expect(r.error).toMatch(/repo is required|target or target_uid is required/);
   });
 
   it('runs happy-path stub against fixture group (stops before bridge when no symbol UIDs)', async () => {
