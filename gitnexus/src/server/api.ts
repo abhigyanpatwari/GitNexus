@@ -56,6 +56,7 @@ import {
 } from '../core/embedding-count.js';
 import { assertString, BadRequestError, createRouteLimiter } from './validation.js';
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
+import { runGrepScanInWorker } from './grep-scan.js';
 import {
   extractRepoName,
   getCloneDir,
@@ -1338,23 +1339,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
-      // Pattern parsing (regex construction, fileFilter, case flag, limit
-      // clamping) lives in grep-params.ts so the contract is unit-testable
-      // without this module's native imports. BadRequestError thrown there is
-      // mapped to 400 by statusFromError in the catch below — including the
-      // CodeQL js/type-confusion-through-parameter-tampering guard for
-      // array-form query params. ReDoS caveat: the wall-clock budget below
-      // is checked between files (and every 256 lines inside a file) — a
-      // single catastrophically backtracking regex.test() still cannot be
-      // interrupted (see grep-params.ts and SECURITY.md; literal=1 restores
-      // full immunity).
+      // Pattern parsing lives in grep-params.ts (unit-testable without
+      // Express + LadybugDB). Matching runs in a worker so terminate() can
+      // cut a stuck regex.test() when the wall-clock budget expires.
       const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
-      const deadline = Date.now() + GREP_TIME_BUDGET_MS;
-
-      const results: { filePath: string; line: number; text: string }[] = [];
       const repoRoot = path.resolve(entry.path);
 
-      // Get file paths from the graph (lightweight — no content loaded)
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const fileRows = await withLbugDb(
         lbugPath,
@@ -1363,46 +1353,21 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         { readOnly: true },
       );
 
-      // Search files on disk one at a time (constant memory); the wall-clock
-      // budget stops the scan between files on large repos and reports
-      // timedOut so callers can distinguish truncation from a full scan.
-      // It is NOT a per-test circuit breaker — see the caveat above.
-      let timedOut = false;
-      files: for (const row of fileRows) {
-        if (results.length >= limit) break;
-        if (Date.now() > deadline) {
-          timedOut = true;
-          break;
-        }
+      const filePaths: string[] = [];
+      for (const row of fileRows) {
         const filePath: string = row.filePath || '';
         if (fileFilter && !filePath.toLowerCase().includes(fileFilter)) continue;
-        const fullPath = path.resolve(repoRoot, filePath);
-
-        // Path traversal guard
-        const safeRepoRoot = repoRoot.endsWith(path.sep) ? repoRoot : repoRoot + path.sep;
-        if (!fullPath.startsWith(safeRepoRoot) && fullPath !== repoRoot) continue;
-
-        let content: string;
-        try {
-          content = await fs.readFile(fullPath, 'utf-8');
-        } catch {
-          continue; // File may have been deleted since indexing
-        }
-
-        const lines = content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (results.length >= limit) break;
-          // Sample the clock; Date.now() every line is wasted on the hot path
-          // and still cannot abort a blocking regex.test().
-          if ((i & 255) === 0 && Date.now() > deadline) {
-            timedOut = true;
-            break files;
-          }
-          if (regex.test(lines[i])) {
-            results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
-          }
-        }
+        filePaths.push(filePath);
       }
+
+      const { results, timedOut } = await runGrepScanInWorker({
+        repoRoot,
+        filePaths,
+        pattern: regex.source,
+        flags: regex.flags,
+        limit,
+        deadlineMs: Date.now() + GREP_TIME_BUDGET_MS,
+      });
 
       res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
     } catch (err: any) {

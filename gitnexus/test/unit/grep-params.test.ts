@@ -145,17 +145,16 @@ describe('/api/grep handler wiring (source-level, api-readonly-wiring.test.ts st
     '../../src/server/api.ts',
   );
 
-  it('threaded through: parseGrepQuery call, deadline, fileFilter filter, timedOut flag', async () => {
+  it('threaded through: parseGrepQuery call, worker scan, fileFilter filter, timedOut flag', async () => {
     const source = await readSource();
     const grepSection = source.match(/app\.get\('\/api\/grep'[\s\S]*?\n  \}\);/);
     expect(grepSection).not.toBeNull();
     const section = grepSection![0];
     expect(section).toContain('parseGrepQuery(');
     expect(section).toContain('GREP_TIME_BUDGET_MS');
-    expect(section).toMatch(/Date\.now\(\) > deadline/);
+    expect(section).toContain('runGrepScanInWorker(');
     expect(section).toMatch(/filePath\.toLowerCase\(\)\.includes\(fileFilter\)/);
     expect(section).toContain('timedOut: true');
-    expect(section).toContain('break files');
     expect(section).toContain('readOnly: true'); // unchanged read-only DB open
   });
 });

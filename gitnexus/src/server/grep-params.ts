@@ -11,23 +11,13 @@
  * pattern into a literal substring — an agent asking for "sign|Sign" got
  * zero hits and concluded the code didn't exist, and the schema's own
  * example ("console\.log") could never match. This restores the promised
- * semantics. The literal-only era was accidentally ReDoS-immune; that
- * immunity is knowingly traded back for the promised contract, with the
- * bounded mitigations below. IMPORTANT — what these mitigations do NOT
- * cover: a single catastrophic-backtracking regex.test() blocks the Node
- * event loop synchronously and the wall-clock budget (checked between
- * files, never inside a test) cannot interrupt it; a pattern like
- * (a+)+$ against a 35-char line measurably exceeds 120s. During that
- * window the whole server (all routes + SSE) is unresponsive. Accepted
- * because: local serve binds loopback by default, hosted deploys gate
- * /api/grep behind the edge token (see SECURITY.md), the pattern cap
- * bounds construction cost, line-by-line matching bounds per-test input
- * length, and the result cap bounds total work. The proper fix — running
- * the scan in a worker_threads worker with terminate() on timeout, or an
- * optional re2 dependency — is deliberately out of scope here.
+ * semantics. Matching runs in a worker_threads worker (`grep-worker.ts`) so
+ * `terminate()` can interrupt a catastrophic `regex.test()` when the
+ * wall-clock budget expires; the parent event loop stays responsive.
+ * Bounded mitigations:
  *   - pattern length cap (200 chars, unchanged from the literal-only era)
  *   - line-by-line matching (each regex.test call sees one source line)
- *   - a wall-clock budget the handler enforces between files
+ *   - a wall-clock budget the parent enforces via worker terminate()
  *   - result cap unchanged (limit, max 200)
  *   - literal=1 opt-out restores the old escaped-substring immunity
  */
@@ -36,7 +26,7 @@ import { assertString, escapeRegExp, BadRequestError } from './validation.js';
 /** Hard cap on pattern length — unchanged from the literal-only era. */
 export const GREP_PATTERN_MAX_LENGTH = 200;
 
-/** Wall-clock budget for one /api/grep call, enforced between files. */
+/** Wall-clock budget for one /api/grep call; parent terminate()s the scan worker. */
 export const GREP_TIME_BUDGET_MS = 5_000;
 
 export const GREP_DEFAULT_LIMIT = 50;
