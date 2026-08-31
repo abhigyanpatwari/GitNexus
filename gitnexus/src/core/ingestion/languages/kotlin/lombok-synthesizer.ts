@@ -7,7 +7,8 @@
  * naming and Method emission share `jvm/beanspec` + `jvm/accessor-synthesis`.
  *
  * ## Supported subset (v1)
- * - Class / data class / object / companion `val`/`var` properties.
+ * - Class / data class / object / companion / interface `val`/`var` properties
+ *   (interface accessors without a custom body are abstract JVM methods).
  * - Primary-constructor `val`/`var` class parameters.
  * - Names beginning with `is` + a non-lowercase character keep that getter name; all other
  *   properties, including `Boolean`, use `get`.
@@ -63,6 +64,7 @@ interface KtProperty {
   setterVisibility: SyntheticVisibility;
   startLine: number;
   endLine: number;
+  propertyNode: Parser.SyntaxNode;
   declaratorNode: Parser.SyntaxNode;
 }
 
@@ -70,6 +72,7 @@ interface KtClass {
   node: Parser.SyntaxNode;
   name: string;
   isStatic: boolean;
+  isInterface: boolean;
   wasHoisted: boolean;
   properties: KtProperty[];
   existingMethods: ExistingMethodIndex;
@@ -291,6 +294,18 @@ function accessorMetadata(
   };
 }
 
+function hasKotlinAccessorBody(prop: Parser.SyntaxNode, kind: 'getter' | 'setter'): boolean {
+  const hasBody = (node: Parser.SyntaxNode): boolean =>
+    node.type === kind && node.children.some((child) => child.type === 'function_body');
+  if (prop.children.some(hasBody)) return true;
+  let sib: Parser.SyntaxNode | null = prop.nextNamedSibling;
+  while (sib && (sib.type === 'getter' || sib.type === 'setter')) {
+    if (hasBody(sib)) return true;
+    sib = sib.nextNamedSibling;
+  }
+  return false;
+}
+
 function functionName(node: Parser.SyntaxNode): string | undefined {
   return node.children.find((c) => c.type === 'simple_identifier')?.text;
 }
@@ -349,6 +364,7 @@ function toKtProperty(child: Parser.SyntaxNode, imports: KotlinImportIndex): KtP
     setterVisibility: accessor.setterVisibility,
     startLine: child.startPosition.row + 1,
     endLine: child.endPosition.row + 1,
+    propertyNode: child,
     declaratorNode: nameNode,
   };
 }
@@ -397,6 +413,7 @@ function findKtClasses(root: Parser.SyntaxNode, imports: KotlinImportIndex): KtC
             node: ownerNode,
             name,
             isStatic: node.type === 'companion_object',
+            isInterface: node.children.some((child) => child.type === 'interface'),
             wasHoisted: ownerNode.id !== node.id,
             properties,
             existingMethods: collectExistingMethods(body, ownerBody),
@@ -428,6 +445,7 @@ function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
         parameterTypes: [],
         visibility: prop.getterVisibility,
         isStatic: cls.isStatic,
+        isAbstract: cls.isInterface && !hasKotlinAccessorBody(prop.propertyNode, 'getter'),
         startLine: prop.startLine,
         endLine: prop.endLine,
         declaratorNode: prop.declaratorNode,
@@ -443,6 +461,7 @@ function planAccessors(cls: KtClass): PlannedJvmAccessor[] {
           parameterTypes: [prop.type],
           visibility: prop.setterVisibility,
           isStatic: cls.isStatic,
+          isAbstract: cls.isInterface && !hasKotlinAccessorBody(prop.propertyNode, 'setter'),
           startLine: prop.startLine,
           endLine: prop.endLine,
           declaratorNode: prop.declaratorNode,

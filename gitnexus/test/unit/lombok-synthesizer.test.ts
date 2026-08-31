@@ -462,7 +462,7 @@ import lombok.Data;
 @Data
 public class Order {
     private String orderId;
-    public String getOrderId() { return orderId; }
+    public String getorderId() { return orderId; }
 }
 `);
       const result = synthesizeLombokAccessors(

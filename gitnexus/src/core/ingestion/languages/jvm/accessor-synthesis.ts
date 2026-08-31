@@ -127,6 +127,7 @@ export interface PlannedJvmAccessor {
   parameterTypes: string[];
   visibility: SyntheticVisibility;
   isStatic: boolean;
+  isAbstract: boolean;
   startLine: number;
   endLine: number;
   declaratorNode: Parser.SyntaxNode;
@@ -251,7 +252,7 @@ function emitPlannedAccessors(args: {
       returnType: acc.returnType,
       visibility: acc.visibility,
       isStatic: acc.isStatic,
-      isAbstract: false,
+      isAbstract: acc.isAbstract,
       isFinal: false,
     });
     args.result.relationships.push({

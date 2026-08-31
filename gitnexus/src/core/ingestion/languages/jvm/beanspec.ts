@@ -16,9 +16,11 @@ export function capitalizeBeanName(s: string): string {
 }
 
 /**
- * Primitive-boolean fields whose name already starts with `is` + uppercase
- * keep that name for the getter and drop the `is` prefix for the setter base
- * (`isEnabled` → `isEnabled()` / `setEnabled(...)`).
+ * Primitive-boolean / Kotlin `is`-prefix fields whose name already starts with
+ * `is` plus a non-lowercase character keep that name for the getter and drop
+ * the `is` prefix for the setter base (`isEnabled` → `isEnabled()` /
+ * `setEnabled(...)`, `is1` → `is1()` / `set1(...)`). Digits and punctuation
+ * count as non-lowercase, matching Lombok `!Character.isLowerCase` and kotlinc.
  */
 export function booleanIsPrefixBase(fieldName: string, useIsPrefix: boolean): string | null {
   if (!useIsPrefix || !fieldName.startsWith('is') || fieldName.length < 3) return null;

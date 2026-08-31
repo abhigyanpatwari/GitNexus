@@ -389,4 +389,32 @@ class Pair(var first: Int, var second: Int)
     ).toEqual(['Pair.getFirst', 'Pair.getSecond', 'Pair.setFirst', 'Pair.setSecond']);
     expect(captures.some((m) => '@declaration.qualified-name' in m)).toBe(false);
   });
+
+  it('marks interface property accessors abstract unless they have a body', () => {
+    const abstractTree = parse(`
+interface Named { val name: String; var age: Int }
+`);
+    const abstractResult = synthesizeLombokAccessors(
+      abstractTree,
+      FILE_PATH,
+      ownerMap(abstractTree, FILE_PATH),
+    );
+    expect(abstractResult.symbols.map((s) => `${s.name}:${s.isAbstract}`).sort()).toEqual([
+      'getAge:true',
+      'getName:true',
+      'setAge:true',
+    ]);
+
+    const defaultTree = parse(`
+interface Named { val name: String get() = "x" }
+`);
+    const defaultResult = synthesizeLombokAccessors(
+      defaultTree,
+      FILE_PATH,
+      ownerMap(defaultTree, FILE_PATH),
+    );
+    expect(defaultResult.symbols.map((s) => `${s.name}:${s.isAbstract}`)).toEqual([
+      'getName:false',
+    ]);
+  });
 });
