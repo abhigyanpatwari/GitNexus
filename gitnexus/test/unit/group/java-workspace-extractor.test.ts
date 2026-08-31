@@ -31,6 +31,24 @@ describe('JavaWorkspaceExtractor', () => {
     return `<project><groupId>${g}</groupId><artifactId>${a}</artifactId><dependencies>${depXml}</dependencies></project>`;
   };
 
+  const inheritedPomTemplate = (artifactId: string, deps: string[] = []) => {
+    const depXml = deps
+      .map((d) => {
+        const [gid, aid] = d.split(':');
+        return `<dependency><groupId>${gid}</groupId><artifactId>${aid}</artifactId></dependency>`;
+      })
+      .join('\n');
+    return `<project xmlns="http://maven.apache.org/POM/4.0.0">
+      <parent>
+        <groupId>com.example</groupId>
+        <artifactId>parent</artifactId>
+        <version>1</version>
+      </parent>
+      <artifactId>${artifactId}</artifactId>
+      <dependencies>${depXml}</dependencies>
+    </project>`;
+  };
+
   it('discovers cross-project imports via Maven pom.xml', async () => {
     await writeFile('models/pom.xml', pomTemplate('com.acme', 'models'));
     await writeFile(
@@ -62,6 +80,109 @@ describe('JavaWorkspaceExtractor', () => {
     });
   });
 
+  it('keeps child artifacts distinct when independent repositories share a Maven parent', async () => {
+    await writeFile('parent/pom.xml', pomTemplate('com.example', 'parent'));
+    await writeFile('shared-lib/pom.xml', inheritedPomTemplate('shared-lib'));
+    await writeFile(
+      'shared-lib/src/main/java/com/example/shared/lib/SharedType.java',
+      'package com.example.shared.lib;\npublic class SharedType {}\n',
+    );
+
+    await writeFile(
+      'service-a/pom.xml',
+      inheritedPomTemplate('service-a', ['com.example:shared-lib']),
+    );
+    await writeFile(
+      'service-a/src/main/java/com/example/service/a/App.java',
+      'package com.example.service.a;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
+    );
+
+    await writeFile(
+      'service-b/pom.xml',
+      inheritedPomTemplate('service-b', ['com.example:shared-lib']),
+    );
+    await writeFile(
+      'service-b/src/main/kotlin/com/example/service/b/App.kt',
+      'package com.example.service.b\nimport com.example.shared.lib.SharedType\nclass App\n',
+    );
+
+    const repos = {
+      parent: 'parent',
+      'shared-lib': 'shared-lib',
+      'service-a': 'service-a',
+      'service-b': 'service-b',
+    };
+    const repoPaths = new Map(
+      Object.keys(repos).map((groupPath) => [groupPath, path.join(tmpDir, groupPath)]),
+    );
+
+    const result = await extractJavaWorkspaceLinks(repos, repoPaths);
+
+    expect(result.discoveredProjects.size).toBe(4);
+    expect(result.discoveredProjects.get('parent')?.artifactId).toBe('parent');
+    expect(result.discoveredProjects.get('shared-lib')?.artifactId).toBe('shared-lib');
+    expect(result.discoveredProjects.get('service-a')?.artifactId).toBe('service-a');
+    expect(result.discoveredProjects.get('service-b')?.artifactId).toBe('service-b');
+    expect(result.links).toEqual([
+      {
+        from: 'shared-lib',
+        to: 'service-a',
+        type: 'custom',
+        contract: 'shared-lib::SharedType',
+        role: 'provider',
+      },
+      {
+        from: 'shared-lib',
+        to: 'service-b',
+        type: 'custom',
+        contract: 'shared-lib::SharedType',
+        role: 'provider',
+      },
+    ]);
+  });
+
+  it('uses an explicit child groupId instead of its Maven parent groupId', async () => {
+    await writeFile(
+      'service/pom.xml',
+      `<project>
+        <parent>
+          <groupId>com.parent</groupId>
+          <artifactId>parent</artifactId>
+          <version>1</version>
+        </parent>
+        <groupId>com.child</groupId>
+        <artifactId>service</artifactId>
+      </project>`,
+    );
+
+    const result = await extractJavaWorkspaceLinks(
+      { service: 'service' },
+      new Map([['service', path.join(tmpDir, 'service')]]),
+    );
+
+    expect(result.discoveredProjects.get('service')).toMatchObject({
+      groupId: 'com.child',
+      artifactId: 'service',
+    });
+  });
+
+  it('still rejects genuinely duplicate effective Maven coordinates', async () => {
+    await writeFile('first/pom.xml', inheritedPomTemplate('shared-lib'));
+    await writeFile('second/pom.xml', inheritedPomTemplate('shared-lib'));
+
+    const result = await extractJavaWorkspaceLinks(
+      { first: 'first', second: 'second' },
+      new Map([
+        ['first', path.join(tmpDir, 'first')],
+        ['second', path.join(tmpDir, 'second')],
+      ]),
+    );
+
+    expect(result.discoveredProjects.size).toBe(1);
+    expect(result.discoveredProjects.has('first')).toBe(true);
+    expect(result.discoveredProjects.has('second')).toBe(false);
+  });
+
   it('handles Gradle build files', async () => {
     await writeFile('core/build.gradle.kts', 'group = "com.acme"\nversion = "1.0"\n');
     await writeFile(
@@ -74,8 +195,8 @@ describe('JavaWorkspaceExtractor', () => {
       'group = "com.acme"\nversion = "1.0"\ndependencies {\n  implementation("com.acme:core:1.0")\n}\n',
     );
     await writeFile(
-      'svc/src/main/java/com/acme/svc/App.java',
-      'package com.acme.svc;\nimport com.acme.core.Config;\npublic class App {}\n',
+      'svc/src/main/kotlin/com/acme/svc/App.kt',
+      'package com.acme.svc\nimport com.acme.core.Config\nclass App\n',
     );
 
     const repos = { core: 'core', svc: 'svc' };
@@ -116,6 +237,44 @@ describe('JavaWorkspaceExtractor', () => {
 
     expect(result.links).toHaveLength(1);
     expect(result.links[0].contract).toBe('common::Entity');
+  });
+
+  it('discovers Maven and Gradle projects together without changing Gradle identity', async () => {
+    await writeFile('shared-lib/pom.xml', pomTemplate('com.example', 'shared-lib'));
+    await writeFile(
+      'shared-lib/src/main/java/com/example/shared/lib/SharedType.java',
+      'package com.example.shared.lib;\npublic class SharedType {}\n',
+    );
+    await writeFile(
+      'gradle-app/build.gradle.kts',
+      'group = "com.example"\ndependencies {\n  implementation("com.example:shared-lib:1.0")\n}\n',
+    );
+    await writeFile(
+      'gradle-app/src/main/kotlin/com/example/gradle/app/App.kt',
+      'package com.example.gradle.app\nimport com.example.shared.lib.SharedType\nclass App\n',
+    );
+
+    const result = await extractJavaWorkspaceLinks(
+      { 'shared-lib': 'shared-lib', 'gradle-app': 'gradle-app' },
+      new Map([
+        ['shared-lib', path.join(tmpDir, 'shared-lib')],
+        ['gradle-app', path.join(tmpDir, 'gradle-app')],
+      ]),
+    );
+
+    expect(result.discoveredProjects.get('gradle-app')).toMatchObject({
+      groupId: 'com.example',
+      artifactId: 'gradle-app',
+    });
+    expect(result.links).toEqual([
+      {
+        from: 'shared-lib',
+        to: 'gradle-app',
+        type: 'custom',
+        contract: 'shared-lib::SharedType',
+        role: 'provider',
+      },
+    ]);
   });
 
   it('handles static imports', async () => {

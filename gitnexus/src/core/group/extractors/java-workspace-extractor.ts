@@ -20,6 +20,12 @@ interface ImportedSymbol {
   filePath: string;
 }
 
+interface XmlElement {
+  name: string;
+  text: string;
+  children: XmlElement[];
+}
+
 async function parseJavaManifest(
   repoPath: string,
 ): Promise<{ groupId: string; artifactId: string; deps: string[] } | null> {
@@ -44,23 +50,89 @@ async function parseJavaManifest(
   return null;
 }
 
-function parsePom(content: string): { groupId: string; artifactId: string; deps: string[] } | null {
-  const projectGroupMatch = content.match(/<project[^>]*>[\s\S]*?<groupId>([^<]+)<\/groupId>/);
-  const projectArtifactMatch = content.match(
-    /<project[^>]*>[\s\S]*?<artifactId>([^<]+)<\/artifactId>/,
-  );
-  if (!projectGroupMatch || !projectArtifactMatch) return null;
+// POMs are static metadata, so preserve XML hierarchy without invoking Maven or
+// pulling in a full effective-model resolver. This intentionally models only
+// literal elements; properties, profiles, and remote parent resolution remain
+// outside the workspace extractor's deterministic boundary.
+function parseXmlRoot(content: string, rootName: string): XmlElement | null {
+  const document: XmlElement = { name: '', text: '', children: [] };
+  const stack = [document];
+  const tokens = /<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<!\[CDATA\[[\s\S]*?\]\]>|<![^>]*>|<[^>]+>/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
 
-  const groupId = projectGroupMatch[1].trim();
-  const artifactId = projectArtifactMatch[1].trim();
+  while ((match = tokens.exec(content)) !== null) {
+    if (stack.length > 1) {
+      stack[stack.length - 1].text += content.slice(cursor, match.index);
+    }
+    cursor = match.index + match[0].length;
+
+    const token = match[0];
+    if (token.startsWith('<![CDATA[')) {
+      if (stack.length > 1) stack[stack.length - 1].text += token.slice(9, -3);
+      continue;
+    }
+    if (token.startsWith('<!--') || token.startsWith('<?') || token.startsWith('<!')) {
+      continue;
+    }
+
+    const closing = token.match(/^<\/\s*([^\s>]+)\s*>$/);
+    if (closing) {
+      const name = closing[1].split(':').pop()!;
+      if (stack.length === 1 || stack[stack.length - 1].name !== name) return null;
+      stack.pop();
+      continue;
+    }
+
+    const opening = token.match(/^<\s*([^\s/>]+)/);
+    if (!opening) return null;
+    const element: XmlElement = {
+      name: opening[1].split(':').pop()!,
+      text: '',
+      children: [],
+    };
+    stack[stack.length - 1].children.push(element);
+    if (!/\/\s*>$/.test(token)) stack.push(element);
+  }
+
+  if (stack.length !== 1) return null;
+  return document.children.find((element) => element.name === rootName) ?? null;
+}
+
+function childText(element: XmlElement | undefined, name: string): string | undefined {
+  const value = element?.children.find((child) => child.name === name)?.text.trim();
+  return value || undefined;
+}
+
+function descendants(element: XmlElement, name: string, matches: XmlElement[] = []): XmlElement[] {
+  for (const child of element.children) {
+    if (child.name === name) matches.push(child);
+    descendants(child, name, matches);
+  }
+  return matches;
+}
+
+function parsePom(content: string): { groupId: string; artifactId: string; deps: string[] } | null {
+  const project = parseXmlRoot(content, 'project');
+  if (!project) return null;
+
+  // Maven inherits groupId from <parent>, but artifactId is always the
+  // project's own direct child and must never fall back to parent.artifactId.
+  const groupId =
+    childText(project, 'groupId') ??
+    childText(
+      project.children.find((child) => child.name === 'parent'),
+      'groupId',
+    );
+  const artifactId = childText(project, 'artifactId');
+  if (!groupId || !artifactId) return null;
 
   const deps: string[] = [];
-  const depBlocks = content.matchAll(/<dependency>\s*([\s\S]*?)<\/dependency>/g);
-  for (const block of depBlocks) {
-    const gMatch = block[1].match(/<groupId>([^<]+)<\/groupId>/);
-    const aMatch = block[1].match(/<artifactId>([^<]+)<\/artifactId>/);
-    if (gMatch && aMatch) {
-      deps.push(`${gMatch[1].trim()}:${aMatch[1].trim()}`);
+  for (const dependency of descendants(project, 'dependency')) {
+    const dependencyGroupId = childText(dependency, 'groupId');
+    const dependencyArtifactId = childText(dependency, 'artifactId');
+    if (dependencyGroupId && dependencyArtifactId) {
+      deps.push(`${dependencyGroupId}:${dependencyArtifactId}`);
     }
   }
 
