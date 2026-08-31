@@ -409,3 +409,143 @@ describe('Kotlin annotation argument shapes', () => {
     ]);
   });
 });
+
+/**
+ * The destination-bearing annotations are only half the handler family. An
+ * event listener names its address as an event TYPE and an integration
+ * endpoint names it as a CHANNEL, so both carry an address in an argument just
+ * as `topics` and `queues` do, and both must survive capture unresolved.
+ */
+describe('handler annotations that name an event type or an integration channel', () => {
+  const javaAnnotations = javaHandlerAnnotations(`
+    package com.example.handlers;
+
+    import com.example.handlers.support.Channels;
+    import org.springframework.context.event.EventListener;
+    import org.springframework.integration.annotation.ServiceActivator;
+    import org.springframework.transaction.event.TransactionalEventListener;
+
+    public class OrderIntegration {
+        @EventListener(OrderCreated.class)
+        public void positionalEventType(OrderCreated event) {}
+
+        @EventListener(classes = {OrderCreated.class, OrderShipped.class}, condition = "#event.urgent")
+        public void namedEventTypes(Object event) {}
+
+        @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+        public void afterCommit(Object event) {}
+
+        @ServiceActivator(inputChannel = "orders.in", outputChannel = Channels.OUT)
+        public void channels(Object message) {}
+
+        @ServiceActivator(inputChannel = "\${app.integration.input-channel}")
+        public void configuredChannel(Object message) {}
+    }
+  `).flat();
+
+  it('still recognizes every event and integration handler it recognized before', () => {
+    expect(javaAnnotations.map((annotation) => annotation.name)).toEqual([
+      'EventListener',
+      'EventListener',
+      'TransactionalEventListener',
+      'ServiceActivator',
+      'ServiceActivator',
+    ]);
+  });
+
+  it('captures a Java event type positionally and named event types by key', () => {
+    expect(javaAnnotations[0]?.args).toEqual([{ text: 'OrderCreated.class' }]);
+    expect(javaAnnotations[1]?.args).toEqual([
+      { name: 'classes', text: '{OrderCreated.class, OrderShipped.class}' },
+      { name: 'condition', text: '"#event.urgent"' },
+    ]);
+    expect(javaAnnotations[2]?.args).toEqual([
+      { name: 'phase', text: 'TransactionPhase.AFTER_COMMIT' },
+    ]);
+  });
+
+  it('keeps Java integration channels apart by name and leaves them unresolved', () => {
+    expect(javaAnnotations[3]?.args).toEqual([
+      { name: 'inputChannel', text: '"orders.in"' },
+      { name: 'outputChannel', text: 'Channels.OUT' },
+    ]);
+    expect(javaAnnotations[4]?.args).toEqual([
+      { name: 'inputChannel', text: '"${app.integration.input-channel}"' },
+    ]);
+  });
+
+  const kotlinAnnotations = kotlinHandlerAnnotations(`
+    package com.example.handlers
+
+    import com.example.handlers.support.Channels
+    import com.example.handlers.support.Destinations
+    import org.springframework.amqp.rabbit.annotation.RabbitListener
+    import org.springframework.context.event.EventListener
+    import org.springframework.integration.annotation.ServiceActivator
+
+    class OrderIntegration {
+        @EventListener(OrderCreated::class)
+        fun positionalEventType(event: OrderCreated) {}
+
+        @EventListener(classes = [OrderCreated::class], condition = "#event.urgent")
+        fun namedEventTypes(event: Any) {}
+
+        @ServiceActivator(inputChannel = "orders.in", outputChannel = Channels.OUT)
+        fun channels(message: Any) {}
+
+        @RabbitListener(queues = ["orders"], containerFactory = "ordersFactory")
+        fun literalQueue(payload: String) {}
+
+        @RabbitListener(queues = [Destinations.PAYMENTS])
+        fun constantQueue(payload: String) {}
+
+        @RabbitListener(queues = ["\\\${app.messaging.queue}"])
+        fun configuredQueue(payload: String) {}
+    }
+  `).flat();
+
+  it('still recognizes the same Kotlin handlers once arguments are read', () => {
+    expect(kotlinAnnotations.map((annotation) => annotation.name)).toEqual([
+      'EventListener',
+      'EventListener',
+      'ServiceActivator',
+      'RabbitListener',
+      'RabbitListener',
+      'RabbitListener',
+    ]);
+  });
+
+  it('captures Kotlin event types and integration channels', () => {
+    expect(kotlinAnnotations[0]?.args).toEqual([{ text: 'OrderCreated::class' }]);
+    expect(kotlinAnnotations[1]?.args).toEqual([
+      { name: 'classes', text: '[OrderCreated::class]' },
+      { name: 'condition', text: '"#event.urgent"' },
+    ]);
+    expect(kotlinAnnotations[2]?.args).toEqual([
+      { name: 'inputChannel', text: '"orders.in"' },
+      { name: 'outputChannel', text: 'Channels.OUT' },
+    ]);
+  });
+
+  it('captures a Kotlin queue written as a literal, a constant, or a placeholder', () => {
+    expect(kotlinAnnotations.slice(3).map((annotation) => annotation.args)).toEqual([
+      [
+        { name: 'queues', text: '["orders"]' },
+        { name: 'containerFactory', text: '"ordersFactory"' },
+      ],
+      [{ name: 'queues', text: '[Destinations.PAYMENTS]' }],
+      [{ name: 'queues', text: '["\\${app.messaging.queue}"]' }],
+    ]);
+  });
+
+  it('resolves neither an event type nor a channel at capture time', () => {
+    const texts = [...javaAnnotations, ...kotlinAnnotations].flatMap(
+      (annotation) => annotation.args ?? [],
+    );
+    // A resolver would have replaced these with a class, a channel, or a value.
+    expect(texts.some((argument) => argument.text.includes('Channels.OUT'))).toBe(true);
+    expect(texts.some((argument) => argument.text.includes('Destinations.PAYMENTS'))).toBe(true);
+    expect(texts.some((argument) => argument.text === '"payments"')).toBe(false);
+    expect(texts.some((argument) => argument.text.includes('com.example'))).toBe(false);
+  });
+});

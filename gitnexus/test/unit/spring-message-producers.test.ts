@@ -663,3 +663,185 @@ describe('Spring messaging producer side-channel transport', () => {
     ]);
   });
 });
+
+/**
+ * Kafka is the template whose destination shapes are covered above. The other
+ * three carry the same burden: a destination is written as a literal, as a
+ * constant that lives in another file, or as a name bound from configuration,
+ * and capture must produce a fact for all three without preferring any.
+ */
+describe('Spring messaging producer destination kinds per template', () => {
+  const JAVA_SOURCE = `
+    package com.example.messaging;
+
+    import com.example.messaging.support.Destinations;
+    import org.springframework.amqp.rabbit.core.RabbitTemplate;
+    import org.springframework.cloud.stream.function.StreamBridge;
+    import org.springframework.jms.core.JmsTemplate;
+
+    public class OrderPublishers {
+        private final RabbitTemplate rabbitTemplate;
+        private final JmsTemplate jmsTemplate;
+        private final StreamBridge streamBridge;
+
+        @Value("\${app.messaging.orders-exchange}")
+        private String ordersExchange;
+
+        public void rabbitLiteral(String payload) {
+            rabbitTemplate.convertAndSend("orders.exchange", "orders.key", payload);
+        }
+
+        public void rabbitConstant(String payload) {
+            rabbitTemplate.convertAndSend(Destinations.EXCHANGE, Destinations.ROUTING_KEY, payload);
+        }
+
+        public void rabbitConfigured(String payload) {
+            rabbitTemplate.convertAndSend(ordersExchange, "orders.key", payload);
+        }
+
+        public void jmsLiteral(String payload) {
+            jmsTemplate.convertAndSend("queue.orders", payload);
+        }
+
+        public void jmsConstant(String payload) {
+            jmsTemplate.convertAndSend(Destinations.QUEUE, payload);
+        }
+
+        public void jmsConfigured(String payload) {
+            jmsTemplate.convertAndSend(ordersQueue, payload);
+        }
+
+        public void bridgeLiteral(String payload) {
+            streamBridge.send("orders-out-0", payload);
+        }
+
+        public void bridgeConstant(String payload) {
+            streamBridge.send(Destinations.ORDERS_BINDING, payload);
+        }
+
+        public void bridgeConfigured(String payload) {
+            streamBridge.send(ordersBinding, payload);
+        }
+
+        public void notAPublish(String payload) {
+            rabbitTemplate.send("orders.exchange", payload);
+            jmsTemplate.send("queue.orders", payload);
+        }
+    }
+  `;
+
+  const KOTLIN_SOURCE = `
+    package com.example.messaging
+
+    import com.example.messaging.support.Destinations
+    import org.springframework.amqp.rabbit.core.RabbitTemplate
+    import org.springframework.cloud.stream.function.StreamBridge
+    import org.springframework.jms.core.JmsTemplate
+
+    class OrderPublishers(
+        private val rabbitTemplate: RabbitTemplate,
+        private val jmsTemplate: JmsTemplate,
+        private val streamBridge: StreamBridge,
+        @Value("\\\${app.messaging.orders-exchange}") private val ordersExchange: String,
+    ) {
+        fun rabbitLiteral(payload: String) {
+            rabbitTemplate.convertAndSend("orders.exchange", "orders.key", payload)
+        }
+
+        fun rabbitConstant(payload: String) {
+            rabbitTemplate.convertAndSend(Destinations.EXCHANGE, Destinations.ROUTING_KEY, payload)
+        }
+
+        fun rabbitConfigured(payload: String) {
+            rabbitTemplate.convertAndSend(ordersExchange, "orders.key", payload)
+        }
+
+        fun jmsLiteral(payload: String) {
+            jmsTemplate.convertAndSend("queue.orders", payload)
+        }
+
+        fun jmsConstant(payload: String) {
+            jmsTemplate.convertAndSend(Destinations.QUEUE, payload)
+        }
+
+        fun jmsConfigured(payload: String) {
+            jmsTemplate.convertAndSend(ordersQueue, payload)
+        }
+
+        fun bridgeLiteral(payload: String) {
+            streamBridge.send("orders-out-0", payload)
+        }
+
+        fun bridgeConstant(payload: String) {
+            streamBridge.send(Destinations.ORDERS_BINDING, payload)
+        }
+
+        fun bridgeConfigured(payload: String) {
+            streamBridge.send(ordersBinding, payload)
+        }
+
+        fun notAPublish(payload: String) {
+            rabbitTemplate.send("orders.exchange", payload)
+            jmsTemplate.send("queue.orders", payload)
+        }
+    }
+  `;
+
+  const EXPECTED_SIGNATURES = [
+    'rabbit rabbitTemplate.convertAndSend',
+    'rabbit rabbitTemplate.convertAndSend',
+    'rabbit rabbitTemplate.convertAndSend',
+    'jms jmsTemplate.convertAndSend',
+    'jms jmsTemplate.convertAndSend',
+    'jms jmsTemplate.convertAndSend',
+    'stream-bridge streamBridge.send',
+    'stream-bridge streamBridge.send',
+    'stream-bridge streamBridge.send',
+  ];
+
+  const EXPECTED_DESTINATIONS = [
+    '"orders.exchange"',
+    'Destinations.EXCHANGE',
+    'ordersExchange',
+    '"queue.orders"',
+    'Destinations.QUEUE',
+    'ordersQueue',
+    '"orders-out-0"',
+    'Destinations.ORDERS_BINDING',
+    'ordersBinding',
+  ];
+
+  it('gives Java rabbit, jms, and stream-bridge a fact for all three shapes', () => {
+    const facts = javaProducers(JAVA_SOURCE);
+    expect(facts.map(signature)).toEqual(EXPECTED_SIGNATURES);
+    expect(facts.map(destination)).toEqual(EXPECTED_DESTINATIONS);
+  });
+
+  it('gives Kotlin rabbit, jms, and stream-bridge a fact for all three shapes', () => {
+    const facts = kotlinProducers(KOTLIN_SOURCE);
+    expect(facts.map(signature)).toEqual(EXPECTED_SIGNATURES);
+    expect(facts.map(destination)).toEqual(EXPECTED_DESTINATIONS);
+  });
+
+  it('leaves a send that does not belong to its template unrecognized', () => {
+    // `notAPublish` is the last method in both fixtures; the signature lists
+    // above end at the stream bridge, so `RabbitTemplate.send` and
+    // `JmsTemplate.send` produced nothing.
+    const receivers = [...javaProducers(JAVA_SOURCE), ...kotlinProducers(KOTLIN_SOURCE)].map(
+      (fact) => `${fact.receiverName}.${fact.methodName}`,
+    );
+    expect(receivers).not.toContain('rabbitTemplate.send');
+    expect(receivers).not.toContain('jmsTemplate.send');
+  });
+
+  it('resolves no destination while capturing it', () => {
+    const texts = [...javaProducers(JAVA_SOURCE), ...kotlinProducers(KOTLIN_SOURCE)].flatMap(
+      (fact) => fact.args ?? [],
+    );
+    // A resolver would have turned the constants and the injected name into
+    // addresses; capture must still be looking at the source spelling.
+    expect(texts.some((argument) => argument.text === 'Destinations.QUEUE')).toBe(true);
+    expect(texts.some((argument) => argument.text === 'ordersExchange')).toBe(true);
+    expect(texts.some((argument) => argument.text.includes('${app.messaging'))).toBe(false);
+  });
+});
