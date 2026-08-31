@@ -297,6 +297,28 @@ object ApiPaths {
       expect(resolveKotlinImportWithIndex('com.example.app.api.ApiPaths', overlaid)).toBeNull();
     });
 
+    it('rebuilds when overlay replaces a contributing file with an import-only module', () => {
+      const repo = repoOf({
+        [CONSTS_KEY]: CONSTS_SRC,
+        [CONTROLLER_KEY]: `package com.example.app.web
+const val ORDERS = "/local"
+`,
+      });
+      const index = buildKotlinConstantIndex(repo);
+      expect(index.byPackage.get('com.example.app.web')?.declarers.get('ORDERS')).toBe(
+        CONTROLLER_KEY,
+      );
+      const importOnly = extractKotlinModuleConstants(
+        parse(`package com.example.app.web
+
+import com.example.app.api.ApiPaths
+`),
+      );
+      const overlaid = overlayKotlinConstantIndex(index, CONTROLLER_KEY, importOnly);
+      expect(overlaid.byPackage.has('com.example.app.web')).toBe(false);
+      expect(overlaid.repo.get(CONTROLLER_KEY)).toBe(importOnly);
+    });
+
     it('prefers an exact declared package over a nested path with the same FQN', () => {
       const parentKey = 'src/main/kotlin/com/example/app/Parent.kt';
       const childKey = 'src/main/kotlin/com/example/app/api/ApiPaths.kt';

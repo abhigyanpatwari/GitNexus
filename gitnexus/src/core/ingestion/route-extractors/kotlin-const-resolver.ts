@@ -586,7 +586,7 @@ export function overlayKotlinConstantIndex(
   fileKey: string,
   mc: ModuleConstants,
 ): KotlinConstantIndex {
-  if (!contributesKotlinConstants(mc)) {
+  if (!contributesKotlinConstants(mc) && !index.repo.has(fileKey)) {
     return { ...index, repo: new KotlinConstantOverlay(index.repo, fileKey, mc) };
   }
   const repo = new Map(index.repo);

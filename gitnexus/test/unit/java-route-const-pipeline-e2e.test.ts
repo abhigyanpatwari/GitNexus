@@ -25,7 +25,7 @@
  *
  * Assertions (both runs):
  *  - the emitted Route node carries the FOLDED literal path, not the expr;
- *  - ALL THREE non-literal shapes survive (qualified, FQN-qualified, concat);
+ *  - ALL FOUR non-literal shapes survive (qualified, FQN-qualified, wildcard, concat);
  *  - a phantom `POST ` / empty path never appears (skip floor);
  *  - the warm run yields the IDENTICAL route set AND is a genuine replay
  *    (`usedWorkerPool === false`) — the harvest result survives the
