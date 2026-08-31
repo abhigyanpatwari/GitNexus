@@ -163,9 +163,10 @@ describe('streamed incremental writeback orchestration', () => {
         thrown = error;
       }
 
-      expect(thrown, `${(thrown as Error)?.stack ?? String(thrown)}\n${logs.join('\n')}`).toBeInstanceOf(
-        StreamedIncrementalWritebackError,
-      );
+      expect(
+        thrown,
+        `${(thrown as Error)?.stack ?? String(thrown)}\n${logs.join('\n')}`,
+      ).toBeInstanceOf(StreamedIncrementalWritebackError);
       expect(analyzeFailureMayHaveMutatedLiveIndex(thrown)).toBe(false);
       expect(fixture.saveMeta).not.toHaveBeenCalled();
       expect(fixture.initLbug).not.toHaveBeenCalled();

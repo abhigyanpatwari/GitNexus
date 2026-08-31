@@ -134,12 +134,16 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
     });
     const finalize = vi.fn<WorkerAnalysisDeps['assertAnalysisFinalized']>(async () => undefined);
 
-    await runWorkerAnalysis('/repo', {}, {
-      runFullAnalysis: failingRun,
-      assertAnalysisFinalized: finalize,
-      send,
-      claimTerminal: alwaysClaim,
-    });
+    await runWorkerAnalysis(
+      '/repo',
+      {},
+      {
+        runFullAnalysis: failingRun,
+        assertAnalysisFinalized: finalize,
+        send,
+        claimTerminal: alwaysClaim,
+      },
+    );
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({

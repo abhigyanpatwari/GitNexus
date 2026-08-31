@@ -241,10 +241,7 @@ export function shouldStopAfterWatchRefreshFailure(
   );
 }
 
-export function formatFatalWatchRefreshFailure(
-  error: unknown,
-  paths: readonly string[],
-): string {
+export function formatFatalWatchRefreshFailure(error: unknown, paths: readonly string[]): string {
   const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
   const reason =
     error instanceof StreamedIncrementalWritebackError

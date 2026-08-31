@@ -57,9 +57,7 @@ describe('watch loop fatal shutdown', () => {
   it('does not start another refresh while a slow watcher.close is in flight', async () => {
     const repo = await makeRepo();
     const refreshCalls: string[][] = [];
-    let loop!: WatchFileLoop;
-
-    loop = await startWatchFileLoop(
+    const loop: WatchFileLoop = await startWatchFileLoop(
       repo,
       10,
       async (paths) => {
@@ -75,12 +73,13 @@ describe('watch loop fatal shutdown', () => {
     loops.push(loop);
 
     expect(refreshCalls).toEqual([[]]);
-    lastWatcher!.emit('all', 'change', path.join(repo, 'src/a.ts'));
+    expect(lastWatcher).toBeDefined();
+    lastWatcher.emit('all', 'change', path.join(repo, 'src/a.ts'));
 
     await vi.waitFor(() => {
       expect(refreshCalls.length).toBe(2);
     });
-    expect(lastWatcher!.close).toHaveBeenCalled();
+    expect(lastWatcher.close).toHaveBeenCalled();
 
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(refreshCalls).toEqual([[], ['src/a.ts']]);
