@@ -441,6 +441,28 @@ export async function shouldMirrorSkillsToAgents(repoPath: string): Promise<bool
   }
 }
 
+const SKILL_PRESERVE_HINT =
+  'delete the file to refresh from the bundled template, or pass --skip-skills to skip skill install';
+
+async function readUtf8IfPresent(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/** Write bundled skill bytes unless an existing file already differs (#3080). */
+async function writeSkillUnlessDivergent(filePath: string, content: string): Promise<void> {
+  const existing = await readUtf8IfPresent(filePath);
+  if (existing !== null && existing !== content) {
+    logger.warn(`Preserved customized skill ${filePath}; ${SKILL_PRESERVE_HINT}.`);
+    return;
+  }
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, content, 'utf-8');
+}
+
 /**
  * Install GitNexus skills as direct children of .claude/skills/
  * Works natively with Claude Code, Cursor, and GitHub Copilot.
@@ -461,9 +483,6 @@ async function installSkills(
     const skillPath = path.join(skillDir, 'SKILL.md');
 
     try {
-      // Create skill directory
-      await fs.mkdir(skillDir, { recursive: true });
-
       // Try to read from package skills directory
       const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skill.name}.md`);
       let skillContent: string;
@@ -485,14 +504,13 @@ Use GitNexus tools to accomplish this task.
 `;
       }
 
-      await fs.writeFile(skillPath, skillContent, 'utf-8');
+      await writeSkillUnlessDivergent(skillPath, skillContent);
 
       // Mirror to .agents/skills/ for agents that read repo-local skills
       if (agentsMirror) {
         try {
-          const agentsSkillDir = path.join(repoPath, '.agents', 'skills', skill.name);
-          await fs.mkdir(agentsSkillDir, { recursive: true });
-          await fs.writeFile(path.join(agentsSkillDir, 'SKILL.md'), skillContent, 'utf-8');
+          const agentsSkillPath = path.join(repoPath, '.agents', 'skills', skill.name, 'SKILL.md');
+          await writeSkillUnlessDivergent(agentsSkillPath, skillContent);
         } catch (err) {
           logger.warn({ err }, `Warning: Could not mirror skill ${skill.name} to .agents/skills:`);
         }
@@ -503,8 +521,16 @@ Use GitNexus tools to accomplish this task.
       // Previous releases installed these known standard skills one level too
       // deep. Remove only the child owned by this installer; unknown siblings
       // under the legacy grouping directory may be user-authored and survive.
+      // Skip rm when nested SKILL.md exists and differs from the bundle (#3080).
       try {
-        await fs.rm(path.join(legacySkillsDir, skill.name), { recursive: true, force: true });
+        const legacyDir = path.join(legacySkillsDir, skill.name);
+        const nestedSkill = path.join(legacyDir, 'SKILL.md');
+        const nestedExisting = await readUtf8IfPresent(nestedSkill);
+        if (nestedExisting !== null && nestedExisting !== skillContent) {
+          logger.warn(`Preserved customized skill ${nestedSkill}; ${SKILL_PRESERVE_HINT}.`);
+        } else {
+          await fs.rm(legacyDir, { recursive: true, force: true });
+        }
       } catch (err) {
         logger.warn({ err }, `Warning: Could not remove legacy skill ${skill.name}:`);
       }
