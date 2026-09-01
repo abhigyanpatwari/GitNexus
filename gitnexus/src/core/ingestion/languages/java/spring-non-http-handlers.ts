@@ -17,7 +17,10 @@ export type JavaSpringNonHttpHandlerFact = SpringNonHttpHandlerFact<JavaAnnotati
  * Annotation arguments are read in a second pass, only for callables that
  * already carry a handler annotation, so the destination-bearing arguments
  * (`topics`, `queues`, `destination`, `cron`) reach the fact without adding
- * argument text to every annotation in the repository.
+ * structured argument text to every annotation in the repository. Java can
+ * decide that on the simple name alone; Kotlin runs the same two passes but
+ * widens the first one with the file's import aliases, because a Kotlin handler
+ * annotation may be written under a name no list can contain.
  */
 export function captureJavaSpringNonHttpHandlerFacts(
   classNode: SyntaxNode,

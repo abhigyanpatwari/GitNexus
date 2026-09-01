@@ -549,3 +549,197 @@ describe('handler annotations that name an event type or an integration channel'
     expect(texts.some((argument) => argument.text.includes('com.example'))).toBe(false);
   });
 });
+
+describe('Spring handler annotation argument error recovery', () => {
+  it('reports no Java arguments for an annotation that did not parse', () => {
+    // Recovery fills the hole after `groupId =` with a node the author never
+    // wrote — an empty `{}` array borrowed from the method body below — and the
+    // resulting fact reads exactly like a real one. Reporting no arguments says
+    // what is true: there is nothing here a resolver can use.
+    const annotations = javaHandlerAnnotations(`
+      package com.example.handlers;
+
+      public class Unfinished {
+          @KafkaListener(topics = "orders", groupId =
+          public void handle(String payload) {}
+
+          @KafkaListener(topics = "later")
+          public void later(String payload) {}
+      }
+    `);
+    const captured = annotations.flat().map((annotation) => annotation.args);
+    expect(captured).toEqual([undefined, [{ name: 'topics', text: '"later"' }]]);
+  });
+
+  it('reports no Java arguments for an annotation with an empty assignment', () => {
+    const annotations = javaHandlerAnnotations(`
+      package com.example.handlers;
+
+      public class Unfinished {
+          @KafkaListener(topics = "orders", groupId = )
+          public void handle(String payload) {}
+      }
+    `);
+    expect(annotations.flat().map((annotation) => annotation.args)).toEqual([undefined]);
+  });
+
+  it('reports no Kotlin arguments for an annotation that did not parse', () => {
+    const annotations = kotlinHandlerAnnotations(`
+      package com.example.handlers
+
+      class Unfinished {
+          @KafkaListener(topics = ["orders"], groupId = )
+          fun handle(payload: String) {}
+      }
+    `);
+    expect(annotations.flat().map((annotation) => annotation.args)).toEqual([undefined]);
+  });
+
+  it('keeps the three argument states apart from the unreadable one', () => {
+    // A recovered list collapses into the marker state deliberately, and the
+    // two states that describe real source stay distinct from each other.
+    const annotations = javaHandlerAnnotations(`
+      package com.example.handlers;
+
+      public class States {
+          @Scheduled
+          public void marker() {}
+
+          @Scheduled()
+          public void empty() {}
+
+          @Scheduled(cron = "0 * * * * *")
+          public void configured() {}
+      }
+    `);
+    expect(annotations.flat().map((annotation) => annotation.args)).toEqual([
+      undefined,
+      [],
+      [{ name: 'cron', text: '"0 * * * * *"' }],
+    ]);
+  });
+});
+
+describe('Spring handler annotation argument spellings', () => {
+  it('gives one Java annotation argument one spelling however the source wrapped it', () => {
+    const annotations = javaHandlerAnnotations(`
+      package com.example.handlers;
+
+      import com.example.handlers.support.Destinations;
+
+      public class WrappedArguments {
+          @KafkaListener(topics = Destinations.ORDERS)
+          public void single(String payload) {}
+
+          @KafkaListener(topics = Destinations
+              .ORDERS)
+          public void wrapped(String payload) {}
+      }
+    `);
+    expect(annotations.flat().map((annotation) => annotation.args)).toEqual([
+      [{ name: 'topics', text: 'Destinations.ORDERS' }],
+      [{ name: 'topics', text: 'Destinations.ORDERS' }],
+    ]);
+  });
+
+  it('gives one Kotlin annotation argument one spelling however the source wrapped it', () => {
+    const annotations = kotlinHandlerAnnotations(`
+      package com.example.handlers
+
+      import com.example.handlers.support.Destinations
+
+      class WrappedArguments {
+          @KafkaListener(topics = [Destinations.ORDERS])
+          fun single(payload: String) {}
+
+          @KafkaListener(topics = [Destinations
+              .ORDERS])
+          fun wrapped(payload: String) {}
+
+          @KafkaListener([Destinations
+              .ORDERS])
+          fun wrappedPositional(payload: String) {}
+      }
+    `);
+    expect(annotations.flat().map((annotation) => annotation.args)).toEqual([
+      [{ name: 'topics', text: '[Destinations.ORDERS]' }],
+      [{ name: 'topics', text: '[Destinations.ORDERS]' }],
+      [{ text: '[Destinations.ORDERS]' }],
+    ]);
+  });
+
+  it('keeps the newlines inside a multi-line string literal argument', () => {
+    const annotations = javaHandlerAnnotations(`
+      package com.example.handlers;
+
+      public class LiteralArguments {
+          @KafkaListener(topics = """
+line-a
+.line-b""")
+          public void handle(String payload) {}
+      }
+    `);
+    expect(annotations.flat().map((annotation) => annotation.args)).toEqual([
+      [{ name: 'topics', text: '"""\nline-a\n.line-b"""' }],
+    ]);
+  });
+});
+
+describe('Kotlin handler annotation argument scope', () => {
+  it('reads arguments for a handler and leaves an unrelated annotation without them', () => {
+    // Kotlin captures every annotated callable on purpose, but it does not have
+    // to read every annotation's arguments to do that. Only annotations that a
+    // handler callable carries pay for the structured copy.
+    const annotations = kotlinHandlerAnnotations(`
+      package com.example.handlers
+
+      import org.springframework.kafka.annotation.KafkaListener
+      import org.springframework.transaction.annotation.Transactional
+
+      class Mixed {
+          @Transactional("txManager")
+          fun notAHandler(payload: String) {}
+
+          @Transactional("txManager")
+          @KafkaListener(topics = ["orders"])
+          fun handler(payload: String) {}
+      }
+    `);
+    expect(
+      annotations.map((fact) => fact.map((annotation) => [annotation.name, annotation.args])),
+    ).toEqual([
+      [['Transactional', undefined]],
+      [
+        ['Transactional', [{ text: '"txManager"' }]],
+        ['KafkaListener', [{ name: 'topics', text: '["orders"]' }]],
+      ],
+    ]);
+  });
+
+  it('reads arguments for a handler annotation reached only through an import alias', () => {
+    // The alias is why Kotlin cannot prefilter callables by simple name. It is
+    // not a reason to skip the argument pass: the import header states which FQN
+    // the local name stands for, so the same relevance question can be answered
+    // about the imported name and carried back to the alias.
+    const annotations = kotlinHandlerAnnotations(`
+      package com.example.handlers
+
+      import org.springframework.context.event.EventListener as SpringEvent
+      import org.springframework.transaction.annotation.Transactional as Tx
+
+      class AliasedHandlers {
+          @SpringEvent(condition = "#root.args[0] != null")
+          fun aliasedEvent(event: Any) {}
+
+          @Tx("txManager")
+          fun notAHandler(payload: String) {}
+      }
+    `);
+    expect(
+      annotations.map((fact) => fact.map((annotation) => [annotation.name, annotation.args])),
+    ).toEqual([
+      [['SpringEvent', [{ name: 'condition', text: '"#root.args[0] != null"' }]]],
+      [['Tx', undefined]],
+    ]);
+  });
+});
