@@ -32,8 +32,9 @@ describe('generateGitNexusContent emits a read-path MUST (#3076)', () => {
 
   it('keeps the MUST beside the Spring Actuator Always-Do line', () => {
     const content = generateGitNexusContent('SpringProject', stats, { hasSpringActuator: true });
-    expect(content).toContain(mustLead);
-    expect(content).toContain('Spring Actuator runtime evidence is enabled');
+    expect(content).toContain(
+      `**${mustLead}** Prefer graph edges to grep strings; use text search to confirm gaps or literals.\n- Spring Actuator runtime evidence is enabled`,
+    );
     expect(content).not.toContain('Explore with');
   });
 
