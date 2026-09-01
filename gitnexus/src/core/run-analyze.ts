@@ -138,6 +138,10 @@ import {
   extractChangedSubgraph,
   computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
+import {
+  collectSpringConfigConsumerDriftFiles,
+  type PersistedSpringConfigConsumerRow,
+} from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
@@ -183,6 +187,8 @@ import {
 } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
+import { SPRING_CONFIG_UNRESOLVED_PREFIX } from './ingestion/frameworks/spring/config-bindings.js';
+import { classifySpringConfigFile } from './ingestion/pipeline-phases/spring-config.js';
 import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
@@ -477,6 +483,11 @@ export interface AnalyzeOptions {
    * consumer scan unchanged.
    */
   fetchWrappers?: string[];
+  /**
+   * Explicit local Spring Boot Actuator snapshot input (#2418), forwarded to
+   * the Spring enrichment phase. Undefined keeps static-only analysis.
+   */
+  springActuatorPath?: string;
   /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
@@ -1653,6 +1664,55 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Actuator snapshots are external runtime inputs and are intentionally not
+  // hashed or persisted. Rebuild on every enabled run so updated snapshots
+  // cannot hit the git freshness fast path; rebuild once when the option is
+  // removed so stale runtime-only evidence is cleared from the index.
+  const springActuatorRequested = options.springActuatorPath !== undefined;
+  const springActuatorPreviouslyEnabled = existingMeta?.springActuator?.enabled === true;
+  const previousActuatorInputs: unknown = existingMeta?.springActuator?.repoRelativeInputs;
+  const retainedActuatorInputs = Array.isArray(previousActuatorInputs)
+    ? previousActuatorInputs.filter((input): input is string => typeof input === 'string')
+    : [];
+  if (springActuatorRequested) {
+    const resolvedRepo = path.resolve(repoPath);
+    const resolvedInput = path.resolve(repoPath, options.springActuatorPath!);
+    const relativeInput = path.relative(resolvedRepo, resolvedInput);
+    const springActuatorRepoRelativeInput =
+      relativeInput === ''
+        ? '.'
+        : relativeInput === '..' ||
+            relativeInput.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeInput)
+          ? null
+          : relativeInput.split(path.sep).join('/');
+    if (
+      springActuatorRepoRelativeInput !== null &&
+      !retainedActuatorInputs.includes(springActuatorRepoRelativeInput)
+    ) {
+      retainedActuatorInputs.push(springActuatorRepoRelativeInput);
+    }
+    if (!options.force) {
+      log('Spring Actuator runtime enrichment requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (springActuatorPreviouslyEnabled) {
+    if (
+      !Array.isArray(previousActuatorInputs) ||
+      previousActuatorInputs.some((input) => typeof input !== 'string')
+    ) {
+      throw new Error(
+        'Cannot safely disable Spring Actuator runtime enrichment because the previous ' +
+          'index did not record whether its snapshot was inside the repository. Re-run once ' +
+          'with the previous --spring-actuator path, then run again without it.',
+      );
+    }
+    log('Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.');
+    options = { ...options, force: true };
+  }
+  const springActuatorScanExclusions =
+    retainedActuatorInputs.length === 0 ? undefined : retainedActuatorInputs;
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1727,6 +1787,7 @@ async function runFullAnalysisInner(
                   // Fast path does not re-run PDG. Using `options.pdg` would
                   // strip PDG bullets from AGENTS.md on a rename-only analyze.
                   hasPdg: existingMeta.pdg != null,
+                  hasSpringActuator: existingMeta.springActuator?.enabled === true,
                 },
               );
             } catch {
@@ -1958,6 +2019,8 @@ async function runFullAnalysisInner(
         : undefined,
       fetchWrappers: options.fetchWrappers,
       skipDerivedGraphPhases,
+      springActuatorPath: options.springActuatorPath,
+      springActuatorScanExclusions,
     },
   );
 
@@ -2395,6 +2458,37 @@ async function runFullAnalysisInner(
       //    and extractChangedSubgraph — asymmetry between the two would
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
+
+      const springConfigChanged =
+        hashDiff.toWrite.some((filePath) => classifySpringConfigFile(filePath) !== null) ||
+        hashDiff.deleted.some((filePath) => classifySpringConfigFile(filePath) !== null);
+      if (springConfigChanged) {
+        const unresolvedPrefix = escapeCypherString(SPRING_CONFIG_UNRESOLVED_PREFIX);
+        const persistedSpringConfigConsumers = (await executeQuery(
+          'MATCH (n:Property) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description ' +
+            'UNION ALL ' +
+            'MATCH (n:Class) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description ' +
+            'UNION ALL ' +
+            'MATCH (n:Record) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description',
+        )) as PersistedSpringConfigConsumerRow[];
+        const springConfigConsumerDriftFiles = collectSpringConfigConsumerDriftFiles(
+          pipelineResult.graph,
+          persistedSpringConfigConsumers,
+        );
+        for (const filePath of springConfigConsumerDriftFiles) effectiveWriteSet.add(filePath);
+        if (springConfigConsumerDriftFiles.size > 0) {
+          log(
+            `Incremental: +${springConfigConsumerDriftFiles.size} file(s) added for ` +
+              'Spring config consumer property drift',
+          );
+        }
+      }
 
       // `frameworkAnnotations` is derived from cross-file JVM visibility, so
       // an unchanged Class row can change when a same-package declaration is
@@ -3685,6 +3779,17 @@ async function runFullAnalysisInner(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       runnerIdentity,
+      // Persist only normalized repo-relative exclusions, never absolute paths
+      // or payloads. Keep them after runtime enrichment is disabled so a later
+      // ordinary scan cannot rediscover an unchanged snapshot as source/FTS.
+      ...(springActuatorRequested || retainedActuatorInputs.length > 0
+        ? {
+            springActuator: {
+              enabled: springActuatorRequested,
+              repoRelativeInputs: retainedActuatorInputs,
+            },
+          }
+        : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
@@ -3966,6 +4071,7 @@ async function runFullAnalysisInner(
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
             hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuatorPath !== undefined,
           },
         );
       } catch {

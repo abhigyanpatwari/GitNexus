@@ -462,6 +462,25 @@ export function walkNamedTree(node: SyntaxNode, cb: (node: SyntaxNode) => void):
   }
 }
 
+/**
+ * True when a node is, or contains, tree-sitter error recovery.
+ *
+ * After a syntax error the parser keeps going by guessing node boundaries, so
+ * the surviving tree stays WELL FORMED while describing text that was never
+ * written that way: an unterminated argument list can absorb the source of the
+ * next declaration into an `ERROR` child, and an assignment with no right-hand
+ * side gets a `MISSING` value node whose text is invented. A capture that reads
+ * such a subtree emits facts that look ordinary and are false, which is worse
+ * than emitting nothing — so callers that record source text verbatim should
+ * check this first and fail closed.
+ *
+ * `hasError` covers the subtree; `isMissing` is checked as well because a node
+ * inserted by recovery is the one case where the node itself carries the flag.
+ */
+export function hasRecoveredSyntax(node: SyntaxNode): boolean {
+  return node.hasError || node.isMissing;
+}
+
 /** Return the first matching ancestor unless a boundary ancestor is reached first. */
 export function findAncestorBeforeBoundary(
   node: SyntaxNode,

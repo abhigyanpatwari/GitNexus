@@ -65,6 +65,14 @@ export interface PipelineOptions {
    * Community/Process rows can be kept instead of wipe+rewrite.
    */
   skipDerivedGraphPhases?: boolean;
+  /**
+   * Explicit local Spring Boot Actuator snapshot input. Accepts a directory
+   * containing endpoint-named JSON files or a JSON bundle keyed by endpoint.
+   * Undefined keeps runtime enrichment completely disabled.
+   */
+  springActuatorPath?: string;
+  /** Repo-relative Actuator inputs retained only for a cleanup scan. */
+  springActuatorScanExclusions?: readonly string[];
   /** Per-advice Spring AOP candidate inspection cap. `0` disables this cap. */
   springAopMaxCandidateInspectionsPerAdvice?: number;
   /** Aggregate Spring AOP candidate inspection cap for one analysis. `0` disables this cap. */

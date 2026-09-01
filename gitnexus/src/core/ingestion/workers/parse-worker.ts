@@ -1578,6 +1578,11 @@ const processFileGroup = (
     }
     const provider = getProvider(language);
 
+    // Owner map for provider.synthesizeStructureMembers: type-declaration AST
+    // node id → graph node id for classes THIS file's capture loop materialized.
+    // Keyed by in-memory AST identity (never persisted); filled below.
+    const classOwnersByNodeId = new Map<number, string>();
+
     // #2687: ONE pass over `matches` yields both suppression sets — the
     // definition-name claims by rank (callable > Property > value), so the dedup
     // below cannot depend on tree-sitter's match order, and the concrete-typedef
@@ -1790,12 +1795,14 @@ const processFileGroup = (
           const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
             ? method
             : 'GET';
+          const handlerName = provider.decoratorRouteHandlerName?.(decoratorNode);
           const base = {
             filePath: file.path,
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row + lineOffset,
             ...(decoratorReceiver ? { decoratorReceiver } : {}),
+            ...(handlerName ? { handlerName } : {}),
           };
           if (decoratorArgStr) {
             // String-literal path (the fast path, unchanged). Empty-string
@@ -2900,6 +2907,7 @@ const processFileGroup = (
           {
             nodeLabel,
             nodeName,
+            filePath: file.path,
             definitionNode,
             parsedImports: parsedFile?.parsedImports ?? [],
             isExported,
@@ -2987,6 +2995,17 @@ const processFileGroup = (
           : {}),
       });
 
+      // Class-like definitions register their AST node id → graph node id for
+      // provider.synthesizeStructureMembers. The definition node is the same
+      // type-declaration AST node that the provider-specific planner receives.
+      if (
+        isClassLikeLabel &&
+        definitionNode &&
+        provider.classExtractor?.isTypeDeclaration(definitionNode)
+      ) {
+        classOwnersByNodeId.set(definitionNode.id, nodeId);
+      }
+
       // Object-literal callables remain file definitions as well as members of
       // their exported binding. Class members still use HAS_METHOD alone.
       const isTopLevelObjectCallable =
@@ -3070,7 +3089,12 @@ const processFileGroup = (
     // without booting a worker.
     if (provider.extractModuleConstants && shouldHarvestModuleConstants(provider, parseContent)) {
       const constants = provider.extractModuleConstants(tree);
-      if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
+      if (
+        constants.literals.size > 0 ||
+        constants.exprs.size > 0 ||
+        constants.imports.size > 0 ||
+        (constants.wildcardImports?.length ?? 0) > 0
+      ) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });
       }
     }
@@ -3090,6 +3114,19 @@ const processFileGroup = (
     if (provider.extractRouteInheritanceTypes) {
       const springTypes = provider.extractRouteInheritanceTypes(tree, file.path);
       if (springTypes.length > 0) (result.springTypes ??= []).push(...springTypes);
+    }
+
+    if (provider.synthesizeStructureMembers) {
+      const synthetic = provider.synthesizeStructureMembers(tree, file.path, classOwnersByNodeId);
+      for (const node of synthetic.nodes) {
+        result.nodes.push(node as ParsedNode);
+      }
+      for (const sym of synthetic.symbols) {
+        result.symbols.push(sym as ParsedSymbol);
+      }
+      for (const rel of synthetic.relationships) {
+        result.relationships.push(rel as ParsedRelationship);
+      }
     }
 
     // Vue: emit CALLS edges for components used in <template>

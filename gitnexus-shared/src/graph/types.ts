@@ -95,6 +95,12 @@ export type NodeProperties = {
   responseKeys?: string[];
   errorKeys?: string[];
   middleware?: string[];
+  /** Route runtime evidence is authoritative only when this is exactly true. */
+  runtimeConfirmed?: boolean;
+  /** Provenance of runtime evidence; presence alone does not imply confirmation. */
+  runtimeSource?: string;
+  /** Runtime result such as runtime-confirmed or handler-conflict. */
+  runtimeStatus?: string;
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
   /** BasicBlock: space-joined leaf callee names invoked in the block — the

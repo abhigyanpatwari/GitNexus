@@ -668,6 +668,8 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
   'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  'GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS',
+  'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO',
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
@@ -1372,6 +1374,7 @@ const analyzeCommandImpl = async (
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      springActuatorPath: options.springActuator,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free
@@ -1530,6 +1533,7 @@ const analyzeCommandImpl = async (
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options.stats === false,
               hasPdg: options.pdg === true,
+              hasSpringActuator: options.springActuator !== undefined,
             },
           );
         }

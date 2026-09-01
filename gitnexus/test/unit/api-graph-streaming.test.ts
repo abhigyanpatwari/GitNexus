@@ -3,6 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
+    executeQuery: vi.fn(),
     streamQuery: vi.fn(),
   },
 }));
@@ -12,7 +13,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   return { ...actual, ...lbugMocks };
 });
 
-import { ClientDisconnectedError, streamGraphNdjson } from '../../src/server/api.js';
+import { buildGraph, ClientDisconnectedError, streamGraphNdjson } from '../../src/server/api.js';
 
 const createMockResponse = (writeImpl?: (chunk: string) => boolean) => {
   const response = new EventEmitter() as any;
@@ -146,6 +147,9 @@ describe('streamGraphNdjson', () => {
       async (query: string, onRow: (row: any) => Promise<void>) => {
         if (query.includes('MATCH (n:`Route`)')) {
           expect(query).not.toContain('startLine');
+          expect(query).toContain('runtimeConfirmed');
+          expect(query).toContain('runtimeSource');
+          expect(query).toContain('runtimeStatus');
           await onRow({
             id: 'Route:/api/graph:GET',
             name: 'GET /api/graph',
@@ -153,6 +157,9 @@ describe('streamGraphNdjson', () => {
             responseKeys: ['nodes', 'relationships'],
             errorKeys: ['error'],
             middleware: ['withAuth'],
+            runtimeConfirmed: true,
+            runtimeSource: 'spring-actuator',
+            runtimeStatus: 'runtime-confirmed',
           });
           return 1;
         }
@@ -193,6 +200,9 @@ describe('streamGraphNdjson', () => {
           responseKeys: ['nodes', 'relationships'],
           errorKeys: ['error'],
           middleware: ['withAuth'],
+          runtimeConfirmed: true,
+          runtimeSource: 'spring-actuator',
+          runtimeStatus: 'runtime-confirmed',
           heuristicLabel: undefined,
           cohesion: undefined,
           symbolCount: undefined,
@@ -231,6 +241,88 @@ describe('streamGraphNdjson', () => {
         },
       },
     });
+  });
+
+  it('retries Route streaming with the legacy projection when runtime columns are absent', async () => {
+    let modernRouteAttempts = 0;
+    let legacyRouteAttempts = 0;
+    lbugMocks.streamQuery.mockImplementation(
+      async (query: string, onRow: (row: any) => Promise<void>) => {
+        if (!query.includes('MATCH (n:`Route`)')) return 0;
+        if (query.includes('runtimeConfirmed')) {
+          modernRouteAttempts++;
+          throw new Error('Binder exception: Cannot find property runtimeConfirmed for n.');
+        }
+        legacyRouteAttempts++;
+        await onRow({
+          id: 'Route:GET /legacy',
+          name: '/legacy',
+          filePath: 'src/LegacyController.java',
+          responseKeys: [],
+          errorKeys: [],
+          middleware: [],
+        });
+        return 1;
+      },
+    );
+
+    const writes: string[] = [];
+    const response = createMockResponse((chunk) => {
+      writes.push(chunk);
+      return true;
+    });
+
+    await expect(streamGraphNdjson(response, false)).resolves.toBeUndefined();
+
+    expect(modernRouteAttempts).toBe(1);
+    expect(legacyRouteAttempts).toBe(1);
+    const routeRecord = writes
+      .map((chunk) => JSON.parse(chunk))
+      .find((record) => record.data?.id === 'Route:GET /legacy');
+    expect(routeRecord).toMatchObject({
+      type: 'node',
+      data: { id: 'Route:GET /legacy' },
+    });
+    expect(routeRecord.data.properties.runtimeConfirmed).toBe(false);
+    expect(routeRecord.data.properties).not.toHaveProperty('runtimeSource');
+    expect(routeRecord.data.properties).not.toHaveProperty('runtimeStatus');
+  });
+
+  it('retries non-streaming Route loading with the legacy projection', async () => {
+    let modernRouteAttempts = 0;
+    let legacyRouteAttempts = 0;
+    lbugMocks.executeQuery.mockImplementation(async (query: string) => {
+      if (!query.includes('MATCH (n:`Route`)')) return [];
+      if (query.includes('runtimeConfirmed')) {
+        modernRouteAttempts++;
+        throw new Error('Binder exception: Cannot find property runtimeConfirmed for n.');
+      }
+      legacyRouteAttempts++;
+      return [
+        {
+          id: 'Route:GET /legacy',
+          name: '/legacy',
+          filePath: 'src/LegacyController.java',
+          responseKeys: [],
+          errorKeys: [],
+          middleware: [],
+        },
+      ];
+    });
+
+    const graph = await buildGraph(false);
+
+    expect(modernRouteAttempts).toBe(1);
+    expect(legacyRouteAttempts).toBe(1);
+    expect(graph.nodes).toContainEqual(
+      expect.objectContaining({
+        id: 'Route:GET /legacy',
+        label: 'Route',
+        properties: expect.objectContaining({
+          runtimeConfirmed: false,
+        }),
+      }),
+    );
   });
 
   // Taint/PDG substrate (#2080): BasicBlock has no name/content columns, so its

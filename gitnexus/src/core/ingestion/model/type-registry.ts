@@ -70,7 +70,7 @@ export const createTypeRegistry = (): MutableTypeRegistry => {
   const classByName = new Map<string, SymbolDefinition[]>();
   const classByQualifiedName = new Map<string, SymbolDefinition[]>();
   const implByName = new Map<string, SymbolDefinition[]>();
-  const nestedByOwner = new Map<string, SymbolDefinition[]>();
+  const nestedByOwner = new Map<string, Map<string, SymbolDefinition[]>>();
 
   const lookupClassByName = (name: string): SymbolDefinition[] => {
     return classByName.get(name) ?? [];
@@ -88,7 +88,7 @@ export const createTypeRegistry = (): MutableTypeRegistry => {
     ownerNodeId: string,
     simpleName: string,
   ): readonly SymbolDefinition[] => {
-    return nestedByOwner.get(`${ownerNodeId}\0${simpleName}`) ?? EMPTY;
+    return nestedByOwner.get(ownerNodeId)?.get(simpleName) ?? EMPTY;
   };
 
   const registerClass = (name: string, qualifiedName: string, def: SymbolDefinition): void => {
@@ -121,12 +121,16 @@ export const createTypeRegistry = (): MutableTypeRegistry => {
     simpleName: string,
     def: SymbolDefinition,
   ): void => {
-    const key = `${ownerNodeId}\0${simpleName}`;
-    const existing = nestedByOwner.get(key);
+    let byName = nestedByOwner.get(ownerNodeId);
+    if (!byName) {
+      byName = new Map();
+      nestedByOwner.set(ownerNodeId, byName);
+    }
+    const existing = byName.get(simpleName);
     if (existing) {
       existing.push(def);
     } else {
-      nestedByOwner.set(key, [def]);
+      byName.set(simpleName, [def]);
     }
   };
 
