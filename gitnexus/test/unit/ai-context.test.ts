@@ -547,7 +547,10 @@ Old content here.
     const skipDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-skip-nested-'));
     const skipStorage = path.join(skipDir, '.gitnexus');
     const nested = path.join(skipDir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
-    const bundled = await fs.readFile(path.join(__dirname, '../../skills/gitnexus-cli.md'), 'utf-8');
+    const bundled = await fs.readFile(
+      path.join(__dirname, '../../skills/gitnexus-cli.md'),
+      'utf-8',
+    );
     await fs.mkdir(nested, { recursive: true });
     await fs.mkdir(skipStorage, { recursive: true });
     await fs.writeFile(path.join(nested, 'SKILL.md'), bundled, 'utf-8');
@@ -621,7 +624,10 @@ Old content here.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-ident-'));
     const storage = path.join(dir, '.gitnexus');
     const dest = path.join(dir, '.claude', 'skills', 'gitnexus-cli', 'SKILL.md');
-    const bundled = await fs.readFile(path.join(__dirname, '../../skills/gitnexus-cli.md'), 'utf-8');
+    const bundled = await fs.readFile(
+      path.join(__dirname, '../../skills/gitnexus-cli.md'),
+      'utf-8',
+    );
     await fs.mkdir(path.dirname(dest), { recursive: true });
     await fs.mkdir(storage, { recursive: true });
     await fs.writeFile(dest, bundled, 'utf-8');
@@ -639,7 +645,10 @@ Old content here.
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-nested-ident-'));
     const storage = path.join(dir, '.gitnexus');
     const nested = path.join(dir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
-    const bundled = await fs.readFile(path.join(__dirname, '../../skills/gitnexus-cli.md'), 'utf-8');
+    const bundled = await fs.readFile(
+      path.join(__dirname, '../../skills/gitnexus-cli.md'),
+      'utf-8',
+    );
     await fs.mkdir(nested, { recursive: true });
     await fs.mkdir(storage, { recursive: true });
     await fs.writeFile(path.join(nested, 'SKILL.md'), bundled, 'utf-8');
