@@ -10,20 +10,25 @@ describe('generateGitNexusContent emits a read-path MUST (#3076)', () => {
   const mustLead =
     'MUST use `query({search_query: "concept"})`, `context({name: "symbolName"})`, or `impact` for read-only questions about callers, dependencies, imports, blast radius, or execution flow.';
 
-  it.each([true, false])('renders the MUST and drops Explore/Use bullets when hasPdg=%s', (hasPdg) => {
-    const content = generateGitNexusContent('ReadPathProject', stats, { hasPdg });
+  it.each([true, false])(
+    'renders the MUST and drops Explore/Use bullets when hasPdg=%s',
+    (hasPdg) => {
+      const content = generateGitNexusContent('ReadPathProject', stats, { hasPdg });
 
-    expect(content).toContain(mustLead);
-    expect(content).toContain('Prefer graph edges to grep strings');
-    expect(content).toContain('use text search to confirm gaps or literals');
-    expect(content).not.toContain('Explore with');
-    expect(content).not.toContain('Use `context({name: "symbolName"})` for callers, callees, and flows.');
-    expect(content).toContain('query({search_query: "concept"})');
-    expect(content).toContain('context({name: "symbolName"})');
-    if (hasPdg) {
-      expect(content).toContain('pdg_query');
-    }
-  });
+      expect(content).toContain(mustLead);
+      expect(content).toContain('Prefer graph edges to grep strings');
+      expect(content).toContain('use text search to confirm gaps or literals');
+      expect(content).not.toContain('Explore with');
+      expect(content).not.toContain(
+        'Use `context({name: "symbolName"})` for callers, callees, and flows.',
+      );
+      expect(content).toContain('query({search_query: "concept"})');
+      expect(content).toContain('context({name: "symbolName"})');
+      if (hasPdg) {
+        expect(content).toContain('pdg_query');
+      }
+    },
+  );
 
   it('keeps the MUST beside the Spring Actuator Always-Do line', () => {
     const content = generateGitNexusContent('SpringProject', stats, { hasSpringActuator: true });
