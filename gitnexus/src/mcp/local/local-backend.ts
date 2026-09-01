@@ -29,6 +29,7 @@ import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
+import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -325,7 +326,6 @@ function normalizeToolParams(
  * The two copies had drifted — this one recognized no C#, Java or Swift test
  * convention, so `includeTests: false` silently failed to filter them.
  */
-import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
 export { isTestFilePath };
 
 /** Valid LadybugDB node labels for safe Cypher query construction */

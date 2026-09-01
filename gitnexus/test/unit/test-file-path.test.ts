@@ -14,6 +14,7 @@ describe('isTestFilePath — shared predicate', () => {
   it('normalizes Windows separators and casing', () => {
     expect(isTestFilePath('SRC\\Test\\FooTests.cs')).toBe(true);
     expect(isTestFilePath('pkg\\thing_test.go')).toBe(true);
+    expect(isTestFilePath('src\\Widgets.Tests\\WidgetTests.cs')).toBe(true);
   });
 
   // These were recognized by entry-point scoring but NOT by the MCP copy, so
@@ -27,6 +28,7 @@ describe('isTestFilePath — shared predicate', () => {
     'src/Widgets.IntegrationTests/Thing.cs',
     'tests/Feature/LoginTest.php',
     'tests/Unit/ThingSpec.php',
+    'tests/Feature/Support/FakeGateway.php',
   ]) {
     it(`detects a test path the MCP copy used to miss: ${p}`, () => {
       expect(isTestFilePath(p)).toBe(true);
@@ -35,7 +37,7 @@ describe('isTestFilePath — shared predicate', () => {
 
   // These were recognized by the MCP copy but NOT by entry-point scoring, so
   // they could be selected as process entry points.
-  for (const p of ['pkg/fixtures/sample.py', 'tests/conftest.py']) {
+  for (const p of ['tests/fixtures/sample.py', 'tests/conftest.py']) {
     it(`detects a test path entry-point scoring used to miss: ${p}`, () => {
       expect(isTestFilePath(p)).toBe(true);
     });
@@ -46,6 +48,12 @@ describe('isTestFilePath — shared predicate', () => {
     'src/core/ingestion/utils/test-file-path.ts',
     'pkg/service/handler.go',
     'app/models/user.rb',
+    'Contest.swift',
+    'Contest.cs',
+    'Protest.cs',
+    'Latest.php',
+    'src/fixtures/schema.ts',
+    'src/fruitests/helpers.swift',
   ]) {
     it(`does not classify production code as test: ${p}`, () => {
       expect(isTestFilePath(p)).toBe(false);
@@ -62,7 +70,9 @@ describe('test-file classification has exactly one implementation', () => {
     'ios/MyAppTests/LoginTests.swift',
     'src/Widgets.Tests/WidgetTests.cs',
     'tests/conftest.py',
-    'pkg/fixtures/sample.py',
+    'tests/fixtures/sample.py',
+    'src/fixtures/schema.ts',
+    'Contest.swift',
     'spec/models/user_spec.rb',
     'pkg/thing_test.go',
     'tests/Feature/LoginTest.php',
@@ -88,9 +98,7 @@ describe('shared predicate stays dependency-free', () => {
       new URL('../../src/core/ingestion/utils/test-file-path.ts', import.meta.url),
       'utf8',
     );
-    const imports = src
-      .split('\n')
-      .filter((l) => /^\s*(import|export)\s.*\sfrom\s/.test(l) || /^\s*import\s*\(/.test(l));
+    const imports = src.split('\n').filter((l) => /^\s*(import\b|export\s.*\sfrom\s)/.test(l));
     expect(imports).toEqual([]);
   });
 });
