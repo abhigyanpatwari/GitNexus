@@ -16,9 +16,18 @@ export interface SpringNonHttpHandlerAnnotationFact {
   /** Kotlin use-site targets describe generated/property elements, not the callable. */
   readonly useSiteTarget?: string;
   /**
-   * Annotation arguments in source order, or absent when the annotation was
-   * written without an argument list (`@Scheduled`). An empty array means an
-   * empty list was written (`@Scheduled()`), which is a different fact.
+   * Annotation arguments in source order. An empty array always means an empty
+   * list was written (`@Scheduled()`), which is a different fact from absence —
+   * but absence has TWO causes, and only one of them is a statement about the
+   * source. Either the annotation was written without an argument list
+   * (`@Scheduled`), or arguments were never read for this callable.
+   *
+   * They are read only for a callable that carries a handler annotation. Java
+   * produces facts for no other callable, so there absence does mean "no list
+   * was written". Kotlin also produces a fact for a merely annotated function —
+   * it captures those without a name prefilter so an import alias cannot hide a
+   * handler — and on those facts arguments are absent however the annotation
+   * was written.
    *
    * The values keep their source spelling, with one deliberate exception:
    * `normalizeSpringFactText` trims them and collapses whitespace around the

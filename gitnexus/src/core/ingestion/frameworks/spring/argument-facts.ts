@@ -23,7 +23,9 @@
  *  - Absence. The text parser answers `[]` both for `@Scheduled` and for
  *    `@Scheduled()`, because a string cannot tell "no list" from "empty list"
  *    without re-deriving it. Capture keeps the two apart — absent versus `[]` —
- *    and downstream code is expected to rely on that distinction.
+ *    so downstream code can rely on the distinction wherever arguments were
+ *    read at all. A capture that reads them for only some of its facts says so
+ *    on its own `args` field.
  *  - Scope. This fact also describes CALL arguments (`template.send(topic, p)`),
  *    which the annotation parser has no notion of.
  *
@@ -34,10 +36,12 @@ export interface SpringArgumentFact {
   /**
    * Argument name for a named argument, absent for a positional one.
    *
-   * The two forms carry the same information in different places: an annotation
-   * names its destination (`@KafkaListener(topics = ...)` versus
-   * `@RabbitListener(queues = ...)`), while a template call gives it by
-   * position (`kafkaTemplate.send(topic, payload)`).
+   * Both forms occur, and where the destination sits differs by construct. An
+   * annotation names it (`@KafkaListener(topics = ...)` versus
+   * `@RabbitListener(queues = ...)`). A call normally gives it by position
+   * (`kafkaTemplate.send(topic, payload)`) — always so in Java, which has no
+   * named arguments — but a Kotlin call may name its arguments whenever the
+   * callee is itself declared in Kotlin, and then the key is captured too.
    */
   readonly name?: string;
   /**
