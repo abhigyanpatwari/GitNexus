@@ -17,7 +17,7 @@ import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { buildGraphNodeLookup } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
 import { createCalleeIdAccumulator } from '../../../src/core/ingestion/scope-resolution/graph-bridge/callee-id-sink.js';
-import { emitCallableValueFlow } from '../../../src/core/ingestion/scope-resolution/passes/callable-value-flow.js';
+import { emitCallableValueFlow, collectDeferredIndirectCollection } from '../../../src/core/ingestion/scope-resolution/passes/callable-value-flow.js';
 
 const FILE = 'chain.ts';
 const MODULE = 'scope:module' as ScopeId;
@@ -198,5 +198,30 @@ describe('callable-value-flow dependency worklist', () => {
         (relationship) => twoN.graph.getNode(relationship.targetId)?.properties.name,
       ),
     ).toEqual(['target']);
+  });
+});
+
+describe('collectDeferredIndirectCollection', () => {
+  it('fills call signatures from the first referenceSites walk', () => {
+    const parsed: ParsedFile = {
+      filePath: FILE,
+      moduleScope: MODULE,
+      scopes: [],
+      parsedImports: [],
+      localDefs: [],
+      referenceSites: [
+        {
+          name: 'target',
+          kind: 'call',
+          callForm: 'free',
+          atRange: range(1),
+          inScope: MODULE,
+          arity: 0,
+        },
+      ],
+      callableFlowSites: [],
+    };
+    const collected = collectDeferredIndirectCollection([parsed]);
+    expect(collected.callSignaturesBySite.get(`${FILE}:1:0`)).toEqual({ parameterCount: 0 });
   });
 });
