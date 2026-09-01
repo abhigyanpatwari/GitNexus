@@ -49,13 +49,13 @@ export interface MutableFieldRegistry extends FieldRegistry {
 // ---------------------------------------------------------------------------
 
 export const createFieldRegistry = (): MutableFieldRegistry => {
-  const fieldByOwner = new Map<string, SymbolDefinition[]>();
+  const fieldByOwner = new Map<string, Map<string, SymbolDefinition[]>>();
 
   const lookupAllByOwner = (
     ownerNodeId: string,
     fieldName: string,
   ): readonly SymbolDefinition[] => {
-    return fieldByOwner.get(`${ownerNodeId}\0${fieldName}`) ?? EMPTY;
+    return fieldByOwner.get(ownerNodeId)?.get(fieldName) ?? EMPTY;
   };
 
   const lookupFieldByOwner = (
@@ -67,12 +67,16 @@ export const createFieldRegistry = (): MutableFieldRegistry => {
   };
 
   const register = (ownerNodeId: string, fieldName: string, def: SymbolDefinition): void => {
-    const key = `${ownerNodeId}\0${fieldName}`;
-    const existing = fieldByOwner.get(key);
+    let byName = fieldByOwner.get(ownerNodeId);
+    if (!byName) {
+      byName = new Map();
+      fieldByOwner.set(ownerNodeId, byName);
+    }
+    const existing = byName.get(fieldName);
     if (existing) {
       existing.push(def);
     } else {
-      fieldByOwner.set(key, [def]);
+      byName.set(fieldName, [def]);
     }
   };
 
