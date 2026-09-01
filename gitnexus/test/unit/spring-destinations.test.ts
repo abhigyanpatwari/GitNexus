@@ -661,20 +661,43 @@ describe('producer argument selection', () => {
       });
     });
 
-    it('is not decided by arity alone: a trailing MessagePostProcessor keeps arg 0', () => {
-      // `convertAndSend(routingKey, message, postProcessor)` is three arguments
-      // but has no exchange. Reading it positionally would publish the ROUTING
-      // KEY as an exchange and the payload expression as an address. `payload`
-      // is a lowercase bare identifier, which is NOT confident evidence of an
-      // address, so slot 1 is rejected and slot 0 stays the routing key.
+    it('REFUSES at three arguments when slot 1 is not confidently an address', () => {
+      // `convertAndSend(routingKey, message, postProcessor)` and
+      // `convertAndSend(routingKey, message, correlationData)` are three
+      // arguments with no exchange, and they are indistinguishable from
+      // `convertAndSend(exchange, routingKey, message)` by arity. The former
+      // code fell back to slot 0 here, which is what published an EXCHANGE as
+      // an address; there is no fallback now.
       const selection = selectProducerDestinationArguments({
         template: 'rabbit',
         methodName: 'convertAndSend',
         args: args('"orders.created"', 'payload', 'postProcessor'),
       });
-      expect(selection.candidates).toHaveLength(1);
-      expect(selection.candidates[0]).toMatchObject({ argIndex: 0, rawText: '"orders.created"' });
-      expect(selection.candidates[0]?.exchange).toBeUndefined();
+      expect(selection.candidates).toEqual([]);
+      expect(selection.refusals.map((r) => r.reason)).toEqual([
+        'producer-argument-not-address-shaped',
+      ]);
+      // The refusal names the slot that failed, not an arbitrary one.
+      expect(selection.refusals[0]).toMatchObject({ argIndex: 1 });
+    });
+
+    it('never publishes the EXCHANGE as an address when the routing key is a variable', () => {
+      // The reproduction, in the three spellings it was reproduced in. Each of
+      // these is an ordinary Spring AMQP call whose routing key happens to be a
+      // variable; the last two even fold to a real exchange name, so the graph
+      // got a plausible-looking wrong address that can join a
+      // @RabbitListener(queues = "orders").
+      for (const exchange of ['"orders.exchange"', 'Exchanges.ORDERS', 'ORDERS_EXCHANGE']) {
+        const selection = selectProducerDestinationArguments({
+          template: 'rabbit',
+          methodName: 'convertAndSend',
+          args: args(exchange, 'routingKey', 'event'),
+        });
+        expect(selection.candidates).toEqual([]);
+        expect(selection.refusals.map((r) => r.reason)).toEqual([
+          'producer-argument-not-address-shaped',
+        ]);
+      }
     });
 
     it('accepts a screaming-snake constant as confident evidence at three arguments', () => {
@@ -690,22 +713,43 @@ describe('producer argument selection', () => {
       });
     });
 
-    it('reads four arguments as unambiguously exchange + routingKey', () => {
-      // Only the exchange overload reaches four arguments, so slot 1 needs no
-      // confident spelling and a lowercase constant reference is let through.
-      const selection = selectProducerDestinationArguments({
+    it('gates four arguments exactly like three', () => {
+      // Arity does not fix the overload here either:
+      // `(routingKey, message, postProcessor, correlationData)` also reaches
+      // four, so the permissive gate that used to apply at this arity let a
+      // payload through as an address.
+      const permissiveOnly = selectProducerDestinationArguments({
         template: 'rabbit',
         methodName: 'convertAndSend',
         args: args('"orders.exchange"', 'routingKey', 'payload', 'postProcessor'),
       });
-      expect(selection.candidates[0]).toMatchObject({
+      expect(permissiveOnly.candidates).toEqual([]);
+      expect(permissiveOnly.refusals.map((r) => r.reason)).toEqual([
+        'producer-argument-not-address-shaped',
+      ]);
+
+      const confident = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: args('"orders.exchange"', '"orders.created"', 'payload', 'postProcessor'),
+      });
+      expect(confident.candidates[0]).toMatchObject({
         argIndex: 1,
-        rawText: 'routingKey',
+        rawText: '"orders.created"',
         exchange: 'orders.exchange',
       });
     });
 
-    it('refuses when neither leading argument is confidently an address', () => {
+    it('applies the same rule to the five-argument overload', () => {
+      const selection = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: args('"x"', '"orders.created"', 'payload', 'postProcessor', 'correlation'),
+      });
+      expect(selection.candidates[0]).toMatchObject({ argIndex: 1, exchange: 'x' });
+    });
+
+    it('reads two arguments as routingKey + message only on confident evidence', () => {
       const selection = selectProducerDestinationArguments({
         template: 'rabbit',
         methodName: 'convertAndSend',
@@ -714,6 +758,117 @@ describe('producer argument selection', () => {
       expect(selection.candidates).toEqual([]);
       expect(selection.refusals.map((r) => r.reason)).toEqual([
         'producer-argument-not-address-shaped',
+      ]);
+    });
+
+    it('documents, rather than hides, the one ambiguity it cannot settle', () => {
+      // `convertAndSend("orders.rk", "body", correlationData)` — a String
+      // payload is syntactically indistinguishable from a routing key. The
+      // exchange reading is taken because that overload is the one that
+      // idiomatically carries two leading strings. This test exists to pin the
+      // CHOSEN reading so a future change to it is deliberate, not to claim the
+      // module is certain.
+      const selection = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: args('"orders.rk"', '"body"', 'correlationData'),
+      });
+      expect(selection.candidates[0]).toMatchObject({
+        argIndex: 1,
+        rawText: '"body"',
+        exchange: 'orders.rk',
+      });
+    });
+  });
+
+  describe('named arguments', () => {
+    it('selects by NAME, not by position', () => {
+      // Kotlin argument lists need not be in parameter order.
+      // `kafkaTemplate.send(data = "payload", topic = "orders")` selected
+      // args[0] and published the PAYLOAD as the address.
+      const selection = selectProducerDestinationArguments({
+        template: 'kafka',
+        methodName: 'send',
+        args: [
+          { name: 'data', text: '"payload"' },
+          { name: 'topic', text: '"orders"' },
+        ],
+      });
+      expect(selection.candidates).toHaveLength(1);
+      expect(selection.candidates[0]).toMatchObject({
+        argIndex: 1,
+        argName: 'topic',
+        rawText: '"orders"',
+      });
+    });
+
+    it('reads a rabbit exchange passed by name as provenance, not as the address', () => {
+      const selection = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: [
+          { name: 'message', text: 'payload' },
+          { name: 'exchange', text: '"orders.exchange"' },
+          { name: 'routingKey', text: '"orders.created"' },
+        ],
+      });
+      expect(selection.candidates[0]).toMatchObject({
+        rawText: '"orders.created"',
+        exchange: 'orders.exchange',
+      });
+    });
+
+    it('knows the destination parameter of the other templates', () => {
+      expect(
+        selectProducerDestinationArguments({
+          template: 'jms',
+          methodName: 'convertAndSend',
+          args: [
+            { name: 'message', text: 'payload' },
+            { name: 'destinationName', text: '"orders.jms"' },
+          ],
+        }).candidates[0],
+      ).toMatchObject({ rawText: '"orders.jms"' });
+      expect(
+        selectProducerDestinationArguments({
+          template: 'stream-bridge',
+          methodName: 'send',
+          args: [
+            { name: 'data', text: 'payload' },
+            { name: 'bindingName', text: '"orders-out-0"' },
+          ],
+        }).candidates[0],
+      ).toMatchObject({ rawText: '"orders-out-0"' });
+    });
+
+    it('still reads a partially named list that puts the destination first', () => {
+      // `send("orders", data = payload)` is legal — positional arguments
+      // precede named ones — and slot 0 really is the topic. Refusing every
+      // list that contains any name at all would have cost this.
+      const selection = selectProducerDestinationArguments({
+        template: 'kafka',
+        methodName: 'send',
+        args: [{ text: '"orders"' }, { name: 'data', text: 'payload' }],
+      });
+      expect(selection.candidates).toHaveLength(1);
+      expect(selection.candidates[0]).toMatchObject({ argIndex: 0, rawText: '"orders"' });
+    });
+
+    it('refuses when the POSITIONAL slot is named after something else', () => {
+      // The residual of the rule above: no name matched a destination
+      // parameter, so the positional reading ran — and landed on an argument
+      // whose own name contradicts it.
+      const selection = selectProducerDestinationArguments({
+        template: 'kafka',
+        methodName: 'send',
+        args: [
+          { name: 'data', text: '"payload"' },
+          { name: 'partition', text: '0' },
+        ],
+      });
+      expect(selection.candidates).toEqual([]);
+      expect(selection.refusals.map((r) => r.reason)).toEqual([
+        'producer-named-argument-unrecognized',
       ]);
     });
   });

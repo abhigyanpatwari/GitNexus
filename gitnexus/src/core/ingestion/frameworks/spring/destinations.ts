@@ -601,6 +601,27 @@ export function selectProducerDestinationArguments(fact: {
       ...(exchange === undefined ? {} : { exchange }),
     });
   };
+  /**
+   * Accept a slot chosen by POSITION.
+   *
+   * Refuses when the argument in that slot carries a name — a named list need
+   * not be in parameter order, so a name in the destination slot that is not a
+   * destination parameter contradicts the position, and reading the position
+   * anyway is how `send(data = "payload", topic = "orders")` published the
+   * payload. The name-matching pre-pass above has already had its chance.
+   */
+  const acceptPositional = (argIndex: number, exchange?: string): void => {
+    const arg = args[argIndex] as SpringArgumentFact;
+    if (arg.name !== undefined) {
+      refuse('producer-named-argument-unrecognized', {
+        rawText: arg.text,
+        argIndex,
+        argName: arg.name,
+      });
+      return;
+    }
+    accept(argIndex, exchange);
+  };
   const textAt = (index: number): string => (args[index] as SpringArgumentFact).text;
   const confident = (index: number): boolean =>
     index < args.length && isConfidentAddressShape(textAt(index));
@@ -608,25 +629,22 @@ export function selectProducerDestinationArguments(fact: {
     refuse('producer-argument-not-address-shaped', { rawText: textAt(index), argIndex: index });
   };
 
-  // ── Named arguments: the name decides, or nothing does ──────────────────
-  if (args.some((arg) => arg.name !== undefined)) {
-    const names = PRODUCER_DESTINATION_PARAMETERS[fact.template];
-    const destinationIndex = args.findIndex(
-      (arg) => arg.name !== undefined && names.includes(arg.name),
-    );
-    if (destinationIndex === -1) {
-      // Some argument was named and none of them is a destination parameter.
-      // The positional reading cannot be trusted — a named list need not be in
-      // parameter order — so this refuses instead of guessing.
-      refuse('producer-named-argument-unrecognized', { rawText: textAt(0), argIndex: 0 });
-      return { candidates, refusals };
-    }
+  // ── A name beats a position ─────────────────────────────────────────────
+  // When an argument names a destination parameter, that argument IS the
+  // destination wherever it sits in the list. Only when no name matches does
+  // the positional reasoning below run, and `acceptPositional` then refuses if
+  // the slot it lands on turns out to be named after something else.
+  const destinationNames = PRODUCER_DESTINATION_PARAMETERS[fact.template];
+  const namedIndex = args.findIndex(
+    (arg) => arg.name !== undefined && destinationNames.includes(arg.name),
+  );
+  if (namedIndex !== -1) {
     const exchangeIndex =
       fact.template === 'rabbit'
         ? args.findIndex((arg) => arg.name === RABBIT_EXCHANGE_PARAMETER)
         : -1;
     accept(
-      destinationIndex,
+      namedIndex,
       exchangeIndex === -1 ? undefined : unquoteForProvenance(textAt(exchangeIndex)),
     );
     return { candidates, refusals };
@@ -650,7 +668,7 @@ export function selectProducerDestinationArguments(fact: {
     if (args.length === 2) {
       // (routingKey, message) versus (message, postProcessor).
       if (confident(0)) {
-        accept(0);
+        acceptPositional(0);
         return { candidates, refusals };
       }
       refuseShape(0);
@@ -670,7 +688,7 @@ export function selectProducerDestinationArguments(fact: {
       // and a `@RabbitListener` names a QUEUE, so the two sides do not join on
       // the exchange anyway. Which queue an exchange/key pair reaches is decided
       // by bindings this index does not read.
-      accept(1, unquoteForProvenance(textAt(0)));
+      acceptPositional(1, unquoteForProvenance(textAt(0)));
       return { candidates, refusals };
     }
     refuseShape(1);
@@ -694,7 +712,7 @@ export function selectProducerDestinationArguments(fact: {
     refuseShape(0);
     return { candidates, refusals };
   }
-  accept(0);
+  acceptPositional(0);
   return { candidates, refusals };
 }
 

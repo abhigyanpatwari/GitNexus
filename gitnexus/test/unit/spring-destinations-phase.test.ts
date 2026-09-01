@@ -4,6 +4,7 @@ import {
   setJavaSpringMessageProducerFacts,
   setJavaSpringNonHttpHandlerFacts,
 } from '../../src/core/ingestion/languages/java/capture-side-channel.js';
+import { SPRING_CONFIG_DESCRIPTION } from '../../src/core/ingestion/frameworks/spring/config-bindings.js';
 import { springDestinationsPhase } from '../../src/core/ingestion/pipeline-phases/spring-destinations.js';
 import type { SpringDestinationsOutput } from '../../src/core/ingestion/pipeline-phases/spring-destinations.js';
 import type {
@@ -180,6 +181,163 @@ describe('springDestinations phase', () => {
     const output = await run(graph, [filePath]);
     expect(output.unresolvedDestinations).toBe(2);
     expect(output.edges).toBe(2);
+  });
+
+  it('keys two callables that START ON ONE LINE to two nodes', async () => {
+    // `void a() { k.send("${x}", p); } void b() { k.send("${x}", p); }` on one
+    // line. The key used to be file + owner START LINE + argument position, so
+    // both publishes landed on one node and both hung an edge off it.
+    const filePath = 'src/OneLine.java';
+    const range = { startLine: 3, startCol: 4, endLine: 3, endCol: 40 } as const;
+    setJavaSpringNonHttpHandlerFacts(filePath, []);
+    setJavaSpringMessageProducerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#a` as never,
+        ownerRange: range,
+        template: 'kafka',
+        receiverName: 'kafkaTemplate',
+        methodName: 'send',
+        args: [{ text: '"${app.topic}"' }, { text: 'payload' }],
+      },
+      {
+        ownerScopeId: `${filePath}#b` as never,
+        ownerRange: { ...range, startCol: 41, endCol: 80 },
+        template: 'kafka',
+        receiverName: 'kafkaTemplate',
+        methodName: 'send',
+        args: [{ text: '"${app.topic}"' }, { text: 'payload' }],
+      },
+    ]);
+    graph.addNode({
+      id: generateId('Method', `${filePath}:a`),
+      label: 'Method',
+      properties: { name: 'a', filePath, startLine: 2, endLine: 2 },
+    });
+
+    const output = await run(graph, [filePath]);
+    expect(output.unresolvedDestinations).toBe(2);
+    const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
+    expect(new Set(nodes.map((node) => node.id)).size).toBe(2);
+  });
+
+  it('keys two handlers apart even when neither fact carried an owner range', async () => {
+    // `ownerRange` is OPTIONAL on a handler fact and required on a producer.
+    // Keyed on the line alone the position degraded to 0 for the whole file and
+    // every consumer in it collapsed onto one node, invisibly.
+    const filePath = 'src/NoRange.java';
+    setJavaSpringNonHttpHandlerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#first` as never,
+        ownerFilePath: filePath,
+        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }],
+      },
+      {
+        ownerScopeId: `${filePath}#second` as never,
+        ownerFilePath: filePath,
+        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }],
+      },
+    ]);
+    setJavaSpringMessageProducerFacts(filePath, []);
+    graph.addNode({
+      id: generateId('File', filePath),
+      label: 'File',
+      properties: { name: 'NoRange.java', filePath },
+    });
+
+    const output = await run(graph, [filePath]);
+    expect(output.unresolvedDestinations).toBe(2);
+    const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
+    expect(new Set(nodes.map((node) => node.id)).size).toBe(2);
+  });
+
+  it('does not merge two config keys that share a default', async () => {
+    // `${a.topic:events}` in one file and `${b.topic:events}` in another used to
+    // collapse onto one `Destination:events` and report a producer/consumer
+    // pair between two services that share nothing but a copy-pasted fallback.
+    for (const [filePath, key] of [
+      ['src/SvcA.java', 'a.topic'],
+      ['src/SvcB.java', 'b.topic'],
+    ] as const) {
+      setJavaSpringNonHttpHandlerFacts(filePath, [
+        {
+          ownerScopeId: `${filePath}#consume` as never,
+          ownerFilePath: filePath,
+          ownerRange: OWNER_RANGE,
+          annotations: [
+            { name: 'KafkaListener', args: [{ name: 'topics', text: `"\${${key}:events}"` }] },
+          ],
+        },
+      ]);
+      setJavaSpringMessageProducerFacts(filePath, []);
+      callableNode(graph, filePath, 'consume');
+    }
+
+    const output = await run(graph, ['src/SvcA.java', 'src/SvcB.java']);
+    expect(output.resolvedDestinations).toBe(0);
+    expect(output.unresolvedDestinations).toBe(2);
+    const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
+    expect(nodes).toHaveLength(2);
+    for (const node of nodes) {
+      expect(node.properties.address).toBeUndefined();
+      // The default is kept as provenance, so the case stays countable and
+      // distinguishable from a bare `${key}`.
+      expect(node.properties.configDefault).toBe('events');
+      expect(node.properties.resolution).toBe('overridable-config-default');
+    }
+    expect(new Set(nodes.map((n) => n.properties.configKey))).toEqual(
+      new Set(['a.topic', 'b.topic']),
+    );
+  });
+
+  it('gives two files that write the same SpEL expression two nodes', async () => {
+    for (const filePath of ['src/SpelA.java', 'src/SpelB.java']) {
+      setJavaSpringNonHttpHandlerFacts(filePath, [
+        {
+          ownerScopeId: `${filePath}#consume` as never,
+          ownerFilePath: filePath,
+          ownerRange: OWNER_RANGE,
+          annotations: [
+            {
+              name: 'KafkaListener',
+              args: [{ name: 'topics', text: '"#{@kafkaProps.ordersTopic}"' }],
+            },
+          ],
+        },
+      ]);
+      setJavaSpringMessageProducerFacts(filePath, []);
+      callableNode(graph, filePath, 'consume');
+    }
+
+    const output = await run(graph, ['src/SpelA.java', 'src/SpelB.java']);
+    expect(output.resolvedDestinations).toBe(0);
+    expect(output.refusalsByReason['spel-expression']).toBe(2);
+    const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
+    expect(nodes).toHaveLength(2);
+    for (const node of nodes) expect(node.properties.address).toBeUndefined();
+  });
+
+  it('never looks a configuration key up under the empty string', async () => {
+    // `${}` used to yield `configKey: ""`, and the phase then queried for it.
+    const filePath = 'src/EmptyKey.java';
+    graph.addNode({
+      id: 'property:empty',
+      label: 'Property',
+      properties: { name: '', filePath: 'application.yml', description: SPRING_CONFIG_DESCRIPTION },
+    });
+    setJavaSpringNonHttpHandlerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#consume` as never,
+        ownerFilePath: filePath,
+        ownerRange: OWNER_RANGE,
+        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${}"' }] }],
+      },
+    ]);
+    setJavaSpringMessageProducerFacts(filePath, []);
+    callableNode(graph, filePath, 'consume');
+
+    const output = await run(graph, [filePath]);
+    expect(output.refusalsByReason['empty-config-key']).toBe(1);
+    expect(output.configKeyLinks).toBe(0);
   });
 
   it('records a broker disagreement instead of merging or dropping it', async () => {
