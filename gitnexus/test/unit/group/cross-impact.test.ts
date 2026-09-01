@@ -591,4 +591,14 @@ repos:
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('accepts zero-ambiguity target_uid without target (public schema parity)', async () => {
+    const res = await validateGroupImpactParams({
+      name: 'demo',
+      repo: 'app/backend',
+      target_uid: 'fn:1',
+      direction: 'upstream',
+    });
+    expect(res.ok).toBe(true);
+  });
 });

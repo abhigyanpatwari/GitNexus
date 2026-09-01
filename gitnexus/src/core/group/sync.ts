@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isUnresolvedEndpoint } from './normalization.js';
 import { Buffer } from 'node:buffer';
 import {
   initLbug,
@@ -663,6 +664,16 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // same endpoints. Prefer the manifest version — it reflects operator intent
   // and carries matchType:'manifest' which downstream consumers may rely on.
   const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]);
+  // Mark links whose PROVIDER endpoint never resolved so operators and
+  // cross-impact can see the fan-out hole instead of a clean-looking registry
+  // (isUnresolvedEndpoint; manifest:: placeholders are exempt). Set once here,
+  // at the persistence boundary, so every downstream consumer (registry write,
+  // degradedLinks count, bridge) sees the same flag.
+  for (const link of crossLinks) {
+    if (!link.degraded && isUnresolvedEndpoint(link.to)) {
+      link.degraded = true;
+    }
+  }
   const allContracts: StoredContract[] = autoContracts;
 
   const registry: ContractRegistry = {
@@ -890,6 +901,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
               'a lower bound rather than as complete.'
             : 'Its metadata could NOT be marked provenance-unknown, so those answers may still ' +
               'report as complete despite describing an older sync.';
+          warnings.push(
+            `bridge write failed: contracts.json is intact (canonical), but bridge.lbug was not replaced — ` +
+              `cross-repo queries may answer from the previous sync's contracts. ${provenanceNote} ` +
+              'Re-run `gitnexus group sync` to retry.',
+          );
           logger.warn(
             { err: msg, groupDir, bridgeProvenanceWithdrawn: withdrawn },
             '⚠️ writeBridge failed; contracts.json is intact and is the canonical copy, ' +

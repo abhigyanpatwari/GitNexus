@@ -3,6 +3,19 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { syncGroup, stableRepoPoolId } from '../../../src/core/group/sync.js';
+vi.mock('../../../src/core/group/bridge-db.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('../../../src/core/group/bridge-db.js')>();
+  return {
+    ...orig,
+    writeBridgeUnlocked: (...args: Parameters<typeof orig.writeBridgeUnlocked>) => {
+      if ((globalThis as { __bridgeFailNext?: boolean }).__bridgeFailNext) {
+        (globalThis as { __bridgeFailNext?: boolean }).__bridgeFailNext = false;
+        return Promise.reject(new Error('boom: disk full'));
+      }
+      return orig.writeBridgeUnlocked(...args);
+    },
+  };
+});
 import { cleanupTempDir } from '../../helpers/test-db.js';
 import { _captureLogger } from '../../../src/core/logger.js';
 import type {
@@ -135,6 +148,33 @@ describe('syncGroup', () => {
     expect(resolved.crossLinks).toHaveLength(1);
     expect('degraded' in resolved.crossLinks[0]).toBe(false);
     expect(resolved.degradedLinks).toBe(0);
+  });
+
+  it('surfaces a bridge write failure as a warning instead of throwing', async () => {
+    const config = makeConfig({ 'app/backend': 'backend-repo' });
+    const mk = (): StoredContract => ({
+      contractId: 'http::GET::/api/x',
+      type: 'http',
+      role: 'provider',
+      symbolUid: 'uid-1',
+      symbolRef: { filePath: 'src/p.ts', name: 'fn-p' },
+      symbolName: 'fn-p',
+      confidence: 0.8,
+      meta: {},
+      repo: 'app/backend',
+    });
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'gnx-bridge-warn-'));
+    (globalThis as { __bridgeFailNext?: boolean }).__bridgeFailNext = true;
+    try {
+      const res = await syncGroup(config, {
+        groupDir: dir,
+        extractorOverride: async () => [mk()],
+      });
+      expect(res.warnings.some((w) => w.includes('bridge'))).toBe(true);
+    } finally {
+      (globalThis as { __bridgeFailNext?: boolean }).__bridgeFailNext = false;
+      await cleanupTempDir(dir);
+    }
   });
 
   it('does NOT mark a manifest synthetic-UID link degraded — the manifest:: uid anchors fan-out', async () => {

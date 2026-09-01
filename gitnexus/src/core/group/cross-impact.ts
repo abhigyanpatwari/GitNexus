@@ -186,7 +186,12 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath)
     return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
-  if (!target) return { ok: false, error: 'target is required' };
+  // Zero-ambiguity `target_uid` alone is valid per the public impact schema
+  // (required: ['direction']) — it must not be held hostage to `target` here,
+  // or single-repo UID dispatch works but the same call in @group mode 400s.
+  if (!target && !(typeof params.target_uid === 'string' && params.target_uid.trim() !== '')) {
+    return { ok: false, error: 'target is required' };
+  }
   if (
     params.service !== undefined &&
     params.service !== null &&
