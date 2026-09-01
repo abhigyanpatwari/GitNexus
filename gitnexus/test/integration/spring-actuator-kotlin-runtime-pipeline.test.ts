@@ -241,7 +241,9 @@ class KotlinProperties {
       application: {
         positiveMatches: {
           'com.example.KotlinConfig#billingService': [{ message: SECRET_ENV_VALUE }],
-          'com.example.KotlinController$Companion#companionHandler': [{ message: SECRET_ENV_VALUE }],
+          'com.example.KotlinController$Companion#companionHandler': [
+            { message: SECRET_ENV_VALUE },
+          ],
           'com.example.NamedHolder$Factory#namedHandler': [{ message: SECRET_ENV_VALUE }],
         },
         negativeMatches: {},
