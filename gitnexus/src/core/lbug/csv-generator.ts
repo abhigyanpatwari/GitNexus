@@ -177,14 +177,22 @@ export const isBinaryContent = (content: string): boolean => {
   return nonPrintable / end > 0.1;
 };
 
+interface PreparedFileContent {
+  readonly content: string;
+  readonly lines: string[];
+  readonly isBinary: boolean;
+}
+
+const EMPTY_PREPARED: PreparedFileContent = { content: '', lines: [''], isBinary: false };
+
 /**
  * LRU content cache — avoids re-reading the same source file for every
  * symbol defined in it. Sized generously so most files stay cached during
- * the single-pass node iteration.
+ * the single-pass node iteration. Insertion order on the Map is LRU
+ * (delete+set on touch).
  */
 class FileContentCache {
-  private cache = new Map<string, string>();
-  private accessOrder: string[] = [];
+  private cache = new Map<string, PreparedFileContent>();
   private maxSize: number;
   private repoPath: string;
 
@@ -193,36 +201,36 @@ class FileContentCache {
     this.maxSize = maxSize;
   }
 
-  async get(relativePath: string): Promise<string> {
-    if (!relativePath) return '';
+  async get(relativePath: string): Promise<PreparedFileContent> {
+    if (!relativePath) return EMPTY_PREPARED;
     const cached = this.cache.get(relativePath);
     if (cached !== undefined) {
-      // Move to end of accessOrder (LRU promotion)
-      const idx = this.accessOrder.indexOf(relativePath);
-      if (idx !== -1) {
-        this.accessOrder.splice(idx, 1);
-        this.accessOrder.push(relativePath);
-      }
+      this.cache.delete(relativePath);
+      this.cache.set(relativePath, cached);
       return cached;
     }
     try {
       const fullPath = path.join(this.repoPath, relativePath);
       const content = await fs.readFile(fullPath, 'utf-8');
-      this.set(relativePath, content);
-      return content;
+      const prepared: PreparedFileContent = {
+        content,
+        lines: content.split('\n'),
+        isBinary: isBinaryContent(content),
+      };
+      this.set(relativePath, prepared);
+      return prepared;
     } catch {
-      this.set(relativePath, '');
-      return '';
+      this.set(relativePath, EMPTY_PREPARED);
+      return EMPTY_PREPARED;
     }
   }
 
-  private set(key: string, value: string) {
-    if (this.cache.size >= this.maxSize) {
-      const oldest = this.accessOrder.shift();
-      if (oldest) this.cache.delete(oldest);
+  private set(key: string, value: PreparedFileContent) {
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
     }
     this.cache.set(key, value);
-    this.accessOrder.push(key);
   }
 }
 
@@ -277,10 +285,11 @@ const EXACT_SYMBOL_CONTENT_LABELS = SYMBOL_NODE_LABELS;
 
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
-  const content = await contentCache.get(filePath);
+  const prepared = await contentCache.get(filePath);
+  const content = prepared.content;
   if (!content) return '';
   if (node.label === 'Folder') return '';
-  if (isBinaryContent(content)) return '[Binary file - content not stored]';
+  if (prepared.isBinary) return '[Binary file - content not stored]';
 
   // File content is stored in full — intentionally NOT length-capped here, so
   // text past the old 10KB cutoff stays FTS-searchable (#2317). It is already
@@ -295,7 +304,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   const endLine = node.properties.endLine;
   if (startLine === undefined || endLine === undefined) return '';
 
-  const lines = content.split('\n');
+  const lines = prepared.lines;
   const exactSymbolContent = EXACT_SYMBOL_CONTENT_LABELS.has(node.label);
   const start = Math.max(0, exactSymbolContent ? startLine : startLine - 2);
   const end = Math.min(lines.length - 1, exactSymbolContent ? endLine : endLine + 2);
