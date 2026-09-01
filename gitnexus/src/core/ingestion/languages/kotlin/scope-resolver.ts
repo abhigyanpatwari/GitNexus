@@ -27,6 +27,7 @@ import { clearKotlinPackageFacts } from './package-facts.js';
 import { attachKotlinSpringDiMetadata } from './spring-di.js';
 import { attachKotlinSpringConditionalMetadata } from './spring-conditionals.js';
 import { attachKotlinSpringNonHttpHandlerMetadata } from './spring-non-http-handlers.js';
+import { attachKotlinSpringConfigBindings } from './spring-config-bindings.js';
 import { attachKotlinSpringDynamicLookup } from './spring-dynamic-lookup.js';
 
 /**
@@ -150,6 +151,7 @@ export const kotlinScopeResolver: ScopeResolver = {
     attachKotlinSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringNonHttpHandlerMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachKotlinSpringDynamicLookup(graph, parsedFiles, nodeLookup, indexes);
+    attachKotlinSpringConfigBindings(graph, parsedFiles, nodeLookup, indexes);
   },
 };
 
