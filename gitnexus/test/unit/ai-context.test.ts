@@ -547,17 +547,19 @@ Old content here.
     const skipDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-skip-nested-'));
     const skipStorage = path.join(skipDir, '.gitnexus');
     const nested = path.join(skipDir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
+    const bundled = await fs.readFile(path.join(__dirname, '../../skills/gitnexus-cli.md'), 'utf-8');
     await fs.mkdir(nested, { recursive: true });
     await fs.mkdir(skipStorage, { recursive: true });
-    await fs.writeFile(path.join(nested, 'SKILL.md'), 'CUSTOM-NESTED', 'utf-8');
+    await fs.writeFile(path.join(nested, 'SKILL.md'), bundled, 'utf-8');
     try {
       await generateAIContextFiles(skipDir, skipStorage, 'TestProject', { nodes: 1 }, undefined, {
         skipAgentsMd: true,
         skipSkills: true,
       });
-      await expect(fs.readFile(path.join(nested, 'SKILL.md'), 'utf-8')).resolves.toBe(
-        'CUSTOM-NESTED',
-      );
+      await expect(fs.readFile(path.join(nested, 'SKILL.md'), 'utf-8')).resolves.toBe(bundled);
+      await expect(
+        fs.access(path.join(skipDir, '.claude', 'skills', 'gitnexus-cli')),
+      ).rejects.toThrow();
     } finally {
       await fs.rm(skipDir, { recursive: true, force: true });
     }

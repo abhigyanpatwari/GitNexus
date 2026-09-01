@@ -447,8 +447,10 @@ const SKILL_PRESERVE_HINT =
 async function readUtf8IfPresent(filePath: string): Promise<string | null> {
   try {
     return await fs.readFile(filePath, 'utf-8');
-  } catch {
-    return null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    throw err;
   }
 }
 
