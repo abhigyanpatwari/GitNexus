@@ -25,7 +25,7 @@
  * defect is observable.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
@@ -88,11 +88,18 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
   const srcDir = (): string =>
     path.join(repo, 'src', 'main', 'java', 'com', 'example', 'messaging');
 
+  // Two argv-form calls rather than one shell string joined by `&&`: the commit
+  // message is a parameter, and interpolating it into a shell command would let
+  // a message containing a space split into extra arguments — the command would
+  // change meaning rather than fail visibly. No caller passes such a message
+  // today, which is exactly why the shell form would have stayed wrong quietly.
   const commit = (message: string): void => {
-    execSync(`git add -A && git -c user.name=t -c user.email=t@t commit -q -m ${message}`, {
-      cwd: repo,
-      stdio: 'pipe',
-    });
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' });
+    execFileSync(
+      'git',
+      ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', message],
+      { cwd: repo, stdio: 'pipe' },
+    );
   };
 
   /** Run analyze and report whether the INCREMENTAL writeback branch ran. */
@@ -142,7 +149,7 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     tmpRepo = await createTempDir('gn-dest-incr-repo-');
     repo = tmpRepo.dbPath;
-    execSync('git init -q', { cwd: repo, stdio: 'pipe' });
+    execFileSync('git', ['init', '-q'], { cwd: repo, stdio: 'pipe' });
     await fs.mkdir(srcDir(), { recursive: true });
     await fs.writeFile(path.join(srcDir(), 'OrderConsumer.java'), CONSUMER);
     await fs.writeFile(path.join(srcDir(), 'OrderPublisher.java'), PUBLISHER);

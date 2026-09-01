@@ -218,6 +218,29 @@ describe('springDestinations phase', () => {
     expect(output.unresolvedDestinations).toBe(2);
     const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
     expect(new Set(nodes.map((node) => node.id)).size).toBe(2);
+
+    // Two identities alone would also hold if one publish had been dropped, so
+    // pin the edges: two publishes, landing on two DIFFERENT destinations. That
+    // is the regression — both used to hang off a single node.
+    const publishes = [...graph.iterRelationshipsByType('PUBLISHES_TO')];
+    expect(publishes).toHaveLength(2);
+    expect(new Set(publishes.map((rel) => rel.targetId)).size).toBe(2);
+
+    // Both edges leave the SAME callable, and that is not a defect of this
+    // phase. With no scope tree here, owner resolution falls back to matching a
+    // callable by line range — and the two facts, being on one line, carry the
+    // same range, so the fallback can only ever name one owner for both. That
+    // is precisely why destination identity must not be derived from the owner:
+    // the one thing the fallback cannot distinguish is the one thing that used
+    // to collapse the two publishes onto a single node.
+    //
+    // Adding a second Method node does NOT sharpen this. Two nodes sharing a
+    // range make the lookup ambiguous, `exactCallableOwnersByRange` maps that
+    // to `null` on purpose, and then NEITHER publish gets a callable — `a`
+    // loses its edge as well. Real ingestion resolves through the scope tree
+    // and never reaches this path.
+    const methodA = generateId('Method', `${filePath}:a`);
+    expect(publishes.every((rel) => rel.sourceId === methodA)).toBe(true);
   });
 
   it('keys two handlers apart even when neither fact carried an owner range', async () => {
