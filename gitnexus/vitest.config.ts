@@ -73,6 +73,9 @@ export default defineConfig({
             'test/integration/local-backend.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
+            // Native @ladybugdb/core: loads a real graph through loadGraphToLbug
+            // and asserts the Destination NULL/join invariant on the stored rows.
+            'test/integration/spring-destinations-lbug.test.ts',
             'test/integration/search-core.test.ts',
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
@@ -148,6 +151,7 @@ export default defineConfig({
             'test/integration/local-backend.test.ts',
             'test/integration/local-backend-calltool.test.ts',
             'test/integration/spring-aop-mcp.test.ts',
+            'test/integration/spring-destinations-lbug.test.ts',
             'test/integration/search-core.test.ts',
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',

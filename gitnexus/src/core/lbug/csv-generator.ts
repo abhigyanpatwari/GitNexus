@@ -835,6 +835,13 @@ export const streamAllCSVsToDisk = async (
       sectionWriter,
       routeWriter,
       toolWriter,
+      // A writer missing from THIS list is not a loud failure. `finish()` is
+      // what flushes the buffered rows, while the header is written eagerly and
+      // `.rows` counts rows as they are added — so an unflushed writer still
+      // produces a valid, header-only CSV and a manifest entry claiming rows.
+      // The COPY then succeeds and loads nothing. Adding a node table means
+      // adding it here as well as to the switch and the manifest.
+      destinationWriter,
       basicBlockWriter,
       ...multiLangWriters.values(),
     ];

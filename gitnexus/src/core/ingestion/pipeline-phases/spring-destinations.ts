@@ -228,7 +228,17 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<SpringDestinationsOutput> {
-    const { parsedFiles, moduleConstants } = getPhaseOutput<ParseOutput>(deps, 'parse');
+    // `allPaths`, NOT `parsedFiles`. On any run with a storage path — which is
+    // every run of the CLI — worker-produced ParsedFiles are flushed to a disk
+    // store and `ParseOutput.parsedFiles` comes back EMPTY, with
+    // scope-resolution streaming them back per language. Iterating it therefore
+    // found nothing in production while every in-process test passed, because a
+    // direct pipeline call has no storage path and keeps them in memory.
+    //
+    // The fact stores are keyed by file path and are populated by the same
+    // streaming pass, so the path list is the right cursor for them anyway: it
+    // does not care how the ParsedFile got to scope resolution.
+    const { allPaths, moduleConstants } = getPhaseOutput<ParseOutput>(deps, 'parse');
     const refusalsByReason: Record<string, number> = {};
     const countRefusal = (reason: SpringDestinationRefusal): void => {
       refusalsByReason[reason] = (refusalsByReason[reason] ?? 0) + 1;
@@ -236,16 +246,16 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
 
     // ── Gather: facts → candidates → resolutions ──────────────────────────
     const sites: DestinationSite[] = [];
-    for (const parsed of parsedFiles) {
-      const provider = getProviderForFile(parsed.filePath);
-      const facts = provider?.getSpringMessagingFacts?.(parsed.filePath);
+    for (const filePath of allPaths) {
+      const provider = getProviderForFile(filePath);
+      const facts = provider?.getSpringMessagingFacts?.(filePath);
       if (facts === undefined) continue;
       if (facts.handlers.length === 0 && facts.producers.length === 0) continue;
 
       // Built lazily and reused for the whole file: the fold state behind it is
       // per-call, but resolving the provider and checking the table is not free
       // and every candidate in the file wants the same closure.
-      const constant = makeConstantResolver(parsed.filePath, moduleConstants);
+      const constant = makeConstantResolver(filePath, moduleConstants);
       const record = (
         selection: SpringDestinationSelection,
         ownerRange: Range | undefined,
@@ -255,7 +265,7 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
           const resolution = resolveSpringDestination(candidate, { constant });
           if (resolution.kind === 'unresolved') countRefusal(resolution.reason);
           sites.push({
-            filePath: parsed.filePath,
+            filePath,
             ...(ownerRange === undefined ? {} : { ownerRange }),
             candidate,
             resolution,

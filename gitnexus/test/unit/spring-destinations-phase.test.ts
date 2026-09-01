@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import type { ParsedFile } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import {
   setJavaSpringMessageProducerFacts,
@@ -26,10 +25,6 @@ import { generateId } from '../../src/lib/utils.js';
 
 const OWNER_RANGE = { startLine: 4, startCol: 4, endLine: 6, endCol: 5 } as const;
 
-function parsedFile(filePath: string): ParsedFile {
-  return { filePath } as unknown as ParsedFile;
-}
-
 function callableNode(graph: KnowledgeGraph, filePath: string, name: string): void {
   graph.addNode({
     id: generateId('Method', `${filePath}:${name}`),
@@ -51,7 +46,10 @@ async function run(graph: KnowledgeGraph, files: string[]): Promise<SpringDestin
       {
         phaseName: 'parse',
         durationMs: 0,
-        output: { parsedFiles: files.map(parsedFile), moduleConstants: new Map() },
+        // `allPaths`, matching the phase: on a run with a storage path the
+        // parse phase returns an EMPTY `parsedFiles` and streams them from
+        // disk instead, so the path list is the only cursor that always holds.
+        output: { allPaths: files, moduleConstants: new Map() },
       },
     ],
     ['scopeResolution', { phaseName: 'scopeResolution', durationMs: 0, output: {} }],
