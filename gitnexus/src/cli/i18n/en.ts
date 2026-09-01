@@ -201,7 +201,7 @@ export const en = {
   'help.option.analyze.skills':
     'Generate repo-specific skill files from detected communities (no-op when --index-only is also set).',
   'help.option.analyze.skipAgentsMd':
-    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip .claude/skills or .agents/skills; use --skip-skills for those.',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
   'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',
   'help.option.analyze.selfCommit':
     'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). Scoped to only those two files (never `git add -A`); no-ops if neither exists, neither changed, or the repo has no git identity configured.',

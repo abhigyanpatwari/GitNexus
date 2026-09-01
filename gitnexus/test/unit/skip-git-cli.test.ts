@@ -44,7 +44,8 @@ describe('--skip-git CLI flag', () => {
     expect(helpOutput).toContain('--skip-git');
     const helpFlat = helpOutput.replace(/\s+/g, ' ');
     expect(helpFlat).toContain('--skip-agents-md');
-    expect(helpFlat).toContain('Does not skip .claude/skills');
+    expect(helpFlat).toContain('Does not skip standard skills in .claude/skills');
+    expect(helpFlat).toContain('Community skills from --skills are unaffected');
     expect(helpFlat).toContain('--skip-skills');
     expect(helpOutput).toContain('directly under .claude/skills/');
     expect(helpOutput).toContain('.agents/skills/');

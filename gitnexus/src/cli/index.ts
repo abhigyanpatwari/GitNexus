@@ -78,7 +78,7 @@ program
   )
   .option(
     '--skip-agents-md',
-    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip .claude/skills or .agents/skills; use --skip-skills for those.',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
   )
   .option(
     '--pdg',
