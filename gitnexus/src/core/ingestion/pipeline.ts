@@ -35,6 +35,7 @@ import {
   springConfigPhase,
   springAutoConfigurationPhase,
   springAopPhase,
+  springDestinationsPhase,
   springAopInheritancePhase,
   pruneLocalSymbolsPhase,
   taintSummariesPhase,
@@ -287,7 +288,8 @@ export interface PipelineOptions {
  * Phase dependency graph:
  *
  *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
- *     → crossFile → scopeResolution → [springAutoConfiguration, springAop] → pruneLocalSymbols
+ *     → crossFile → scopeResolution → [springAutoConfiguration, springAop,
+ *       springDestinations] → pruneLocalSymbols
  *     → mro → springAopInheritance → di → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
@@ -316,6 +318,11 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(scopeResolutionPhase)
       .register(springAutoConfigurationPhase)
       .register(springAopPhase)
+      // Async messaging overlay. Must follow scopeResolution twice over: the
+      // owner Method/Function nodes have to exist, and each provider's
+      // `applyCaptureSideChannel` has to have restored the messaging facts onto
+      // the main thread. It also reads the Property nodes springConfig emits.
+      .register(springDestinationsPhase)
       .register(pruneLocalSymbolsPhase)
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on

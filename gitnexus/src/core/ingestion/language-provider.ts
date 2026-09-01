@@ -46,6 +46,16 @@ import type {
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
+import type { SpringNonHttpHandlerFact } from './frameworks/spring/non-http-handlers.js';
+import type { SpringMessageProducerFact } from './frameworks/spring/message-producers.js';
+
+/** One file's captured Spring async messaging facts, in both directions. */
+export interface SpringMessagingFacts {
+  /** Callables carrying a listener annotation — the inbound side. */
+  readonly handlers: readonly SpringNonHttpHandlerFact[];
+  /** Messaging-template publishes — the outbound side. */
+  readonly producers: readonly SpringMessageProducerFact[];
+}
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
@@ -543,6 +553,22 @@ interface LanguageProviderConfig {
    * Default: undefined (the harvested constants are already fold-ready).
    */
   readonly prepareRouteConstants?: (repo: RepoConstants) => void;
+
+  /**
+   * Spring async messaging facts captured for one file — the listener
+   * annotations that subscribe to a broker destination and the template calls
+   * that publish to one.
+   *
+   * Both families are collected during capture and restored on the main thread
+   * by {@link LanguageProviderConfig.applyCaptureSideChannel}, so they are only
+   * readable AFTER scope resolution has run. The `springDestinations` phase is
+   * the caller; routing through a provider hook is what keeps that phase from
+   * naming a language to reach a per-language fact store.
+   *
+   * Default: undefined — this language captures no Spring messaging facts, and
+   * the phase contributes nothing for its files.
+   */
+  readonly getSpringMessagingFacts?: (filePath: string) => SpringMessagingFacts;
 
   /**
    * Fold one file's non-literal route-path operand list
