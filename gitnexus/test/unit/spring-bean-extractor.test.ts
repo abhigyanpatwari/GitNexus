@@ -184,12 +184,14 @@ describe('Kotlin Spring non-HTTP handler syntax capture', () => {
       .sort((left, right) => left.name.localeCompare(right.name));
     expect(annotations).toEqual([
       { name: 'EventListener', useSiteTarget: 'receiver' },
-      { name: 'KafkaListener' },
+      { name: 'KafkaListener', args: [{ name: 'topics', text: '["orders"]' }] },
       { name: 'Scheduled' },
       { name: 'TransactionalEventListener' },
-      { name: 'XxlJob' },
+      { name: 'XxlJob', args: [{ text: '"enum-handler"' }] },
     ]);
     for (const annotation of annotations) {
+      // `text` and `line` describe the DI capture, not the handler; only the
+      // fields a later resolution phase reads may cross the side channel.
       expect(annotation).not.toHaveProperty('text');
       expect(annotation).not.toHaveProperty('line');
     }
