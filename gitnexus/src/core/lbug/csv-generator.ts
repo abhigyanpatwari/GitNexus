@@ -220,9 +220,8 @@ class FileContentCache {
       this.set(relativePath, prepared);
       return prepared;
     } catch {
-      const prepared: PreparedFileContent = { content: '', lines: [''], isBinary: false };
-      this.set(relativePath, prepared);
-      return prepared;
+      this.set(relativePath, EMPTY_PREPARED);
+      return EMPTY_PREPARED;
     }
   }
 

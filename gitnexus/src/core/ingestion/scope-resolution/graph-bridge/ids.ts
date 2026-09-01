@@ -61,6 +61,7 @@ const defGraphIdMemoKey = (
   },
 ): string =>
   `${filePath}\0${def.nodeId ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${(def.parameterTypeClasses ?? []).join(',')}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
+
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
  * source ("caller"). A Variable / Property can be the TARGET of an
