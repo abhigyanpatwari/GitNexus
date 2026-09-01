@@ -134,7 +134,7 @@ describe('Java Spring messaging producer receivers', () => {
     }
   `);
 
-  it('matches a receiver whose simple name ends with the template type name', () => {
+  it('matches a receiver whose simple name contains the template type name', () => {
     expect(facts.map((fact) => fact.receiverName)).toEqual([
       'orderKafkaTemplate',
       'outer.inner.kafkaTemplate',
@@ -940,6 +940,46 @@ describe('Spring messaging producer receiver decorations', () => {
         }
       `),
     ).toEqual([]);
+  });
+
+  it('names no broker for a receiver that matches two templates at once', () => {
+    // Two signatures share `send` and two share `convertAndSend`, so a
+    // substring match lets one receiver name satisfy both. The receiver's type
+    // is never resolved, so nothing ranks one match over the other, and the
+    // first-listed signature would be published as a definite attribution.
+    expect(
+      javaProducers(`
+        package com.example.messaging;
+
+        public class AmbiguousTemplates {
+            public void bothSend(String payload) {
+                streamBridgeKafkaTemplate.send("a", payload);
+            }
+            public void bothSendReversed(String payload) {
+                kafkaTemplateStreamBridge.send("b", payload);
+            }
+            public void bothConvertAndSend(String key, String payload) {
+                rabbitTemplateJmsTemplate.convertAndSend(key, payload);
+            }
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('names the broker when only one template matches the receiver', () => {
+    // The counterpart of the rule above: withholding applies to a genuinely
+    // ambiguous name, not to a decorated one that happens to be long. Neither
+    // receiver here contains a second template type name.
+    expect(
+      javaProducers(`
+        package com.example.messaging;
+
+        public class UnambiguousTemplates {
+            public void bridged(String payload) { orderStreamBridge.send("a", payload); }
+            public void kafka(String payload) { streamingKafkaTemplate.send("b", payload); }
+        }
+      `).map(signature),
+    ).toEqual(['stream-bridge orderStreamBridge.send', 'kafka streamingKafkaTemplate.send']);
   });
 
   it('refuses a receiver whose last segment is not a bare identifier', () => {

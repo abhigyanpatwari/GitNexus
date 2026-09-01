@@ -17,7 +17,12 @@ export type SpringMessageProducerTemplate = 'kafka' | 'rabbit' | 'jms' | 'stream
 
 interface ProducerSignature {
   readonly template: SpringMessageProducerTemplate;
-  /** Simple type name of the template bean, matched as a receiver-name suffix. */
+  /**
+   * Simple type name of the template bean, matched case-insensitively as a
+   * SUBSTRING of the receiver's folded simple name. The classifier below states
+   * which decorations that accepts, and what it does when one receiver name
+   * contains the type names of two different templates.
+   */
   readonly typeName: string;
   readonly methodName: string;
 }
@@ -84,6 +89,19 @@ export function isSpringMessageProducerMethod(methodName: string): boolean {
  * accepted. That is left as it is: the match is by NAME, a name equal to the
  * type is the strongest evidence the rule has, and a later phase that owns type
  * information can discard a static-looking receiver.
+ *
+ * A substring rule also lets ONE receiver satisfy TWO signatures, which a
+ * suffix rule could not: `KafkaTemplate` and `StreamBridge` both publish
+ * through `send`, and `RabbitTemplate` and `JmsTemplate` both through
+ * `convertAndSend`, so `streamBridgeKafkaTemplate.send(...)` matches two
+ * templates at once. Such a receiver yields NO fact. Nothing here can break the
+ * tie honestly: the receiver's TYPE is deliberately not resolved, and the name
+ * is not ranked evidence — neither the longest match, nor the last one, nor the
+ * order of this list says whether that bean is a KafkaTemplate fronted by a
+ * stream binding or a StreamBridge named after the broker behind it. Returning
+ * the first match published an arbitrary choice as a definite broker
+ * attribution, the one outcome a consumer cannot tell from a fact. Silence
+ * costs a rare publish and stays recoverable by a phase that owns types.
  */
 export function springMessageProducerTemplateOf(
   receiverName: string,
@@ -93,11 +111,16 @@ export function springMessageProducerTemplateOf(
   const receiverSimpleName = receiverName.slice(receiverName.lastIndexOf('.') + 1).trim();
   if (!PLAIN_IDENTIFIER.test(receiverSimpleName)) return null;
   const folded = foldReceiverName(receiverSimpleName);
+  let matched: SpringMessageProducerTemplate | null = null;
   for (const signature of PRODUCER_SIGNATURES) {
     if (signature.methodName !== methodName) continue;
-    if (folded.includes(signature.typeName.toLowerCase())) return signature.template;
+    if (!folded.includes(signature.typeName.toLowerCase())) continue;
+    // A second match makes the receiver ambiguous; see above for why it is not
+    // resolved by preferring one of them.
+    if (matched !== null) return null;
+    matched = signature.template;
   }
-  return null;
+  return matched;
 }
 
 export interface SpringMessageProducerFact {
