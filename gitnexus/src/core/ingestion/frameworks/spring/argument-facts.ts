@@ -40,7 +40,13 @@ export interface SpringArgumentFact {
    * position (`kafkaTemplate.send(topic, payload)`).
    */
   readonly name?: string;
-  /** Argument value exactly as written, with quotes, braces, and casts intact. */
+  /**
+   * Argument value in its source spelling — quotes, braces and casts intact,
+   * nothing resolved — after `normalizeSpringFactText`. That pass trims the
+   * text and collapses whitespace around the dots of a multi-line expression,
+   * so one destination written two ways yields one fact. It is the only
+   * rewrite; see the function for why formatting must not reach the data.
+   */
   readonly text: string;
 }
 

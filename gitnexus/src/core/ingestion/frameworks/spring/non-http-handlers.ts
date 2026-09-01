@@ -20,10 +20,18 @@ export interface SpringNonHttpHandlerAnnotationFact {
    * written without an argument list (`@Scheduled`). An empty array means an
    * empty list was written (`@Scheduled()`), which is a different fact.
    *
-   * The values stay exactly as written: `@KafkaListener(topics = ...)` and
+   * The values keep their source spelling, with one deliberate exception:
+   * `normalizeSpringFactText` trims them and collapses whitespace around the
+   * dots of a multi-line expression, so `Destinations.ORDERS` and the same
+   * reference wrapped across lines produce equal facts. Without that, source
+   * formatting — including the enclosing block's indentation, which is not a
+   * property of the expression at all — would leak into the data and make two
+   * spellings of one destination compare unequal downstream.
+   *
+   * Nothing else is touched. `@KafkaListener(topics = ...)` and
    * `@RabbitListener(queues = ...)` name the destination differently, and a
    * destination may be a literal, a constant reference, or a `${...}`
-   * placeholder. Resolving any of those belongs to a later phase.
+   * placeholder; resolving any of those belongs to a later phase.
    */
   readonly args?: readonly SpringArgumentFact[];
 }
