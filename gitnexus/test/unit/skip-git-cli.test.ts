@@ -39,11 +39,15 @@ describe('--skip-git CLI flag', () => {
       cwd: path.resolve(__dirname, '../..'),
       encoding: 'utf8',
       timeout: 10000,
+      env: { ...process.env, GITNEXUS_LANG: 'en' },
     });
 
     expect(helpOutput).toContain('--skip-git');
-    expect(helpOutput).toContain('--skip-agents-md');
-    expect(helpOutput).toContain('--skip-skills');
+    const helpFlat = helpOutput.replace(/\s+/g, ' ');
+    expect(helpFlat).toContain('--skip-agents-md');
+    expect(helpFlat).toContain('Does not skip standard skills in .claude/skills');
+    expect(helpFlat).toContain('Community skills from --skills are unaffected');
+    expect(helpFlat).toContain('--skip-skills');
     expect(helpOutput).toContain('directly under .claude/skills/');
     expect(helpOutput).toContain('.agents/skills/');
     expect(helpOutput).toContain('.claude/skills/gitnexus-area-*');
