@@ -196,3 +196,29 @@ describe('parse-result graph insertion determinism', () => {
     ).toBe(record.id);
   });
 });
+
+describe('resolveDefGraphId memo', () => {
+  it('returns the same id on a repeated lookup and does not leak across rebuilt lookups', () => {
+    const method = {
+      id: `Method:${FILE}:Service.save#1`,
+      label: 'Method' as const,
+      name: 'save',
+      qualifiedName: 'Service.save',
+      startLine: 10,
+    };
+    const lookupA = buildLookup([method]);
+    const lookupB = buildLookup([method]);
+    const def = {
+      type: 'Method' as const,
+      qualifiedName: 'Service.save',
+      nodeId: 'def:src/service.ts#11:0:Method:Service.save',
+    };
+    const first = resolveDefGraphId(FILE, def, lookupA);
+    const second = resolveDefGraphId(FILE, def, lookupA);
+    const otherLookup = resolveDefGraphId(FILE, def, lookupB);
+    expect(first).toBe(method.id);
+    expect(second).toBe(first);
+    expect(otherLookup).toBe(method.id);
+    expect(lookupA).not.toBe(lookupB);
+  });
+});
