@@ -13,6 +13,7 @@ const GUARD_FLAGS = [
   'diff',
   '--ignore-cr-at-eol',
   '--no-ext-diff',
+  '--color=never',
   '--src-prefix=a/',
   '--dst-prefix=b/',
 ];

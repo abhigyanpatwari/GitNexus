@@ -6,6 +6,7 @@ type DetectChangesSummary = {
   changed_count?: number;
   affected_count?: number;
   risk_level?: string;
+  message?: string;
 };
 
 type ChangedSymbol = {
@@ -55,6 +56,16 @@ export function formatDetectChangesResult(result: unknown): string {
     );
 
   if ((summary.changed_count ?? 0) === 0) {
+    // Backend parse-fail / empty-overlap payloads carry an honest `message`.
+    // Dropping it made every zero-symbol run look like a clean tree (#3131).
+    if (typeof summary.message === 'string' && summary.message.trim().length > 0) {
+      return [...notes, summary.message.trim()].join('\n');
+    }
+    if ((summary.changed_files ?? 0) > 0) {
+      return [...notes, t('tool.detectChanges.noOverlappingSymbols', { files: summary.changed_files })].join(
+        '\n',
+      );
+    }
     return [...notes, t('tool.detectChanges.noChanges')].join('\n');
   }
 

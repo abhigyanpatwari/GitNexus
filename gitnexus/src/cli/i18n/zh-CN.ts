@@ -78,6 +78,8 @@ export const zhCN = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
+  'tool.detectChanges.noOverlappingSymbols':
+    'diff 触及 {{files}} 个文件，但没有索引符号与这些 hunk 重叠 — 并非干净工作区。',
   'tool.detectChanges.partial':
     '结果不完整：图查询失败，可能遗漏已变更符号。请勿将其视为通过的提交前检查。',
   'tool.detectChanges.truncated':
