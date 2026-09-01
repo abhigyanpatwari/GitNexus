@@ -7,23 +7,25 @@ import { generateGitNexusContent } from '../../src/cli/ai-context.js';
 // edit/commit/rename-only sentence.
 describe('generateGitNexusContent emits a read-path MUST (#3076)', () => {
   const stats = { nodes: 50, edges: 100, processes: 5 };
-  const mustLead =
-    'MUST use `query({search_query: "concept"})`, `context({name: "symbolName"})`, or `impact` for read-only questions about callers, dependencies, imports, blast radius, or execution flow.';
+  const mustBullet =
+    '- **MUST use `query({search_query: "concept"})`, `context({name: "symbolName"})`, or `impact` for read-only questions about callers, dependencies, imports, blast radius, or execution flow.** Prefer graph edges to grep strings; use text search to confirm gaps or literals.';
+
+  function alwaysDoSection(content: string): string {
+    return content.slice(content.indexOf('## Always Do'), content.indexOf('## Never Do'));
+  }
+
+  function assertNoAdvisoryExploreUse(content: string): void {
+    expect(content).not.toMatch(/Explore\s+with/);
+    expect(content).not.toMatch(/Use\s+`context\(\{name:/);
+    expect(alwaysDoSection(content)).not.toMatch(/^- [^\n]*Explore/m);
+  }
 
   it.each([true, false])(
     'renders the MUST and drops Explore/Use bullets when hasPdg=%s',
     (hasPdg) => {
       const content = generateGitNexusContent('ReadPathProject', stats, { hasPdg });
-
-      expect(content).toContain(mustLead);
-      expect(content).toContain('Prefer graph edges to grep strings');
-      expect(content).toContain('use text search to confirm gaps or literals');
-      expect(content).not.toContain('Explore with');
-      expect(content).not.toContain(
-        'Use `context({name: "symbolName"})` for callers, callees, and flows.',
-      );
-      expect(content).toContain('query({search_query: "concept"})');
-      expect(content).toContain('context({name: "symbolName"})');
+      expect(alwaysDoSection(content)).toContain(`\n${mustBullet}\n`);
+      assertNoAdvisoryExploreUse(content);
       if (hasPdg) {
         expect(content).toContain('pdg_query');
       }
@@ -32,15 +34,15 @@ describe('generateGitNexusContent emits a read-path MUST (#3076)', () => {
 
   it('keeps the MUST beside the Spring Actuator Always-Do line', () => {
     const content = generateGitNexusContent('SpringProject', stats, { hasSpringActuator: true });
-    expect(content).toContain(
-      `**${mustLead}** Prefer graph edges to grep strings; use text search to confirm gaps or literals.\n- Spring Actuator runtime evidence is enabled`,
+    expect(alwaysDoSection(content)).toContain(
+      `${mustBullet}\n- Spring Actuator runtime evidence is enabled`,
     );
-    expect(content).not.toContain('Explore with');
+    assertNoAdvisoryExploreUse(content);
   });
 
   it('keeps pdg_query gated on hasPdg while the read-path MUST stays always-emitted', () => {
     const withoutPdg = generateGitNexusContent('PlainProject', stats);
-    expect(withoutPdg).toContain(mustLead);
+    expect(alwaysDoSection(withoutPdg)).toContain(`\n${mustBullet}\n`);
     expect(withoutPdg).not.toContain('pdg_query');
   });
 });
