@@ -171,7 +171,11 @@ function importedAs(
   fqn: string,
   wildcardPackage: string,
 ): boolean {
-  return imports.exact.get(simple) === fqn || imports.wildcard.has(wildcardPackage);
+  if (imports.exact.get(simple) === fqn) return true;
+  // An explicit import wins over a star import in Kotlin, so a conflicting
+  // binding for the same simple name rules the Spring annotation out even when
+  // its package is wildcard-imported.
+  return imports.exact.get(simple) === undefined && imports.wildcard.has(wildcardPackage);
 }
 
 function hasVisibleLocalType(

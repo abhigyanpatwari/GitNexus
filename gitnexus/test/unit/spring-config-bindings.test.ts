@@ -450,6 +450,28 @@ describe('Kotlin Spring configuration consumers', () => {
         }
       `),
     ).toEqual([]);
+
+    // The explicit import still wins when Spring's package is star-imported
+    // alongside it, so only the unshadowed annotation resolves.
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import com.example.Value
+        import org.springframework.beans.factory.annotation.*
+        import org.springframework.boot.context.properties.ConfigurationProperties
+
+        @ConfigurationProperties("service")
+        class Local {
+          @Value("\\\${fake.key}")
+          var field: String = ""
+        }
+      `),
+    ).toEqual([
+      expect.objectContaining({
+        kind: 'configuration-properties',
+        className: 'Local',
+        prefix: 'service',
+      }),
+    ]);
   });
 
   it('does not decode escapes inside Kotlin raw string prefixes', async () => {
