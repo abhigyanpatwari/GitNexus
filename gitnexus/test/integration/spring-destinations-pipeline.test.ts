@@ -68,10 +68,35 @@ describe('Spring destination resolution', () => {
     );
   });
 
-  it('resolves a placeholder default, because the default is written in the source', () => {
-    const nodes = withAddress('audit.v1');
-    expect(nodes).toHaveLength(1);
-    expect(nodes[0]?.properties.resolution).toBe('config-default');
+  it('does NOT resolve a placeholder default, and keeps both key and default', () => {
+    // The default is written in the source, so it is read — but it holds only
+    // while the key is not overridden, and configuration VALUES are absent from
+    // this graph by design, so it cannot be an identity.
+    expect(withAddress('audit.v1')).toEqual([]);
+    const nodes = destinations.filter(
+      (node) => node.properties.configKey === 'app.messaging.audit-topic',
+    );
+    // One Java consumer, one Kotlin consumer — two files, two nodes.
+    expect(nodes).toHaveLength(2);
+    for (const node of nodes) {
+      expect(node.properties.resolution).toBe('overridable-config-default');
+      expect(node.properties.configDefault).toBe('audit.v1');
+      expect(node.properties.address).toBeUndefined();
+    }
+  });
+
+  it('does not merge two different keys that share a default', () => {
+    // `${app.messaging.report-topic:events}` and
+    // `${app.messaging.archive-topic:events}` collapsed onto one
+    // `Destination:events` and reported a producer/consumer pair between two
+    // services sharing nothing but a copy-pasted fallback.
+    expect(withAddress('events')).toEqual([]);
+    const shared = destinations.filter((node) => node.properties.configDefault === 'events');
+    expect(shared).toHaveLength(2);
+    expect(new Set(shared.map((node) => node.id)).size).toBe(2);
+    expect(new Set(shared.map((node) => node.properties.configKey))).toEqual(
+      new Set(['app.messaging.report-topic', 'app.messaging.archive-topic']),
+    );
   });
 
   it('emits one edge per element of an array-valued topics argument', () => {
@@ -132,10 +157,70 @@ describe('Spring destination resolution', () => {
     for (const node of destinations) {
       const resolved = node.properties.resolution;
       const hasAddress = node.properties.address !== undefined;
-      expect(hasAddress).toBe(
-        resolved === 'literal' || resolved === 'constant' || resolved === 'config-default',
-      );
+      expect(hasAddress).toBe(resolved === 'literal' || resolved === 'constant');
     }
+  });
+
+  it('gives two files that write the same SpEL expression two distinct nodes', () => {
+    // A runtime bean expression is the archetypal unresolvable address. Filed
+    // as a literal it produced ONE node with `address =
+    // "#{@messagingProperties.ordersTopic}"` and a CONSUMES_FROM edge from each
+    // of two unrelated services.
+    const spel = destinations.filter((node) => node.properties.resolution === 'spel-expression');
+    expect(spel).toHaveLength(2);
+    expect(new Set(spel.map((node) => node.id)).size).toBe(2);
+    for (const node of spel) expect(node.properties.address).toBeUndefined();
+    expect(destinations.some((node) => String(node.properties.address ?? '').includes('#{'))).toBe(
+      false,
+    );
+  });
+
+  it('gives two Kotlin services writing the same string TEMPLATE two nodes', () => {
+    // Kotlin interpolates; Java does not. `"orders-$env"` has no braces at all,
+    // so the `${` test never saw it and both services shared the literal
+    // address `orders-$env`.
+    const templates = destinations.filter(
+      (node) => node.properties.resolution === 'unescaped-interpolation',
+    );
+    // `"orders-$env"` in two files plus `"orders-${env}"` in one.
+    expect(templates).toHaveLength(3);
+    expect(new Set(templates.map((node) => node.id)).size).toBe(3);
+    for (const node of templates) {
+      expect(node.properties.address).toBeUndefined();
+      // The braced form was read as a SPRING placeholder and invented
+      // `configKey: "env"`, which the phase then linked to any Property of that
+      // name — provenance with no source.
+      expect(node.properties.configKey).toBeUndefined();
+    }
+    expect(destinations.some((node) => node.properties.address === 'orders-$env')).toBe(false);
+  });
+
+  it('still reads the ESCAPED Kotlin dollar as a real Spring placeholder', () => {
+    // `"\${app.topic}"` is how a Spring placeholder has to be written in
+    // Kotlin, and the interpolation rule must not swallow it.
+    const escaped = destinations.filter(
+      (node) =>
+        String(node.properties.filePath).endsWith('KotlinOrderPublishers.kt') &&
+        node.properties.resolution === 'unresolved-config-key',
+    );
+    expect(escaped).toHaveLength(1);
+    expect(escaped[0]?.properties.configKey).toBe('app.messaging.shared-topic');
+  });
+
+  it('never publishes a Rabbit EXCHANGE as an address', () => {
+    // `convertAndSend(Topics.ORDERS_EXCHANGE, routingKey, payload)` — an
+    // ordinary publish whose routing key is a variable. Arity cannot tell it
+    // from `(routingKey, message, postProcessor)`, and the discarded positional
+    // fallback made the exchange the address, where it could join a listener on
+    // a queue of that name.
+    expect(withAddress('orders.exchange')).toEqual([]);
+    expect(
+      destinations.some((node) => String(node.properties.name) === 'orders.exchange'),
+    ).toBe(false);
+    const sources = new Set(
+      messagingEdges.map((edge) => result.graph.getNode(edge.sourceId)?.properties.name),
+    );
+    expect(sources.has('publishToExchangeWithVariableRoutingKey')).toBe(false);
   });
 
   it('does not connect the two unrelated placeholder consumers', () => {
@@ -158,7 +243,9 @@ describe('Spring destination resolution', () => {
     const inventory = destinations.find((node) =>
       String(node.properties.filePath).endsWith('InventoryConsumer.java'),
     );
-    expect(inventory?.properties.name).toContain('${app.messaging.shared-topic}');
+    // Unquoted, so an unresolved node's `name` is spelled the way a resolved
+    // one's is rather than carrying the source's quotation marks.
+    expect(inventory?.properties.name).toBe('${app.messaging.shared-topic}');
     expect(inventory?.properties.address).toBeUndefined();
     expect(inventory?.properties.resolution).toBe('unresolved-config-key');
   });

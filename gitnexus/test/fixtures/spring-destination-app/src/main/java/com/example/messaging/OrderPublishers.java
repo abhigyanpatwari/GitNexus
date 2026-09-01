@@ -43,6 +43,17 @@ public class OrderPublishers {
         rabbitTemplate.convertAndSend("orders.exchange", "orders.created", payload);
     }
 
+    /**
+     * An ordinary Spring AMQP publish whose ROUTING KEY is a variable. Arity
+     * cannot tell this from convertAndSend(routingKey, message, postProcessor),
+     * and the discarded positional fallback published EXCHANGES as the address
+     * — a plausible-looking wrong answer that could join a listener on a queue
+     * of that name.
+     */
+    public void publishToExchangeWithVariableRoutingKey(String routingKey, String payload) {
+        rabbitTemplate.convertAndSend(Topics.ORDERS_EXCHANGE, routingKey, payload);
+    }
+
     /** Default exchange, empty routing key — no address is written anywhere. */
     public void publishToDefaultExchange(String payload) {
         rabbitTemplate.convertAndSend(payload);
@@ -50,6 +61,17 @@ public class OrderPublishers {
 
     public void publishToQueue(String payload) {
         jmsTemplate.convertAndSend("orders.jms", payload);
+    }
+
+    /**
+     * The same address a @RabbitListener subscribes to, over a different
+     * broker. The broker is inferred from a receiver's NAME, so a disagreement
+     * is far more likely to be a bad guess than two brokers sharing an address
+     * — the node records it rather than merging it away or dropping the
+     * connection the two sides agree on.
+     */
+    public void publishToConflictingBroker(String payload) {
+        jmsTemplate.convertAndSend("orders.queue", payload);
     }
 
     public void publishToBinding(String payload) {
