@@ -1536,7 +1536,7 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Destination') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, address, broker, resolution, configKey, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, address, broker, resolution, configKey, configDefault, brokerConflict, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'BasicBlock') {
     // Taint/PDG substrate (issue #2080) — no name column. `callees` is the
@@ -2554,7 +2554,9 @@ export const deleteNodesForFile = async (
  * RESOLVED destination stores no `filePath` and so never matches the
  * predicate — deliberately, because it is shared across files. See the node
  * property block in `pipeline-phases/spring-destinations.ts` for why deleting
- * one here would cut edges belonging to files outside the write set.
+ * one here would cut edges belonging to files outside the write set. Because
+ * this pass therefore cannot maintain the layer, {@link deleteAllDestinations}
+ * clears it separately and `extractChangedSubgraph` re-includes it whole.
  */
 export const DELETE_FILES_CHUNK_SIZE = 200;
 
@@ -2576,8 +2578,11 @@ export const DELETE_FILES_CHUNK_SIZE = 200;
  * EMBEDDING_SCHEMA cannot own embedding rows, so skipping that one
  * statement is sound, while failing would brick every incremental run on
  * such a DB until `--force`. Statement count per chunk is unchanged by the
- * multi-label join: 1 embedding join-delete + 30 node-table deletes = 31
- * (the rejected per-label fallback shape would have been 19 + 30 = 49).
+ * multi-label join: 1 embedding join-delete + 31 node-table deletes = 32
+ * (the rejected per-label fallback shape would have been 19 + 31 = 50).
+ * The 31 is the filePath-bearing half of the 33-table NODE_TABLES roster and
+ * moves whenever a node table is added — it went up by one when `Destination`
+ * joined, and the twin note on DELETE_FILES_CHUNK_SIZE has to move with it.
  * Singleton-connection only: the analyze writeback owns the write lock,
  * and `queryAndDrain` routes through `withConnLock` for it (the WAL
  * checkpoint driver is live during this).
@@ -3164,6 +3169,60 @@ export const deleteSpringAopEvidenceNodes = async (): Promise<{ nodesDeleted: nu
       throw new Error(
         '[spring-aop] failed to clear synthetic evidence before incremental re-write ' +
           `(${message}) — aborting to avoid stale advice metadata; the next run will full-rebuild`,
+      );
+    }
+  });
+};
+
+/**
+ * Drop EVERY `Destination` node before an incremental writeback, so the async
+ * messaging overlay is rebuilt whole from the fresh graph.
+ *
+ * Delete-all rather than delete-by-file, because the file-keyed rule cannot
+ * express this layer in either direction. A RESOLVED destination stores no
+ * `filePath` — that is what stops `deleteNodesForFiles` cutting a node shared
+ * by files outside the write set — which also means it is never deleted when it
+ * SHOULD be, so a destination whose last referrer stopped naming it survived as
+ * an edgeless orphan that still carried `address`, the cross-repository join
+ * key, accumulating on every run. The mirror defect was worse: without a
+ * matching graph-wide re-include, a newly added file publishing to a NEW topic
+ * wrote neither the destination nor the publisher's edge, silently and with a
+ * zero exit.
+ *
+ * The `springDestinations` phase runs on every persisting analyze and recomputes
+ * the full set from the whole file list, so delete-then-re-include is complete.
+ * `extractChangedSubgraph` treats `Destination` as graph-wide to supply the
+ * other half; the two must be changed together. DETACH DELETE also takes the
+ * `CONSUMES_FROM` / `PUBLISHES_TO` edges, which the re-include restores because
+ * every one of them has the destination as an endpoint.
+ */
+export const deleteAllDestinations = async (): Promise<{ nodesDeleted: number }> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  return withConnLock(async () => {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    try {
+      countResult = await c.query('MATCH (n:Destination) RETURN count(n) AS cnt');
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await closeQueryResults(await c.query('MATCH (n:Destination) DETACH DELETE n'));
+      }
+      if (countResult) await closeQueryResults(countResult);
+      return { nodesDeleted: count };
+    } catch (err) {
+      if (countResult) await closeQueryResults(countResult);
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
+        return { nodesDeleted: 0 };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        '[spring-destinations] failed to clear the messaging overlay before incremental ' +
+          `re-write (${message}) — aborting rather than leaving duplicate or orphaned ` +
+          'destinations; the next run will full-rebuild',
       );
     }
   });
