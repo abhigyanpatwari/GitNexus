@@ -96,7 +96,7 @@ function isPlainStringLiteral(node: Parser.SyntaxNode): boolean {
  */
 function isEmptyKotlinPathCollection(node: Parser.SyntaxNode): boolean {
   if (node.type === 'collection_literal') {
-    return node.namedChildren.filter((child) => child.text.length > 0).length === 0;
+    return node.namedChildren.every((child) => child.text.length === 0);
   }
   if (node.type !== 'call_expression') return false;
   const callee = node.namedChild(0);
@@ -230,11 +230,14 @@ function classMapping(annotations: readonly Parser.SyntaxNode[]): ClassMapping |
   let prefix = '';
   if (paths.length === 1) {
     const path = paths[0].expression;
-    if (!isEmptyKotlinPathCollection(path)) {
-      if (!isPlainStringLiteral(path)) return null;
+    if (isEmptyKotlinPathCollection(path)) {
+      prefix = '';
+    } else if (isPlainStringLiteral(path)) {
       const literal = unquoteSpringLiteral(path.text);
       if (literal === null) return null;
       prefix = literal;
+    } else {
+      return null;
     }
   }
 

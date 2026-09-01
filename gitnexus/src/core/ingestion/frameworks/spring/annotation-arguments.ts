@@ -127,7 +127,7 @@ export function parseSpringAnnotationArguments(
   if (rawArguments === null) return null;
   // Kotlin (and some formatters) allow a trailing comma. An empty *middle*
   // argument is still invalid and fail-closed.
-  while (rawArguments.length > 0 && rawArguments[rawArguments.length - 1].length === 0) {
+  while (rawArguments.at(-1)?.length === 0) {
     rawArguments.pop();
   }
   if (rawArguments.some((argument) => argument.length === 0)) return null;
