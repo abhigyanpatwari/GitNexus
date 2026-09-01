@@ -1,5 +1,5 @@
 import type { NodeLabel } from 'gitnexus-shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
@@ -220,6 +220,19 @@ function countingLookup(inner: ReturnType<typeof buildLookup>): {
 }
 
 describe('resolveDefGraphId memo', () => {
+  const MEMO_ENV = 'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO';
+  let previousMemoEnv: string | undefined;
+
+  beforeEach(() => {
+    previousMemoEnv = process.env[MEMO_ENV];
+    delete process.env[MEMO_ENV];
+  });
+
+  afterEach(() => {
+    if (previousMemoEnv === undefined) delete process.env[MEMO_ENV];
+    else process.env[MEMO_ENV] = previousMemoEnv;
+  });
+
   it('returns the same id on a repeated lookup and does not leak across rebuilt lookups', () => {
     const method = {
       id: `Method:${FILE}:Service.save#1`,
@@ -246,5 +259,26 @@ describe('resolveDefGraphId memo', () => {
     expect(otherLookup).toBe(method.id);
     expect(countedB.gets()).toBeGreaterThan(0);
     expect(countedA.lookup).not.toBe(countedB.lookup);
+  });
+
+  it('walks the lookup again when the memo env opt-out is set', () => {
+    process.env[MEMO_ENV] = '0';
+    const method = {
+      id: `Method:${FILE}:Service.save#1`,
+      label: 'Method' as const,
+      name: 'save',
+      qualifiedName: 'Service.save',
+      startLine: 10,
+    };
+    const counted = countingLookup(buildLookup([method]));
+    const def = {
+      type: 'Method' as const,
+      qualifiedName: 'Service.save',
+      nodeId: 'def:src/service.ts#11:0:Method:Service.save',
+    };
+    expect(resolveDefGraphId(FILE, def, counted.lookup)).toBe(method.id);
+    const getsAfterFirst = counted.gets();
+    expect(resolveDefGraphId(FILE, def, counted.lookup)).toBe(method.id);
+    expect(counted.gets()).toBeGreaterThan(getsAfterFirst);
   });
 });

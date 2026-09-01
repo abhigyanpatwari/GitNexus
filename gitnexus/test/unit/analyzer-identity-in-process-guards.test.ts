@@ -28,6 +28,7 @@ vi.mock('node:child_process', async (importOriginal) => {
 const fsCtx = vi.hoisted(() => ({
   accessSync: vi.fn(),
   unwritableExact: new Set<string>(),
+  wOkProbes: [] as string[],
 }));
 
 vi.mock('node:fs', async (importOriginal) => {
@@ -37,6 +38,7 @@ vi.mock('node:fs', async (importOriginal) => {
     mode?: number,
   ) => {
     const pathStr = String(p);
+    if (mode === actual.constants.W_OK) fsCtx.wOkProbes.push(pathStr);
     if (mode === actual.constants.W_OK && fsCtx.unwritableExact.has(pathStr)) {
       const err = new Error('EACCES') as NodeJS.ErrnoException;
       err.code = 'EACCES';
@@ -101,6 +103,7 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
     delete process.env[ENV_KEY];
     spawnCtx.spawnSync.mockClear();
     fsCtx.unwritableExact.clear();
+    fsCtx.wOkProbes.length = 0;
     _clearAnalyzerIdentityProcessCacheForTests();
   });
 
@@ -192,8 +195,11 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
       fsCtx.unwritableExact.add(cacheDirectory);
       spawnCtx.spawnSync.mockClear();
+      fsCtx.wOkProbes.length = 0;
       _clearAnalyzerIdentityProcessCacheForTests();
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
+      expect(fsCtx.wOkProbes).toEqual(expect.arrayContaining([tree.packageRoot, tree.sourceRoot]));
+      expect(fsCtx.wOkProbes).not.toContain(cacheDirectory);
       expect(cacheGuardSpawnCount()).toBeGreaterThan(0);
     } finally {
       await fixture.cleanup();
