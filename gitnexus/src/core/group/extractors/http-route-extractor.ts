@@ -621,6 +621,7 @@ export class HttpRouteExtractor implements ContractExtractor {
             dbExecutor,
             getDetections,
             resolveDetectionSymbol,
+            loadFileSymbols,
             coveredFiles,
           )
         : [];
@@ -690,6 +691,7 @@ export class HttpRouteExtractor implements ContractExtractor {
     db: CypherExecutor,
     getDetections: (rel: string) => Promise<HttpDetection[]>,
     resolveSymbol: (filePath: string, d: HttpDetection) => Promise<ResolvedSymbol | null>,
+    loadFileSymbols: (filePath: string) => Promise<Record<string, unknown>[]>,
     coveredFiles?: Set<string>,
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
@@ -749,15 +751,11 @@ export class HttpRouteExtractor implements ContractExtractor {
         if (!method) method = 'GET';
         symbolUid = handlerSymbolId;
         if (filePath) {
-          try {
-            const syms = await db(CONTAINING_QUERY, { filePath });
-            const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
-            if (hit) {
-              symbolName = String(hit.name ?? hit[1]) || symbolName;
-              symPath = String(hit.filePath ?? hit[2]) || filePath;
-            }
-          } catch {
-            /* keep the authoritative uid + basename fallback */
+          const syms = await loadFileSymbols(filePath);
+          const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
+          if (hit) {
+            symbolName = String(hit.name ?? hit[1]) || symbolName;
+            symPath = String(hit.filePath ?? hit[2]) || filePath;
           }
         }
       } else {

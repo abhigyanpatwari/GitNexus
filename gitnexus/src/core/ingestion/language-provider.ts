@@ -414,6 +414,28 @@ interface LanguageProviderConfig {
   ) => ExtractedDecoratorRoute[];
 
   /**
+   * Name of the function a route decorator captured by the worker's generic
+   * `@decorator` query applies to, given the decorator's own AST node.
+   *
+   * The worker knows a decorator is a route decorator but not how this
+   * language's grammar attaches it to a definition, so it hands the node over
+   * unchanged and takes whatever the language returns. Only languages that
+   * declare route handlers through the generic decorator captures need this;
+   * languages with a dedicated {@link extractDecoratorRoutes} extractor
+   * (JS/TS via `nest.ts`, Java via `spring.ts`) already set
+   * `ExtractedDecoratorRoute.handlerName` there and should leave this undefined.
+   *
+   * Implementations must read their own decorated-definition shape directly and
+   * return undefined for anything else — never climb ancestors to find a name,
+   * since a decorator that is not attached to a function has no handler and a
+   * borrowed enclosing name resolves `handlerSymbolId` to the wrong symbol. The
+   * routes phase treats undefined as "fall back to the file-level edge".
+   *
+   * Default: undefined (no handler name from generic decorator captures).
+   */
+  readonly decoratorRouteHandlerName?: (decoratorNode: SyntaxNode) => string | undefined;
+
+  /**
    * Collect a project-wide, language-agnostic view of route-defining
    * class/interface declarations (`SharedSpringType`) from a parsed file.
    *

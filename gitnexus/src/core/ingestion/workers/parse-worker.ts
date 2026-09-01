@@ -1795,12 +1795,14 @@ const processFileGroup = (
           const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
             ? method
             : 'GET';
+          const handlerName = provider.decoratorRouteHandlerName?.(decoratorNode);
           const base = {
             filePath: file.path,
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row + lineOffset,
             ...(decoratorReceiver ? { decoratorReceiver } : {}),
+            ...(handlerName ? { handlerName } : {}),
           };
           if (decoratorArgStr) {
             // String-literal path (the fast path, unchanged). Empty-string

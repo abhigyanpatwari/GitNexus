@@ -371,7 +371,7 @@ const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
  *  | `Annotation` | `frameworks/spring/conditionals.ts` CONDITIONAL_ON | `resolveDefGraphId` / `resolveCallerGraphId` |
  *  | `Community`  | `pipeline-phases/communities.ts` MEMBER_OF     | Leiden membership, `isCommunitySymbol`-gated |
  *  | `Process`    | `pipeline-phases/processes.ts` STEP_IN_PROCESS | trace step node                       |
- *  | `Route`      | `pipeline-phases/routes.ts` HANDLES_ROUTE      | `generateId('File', handlerPath)` — a literal |
+ *  | `Route`      | `pipeline-phases/routes.ts` HANDLES_ROUTE      | `generateId('File', handlerPath)` — a literal — plus, when the route's handler resolves, that definition |
  *  | `Tool`       | `pipeline-phases/tools.ts` HANDLES_TOOL        | `handlerNodeId` — whatever definition the decorator sat on |
  *  | `File`       | `languages/vue/scope-resolver.ts` BINDS_EVENT_HANDLER | handler node                    |
  *  | `Record`     | `cobol-processor.ts` × 8 external-resource sites | `scopedCallerLookup`                |
@@ -383,25 +383,35 @@ const DEFINITION_ANCHOR_LABELS: readonly NodeTableName[] = NODE_TABLES.filter(
  * {@link DEFINITION_ANCHOR_LABELS} × this set covers all four plus every
  * sibling the same emitters can reach.
  *
- * TWO TARGETS ARE LABEL-GATED TODAY, and the cross product over-declares for
- * them ON PURPOSE (~47 of the 182 attachment pairs are unreachable right now):
+ * TWO TARGETS USE ONLY PART OF THEIR CROSS PRODUCT TODAY, and it over-declares
+ * for them ON PURPOSE (~45 of the 182 attachment pairs have no emitter that can
+ * reach them right now):
  *  - `Community` — `isCommunitySymbol` (`community-processor.ts`) admits only
  *    `Function` / `Class` / `Method` / `Interface` as members, so the other 22
  *    anchors cannot source a MEMBER_OF edge until that predicate widens.
- *  - `Route` — HANDLES_ROUTE sources `generateId('File', handlerPath)`, a
- *    literal `File`, so every non-`File` anchor is headroom.
+ *  - `Route` — HANDLES_ROUTE always sources the literal
+ *    `generateId('File', handlerPath)`, and additionally the route's HANDLER
+ *    DEFINITION whenever `routeHandlerSymbols` produced an id that
+ *    `ctx.graph.getNode` confirms is in the graph. That second anchor is a
+ *    lookup result the emitter never label-checks; handler resolution returns
+ *    `Function` / `Method` definitions today, so `Route` is no longer a
+ *    `File`-only target and the remaining anchors are headroom.
  *
  * Those pairs stay declared because the two sides of the error are not
  * symmetric: an UNDECLARED pair makes LadybugDB reject the edge and aborts
  * `analyze` outright on a user's repo, while an unused DECLARED pair costs
  * almost nothing — `bench/schema-pairs` measured the pre-#2801 332→450 growth
- * (118 pairs, of which these ~47 are a part) at 0.93–1.05×, i.e. inside
+ * (118 pairs, of which these ~45 are a part) at 0.93–1.05×, i.e. inside
  * run-to-run noise. #2801's 11 generated `Record` pairs bring the total to 461.
  * Its Windows measurements and noise caveats live in the benchmark README; the
  * operational production ceiling is the checked 1.5× budget.
  * Every one of the four aborts above came from re-narrowing a set to what one
  * predicate looked like it allowed — so a reading of `isCommunitySymbol` is not
- * grounds to shrink this. Widening either predicate is then a no-op here.
+ * grounds to shrink this. `Route` is the worked example in the other direction:
+ * the definition-level HANDLES_ROUTE edge started emitting `Function|Route` /
+ * `Method|Route` with no DDL change, because those pairs were already declared.
+ * Widening `isCommunitySymbol`, or handler resolution returning a further
+ * label, is likewise a no-op here.
  *
  * `Route` / `Tool` being excluded as ANCHORS (see {@link NON_DEFINITION_LABELS})
  * is likewise a SIZE choice, not something derived from a rule: they do source
