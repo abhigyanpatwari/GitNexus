@@ -90,6 +90,25 @@ function isPlainStringLiteral(node: Parser.SyntaxNode): boolean {
   );
 }
 
+/**
+ * Empty `[]` / `arrayOf()` is Spring "no path", not an unresolvable prefix.
+ * tree-sitter-kotlin may put a zero-width recovery child inside `[]`.
+ */
+function isEmptyKotlinPathCollection(node: Parser.SyntaxNode): boolean {
+  if (node.type === 'collection_literal') {
+    return node.namedChildren.filter((child) => child.text.length > 0).length === 0;
+  }
+  if (node.type !== 'call_expression') return false;
+  const callee = node.namedChild(0);
+  if (callee?.type !== 'simple_identifier' || unquoteKotlinIdentifier(callee.text) !== 'arrayOf') {
+    return false;
+  }
+  const suffix = node.namedChildren.find((child) => child.type === 'call_suffix');
+  const args = suffix?.namedChildren.find((child) => child.type === 'value_arguments');
+  if (!args) return true;
+  return args.namedChildren.every((child) => child.type !== 'value_argument');
+}
+
 function isKotlinInterface(node: Parser.SyntaxNode): boolean {
   return node.children.some((child) => child.type === 'interface');
 }
@@ -193,8 +212,9 @@ interface ClassMapping {
 
 /**
  * Read the one optional class-level RequestMapping. A present route member must
- * be exactly one plain string literal; constants, interpolation, collections,
- * duplicate mappings, and dynamic expressions fail closed for the whole class.
+ * be exactly one plain string literal, an empty `[]`/`arrayOf()` (no prefix),
+ * or absent; constants, interpolation, non-empty collections, duplicate
+ * mappings, and dynamic expressions fail closed for the whole class.
  */
 function classMapping(annotations: readonly Parser.SyntaxNode[]): ClassMapping | null {
   const mappings = annotations.filter(
@@ -210,10 +230,12 @@ function classMapping(annotations: readonly Parser.SyntaxNode[]): ClassMapping |
   let prefix = '';
   if (paths.length === 1) {
     const path = paths[0].expression;
-    if (!isPlainStringLiteral(path)) return null;
-    const literal = unquoteSpringLiteral(path.text);
-    if (literal === null) return null;
-    prefix = literal;
+    if (!isEmptyKotlinPathCollection(path)) {
+      if (!isPlainStringLiteral(path)) return null;
+      const literal = unquoteSpringLiteral(path.text);
+      if (literal === null) return null;
+      prefix = literal;
+    }
   }
 
   const methods = kotlinSpringHttpMethods('RequestMapping', mapping);
@@ -261,7 +283,9 @@ export function extractKotlinSpringRoutes(
         let routePathOperands: Operand[] | undefined;
         if (paths.length === 1) {
           const expression = paths[0].expression;
-          if (isPlainStringLiteral(expression)) {
+          if (isEmptyKotlinPathCollection(expression)) {
+            routePath = '';
+          } else if (isPlainStringLiteral(expression)) {
             const literal = unquoteSpringLiteral(expression.text);
             if (literal === null) continue;
             routePath = literal;

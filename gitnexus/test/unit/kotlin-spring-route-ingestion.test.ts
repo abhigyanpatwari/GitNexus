@@ -333,6 +333,69 @@ class InterpolatedPrefix {
     expect(routes).toEqual([]);
   });
 
+  it('treats an empty class path arrayOf() as no prefix', () => {
+    const routes = extractKotlinSpringRoutes(
+      parse(`
+@RestController
+@RequestMapping(arrayOf())
+class ArrayOfEmpty {
+    @GetMapping("/pets")
+    fun pets() {}
+}
+`),
+      'ArrayOfEmpty.kt',
+    );
+
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({ routePath: '/pets', httpMethod: 'GET', handlerName: 'pets' });
+    expect(routes[0].prefix).toBeUndefined();
+  });
+
+  it('treats an empty method path collection_literal as a pathless mapping', () => {
+    // Class-level `@RequestMapping([])` is often recovered as prefix_expression
+    // (no class_declaration) by tree-sitter-kotlin; method-level `[]` still
+    // exercises the same empty-collection classification.
+    const routes = extractKotlinSpringRoutes(
+      parse(`
+@RestController
+class MethodEmpty {
+    @GetMapping([])
+    fun pets() {}
+}
+`),
+      'MethodEmpty.kt',
+    );
+
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({
+      routePath: '',
+      httpMethod: 'GET',
+      handlerName: 'pets',
+    });
+  });
+
+  it('keeps a trailing comma on RequestMapping from dropping the controller', () => {
+    const routes = extractKotlinSpringRoutes(
+      parse(`
+@RestController
+@RequestMapping("/api",)
+class Trailing {
+    @GetMapping("/pets",)
+    fun pets() {}
+}
+`),
+      'Trailing.kt',
+    );
+
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({
+      prefix: '/api',
+      routePath: '/pets',
+      handlerName: 'pets',
+      httpMethod: 'GET',
+    });
+  });
+
   it('skips interpolated, array, and dynamic function paths', () => {
     const routes = extractKotlinSpringRoutes(
       parse(`
