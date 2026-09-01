@@ -45,6 +45,19 @@ export type NodeLabel =
   | 'Section'
   | 'Route'
   | 'Tool'
+  /**
+   * A message-broker destination — a Kafka topic, a Rabbit exchange/routing
+   * key, a JMS queue, a Spring Cloud Stream binding. The framework overlay for
+   * ASYNCHRONOUS entry/exit points, symmetric to `Route` for HTTP.
+   *
+   * Identity is the resolved ADDRESS, so a publisher and a consumer of the same
+   * address land on one node and the connection is a single hop. A destination
+   * whose address could NOT be resolved is keyed by its source location
+   * instead and carries no `address` property at all — see
+   * `pipeline-phases/spring-destinations.ts` for why an unresolved address must
+   * never be allowed to key a node.
+   */
+  | 'Destination'
   // Taint/PDG substrate (issue #2080). Intra-procedural control-flow node.
   // Emitted by no phase yet — M1 (#2081) populates these behind an opt-in.
   | 'BasicBlock';
@@ -128,6 +141,19 @@ export type RelationshipType =
   | 'MEMBER_OF'
   | 'STEP_IN_PROCESS'
   | 'HANDLES_ROUTE'
+  /** Outbound async messaging. Source = the callable that performs the publish
+   *  (or its File); target = the `Destination` it publishes to. Emitted by
+   *  `pipeline-phases/spring-destinations.ts` from Spring messaging-template
+   *  calls (`kafkaTemplate.send(...)`, `rabbitTemplate.convertAndSend(...)`).
+   *  One edge per address: a publish that names two destinations yields two
+   *  edges, and `reason` records which argument each came from. */
+  | 'PUBLISHES_TO'
+  /** Inbound async messaging — the mirror of `PUBLISHES_TO`. Source = the
+   *  annotated handler callable (or its File); target = the `Destination` it
+   *  subscribes to. Emitted from `@KafkaListener` / `@RabbitListener` /
+   *  `@JmsListener` and their siblings. Together the two types make
+   *  "who else reads what this service writes" a two-hop traversal. */
+  | 'CONSUMES_FROM'
   | 'FETCHES'
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'

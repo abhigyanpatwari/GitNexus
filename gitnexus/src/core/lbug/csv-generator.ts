@@ -536,6 +536,12 @@ export const streamAllCSVsToDisk = async (
       'id,name,filePath,description',
     );
 
+    // Destination nodes for async messaging (Kafka topics, Rabbit exchanges, …)
+    const destinationWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'destination.csv'),
+      'id,name,filePath,startLine,endLine,address,broker,resolution,configKey,description',
+    );
+
     // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
     // blocks are identified by id + source span. Emitted by no phase yet.
     const basicBlockWriter = new BufferedCSVWriter(
@@ -727,6 +733,29 @@ export const streamAllCSVsToDisk = async (
             ].join(','),
           );
           break;
+        case 'Destination':
+          // `address` is the cross-service join key and stays EMPTY for an
+          // unresolved destination, mirroring the in-memory rule that the
+          // property is absent there. Writing the placeholder text into this
+          // column instead would make two services that merely both wrote
+          // `${app.topic}` join on it — the exact false connection the
+          // location-based node id exists to prevent. The placeholder is
+          // carried by `name`, which nothing joins on.
+          pending = destinationWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVNumber(node.properties.startLine, -1),
+              escapeCSVNumber(node.properties.endLine, -1),
+              escapeCSVField(String(node.properties.address ?? '')),
+              escapeCSVField(String(node.properties.broker ?? '')),
+              escapeCSVField(String(node.properties.resolution ?? '')),
+              escapeCSVField(String(node.properties.configKey ?? '')),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
+            ].join(','),
+          );
+          break;
         case 'BasicBlock':
           pending = basicBlockWriter.addRow(buildBasicBlockRow(node));
           break;
@@ -830,6 +859,7 @@ export const streamAllCSVsToDisk = async (
       ['Section' as NodeTableName, sectionWriter],
       ['Route' as NodeTableName, routeWriter],
       ['Tool' as NodeTableName, toolWriter],
+      ['Destination' as NodeTableName, destinationWriter],
       ['BasicBlock' as NodeTableName, basicBlockWriter],
       ...Array.from(multiLangWriters.entries()).map(
         ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],
