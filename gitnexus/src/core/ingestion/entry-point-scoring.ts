@@ -176,10 +176,15 @@ export function isTestFile(filePath: string): boolean {
     p.includes('.spec.') ||
     p.includes('__tests__/') ||
     p.includes('__mocks__/') ||
-    // Generic test folders
+    // Generic test folders. Repo-relative paths can start with these folders.
+    p.startsWith('test/') ||
+    p.startsWith('tests/') ||
+    p.startsWith('testing/') ||
     p.includes('/test/') ||
     p.includes('/tests/') ||
     p.includes('/testing/') ||
+    // Dart/Flutter test pattern
+    p.endsWith('_test.dart') ||
     // Python test patterns
     p.endsWith('_test.py') ||
     p.includes('/test_') ||
