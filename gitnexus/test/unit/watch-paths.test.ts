@@ -112,6 +112,7 @@ describe('watch path selection', () => {
         skipAgentsMd: false,
         skipSkills: false,
         stats: true,
+        springActuator: './actuator',
       }),
     );
     const ignored: string[][] = [];
@@ -128,7 +129,7 @@ describe('watch path selection', () => {
       ),
     ).resolves.toMatchObject({ skipAgentsMd: true, skipSkills: true });
     expect(ignored).toEqual([
-      ['embeddings', 'defaultBranch', 'skipAgentsMd', 'skipSkills', 'stats'],
+      ['embeddings', 'defaultBranch', 'skipAgentsMd', 'skipSkills', 'stats', 'springActuator'],
     ]);
 
     const unsupportedCliOptions: Array<[Parameters<typeof resolveWatchOptions>[1], string]> = [
@@ -137,6 +138,7 @@ describe('watch path selection', () => {
       [{ skipAgentsMd: true }, '--skip-agents-md'],
       [{ skipSkills: true }, '--skip-skills'],
       [{ stats: false }, '--no-stats'],
+      [{ springActuator: './actuator' }, '--spring-actuator'],
     ];
     for (const [options, flag] of unsupportedCliOptions) {
       await expect(

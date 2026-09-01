@@ -155,6 +155,11 @@ program
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )
+  .option(
+    '--spring-actuator <path>',
+    'Import local Spring Boot Actuator JSON snapshots (mappings, beans, conditions, ' +
+      'configprops, env). Explicit opt-in; disabled by default.',
+  )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')

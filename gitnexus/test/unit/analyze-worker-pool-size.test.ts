@@ -89,6 +89,24 @@ describe('analyzeCommand --workers validation', () => {
     );
   });
 
+  it('threads --spring-actuator through to the core pipeline', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    runFullAnalysisMock.mockResolvedValue({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: {},
+      alreadyUpToDate: true,
+    });
+
+    await analyzeCommand(undefined, { springActuator: 'snapshots/actuator' });
+
+    expect(runFullAnalysisMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ springActuatorPath: 'snapshots/actuator' }),
+      expect.any(Object),
+    );
+  });
+
   it('rejects --workers 0 with a CLI error (sequential parsing was removed)', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     runFullAnalysisMock.mockResolvedValue({

@@ -42,6 +42,8 @@ export interface AIContextOptions {
    * "no PDG layer" note, so advertising it on a non-`--pdg` index is noise.
    */
   hasPdg?: boolean;
+  /** Whether this index includes opt-in Spring Actuator runtime evidence. */
+  hasSpringActuator?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -136,6 +138,8 @@ export interface GitNexusContentOptions {
    *  line below — false (default) omits it, so a non-pdg index doesn't advertise
    *  a tool that only returns a "no PDG layer" note. */
   hasPdg?: boolean;
+  /** Whether Route nodes may carry Spring Actuator runtime evidence. */
+  hasSpringActuator?: boolean;
 }
 
 export function generateGitNexusContent(
@@ -151,6 +155,7 @@ export function generateGitNexusContent(
     runnerPath = '.gitnexus/run.cjs',
     defaultBranch = 'main',
     hasPdg = false,
+    hasSpringActuator = false,
   } = opts;
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
@@ -227,7 +232,11 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
 - **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
 - Explore with \`query({search_query: "concept"})\` for process-grouped flows.
-- Use \`context({name: "symbolName"})\` for callers, callees, and flows.
+- Use \`context({name: "symbolName"})\` for callers, callees, and flows.${
+    hasSpringActuator
+      ? '\n- Spring Actuator runtime evidence is enabled. A Route is authoritative only when `runtimeConfirmed === true`; `runtimeSource` is provenance and may also describe conflicts. Snapshot values are never persisted.'
+      : ''
+  }
 - For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
     hasPdg
       ? `\n- For control/data dependence, \`pdg_query({mode: "controls", target: "fileOrSymbol"})\` answers "under what condition does X run?" (CDG, incl. guard clauses) and \`pdg_query({mode: "flows", target, variable})\` traces "where does variable Y flow?" (REACHING_DEF). \`--pdg\` layer.`
@@ -551,6 +560,7 @@ export async function generateAIContextFiles(
     runnerPath,
     defaultBranch: options?.defaultBranch ?? 'main',
     hasPdg: options?.hasPdg ?? false,
+    hasSpringActuator: options?.hasSpringActuator ?? false,
   });
   const createdFiles: string[] = [];
 

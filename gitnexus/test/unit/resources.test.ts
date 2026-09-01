@@ -563,6 +563,27 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
     );
   });
 
+  it('exposes Spring Actuator index metadata to agents', async () => {
+    loadMetaMock.mockResolvedValue({
+      repoPath: '/tmp/test-repo',
+      lastCommit: 'current-head',
+      indexedAt: '2026-08-31T20:00:00.000Z',
+      springActuator: {
+        enabled: true,
+        repoRelativeInputs: ['runtime-actuator'],
+      },
+    });
+
+    const result = await readResource(
+      'gitnexus://repo/test-project/context',
+      createMockBackend({ context: CONTEXT }),
+    );
+
+    expect(result).toContain(
+      'spring_actuator: {"enabled":true,"repoRelativeInputs":["runtime-actuator"]}',
+    );
+  });
+
   it('falls back to cached stats when loadMeta returns null', async () => {
     // loadMeta returns null (e.g. pre-analyze state or missing gitnexus.json)
     loadMetaMock.mockResolvedValue(null);

@@ -21,6 +21,11 @@ import {
   SPRING_AUTO_CONFIGURATION_IMPORT_REASON,
   SPRING_AUTO_CONFIGURATION_SYNTHETIC_DESCRIPTION,
 } from '../frameworks/spring/auto-configuration.js';
+import {
+  importSpringActuatorRuntime,
+  MAX_RUNTIME_RECORDS,
+  type SpringActuatorImportStats,
+} from '../frameworks/spring/actuator-runtime.js';
 import { isDev } from '../utils/env.js';
 import type { StructureOutput } from './structure.js';
 import type { PipelineContext, PipelinePhase, PhaseResult } from './types.js';
@@ -74,6 +79,7 @@ export interface SpringAutoConfigurationOutput {
   readonly metadataFiles: number;
   readonly autoConfigurations: number;
   readonly ambiguousAutoConfigurations: number;
+  readonly actuatorRuntime?: SpringActuatorImportStats;
 }
 
 export function classifySpringAutoConfigurationMetadata(
@@ -305,10 +311,25 @@ export const springAutoConfigurationPhase: PipelinePhase<SpringAutoConfiguration
       );
     }
 
+    const actuatorRuntime =
+      ctx.options?.springActuatorPath === undefined
+        ? undefined
+        : await importSpringActuatorRuntime(
+            ctx.graph,
+            ctx.repoPath,
+            ctx.options.springActuatorPath,
+          );
+    if (actuatorRuntime !== undefined && actuatorRuntime.truncatedEndpoints.length > 0) {
+      logger.warn(
+        `Spring Actuator runtime import reached the ${MAX_RUNTIME_RECORDS.toLocaleString('en-US')}-record limit for: ${actuatorRuntime.truncatedEndpoints.join(', ')}. Runtime evidence is incomplete.`,
+      );
+    }
+
     return {
       metadataFiles,
       autoConfigurations,
       ambiguousAutoConfigurations: ambiguousQualifiedNames.size,
+      ...(actuatorRuntime === undefined ? {} : { actuatorRuntime }),
     };
   },
 };

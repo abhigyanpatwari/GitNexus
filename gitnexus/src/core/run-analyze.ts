@@ -478,6 +478,11 @@ export interface AnalyzeOptions {
    */
   fetchWrappers?: string[];
   /**
+   * Explicit local Spring Boot Actuator snapshot input (#2418), forwarded to
+   * the Spring enrichment phase. Undefined keeps static-only analysis.
+   */
+  springActuatorPath?: string;
+  /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
    * durability but skips the native `conn.close()`/`db.close()`, which can
@@ -1653,6 +1658,55 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Actuator snapshots are external runtime inputs and are intentionally not
+  // hashed or persisted. Rebuild on every enabled run so updated snapshots
+  // cannot hit the git freshness fast path; rebuild once when the option is
+  // removed so stale runtime-only evidence is cleared from the index.
+  const springActuatorRequested = options.springActuatorPath !== undefined;
+  const springActuatorPreviouslyEnabled = existingMeta?.springActuator?.enabled === true;
+  const previousActuatorInputs: unknown = existingMeta?.springActuator?.repoRelativeInputs;
+  const retainedActuatorInputs = Array.isArray(previousActuatorInputs)
+    ? previousActuatorInputs.filter((input): input is string => typeof input === 'string')
+    : [];
+  if (springActuatorRequested) {
+    const resolvedRepo = path.resolve(repoPath);
+    const resolvedInput = path.resolve(repoPath, options.springActuatorPath!);
+    const relativeInput = path.relative(resolvedRepo, resolvedInput);
+    const springActuatorRepoRelativeInput =
+      relativeInput === ''
+        ? '.'
+        : relativeInput === '..' ||
+            relativeInput.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeInput)
+          ? null
+          : relativeInput.split(path.sep).join('/');
+    if (
+      springActuatorRepoRelativeInput !== null &&
+      !retainedActuatorInputs.includes(springActuatorRepoRelativeInput)
+    ) {
+      retainedActuatorInputs.push(springActuatorRepoRelativeInput);
+    }
+    if (!options.force) {
+      log('Spring Actuator runtime enrichment requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (springActuatorPreviouslyEnabled) {
+    if (
+      !Array.isArray(previousActuatorInputs) ||
+      previousActuatorInputs.some((input) => typeof input !== 'string')
+    ) {
+      throw new Error(
+        'Cannot safely disable Spring Actuator runtime enrichment because the previous ' +
+          'index did not record whether its snapshot was inside the repository. Re-run once ' +
+          'with the previous --spring-actuator path, then run again without it.',
+      );
+    }
+    log('Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.');
+    options = { ...options, force: true };
+  }
+  const springActuatorScanExclusions =
+    retainedActuatorInputs.length === 0 ? undefined : retainedActuatorInputs;
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1727,6 +1781,7 @@ async function runFullAnalysisInner(
                   // Fast path does not re-run PDG. Using `options.pdg` would
                   // strip PDG bullets from AGENTS.md on a rename-only analyze.
                   hasPdg: existingMeta.pdg != null,
+                  hasSpringActuator: existingMeta.springActuator?.enabled === true,
                 },
               );
             } catch {
@@ -1958,6 +2013,8 @@ async function runFullAnalysisInner(
         : undefined,
       fetchWrappers: options.fetchWrappers,
       skipDerivedGraphPhases,
+      springActuatorPath: options.springActuatorPath,
+      springActuatorScanExclusions,
     },
   );
 
@@ -3685,6 +3742,17 @@ async function runFullAnalysisInner(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       runnerIdentity,
+      // Persist only normalized repo-relative exclusions, never absolute paths
+      // or payloads. Keep them after runtime enrichment is disabled so a later
+      // ordinary scan cannot rediscover an unchanged snapshot as source/FTS.
+      ...(springActuatorRequested || retainedActuatorInputs.length > 0
+        ? {
+            springActuator: {
+              enabled: springActuatorRequested,
+              repoRelativeInputs: retainedActuatorInputs,
+            },
+          }
+        : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
@@ -3966,6 +4034,7 @@ async function runFullAnalysisInner(
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
             hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuatorPath !== undefined,
           },
         );
       } catch {

@@ -36,7 +36,7 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type {
@@ -54,6 +54,7 @@ export type CaptureMap = Record<string, SyntaxNode | undefined>;
 export interface DefinitionPropertiesContext {
   readonly nodeLabel: NodeLabel;
   readonly nodeName: string;
+  readonly filePath: string;
   readonly definitionNode: SyntaxNode;
   readonly parsedImports: readonly ParsedImport[];
   readonly isExported: boolean;
@@ -62,6 +63,26 @@ export interface DefinitionPropertiesContext {
 export type DefinitionPropertiesExtractor = (
   context: DefinitionPropertiesContext,
 ) => Readonly<Record<string, unknown>> | undefined;
+
+export interface RuntimeCallableIdentity {
+  readonly name: string;
+  readonly descriptorParameterTypes: readonly string[] | undefined;
+}
+
+/**
+ * Optional language-owned bridge from runtime/compiler symbol identities to
+ * source graph symbols. Framework importers use this instead of naming
+ * languages or reproducing compiler conventions in shared ingestion code.
+ */
+export interface RuntimeSymbolStrategy {
+  /** Runtime owner names that may contain this callable/property. */
+  readonly callableOwnerAliases?: (
+    node: GraphNode,
+    owner: GraphNode | undefined,
+  ) => readonly string[];
+  /** Whether a runtime callable identity can conservatively identify a node. */
+  readonly matchesCallable: (node: GraphNode, runtime: RuntimeCallableIdentity) => boolean;
+}
 
 /** Run optional provider enrichment without allowing one hook failure to drop
  * the rest of the worker's language batch. */
@@ -191,6 +212,13 @@ interface LanguageProviderConfig {
    * Default: undefined (no preprocessing — `file.content` is parsed verbatim).
    */
   readonly preprocessSource?: (sourceText: string, filePath: string) => string;
+
+  /**
+   * Runtime/compiler identity reconciliation for framework metadata. The
+   * central importer owns ambiguity handling; providers only supply aliases
+   * and language-specific callable compatibility.
+   */
+  readonly runtimeSymbolStrategy?: RuntimeSymbolStrategy;
 
   // ── Core (required) ───────────────────────────────────────────────
   /** Type extraction: declarations, initializers, for-loop bindings */
@@ -483,6 +511,16 @@ interface LanguageProviderConfig {
    * {@link extractModuleConstants} accepts.
    */
   readonly moduleConstantHeuristic?: (content: string) => boolean;
+
+  /**
+   * Prepare this language's harvested constants once the complete repo map is
+   * available and before route operands are folded. The parse phase passes only
+   * entries owned by this provider, so implementations can build one reusable
+   * language-specific index and may materialize deferred bindings in place.
+   *
+   * Default: undefined (the harvested constants are already fold-ready).
+   */
+  readonly prepareRouteConstants?: (repo: RepoConstants) => void;
 
   /**
    * Fold one file's non-literal route-path operand list
@@ -900,6 +938,34 @@ export interface LanguageProvider extends Omit<LanguageProviderConfig, 'mroStrat
   readonly mroStrategy: MroStrategy;
   /** Check if a name is a built-in/stdlib function that should be filtered from the call graph. */
   readonly isBuiltInName: (name: string) => boolean;
+}
+
+/**
+ * Run each provider's repo-constant preparation hook once over only the files
+ * that provider owns. Values are shared with `repo`, so in-place preparation
+ * is visible to the subsequent fold without copying the complete map.
+ */
+export function prepareRouteConstantsByProvider(
+  repo: RepoConstants,
+  providerForFile: (filePath: string) => Pick<LanguageProvider, 'prepareRouteConstants'> | null,
+): void {
+  const slices = new Map<
+    Pick<LanguageProvider, 'prepareRouteConstants'>,
+    Map<string, ModuleConstants>
+  >();
+  for (const [filePath, constants] of repo) {
+    const provider = providerForFile(filePath);
+    if (!provider?.prepareRouteConstants) continue;
+    let slice = slices.get(provider);
+    if (!slice) {
+      slice = new Map();
+      slices.set(provider, slice);
+    }
+    slice.set(filePath, constants);
+  }
+  for (const [provider, slice] of slices) {
+    provider.prepareRouteConstants?.(slice);
+  }
 }
 
 const DEFAULTS: Pick<LanguageProvider, 'mroStrategy'> = {
