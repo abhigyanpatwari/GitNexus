@@ -39,6 +39,7 @@ describe('--skip-git CLI flag', () => {
       cwd: path.resolve(__dirname, '../..'),
       encoding: 'utf8',
       timeout: 10000,
+      env: { ...process.env, GITNEXUS_LANG: 'en' },
     });
 
     expect(helpOutput).toContain('--skip-git');
