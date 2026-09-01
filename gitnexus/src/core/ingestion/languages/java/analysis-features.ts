@@ -8,14 +8,21 @@ function isSpringApplicationConfig(filePath: string): boolean {
 /** Durable completeness contract for Java Spring configuration bindings. */
 export const SPRING_CONFIG_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
   id: 'spring.config-bindings',
-  version: 1,
-  // Java sources need consumer extraction even without config files (missing
-  // placeholders still get unresolved markers). Config-only repositories also
-  // need a one-time rebuild to backfill language-agnostic Property nodes.
+  version: 2,
+  // Java and Kotlin sources need consumer extraction even without config files
+  // (missing placeholders still get unresolved markers). Config-only
+  // repositories also need a one-time rebuild to backfill language-agnostic
+  // Property nodes. Gradle Kotlin DSL is not a consumer source.
   appliesTo: (filePaths) =>
-    filePaths.some(
-      (filePath) => filePath.toLowerCase().endsWith('.java') || isSpringApplicationConfig(filePath),
-    ),
+    filePaths.some((filePath) => {
+      const normalized = filePath.replaceAll('\\', '/').toLowerCase();
+      if (normalized.endsWith('.gradle.kts')) return false;
+      return (
+        normalized.endsWith('.java') ||
+        normalized.endsWith('.kt') ||
+        isSpringApplicationConfig(filePath)
+      );
+    }),
 };
 
 /** Durable completeness contract for implicit Java record-component accessors. */

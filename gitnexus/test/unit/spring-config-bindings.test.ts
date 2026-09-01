@@ -274,6 +274,126 @@ describe('Java Spring configuration consumers', () => {
   });
 });
 
+describe('Kotlin Spring configuration consumers', () => {
+  it('resolves official imports and ignores shadowed annotation names', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    const consumers = extractKotlinSpringConfigConsumers(`
+      import org.springframework.beans.factory.annotation.Value
+      import org.springframework.boot.context.properties.ConfigurationProperties
+
+      @ConfigurationProperties(prefix = "service")
+      class ServiceProperties {
+        @Value("\\\${service.timeout:30}")
+        var timeout: Int = 0
+      }
+    `);
+    expect(consumers).toEqual([
+      expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['service.timeout'] }),
+      expect.objectContaining({
+        kind: 'configuration-properties',
+        className: 'ServiceProperties',
+        prefix: 'service',
+      }),
+    ]);
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        annotation class Value(val value: String)
+        class Local {
+          @Value("\\\${fake.key}")
+          var field: String = ""
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('binds constructor properties, setters, and import aliases, not getters or unbound params', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    const consumers = extractKotlinSpringConfigConsumers(`
+      import org.springframework.beans.factory.annotation.Value as Bound
+      import org.springframework.boot.context.properties.ConfigurationProperties
+
+      @ConfigurationProperties("service")
+      class BoundProps(
+        @param:Bound("\\\${service.timeout}")
+        val timeout: Int,
+        @Bound("\\\${ignored.plain}")
+        timeoutPlain: Int,
+      ) {
+        @get:Bound("\\\${ignored.getter}")
+        @set:Bound("\\\${service.endpoint}")
+        var endpoint: String = ""
+
+        @field:Bound("\\\${service.retry.max-attempts}")
+        var attempts: Int = 0
+      }
+    `);
+
+    expect(consumers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['service.timeout'] }),
+        expect.objectContaining({
+          kind: 'value',
+          fieldName: 'endpoint',
+          keys: ['service.endpoint'],
+        }),
+        expect.objectContaining({
+          kind: 'value',
+          fieldName: 'attempts',
+          keys: ['service.retry.max-attempts'],
+        }),
+        expect.objectContaining({
+          kind: 'configuration-properties',
+          className: 'BoundProps',
+          prefix: 'service',
+        }),
+      ]),
+    );
+    expect(
+      consumers.some(
+        (consumer) => consumer.kind === 'value' && consumer.keys.includes('ignored.getter'),
+      ),
+    ).toBe(false);
+    expect(
+      consumers.some(
+        (consumer) => consumer.kind === 'value' && consumer.keys.includes('ignored.plain'),
+      ),
+    ).toBe(false);
+  });
+
+  it('fails closed on Kotlin string interpolation and decodes escaped placeholders', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.beans.factory.annotation.Value
+        class Interpolated {
+          val prefix = "service"
+          @Value("\${prefix}.timeout")
+          var timeout: Int = 0
+        }
+      `),
+    ).toEqual([]);
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.beans.factory.annotation.Value
+        class Escaped {
+          @Value("\\\${payment.timeout}")
+          var timeout: Int = 0
+        }
+      `),
+    ).toEqual([
+      expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['payment.timeout'] }),
+    ]);
+  });
+});
+
 describe('Spring configuration graph binding', () => {
   it('indexes the graph once for all consumer files and skips empty work', () => {
     const graph = createKnowledgeGraph();
