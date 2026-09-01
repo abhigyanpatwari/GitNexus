@@ -345,7 +345,27 @@ export const writeNdjsonRecord = async (
   }
 };
 
-const buildGraph = async (
+const ROUTE_NODE_CORE_PROJECTION =
+  'n.id AS id, n.name AS name, n.filePath AS filePath, ' +
+  'n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware';
+
+const LEGACY_ROUTE_NODE_QUERY = `MATCH (n:\`Route\`) RETURN ${ROUTE_NODE_CORE_PROJECTION}`;
+
+const isMissingRouteRuntimePropertyError = (err: unknown): boolean => {
+  const message = err instanceof Error ? err.message : String(err);
+  const mentionsRuntimeProperty = ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus'].some(
+    (property) => message.includes(property),
+  );
+
+  return (
+    mentionsRuntimeProperty &&
+    (/cannot find property/i.test(message) ||
+      /property .* does not exist/i.test(message) ||
+      /property .* not found/i.test(message))
+  );
+};
+
+export const buildGraph = async (
   includeContent = false,
 ): Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }> => {
   const nodes: GraphNode[] = [];
@@ -356,6 +376,13 @@ const buildGraph = async (
         nodes.push(mapGraphNodeRow(table, row, includeContent));
       }
     } catch (err) {
+      if (table === 'Route' && isMissingRouteRuntimePropertyError(err)) {
+        const rows = await executeQuery(LEGACY_ROUTE_NODE_QUERY);
+        for (const row of rows) {
+          nodes.push(mapGraphNodeRow(table, row, includeContent));
+        }
+        continue;
+      }
       if (!isIgnorableGraphQueryError(err)) {
         throw err;
       }
@@ -403,7 +430,7 @@ export const getNodeQuery = (table: string, includeContent: boolean): string => 
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.label AS label, n.heuristicLabel AS heuristicLabel, n.processType AS processType, n.stepCount AS stepCount, n.communities AS communities, n.entryPointId AS entryPointId, n.terminalId AS terminalId`;
   }
   if (table === 'Route') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware`;
+    return `MATCH (n:${tableLabel}) RETURN ${ROUTE_NODE_CORE_PROJECTION}, n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus`;
   }
   if (table === 'Tool') {
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
@@ -432,6 +459,11 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     responseKeys: row.responseKeys,
     errorKeys: row.errorKeys,
     middleware: row.middleware,
+    // Normalize legacy Route projections to the modern contract. Source is
+    // provenance; only runtimeConfirmed === true is authoritative.
+    runtimeConfirmed: table === 'Route' ? (row.runtimeConfirmed ?? false) : undefined,
+    runtimeSource: table === 'Route' ? row.runtimeSource : undefined,
+    runtimeStatus: table === 'Route' ? row.runtimeStatus : undefined,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,
@@ -472,6 +504,19 @@ export const streamGraphNdjson = async (
         );
       });
     } catch (err) {
+      if (table === 'Route' && isMissingRouteRuntimePropertyError(err)) {
+        await streamQuery(LEGACY_ROUTE_NODE_QUERY, async (row) => {
+          await writeNdjsonRecord(
+            res,
+            {
+              type: 'node',
+              data: mapGraphNodeRow(table, row, includeContent),
+            },
+            signal,
+          );
+        });
+        continue;
+      }
       if (!isIgnorableGraphQueryError(err)) {
         throw err;
       }
@@ -1454,6 +1499,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           force,
           embeddings,
           dropEmbeddings,
+          springActuatorPath,
           token: repoToken,
         } = req.body;
 
@@ -1464,6 +1510,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         }
         if (repoLocalPath !== undefined && typeof repoLocalPath !== 'string') {
           res.status(400).json({ error: '"path" must be a string' });
+          return;
+        }
+        if (
+          springActuatorPath !== undefined &&
+          (typeof springActuatorPath !== 'string' || springActuatorPath.trim().length === 0)
+        ) {
+          res.status(400).json({ error: '"springActuatorPath" must be a non-empty string' });
           return;
         }
 
@@ -1549,7 +1602,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               throw new Error('No target path resolved');
             }
 
-            launchAnalysisWorker(job, targetPath, { force, embeddings, dropEmbeddings });
+            launchAnalysisWorker(job, targetPath, {
+              force,
+              embeddings,
+              dropEmbeddings,
+              springActuatorPath,
+            });
           } catch (err: any) {
             if (targetPath) releaseRepoLock(getStoragePath(targetPath));
             jobManager.updateJob(job.id, {

@@ -233,6 +233,9 @@ CREATE NODE TABLE Route (
   middleware STRING[],
   method STRING,
   handlerSymbolId STRING,
+  runtimeConfirmed BOOLEAN,
+  runtimeSource STRING,
+  runtimeStatus STRING,
   PRIMARY KEY (id)
 )`;
 

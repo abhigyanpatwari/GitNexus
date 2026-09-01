@@ -124,6 +124,11 @@ export interface AnalyzeOptions {
    * outside the built-in convention still produces `route_map` consumers.
    */
   fetchWrappers?: string[];
+  /**
+   * Explicit local Spring Boot Actuator snapshot input (#2418). Accepts a JSON
+   * bundle or a directory containing endpoint JSON files. Disabled by default.
+   */
+  springActuator?: string;
   /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
   embeddingBaseUrl?: string;
   /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */

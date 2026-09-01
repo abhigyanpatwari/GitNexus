@@ -1372,6 +1372,7 @@ const analyzeCommandImpl = async (
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      springActuatorPath: options.springActuator,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free
@@ -1530,6 +1531,7 @@ const analyzeCommandImpl = async (
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options.stats === false,
               hasPdg: options.pdg === true,
+              hasSpringActuator: options.springActuator !== undefined,
             },
           );
         }

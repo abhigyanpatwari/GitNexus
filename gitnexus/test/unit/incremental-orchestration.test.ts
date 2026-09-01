@@ -246,6 +246,53 @@ async function readSpringConfigPropertyNames(repoPath: string): Promise<string[]
   }
 }
 
+async function readActuatorSnapshotLeakRows(
+  repoPath: string,
+  snapshotPath: string,
+  secretValue: string,
+): Promise<Array<{ filePath?: unknown; content?: unknown }>> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH (f:File) RETURN f.filePath AS filePath, f.content AS content`,
+    )) as Array<{ filePath?: unknown; content?: unknown }>;
+    return rows.filter(
+      (row) =>
+        row.filePath === snapshotPath ||
+        (typeof row.content === 'string' && row.content.includes(secretValue)),
+    );
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function readRuntimePropertyEvidence(repoPath: string): Promise<{
+  description: string;
+  reasons: string[];
+}> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const propertyRows = (await adapter.executeQuery(
+      `MATCH (p:Property) WHERE p.name = 'runtime.secret' ` +
+        `RETURN p.description AS description LIMIT 1`,
+    )) as Array<{ description?: unknown }>;
+    const relationshipRows = (await adapter.executeQuery(
+      `MATCH (:File)-[r:CodeRelation]->(p:Property) WHERE p.name = 'runtime.secret' ` +
+        `AND r.type = 'DECLARES' RETURN r.reason AS reason ORDER BY reason`,
+    )) as Array<{ reason?: unknown }>;
+    return {
+      description: String(propertyRows[0]?.description ?? ''),
+      reasons: relationshipRows.map((row) => String(row.reason ?? '')),
+    };
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
 async function countStatusImplementsNamed(repoPath: string): Promise<number> {
   const adapter = await import('../../src/core/lbug/lbug-adapter.js');
   const { lbugPath } = getStoragePaths(repoPath);
@@ -481,6 +528,108 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // lastCommit==HEAD && working tree clean (mod GitNexus output) →
       // early-return fast path.
       expect(second.alreadyUpToDate).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('rebuilds for Actuator snapshots and once more when runtime enrichment is disabled', async () => {
+    const repo = await setupMiniRepo();
+    const runtimeInput = 'runtime-actuator';
+    const runtimeInputDir = path.join(repo.dbPath, runtimeInput);
+    const secretValue = 'ACTUATOR_META_SECRET_2418';
+    try {
+      await mkdir(runtimeInputDir, { recursive: true });
+      await writeFile(
+        path.join(runtimeInputDir, 'env.json'),
+        JSON.stringify({
+          propertySources: [
+            {
+              name: 'systemEnvironment',
+              properties: { 'runtime.secret': { value: secretValue, origin: 'env' } },
+            },
+          ],
+        }),
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add actuator runtime snapshot');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const enabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, springActuatorPath: runtimeInput },
+        { onProgress: () => {} },
+      );
+      expect(enabled.alreadyUpToDate).toBeUndefined();
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const enabledMeta = await loadMeta(storagePath);
+      if (enabledMeta === null)
+        throw new Error('Expected Actuator metadata after enabled analysis');
+      expect(enabledMeta.springActuator).toEqual({
+        enabled: true,
+        repoRelativeInputs: [runtimeInput],
+      });
+      expect(JSON.stringify(enabledMeta)).not.toContain(secretValue);
+      expect(Object.keys(enabledMeta.fileHashes ?? {})).not.toContain(`${runtimeInput}/env.json`);
+      expect(await readRuntimePropertyEvidence(repo.dbPath)).toEqual({
+        description: expect.stringContaining('Spring Actuator env runtime-confirmed'),
+        reasons: ['spring-actuator:env:runtime-confirmed'],
+      });
+      expect(
+        await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
+      ).toEqual([]);
+
+      await saveMeta(storagePath, {
+        ...enabledMeta,
+        springActuator: {
+          enabled: true,
+          repoRelativeInputs: [runtimeInput, 42],
+        },
+      } as RepoMeta);
+      await expect(
+        runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} }),
+      ).rejects.toThrow('Cannot safely disable Spring Actuator runtime enrichment');
+      await saveMeta(storagePath, enabledMeta);
+
+      const disableLogs: string[] = [];
+      const disabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => disableLogs.push(message) },
+      );
+      expect(disabled.alreadyUpToDate).toBeUndefined();
+      expect(disableLogs.join('\n')).toContain(
+        'Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.',
+      );
+      expect((await loadMeta(storagePath))?.springActuator).toEqual({
+        enabled: false,
+        repoRelativeInputs: [runtimeInput],
+      });
+      expect(
+        await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
+      ).toEqual([]);
+
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
+
+      const forcedSteady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, force: true },
+        { onProgress: () => {} },
+      );
+      expect(forcedSteady.alreadyUpToDate).toBeUndefined();
+      expect(
+        await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
+      ).toEqual([]);
+      expect((await loadMeta(storagePath))?.springActuator).toEqual({
+        enabled: false,
+        repoRelativeInputs: [runtimeInput],
+      });
     } finally {
       await repo.cleanup();
     }

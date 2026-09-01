@@ -1078,6 +1078,11 @@ interface ApiImpactRoute {
   route: string;
   method: string | null;
   handler: string;
+  runtimeEvidence: {
+    confirmed: boolean;
+    source?: string;
+    status?: string;
+  };
   responseShape: { success: string[]; error: string[] };
   middleware: string[];
   middlewareDetection?: 'partial';
@@ -1097,6 +1102,30 @@ interface ApiImpactRoute {
     warning?: string;
   };
 }
+
+interface RouteRuntimeEvidence {
+  runtimeConfirmed: boolean;
+  runtimeSource: string | null;
+  runtimeStatus: string | null;
+}
+
+const routeRuntimeEvidence = (route: RouteRuntimeEvidence) => ({
+  confirmed: route.runtimeConfirmed,
+  ...(route.runtimeSource === null ? {} : { source: route.runtimeSource }),
+  ...(route.runtimeStatus === null ? {} : { status: route.runtimeStatus }),
+});
+
+const isMissingRouteRuntimePropertyError = (error: unknown): boolean => {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    ['runtimeConfirmed', 'runtimeSource', 'runtimeStatus'].some((property) =>
+      message.includes(property),
+    ) &&
+    (/cannot find property/i.test(message) ||
+      /property .* does not exist/i.test(message) ||
+      /property .* not found/i.test(message))
+  );
+};
 
 /**
  * `api_impact` is polymorphic by match count: a single matched route returns the
@@ -8388,6 +8417,9 @@ export class LocalBackend {
       responseKeys: string[] | null;
       errorKeys: string[] | null;
       middleware: string[] | null;
+      runtimeConfirmed: boolean;
+      runtimeSource: string | null;
+      runtimeStatus: string | null;
       consumers: Array<{
         name: string;
         filePath: string;
@@ -8396,9 +8428,7 @@ export class LocalBackend {
       }>;
     }>
   > {
-    const rows = await executeParameterized(
-      repoId,
-      `
+    const routeQuery = (includeRuntimeEvidence: boolean) => `
       MATCH (n:Route)
       WHERE n.id STARTS WITH 'Route:' ${routeFilter}
       OPTIONAL MATCH (consumer)-[r:CodeRelation]->(n)
@@ -8406,10 +8436,19 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason, n.method AS method
-    `,
-      params,
-    );
+             r.reason AS fetchReason, n.method AS method${
+               includeRuntimeEvidence
+                 ? ', n.runtimeConfirmed AS runtimeConfirmed, n.runtimeSource AS runtimeSource, n.runtimeStatus AS runtimeStatus'
+                 : ''
+             }
+    `;
+    let rows;
+    try {
+      rows = await executeParameterized(repoId, routeQuery(true), params);
+    } catch (error) {
+      if (!isMissingRouteRuntimePropertyError(error)) throw error;
+      rows = await executeParameterized(repoId, routeQuery(false), params);
+    }
 
     // Strip wrapping quotes from DB array elements — CSV COPY stores ['key'] which
     // LadybugDB may return as "'key'" rather than "key"
@@ -8426,6 +8465,9 @@ export class LocalBackend {
         responseKeys: string[] | null;
         errorKeys: string[] | null;
         middleware: string[] | null;
+        runtimeConfirmed: boolean;
+        runtimeSource: string | null;
+        runtimeStatus: string | null;
         consumers: Array<{
           name: string;
           filePath: string;
@@ -8449,6 +8491,9 @@ export class LocalBackend {
       // resource). Appended last in RETURN so positional fallbacks for the
       // consumer/reason columns above stay stable.
       const method: string | null = row.method ?? row[9] ?? null;
+      const runtimeConfirmed = (row.runtimeConfirmed ?? row[10]) === true;
+      const runtimeSource: string | null = row.runtimeSource ?? row[11] ?? null;
+      const runtimeStatus: string | null = row.runtimeStatus ?? row[12] ?? null;
 
       if (!routeMap.has(id)) {
         routeMap.set(id, {
@@ -8459,6 +8504,9 @@ export class LocalBackend {
           responseKeys,
           errorKeys,
           middleware,
+          runtimeConfirmed,
+          runtimeSource,
+          runtimeStatus,
           consumers: [],
         });
       }
@@ -8554,6 +8602,7 @@ export class LocalBackend {
         route: r.name,
         method: r.method,
         handler: r.filePath,
+        runtimeEvidence: routeRuntimeEvidence(r),
         middleware: r.middleware || [],
         consumers: r.consumers,
         flows: flowMap.get(r.id) || [],
@@ -8622,6 +8671,7 @@ export class LocalBackend {
           route: r.name,
           method: r.method,
           handler: r.filePath,
+          runtimeEvidence: routeRuntimeEvidence(r),
           ...(responseKeys.length > 0 ? { responseKeys } : {}),
           ...(errorKeys.length > 0 ? { errorKeys } : {}),
           consumers,
@@ -8823,6 +8873,7 @@ export class LocalBackend {
         route: r.name,
         method: r.method,
         handler: r.filePath,
+        runtimeEvidence: routeRuntimeEvidence(r),
         responseShape: {
           success: responseKeys,
           error: errorKeys,
