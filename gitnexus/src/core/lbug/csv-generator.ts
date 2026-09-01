@@ -18,6 +18,7 @@ import path from 'path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName, RELATION_SCHEMA } from './schema.js';
+import { isTestFilePath } from '../ingestion/utils/test-file-path.js';
 import { VALID_NODE_TABLES, parseRelationSchemaPairs, RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
@@ -489,7 +490,8 @@ export const streamAllCSVsToDisk = async (
       'id,name,filePath,content',
     );
     const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
-    const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
+    const codeElementHeader =
+      'id,name,filePath,startLine,endLine,isExported,isTestCode,content,description';
     const functionWriter = new BufferedCSVWriter(
       path.join(csvDir, 'function.csv'),
       `${codeElementHeader},convexEndpointFactory`,
@@ -503,7 +505,7 @@ export const streamAllCSVsToDisk = async (
       codeElementHeader,
     );
     const methodHeader =
-      'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType';
+      'id,name,filePath,startLine,endLine,isExported,isTestCode,content,description,parameterCount,returnType';
     const methodWriter = new BufferedCSVWriter(path.join(csvDir, 'method.csv'), methodHeader);
     const codeElemWriter = new BufferedCSVWriter(
       path.join(csvDir, 'codeelement.csv'),
@@ -667,6 +669,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.startLine, -1),
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
+              isTestFilePath(node.properties.filePath) ? 'true' : 'false',
               escapeCSVField(content),
               escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVNumber(node.properties.parameterCount, 0),
@@ -742,6 +745,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.startLine, -1),
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
+              isTestFilePath(node.properties.filePath) ? 'true' : 'false',
               escapeCSVField(content),
               escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ];
