@@ -330,6 +330,10 @@ function extractManagedBlock(file: string): string {
   return match![1];
 }
 
+function alwaysDoSection(block: string): string {
+  return block.slice(block.indexOf('## Always Do'), block.indexOf('## Never Do'));
+}
+
 // The `risk: UNKNOWN` Always-Do bullet and its Never-Do clause were hand-added
 // INSIDE the machine-managed region instead of living in the template, so a
 // real analyze run silently deleted them on regeneration — twice (#2856's
@@ -358,17 +362,32 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
   });
 
   it.each(['AGENTS.md', 'CLAUDE.md'])(
+    '%s Always-Do pins the read-path MUST as its own bullet (#3076)',
+    (file) => {
+      const alwaysDo = alwaysDoSection(extractManagedBlock(file));
+      expect(alwaysDo).toMatch(/^- \*\*MUST use `query\(\{search_query: "concept"\}\)`/m);
+      expect(alwaysDo).toContain('Graph first');
+      expect(alwaysDo).toContain('text search only for empty/');
+      expect(alwaysDo).not.toMatch(/Explore\s+with/);
+      expect(alwaysDo).not.toMatch(/Use\s+`context\(\{name:/);
+      expect(alwaysDo).not.toMatch(/^- [^\n]*Explore/m);
+    },
+  );
+
+  it.each(['AGENTS.md', 'CLAUDE.md'])(
     "%s managed block's Always Do / Never Do bullet counts do not drop below the known floor",
     (file) => {
       const block = extractManagedBlock(file);
-      const alwaysDoSection = block.slice(
-        block.indexOf('## Always Do'),
-        block.indexOf('## Never Do'),
-      );
+      const alwaysDo = alwaysDoSection(block);
       const neverDoSection = block.slice(block.indexOf('## Never Do'));
-      // 7 Always-Do bullets are unconditional; an 8th (pdg_query) only
-      // appears when the index was built with --pdg, so the floor is 7, not 8.
-      expect((alwaysDoSection.match(/^- /gm) || []).length).toBeGreaterThanOrEqual(7);
+      const ungated = (alwaysDo.match(/^- .+/gm) ?? []).filter(
+        (line) => !line.includes('pdg_query'),
+      );
+      // Six Always-Do bullets are not hasPdg-gated after #3076. pdg_query is
+      // extra when the committed block was generated with --pdg. Counting
+      // ungated bullets (not total >= 6) fails if the read-path MUST leaves
+      // Always-Do while pdg_query keeps the old slack.
+      expect(ungated).toHaveLength(6);
       // Never Do never varies with hasPdg — exactly 4 today, so 4 is the floor.
       expect((neverDoSection.match(/^- NEVER /gm) || []).length).toBeGreaterThanOrEqual(4);
     },
