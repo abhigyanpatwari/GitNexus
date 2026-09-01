@@ -25,12 +25,27 @@ export {
 } from './language-detection.js';
 export type { MroStrategy } from './mro-strategy.js';
 
+// Impact risk scoring
+export { scoreImpactRisk, unusedAxesForImpactWalk } from './impact-risk.js';
+export type {
+  ImpactRisk,
+  ImpactRiskAxis,
+  ImpactRiskInput,
+  ImpactRiskResult,
+  UnusedImpactRiskAxis,
+  UnusedImpactRiskReason,
+} from './impact-risk.js';
+
 // Pipeline progress
 export type { PipelinePhase, PipelineProgress } from './pipeline.js';
 
 // ─── Scope-based resolution — RFC #909 (Ring 1 #910) ────────────────────────
 // Data model (RFC §2)
-export type { ParameterTypeClass, SymbolDefinition } from './scope-resolution/symbol-definition.js';
+export type {
+  ParameterTypeClass,
+  SymbolDefinition,
+  TypeParameter,
+} from './scope-resolution/symbol-definition.js';
 export type {
   ScopeId,
   DefId,

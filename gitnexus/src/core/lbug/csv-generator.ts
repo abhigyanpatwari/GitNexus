@@ -137,25 +137,62 @@ const formatCSVStringArray = (value: unknown): string => {
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
 // ============================================================================
 
+const BINARY_SAMPLE_CHARS = 1000;
+const UNICODE_REPLACEMENT_CHAR = 0xfffd;
+
+/**
+ * Did this text come from a binary payload? Density of non-printables over the
+ * first {@link BINARY_SAMPLE_CHARS} characters, above 10%.
+ *
+ * U+FFFD counts, and it is the character that matters most here (#2889). Every
+ * source file enters the pipeline through a `utf-8` decode — the content cache
+ * below reads with `fs.readFile(path, 'utf-8')`, and the parse worker decodes
+ * the same way. That decode is lossy and total: an invalid byte sequence never
+ * survives as invalid bytes, it is REPLACED with U+FFFD. So the embedded-binary
+ * payloads #2889 describes (webpack bundles, class-file constant pools,
+ * serialized objects inside .js/.vue sources) arrive here as long runs of
+ * U+FFFD, not as the control bytes this scan was originally written to count —
+ * charCode 0xFFFD is neither `< 9`, nor between 13 and 32, nor 127, so the
+ * detector scored a wholly corrupt payload as clean text and every caller waved
+ * it through.
+ *
+ * The threshold stays at 10%: a legitimate source file carries no replacement
+ * characters at all unless it was mis-decoded, and a handful (a stray latin-1
+ * comment, one bad byte in a license header) still scores far under the bar.
+ * Density rather than "contains any binary run" is deliberate — a description
+ * that is mostly real prose with one stray replacement character is worth more
+ * indexed than dropped.
+ */
 export const isBinaryContent = (content: string): boolean => {
-  if (!content || content.length === 0) return false;
-  const sample = content.slice(0, 1000);
+  // `content &&` keeps the original tolerance for a null/undefined caller —
+  // `strict` is off in this package, so the type alone does not rule it out.
+  const end = content ? Math.min(content.length, BINARY_SAMPLE_CHARS) : 0;
+  if (end === 0) return false;
   let nonPrintable = 0;
-  for (let i = 0; i < sample.length; i++) {
-    const code = sample.charCodeAt(i);
-    if (code < 9 || (code > 13 && code < 32) || code === 127) nonPrintable++;
+  for (let i = 0; i < end; i++) {
+    const code = content.charCodeAt(i);
+    if (code < 9 || (code > 13 && code < 32) || code === 127 || code === UNICODE_REPLACEMENT_CHAR)
+      nonPrintable++;
   }
-  return nonPrintable / sample.length > 0.1;
+  return nonPrintable / end > 0.1;
 };
+
+interface PreparedFileContent {
+  readonly content: string;
+  readonly lines: string[];
+  readonly isBinary: boolean;
+}
+
+const EMPTY_PREPARED: PreparedFileContent = { content: '', lines: [''], isBinary: false };
 
 /**
  * LRU content cache — avoids re-reading the same source file for every
  * symbol defined in it. Sized generously so most files stay cached during
- * the single-pass node iteration.
+ * the single-pass node iteration. Insertion order on the Map is LRU
+ * (delete+set on touch).
  */
 class FileContentCache {
-  private cache = new Map<string, string>();
-  private accessOrder: string[] = [];
+  private cache = new Map<string, PreparedFileContent>();
   private maxSize: number;
   private repoPath: string;
 
@@ -164,36 +201,36 @@ class FileContentCache {
     this.maxSize = maxSize;
   }
 
-  async get(relativePath: string): Promise<string> {
-    if (!relativePath) return '';
+  async get(relativePath: string): Promise<PreparedFileContent> {
+    if (!relativePath) return EMPTY_PREPARED;
     const cached = this.cache.get(relativePath);
     if (cached !== undefined) {
-      // Move to end of accessOrder (LRU promotion)
-      const idx = this.accessOrder.indexOf(relativePath);
-      if (idx !== -1) {
-        this.accessOrder.splice(idx, 1);
-        this.accessOrder.push(relativePath);
-      }
+      this.cache.delete(relativePath);
+      this.cache.set(relativePath, cached);
       return cached;
     }
     try {
       const fullPath = path.join(this.repoPath, relativePath);
       const content = await fs.readFile(fullPath, 'utf-8');
-      this.set(relativePath, content);
-      return content;
+      const prepared: PreparedFileContent = {
+        content,
+        lines: content.split('\n'),
+        isBinary: isBinaryContent(content),
+      };
+      this.set(relativePath, prepared);
+      return prepared;
     } catch {
-      this.set(relativePath, '');
-      return '';
+      this.set(relativePath, EMPTY_PREPARED);
+      return EMPTY_PREPARED;
     }
   }
 
-  private set(key: string, value: string) {
-    if (this.cache.size >= this.maxSize) {
-      const oldest = this.accessOrder.shift();
-      if (oldest) this.cache.delete(oldest);
+  private set(key: string, value: PreparedFileContent) {
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
     }
     this.cache.set(key, value);
-    this.accessOrder.push(key);
   }
 }
 
@@ -225,9 +262,21 @@ class FileContentCache {
  */
 export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
 
-/** Composes both FTS-text transforms for the `description` column — one place for the six emission sites below to call, instead of repeating the composition. */
+/**
+ * Composes both FTS-text transforms for the `description` column — one place for
+ * the six emission sites below to call, instead of repeating the composition.
+ *
+ * Binary-looking descriptions are dropped rather than transformed (#2889). The
+ * `content` column has always been gated on {@link isBinaryContent} inside
+ * {@link extractContent}; `description` never was, so a symbol whose "doc
+ * comment" is really a slice of an embedded binary payload had that payload
+ * copied verbatim into an FTS-indexed column. Dropping it here rather than at
+ * each of the six call sites keeps the gate in the same place as the transforms
+ * it guards. Empty string, not a sentinel: unlike `content`, a description has
+ * no reader that needs to be told why it is missing.
+ */
 const formatFtsDescription = (description: string): string =>
-  normalizeFtsText(applyCjkSegmentationIfEnabled(description));
+  isBinaryContent(description) ? '' : normalizeFtsText(applyCjkSegmentationIfEnabled(description));
 
 // Labels that get exact source-span content (no ±2 window). Single source of
 // truth in `symbol-labels.ts` — see there for why the exactness depends on the
@@ -236,10 +285,11 @@ const EXACT_SYMBOL_CONTENT_LABELS = SYMBOL_NODE_LABELS;
 
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
-  const content = await contentCache.get(filePath);
+  const prepared = await contentCache.get(filePath);
+  const content = prepared.content;
   if (!content) return '';
   if (node.label === 'Folder') return '';
-  if (isBinaryContent(content)) return '[Binary file - content not stored]';
+  if (prepared.isBinary) return '[Binary file - content not stored]';
 
   // File content is stored in full — intentionally NOT length-capped here, so
   // text past the old 10KB cutoff stays FTS-searchable (#2317). It is already
@@ -254,7 +304,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   const endLine = node.properties.endLine;
   if (startLine === undefined || endLine === undefined) return '';
 
-  const lines = content.split('\n');
+  const lines = prepared.lines;
   const exactSymbolContent = EXACT_SYMBOL_CONTENT_LABELS.has(node.label);
   const start = Math.max(0, exactSymbolContent ? startLine : startLine - 2);
   const end = Math.min(lines.length - 1, exactSymbolContent ? endLine : endLine + 2);
@@ -442,7 +492,7 @@ export const streamAllCSVsToDisk = async (
     const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
     const functionWriter = new BufferedCSVWriter(
       path.join(csvDir, 'function.csv'),
-      codeElementHeader,
+      `${codeElementHeader},convexEndpointFactory`,
     );
     const classWriter = new BufferedCSVWriter(
       path.join(csvDir, 'class.csv'),
@@ -477,7 +527,7 @@ export const streamAllCSVsToDisk = async (
     // Route nodes for API endpoint mapping
     const routeWriter = new BufferedCSVWriter(
       path.join(csvDir, 'route.csv'),
-      'id,name,filePath,responseKeys,errorKeys,middleware,method,handlerSymbolId',
+      'id,name,filePath,responseKeys,errorKeys,middleware,method,handlerSymbolId,runtimeConfirmed,runtimeSource,runtimeStatus',
     );
 
     // Tool nodes for MCP tool definitions
@@ -495,6 +545,7 @@ export const streamAllCSVsToDisk = async (
 
     // Multi-language node types share the same CSV shape (no isExported column)
     const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
+    const constHeader = `${multiLangHeader},convexEndpointFactory`;
     const MULTI_LANG_TYPES = [
       'Struct',
       'Enum',
@@ -516,14 +567,15 @@ export const streamAllCSVsToDisk = async (
       'Template',
       'Module',
     ] as const;
-    const propertyHeader = 'id,name,filePath,startLine,endLine,content,description,declaredType';
+    const propertyHeader =
+      'id,name,filePath,startLine,endLine,content,description,declaredType,isDetail';
     const multiLangWriters = new Map<string, BufferedCSVWriter>();
     for (const t of MULTI_LANG_TYPES) {
       multiLangWriters.set(
         t,
         new BufferedCSVWriter(
           path.join(csvDir, `${t.toLowerCase()}.csv`),
-          t === 'Property' ? propertyHeader : multiLangHeader,
+          t === 'Property' ? propertyHeader : t === 'Const' ? constHeader : multiLangHeader,
         ),
       );
     }
@@ -658,6 +710,9 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(middlewareStr),
               escapeCSVField(String(node.properties.method ?? '')),
               escapeCSVField(String(node.properties.handlerSymbolId ?? '')),
+              node.properties.runtimeConfirmed === true ? 'true' : 'false',
+              escapeCSVField(String(node.properties.runtimeSource ?? '')),
+              escapeCSVField(String(node.properties.runtimeStatus ?? '')),
             ].join(','),
           );
           break;
@@ -692,6 +747,8 @@ export const streamAllCSVsToDisk = async (
             ];
             if (node.label === 'Class') {
               row.push(escapeCSVField(formatCSVStringArray(node.properties.frameworkAnnotations)));
+            } else if (node.label === 'Function') {
+              row.push(escapeCSVField(String(node.properties.convexEndpointFactory ?? '')));
             }
             pending = writer.addRow(row.join(','));
           } else {
@@ -709,8 +766,16 @@ export const streamAllCSVsToDisk = async (
                   escapeCSVField(content),
                   escapeCSVField(formatFtsDescription(node.properties.description || '')),
                   ...(node.label === 'Property'
-                    ? [escapeCSVField(node.properties.declaredType || '')]
-                    : []),
+                    ? [
+                        escapeCSVField(node.properties.declaredType || ''),
+                        // R3-4 detail symbols — see PROPERTY_SCHEMA. Written as
+                        // an explicit boolean so the column is never empty; an
+                        // empty BOOLEAN cell fails the COPY.
+                        node.properties.isDetail === true ? 'true' : 'false',
+                      ]
+                    : node.label === 'Const'
+                      ? [escapeCSVField(String(node.properties.convexEndpointFactory ?? ''))]
+                      : []),
                 ].join(','),
               );
             } else {

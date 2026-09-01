@@ -3,6 +3,8 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
+import fs from 'node:fs';
+import os from 'node:os';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
@@ -11,6 +13,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 
@@ -2314,21 +2317,117 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
     expect(all).toContain('UserRecord');
   });
 
-  it('emits no spurious self-EXTENDS for a record (record→record same-namespace EXTENDS is a known registry gap)', () => {
-    // Since #1956 the inheritance synth walks `record_declaration` base_lists,
-    // so record→class and record→interface bases now resolve to
-    // EXTENDS/IMPLEMENTS edges — see the qualified/record/struct block below
-    // (record R : Base, record P : Base(id), …). The record→RECORD case in the
-    // SAME namespace (`record UserRecord : BaseEntity`, both in `Models`) is a
-    // separate, pre-existing resolution gap: the synth emits the
-    // @reference.inherits capture, but the same-namespace record-target binding
-    // is not resolved, so no UserRecord→BaseEntity EXTENDS edge appears. It is
-    // NOT asserted here and is tracked as a follow-up. The self-edge invariant
-    // must always hold.
+  it('emits no spurious self-EXTENDS for a record', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const selfExtend = extends_.find((e) => e.source === 'UserRecord' && e.target === 'UserRecord');
     expect(selfExtend).toBeUndefined();
   });
+
+  it('links record inheritance between the canonical Record nodes (#2801)', () => {
+    const edge = getRelationships(result, 'EXTENDS').find(
+      (candidate) => candidate.source === 'UserRecord' && candidate.target === 'BaseEntity',
+    );
+
+    expect(edge?.sourceLabel).toBe('Record');
+    expect(edge?.targetLabel).toBe('Record');
+  });
+
+  it('uses the Record node as the caller for a property initializer (#2801)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-csharp-record-link-'));
+    try {
+      writeFixtureRepo(root, {
+        'Record.cs': `namespace Probe;
+          public record Record {
+            private static int Seed { get; } = Initialize();
+            private static int Initialize() => 1;
+          }`,
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const initializerCall = getRelationships(linked, 'CALLS').find(
+        (edge) => edge.source === 'Record' && edge.target === 'Initialize',
+      );
+      expect(initializerCall?.sourceLabel).toBe('Record');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('fans interface calls out to an implementing Record method (#2884)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-csharp-record-dispatch-'));
+    try {
+      writeFixtureRepo(root, {
+        'INamed.cs': 'namespace Probe; public interface INamed { string Name(); }',
+        'User.cs': `namespace Probe;
+          public record User(string Value) : INamed {
+            public string Name() => Value;
+          }`,
+        'Reader.cs': `namespace Probe;
+          public class Reader {
+            public string Read(INamed value) => value.Name();
+            public string ReadConcrete(User value) => value.Name();
+          }`,
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const calls = getRelationships(linked, 'CALLS');
+      const primary = calls.filter(
+        (edge) =>
+          edge.source === 'Read' &&
+          edge.target === 'Name' &&
+          edge.rel.reason !== 'interface-dispatch',
+      );
+      const fanout = calls.filter(
+        (edge) =>
+          edge.source === 'Read' &&
+          edge.target === 'Name' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+      const concreteFanout = calls.filter(
+        (edge) =>
+          edge.source === 'ReadConcrete' &&
+          edge.target === 'Name' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+
+      expect(primary.map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`)).toEqual([
+        'Method:INamed.cs',
+      ]);
+      expect(fanout.map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`)).toEqual([
+        'Method:User.cs',
+      ]);
+      expect(concreteFanout).toEqual([]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('fans out through reversed same-file partial Record declarations (#2884)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-csharp-partial-record-dispatch-'));
+    try {
+      writeFixtureRepo(root, {
+        'All.cs': `namespace Probe;
+          public interface INamed { string Name(); }
+          public partial record User { public string Name() => "u"; }
+          public partial record User : INamed { }
+          public class Reader { public string Read(INamed value) => value.Name(); }`,
+      });
+
+      const linked = await runPipelineFromRepo(root, () => {});
+      const fanout = getRelationships(linked, 'CALLS').filter(
+        (edge) =>
+          edge.source === 'Read' &&
+          edge.target === 'Name' &&
+          edge.rel.reason === 'interface-dispatch',
+      );
+
+      expect(fanout.map((edge) => `${edge.targetLabel}:${edge.targetFilePath}`)).toEqual([
+        'Method:All.cs',
+      ]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 60000);
 
   it('resolves base.Save() inside UserRecord.Save to BaseEntity.Save (not self)', () => {
     const calls = getRelationships(result, 'CALLS');

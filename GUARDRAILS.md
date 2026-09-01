@@ -31,7 +31,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Stale graph after edits
 
 - **Trigger:** MCP warns index is behind `HEAD`, or search doesn't match latest commit.
-- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used). Runs incrementally by default — the pipeline parses every file every run (cross-file resolution requires it), but tree-sitter dispatch is skipped for unchanged file chunks via the content-addressed cache, and only changed-file rows (plus their importers, transitively) are rewritten in LadybugDB. When the effective write set exceeds ~50% of the repo's files (minimum 50 files), the run transparently switches to the full wipe + bulk-COPY write plan and logs "switching to a full DB write" — expected behavior, not a bug, and file-level bookkeeping stays incremental.
+- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used). Runs incrementally by default — the pipeline parses every file every run (cross-file resolution requires it), but tree-sitter dispatch is skipped for unchanged file chunks via the content-addressed cache, and only changed-file rows (plus their importers, transitively) are rewritten in LadybugDB. When the effective write set exceeds ~50% of the repo's files (minimum 50 files), the run transparently switches to the full wipe + bulk-COPY write plan and logs "switching to a full DB write" — expected behavior, not a bug, and file-level bookkeeping stays incremental. That same line also appears — regardless of write-set size, even for a one-file change — when a LadybugDB extension the existing index depends on cannot load on this machine (VECTOR, #2623; FTS, #2841), because a DB carrying those indexes refuses all row-level DML until the extension is loaded; run `gitnexus doctor` for live extension status and re-run with `GITNEXUS_LBUG_EXTENSION_INSTALL=auto` (with network access) to allow one bounded install attempt. The rebuild is one-shot: it clears the indexes, so the next run goes back to the incremental plan.
 - **Why:** Tools query LadybugDB from last analyze; git changes are invisible until re-indexed.
 
 ### Index seems corrupt or "incremental" is misbehaving
@@ -52,6 +52,18 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 - **Do:** Re-run plain `npx gitnexus analyze` — no `--embeddings` flag needed. A retained `embeddingCheckpoint` in the index metadata forces embedding generation for exactly the pending nodes regardless of flags, and clears once they succeed. `--drop-embeddings` abandons the pending nodes instead of retrying them; `--force` also discards the checkpoint (with a warning) and rebuilds without resuming it.
 - **Why:** A long analyze run against a flaky HTTP embedding endpoint tolerates bounded sub-batch failures instead of aborting the whole run: it deletes the affected nodes' embedding rows (so they hold zero rows, never a partial set) and records those nodes as pending in `embeddingCheckpoint`. `stats.embeddings` stays an honest, non-zero count of everything that did succeed, so this state never trips the "Embeddings vanished" Sign above — `embedding-checkpoint-pending` is the only reliable signal.
 
+### Scope extraction is incomplete
+
+- **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["scope-extraction-failed"]` when files were omitted, or `incompleteReasons: ["scope-extraction-unverified"]` when the index predates the completeness receipt or its metadata is unreadable. `impact`/`context` reports the same uncertainty as `epistemic: "lower-bound"`; confirmed omissions set `causes.scopeExtractionFiles > 0`.
+- **Do:** Re-run `npx gitnexus analyze` (`--force` for a full graph rebuild). If the reason persists, inspect the scope-extraction warnings and treat impact counts as floors until the affected source is supported or corrected.
+- **Why:** Parsing continued, but scope captures for the reported file count could not be produced even after the main-thread fallback. Calls, inheritance, imports, or accesses originating there may therefore be absent from the graph.
+
+### Analyze reports INCOMPLETE with a collapsed graph write
+
+- **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["graph-write-collapsed"]`; the analyze summary printed `Repository indexed INCOMPLETELY` naming an expected and a persisted relationship count, and the CLI exited non-zero.
+- **Do:** Re-run `npx gitnexus analyze --force`. If it recurs, check free disk space on the volume holding `.gitnexus/`, confirm no second `analyze` is running against the same repo (both stage through `.gitnexus/csv`), then run `npx gitnexus doctor`.
+- **Why:** The run finished and wrote metadata, but far fewer relationships are readable back than the pipeline produced. Nothing throws: the DB holds rows and the metadata is valid, so every query answers with missing edges rather than an error — a confident empty answer, which is worse than a failure because it looks like a result. Unlike `incremental-in-progress` and `embedding-checkpoint-pending`, which describe a run that did what it said and left work for next time, this one means most of your edges are gone, so it is the one incomplete reason that also fails the exit code. The check compares in-memory totals (including rows streamed out of the heap) against the post-write count, refuses to answer when the count cannot be read, and is skipped on incremental runs where whole-scope counts are not comparable.
+
 ### MCP lists no repos
 
 - **Trigger:** MCP stderr says no indexed repos.
@@ -61,8 +73,8 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Wrong repo in multi-repo setups
 
 - **Trigger:** Query/impact results belong to another project.
-- **Do:** Call `list_repos`, then pass `repo` on subsequent tools.
-- **Why:** Default target is ambiguous when multiple repos are registered.
+- **Do:** Confirm an MCP default is configured or the GitNexus process was launched inside the intended registered path without crossing into an unindexed nested Git checkout. Otherwise call `list_repos`, then pass `repo` on subsequent tools; pass it for mutating tools when multiple repos are registered and no MCP default exists.
+- **Why:** Read-only tools derive their default from MCP configuration or a process cwd that stays within one registered Git boundary. Outside those paths the target remains ambiguous, and mutating tools stay explicit unless configuration supplies the target.
 
 ### LadybugDB lock / "database busy"
 

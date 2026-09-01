@@ -6,10 +6,12 @@
  * does is skip the tree-sitter worker dispatch when a chunk's contents
  * haven't changed since the last run.
  *
- * Granularity: chunk-level. The parse phase chunks files into ~20MB byte
- * budgets. The cache key is `sha256(joined(filePath:contentHash for each
- * file in the chunk, sorted))`. A change to a single file invalidates only
- * that file's chunk — typically 1 of ~50 chunks on a 1000-file repo.
+ * Granularity: chunk-level. Files are assigned to a stable
+ * `(language, hash(path) mod 128)` bucket, then packed to a 2 MiB (or
+ * operator) byte budget *inside* that bucket. Membership does not depend
+ * on worker count. The cache key is `sha256(joined(filePath:contentHash
+ * for each file in the chunk, sorted))`. A content edit invalidates only
+ * that file's pack; add/delete/rename only the affected bucket.
  *
  * Why not per-file:
  * - Workers process sub-batches and emit aggregated `ParseWorkerResult`s.
@@ -27,7 +29,9 @@ import { createRequire } from 'module';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
+import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sidecar.js';
 
 /**
  * Cache version composed of:
@@ -248,7 +252,471 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // them. Only comparing against origin/main at MERGE time surfaces it.
 // PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 45;
+// 45 -> 46 for the JavaScript bare-identifier read captures (A2), which emit
+// `@reference.read.identifier` in value positions (call arguments,
+// default-parameter values, return statements) so a module-scope `const` read
+// only by bare name finally mints a reference site, plus the object-literal
+// `@definition.property` rule and the TypeScript shape-member captures. All
+// PARSE-TIME emission, so a warm cache serves entries carrying none of those
+// matches and the new nodes and edges never appear — observed directly while
+// developing: a full `analyze --force` produced a byte-identical graph and read
+// as a failed hypothesis until the cache was cleared by hand.
+//
+// This branch originally took 45 and it COLLIDED: #2837 above merged first and
+// claimed it. The TENTH entry in this ledger and the FOURTH exact clash, caught
+// exactly as the note above says it must be — by comparing against origin/main
+// at merge time, not at review time. The pin test cannot catch it: both sides
+// asserted `toBe(45)`, which passes while main is already 45, so two capture
+// schemas would have shared one PARSE_CACHE_VERSION and the durable ParsedFile
+// store would have replayed pre-fix ParsedFiles verbatim for one of them.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 46 -> 47: method-level Spring `@RequestMapping` now emits wildcard routes
+// and one route per static `RequestMethod.X` value. These decorator routes live
+// in ParseWorkerResult and are replayed verbatim on warm cache hits, so keeping
+// the previous version would make the fix a no-op for every unchanged Java file.
+// PR #2856 claims 46, so this branch owns 47. Verified against upstream/main at
+// 021ac3037 (still 45). RE-CHECK BEFORE MERGE.
+//
+// ── The FIFTH clash, and the first one the ledger's own convention prevented ──
+// #2857 above merged while this branch sat waiting, and it did the right thing:
+// it read this PR's claim on 46 and took 47 instead of colliding. That left the
+// clash one step further up — 46 was safe, but THIS branch's own 47 (below) was
+// not, and neither was anything after it. Every entry from here down has been
+// renumbered +1 at merge time. Nothing about the capture sets changed; only the
+// numbers did, which is the whole point of re-checking at merge rather than at
+// review. Ledger entries 11 through 15.
+//
+// SIXTH clash, same shape, one merge later: #2833 then took 48 for a generic-
+// receiver fix, so this branch's chain shifted +1 AGAIN and now runs 49-53.
+// The capture sets have never moved; only the numbers have. This is the cost of
+// a single global counter with concurrent PRs, and #2860 is the mechanical fix.
+//
+// 48 -> 49 for the round-2 capture work: object literals behind an
+// identity-preserving wrapper (`const X = Object.freeze({ ... })`) now mint
+// `@definition.property` for their keys. Parse-time like every entry above, and
+// this one was ALSO observed as a false negative first: `analyze --force`
+// against a fixture carrying the new shape returned the pre-change node set and
+// read as "the query does not match", until the on-disk cache was removed by
+// hand and the same run produced the node. `--force` re-runs the pipeline but
+// still serves ParsedFiles from the durable store, so it does not substitute
+// for this bump.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 49 -> 50 for the TypeScript object-literal captures (R3-3): named
+// object-literal keys and the identity-wrapper form now mint `@definition.property`
+// in TYPESCRIPT_QUERIES, as they already did for JavaScript. Parse-time, so a
+// warm cache would replay ParsedFiles carrying none of those matches and the
+// keys would stay invisible.
+//
+// #2860 adds a CI check comparing this against the base branch — the merge-time
+// re-check this ledger has asked for by hand across ten entries and four exact
+// clashes. It is NOT on this branch, so until that one merges the re-check
+// below is still manual.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 50 -> 51 for the return-shape and shorthand captures (R3-4): keys of an
+// anonymous literal in return position, and shorthand keys in both that and the
+// variable-bound form. Parse-time again.
+//
+// The v34 hazard, and this branch has already tripped it: a build stamped 48
+// (now 50) was installed and used to analyze two repos BEFORE these captures
+// existed, so caches stamped 48 exist that carry none of them. Within one PR the version
+// only has to differ from main's, but an INTERMEDIATE build of the same series
+// is a different capture set wearing the same number — which is exactly what
+// the note above records for 33/34.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 51 -> 52 is NOT needed for R3-5: that pass is scope-resolution, not
+// parse-time capture, so a warm cache replays ParsedFiles that already carry
+// everything it reads. Recorded because the reflex on this branch has been to
+// bump, and a bump nobody needs still forces every user a full re-parse.
+//
+// 51 -> 52 IS needed for dispatch-guard routes (R3-7): the JS/TS providers now
+// implement `extractDecoratorRoutes`, and decorator routes are worker output
+// carried in the parse cache. A warm cache replays a worker result whose
+// `decoratorRoutes` predates the extractor entirely, so every hand-rolled route
+// stays invisible and `route_map` keeps answering empty — the exact symptom the
+// change exists to fix, wearing the mask of "the extractor does not work".
+//
+// 52 -> 53 for the same-file constant folding that followed it. The v34 hazard
+// again, and this branch has now tripped it TWICE: a build stamped 50 (now 52)
+// was used to analyze before folding existed, so those caches carry the unfolded
+// route set. Caught by measuring — the post-folding run came back suspiciously
+// fast and would have reported the pre-folding number, which is precisely how
+// "an intermediate build of the same series is a different capture set wearing
+// the same number" shows up in practice. Within one PR the version only has to
+// differ from main's; against a cache YOU wrote, it has to differ from itself.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+
+// 47 -> 48: #2833 makes a generic-typed FIELD usable as a call receiver. Three
+// parse-time changes ride on this one value:
+//   - C++ (`languages/cpp/query.ts`) gains `field_declaration` rules whose
+//     `type:` is a `template_type` or a `qualified_identifier` wrapping one.
+//     The rules that existed all required a bare `type_identifier`, so
+//     `Repo<User> repo;` and `std::vector<Item> items;` matched NONE of them and
+//     the member got no type binding at all — new captures where there were none.
+//   - Python (`languages/python/interpret.ts`) reduces a subscripted type its
+//     container allow-lists do not claim to its base name, so `Repo[User]` binds
+//     as `Repo`. That rewrites `TypeRef.rawName`, which is serialized into the
+//     cached ParsedFile.
+//   - `SymbolDefinition.typeParameters` — the DECLARED parameter list
+//     (`template <class T>`, `class Box<T extends Repo>`), captured nowhere
+//     before and on a different axis from the existing `templateArguments`. Six
+//     per-language declaration queries gained `@declaration.type-parameters` and
+//     `scope-extractor.ts` reads it onto every class-like def.
+// A warm cache would replay the pre-fix ParsedFiles, so every file served from
+// it would carry the old captures while passing every cold-run test — the exact
+// failure this constant exists to prevent.
+//
+// WHAT THE BUMP DOES NOT COVER. It invalidates the PARSE half only. Whether the
+// re-parsed captures reach the graph is a separate gate: `isIncremental`
+// (`core/run-analyze.ts`) tests `!options.force`, an existing meta,
+// `!schemaFingerprintMismatch(...)`, feature parity, non-empty `fileHashes` and
+// a git repo — SCHEMA_BUMP appears in none of them — and an incremental run then
+// writes back only `hashDiff.toWrite`, logging the rest as "unchanged file rows
+// preserved". SCHEMA_FINGERPRINT is a hash of node/relation DDL, which this
+// branch does not touch, so it is byte-identical and moves nothing either.
+// Net: after this bump an incremental analyze re-parses an unchanged file
+// correctly but keeps its existing rows, and the new edges land on the next full
+// rebuild (`--force`, or any run whose runner identity or DDL moved). That is
+// the pre-existing contract for every capture change, not a regression here.
+//
+// THIS BRANCH COLLIDED TWICE, which is why it lands on 48 rather than 46.
+// It first took 46 (the C++/Python captures) and then 47 (typeParameters), both
+// verified free against origin/main at 021ac3037. By merge time main had moved:
+// #2856 claims 46 and #2857 took 47 and merged first. The eleventh entry in this
+// ledger and the FOURTH and FIFTH exact clashes — and note what caught them.
+// Not the pin test: this branch asserted `toBe(47)` and so did #2857, and both
+// pass, because a literal pin cannot see the other side. Only diffing
+// origin/main at the moment of merge surfaces it. Every value this branch
+// published (46, 47) is superseded by 48, so a warm cache stamped with either is
+// correctly invalidated.
+//
+// 53 -> 54 for W2-8: `@declaration.type-parameters` is now captured on generic
+// FUNCTIONS, generator functions and type ALIASES in TYPESCRIPT_SCOPE_QUERY, not
+// only on class/interface declarations. Parse-time emission, so a warm cache
+// replays ParsedFiles whose defs carry no parameter list and the shadowing guard
+// that consumes it silently does nothing — the feature would look implemented
+// and be inert, which is the failure this constant exists to prevent.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 54 -> 55 for W2-9: the dispatch-guard verb walk now tracks boolean POLARITY,
+// so `(req.method === 'GET' ? false : true) && pathname === '/x'` no longer
+// reports GET — the one method that branch guarantees the request does not have
+// — and `!!(req.method === 'GET')` no longer loses its verb. Routes are emitted
+// at parse time and replayed verbatim from a warm cache, so without this bump an
+// already-indexed repo keeps serving the inverted verb and the fix looks inert.
+// Same reason 51 and 52 were taken for R3-7.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 55 -> 56 for R3-8 (part 1): a dispatch guard's verb walk now returns ALL the
+// methods a guard serves, so `(req.method === 'GET' || req.method === 'POST') &&
+// pathname === '/x'` emits two routes instead of reporting GET alone, and a
+// disjunction with a non-verb operand emits none instead of the first verb it
+// saw. Routes are parse-time output replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 56 -> 57 for R3-8 (part 2): `pathname.match(RE)` is read as a route test
+// alongside `RE.test(pathname)`, a bound match takes its verb from where the
+// binding is TESTED rather than where it is bound, a regex named by a same-file
+// const resolves, and `regexToRoutePath` accepts a CAPTURING segment wildcard
+// (`([^/]+)`) — the form every real dispatcher writes and the one it refused.
+// All parse-time route output, replayed verbatim from a warm cache.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 57 -> 58 for #2897: the fetch capture no longer requires a LITERAL url, so a
+// call passing a variable is recorded as an outward-action site. Measured, 44 of
+// 47 fetch calls in this repo pass a variable, so the R3-6 sink signal was
+// absent from 94% of them. Parse-time capture output replayed verbatim from a
+// warm cache, so without the bump an indexed repo keeps its empty sink set and
+// the fix looks inert.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+// 58 -> 59 for the #2899 REVIEW FOLLOW-UP to the dispatch-guard route walk. Two
+// route-output changes, both parse-time and both replayed verbatim from a warm
+// cache, so without this bump an already-indexed repo keeps serving the wrong
+// routes and both fixes look implemented while being inert:
+//   (a) `matchBindings` / `tested` are keyed on (enclosing function, name)
+//       instead of the bare identifier. A same-named non-match binding in
+//       ANOTHER function used to mint a fabricated verbed route under the wrong
+//       handler — reproduced: `DELETE /api/live/positions/{param1}/replay
+//       handler=handleSettings` — which then EVICTED the true verb-less route
+//       through `reconcileDispatchGuardRoutes`. `buildRegexConstantMap` refuses
+//       a name rebound to a non-regex for the same reason.
+//   (b) `verbsFromTernary` INTERSECTS the operands of a conjunction instead of
+//       taking the first non-empty set. `(GET||POST) ? (POST||PUT) : false`
+//       emitted GET and POST where only POST is reachable, and
+//       `GET ? POST : false` emitted GET for an unsatisfiable guard.
+// Both changes strictly REMOVE routes, so a stale cache serves strictly more
+// wrong answers than a cold one — which is exactly the state this constant
+// exists to make unreachable. Same reason 55, 56 and 57 were taken.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 59 -> 60 for #2864's `ParsedImport.reexportsName` plus the `@import.publishes`
+// capture that gates it. The FIELD is the easy half to miss: it is not a
+// capture, but `parsedfile-store.ts` serializes the whole ParsedFile
+// generically, so a new optional property on `ParsedImport` is part of the
+// cached shape all the same. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, `isNamedReexport`'s strict `=== true` takes
+// the old path, and the whole fix is a silent no-op on incremental analyze while
+// every cold-run test passes — landing hardest on `__init__.py`, the
+// rarest-changing and highest-cache-hit files in a Python repo. The MARKER makes
+// it a capture change too, confirmed independently by
+// `bench/python-scope/measure.mjs` drifting.
+//
+// This branch is the SIXTH exact clash, and the first one the re-check caught
+// where the number did NOT have to move. It staged 60 while main was 53,
+// deliberately clearing the two claims visible at the time (#2899 and #2891).
+// #2899 then merged and cascaded main 53 -> 59 in five steps — far past the 54
+// its diff appeared to claim, because reading a PR's LAST bump hunk understates a
+// branch that bumps repeatedly. 60 survived only because it was chosen above the
+// highest claim rather than at main + 1; had it been staged at 54 it would now be
+// buried four deep inside main's own ledger. Take the next free value above every
+// in-flight MAXIMUM, not above origin/main.
+//
+// Still open at this commit: #2891 also claims 59, which main now holds. That is
+// a live exact clash for #2891 to renumber, not for this branch.
+//
+// 60 -> 62 for the two optional `ParsedImport` fields the cycle-checker fix
+// adds: `typeOnly` (TS `import type`) and `runsOnlyWhenCalled` (an import
+// written inside a function body). This is #2864's lesson arriving again, in
+// the same shape and for the same reason — neither field is a capture, but
+// `parsedfile-store.ts` serializes the whole ParsedFile generically, so both are
+// part of the cached shape. Without the bump a warm cache replays pre-fix
+// `ParsedImport`s carrying no flag, the strict `=== true` reads in
+// `finalize-algorithm.ts` and `imports-to-edges.ts` take the untagged path, and
+// `check --cycles` keeps reporting the erased and deferred imports this branch
+// exists to stop reporting — a silent no-op on incremental analyze while every
+// cold-run test in the branch passes. The failure is toward OVER-reporting, so
+// it is loud rather than dangerous, but it is still the whole fix not applying.
+// (`typeOnly` also has a capture half — `@import.type-only` from
+// `typescript/import-decomposer.ts` — so that side would drift a capture bench;
+// `runsOnlyWhenCalled` is decided in scope-extractor Pass 3 from the scope tree
+// and has no marker at all, which is exactly the half that gets missed.)
+//
+// 63, not 62, and not 61: main holds 60, #2935 claims 61, and #2936 claims 62.
+// Per the rule three paragraphs up, this is the next free value above every
+// in-flight MAXIMUM, not above origin/main. #2891's 59 is already buried by main
+// and is theirs to renumber; #1616's 2 is stale.
+//
+// This staged 62 first and was correct when written. #2936 opened four hours
+// later and also took 62 — bumping for #2917's implicit Java record-component
+// accessors, a genuinely different cached shape — because it re-checked against
+// main (60) rather than against the in-flight claims, which is the SEVENTH exact
+// clash and the same mistake the ledger above keeps recording. Moving rather
+// than standing on seniority: 63 is above every claim, so it is correct whichever
+// of the two merges first, and needs no coordination to stay correct. An exact
+// clash is the dangerous shape precisely because neither side invalidates the
+// other — a warm cache written by #2936's build would be read as valid by this
+// one, and the accessor definitions it materializes are not in this branch's
+// ParsedFile shape at all.
+//
+// 63 -> 64 for Java enum heritage plus annotated class, record, interface,
+// enum, and explicit-super base names emitting corrected captures (#2918).
+// Warm v63 ParsedFiles lack those captures and must be re-extracted.
+// 64 -> 66 adds the synthetic-declaration sidecar used to keep anonymous class
+// implementations from evicting ordinary implementors at the dispatch cap.
+// That PR published a v64 head first, so 66 kept all the shapes in flight at the
+// time distinct. (It also named a v65 claim from this branch; that claim was
+// superseded before either landed — see the 66 -> 67 entry below. Nothing holds
+// 65 now.)
+//
+// 66 -> 67 for #2917's implicit Java record-component accessor definitions and
+// scope declarations. A warm cache would otherwise replay ParsedFiles without
+// the synthesized accessors. This branch staged 65 before #2918's 66 landed on
+// main; 67 is the next free value above every in-flight claim (main 66, #2939's
+// 64), which is the ledger rule above — re-check against the claims, not just
+// against main.
+//
+// 67 -> 68 for #2912's `ReferenceSite.typeArguments`: the generic arguments a
+// heritage reference was written with (`: IValidator<string>`), derived at
+// EXTRACTION time from the anchor's spelling. A warm cache replays `inherits`
+// sites with the field absent, absence is the fail-open "unknown", and
+// generic-instantiation filtering therefore degrades to the pre-fix fan-out on
+// exactly the unchanged files — silent, and passing every cold-run test.
+//
+// This branch staged 64 when main held 60 and #2935/#2936/#2934 claimed 61/62/63.
+// All three have since landed and cascaded main to 67, burying 64 inside main's
+// own ledger — the EIGHTH time the re-check moved a number, and the reason the
+// re-check is a merge step rather than a one-time choice. 68 is the next free
+// value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
+// stale 2), which is the rule above: above every claim, not above origin/main.
+// RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
+//
+// 68 -> 69 added #2969's JS/TS data-route-table decoratorRoutes. A warm v68
+// cache would replay unchanged worker results without those routes. Version 70
+// then adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so Java
+// and Kotlin caches persist scheduled, event, messaging, and managed-job facts.
+//
+// 70 -> 71 adds the Java constant-route capture set (#2980):
+// `route-extractors/java-const-resolver.ts`, the `spring.ts` operand branch,
+// and the parse-worker's provider-driven constant harvest. A warm pre-feature
+// cache replays those files' worker results with `moduleConstants` absent and
+// `routePathOperands` unset, so every constant-based Spring route on an
+// unchanged file is silently dropped — the feature is inert until something
+// else invalidates the cache.
+//
+// This branch briefly reasoned that no bump was needed because the ledger
+// "already sits at 70, whose capture set post-dates and includes this harvest".
+// It does not: v70 was cut by fe3d7e56b for Spring non-HTTP handler facts
+// (#2417 / #2891), an ancestor of this PR's base, and it cannot include a
+// harvest that does not exist on main. Because
+// `PARSE_CACHE_VERSION = ${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}` and
+// package.json is untouched here, leaving 70 makes the key BYTE-IDENTICAL
+// before and after this merge — precisely the inert-feature trap the v33/v34
+// notes above warn about. Exposure is bounded by the package version (a
+// released upgrade invalidates anyway), but same-version warm caches — dev
+// builds, CI caches, anyone who indexed with an unreleased build — replay the
+// stale captures.
+//
+// 72, not 71: open PR #3017 (`fix/nest-decorator-routes`, NestJS decorator route
+// indexing) already claims 71, with an identical pin test. Re-checking
+// origin/main alone would not catch that — main is 70 and stays 70 until one of
+// the two merges, at which point the second lands a byte-identical
+// PARSE_CACHE_VERSION and is inert. This is exactly the rule the ledger states
+// and the v37/v38 clash it was written for: the next free value above every
+// IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
+// scanned; #3017 is the only other claimant.
+//
+// 72 -> 74 adds import-proven Convex endpoint metadata to Const/Function worker
+// output. A warm v72 cache has no convexEndpointFactory property, so the MCP
+// impact probe would keep claiming exact results for unchanged endpoints. The
+// parse-cache bump makes unchanged files re-parse; analyzer runner identity
+// drift separately forces the graph re-emit (run-analyze.ts), and an id/schema
+// migration needs both guarantees. Version 73 is intentionally skipped because
+// concurrent PR #3046 (fixes #3041) claims it. Re-check main and open PRs
+// immediately before merge.
+//
+// 74 -> 76 makes object-literal Function and Method members owner-qualified
+// (#3041). A warm v74 cache replays the old collapsed callable ids and omits
+// the new Const/Variable -> callable HAS_METHOD ownership edges, so this bump
+// makes unchanged files re-parse rather than waiting for a source edit. The
+// persisted graph is rebuilt separately when `analyzerRunnerIdentitiesEqual`
+// detects the changed analyzer build in run-analyze.ts. Both guards are
+// required; a parse-cache bump alone must never be read as a graph rebuild.
+// Version 75 is intentionally skipped because concurrent PR #3017 claims it.
+//
+// 74 -> 75 adds #3009's NestJS decorator routes to the JS/TS decoratorRoutes
+// channel. Same reasoning as 69: a warm pre-feature cache replays unchanged
+// worker results, which for every already-indexed NestJS repo means replaying
+// the empty route set this change exists to fix — the fix would appear to do
+// nothing until something else invalidated the cache.
+//
+// 75, not 71 (this branch's original claim) and not 74: origin/main cascaded
+// past both while this PR was open. #2980 took 71, #3046 claims 73, and the
+// Convex endpoint-metadata change took 74 (skipping 73 for exactly that
+// reason). 75 is the next free value above origin/main AND above every
+// in-flight claim — the rule the ledger states, not "one above main". Every
+// open PR touching gitnexus/src/storage/parse-cache.ts was scanned at this
+// merge: #3046 (73) and #1616 (a stale 2) are the only other claimants.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+//
+// 75 -> 76 for the NestJS multi-path (array) form: `@Get(['a','b'])` now yields
+// one `decoratorRoutes` entry per path where it previously yielded none. That
+// changes worker output for the same file, and 75 was already claimed earlier
+// on this same branch — so a warm cache written by a dev or CI build at v75,
+// before the array form landed, would replay the pre-feature captures under a
+// BYTE-IDENTICAL `PARSE_CACHE_VERSION` and the array form would be inert. The
+// package version is untouched here, so it cannot rescue that case. Same-branch
+// re-bumping is unusual, but the ledger's rule is about what a warm cache can
+// replay, not about how the value was reached.
+//
+// 76 -> 77 because 76 was NOT free. While this branch sat in review, origin/main
+// advanced to ac68f5254 and #3046 took 76 — the value this branch already held.
+// `gitnexus/package.json` is 1.6.9 on both sides, so `PARSE_CACHE_VERSION` was
+// the byte-identical string `76+1.6.9` on two branches that changed
+// incompatible worker output. Every warm cache would have been reused across
+// both features, making both inert while every test stayed green.
+//
+// The sharpest part: #3046 skipped 75 BECAUSE this branch held it, then took
+// 76 — and this branch had meanwhile moved 75 -> 76 for the array form. Two
+// PRs each doing the bookkeeping correctly still collided, because each
+// re-checked once and neither re-checked after the other moved. That is what
+// the re-check line below is for, and why it says AT MERGE rather than
+// when you pick the number.
+//
+// 78 was claimed concurrently by #3060 while this branch was in review. Both
+// branches keep the same package version, so sharing 78 would replay
+// incompatible worker output without a textual merge conflict. This branch
+// therefore takes 79, the next free value above origin/main and every open PR
+// found by the contents-API scan at their exact head SHAs.
+//
+// 79 -> 80 for #3088: parse-cache membership is `(language, sha256(path) mod
+// 128)` then the byte budget *inside* that bucket. Worker count is no longer a
+// membership input, so a warm v79 cache keyed sequential scan-order packs (and
+// on multi-worker hosts, pool×2 MiB mega-chunks) must miss. Sidecar-era
+// ParsedFile stores (#3086/#3087) share PARSE_CACHE_VERSION, so both stores
+// invalidate in lockstep. origin/main at allocation is 79; open PRs that still
+// touch gitnexus/src/storage/parse-cache.ts claim 78 (#3060), 71 (#2840), and
+// 2 (#1616) — none claim 80. RE-CHECK AGAINST origin/main AND OPEN PRs
+// IMMEDIATELY BEFORE MERGING.
+//
+// WHY THIS IS STILL A HAND-PICKED NUMBER, when `SCHEMA_FINGERPRINT` next door
+// is a derived sha256 that cannot collide. The derivation exists and already
+// runs: `resolveAnalyzerRunnerIdentity` computes `build.digest` over the
+// analyzer build tree on every analyze. It is not used here because it moves on
+// ANY build change — a comment-only edit, this paragraph included — so every
+// dev and CI rebuild would force a full re-parse of every repo. That is the
+// expensive half of the trade, and `PARSE_CACHE_VERSION` already carries the
+// package version, so this counter's only job is separating builds that SHARE
+// one: dev, CI, unreleased. Exactly the population a whole-build digest would
+// punish, and exactly the population that hits the exact-clash failure.
+//
+// So the counter stays, and the open cost is that a bump nobody makes is
+// invisible: a capture change with no bump ships inert and no check can see it.
+// #2860 (a base-branch CI comparison) closes the "not greater than main" axis
+// only. A digest over just the determinant subset — the language queries plus
+// `route-extractors/` and `workers/` module content — would close the missing-
+// bump axis without invalidating on unrelated churn, and is the real follow-up.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+// 80 -> 81: ParsedFile and parse-cache shards are one immutable `.v8` envelope
+// each (no JSON/path/generation siblings). A v80 index still names `.json`
+// keys and would skip workers while scope-resolution found nothing — the
+// #1983 main-thread reparse. origin/main at allocation is 80.
+// 81 -> 82: Java and Kotlin ParsedFile capture side channels now carry
+// programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
+// would skip workers and silently omit the new INJECTS edges. origin/main at
+// allocation is 81.
+// 82 -> 83: Java Lombok @Data/@Getter/@Setter accessor synthesis emits
+// synthetic Method nodes, HAS_METHOD edges, and matching scope captures into
+// ParseWorkerResult / ParsedFile. A warm v82 cache replays pre-Lombok worker
+// output and silently omits those callables. origin/main at allocation is 82.
+// 83 -> 84: Kotlin val/var properties synthesize JVM get/set Method nodes
+// (same provider hook as Java Lombok). A warm v83 cache omits those callables.
+// origin/main at allocation is 83 (Java Lombok on this branch).
+// 84 -> 85: JVM synthetic accessor captures now use the declaration
+// qualified_name key consumed by scope extraction, and Kotlin accessor planning
+// follows JvmAbi naming plus conservative @JvmName suppression. A warm v84
+// cache can replay stale names and declaration metadata.
+// 85 -> 86: Kotlin interface property accessors now record isAbstract on the
+// synthetic Method. A warm v85 cache replays them as concrete.
+// 86 -> 87: ModuleConstants gained wildcardImports (static-import-asterisk
+// materialization) — a warm v86 cache has no wildcard bindings, so folding
+// would skip them and drop wildcard-imported route constants. origin/main at
+// allocation is 86 (#2885).
+// 87 -> 88: Java ModuleConstants now preserves unfoldable declaration names
+// across worker/cache replay so wildcard expansion cannot resurrect an imported
+// member hidden by a local field. A warm v87 cache lacks that shadow metadata.
+// 88 -> 89: the same side channels now carry Spring messaging facts — the
+// arguments of non-HTTP handler annotations (`@KafkaListener(topics = ...)`)
+// and a new `springMessageProducerFacts` list for template publishes
+// (`KafkaTemplate.send`, `RabbitTemplate`/`JmsTemplate.convertAndSend`,
+// `StreamBridge.send`). Both are parse-time worker output replayed verbatim
+// from `ParsedFile.captureSideChannel`, so a warm v88 cache would skip workers
+// and hand the annotation facts back with no `args` and the producer list
+// empty. Measured on the fixture app: a warm all-cache-hit run
+// (`usedWorkerPool=false`, `reparsedFileCount=0`) reproduces 6 Java and 7
+// Kotlin producer facts purely from the store, which is exactly the state a
+// pre-change cache would have served as zero. origin/main at allocation is 88.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING — this
+// entry was allocated 83 first, and five bumps landed upstream before it merged.
+// 89 -> 90 (#2865): route decorator captures now carry `handlerName` in
+// `decoratorRoutes`, which is what lets `resolveRouteHandlerSymbols` stamp
+// `handlerSymbolId` and the routes phase emit the definition-level
+// HANDLES_ROUTE edge. The field is minted in the parse WORKER and persisted
+// verbatim, so a warm v89 cache replays handler-less decorator routes: every
+// route loses its definition-level association on incremental analyze while
+// every cold-run test passes — the inert-feature trap the entries above record.
+// 89 is now taken by merged #3128. 90 is the next free value above origin/main
+// (89) and above every in-flight claim found by scanning open PRs'
+// parse-cache.ts at their exact head SHAs (highest other open claim was still
+// ≤88). RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 90;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -273,6 +741,58 @@ const GITNEXUS_PKG_VERSION = (() => {
   return '0.0.0-unknown';
 })();
 export const PARSE_CACHE_VERSION = `${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}`;
+
+/** SHA-256 hex of a string or buffer (paths for bucket ids, contents for cache keys). */
+const sha256Hex = (input: Buffer | string): string =>
+  createHash('sha256')
+    .update(typeof input === 'string' ? Buffer.from(input) : input)
+    .digest('hex');
+
+/** Stable parse-cache bucket count (#3088). Changing this requires SCHEMA_BUMP. */
+export const PARSE_CACHE_BUCKET_COUNT = 128;
+
+/** Bucket id for cache membership: `sha256(path) mod N` without IEEE-754 truncation. */
+export const parseCacheBucketId = (filePath: string): number =>
+  Number(BigInt(`0x${sha256Hex(filePath)}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
+
+export type ParseCachePackFile = { path: string; size: number; language: string };
+
+/**
+ * Pack files into parse-cache chunks: group by (language, bucket id), sort
+ * paths inside the group, then cut at `byteBudget`. Bucket visit order is
+ * the lexicographic order of `${language}\\0${bucketId}` keys (deterministic,
+ * independent of scan order and worker count).
+ */
+export const packParseCacheChunks = (
+  files: readonly ParseCachePackFile[],
+  byteBudget: number,
+): string[][] => {
+  const buckets = new Map<string, ParseCachePackFile[]>();
+  for (const file of files) {
+    const key = `${file.language}\0${parseCacheBucketId(file.path)}`;
+    const list = buckets.get(key);
+    if (list) list.push(file);
+    else buckets.set(key, [file]);
+  }
+  const chunks: string[][] = [];
+  for (const key of [...buckets.keys()].sort()) {
+    const group = buckets.get(key)!;
+    group.sort((a, b) => compareCodeUnits(a.path, b.path));
+    let current: string[] = [];
+    let bytes = 0;
+    for (const file of group) {
+      if (current.length > 0 && bytes + file.size > byteBudget) {
+        chunks.push(current);
+        current = [];
+        bytes = 0;
+      }
+      current.push(file.path);
+      bytes += file.size;
+    }
+    if (current.length > 0) chunks.push(current);
+  }
+  return chunks;
+};
 
 const LEGACY_CACHE_FILENAME = 'parse-cache.json';
 const CACHE_DIRNAME = 'parse-cache';
@@ -317,12 +837,6 @@ export interface ParseCache {
   /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
   onDiskKeys?: Set<string>;
 }
-
-/** SHA-256 hex of a single string or buffer. */
-const sha256Hex = (input: Buffer | string): string =>
-  createHash('sha256')
-    .update(typeof input === 'string' ? Buffer.from(input) : input)
-    .digest('hex');
 
 /** Stable hash of a single file's contents — used by callers to compose a chunk hash. */
 export const fileContentHash = (content: Buffer | string): string => sha256Hex(content);
@@ -438,7 +952,7 @@ const getCacheIndexPath = (storagePath: string): string =>
   path.join(getCacheDirPath(storagePath), CACHE_INDEX_FILENAME);
 
 const getCacheChunkPath = (storagePath: string, chunkHash: string): string =>
-  path.join(getCacheDirPath(storagePath), `${chunkHash}.json`);
+  path.join(getCacheDirPath(storagePath), `${chunkHash}.v8`);
 
 /**
  * Drop fields that are not replayed by `mergeChunkResults` / parse-impl after
@@ -469,9 +983,12 @@ const readParseCacheChunkFromDisk = async (
 ): Promise<ParseWorkerResult[] | undefined> => {
   if (!isValidChunkCacheKey(chunkHash)) return undefined;
   try {
-    const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
-    const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
-    return Array.isArray(chunkData) ? chunkData : undefined;
+    const chunkPath = getCacheChunkPath(storagePath, chunkHash);
+    const v8Hit = await tryLoadV8Cache(chunkPath);
+    if (v8Hit?.kind === 'hit' && Array.isArray(v8Hit.value)) {
+      return v8Hit.value as ParseWorkerResult[];
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -514,8 +1031,17 @@ export const persistParseCacheChunk = async (
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
     }
-    const payload = JSON.stringify(slim, mapReplacer);
-    await fs.writeFile(getCacheChunkPath(cache.storagePath, chunkHash), payload, 'utf-8');
+    const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
+    let ok = await writeV8CacheFile(chunkPath, slim);
+    if (!ok) {
+      await fs.mkdir(cacheDir, { recursive: true });
+      createdCacheDirs.add(cacheDir);
+      ok = await writeV8CacheFile(chunkPath, slim);
+    }
+    if (!ok) {
+      cache.entries.set(chunkHash, slim);
+      return;
+    }
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
     cache.entries.delete(chunkHash);
@@ -618,25 +1144,17 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   // index from what we persisted, not from the raw usedKeys snapshot.
   const writtenKeys: string[] = [];
   for (const chunkHash of keys) {
-    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
+    const chunkPath = path.join(tmpDir, `${chunkHash}.v8`);
     const inMemory = cache.entries.get(chunkHash);
     if (inMemory !== undefined) {
-      let payload: string;
-      try {
-        payload = JSON.stringify(inMemory, mapReplacer);
-      } catch {
-        continue;
+      if (await writeV8CacheFile(chunkPath, inMemory)) {
+        writtenKeys.push(chunkHash);
       }
-      await fs.writeFile(chunkPath, payload, 'utf-8');
-      writtenKeys.push(chunkHash);
       continue;
     }
     const existingPath = getCacheChunkPath(storagePath, chunkHash);
-    try {
-      await fs.copyFile(existingPath, chunkPath);
+    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
       writtenKeys.push(chunkHash);
-    } catch {
-      /* shard missing — skip; next run treats as cache miss */
     }
   }
 

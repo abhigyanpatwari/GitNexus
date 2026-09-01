@@ -7,7 +7,8 @@ import {
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
 import {
-  METHOD_ANNOTATION_TO_HTTP,
+  springAnnotationHttpMethods,
+  intersectSpringHttpMethods,
   isRouteMemberKey,
   findEnclosingClass,
   joinPath,
@@ -28,6 +29,16 @@ import {
   EXCHANGE_CONFIDENCE,
 } from './spring-consumer-shared.js';
 import {
+  expandJavaWildcardStaticImports,
+  extractJavaModuleConstants,
+  foldJavaOperands,
+  isJavaConstantFile,
+  parseJavaConstOperands,
+  prepareJavaRouteConstants,
+  type JavaConstantIndex,
+  type RepoConstants,
+} from '../../../ingestion/route-extractors/java-const-resolver.js';
+import {
   extractStaticPathExpression,
   inferOkHttpMethod,
   inferHttpClientMethod,
@@ -44,7 +55,7 @@ import type {
 
 /**
  * Java HTTP plugin. Handles:
- *   - Spring `@RequestMapping` class prefixes + `@(Get|Post|...)Mapping` method annotations
+ *   - Spring `@RequestMapping` class prefixes + shortcut/`@RequestMapping` method annotations
  *   - Spring `RestTemplate.getForObject/...`, `exchange(...)`
  *   - Spring `WebClient.method(HttpMethod.X, ...)`, `WebClient.get().uri(...)`
  *   - OkHttp `new Request.Builder().url("...")`
@@ -163,6 +174,34 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
                   (element_value_pair
                     key: (identifier) @key
                     value: [(string_literal) @value (element_value_array_initializer (string_literal) @value)]))))
+            name: (identifier) @member) @node
+          (class_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr])))) @node
+          (class_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list
+                  (element_value_pair
+                    key: (identifier) @key
+                    value: [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr]))))) @node
+          (method_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr])))
+            name: (identifier) @member) @node
+          (method_declaration
+            (modifiers
+              (annotation
+                name: [(identifier) (scoped_identifier)] @ann
+                arguments: (annotation_argument_list
+                  (element_value_pair
+                    key: (identifier) @key
+                    value: [(identifier) @value_expr (field_access) @value_expr (binary_expression) @value_expr]))))
             name: (identifier) @member) @node
         ]
       `,
@@ -408,6 +447,35 @@ function simpleName(text: string): string {
   return text.split('.').pop() ?? text;
 }
 
+function declarationAnnotations(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
+  if (!modifiers) return [];
+  return modifiers.namedChildren.filter(
+    (child) => child.type === 'annotation' || child.type === 'marker_annotation',
+  );
+}
+
+function annotationHasRouteMember(annotation: Parser.SyntaxNode): boolean {
+  const args = annotation.childForFieldName('arguments');
+  if (!args) return false;
+  for (const child of args.namedChildren) {
+    if (child.type !== 'element_value_pair') return true;
+    const key = child.childForFieldName('key');
+    if (isRouteMemberKey(key ?? undefined)) return true;
+  }
+  return false;
+}
+
+function typeRequestMethods(typeNode: Parser.SyntaxNode): readonly string[] {
+  const mappings = declarationAnnotations(typeNode).filter(
+    (annotation) =>
+      simpleName(annotation.childForFieldName('name')?.text ?? '') === 'RequestMapping',
+  );
+  if (mappings.length === 0) return ['*'];
+  if (mappings.length !== 1) return [];
+  return springAnnotationHttpMethods('RequestMapping', mappings[0].text);
+}
+
 function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[]): boolean {
   const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
   if (!modifiers) return false;
@@ -437,6 +505,14 @@ interface MethodRouteAnnotation {
   methodName: string | null;
   httpMethod: string;
   rawPath: string;
+  /** OpenFeign's single effective verb; null means its contract is invalid/ambiguous. */
+  feignHttpMethod?: string | null;
+  /**
+   * Non-literal path operands (constant ref or `+`-concat), captured when the
+   * annotation value is not a string literal. Resolved against the repo-wide
+   * Java constant map in scan(); a failed fold drops the route (skip floor).
+   */
+  pathOperands?: readonly import('../../../ingestion/route-extractors/constant-resolver.js').Operand[];
 }
 
 interface RequestLineAnnotation {
@@ -452,7 +528,17 @@ interface RouteAnnotationScan {
   feignPrefixByInterfaceId: Map<number, string[]>;
   /** Spring HTTP Interface `@HttpExchange(url|value)` type-level prefixes per class/interface node id. */
   httpExchangePrefixByTypeId: Map<number, string[]>;
-  /** One entry per resolved Spring `@(Get|...)Mapping` route — a method with N mappings yields N entries. */
+  /**
+   * Class node ids whose `@RequestMapping` prefix is a constant reference or
+   * concat rather than a literal. Folding a TYPE-level prefix would need the
+   * repo constant map inside `scanRouteAnnotations`, which has no access to it,
+   * so `scan()` suppresses every method route under such a class instead of
+   * emitting it with the prefix silently dropped (a wrong path, not a missing
+   * one). Ingestion's `extractSpringRoutes` applies the identical rule — R4
+   * parity.
+   */
+  typesWithUnfoldablePrefix: Set<number>;
+  /** Resolved Spring shortcut/`@RequestMapping` routes — paths × verbs yield one entry each. */
   methodRoutes: MethodRouteAnnotation[];
   /** One entry per OpenFeign `@RequestLine` whose value parses to a verb + path. */
   requestLines: RequestLineAnnotation[];
@@ -479,11 +565,13 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   // feeds the OpenFeign *consumer* path in scan(). An interface carrying both
   // `@RequestMapping` and `@FeignClient(path)` lands a different value in each.
   const prefixByTypeId = new Map<number, string[]>();
+  const typesWithUnfoldablePrefix = new Set<number>();
   const feignPrefixByInterfaceId = new Map<number, string[]>();
   const httpExchangePrefixByTypeId = new Map<number, string[]>();
   const methodRoutes: MethodRouteAnnotation[] = [];
   const requestLines: RequestLineAnnotation[] = [];
   const exchangeRoutes: MethodRouteAnnotation[] = [];
+  const httpMethodsByAnnotationId = new Map<number, readonly string[]>();
   // Interface `@RequestMapping` prefixes rank below `@FeignClient(path)`;
   // collect them and apply only after the FeignClient pass below.
   const interfaceRequestMappingPrefixes: Array<{ id: number; prefix: string }> = [];
@@ -494,7 +582,10 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const annNode = captures.ann;
     const node = captures.node;
     const valueNode = captures.value;
-    if (!annNode || !node || !valueNode) continue;
+    // A non-literal annotation value (constant ref / `+`-concat) is captured
+    // as @value_expr instead of @value — one of the two must be present.
+    const valueExprNode = captures.value_expr;
+    if (!annNode || !node || (!valueNode && !valueExprNode)) continue;
     // Discrimination is on the trailing segment only (`simpleName`), so a
     // non-Spring annotation whose last segment collides with a route annotation
     // (e.g. `@com.evil.GetMapping("/x")`) is treated as a route. This is the
@@ -505,22 +596,56 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const keyNode = captures.key; // undefined for the positional shape
 
     if (node.type === 'method_declaration') {
-      // Method-level: a Spring `@(Get|...)Mapping` route, or native `@RequestLine`.
-      const httpMethod = METHOD_ANNOTATION_TO_HTTP[ann];
-      if (httpMethod) {
+      // Method-level: a Spring shortcut/`@RequestMapping` route, or native `@RequestLine`.
+      const annotationNode = annNode.parent;
+      if (!annotationNode) continue;
+      let httpMethods = httpMethodsByAnnotationId.get(annotationNode.id);
+      if (!httpMethods) {
+        httpMethods = springAnnotationHttpMethods(ann, annotationNode.text);
+        httpMethodsByAnnotationId.set(annotationNode.id, httpMethods);
+      }
+      if (httpMethods.length > 0) {
+        const feignHttpMethod =
+          httpMethods.length === 1 ? (httpMethods[0] === '*' ? 'GET' : httpMethods[0]) : null;
         if (!isRouteMemberKey(keyNode)) continue;
-        const rawPath = unquoteLiteral(valueNode.text);
+        const rawPath = valueNode ? unquoteLiteral(valueNode.text) : null;
         if (rawPath !== null) {
-          methodRoutes.push({
-            methodNode: node,
-            methodName: captures.member?.text ?? null,
-            httpMethod,
-            rawPath,
-          });
+          for (const httpMethod of httpMethods) {
+            methodRoutes.push({
+              methodNode: node,
+              methodName: captures.member?.text ?? null,
+              httpMethod,
+              rawPath,
+              feignHttpMethod,
+            });
+          }
+        } else {
+          // Non-literal path (a constant reference or `+`-concatenation).
+          // Defer to scan(): the fold needs the repo-wide constant map built
+          // by prepareRepo. Capture the operand list now; resolution happens
+          // in scan() against JavaRepoContext, and an unresolvable operand
+          // list leaves the route skipped (KTD5 skip floor).
+          const operands = parseJavaConstOperands(valueExprNode);
+          if (operands !== null) {
+            for (const httpMethod of httpMethods) {
+              methodRoutes.push({
+                methodNode: node,
+                methodName: captures.member?.text ?? null,
+                httpMethod,
+                rawPath: '',
+                feignHttpMethod,
+                pathOperands: operands,
+              });
+            }
+          }
         }
       } else if (ann === 'RequestLine') {
         // Feign packs verb + path in one literal; its only named argument is `value`.
         if (keyNode && keyNode.text !== 'value') continue;
+        // A constant-valued `@RequestLine` arrives as @value_expr, not @value —
+        // `valueNode` is undefined in that shape. Skip rather than dereference
+        // (constant folding for Feign verb+path literals is out of scope here).
+        if (!valueNode) continue;
         const raw = unquoteLiteral(valueNode.text);
         const parsed = raw !== null ? parseRequestLine(raw) : null;
         if (parsed) {
@@ -535,7 +660,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
         // `url` or `value` attribute (or positionally); other attributes
         // (`accept`, `contentType`, …) are not routes.
         if (keyNode && keyNode.text !== 'url' && keyNode.text !== 'value') continue;
-        const rawPath = unquoteLiteral(valueNode.text);
+        const rawPath = valueNode ? unquoteLiteral(valueNode.text) : null;
         if (rawPath !== null) {
           exchangeRoutes.push({
             methodNode: node,
@@ -552,6 +677,11 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     // — on an interface — an OpenFeign `@FeignClient(path = "...")` prefix.
     if (ann === 'RequestMapping') {
       if (!isRouteMemberKey(keyNode)) continue;
+      if (!valueNode) {
+        // Constant-valued class prefix — see `typesWithUnfoldablePrefix`.
+        typesWithUnfoldablePrefix.add(node.id);
+        continue;
+      }
       const prefix = unquoteLiteral(valueNode.text);
       if (prefix !== null) {
         pushPrefix(prefixByTypeId, node.id, prefix);
@@ -562,16 +692,53 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     } else if (ann === 'FeignClient' && node.type === 'interface_declaration') {
       // Feign's `name`/`value` identify a service, not a path — only `path` is a prefix.
       if (!keyNode || keyNode.text !== 'path') continue;
-      const prefix = unquoteLiteral(valueNode.text);
+      const prefix = valueNode ? unquoteLiteral(valueNode.text) : null;
       if (prefix !== null) pushPrefix(feignPrefixByInterfaceId, node.id, prefix);
     } else if (ann === 'HttpExchange') {
       // Spring HTTP Interface type-level prefix: the path lives in `url`/`value`
       // (or positionally). Applies to its `@(Get|...)Exchange` consumer methods.
       if (keyNode && keyNode.text !== 'url' && keyNode.text !== 'value') continue;
-      const prefix = unquoteLiteral(valueNode.text);
+      const prefix = valueNode ? unquoteLiteral(valueNode.text) : null;
       if (prefix !== null) pushPrefix(httpExchangePrefixByTypeId, node.id, prefix);
     }
   }
+
+  const classHttpMethodsByTypeId = new Map<number, readonly string[]>();
+  for (const match of runCompiledPatterns(SPRING_TYPE_DECLARATION_PATTERNS, tree)) {
+    const typeNode = match.captures.type;
+    if (!typeNode) continue;
+    const classMethods = typeRequestMethods(typeNode);
+    classHttpMethodsByTypeId.set(typeNode.id, classMethods);
+    for (const methodNode of collectDirectMethods(typeNode)) {
+      for (const annotationNode of declarationAnnotations(methodNode)) {
+        if (annotationHasRouteMember(annotationNode)) continue;
+        const ann = simpleName(annotationNode.childForFieldName('name')?.text ?? '');
+        const httpMethods = springAnnotationHttpMethods(ann, annotationNode.text);
+        if (httpMethods.length === 0) continue;
+        const feignHttpMethod =
+          httpMethods.length === 1 ? (httpMethods[0] === '*' ? 'GET' : httpMethods[0]) : null;
+        for (const httpMethod of httpMethods) {
+          methodRoutes.push({
+            methodNode,
+            methodName: getNodeName(methodNode),
+            httpMethod,
+            rawPath: '',
+            feignHttpMethod,
+          });
+        }
+      }
+    }
+  }
+
+  const constrainedMethodRoutes = methodRoutes.flatMap((route) => {
+    const typeNode =
+      findEnclosingInterface(route.methodNode) ?? findEnclosingClass(route.methodNode);
+    const classMethods = typeNode ? (classHttpMethodsByTypeId.get(typeNode.id) ?? ['*']) : ['*'];
+    return intersectSpringHttpMethods(classMethods, [route.httpMethod]).map((httpMethod) => ({
+      ...route,
+      httpMethod,
+    }));
+  });
 
   // `@RequestMapping` on a Feign interface is the fallback prefix, but only when
   // the interface has no `@FeignClient(path)` of its own (path wins).
@@ -581,9 +748,10 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
 
   return {
     prefixByTypeId,
+    typesWithUnfoldablePrefix,
     feignPrefixByInterfaceId,
     httpExchangePrefixByTypeId,
-    methodRoutes,
+    methodRoutes: constrainedMethodRoutes,
     requestLines,
     exchangeRoutes,
   };
@@ -626,9 +794,20 @@ function collectImplementedInterfaces(typeNode: Parser.SyntaxNode): string[] {
 }
 
 function collectSpringTypes(filePath: string, tree: Parser.Tree): SharedSpringType[] {
-  const { prefixByTypeId, methodRoutes } = scanRouteAnnotations(tree);
+  const { prefixByTypeId, typesWithUnfoldablePrefix, methodRoutes } = scanRouteAnnotations(tree);
   const routesByMethodId = new Map<number, Array<{ method: string; path: string }>>();
   for (const route of methodRoutes) {
+    // Constant-valued class prefix: no single prefix string exists here, so the
+    // inheritance view would publish this route unprefixed. Skip — same rule as
+    // scan() and as ingestion (R4 parity).
+    const owner = findEnclosingClass(route.methodNode);
+    if (owner && typesWithUnfoldablePrefix.has(owner.id)) continue;
+    // A constant-referencing route still carries `rawPath: ''` here — folding
+    // happens in scan() against the repo constant map, which this
+    // inheritance-view collector has no access to. Emitting it as an empty
+    // path would publish `POST /`-shaped noise into the shared type view;
+    // skip instead (ingestion keeps the same skip floor — R4 parity).
+    if (route.pathOperands) continue;
     const routes = routesByMethodId.get(route.methodNode.id) ?? [];
     routes.push({ method: route.httpMethod, path: route.rawPath });
     routesByMethodId.set(route.methodNode.id, routes);
@@ -700,15 +879,84 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       content,
     );
   },
-  scan(tree) {
+  prepareRepo(args) {
+    // Build the repo-wide Java string-constant map once per extract() run
+    // (mirrors the Python binding's cost-gated pre-pass). A cheap content
+    // gate keeps literal-only repos at zero parses: only files containing a
+    // `static final String` declaration are parsed for constants.
+    try {
+      // The orchestrator hands over a bare Parser (no language set yet);
+      // bind Java explicitly — Python's prepareRepo does the same — otherwise
+      // parseSourceSafe spins to its 15 s budget per file.
+      args.parser.setLanguage(Java);
+    } catch {
+      // fall through: a parser that rejects binding cannot produce a constant
+      // map; per-file try/catch below then skips everything harmlessly.
+    }
+    const constants = new Map<
+      string,
+      import('../../../ingestion/route-extractors/constant-resolver.js').ModuleConstants
+    >();
+    for (const rel of args.files) {
+      if (!rel.endsWith('.java')) continue;
+      try {
+        const src = args.readFile(rel);
+        // Cheap content gate: only constant-DEFINITION candidates get parsed
+        // here (~hundreds of files). Import-only files (every controller)
+        // are deliberately NOT parsed in this pass — scan() lazily extracts
+        // the importing file's own import table from the tree it already
+        // holds when a constant-referencing route actually needs the fold.
+        // A gate that also matched `import ...;` would parse the entire
+        // repository here (tens of thousands of files) just to build import
+        // tables the fold can derive per-file on demand.
+        //
+        // The predicate is the SHARED one the ingestion provider uses, so the
+        // two subsystems agree on which files define constants. Its previous
+        // local spelling missed `final static String` and lowercase interface
+        // names, and admitted an interface that ingestion's gate rejected.
+        if (!src || !isJavaConstantFile(src)) {
+          continue;
+        }
+        const tree = args.parseSource(args.parser, src);
+        if (!tree) continue;
+        const mc = extractJavaModuleConstants(tree);
+        if (
+          mc.literals.size > 0 ||
+          mc.exprs.size > 0 ||
+          mc.imports.size > 0 ||
+          (mc.wildcardImports?.length ?? 0) > 0
+        ) {
+          constants.set(rel, mc);
+        }
+      } catch {
+        // Per-file resilience: one unreadable/oversized/ill-formed file must
+        // not forfeit the whole repo's constant map (a missing constants
+        // class only degrades refs that pointed at it).
+        continue;
+      }
+    }
+    // On-demand static imports (`import static a.b.C.*`) were recorded as
+    // pending class FQNs during extraction; materialize their bare-name
+    // bindings now that the whole map exists. A wildcard's target is itself
+    // a constants file, so it is necessarily a map entry — anything else
+    // degrades to the fold's skip floor. In-place: each entry is owned by
+    // this map, and every file is expanded exactly once.
+    const constantIndex = prepareJavaRouteConstants(constants);
+    return { constants, constantIndex };
+  },
+  scan(tree, repoContext, fileRel) {
     const out: HttpDetection[] = [];
+    const javaCtx = repoContext as
+      | { constants: RepoConstants; constantIndex: JavaConstantIndex }
+      | undefined;
 
     // ─── Spring providers + OpenFeign consumers (one query pass) ────
     // `scanRouteAnnotations` resolves every route-defining annotation —
-    // class/interface prefixes, method `@(Get|...)Mapping`s and native
+    // class/interface prefixes, method shortcut/`@RequestMapping`s and native
     // `@RequestLine`s — from a single `matches()` pass over the tree.
     const {
       prefixByTypeId,
+      typesWithUnfoldablePrefix,
       feignPrefixByInterfaceId,
       httpExchangePrefixByTypeId,
       methodRoutes,
@@ -721,15 +969,61 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // class is a Spring *provider*. A mapping on a non-Feign interface has no
     // enclosing class and is dropped here — interface→controller inheritance is
     // handled by `scanProject`.
+    // Lazy per-file constants view. prepareRepo only indexes constant-
+    // DEFINING files (cheap gate); an importing controller is absent from
+    // that map. When a route actually references a constant, extract THIS
+    // file's import table from the tree scan() already holds (zero extra
+    // parses) and overlay it for the fold. Files whose routes are all
+    // literal — the overwhelming majority — never pay this cost.
+    let foldConstants: RepoConstants | undefined;
+    const getFoldConstants = (): RepoConstants | undefined => {
+      if (foldConstants !== undefined) return foldConstants;
+      foldConstants = javaCtx?.constants;
+      if (!javaCtx?.constants || !fileRel) return foldConstants;
+      if (javaCtx.constants.has(fileRel)) return foldConstants;
+      try {
+        const mc = extractJavaModuleConstants(tree);
+        // A file carrying ONLY wildcard static imports has an empty import
+        // table pre-expansion — overlay it too, then materialize the promised
+        // bindings against the repo map before it becomes a fold target.
+        if (mc.imports.size > 0 || (mc.wildcardImports?.length ?? 0) > 0) {
+          const merged = new Map(javaCtx.constants);
+          expandJavaWildcardStaticImports(mc, fileRel, merged, javaCtx.constantIndex);
+          merged.set(fileRel, mc);
+          foldConstants = merged;
+        }
+      } catch {
+        // fold falls back to the repo-wide map (imports stay unresolved)
+      }
+      return foldConstants;
+    };
+
     for (const route of methodRoutes) {
+      // A constant-valued CLASS prefix cannot be folded here, so every method
+      // route under such a class is suppressed rather than emitted at a wrong
+      // (unprefixed) path — the same rule `classesWithArrayPrefix` already
+      // encodes for the array form, and the same rule ingestion applies.
+      const owner = findEnclosingClass(route.methodNode);
+      if (owner && typesWithUnfoldablePrefix.has(owner.id)) continue;
+      // Non-literal route path: fold the operand list against the repo-wide
+      // constant map. Skip (never a guessed path) when the fold fails or the
+      // repo context is absent (context-less fallback scanning).
+      if (route.pathOperands && javaCtx && fileRel) {
+        const resolved = foldJavaOperands(fileRel, route.pathOperands, getFoldConstants()!);
+        if (resolved === null) continue;
+        route.rawPath = resolved;
+      } else if (route.pathOperands) {
+        continue;
+      }
       const enclosingInterface = findEnclosingInterface(route.methodNode);
       if (enclosingInterface && hasAnnotation(enclosingInterface, 'FeignClient')) {
+        if (!route.feignHttpMethod) continue;
         const prefixes = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? [''];
         for (const prefix of prefixes) {
           out.push({
             role: 'consumer',
             framework: OPENFEIGN_FRAMEWORK,
-            method: route.httpMethod,
+            method: route.feignHttpMethod,
             path: joinPath(prefix, route.rawPath),
             name: route.methodName,
             line: route.methodNode.startPosition.row + 1,

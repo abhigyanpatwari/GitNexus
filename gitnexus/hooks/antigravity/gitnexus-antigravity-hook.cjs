@@ -503,7 +503,7 @@ function buildStaleIndexHint(gitNexusDir, cwd) {
 
   if (currentHead === lastCommit) return '';
 
-  const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings });
+  const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
   return (
     `[GitNexus] index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
     `Run \`${analyzeCmd}\` to refresh the knowledge graph.`

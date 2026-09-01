@@ -39,6 +39,15 @@
  *      (object-literal services). Last-resort fallback for lowercase
  *      receivers with no class-like or type-binding match. Mirrors
  *      the legacy DAG bridge in `call-processor.ts`.
+ *  10. **Case 6 (class-level member receiver)** — `Holder.repo.save(u)`,
+ *      where the receiver's head is a CLASS and the one hop past it is a
+ *      class-level (`isStatic`) field. Types the receiver from that field
+ *      DEF's declared type rather than from a `typeBindings` entry, which
+ *      is the thing a per-scope binding map cannot hold for a class that
+ *      declares both a static and an instance member of one name. Gated on
+ *      Case 0 having declined the same receiver, so it only ever adds an
+ *      edge where there was none. Emits the interface-dispatch fan-out
+ *      alongside Cases 0, 3b and 4.
  *
  * Reordering or merging cases changes resolution semantics.
  *
@@ -59,6 +68,7 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import { collectNamespaceTargets } from '../scope/namespace-targets.js';
 import {
+  bindsTypeParameter,
   findClassBindingInScope,
   findEnclosingClassDef,
   isReceiverOwnedButUnbound,
@@ -69,6 +79,7 @@ import {
   isClassLike,
   isNamespaceNameShadowed,
   type DecorationStripper,
+  resolveClassBindingForName,
 } from '../scope/walkers.js';
 import {
   tryEmitEdge,
@@ -76,16 +87,22 @@ import {
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
-import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
+import {
+  resolveCompoundReceiverClass,
+  resolveCompoundReceiverTyped,
+} from '../passes/compound-receiver.js';
+import { erasedTypeApplication, typeApplicationArguments } from '../../utils/template-arguments.js';
+import {
+  heritageTypeArgumentsKey,
+  stepHeritageInstantiation,
+  type GroundedTypeArgument,
+  type HeritageTypeArguments,
+} from '../utils/generic-instantiation.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
   narrowOverloadCandidates,
   isOverloadAmbiguousAfterNormalization,
 } from './overload-narrowing.js';
-import {
-  extractTemplateArguments,
-  stripTemplateArguments,
-} from '../../utils/template-arguments.js';
 import type {
   ResolutionOutcomeRecorder,
   ResolutionSuppressionReason,
@@ -117,63 +134,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
   | 'isStaticOnly'
+  | 'normalizeTypeArgument'
 >;
-
-function normalizeTemplateArgToken(value: string): string {
-  return value.replace(/\s+/g, '');
-}
-
-function resolveClassBindingForName(
-  scopeId: string,
-  rawClassName: string,
-  scopes: ScopeResolutionIndexes,
-  /**
-   * OPT-IN, and deliberately not passed by the emitting cases. `findClass
-   * BindingInScope`'s own docstring explains why the stripper is opt-in: a name
-   * that previously bound nothing starts binding, which SUPPRESSES the
-   * `?? otherResolver(...)` fallbacks several callers rely on. Case 4 therefore
-   * keeps exact-name behaviour and only `classifyReceiverOrigin` — which emits
-   * no edge and can only change a diagnostic label — passes it.
-   */
-  stripDecoration?: DecorationStripper,
-): SymbolDefinition | undefined {
-  const direct = findClassBindingInScope(scopeId, rawClassName, scopes, stripDecoration);
-  if (direct !== undefined) return direct;
-
-  if (!rawClassName.includes('<')) return undefined;
-  const baseName = stripTemplateArguments(rawClassName).replace(/\s+/g, '');
-  if (baseName.length === 0) return undefined;
-
-  const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
-  if (wantedArgs !== undefined && wantedArgs.length > 0) {
-    // qualifiedNames is a Map and may not contain the stripped base name at all
-    // (e.g., unresolved type binding or only template-qualified entries), so
-    // default to [] before checking `.length`.
-    const qnameIds = scopes.qualifiedNames.get(baseName) ?? [];
-    if (qnameIds.length === 0) {
-      return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
-    }
-    const matches: SymbolDefinition[] = [];
-    for (const id of qnameIds) {
-      const def = scopes.defs.get(id);
-      if (def === undefined || !isClassLike(def.type)) continue;
-      const defArgs = def.templateArguments?.map(normalizeTemplateArgToken);
-      if (
-        defArgs !== undefined &&
-        defArgs.length === wantedArgs.length &&
-        defArgs.every((value, i) => value === wantedArgs[i])
-      ) {
-        matches.push(def);
-      }
-    }
-    if (matches.length === 1) return matches[0];
-    // Scope extractor only records class definitions with bodies in C++, so
-    // forward declarations are not expected here. Keep fallback behavior for
-    // safety in non-ODR or mixed-language edge cases.
-  }
-
-  return findClassBindingInScope(scopeId, baseName, scopes, stripDecoration);
-}
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
 const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
@@ -347,6 +309,14 @@ export function emitReceiverBoundCalls(
      *  degrades a drop's label to `unknown` (the safe direction) and changes no
      *  edge. */
     readonly isBuiltInName?: (name: string) => boolean;
+    /** The generic arguments each heritage clause instantiated its base with,
+     *  from the passes that emitted those heritage edges — the inheritance
+     *  pre-pass, and the language resolvers that emit their own (Rust `impl T
+     *  for S`, Dart `implements` / `with`) (#2912). Read
+     *  ONLY by the interface-dispatch fan-out, to refuse an implementor of an
+     *  incompatible instantiation. Absent ⇒ every heritage instantiation reads
+     *  as unknown ⇒ the pre-#2912 fan-out, unchanged. */
+    readonly heritageTypeArguments?: HeritageTypeArguments;
   } = {},
 ): ReceiverBoundResult {
   let emitted = 0;
@@ -366,6 +336,7 @@ export function emitReceiverBoundCalls(
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
   };
   // Loop-invariant: both hooks come off the pass arguments, so the options bag
   // for `classifyReceiverOrigin` is built once here rather than per dropped site.
@@ -374,17 +345,46 @@ export function emitReceiverBoundCalls(
     isBuiltInName: options.isBuiltInName,
   };
 
-  // Build an interface → implementors map from IMPLEMENTS edges.
-  // Maps Interface graph-id → list of implementor class scope-def-ids.
-  // We translate graph-ids back to scope-resolution DefIds via
-  // `parsedFiles.localDefs` lookup so downstream `findOwnedMember`
-  // (which keys by DefId) can find the implementor's members.
-  const graphIdToClassDef = new Map<string, SymbolDefinition>();
+  // Maps class-like graph ids back to ALL scope definitions that resolved to
+  // them. Same-file partial declarations share one graph id but keep distinct
+  // DefIds, and `pickOverload` keys member lookup by those DefIds. Preserving
+  // every part makes dispatch independent of declaration order.
+  const graphIdToClassDefs = new Map<string, SymbolDefinition[]>();
+  // The same correspondence read the other way, so the dispatch walk can name a
+  // heritage EDGE (which is keyed by graph ids) from the two DEFS it holds.
+  const classGraphIdByDefId = new Map<string, string>();
+  /**
+   * Does THIS language record generic type parameters (#2912)?
+   *
+   * `SymbolDefinition.typeParameters` is absent both for a non-generic
+   * declaration and for every declaration in a language whose captures do not
+   * emit `@declaration.type-parameters`, and instantiation filtering needs the
+   * two told apart: in the second case a heritage argument `T` is a type
+   * VARIABLE that would otherwise read as a concrete type named "T", and
+   * `class Box<T> : IValidator<T>` would be pruned out of every instantiation.
+   *
+   * Evidence rather than a declared capability, because the evidence is exactly
+   * as good and costs nothing: one run resolves one language (`phase.ts` loops
+   * per language), so a single generic declaration anywhere in it proves the
+   * captures record parameters. A run where none exists cannot be harmed by the
+   * answer — with no generic declaration there is no type variable to mistake.
+   */
+  let languageCapturesTypeParameters = false;
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
-      if (def.type !== 'Class' && def.type !== 'Struct' && def.type !== 'Interface') continue;
+      if (!isClassLike(def.type)) continue;
       const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
-      if (graphId !== undefined) graphIdToClassDef.set(graphId, def);
+      if (graphId === undefined) continue;
+      let defs = graphIdToClassDefs.get(graphId);
+      if (defs === undefined) {
+        defs = [];
+        graphIdToClassDefs.set(graphId, defs);
+      }
+      defs.push(def);
+      classGraphIdByDefId.set(def.nodeId, graphId);
+      if (def.typeParameters !== undefined && def.typeParameters.length > 0) {
+        languageCapturesTypeParameters = true;
+      }
     }
   }
   // Direct subtypes of a type, keyed by the SUPERtype's def id.
@@ -408,10 +408,12 @@ export function emitReceiverBoundCalls(
   };
   for (const relType of ['IMPLEMENTS', 'EXTENDS'] as const) {
     for (const rel of graph.iterRelationshipsByType(relType)) {
-      const superDef = graphIdToClassDef.get(rel.targetId);
-      const subDef = graphIdToClassDef.get(rel.sourceId);
-      if (superDef === undefined || subDef === undefined) continue;
-      addSubtype(superDef.nodeId, subDef);
+      const superDefs = graphIdToClassDefs.get(rel.targetId);
+      const subDefs = graphIdToClassDefs.get(rel.sourceId);
+      if (superDefs === undefined || subDefs === undefined) continue;
+      for (const superDef of superDefs) {
+        for (const subDef of subDefs) addSubtype(superDef.nodeId, subDef);
+      }
     }
   }
 
@@ -475,6 +477,34 @@ export function emitReceiverBoundCalls(
   };
 
   /**
+   * What does this written type argument NAME, as seen from `scopeId` (#2912)?
+   *
+   * The scope is load-bearing: a heritage argument is resolved from the
+   * declaring class's own scope and a receiver argument from the call site's,
+   * because a name means what it means where it was WRITTEN. Resolving both
+   * makes `Models.User` and an imported `User` one type, which a string
+   * comparison could only get wrong.
+   *
+   * Neither answer is an error: a name that binds nothing and is not built in
+   * comes back ungrounded, which the matcher reads as "unknown" and keeps.
+   *
+   * A TYPE PARAMETER is reported as such rather than left to the ungrounded
+   * path, because `resolveClassBindingForName` answers a bounded one with its
+   * BOUND's declaration — grounded, and the wrong thing to compare.
+   */
+  const groundTypeArgument = (name: string, scopeId: string | undefined): GroundedTypeArgument => {
+    const def =
+      scopeId === undefined ? undefined : resolveClassBindingForName(scopeId, name, scopes);
+    return {
+      ...(def !== undefined ? { definitionId: def.nodeId } : {}),
+      builtIn: options.isBuiltInName?.(name) === true,
+      ...(scopeId !== undefined && bindsTypeParameter(scopeId, name, scopes)
+        ? { typeVariable: true }
+        : {}),
+    };
+  };
+
+  /**
    * Emit secondary CALLS edges with reason='interface-dispatch' when the primary
    * receiver-typed edge targeted an Interface's method.
    *
@@ -495,6 +525,17 @@ export function emitReceiverBoundCalls(
    * override further down is an equally real runtime target — dispatch is an
    * over-approximation by design, and stopping early would silently prefer the
    * base.
+   *
+   * The closure is walked carrying the receiver's generic INSTANTIATION (#2912).
+   * `IValidator<string>` and `IValidator<int>` are one declaration and therefore
+   * one subtype list, so without the substitution a `IValidator<string>` call
+   * reaches `IntValidator.Check(int)` — a target no dispatch can produce. Each
+   * hop unifies the arguments the subtype wrote against the ones the supertype
+   * is known to hold; an incompatible hop is skipped BEFORE the visit is
+   * recorded, so a type reachable by a second, compatible path still gets its
+   * edge, and skipped WITHOUT descending, because its own subtypes inherit the
+   * mismatch.
+   * Every uncertainty keeps the target — see `generic-instantiation.ts`.
    */
   const emitInterfaceDispatchFor = (
     ownerDef: SymbolDefinition,
@@ -503,39 +544,158 @@ export function emitReceiverBoundCalls(
     site: ParsedFile['referenceSites'][number],
     confidence: number,
     calleeCapture: CalleeIdCaptureCtx | undefined,
+    /** The receiver's declared type AS WRITTEN (`IValidator<string>`), or
+     *  `undefined` where the case could not recover it — which restores the
+     *  unfiltered fan-out for that site rather than guessing.
+     *
+     *  The SPELLING rather than the parsed arguments, so the parse happens after
+     *  the two gates below rather than at every resolved receiver site: all five
+     *  cases call this unconditionally, and the overwhelming majority of
+     *  receivers are concrete classes that return at the first line. */
+    receiverTypeSpelling: string | undefined,
   ): number => {
     if (ownerDef.type !== 'Interface') return 0;
     if (subtypesBySupertypeDefId.get(ownerDef.nodeId) === undefined) return 0;
+    const receiverTypeArguments =
+      receiverTypeSpelling === undefined
+        ? undefined
+        : typeApplicationArguments(receiverTypeSpelling);
+    // Captures only `site`, so it is built once per SITE rather than once per
+    // subtype visited. Its partner below cannot be: it is keyed by the subtype.
+    const resolveSupertypeArgument = (name: string): GroundedTypeArgument =>
+      groundTypeArgument(name, site.inScope);
 
     // Collect concrete targets across the closure first, so the cap below counts
-    // real dispatch targets rather than types visited.
-    const targets: SymbolDefinition[] = [];
-    const seenTypes = new Set<string>([ownerDef.nodeId]);
-    const queue: string[] = [ownerDef.nodeId];
-    while (queue.length > 0) {
-      const superId = queue.shift() as string;
-      for (const subDef of subtypesBySupertypeDefId.get(superId) ?? []) {
-        if (seenTypes.has(subDef.nodeId)) continue;
-        seenTypes.add(subDef.nodeId);
-        queue.push(subDef.nodeId);
-        const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+    // real dispatch targets rather than types visited. Source-written owners
+    // rank ahead of synthesized owners so a large anonymous implementation
+    // family cannot consume the whole budget. Within each group, the priority
+    // counts concrete implementations already encountered on the path: the
+    // first implementation under an abstract branch ranks ahead of deeper
+    // overrides. Carrying that count through this existing walk avoids a reverse
+    // traversal per target at every call site.
+    type DispatchTarget = {
+      readonly member: SymbolDefinition;
+      readonly syntheticOwnerPriority: number;
+      readonly ancestorImplementationCount: number;
+      readonly discoveryOrder: number;
+    };
+    type DispatchTraversal = {
+      readonly typeId: string;
+      readonly ancestorImplementationCount: number;
+      /** The instantiation this type is known to hold ON THIS PATH (#2912), or
+       *  `undefined` where it is not known — which restores the unfiltered
+       *  fan-out for the subtree below it rather than guessing. */
+      readonly typeArguments: readonly string[] | undefined;
+    };
+    const targetByMemberId = new Map<string, DispatchTarget>();
+    const bestIncomingCount = new Map<string, number>([[ownerDef.nodeId, 0]]);
+    const queue: DispatchTraversal[] = [
+      {
+        typeId: ownerDef.nodeId,
+        ancestorImplementationCount: 0,
+        typeArguments: receiverTypeArguments,
+      },
+    ];
+    let head = 0;
+    let discoveryOrder = 0;
+    while (head < queue.length) {
+      const current = queue[head++]!;
+      // The whole instantiation apparatus hangs off ONE question: is the
+      // supertype's own instantiation known? It is not for a non-generic
+      // receiver, nor for any language that captures no heritage arguments, so
+      // those walks skip every lookup below and emit exactly what they did
+      // before #2912.
+      const superGraphId =
+        current.typeArguments === undefined ? undefined : classGraphIdByDefId.get(current.typeId);
+      for (const subDef of subtypesBySupertypeDefId.get(current.typeId) ?? []) {
+        const previousIncomingCount = bestIncomingCount.get(subDef.nodeId);
         if (
-          implMember === undefined ||
-          implMember === OVERLOAD_AMBIGUOUS ||
-          implMember.isDeleted === true
+          previousIncomingCount !== undefined &&
+          previousIncomingCount <= current.ancestorImplementationCount
         ) {
           continue;
         }
-        if (implMember.nodeId === primaryMemberDef.nodeId) continue;
-        // A re-declared interface method or an `abstract` override is not an
-        // implementation — keep descending past it rather than emitting to it.
-        if (isDeclarationOnly(implMember)) continue;
-        // Nor is a static member: no instance-typed receiver can reach one, so
-        // an edge to it is a target dispatch cannot produce (#2842 review).
-        if (isUnreachableByInstanceDispatch(implMember)) continue;
-        targets.push(implMember);
+
+        // What THIS heritage clause instantiated its base with. `superGraphId`
+        // already answers "is the supertype's instantiation known?", so it gates
+        // the whole lookup once instead of being re-asked at each step below.
+        let subtypeArguments: readonly string[] | undefined;
+        if (superGraphId !== undefined) {
+          const subGraphId = classGraphIdByDefId.get(subDef.nodeId);
+          const heritageArguments =
+            subGraphId === undefined
+              ? undefined
+              : options.heritageTypeArguments?.get(
+                  heritageTypeArgumentsKey(subGraphId, superGraphId),
+                );
+          if (heritageArguments !== undefined) {
+            const subtypeScopeId = index.classScopeByDefId.get(subDef.nodeId)?.id;
+            const step = stepHeritageInstantiation({
+              supertypeArguments: current.typeArguments,
+              heritageArguments,
+              subtypeParameters: subDef.typeParameters,
+              // The "this subtype declares parameters" disjunct an earlier
+              // revision carried here could never decide: `subDef` comes out of
+              // the same loop that sets this flag, from exactly these defs, so a
+              // subtype with parameters has already set it.
+              subtypeParametersComplete: languageCapturesTypeParameters,
+              resolveSupertypeArgument,
+              resolveHeritageArgument: (name) => groundTypeArgument(name, subtypeScopeId),
+              normalize: provider.normalizeTypeArgument,
+            });
+            // Skipped BEFORE the visit is recorded, so a type reachable by a
+            // second, compatible path still gets its edge; and without
+            // descending, because its own subtypes inherit the mismatch.
+            if (!step.compatible) continue;
+            subtypeArguments = step.subtypeArguments;
+          }
+        }
+
+        bestIncomingCount.set(subDef.nodeId, current.ancestorImplementationCount);
+
+        const implMember = pickOverload(subDef.nodeId, memberName, site, model, provider);
+        let descendantImplementationCount = current.ancestorImplementationCount;
+        if (
+          implMember !== undefined &&
+          implMember !== OVERLOAD_AMBIGUOUS &&
+          implMember.isDeleted !== true &&
+          implMember.nodeId !== primaryMemberDef.nodeId &&
+          !isDeclarationOnly(implMember) &&
+          !isUnreachableByInstanceDispatch(implMember)
+        ) {
+          const existing = targetByMemberId.get(implMember.nodeId);
+          const syntheticOwnerPriority = subDef.isSynthetic === true ? 1 : 0;
+          if (
+            existing === undefined ||
+            syntheticOwnerPriority < existing.syntheticOwnerPriority ||
+            (syntheticOwnerPriority === existing.syntheticOwnerPriority &&
+              current.ancestorImplementationCount < existing.ancestorImplementationCount)
+          ) {
+            targetByMemberId.set(implMember.nodeId, {
+              member: implMember,
+              syntheticOwnerPriority,
+              ancestorImplementationCount: current.ancestorImplementationCount,
+              discoveryOrder: existing?.discoveryOrder ?? discoveryOrder++,
+            });
+          }
+          descendantImplementationCount++;
+        }
+        queue.push({
+          typeId: subDef.nodeId,
+          ancestorImplementationCount: descendantImplementationCount,
+          typeArguments: subtypeArguments,
+        });
       }
     }
+
+    const targets = [...targetByMemberId.values()]
+      .sort(
+        (left, right) =>
+          left.syntheticOwnerPriority - right.syntheticOwnerPriority ||
+          left.ancestorImplementationCount - right.ancestorImplementationCount ||
+          left.discoveryOrder - right.discoveryOrder,
+      )
+      .map((target) => target.member);
 
     // Bounded, and NEVER silently (#2829). An interface with a very large
     // implementor set multiplies edges by every call site — Go, TypeScript and
@@ -546,8 +706,13 @@ export function emitReceiverBoundCalls(
     if (targets.length > MAX_INTERFACE_DISPATCH_FANOUT) {
       dispatchFanoutSkipped += targets.length - MAX_INTERFACE_DISPATCH_FANOUT;
       if (dispatchFanoutSkippedNames.length < MAX_REPORTED_SKIPPED_INTERFACES) {
+        const dropped = targets
+          .slice(MAX_INTERFACE_DISPATCH_FANOUT, MAX_INTERFACE_DISPATCH_FANOUT + 5)
+          .map((target) => target.qualifiedName ?? target.nodeId);
+        const omitted = targets.length - MAX_INTERFACE_DISPATCH_FANOUT - dropped.length;
         dispatchFanoutSkippedNames.push(
-          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets)`,
+          `${ownerDef.qualifiedName ?? ownerDef.nodeId}.${memberName} (${targets.length} targets; ` +
+            `dropped: ${dropped.join(', ')}${omitted > 0 ? `, +${omitted} more` : ''})`,
         );
       }
       targets.length = MAX_INTERFACE_DISPATCH_FANOUT;
@@ -570,6 +735,42 @@ export function emitReceiverBoundCalls(
       if (ok) n++;
     }
     return n;
+  };
+
+  /**
+   * Declared type of the CLASS-LEVEL field named `fieldName` on `ownerId`, or
+   * `undefined` when the owner declares no such field, declares only an
+   * instance one, or declares one whose type was never captured.
+   *
+   * Both facts live on the graph NODE rather than on `SymbolDefinition` —
+   * `isStatic` is set by the structure phase and `declaredType` by the field
+   * extractor — which is the same place {@link isUnreachableByInstanceDispatch}
+   * reads `isStatic` from, so this introduces no new dependency.
+   *
+   * `isStatic === true` is required, not merely preferred. The receiver that
+   * asks this question resolved its head to the CLASS, so an instance field of
+   * that name is not reachable through it and answering with the instance
+   * field's type would type the receiver as something the source cannot
+   * denote. A def that resolves to no node, or a node with no captured type,
+   * answers `undefined` — the declining direction, matching how the rest of
+   * this pass treats an unresolvable lookup.
+   */
+  const declaredTypeOfClassLevelField = (
+    ownerId: string,
+    fieldName: string,
+  ): string | undefined => {
+    for (const candidate of model.fields.lookupAllByOwner(ownerId, fieldName)) {
+      const graphId = resolveDefGraphId(candidate.filePath, candidate, nodeLookup);
+      if (graphId === undefined) continue;
+      const properties = graph.getNode(graphId)?.properties;
+      if (properties?.isStatic !== true) continue;
+      const declaredType = properties.declaredType;
+      if (typeof declaredType !== 'string') continue;
+      const trimmed = declaredType.trim();
+      if (trimmed.length === 0) continue;
+      return trimmed;
+    }
+    return undefined;
   };
 
   for (const parsed of parsedFiles) {
@@ -739,7 +940,7 @@ export function emitReceiverBoundCalls(
         receiverName.includes('(') ||
         site.receiverChain !== undefined
       ) {
-        const currentClass = resolveCompoundReceiverClass(
+        const resolved = resolveCompoundReceiverTyped(
           receiverName,
           site.inScope,
           scopes,
@@ -748,8 +949,9 @@ export function emitReceiverBoundCalls(
           // captured chain describes it and the structural fold applies.
           { ...fileCompoundOpts, receiverChain: site.receiverChain },
         );
+        const currentClass = resolved?.def;
         compoundReceiverUnresolved = currentClass === undefined;
-        if (currentClass !== undefined) {
+        if (resolved !== undefined && currentClass !== undefined) {
           const chain = [currentClass.nodeId, ...scopes.methodDispatch.mroFor(currentClass.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguousOwnerId: string | undefined;
@@ -852,6 +1054,10 @@ export function emitReceiverBoundCalls(
             // Deliberately not "fixed" here: changing Case 0's primary
             // confidence is a separate behavioural change affecting every
             // language, and is out of scope for #2813.
+            //
+            // The instantiation the FOLD typed this receiver from — the
+            // declared spelling of `this.repo` / `svc.get().repo`, which the
+            // folded class alone no longer carries (#2912).
             emitted += emitInterfaceDispatchFor(
               currentClass,
               memberName,
@@ -859,6 +1065,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
+              resolved.declaredSpelling,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1329,15 +1536,18 @@ export function emitReceiverBoundCalls(
         // already contain `()` (Ruby member-call-return captures),
         // pass through directly — the compound resolver handles the
         // full expression including the call syntax.
-        let ownerDef = resolveCompoundReceiverClass(
+        // Each attempt carries its OWN spelling: the retry below used to reuse a
+        // recorder reset once, before the first call, so a spelling reported by
+        // the attempt that FAILED could be read as the retry's.
+        let resolved = resolveCompoundReceiverTyped(
           typeRef.rawName,
           typeRef.declaredAtScope,
           scopes,
           index,
           fileCompoundOpts,
         );
-        if (ownerDef === undefined && !typeRef.rawName.includes('(')) {
-          ownerDef = resolveCompoundReceiverClass(
+        if (resolved === undefined && !typeRef.rawName.includes('(')) {
+          resolved = resolveCompoundReceiverTyped(
             typeRef.rawName + '()',
             typeRef.declaredAtScope,
             scopes,
@@ -1345,7 +1555,8 @@ export function emitReceiverBoundCalls(
             fileCompoundOpts,
           );
         }
-        if (ownerDef !== undefined) {
+        const ownerDef = resolved?.def;
+        if (resolved !== undefined && ownerDef !== undefined) {
           const chain = [ownerDef.nodeId, ...scopes.methodDispatch.mroFor(ownerDef.nodeId)];
           let memberDef: SymbolDefinition | undefined;
           let ambiguousOwnerId: string | undefined;
@@ -1446,6 +1657,7 @@ export function emitReceiverBoundCalls(
             // value instead because ITS primary varies that way; Case 3b's
             // primary, like Case 0's, does not, so there is no 1.0 arm here to
             // mirror.
+            // Same fold, same recovered spelling as Case 0.
             emitted += emitInterfaceDispatchFor(
               ownerDef,
               memberName,
@@ -1453,6 +1665,7 @@ export function emitReceiverBoundCalls(
               site,
               0.85,
               calleeCapture,
+              resolved.declaredSpelling,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1466,13 +1679,31 @@ export function emitReceiverBoundCalls(
 
       // ── Case 4: simple typeBinding (`u: U`) ──────────────────────
       if (typeRef !== undefined && !typeRef.rawName.includes('.')) {
-        let ownerDef = resolveClassBindingForName(site.inScope, typeRef.rawName, scopes);
+        // A `rawName` the capture layer reduced from a type application is
+        // resolved through the application it was written as, so the erasure
+        // takes the GROUNDED route rather than binding whatever the workspace
+        // declares under that base name — see {@link erasedTypeApplication}.
+        const typeApplication = erasedTypeApplication(typeRef);
+        let ownerDef = resolveClassBindingForName(
+          site.inScope,
+          typeApplication ?? typeRef.rawName,
+          scopes,
+        );
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
         // For languages with namespace-style imports (Go), imported types
         // don't create bindings. Fall back to QualifiedNameIndex — single-
         // match wins; ambiguous/missing falls through.
-        if (ownerDef === undefined) {
+        //
+        // NOT for an erased base name. This fallback consults no scope, no
+        // import and no module: it binds any name with exactly one workspace
+        // definition. That is a defensible last resort for a name the source
+        // WROTE — the file named it, so the only question is which declaration
+        // it meant — and is not defensible for a name the capture layer
+        // MANUFACTURED by erasing type arguments, where the file may never
+        // have named it at all. The lookup above already answered that case on
+        // grounds; re-asking it here without any would undo them.
+        if (ownerDef === undefined && typeApplication === undefined) {
           const qnameIds = scopes.qualifiedNames.get(typeRef.rawName);
           if (qnameIds.length === 1) {
             const qdef = scopes.defs.get(qnameIds[0]!);
@@ -1482,7 +1713,18 @@ export function emitReceiverBoundCalls(
         // Map for-of tuple bindings (`__MAP_TUPLE_i__:mapId`), callable
         // aliases (`getUser` → User), and other compound-friendly shapes
         // need the compound resolver keyed by the receiver identifier.
-        if (ownerDef === undefined) {
+        //
+        // Not asked for a receiver whose declared type IS an erased type
+        // application the grounded lookup just refused. Those shapes are
+        // alternatives to a declared type, not readings of one: this receiver
+        // HAS a declared type, the question "which class does its base name
+        // denote here" was already put and answered "cannot tell", and the
+        // compound resolver reaches the same base name through its own
+        // scope-free routes (its bare-identifier step re-runs the lookup on
+        // `rawName`; its callable-alias step retries the same name as a
+        // construction). Asking again by a route that cannot see the grounds
+        // would make the refusal decorative.
+        if (ownerDef === undefined && typeApplication === undefined) {
           ownerDef = resolveCompoundReceiverClass(
             receiverName,
             site.inScope,
@@ -1491,6 +1733,37 @@ export function emitReceiverBoundCalls(
             // Group A, same reasoning as Case 0 above.
             { ...fileCompoundOpts, receiverChain: site.receiverChain },
           );
+        }
+        // The receiver has a declared type, that type is a type APPLICATION,
+        // and its base name could not be connected to any declaration this
+        // file can see. The site is DROPPED, and dropped deliberately, so it
+        // must be marked handled: `emitReferencesViaLookup` would otherwise
+        // re-emit the very target the grounds refused, because the pre-resolved
+        // reference index answers a name with the single workspace definition
+        // that carries it and knows nothing about erasure. That is exactly why
+        // the static-only filter above marks handled too — a refusal this pass
+        // makes is not a refusal until the fallback emitter is told.
+        //
+        // Recorded as `receiver-unresolved` rather than silently: the receiver's
+        // TYPE could not be established, which is the reason's own definition,
+        // and a consumer counting resolver gaps must see this drop rather than
+        // read the absence as a resolved site. No `receiverOrigin` — the base
+        // name resolving in the index is precisely the evidence just rejected,
+        // so claiming `in-program` from it would relaunder the fabrication as a
+        // diagnostic, and the absent field hedges (the safe direction).
+        if (ownerDef === undefined && typeApplication !== undefined) {
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+          handledSites.add(siteKey);
+          continue;
         }
         if (ownerDef !== undefined) {
           const languageResolution = provider.resolveReceiverMember?.(
@@ -1666,6 +1939,12 @@ export function emitReceiverBoundCalls(
             // Interface dispatch: when the primary owner is an
             // Interface, emit secondary CALLS edges to every
             // implementing class's same-named method.
+            //
+            // This case is the one that KNOWS the instantiation: the receiver
+            // has a declared type, and `typeApplication` is that type restored
+            // to its written `Base<Args>` spelling (`rawName` is the erasure).
+            // A language whose `rawName` was never erased carries the arguments
+            // itself, so both spellings are read (#2912).
             emitted += emitInterfaceDispatchFor(
               ownerDef,
               memberName,
@@ -1673,6 +1952,7 @@ export function emitReceiverBoundCalls(
               site,
               confidence,
               calleeCapture,
+              typeApplication ?? typeRef.rawName,
             );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
@@ -1773,6 +2053,195 @@ export function emitReceiverBoundCalls(
         }
       }
 
+      // ── Case 6: class-level (static) member receiver ─────────────
+      // `Holder.repo.save(u)` — the receiver `Holder.repo` reaches a value
+      // through a CLASS-LEVEL member. Both routes that type a compound
+      // receiver (the structural fold and the text cascade) read the same
+      // place for the `repo` hop: the owning class scope's `typeBindings`.
+      // A scope has ONE `typeBindings` map with no static/instance split, so
+      // a language that declares both `p` and `static p` cannot record both
+      // — and at least two resolve that collision by not recording the
+      // static one at all, leaving `Holder.repo` with nothing to type
+      // against. A language that nests its class-level members in a scope of
+      // their own (a companion/singleton body) lands in the same place from
+      // the other direction: the binding exists, but not in the scope keyed
+      // by the class the receiver names. Both were MEASURED as emitting no
+      // edge at all, generic field and non-generic control alike.
+      //
+      // The definition side does not have that ambiguity: a class-level
+      // member and an instance member of one name are two distinct defs, and
+      // the graph node carries both `isStatic` and the member's declared
+      // type. So this case types the receiver off the DEF rather than off a
+      // typeBinding, and needs no scope-tree change to do it.
+      //
+      // ── WHY THIS CANNOT MINT A STATIC-TARGETED EDGE ────────────────────
+      //
+      // `Holder.repo` is a static FIELD whose TYPE is `Repo`; the value it
+      // holds is an INSTANCE. So "reached through a class-level member" says
+      // nothing about the target: `save` is looked up with the ordinary
+      // `pickFirstNonStaticOnly` instance walk that Cases 0/3b/4 use, and a
+      // static-only `save` is skipped exactly as it is there. A genuine
+      // static CALL (`Repo.create()`) never arrives here — its receiver is a
+      // bare class name with no dot, which Case 2 owns and this case's
+      // two-part receiver requirement excludes.
+      //
+      // The `isStatic === true` requirement on the FIELD is the load-bearing
+      // guard in the other direction: the head resolved to the class itself,
+      // so only a class-level member is reachable through it, and an
+      // instance field of the same name must not be substituted. That is a
+      // POSITIVE selection among the defs that exist, never a filter that
+      // deletes otherwise-valid targets — the distinction that matters for a
+      // language whose singleton/companion members all carry `isStatic` from
+      // their OWNER type, where the flag being set is precisely what makes
+      // reaching them through the type name correct.
+      //
+      // Runs LAST, and only for a receiver Case 0 already declined
+      // (`compoundReceiverUnresolved`): a site any earlier case resolved
+      // keeps that answer, so this can only turn a missing edge into an edge
+      // and never retarget an existing one. Contract Invariant I4 holds —
+      // nothing above moved.
+      if (compoundReceiverUnresolved) {
+        const staticMemberReceiver = splitClassLevelMemberReceiver(
+          receiverName,
+          site.receiverChain,
+        );
+        const headClass =
+          staticMemberReceiver === undefined
+            ? undefined
+            : findClassBindingInScope(site.inScope, staticMemberReceiver.headName, scopes);
+        // The head must be the CLASS ITSELF, not a value that happens to
+        // share its name — the same `currentIsClassConstant` test the text
+        // cascade makes before it treats a head as a class constant. A head
+        // with a type binding is an instance and its members are typed by
+        // the routes above.
+        if (
+          staticMemberReceiver !== undefined &&
+          headClass !== undefined &&
+          findReceiverTypeBinding(site.inScope, staticMemberReceiver.headName, scopes) === undefined
+        ) {
+          // MRO walk, so a class-level member declared on an ancestor is
+          // reachable through a subclass name where the language allows it.
+          // First owner that declares one wins, matching every other walk in
+          // this pass.
+          let fieldOwnerId: string | undefined;
+          let fieldDeclaredType: string | undefined;
+          for (const ownerId of [
+            headClass.nodeId,
+            ...scopes.methodDispatch.mroFor(headClass.nodeId),
+          ]) {
+            const declared = declaredTypeOfClassLevelField(
+              ownerId,
+              staticMemberReceiver.memberName,
+            );
+            if (declared === undefined) continue;
+            fieldOwnerId = ownerId;
+            fieldDeclaredType = declared;
+            break;
+          }
+          // Resolve the declared type from where it was WRITTEN — the
+          // declaring class's own scope — not from the call site. A caller
+          // in another file need not have the field's type in scope at all,
+          // and resolving `Repo` against the caller's bindings would either
+          // miss or, worse, find an unrelated same-named class.
+          const declaringScope =
+            fieldOwnerId === undefined ? undefined : index.classScopeByDefId.get(fieldOwnerId)?.id;
+          const receiverClass =
+            declaringScope === undefined || fieldDeclaredType === undefined
+              ? undefined
+              : resolveClassBindingForName(
+                  declaringScope,
+                  fieldDeclaredType,
+                  scopes,
+                  provider.stripTypePreservingDecoration,
+                );
+          if (receiverClass !== undefined) {
+            const chain = [
+              receiverClass.nodeId,
+              ...scopes.methodDispatch.mroFor(receiverClass.nodeId),
+            ];
+            let memberDef: SymbolDefinition | undefined;
+            let ambiguousOwnerId: string | undefined;
+            for (const ownerId of chain) {
+              const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
+              if (picked === OVERLOAD_AMBIGUOUS) {
+                ambiguousOwnerId = ownerId;
+                break;
+              }
+              // Same skip-and-walk-on as Case 4: a static-only candidate at
+              // this owner must not block an ancestor's instance member.
+              if (picked === STATIC_ONLY_FILTERED || picked === undefined) continue;
+              memberDef = picked;
+              break;
+            }
+            if (ambiguousOwnerId !== undefined) {
+              recordReceiverOverloadSuppression(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                ambiguousOwnerId,
+                memberName,
+                model,
+                provider,
+              );
+              handledSites.add(siteKey);
+              continue;
+            }
+            if (memberDef !== undefined) {
+              if (
+                suppressDeletedCallTarget(
+                  options.recordResolutionOutcome,
+                  parsed.filePath,
+                  site,
+                  memberDef,
+                )
+              ) {
+                handledSites.add(siteKey);
+                continue;
+              }
+              const reason =
+                site.kind === 'write' || site.kind === 'read'
+                  ? site.kind
+                  : memberDef.filePath !== parsed.filePath
+                    ? 'import-resolved'
+                    : 'global';
+              const confidence = site.kind === 'write' || site.kind === 'read' ? 1.0 : 0.85;
+              const ok = tryEmitEdge(
+                graph,
+                scopes,
+                nodeLookup,
+                site,
+                memberDef,
+                reason,
+                seen,
+                confidence,
+                collapse,
+                calleeCapture,
+              );
+              if (ok) emitted++;
+              // The receiver's declared type can be an Interface exactly as
+              // in Cases 0/3b/4 — an interface-typed static field is the
+              // canonical service-locator shape — so it fans out the same
+              // way. Omitting it would make the static spelling emit fewer
+              // targets than the identical instance field, which is the very
+              // spelling-dependence #2829/#2842 closed elsewhere.
+              // The field's DECLARED type is the spelling the source wrote, so
+              // its arguments are available here exactly as in Case 4 (#2912).
+              emitted += emitInterfaceDispatchFor(
+                receiverClass,
+                memberName,
+                memberDef,
+                site,
+                confidence,
+                calleeCapture,
+                fieldDeclaredType,
+              );
+              handledSites.add(siteKey);
+              continue;
+            }
+          }
+        }
+      }
+
       // #2744: the site survived every case with a compound receiver we could
       // not type, so the call is dropped with no candidate. Record it here —
       // after the cases, so a site a later case resolved is never reported —
@@ -1820,6 +2289,50 @@ export function emitReceiverBoundCalls(
 
   return { emitted, dispatchFanoutSkipped, dispatchFanoutSkippedNames };
 }
+
+/** A receiver of the exact shape `<name>.<name>` — a head and ONE member
+ *  hop — as split by {@link splitClassLevelMemberReceiver}. */
+interface ClassLevelMemberReceiver {
+  readonly headName: string;
+  readonly memberName: string;
+}
+
+/**
+ * Split a receiver into `Head` + one member hop, or decline.
+ *
+ * The STRUCTURE decides when the capture layer minted a chain: exactly one
+ * step, and that step a FIELD. A `call` step is a different shape entirely
+ * (`Holder.make().save()` — the value comes from a return type, which the
+ * routes above already own), and an `await`/`index` step transforms the value
+ * in a way a field's declared type does not describe.
+ *
+ * Without a chain the receiver TEXT answers, and only in the one spelling that
+ * cannot be read two ways: two bare identifiers around a single dot. Anything
+ * carrying a call, a subscript, a second dot or a decoration declines rather
+ * than being parsed here — re-deriving structure from text is what the chain
+ * exists to replace, and a second, looser text parser beside the cascade's own
+ * would drift from it.
+ */
+function splitClassLevelMemberReceiver(
+  receiverText: string,
+  receiverChain: string | undefined,
+): ClassLevelMemberReceiver | undefined {
+  const decoded = decodeReceiverChain(receiverChain);
+  if (decoded !== undefined) {
+    if (decoded.truncated || decoded.steps.length !== 1) return undefined;
+    const step = decoded.steps[0];
+    if (step === undefined || step.kind !== 'field') return undefined;
+    return { headName: decoded.baseReceiverName, memberName: step.name };
+  }
+  const match = TWO_PART_RECEIVER_RE.exec(receiverText);
+  if (match === null) return undefined;
+  const [, headName, memberName] = match;
+  if (headName === undefined || memberName === undefined) return undefined;
+  return { headName, memberName };
+}
+
+/** `Holder.repo` and nothing looser — see {@link splitClassLevelMemberReceiver}. */
+const TWO_PART_RECEIVER_RE = /^([A-Za-z_$][\w$]*)\.([A-Za-z_$][\w$]*)$/;
 
 /** Resolve a member by name on a class def, narrowing by argument
  *  types when multiple overloads share the name. Falls back to the

@@ -98,6 +98,33 @@ const reexport = (localName: string, importedName: string, targetRaw: string): P
 
 const wildcard = (targetRaw: string): ParsedImport => ({ kind: 'wildcard', targetRaw });
 
+/** A named import that also republishes the name — see `reexportsName` on `ParsedImport`. */
+const namedReexporting = (
+  localName: string,
+  importedName: string,
+  targetRaw: string,
+): ParsedImport => ({
+  kind: 'named',
+  localName,
+  importedName,
+  targetRaw,
+  reexportsName: true,
+});
+
+/** The `from m import X as Y` form of {@link namedReexporting}. */
+const aliasReexporting = (
+  localName: string,
+  importedName: string,
+  targetRaw: string,
+): ParsedImport => ({
+  kind: 'alias',
+  localName,
+  importedName,
+  alias: localName,
+  targetRaw,
+  reexportsName: true,
+});
+
 const dynamic = (localName: string, targetRaw: string | null): ParsedImport => ({
   kind: 'dynamic-unresolved',
   localName,
@@ -403,6 +430,205 @@ describe('finalize', () => {
       expect(edge.transitiveVia).toEqual(['b', 'c', 'd']);
     });
 
+    // ── Languages with no dedicated re-export form (Python) ──────────────
+    // Contract and rationale live on `reexportsName` in `ParsedImport`.
+    it('resolves through a named import flagged reexportsName (Python __init__.py surface)', () => {
+      const c = file('c', [def('def:c.X', 'Function', 'c.X')]);
+      // `pkg/__init__.py`: re-publishes X without surfacing it in localDefs.
+      const b = file('b', [], [namedReexporting('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.linkStatus).toBeUndefined();
+      expect(edge.targetDefId).toBe('def:c.X');
+      expect(edge.transitiveVia).toEqual(['b', 'c']);
+    });
+
+    it('leaves a plain named import out of the closure (no reexportsName → unchanged behavior)', () => {
+      // Negative control: this is the pre-existing behavior every language
+      // without the flag still gets. Only the flag opts a named import in, so
+      // adding it cannot silently widen resolution for TS/Java/Go/etc.
+      const c = file('c', [def('def:c.X', 'Function', 'c.X')]);
+      const b = file('b', [], [named('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBeUndefined();
+    });
+
+    it('resolves a 3-hop chain of reexportsName named imports', () => {
+      // `pkg/__init__.py` → `pkg/sub/__init__.py` → defining module: the shape
+      // a nested Python package produces.
+      const d = file('d', [def('def:d.X', 'Function', 'd.X')]);
+      const c = file('c', [], [namedReexporting('X', 'X', 'd')]);
+      const b = file('b', [], [namedReexporting('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c, d];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBe('def:d.X');
+      expect(edge.transitiveVia).toEqual(['b', 'c', 'd']);
+    });
+
+    it('keys the closure by the published alias for `from m import X as Y`', () => {
+      // `from c import X as Y` publishes `Y`, so an importer asking for Y must
+      // reach X's definition, and one asking for X must not.
+      const c = file('c', [def('def:c.X', 'Function', 'c.X')]);
+      const b = file('b', [], [aliasReexporting('Y', 'X', 'c')]);
+      const aY = file('a', [], [named('Y', 'Y', 'b')]);
+      const filesY = [aY, b, c];
+      const outY = finalize({ files: filesY, workspaceIndex: undefined }, defaultHooks(filesY));
+      const edgeY = firstImport(outY, aY.moduleScope)!;
+      expect(edgeY.targetDefId).toBe('def:c.X');
+      // Path as well as destination: reaching `def:c.X` by any other route
+      // would mean the closure was keyed by `importedName`, the exact bug
+      // this test exists to catch.
+      expect(edgeY.transitiveVia).toEqual(['b', 'c']);
+
+      const aX = file('a', [], [named('X', 'X', 'b')]);
+      const filesX = [aX, b, c];
+      const outX = finalize({ files: filesX, workspaceIndex: undefined }, defaultHooks(filesX));
+      expect(firstImport(outX, aX.moduleScope)!.targetDefId).toBeUndefined();
+    });
+
+    it('threads a definition out of a reexportsName cycle (package __init__ cycle)', () => {
+      // b and c re-export from each other (`Y`), the shape two package
+      // `__init__.py` files that import from each other produce. `X` enters
+      // the cycle at c and must reach d's real def through it.
+      //
+      // The cycle needs a terminal def to be worth asserting on: with no
+      // `SymbolDefinition` anywhere in the fixture, `toBeUndefined()` holds
+      // for a correct implementation, a reverted one, and a broken one alike.
+      const d = file('d', [def('def:d.X', 'Function', 'd.X')]);
+      const c = file('c', [], [namedReexporting('X', 'X', 'd'), namedReexporting('Y', 'Y', 'b')]);
+      const b = file('b', [], [namedReexporting('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c, d];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBe('def:d.X');
+      expect(edge.transitiveVia).toEqual(['b', 'c', 'd']);
+    });
+
+    it('drops a name two reexportsName imports publish from different files', () => {
+      // CPython rebinds, so `from .v2 import Client` is the live `Client` and
+      // declaration-order first-wins would attribute every importer to the
+      // dead v1. Last-wins is no better — a `try:`/`except ImportError:` or
+      // `if sys.version_info` pair runs exactly one branch and which is not
+      // decidable here — so the ambiguous name is dropped and the importer
+      // stays unresolved, the pre-#2864 answer.
+      const v1 = file('v1', [def('def:v1.Client', 'Class', 'v1.Client')]);
+      const v2 = file('v2', [def('def:v2.Client', 'Class', 'v2.Client')]);
+      const pkg = file(
+        'pkg',
+        [],
+        [namedReexporting('Client', 'Client', 'v1'), namedReexporting('Client', 'Client', 'v2')],
+      );
+      const a = file('a', [], [named('Client', 'Client', 'pkg')]);
+      const files = [a, pkg, v1, v2];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBeUndefined();
+      expect(edge.linkStatus).toBe('unresolved');
+      // The file-level dependency is unaffected — only the symbol-level
+      // attribution is withheld.
+      expect(edge.targetFile).toBe('pkg');
+    });
+
+    it('keeps a name two reexportsName imports publish from the SAME file', () => {
+      // Duplicate imports of one target are not ambiguous, so the
+      // drop-on-collision rule must not fire on them.
+      const impl = file('impl', [def('def:impl.X', 'Function', 'impl.X')]);
+      const pkg = file(
+        'pkg',
+        [],
+        [namedReexporting('X', 'X', 'impl'), namedReexporting('X', 'X', 'impl')],
+      );
+      const a = file('a', [], [named('X', 'X', 'pkg')]);
+      const files = [a, pkg, impl];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, a.moduleScope)!.targetDefId).toBe('def:impl.X');
+    });
+
+    it('does not let a wildcard refill an ambiguous name', () => {
+      // Named re-exports take precedence over wildcards, so suppressing only
+      // the named loop would hand the name to `from .other import *` and
+      // reinstate an arbitrary winner through the back door.
+      const v1 = file('v1', [def('def:v1.Client', 'Class', 'v1.Client')]);
+      const v2 = file('v2', [def('def:v2.Client', 'Class', 'v2.Client')]);
+      const other = file('other', [def('def:other.Client', 'Class', 'other.Client')]);
+      const pkg = file(
+        'pkg',
+        [],
+        [
+          namedReexporting('Client', 'Client', 'v1'),
+          namedReexporting('Client', 'Client', 'v2'),
+          wildcard('other'),
+        ],
+      );
+      const a = file('a', [], [named('Client', 'Client', 'pkg')]);
+      const files = [a, pkg, v1, v2, other];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, a.moduleScope)!.targetDefId).toBeUndefined();
+    });
+
+    it('caps transitiveVia at 32 on a deep chain and marks it truncated', () => {
+      // Each hop copies the inherited path, so an uncapped chain is O(depth^2)
+      // in time and retained memory. At depth 400 the cap is worth 67 -> 25 ms
+      // and 145 -> 40 MB; the def it resolves to must not change.
+      //
+      // The truncated shape is fully determined: `extendVia` keeps the head,
+      // 30 inherited entries, and the marker — so it is 32 entries naming the
+      // nearest 31 hops, for any depth past the cap.
+      const depth = 60;
+      const files = [file('leaf', [def('def:leaf.X', 'Function', 'leaf.X')])];
+      let prev = 'leaf';
+      for (let d = 0; d < depth; d++) {
+        files.push(file(`hop${d}`, [], [namedReexporting('X', 'X', prev)]));
+        prev = `hop${d}`;
+      }
+      files.push(file('app', [], [named('X', 'X', prev)]));
+      const app = files[files.length - 1]!;
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, app.moduleScope)!;
+      expect(edge.targetDefId).toBe('def:leaf.X');
+      const expected = [...Array.from({ length: 31 }, (_, i) => `hop${depth - 1 - i}`), '…'];
+      expect(edge.transitiveVia).toEqual(expected);
+      expect(edge.transitiveVia).toHaveLength(32);
+    });
+
+    it('leaves transitiveVia intact for chains under the cap', () => {
+      const d = file('d', [def('def:d.X', 'Function', 'd.X')]);
+      const c = file('c', [], [namedReexporting('X', 'X', 'd')]);
+      const b = file('b', [], [namedReexporting('X', 'X', 'c')]);
+      const a = file('a', [], [named('X', 'X', 'b')]);
+      const files = [a, b, c, d];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, a.moduleScope)!.transitiveVia).toEqual(['b', 'c', 'd']);
+    });
+
+    it('leaves a reexportsName import reclassified to namespace out of the closure', () => {
+      // Python's `from . import logger`: the provider's `isNamespaceImport`
+      // hook reclassifies the draft to `namespace`, which aliases the target
+      // MODULE and publishes no name. Admitting it republished whatever def
+      // shared the module's simple name — for `logger.py` holding a
+      // module-level `logger = logging.getLogger(...)`, importers of
+      // `from pkg import logger` bound to that Variable instead of the module.
+      const logger = file('logger', [def('def:logger.logger', 'Variable', 'logger.logger')]);
+      const pkg = file('pkg', [], [namedReexporting('logger', 'logger', 'logger')]);
+      const a = file('a', [], [named('logger', 'logger', 'pkg')]);
+      const files = [a, pkg, logger];
+      const hooks = {
+        ...defaultHooks(files),
+        isNamespaceImport: (imp: ParsedImport, targetFile: string | null) =>
+          targetFile === 'logger' && imp.kind === 'named' && imp.localName === 'logger',
+      };
+      const out = finalize({ files, workspaceIndex: undefined }, hooks);
+      expect(firstImport(out, a.moduleScope)!.targetDefId).toBeUndefined();
+    });
+
     it('terminates without infinite recursion when re-exports cycle back through the chain', () => {
       // Cycle: b re-exports from c, c re-exports from b. Neither surfaces
       // X. The SCC-condensed closure builder lumps b+c into one cyclic
@@ -464,12 +690,18 @@ describe('finalize', () => {
       expect(edge.targetFile).toBe('chain1');
       expect(edge.linkStatus).toBeUndefined();
       expect(edge.targetDefId).toBe(`def:chain${CHAIN_LEN}.X`);
-      // `transitiveVia` enumerates every intermediate file from chain1
-      // through chain1000 — proves the closure walked the full path.
-      expect(edge.transitiveVia).toBeDefined();
-      expect(edge.transitiveVia!.length).toBe(CHAIN_LEN);
-      expect(edge.transitiveVia![0]).toBe('chain1');
-      expect(edge.transitiveVia![CHAIN_LEN - 1]).toBe(`chain${CHAIN_LEN}`);
+      // `transitiveVia` records the path the closure walked, now bounded by
+      // `MAX_VIA_LENGTH` — copying the inherited array at every hop is
+      // O(depth^2) in time and retained memory, and at this depth that is the
+      // dominant cost of the pass. Full resolution above is the load-bearing
+      // assertion and is unchanged: the chain is still walked end to end, only
+      // the provenance array is summarized. `transitiveVia` has no production
+      // reader; it is diagnostic.
+      expect(edge.transitiveVia).toEqual([
+        ...Array.from({ length: 31 }, (_, i) => `chain${i + 1}`),
+        '…',
+      ]);
+      expect(edge.transitiveVia).toHaveLength(32);
     });
 
     it('first-match-wins when the closure encounters multiple sources for the same name', () => {
@@ -621,6 +853,75 @@ describe('finalize', () => {
       // Only the last merged layer (the import) remains.
       expect(bindings.length).toBe(1);
       expect(bindings[0]!.origin).toBe('import');
+    });
+  });
+
+  /**
+   * `typeOnly` is the one `ParsedImport` fact `check --cycles` needs that
+   * finalize cannot re-derive: the emitted `kind` for `import type { X }` is
+   * the same `named` a value import produces. So it has to be carried, and
+   * carried onto `base` specifically — every finalized edge is built by
+   * spreading `base`, including the re-export and namespace paths.
+   */
+  describe('type-only carry-through', () => {
+    const typeNamed = (localName: string, importedName: string, targetRaw: string): ParsedImport =>
+      ({ ...named(localName, importedName, targetRaw), typeOnly: true }) as ParsedImport;
+
+    it('carries `typeOnly` onto a linked edge', () => {
+      const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
+      const a = file('a', [], [typeNamed('User', 'User', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      // Same kind as the value import — which is exactly why the flag exists.
+      expect(edge.kind).toBe('named');
+      expect(edge.targetDefId).toBe('def:b.User');
+      expect(edge.typeOnly).toBe(true);
+    });
+
+    it('a value import gets NO `typeOnly` property', () => {
+      // Absent, not `false`: the field is spread in only when set, so an
+      // ordinary edge keeps the property set it had before this existed.
+      const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
+      const a = file('a', [], [named('User', 'User', 'b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      expect(firstImport(out, a.moduleScope)!).not.toHaveProperty('typeOnly');
+    });
+
+    it('survives an unresolved target', () => {
+      // The unresolved branch builds its own `base`; it must set the flag too,
+      // or a package-external `import type` would read as a value import if it
+      // ever became resolvable.
+      const a = file('a', [], [typeNamed('User', 'User', 'external-pkg')]);
+      const out = finalize({ files: [a], workspaceIndex: undefined }, defaultHooks([a]));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.linkStatus).toBe('unresolved');
+      expect(edge.typeOnly).toBe(true);
+    });
+
+    it('survives a re-export hop', () => {
+      // `export type { X } from './y'` in a barrel, imported through it. The
+      // finalized edge here is built on a later spread of `base`, not the one
+      // `makeEdgeDrafts` returned.
+      const leaf = file('leaf', [def('def:leaf.User', 'Class', 'leaf.User')]);
+      const barrel = file('barrel', [], [reexport('User', 'User', 'leaf')]);
+      const a = file('a', [], [typeNamed('User', 'User', 'barrel')]);
+      const files = [a, barrel, leaf];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edge = firstImport(out, a.moduleScope)!;
+      expect(edge.targetDefId).toBe('def:leaf.User');
+      expect(edge.typeOnly).toBe(true);
+    });
+
+    it('a kind with no erased spelling never gains the flag', () => {
+      const b = file('b', [def('def:b.User', 'Class', 'b.User')]);
+      const a = file('a', [], [sideEffect('b'), dynamicResolved('b'), wildcard('b')]);
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edges = out.imports.get(a.moduleScope) ?? [];
+      expect(edges.length).toBeGreaterThan(0);
+      expect(edges.filter((e) => 'typeOnly' in e)).toEqual([]);
     });
   });
 

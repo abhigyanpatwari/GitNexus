@@ -21,12 +21,19 @@ Run from the project root. This parses all source files, builds the knowledge gr
 
 | Flag           | Effect                                                           |
 | -------------- | ---------------------------------------------------------------- |
+| `--watch`      | Keep a Git repository index current with serialized refreshes    |
+| `--debounce <ms>` | Watch quiet period before refresh (default: 300 ms)            |
 | `--force`      | Force full re-index even if up to date                           |
 | `--embeddings` | Enable embedding generation for semantic search (off by default) |
 | `--drop-embeddings` | Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` preserves them. |
 | `--pdg` | Build the program-dependence layers used by `explain` and `pdg_query` (taint, CDG, and REACHING_DEF). |
+| `--spring-actuator <path>` | Import opt-in Spring Boot Actuator mappings, beans, conditions, configprops, and env snapshots. Forces a full rebuild; unsupported with `--watch`. |
 
 **When to run:** First time in a project, after major code changes, or when `gitnexus://repo/{name}/context` reports the index is stale. In Claude Code, a PostToolUse hook detects staleness after `git commit` and `git merge` and notifies the agent to run `analyze` — the hook does not run analyze itself, to avoid blocking the agent for up to 120s and risking KuzuDB corruption on timeout.
+
+For Spring runtime enrichment, pass a JSON bundle, one endpoint JSON file, or a directory containing endpoint files. Route evidence is authoritative only when `runtimeConfirmed === true`; `runtimeSource` records provenance and may also accompany `handler-conflict`. Env/configprops values are never persisted.
+
+Use `node .gitnexus/run.cjs analyze --watch` for a long-lived local Git repository. It performs an initial analysis, queues scanner-admitted file changes, and retries intact failed batches with bounded backoff. Watch refreshes update only the graph: they skip AGENTS.md / CLAUDE.md injection and standard skill installation, so run a one-shot `analyze` when those generated files need updating. Watch rejects one-shot or context-output flags including `--force`, embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`, `--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`. It never pulls remotes. Running MCP and `serve` processes periodically check for a published replacement and reopen it without a restart. MCP checks are throttled to once every five seconds, so a tool call before the next check can briefly use the previous index.
 
 ### status — Check index freshness
 
@@ -55,15 +62,19 @@ Deletes the `.gitnexus/` directory and unregisters the repo from the global regi
 node .gitnexus/run.cjs wiki
 ```
 
-Generates repository documentation from the knowledge graph using an LLM. Requires an API key (saved to `~/.gitnexus/config.json` on first use).
+Generates repository documentation from the knowledge graph using an LLM. HTTP providers require an API key (saved to `~/.gitnexus/config.json` on first use). Local CLI providers (`--provider cursor|claude|codex|opencode|grok`) use your existing CLI login.
 
 | Flag                | Effect                                    |
 | ------------------- | ----------------------------------------- |
-| `--force`           | Force full regeneration                   |
-| `--model <model>`   | LLM model (default: minimax/minimax-m2.5) |
+| `--force`           | Force full regeneration, also required to re-generate an existing wiki in a different language |
+| `--provider <name>` | LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax). Local CLIs (`cursor`, `claude`, `codex`, `opencode`, `grok`) use your existing CLI login and skip `--api-key`. |
+| `--model <model>`   | LLM model (default: MiniMax-M3)           |
 | `--base-url <url>`  | LLM API base URL                          |
 | `--api-key <key>`   | LLM API key                               |
 | `--concurrency <n>` | Parallel LLM calls (default: 3)           |
+| `--timeout <seconds>` | LLM request timeout in seconds (default: disabled) |
+| `--retries <n>`     | Max LLM retry attempts per request (default: 3) |
+| `--lang <lang>`     | Output language for generated documentation (e.g. english, chinese, spanish, japanese) |
 | `--gist`            | Publish wiki as a public GitHub Gist      |
 
 ### list — Show all indexed repos
@@ -82,5 +93,5 @@ Lists all repositories registered in `~/.gitnexus/registry.json`. The MCP `list_
 ## Troubleshooting
 
 - **"Not inside a git repository"**: Run from a directory inside a git repo
-- **Index is stale after re-analyzing**: Restart Claude Code to reload the MCP server
+- **Index is stale after re-analyzing**: Wait for the next MCP tool call to reopen the published index; this normally takes no more than five seconds
 - **Embeddings slow**: Omit `--embeddings` (it's off by default) or set `OPENAI_API_KEY` for faster API-based embedding

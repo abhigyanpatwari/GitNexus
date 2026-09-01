@@ -50,6 +50,7 @@ import {
   validateBranchName,
   GitNexusRcError,
 } from './analyze-config.js';
+import type { AnalyzeOptions } from './analyze-options.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
@@ -362,6 +363,7 @@ interface RespawnExit {
   stdout?: string;
   stderr?: string;
   message?: string;
+  forwardedSignal?: NodeJS.Signals;
 }
 
 const appendOutputTail = (tail: string, chunk: unknown): string => {
@@ -394,17 +396,28 @@ const runRespawnedAnalyze = (
     let stdout = '';
     let stderr = '';
     let settled = false;
-    const finish = (exit: RespawnExit): void => {
-      if (settled) return;
-      settled = true;
-      resolve(exit);
-    };
-
+    let forwardedSignal: NodeJS.Signals | undefined;
     const child = spawn(process.execPath, [...args], {
       stdio: ['inherit', 'pipe', 'pipe'],
       windowsHide: true,
       env,
     });
+    const forwardSignal = (signal: NodeJS.Signals): void => {
+      forwardedSignal ??= signal;
+      if (child.exitCode === null && child.signalCode === null) child.kill(signal);
+    };
+    const forwardSigint = () => forwardSignal('SIGINT');
+    const forwardSigterm = () => forwardSignal('SIGTERM');
+    const finish = (exit: RespawnExit): void => {
+      if (settled) return;
+      settled = true;
+      process.removeListener('SIGINT', forwardSigint);
+      process.removeListener('SIGTERM', forwardSigterm);
+      resolve({ ...exit, forwardedSignal });
+    };
+
+    process.once('SIGINT', forwardSigint);
+    process.once('SIGTERM', forwardSigterm);
 
     child.stdout?.on('data', (chunk) => {
       stdout = appendOutputTail(stdout, chunk);
@@ -547,7 +560,16 @@ export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
  *    tooling), not a deliberate per-run choice: warn and respawn with the
  *    auto cap. Pre-#2649 this returned early and large repos then OOM'd on
  *    whatever heap the environment happened to specify. */
-async function ensureHeap(): Promise<boolean> {
+export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
+  if (cleanTermination) return 0;
+  if (signal === 'SIGINT') return 130;
+  if (signal === 'SIGTERM') return 143;
+  return 1;
+}
+
+export async function ensureHeap(
+  options: { cleanForwardedTermination?: boolean } = {},
+): Promise<boolean> {
   // Explicit opt-out disables auto-sizing ENTIRELY — both the ambient-pin
   // override and the default v8-limit respawn — and is honored SILENTLY:
   // the operator already made the call, and stderr-sensitive consumers
@@ -589,6 +611,13 @@ async function ensureHeap(): Promise<boolean> {
   };
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
   const childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  if (childExit.forwardedSignal !== undefined) {
+    process.exitCode = forwardedSignalExitCode(
+      childExit.forwardedSignal,
+      options.cleanForwardedTermination === true,
+    );
+    return true;
+  }
   if (childExit.status !== 0 || childExit.signal) {
     if (childProcessLikelyOom(childExit)) {
       cliError(
@@ -639,6 +668,8 @@ const ANALYZE_CLI_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_SUB_BATCH_SIZE',
   'GITNEXUS_EMBEDDING_DEVICE',
   'GITNEXUS_ANALYZE_PROGRESS_ACTIVE',
+  'GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS',
+  'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO',
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
   'GITNEXUS_EMBEDDING_API_KEY',
@@ -661,121 +692,14 @@ const restoreAnalyzeEnv = (snap: AnalyzeEnvSnapshot): void => {
   }
 };
 
-export interface AnalyzeOptions {
-  force?: boolean;
-  repairFts?: boolean;
-  /**
-   * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
-   *   - `undefined` when the flag is omitted
-   *   - `true` when passed without an argument (use default 50K node cap)
-   *   - a string when passed with an argument (`--embeddings 0` disables the
-   *     cap, `--embeddings <n>` uses `<n>` as the cap)
-   */
-  embeddings?: boolean | string;
-  /**
-   * Explicitly drop existing embeddings on rebuild instead of preserving
-   * them. Without this flag, a routine `analyze` keeps any embeddings
-   * already present in the index even when `--embeddings` is omitted.
-   */
-  dropEmbeddings?: boolean;
-  skills?: boolean;
-  verbose?: boolean;
-  /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
-  skipAgentsMd?: boolean;
-  /**
-   * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
-   * default. Threaded to both the worker (CFG build) and scope-resolution
-   * (BasicBlock/CFG emit).
-   */
-  pdg?: boolean;
-  /**
-   * Stats inclusion in AGENTS.md and CLAUDE.md.
-   *
-   * Commander.js represents `--no-stats` as `stats: boolean` (default
-   * `true`; `false` when the user passes `--no-stats`), NOT as
-   * `noStats: boolean`. Reading the negated form would always be
-   * `undefined` and the flag would silently no-op (#1477). Consumers
-   * that want "did the user request --no-stats?" should compare with
-   * `=== false` to distinguish the explicit-off case from the
-   * default-on case.
-   */
-  stats?: boolean;
-  /**
-   * Opt-in auto-commit of any AGENTS.md/CLAUDE.md changes this `analyze` run
-   * makes. Scoped to only those two files (never `git add -A`); no-ops
-   * silently if neither exists, neither changed, or the commit step itself
-   * fails (e.g. no git identity configured). See #2639.
-   */
-  selfCommit?: boolean;
-  /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
-  skipSkills?: boolean;
-  /**
-   * Default branch for the generated regression-compare example (#243). From
-   * `--default-branch`; may also be supplied via `.gitnexusrc`. Resolved to a
-   * concrete branch (CLI > `.gitnexusrc` > auto-detected origin/HEAD > "main")
-   * before being threaded into the generated AGENTS.md / CLAUDE.md content.
-   */
-  defaultBranch?: string;
-  /**
-   * Index-branch selector (#2106). From `--branch`. Distinct from
-   * `defaultBranch` (cosmetic base_ref): this routes the index to a per-branch
-   * slot. NOT sourced from `.gitnexusrc` — the `.gitnexusrc` `branch` key is an
-   * alias for `defaultBranch` and must not change index placement. Defaults to
-   * the checked-out branch inside `runFullAnalysis` when omitted.
-   */
-  branch?: string;
-  /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
-  indexOnly?: boolean;
-  /** Index the folder even when no .git directory is present. */
-  skipGit?: boolean;
-  /**
-   * Override the default basename-derived registry `name` with a
-   * user-supplied alias (#829). Disambiguates repos whose paths share a
-   * basename. Persisted — subsequent re-analyses of the same path without
-   * `--name` preserve the alias.
-   */
-  name?: string;
-  /**
-   * Allow registration even when another path already uses the same
-   * `--name` alias (#829). Intentionally a distinct flag from `--force`
-   * because the user may want to coexist under the same name WITHOUT
-   * paying the cost of a pipeline re-index. Maps to registerRepo's
-   * `allowDuplicateName` option end-to-end.
-   */
-  allowDuplicateName?: boolean;
-  /**
-   * Override the walker's large-file skip threshold (#991). Value in KB;
-   * clamped downstream to the tree-sitter 32 MB ceiling. Sets
-   * `GITNEXUS_MAX_FILE_SIZE` for the rest of the pipeline.
-   */
-  maxFileSize?: string;
-  /** Override worker sub-batch idle timeout in seconds. */
-  workerTimeout?: string;
-  /** Control LadybugDB WAL auto-checkpoint threshold during analyze. */
-  walCheckpointThreshold?: string;
-  /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
-  workers?: string;
-  embeddingThreads?: string;
-  embeddingBatchSize?: string;
-  embeddingSubBatchSize?: string;
-  embeddingDevice?: string;
-  /**
-   * Extra fetch-wrapper function names to treat as HTTP consumers (#1589/#1852
-   * residual). Supplied via `.gitnexusrc` `fetchWrappers: [...]`. Threaded into
-   * the routes phase, where the cross-file consumer scan unions them with the
-   * auto-detected `fetch()` wrappers so a custom/axios-based wrapper named
-   * outside the built-in convention still produces `route_map` consumers.
-   */
-  fetchWrappers?: string[];
-  /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
-  embeddingBaseUrl?: string;
-  /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */
-  embeddingModel?: string;
-  /** Bearer token for the embeddings endpoint. Overrides GITNEXUS_EMBEDDING_API_KEY. Never logged. */
-  embeddingAuthToken?: string;
-  /** Embedding vector dimensions (positive integer string). Overrides GITNEXUS_EMBEDDING_DIMS. */
-  embeddingDims?: string;
-}
+/**
+ * CLI `analyze` flag shape. Defined in `./analyze-options.js` so
+ * `analyze-config.ts` can reference it without importing this module back —
+ * that type import closed a cycle over `analyze` → `analyze-config` and
+ * `analyze` → `run-analyze` → `analyze-config`. Re-exported here because this
+ * is where callers have always imported it from.
+ */
+export type { AnalyzeOptions };
 
 /**
  * Whether the post-index skill step should run.
@@ -845,6 +769,19 @@ export const analyzeCommandWithRunnerIdentity = async (
   inputPath?: string,
   options?: AnalyzeOptions,
 ): Promise<void> => analyzeCommand(inputPath, options, runnerIdentityAtBootstrap);
+
+export async function analyzeOrWatchCommandWithRunnerIdentity(
+  runnerIdentityAtBootstrap: AnalyzerRunnerIdentity,
+  inputPath?: string,
+  options: AnalyzeOptions = {},
+): Promise<void> {
+  if (options.watch) {
+    const { watchCommandWithRunnerIdentity } = await import('./watch.js');
+    await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+    return;
+  }
+  await analyzeCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
+}
 
 const analyzeCommandImpl = async (
   inputPath?: string,
@@ -1437,6 +1374,7 @@ const analyzeCommandImpl = async (
       // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
+      springActuatorPath: options.springActuator,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free
@@ -1501,6 +1439,9 @@ const analyzeCommandImpl = async (
       console.error = origError;
       bar.stop();
       console.log('  Already up to date\n');
+      if (runOptions.registryName) {
+        console.log(`  Registry name: ${result.repoName}\n`);
+      }
       if (baseRefRefreshed.length > 0) {
         console.log(
           `  Updated base_ref to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
@@ -1592,6 +1533,7 @@ const analyzeCommandImpl = async (
               // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
               noStats: options.stats === false,
               hasPdg: options.pdg === true,
+              hasSpringActuator: options.springActuator !== undefined,
             },
           );
         }
@@ -1624,6 +1566,27 @@ const analyzeCommandImpl = async (
 
     // ── Summary ────────────────────────────────────────────────────
     const s = result.stats;
+    // A collapsed graph write is NOT a successful index. The other incomplete
+    // reasons (`incremental-in-progress`, `embedding-checkpoint-pending`)
+    // describe a run that did what it said and left work for next time; this
+    // one means most of your edges are gone, so every query answers a confident
+    // empty and the exit code is the only thing automation reads. Printing
+    // "indexed successfully" and exiting 0 here would be the same class of
+    // false certainty the check itself was written to remove.
+    if (result.graphWriteCollapsed) {
+      const { expected, persisted } = result.graphWriteCollapsed;
+      console.log(`\n  Repository indexed INCOMPLETELY (${totalTime}s)\n`);
+      console.log(
+        `  Graph write collapsed: the pipeline produced ${expected.toLocaleString()} relationships\n` +
+          `  but only ${persisted.toLocaleString()} are readable from the index. Queries will answer\n` +
+          `  with missing edges rather than an error.\n\n` +
+          `  The index is recorded INCOMPLETE (graph-write-collapsed). Re-run\n` +
+          `  \`gitnexus analyze --force\`; if it recurs, check disk space and run \`gitnexus doctor\`.`,
+      );
+      console.log(`  ${repoPath}`);
+      process.exitCode = 1;
+      return;
+    }
     console.log(`\n  Repository indexed successfully (${totalTime}s)\n`);
     console.log(
       `  ${(s.nodes ?? 0).toLocaleString()} nodes | ${(s.edges ?? 0).toLocaleString()} edges | ${s.communities ?? 0} clusters | ${s.processes ?? 0} flows`,
@@ -1644,9 +1607,14 @@ const analyzeCommandImpl = async (
         );
       } else {
         console.log(
+          // NOT "then rerun" (#2841 §5.C): this run stamped `lastCommit`, so a
+          // plain rerun on an unchanged tree takes the up-to-date fast path and
+          // returns before Phase 3 could rebuild anything — the advice would be
+          // ineffective exactly when the user follows it. `--repair-fts` is the
+          // verb that rebuilds the search indexes without re-parsing the repo.
           `\n  Warning: full-text/BM25 search is disabled — the LadybugDB FTS extension was unavailable.\n` +
-            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) then rerun, or\n` +
-            `  run \`gitnexus analyze --repair-fts\` when connected. Run \`gitnexus doctor\` for details.`,
+            `  Install it once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto), then run\n` +
+            `  \`gitnexus analyze --repair-fts\` to build the search indexes. Run \`gitnexus doctor\` for details.`,
         );
       }
     }

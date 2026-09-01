@@ -1,6 +1,6 @@
 /**
  * Build a `(filePath, name) → graphNodeId` lookup over the graph's
- * Function/Method/Class/Constructor nodes. Two keys per node:
+ * {@link LINKABLE_LABELS} definition nodes. Two keys per node:
  *
  *   - simple name (`User` / `save`) — legacy fallback
  *   - qualified name when derivable from the node id (`User.save`)
@@ -30,7 +30,7 @@ import { parameterShapeIdTag } from '../../utils/method-props.js';
 export type GraphNodeLookup = ReadonlyMap<string, string>;
 
 /**
- * Parse a qualified name out of a Function/Method node id.
+ * Parse a qualified name out of a linkable graph-node id.
  *
  * Node id format: `${label}:${filePath}:${qualifiedName}${arityTag}`,
  * where `arityTag` is `#<n>` (or empty). Strips the known-length
@@ -96,6 +96,16 @@ export function positionKey(
   return `<p>:${filePath}::${label}::${startLine}::${name}`;
 }
 
+/** Exact source-position key used before the legacy line/name join. */
+export function exactPositionKey(
+  filePath: string,
+  label: NodeLabel,
+  startLine: number,
+  startColumn: number,
+): string {
+  return `<pc>:${filePath}::${label}::${startLine}:${startColumn}`;
+}
+
 /**
  * Key recording that a FUNCTION-LOCAL callable with this simple name exists in the
  * file (#2699 follow-up).
@@ -131,6 +141,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       name?: string;
       qualifiedName?: string;
       templateArguments?: readonly string[];
+      startColumn?: number;
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
@@ -139,6 +150,10 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     // ambiguous rather than letting source order decide.
     const startLine = (props as { startLine?: number }).startLine;
     if (startLine !== undefined && isPositionQualifiedLocalLabel(node.label)) {
+      if (props.startColumn !== undefined) {
+        const exactK = exactPositionKey(props.filePath, node.label, startLine, props.startColumn);
+        lookup.set(exactK, lookup.has(exactK) ? AMBIGUOUS_POSITION : node.id);
+      }
       const posK = positionKey(props.filePath, node.label, startLine, props.name);
       lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
       // A local-identity node carries `@<row>:<col>` on its last name segment. Record
@@ -268,11 +283,31 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Interface',
   'Struct',
   'Enum',
+  // Record participates in the same def→graph bridge as other class-like
+  // declarations. Without this entry, its qualified/template lookup branches
+  // are unreachable and label-agnostic fallback can alias it to a same-named
+  // Constructor or Method (#2801).
+  'Record',
   // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
   // defs between scope-resolution DefIds and the graph's node ids.
   // IMPLEMENTS edges from classes to traits are otherwise invisible to
   // the scope-resolution MRO pass.
   'Trait',
+  // TypeAlias is linkable for the same reason Trait is (R2-2). The alias
+  // resolves fine — `CLASS_KINDS` has always listed it, and the ClassRegistry
+  // returns the def — but without an entry here `resolveDefGraphId` cannot
+  // bridge that def to its graph node, so the edge is dropped after a
+  // SUCCESSFUL lookup. That is why an exported contract type owned its members
+  // and still reported `incoming: {}`: the failure was one table away from
+  // everything that appeared to be responsible.
+  //
+  // Covers every language that spells an alias this way — TypeScript, Kotlin,
+  // Dart and Rust all emit `@declaration.type_alias`. The remaining
+  // `CLASS_KINDS` entries (Typedef, Record, Union, Delegate, Annotation,
+  // Template) plausibly have the same gap, but nothing exercises them today
+  // and adding labels no test covers is how this list drifts out of sync with
+  // what it claims.
+  'TypeAlias',
   // Variable / Property are linkable too — receiver-bound write/read
   // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
   // ACCESSES edge to User's `name` Variable/Property node).

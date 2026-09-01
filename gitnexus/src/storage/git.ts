@@ -3,42 +3,33 @@ import { statSync, existsSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import { logger } from '../core/logger.js';
+import { toZeroBasedLine } from '../core/ingestion/utils/line-base.js';
+import { GITNEXUS_MANAGED_PATH_EXCLUDES, isGitNexusManagedPath } from './gitnexus-managed-paths.js';
 
 // Git utilities for repository detection, commit tracking, and diff analysis
 
 const chompGitOutput = (value: Buffer): string => value.toString().replace(/\r?\n$/, '');
+const GIT_PATH_LIST_MAX_BUFFER = 64 * 1024 * 1024;
 
 /**
  * True when the working tree has uncommitted changes that analyze would
- * re-index, even at a matching HEAD. Excludes the paths GitNexus writes during
- * analyze (.gitnexus/, .claude/, .cursor/, AGENTS.md, CLAUDE.md, and the
- * repo-local .agents/ mirror) so its own output never counts as dirty
- * (regression vs PR #1233 behavior). The entire .agents/ tree is excluded,
- * matching the .claude/ treatment, because the skill mirror writes across
- * .agents/skills/ and deeper paths. Conservative on any git failure. Shared
- * so `analyze`'s fast-path gate and `status`'s freshness report agree on what
- * "dirty" means.
+ * re-index, even at a matching HEAD. Excludes GITNEXUS_MANAGED_PATHS so
+ * GitNexus's own analyze output never counts as dirty (regression vs PR #1233
+ * behavior); whole directory trees are excluded, not just their root entries,
+ * because the skill mirror writes across .agents/skills/ and deeper paths.
+ * Conservative on any git failure.
+ *
+ * This drives `analyze`'s up-to-date fast path. It is deliberately coarse:
+ * a false "dirty" here costs only a hash diff that finds nothing. `status`
+ * reaches for the per-file comparison in core/index-content-drift.ts instead,
+ * because there the same false positive is a verdict the user cannot clear
+ * (#3077), and falls back to this only when that comparison cannot run.
  */
 export const isWorkingTreeDirty = (repoPath: string): boolean => {
   try {
     const out = execFileSync(
       'git',
-      [
-        'status',
-        '--porcelain',
-        '--',
-        '.',
-        ':(exclude).gitnexus',
-        ':(exclude).gitnexus/**',
-        ':(exclude).claude',
-        ':(exclude).claude/**',
-        ':(exclude).cursor',
-        ':(exclude).cursor/**',
-        ':(exclude)AGENTS.md',
-        ':(exclude)CLAUDE.md',
-        ':(exclude).agents',
-        ':(exclude).agents/**',
-      ],
+      ['status', '--porcelain', '--', '.', ...GITNEXUS_MANAGED_PATH_EXCLUDES],
       {
         cwd: repoPath,
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -49,6 +40,84 @@ export const isWorkingTreeDirty = (repoPath: string): boolean => {
     return out.trim().length > 0;
   } catch {
     return true; // conservative on git failure
+  }
+};
+
+const parsePorcelainPaths = (porcelain: string): string[] => {
+  const paths = new Set<string>();
+  const records = porcelain.split('\0');
+  for (let i = 0; i < records.length; i++) {
+    const record = records[i];
+    if (record.length < 4) continue;
+
+    const status = record.slice(0, 2);
+    paths.add(record.slice(3));
+
+    // In porcelain v1 `-z` mode, rename/copy source and destination paths are
+    // separate NUL records (with no human-facing ` -> ` delimiter). Keep both:
+    // either side may be present in the previous coverage set.
+    if (status.includes('R') || status.includes('C')) {
+      const pairedPath = records[++i];
+      if (pairedPath) paths.add(pairedPath);
+    }
+  }
+  return [...paths];
+};
+
+const gitPathListExec = {
+  stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
+  encoding: 'utf8' as const,
+  maxBuffer: GIT_PATH_LIST_MAX_BUFFER,
+};
+
+const listHiddenIndexPaths = (repoPath: string): string[] => {
+  const out = execFileSync('git', ['ls-files', '-v', '-z', '--'], {
+    cwd: repoPath,
+    windowsHide: true,
+    ...gitPathListExec,
+  });
+  const paths: string[] = [];
+  for (const record of out.split('\0')) {
+    if (record.length < 3 || record[1] !== ' ') continue;
+    const tag = record[0];
+    // `S` marks skip-worktree. With `-v`, an assume-unchanged entry's
+    // ordinary tag is lower-cased (`H` -> `h`, `S` -> `s`, etc.).
+    if (tag === 'S' || (tag >= 'a' && tag <= 'z')) paths.push(record.slice(2));
+  }
+  return paths;
+};
+
+/**
+ * Repo-relative paths `git status` reports as dirty or untracked, using the
+ * same managed-path excludes as {@link isWorkingTreeDirty}, plus tracked paths
+ * whose assume-unchanged or skip-worktree bits can hide content changes from
+ * porcelain. `null` means either query failed — callers must not treat that as
+ * a clean tree.
+ */
+export const listWorkingTreeDirtyPaths = (repoPath: string): string[] | null => {
+  try {
+    const out = execFileSync(
+      'git',
+      [
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--untracked-files=all',
+        '--',
+        '.',
+        ...GITNEXUS_MANAGED_PATH_EXCLUDES,
+      ],
+      { cwd: repoPath, windowsHide: true, ...gitPathListExec },
+    );
+    return [
+      ...new Set(
+        [...parsePorcelainPaths(out), ...listHiddenIndexPaths(repoPath)].filter(
+          (rel) => !isGitNexusManagedPath(rel),
+        ),
+      ),
+    ];
+  } catch {
+    return null;
   }
 };
 
@@ -202,6 +271,28 @@ export const getCurrentCommit = (repoPath: string): string => {
 };
 
 /**
+ * Remove `user[:password]@` userinfo from an http(s) URL.
+ *
+ * `git config remote.origin.url` returns whatever was configured, and the
+ * HTTPS token form `https://x-access-token:<token>@host/owner/repo` is how
+ * CI checkouts and credential helpers routinely authenticate. That string
+ * reached `registry.json`, the per-repo meta and the MCP `list_repos`
+ * payload verbatim, which turned repository discovery into credential
+ * disclosure (#2914).
+ *
+ * Only `http`/`https` are rewritten. `ssh://git@host/…` and the SCP-like
+ * `git@host:owner/repo` carry an SSH *user name*, not a secret, and are part
+ * of the remote's identity — dropping it would repoint the sibling-clone
+ * fingerprint (#2054) for every already-registered repo.
+ *
+ * The match is bounded by the authority (`[^/]*` cannot cross the first `/`
+ * after the scheme) and greedy to the last `@` in it, so a password
+ * containing `@` is removed whole rather than leaving its tail behind.
+ */
+export const stripUrlCredentials = (url: string): string =>
+  url.replace(/^(https?:\/\/)[^/]*@/i, '$1');
+
+/**
  * Get a stable canonical identifier for the repo's `origin` remote, if any.
  *
  * Used to fingerprint two on-disk clones as the same logical repository
@@ -212,6 +303,10 @@ export const getCurrentCommit = (repoPath: string): string => {
  * survives those conventions.
  *
  * Normalisation strategy:
+ *   - Strip http(s) userinfo credentials (see {@link stripUrlCredentials}).
+ *     Done FIRST, before the host lower-casing below — that regex treats the
+ *     whole `user:pass@host` span as the host and would mangle the secret's
+ *     case on its way into the registry (#2914).
  *   - Strip a trailing `.git` so `https://x/y` and `https://x/y.git` collapse.
  *   - Strip a trailing `/` for the same reason.
  *   - `git@github.com:foo/bar` and `https://github.com/foo/bar` are
@@ -239,7 +334,9 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
   }
   if (!raw) return undefined;
 
-  let normalised = raw.replace(/\/$/, '').replace(/\.git$/, '');
+  let normalised = stripUrlCredentials(raw)
+    .replace(/\/$/, '')
+    .replace(/\.git$/, '');
 
   // Lower-case the host segment of `scheme://[user@]host[:port]/...`
   // and the host segment of `git@host:owner/repo` SCP form.
@@ -636,9 +733,16 @@ export const getInferredRepoName = (repoPath: string): string | null => {
   return parseRepoNameFromUrl(getRemoteOriginUrl(repoPath));
 };
 
+/**
+ * An inclusive run of changed lines in the NEW file, 1-based like `@@` headers
+ * and every other git line number. Graph rows are 0-based (#2377), so a consumer
+ * comparing the two converts one side first — see `coalesceHunks` callers.
+ */
 export interface DiffHunk {
   startLine: number;
   endLine: number;
+  /** Phantom brand, never set — see {@link GraphLineRange}. */
+  readonly lineBase?: 'git1';
 }
 
 export interface FileDiff {
@@ -649,6 +753,20 @@ export interface FileDiff {
 /**
  * Parse unified diff output (with -U0) into per-file hunk ranges.
  * Extracts the new-file line ranges from @@ hunk headers.
+ *
+ * A pure deletion adds no new lines, and unified diff spells that empty range
+ * as the line BEFORE it: `@@ -4,2 +3,0 @@` removed old lines 4–5 from between
+ * new lines 3 and 4 (git emits `+0,0` when the deletion is at the head of the
+ * file). The hunk still says WHERE the change landed, so it becomes the
+ * one-line range at that anchor rather than being dropped. Dropping it left the
+ * file entry with no hunks at all, so `detect_changes` contributed no bound for
+ * the path, issued no query, and reported "No changes detected." for a commit
+ * that deleted a function (#2915 review).
+ *
+ * The anchor line only, not the pair straddling the gap: a symbol that
+ * contained the deleted text still contains the anchor, whereas extending to
+ * the following line would also claim a symbol that merely STARTS after the
+ * gap — the widening {@link coalesceHunks} is careful never to do.
  */
 export function parseDiffHunks(diffOutput: string): FileDiff[] {
   const files: FileDiff[] = [];
@@ -664,9 +782,117 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
         const count = match[2] !== undefined ? parseInt(match[2], 10) : 1;
         if (count > 0) {
           current.hunks.push({ startLine: start, endLine: start + count - 1 });
+        } else {
+          // Deletion: anchor on the line the removed text followed, clamped to
+          // 1 for a `+0,0` deletion at the head of the file (see above).
+          const anchor = Math.max(start, 1);
+          current.hunks.push({ startLine: anchor, endLine: anchor });
         }
       }
     }
   }
   return files;
+}
+
+/**
+ * Merge a file's hunks into sorted, non-touching ranges.
+ *
+ * `detect_changes` used to fold one `(n.startLine <= $hunkEndI AND n.endLine >=
+ * $hunkStartI)` pair per hunk into a single Cypher `WHERE` clause. A
+ * machine-generated file (a cache JSON, a lockfile, a golden fixture) diffs at
+ * thousands of hunks with `-U0`, and the resulting expression tree is deep
+ * enough that LadybugDB's recursive evaluator copy overflows its worker-thread
+ * stack: a bare SIGBUS with no error output where secondary threads get 512 KB
+ * (macOS), and a swallowed 30s query timeout where they get more (#2915).
+ *
+ * Only ranges that overlap or ABUT (`next.startLine <= current.endLine + 1`)
+ * are merged, so the union covers exactly the lines the raw hunks covered —
+ * coalescing can never widen a range into a symbol the hunks did not touch.
+ */
+export function coalesceHunks(hunks: readonly GraphLineRange[]): GraphLineRange[] {
+  if (hunks.length === 0) return [];
+  const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine);
+  const merged: GraphLineRange[] = [{ ...sorted[0] }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = merged[merged.length - 1];
+    const next = sorted[i];
+    if (next.startLine <= last.endLine + 1) last.endLine = Math.max(last.endLine, next.endLine);
+    else merged.push({ ...next });
+  }
+  return merged;
+}
+
+/**
+ * An inclusive line range in the GRAPH's 0-based space, not git's 1-based one.
+ *
+ * A separate type from {@link DiffHunk} on purpose: the two carry the same two
+ * fields in different bases, and mixing them is exactly the #2377 bug — every
+ * symbol shifts one line and an edit to a symbol's last line reports nothing
+ * changed. The phantom `lineBase` field is what makes that distinction real to
+ * the compiler: two OPTIONAL properties with incompatible literal types are
+ * mutually unassignable, so a value typed {@link DiffHunk} cannot reach
+ * {@link hunksOverlapRange} without a conversion in between, while a bare
+ * `{ startLine, endLine }` literal still satisfies both and no construction
+ * site needs a cast. The brand catches plumbing that passes the wrong array,
+ * not a range a caller built by hand out of 1-based numbers.
+ */
+export interface GraphLineRange {
+  startLine: number;
+  endLine: number;
+  /** Phantom brand, never set — see above. */
+  readonly lineBase?: 'graph0';
+}
+
+/**
+ * Group a diff's hunks by file, converted into the graph's 0-based line space.
+ *
+ * The conversion lives here, at the parse boundary, rather than in each
+ * consumer: `parseDiffHunks` stays faithful to git (1-based, like the `@@`
+ * headers it reads) and everything downstream compares graph-native values.
+ *
+ * A path can appear twice in one diff (e.g. a rename reported alongside an
+ * edit), so hunks accumulate per path instead of the later entry winning —
+ * accumulated raw first, coalesced once, so a path repeated K times costs one
+ * sort rather than K.
+ */
+export function coalesceHunksByPath(fileDiffs: FileDiff[]): Map<string, GraphLineRange[]> {
+  const rawByPath = new Map<string, GraphLineRange[]>();
+  for (const fileDiff of fileDiffs) {
+    const ranges = rawByPath.get(fileDiff.filePath) ?? [];
+    for (const hunk of fileDiff.hunks) {
+      ranges.push({
+        startLine: toZeroBasedLine(hunk.startLine),
+        endLine: toZeroBasedLine(hunk.endLine),
+      });
+    }
+    if (ranges.length > 0) rawByPath.set(fileDiff.filePath, ranges);
+  }
+
+  const byPath = new Map<string, GraphLineRange[]>();
+  for (const [filePath, ranges] of rawByPath) byPath.set(filePath, coalesceHunks(ranges));
+  return byPath;
+}
+
+/**
+ * Does any hunk overlap the inclusive line range [startLine, endLine]?
+ *
+ * `coalesced` must come from {@link coalesceHunks} — sorted and disjoint, which
+ * is what makes the binary search valid — and both sides must use the same line
+ * base.
+ */
+export function hunksOverlapRange(
+  coalesced: GraphLineRange[],
+  startLine: number,
+  endLine: number,
+): boolean {
+  // Lower bound: first hunk ending at or after startLine. `lo === length` means
+  // every hunk ends before the range starts (and covers the empty list).
+  let lo = 0;
+  let hi = coalesced.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (coalesced[mid].endLine >= startLine) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < coalesced.length && coalesced[lo].startLine <= endLine;
 }

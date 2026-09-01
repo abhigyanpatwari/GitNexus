@@ -37,6 +37,15 @@ export const zhCN = {
   'status.workspaceIndexLabel':
     "工作区索引：最近在 '{{primary}}' 分支上分析（重新运行 gitnexus analyze 以跟随当前分支）",
   'status.status': '状态',
+  'status.indexContentCurrent': '索引内容：与覆盖的全部 {{count}} 个文件一致',
+  'status.indexContentDrifted':
+    '索引内容：{{changed}} 个已修改，{{added}} 个新增，{{deleted}} 个已删除',
+  'status.indexContentMore': '  ……另有 {{count}} 个 {{label}}',
+  'status.indexContentUnmeasurable': '索引内容：无法比对（{{reason}}），已回退到工作区检查',
+  'status.indexContentScanFailed': '索引内容：覆盖扫描失败，按过期处理',
+  'status.driftChanged': '已修改',
+  'status.driftAdded': '新增',
+  'status.driftDeleted': '已删除',
   'status.upToDate': '✅ 已是最新',
   'status.stale': '⚠️ 已过期（重新运行 gitnexus analyze）',
   'clean.deleteAll': '将删除 {{count}} 个仓库的 GitNexus 索引：',
@@ -69,6 +78,12 @@ export const zhCN = {
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
+  'tool.detectChanges.partial':
+    '结果不完整：图查询失败，可能遗漏已变更符号。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.truncated':
+    '列表已截断：已变更符号列表被截断，未列出全部变更符号。计数与风险等级仍涵盖全部符号。',
+  'tool.detectChanges.truncatedDegraded':
+    '列表已截断：已变更符号列表被截断。本次运行同时不完整，因此计数为下限而非总数。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',
@@ -173,7 +188,8 @@ export const zhCN = {
     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
   'help.option.analyze.skills':
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
-  'help.option.analyze.skipAgentsMd': '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块',
+  'help.option.analyze.skipAgentsMd':
+    '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
   'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',
   'help.option.analyze.selfCommit':
     '在 analyze 后自动提交 AGENTS.md/CLAUDE.md 的变更（默认关闭，需显式开启）。仅限这两个文件（绝不使用 `git add -A`）；若两者均不存在、均未变更，或仓库未配置 git 身份，则不执行任何操作。',
@@ -197,6 +213,8 @@ export const zhCN = {
   'help.option.analyze.embeddingBatchSize': '每个嵌入批次的节点数',
   'help.option.analyze.embeddingSubBatchSize': '每次嵌入模型调用的分块数',
   'help.option.analyze.embeddingDevice': '嵌入设备：auto、cpu、dml、cuda 或 wasm',
+  'help.option.analyze.watch': '监视本地源文件变更并串行执行增量刷新',
+  'help.option.analyze.debounce': '刷新前的静默等待时间（毫秒）',
   'help.option.index.force': '即使缺少索引元数据也注册（统计为空）',
   'help.option.index.allowNonGit': '允许注册非 Git 仓库文件夹',
   'help.option.port': '端口号',
@@ -205,7 +223,7 @@ export const zhCN = {
   'help.option.mcp.host':
     'HTTP 绑定地址（仅与 --http 搭配使用）。默认：127.0.0.1（回环）。使用 0.0.0.0 向所有接口开放。',
   'help.option.mcp.authToken':
-    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
+    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置，该变量同时为 gitnexus serve 的 /api/mcp 路由启用 MCP Bearer 认证。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',
@@ -214,15 +232,14 @@ export const zhCN = {
     '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
-    'LLM 提供商：openai、openrouter、azure、custom、cursor、claude、codex 或 opencode（默认：openai）',
-  'help.option.wiki.model': 'LLM 模型或 Azure deployment 名称（默认：minimax/minimax-m2.5）',
+    'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',
+  'help.option.wiki.model': 'LLM 模型或 deployment 名称（默认：MiniMax-M3）',
   'help.option.wiki.baseUrl':
     'LLM API base URL。Azure v1：https://{resource}.openai.azure.com/openai/v1',
   'help.option.wiki.apiKey': 'LLM API key 或 Azure api-key（保存到 ~/.gitnexus/config.json）',
   'help.option.wiki.apiVersion': 'Azure api-version 查询参数，例如 2024-10-21（仅旧版 Azure API）',
-  'help.option.wiki.reasoningModel':
-    '标记 deployment 为 reasoning model（o1/o3/o4-mini）— 去除 temperature，使用 max_completion_tokens',
-  'help.option.wiki.noReasoningModel': '禁用 reasoning model 模式（覆盖已保存配置）',
+  'help.option.wiki.reasoningModel': '启用 reasoning 模式；MiniMax-M3 使用自适应 thinking',
+  'help.option.wiki.noReasoningModel': '禁用 reasoning 模式；MiniMax-M3 关闭 thinking',
   'help.option.wiki.concurrency': '并行 LLM 调用数（默认：3）',
   'help.option.wiki.timeout': 'LLM 请求超时时间（秒，默认：禁用）',
   'help.option.wiki.retries': '每个请求的最大 LLM 重试次数（默认：3）',
@@ -268,10 +285,9 @@ export const zhCN = {
     '同时下载 CUDA GPU 二进制文件（运行 onnxruntime-node 的 NuGet postinstall；代理后请设置 GLOBAL_AGENT_HTTPS_PROXY）',
   'help.option.embeddings.install.force': '即使嵌入组件已可解析，也强制安装到运行时目录',
   'help.option.group.create.force': '覆盖现有仓库组',
-  'help.option.group.sync.skipEmbeddings': '仅使用 exact + BM25（不使用嵌入回退）',
-  'help.option.group.sync.exactOnly': '仅精确匹配',
-  'help.option.group.sync.allowStale': '跳过过期索引警告',
-  'help.option.group.sync.verbose': '显示每条跨仓库链接详情',
+  'help.option.group.sync.exactOnly':
+    '跳过通配符服务匹配，仅按契约 ID 精确匹配建立跨仓链接（清单声明的链接仍然生效）',
+  'help.option.group.sync.verbose': '显示额外的同步诊断信息',
   'help.option.status.json': '输出机器可读的索引和分析器来源信息',
   'help.option.json': 'JSON 输出',
   'help.option.group.impact.target': '要分析的符号或文件名',

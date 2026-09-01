@@ -3,7 +3,7 @@
  *
  * The regression this guards is specific and was expensive: three CHEAP files
  * were registered in `SPAWN_CLI`, vitest re-partitioned the list by file COUNT,
- * and the reshuffle clustered `cli-e2e` (361 s on Windows) with `cli-limit-e2e`
+ * and the reshuffle clustered `cli-e2e` (now 621 s on Windows) with `cli-limit-e2e`
  * (75 s) and `analyze-heap-oom-e2e` (23 s) on one shard, which then blew the
  * 20-minute watchdog. The added files cost nothing; the COUNT-split did it.
  *
@@ -49,7 +49,7 @@ describe('cross-platform shard partition', () => {
   });
 
   it('never puts the two heaviest suites on the same shard', () => {
-    // The exact shape of the outage: cli-e2e and worker-pool are 361 s and
+    // The exact shape of the outage: cli-e2e and worker-pool are 621 s and
     // 222 s, so together they are most of a shard's budget before anything else
     // is scheduled.
     const shards = allShards(ALL_CROSS_PLATFORM, SHARD_TOTAL);

@@ -1,0 +1,8 @@
+{
+  "_comment": "Baselines for bench/java-wildcard-route-constants/measure.mjs --check (#3110). fingerprint is sha256 over 800 materialized route bindings from 800 constant files and must match the named-import control. The benchmark builds the constant import index once per repo pass, matching ingestion and group wiring.",
+  "fingerprint": "8114e613e93ce0ef6220b810850888592e0e822fe04bf2eb5d8fc4ec3dbba5ef",
+  "scaling_budget": 1.6,
+  "_scaling_note": "(t_large/t_small)/(800/250) while both constant files and wildcard importers scale. Measured about 1.14 with the suffix index; repeated candidate scans are quadratic.",
+  "absolute_ms_budget": 10,
+  "_absolute_ms_note": "Wildcard materialization for 800 controllers. Measured about 1.1 ms; the generous ceiling catches gross regressions without treating the near-zero named-import control as a stable ratio denominator."
+}
