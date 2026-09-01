@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { GraphNode } from 'gitnexus-shared';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 
-const SECRET = 'KOTLIN_ACTUATOR_SECRET_2418';
+const SECRET_ENV_VALUE = 'KOTLIN_ACTUATOR_ENV_CANARY_2418';
 
 function writeFixture(root: string, relativePath: string, content: string): void {
   const target = path.join(root, relativePath);
@@ -240,9 +240,11 @@ class KotlinProperties {
     contexts: {
       application: {
         positiveMatches: {
-          'com.example.KotlinConfig#billingService': [{ message: SECRET }],
-          'com.example.KotlinController$Companion#companionHandler': [{ message: SECRET }],
-          'com.example.NamedHolder$Factory#namedHandler': [{ message: SECRET }],
+          'com.example.KotlinConfig#billingService': [{ message: SECRET_ENV_VALUE }],
+          'com.example.KotlinController$Companion#companionHandler': [
+            { message: SECRET_ENV_VALUE },
+          ],
+          'com.example.NamedHolder$Factory#namedHandler': [{ message: SECRET_ENV_VALUE }],
         },
         negativeMatches: {},
       },
@@ -254,7 +256,7 @@ class KotlinProperties {
         beans: {
           kotlin: {
             prefix: 'app.kotlin',
-            inputs: { url: { value: SECRET, origin: SECRET } },
+            inputs: { url: { value: SECRET_ENV_VALUE, origin: SECRET_ENV_VALUE } },
           },
         },
       },
@@ -263,10 +265,10 @@ class KotlinProperties {
   writeJson(repo, 'actuator/env.json', {
     propertySources: [
       {
-        name: SECRET,
+        name: SECRET_ENV_VALUE,
         properties: {
-          'app.kotlin.url': { value: SECRET, origin: SECRET },
-          'app.kotlin.password': { value: SECRET, origin: SECRET },
+          'app.kotlin.url': { value: SECRET_ENV_VALUE, origin: SECRET_ENV_VALUE },
+          'app.kotlin.password': { value: SECRET_ENV_VALUE, origin: SECRET_ENV_VALUE },
         },
       },
     ],
@@ -380,7 +382,7 @@ describe('Spring Boot Actuator Kotlin runtime enrichment', () => {
       'Spring Actuator env runtime-confirmed',
     );
 
-    expect(JSON.stringify([...result.graph.iterNodes()])).not.toContain(SECRET);
+    expect(JSON.stringify([...result.graph.iterNodes()])).not.toContain(SECRET_ENV_VALUE);
     expect(nodes.some((node) => String(node.properties.filePath).includes('/actuator/'))).toBe(
       false,
     );
