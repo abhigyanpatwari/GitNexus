@@ -42,8 +42,10 @@ describe('--skip-git CLI flag', () => {
     });
 
     expect(helpOutput).toContain('--skip-git');
-    expect(helpOutput).toContain('--skip-agents-md');
-    expect(helpOutput).toContain('--skip-skills');
+    const helpFlat = helpOutput.replace(/\s+/g, ' ');
+    expect(helpFlat).toContain('--skip-agents-md');
+    expect(helpFlat).toContain('Does not skip .claude/skills');
+    expect(helpFlat).toContain('--skip-skills');
     expect(helpOutput).toContain('directly under .claude/skills/');
     expect(helpOutput).toContain('.agents/skills/');
     expect(helpOutput).toContain('.claude/skills/gitnexus-area-*');
