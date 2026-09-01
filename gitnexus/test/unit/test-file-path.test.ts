@@ -23,6 +23,8 @@ describe('isTestFilePath — shared predicate', () => {
     'app/src/test/java/com/x/FooTest.java',
     'ios/MyAppTests/LoginTests.swift',
     'ios/MyAppUITests/FlowTest.swift',
+    'ios/MyAppUITests/Flow.swift',
+    'ios/MyAppUITests/README.swift',
     'src/Widgets.Tests/WidgetTests.cs',
     'src/Widgets.UnitTests/Thing.cs',
     'src/Widgets.IntegrationTests/Thing.cs',

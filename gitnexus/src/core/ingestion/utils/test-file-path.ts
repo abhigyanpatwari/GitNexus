@@ -79,6 +79,9 @@ export function isTestFilePath(filePath: string | null | undefined): boolean {
   const lower = prefixed.toLowerCase();
   if (TEST_PATH_SUBSTRINGS.some((needle) => lower.includes(needle))) return true;
   if (TEST_PATH_DELIMITED_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true;
+  // Xcode `{Product}UITests` targets. Slash-anchored `/uitests/` does not match
+  // `MyAppUITests`; an unanchored `uitests/` substring also matches `fruitests`.
+  if (prefixed.split('/').some((seg) => seg.endsWith('UITests'))) return true;
   const basename = prefixed.slice(prefixed.lastIndexOf('/') + 1);
   return TEST_PATH_CASED_SUFFIXES.some((suffix) => basename.endsWith(suffix));
 }
