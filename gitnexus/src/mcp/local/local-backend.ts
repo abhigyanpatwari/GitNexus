@@ -314,18 +314,7 @@ function normalizeToolParams(
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
-/**
- * Quick test-file detection for filtering impact results.
- *
- * Re-exported from the shared predicate in
- * `core/ingestion/utils/test-file-path.ts`, which is deliberately
- * dependency-free: importing `entry-point-scoring.ts` (the other former home of
- * this logic) would pull the language-provider registry back into MCP startup,
- * the closure #2802 removed.
- *
- * The two copies had drifted — this one recognized no C#, Java or Swift test
- * convention, so `includeTests: false` silently failed to filter them.
- */
+/** Shared predicate; re-exported so MCP importers keep the old public name. */
 export { isTestFilePath };
 
 /** Valid LadybugDB node labels for safe Cypher query construction */

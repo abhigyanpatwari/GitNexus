@@ -26,45 +26,30 @@
 
 /**
  * Lowercase forward-slash path substrings. Directory needles include a leading
- * slash so they match path components (callers slash-prefix relative paths
- * first). Ordered by language for review; matching is order-independent.
+ * slash so they match path components after the caller slash-prefixes relative
+ * paths. `/test/` already covers Maven `src/test` and `/test/fixtures/`;
+ * `/tests/` covers Laravel `tests/Feature` and `/tests/fixtures/`.
  */
 const TEST_PATH_SUBSTRINGS: readonly string[] = [
-  // JavaScript / TypeScript
   '.test.',
   '.spec.',
   '__tests__/',
   '__mocks__/',
-  // Generic test folders (slash-anchored so `fruitests/` is not a hit)
   '/test/',
   '/tests/',
   '/testing/',
-  '/test/fixtures/',
-  '/tests/fixtures/',
-  '/spec/fixtures/',
   '/spec/',
-  // Python
   '/test_',
   '/conftest.',
-  // Java / Kotlin (Maven + Gradle layout)
-  '/src/test/',
-  // Swift
   '/uitests/',
-  // C#
   '.tests/',
   '.test/',
   '.integrationtests/',
   '.unittests/',
   '/testproject/',
-  // PHP / Laravel (also covered by `/tests/` after slash-prefix)
-  '/tests/feature/',
-  '/tests/unit/',
 ];
 
-/**
- * Case-insensitive filename suffixes that already include a delimiter
- * (`_test.py`, not `test.py`).
- */
+/** Case-insensitive suffixes that already include a delimiter (`_test.py`, not `test.py`). */
 const TEST_PATH_DELIMITED_SUFFIXES: readonly string[] = [
   '_test.py',
   '_test.go',
@@ -73,9 +58,8 @@ const TEST_PATH_DELIMITED_SUFFIXES: readonly string[] = [
 ];
 
 /**
- * Case-sensitive filename suffixes for languages whose test convention is a
- * `Test`/`Tests`/`Spec` token. Matching these after `toLowerCase()` would also
- * accept production names such as `Contest.swift` and `Latest.php`.
+ * Case-sensitive `Test`/`Tests`/`Spec` suffixes. Lowercasing first would also
+ * match production names such as `Contest.swift` and `Latest.php`.
  */
 const TEST_PATH_CASED_SUFFIXES: readonly string[] = [
   'Tests.swift',
@@ -86,28 +70,14 @@ const TEST_PATH_CASED_SUFFIXES: readonly string[] = [
   'Spec.php',
 ];
 
-function slashPrefixedForwardSlashes(filePath: string): string {
-  const withForward = filePath.replace(/\\/g, '/');
-  return withForward.startsWith('/') ? withForward : `/${withForward}`;
-}
-
-/**
- * Is this path test code?
- *
- * Callers use it for two purposes that must agree: excluding tests from
- * entry-point detection, and honoring `includeTests: false` on the read tools.
- * A path classified differently by the two produces results that contradict
- * each other, which is why there is exactly one implementation.
- *
- * Accepts nullish input so call sites reading an optional `filePath` do not each
- * need their own guard; absent paths are not test paths.
- */
+/** Absent / empty paths are not test paths. */
 export function isTestFilePath(filePath: string | null | undefined): boolean {
   if (!filePath) return false;
-  const slashed = slashPrefixedForwardSlashes(filePath);
-  const lower = slashed.toLowerCase();
-  for (const needle of TEST_PATH_SUBSTRINGS) if (lower.includes(needle)) return true;
+  const slashed = filePath.replace(/\\/g, '/');
+  const prefixed = slashed.startsWith('/') ? slashed : `/${slashed}`;
+  const lower = prefixed.toLowerCase();
+  if (TEST_PATH_SUBSTRINGS.some((needle) => lower.includes(needle))) return true;
   if (TEST_PATH_DELIMITED_SUFFIXES.some((suffix) => lower.endsWith(suffix))) return true;
-  const basename = slashed.slice(slashed.lastIndexOf('/') + 1);
+  const basename = prefixed.slice(prefixed.lastIndexOf('/') + 1);
   return TEST_PATH_CASED_SUFFIXES.some((suffix) => basename.endsWith(suffix));
 }
