@@ -231,8 +231,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 - **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
 - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
 - **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
-- Explore with \`query({search_query: "concept"})\` for process-grouped flows.
-- Use \`context({name: "symbolName"})\` for callers, callees, and flows.${
+- **MUST use \`query({search_query: "concept"})\`, \`context({name: "symbolName"})\`, or \`impact\` for read-only questions about callers, dependencies, imports, blast radius, or execution flow.** Prefer graph edges to grep strings; use text search to confirm gaps or literals.${
     hasSpringActuator
       ? '\n- Spring Actuator runtime evidence is enabled. A Route is authoritative only when `runtimeConfirmed === true`; `runtimeSource` is provenance and may also describe conflicts. Snapshot values are never persisted.'
       : ''

@@ -350,6 +350,7 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
     'Compare File/symbol',
     'MCP File omits axes',
     'Graph-RAG expands File',
+    'MUST use `query({search_query: "concept"})`, `context({name: "symbolName"})`, or `impact` for read-only questions about callers, dependencies, imports, blast radius, or execution flow.',
   ];
 
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
@@ -366,9 +367,11 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
         block.indexOf('## Never Do'),
       );
       const neverDoSection = block.slice(block.indexOf('## Never Do'));
-      // 7 Always-Do bullets are unconditional; an 8th (pdg_query) only
-      // appears when the index was built with --pdg, so the floor is 7, not 8.
-      expect((alwaysDoSection.match(/^- /gm) || []).length).toBeGreaterThanOrEqual(7);
+      // 6 Always-Do bullets are not hasPdg-gated after #3076 consolidated the
+      // two advisory Explore/Use lines into one read-path MUST. pdg_query is
+      // still an extra bullet only when the index was built with --pdg, so the
+      // floor is 6, not 7.
+      expect((alwaysDoSection.match(/^- /gm) || []).length).toBeGreaterThanOrEqual(6);
       // Never Do never varies with hasPdg — exactly 4 today, so 4 is the floor.
       expect((neverDoSection.match(/^- NEVER /gm) || []).length).toBeGreaterThanOrEqual(4);
     },
