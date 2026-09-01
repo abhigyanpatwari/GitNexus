@@ -84,10 +84,19 @@ const KOTLIN_COMMENT_NODE_TYPES = new Set(['line_comment', 'multiline_comment'])
  * collection literals, and interpolated strings — is kept as raw text, because
  * evaluating it would be resolution.
  *
- * The caller MUST reject a list with `hasRecoveredSyntax` before calling this.
- * Nothing here re-checks: `hasError` propagates from any argument up to the
- * list, so a per-argument check behind a list-level one can never fire, and a
- * branch that cannot fire is a branch nobody can test.
+ * Returns `null` for a list tree-sitter had to recover, and the callers decide
+ * what that means: a producer call drops the whole fact, since it has no state
+ * for "published somewhere unreadable", while an annotation reports no
+ * arguments and collapses into the marker form. Both answers say "nothing here
+ * to resolve", which is true; a fabricated value would send a consumer
+ * somewhere real and wrong.
+ *
+ * The check lives HERE, not only in the callers. This function is exported and
+ * already has a caller in another module, so a guard that every future caller
+ * has to remember is the same fragility this change set exists to remove —
+ * `null` makes the decision unavoidable at the type level. Per-argument
+ * re-checks are still pointless: `hasError` propagates from any argument up to
+ * the list, so a branch behind this one could never fire.
  *
  * A named argument is identified by the `=` TOKEN, and the two-child shape is
  * only a corroborating detail. Today nothing well formed reaches two children
@@ -99,7 +108,8 @@ const KOTLIN_COMMENT_NODE_TYPES = new Set(['line_comment', 'multiline_comment'])
  * an argument key the source never wrote, which is the failure mode this whole
  * change set is about.
  */
-export function kotlinValueArgumentFacts(valueArguments: SyntaxNode): SpringArgumentFact[] {
+export function kotlinValueArgumentFacts(valueArguments: SyntaxNode): SpringArgumentFact[] | null {
+  if (hasRecoveredSyntax(valueArguments)) return null;
   const args: SpringArgumentFact[] = [];
   for (const argument of valueArguments.namedChildren) {
     if (argument.type !== 'value_argument') continue;
@@ -137,8 +147,10 @@ function kotlinAnnotationArgumentFacts(annotation: SyntaxNode): SpringArgumentFa
   );
   if (named === undefined || named.type !== 'constructor_invocation') return undefined;
   const valueArguments = named.namedChildren.find((child) => child.type === 'value_arguments');
-  if (valueArguments === undefined || hasRecoveredSyntax(valueArguments)) return undefined;
-  return kotlinValueArgumentFacts(valueArguments);
+  if (valueArguments === undefined) return undefined;
+  // `null` here means recovered syntax; an annotation answers that by reporting
+  // no arguments at all, which is the marker-annotation form.
+  return kotlinValueArgumentFacts(valueArguments) ?? undefined;
 }
 
 function annotationFact(

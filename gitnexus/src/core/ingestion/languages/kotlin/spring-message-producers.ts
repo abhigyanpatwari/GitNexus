@@ -7,7 +7,6 @@ import {
 } from '../../frameworks/spring/message-producers.js';
 import {
   findAncestorBeforeBoundary,
-  hasRecoveredSyntax,
   nodeToCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
@@ -102,7 +101,12 @@ export function captureKotlinSpringMessageProducerFact(
   const valueArguments = callSuffix?.namedChildren.find(
     (child) => child.type === 'value_arguments',
   );
-  if (valueArguments !== undefined && hasRecoveredSyntax(valueArguments)) return null;
+  // `null` from the reader means tree-sitter had to recover the list. A publish
+  // fact exists to carry a destination and has no state for "published
+  // somewhere unreadable", so the whole fact is withheld rather than reported
+  // with arguments the source never wrote.
+  const args = valueArguments === undefined ? undefined : kotlinValueArgumentFacts(valueArguments);
+  if (args === null) return null;
   const owner = findAncestorBeforeBoundary(node, CALLABLE_NODE_TYPES, TYPE_BODY_BOUNDARIES);
   if (owner === null) return null;
   const ownerCapture = nodeToCapture('@spring-message-producer.owner', owner);
@@ -112,7 +116,7 @@ export function captureKotlinSpringMessageProducerFact(
     template,
     receiverName: parts.receiverName,
     methodName: parts.methodName,
-    ...(valueArguments === undefined ? {} : { args: kotlinValueArgumentFacts(valueArguments) }),
+    ...(args === undefined ? {} : { args }),
   };
 }
 
