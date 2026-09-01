@@ -1795,11 +1795,6 @@ const processFileGroup = (
           const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
             ? method
             : 'GET';
-          // Which definition a decorator attaches to is grammar-specific, so
-          // the name comes from the language, not from this loop. Without it the
-          // routes phase cannot stamp `handlerSymbolId` or emit a traversable
-          // definition-level HANDLES_ROUTE edge. Languages with a dedicated
-          // `extractDecoratorRoutes` set `handlerName` there instead.
           const handlerName = provider.decoratorRouteHandlerName?.(decoratorNode);
           const base = {
             filePath: file.path,

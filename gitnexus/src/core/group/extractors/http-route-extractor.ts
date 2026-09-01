@@ -621,6 +621,7 @@ export class HttpRouteExtractor implements ContractExtractor {
             dbExecutor,
             getDetections,
             resolveDetectionSymbol,
+            loadFileSymbols,
             coveredFiles,
           )
         : [];
@@ -690,6 +691,7 @@ export class HttpRouteExtractor implements ContractExtractor {
     db: CypherExecutor,
     getDetections: (rel: string) => Promise<HttpDetection[]>,
     resolveSymbol: (filePath: string, d: HttpDetection) => Promise<ResolvedSymbol | null>,
+    loadFileSymbols: (filePath: string) => Promise<Record<string, unknown>[]>,
     coveredFiles?: Set<string>,
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
@@ -698,24 +700,6 @@ export class HttpRouteExtractor implements ContractExtractor {
     // language plugin declares `routeCoverage: 'complete'`. Such files can skip
     // the source scan + parse entirely — the graph is authoritative for them.
     const fileAllResolved = new Map<string, boolean>();
-    // CONTAINING_QUERY is a per-FILE lookup, but the resolved-handler fast path
-    // below runs per ROUTE — a controller with N resolved routes would scan its
-    // whole file N times on every group sync. Memoize by filePath for this pass.
-    // A failed lookup caches as empty, which is the same outcome the fast path's
-    // catch already took (keep the authoritative uid + basename fallback).
-    const fileSymbolCache = new Map<string, Record<string, unknown>[]>();
-    const loadFileSymbols = async (filePath: string): Promise<Record<string, unknown>[]> => {
-      const cached = fileSymbolCache.get(filePath);
-      if (cached) return cached;
-      let syms: Record<string, unknown>[] = [];
-      try {
-        syms = await db(CONTAINING_QUERY, { filePath });
-      } catch {
-        syms = [];
-      }
-      fileSymbolCache.set(filePath, syms);
-      return syms;
-    };
     let rows: Record<string, unknown>[];
     try {
       rows = await db(HANDLES_ROUTE_QUERY);

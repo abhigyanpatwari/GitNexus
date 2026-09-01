@@ -144,9 +144,6 @@ export const pythonProvider = defineLanguage({
     discoverDjangoRootUrls(files, contentMap, reader),
   extractRoutes: (tree, filePath, reader, parser) =>
     parser ? extractDjangoRoutes(tree, filePath, parser, reader) : [],
-  // Flask/FastAPI route handlers come through the worker's generic `@decorator`
-  // captures, so the handler name has to be read from Python's own
-  // `decorated_definition` shape — the worker cannot know it.
   decoratorRouteHandlerName: pythonDecoratorRouteHandlerName,
   labelOverride: pythonFunctionDefinitionLabel,
 

@@ -14,7 +14,6 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
-import type { GraphNode } from 'gitnexus-shared';
 import { isBladeTemplateFilename } from 'gitnexus-shared';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
@@ -337,54 +336,27 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
 
     let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
-      /**
-       * The route's handler symbol, resolved to a node that is actually IN the
-       * graph — or `undefined`.
-       *
-       * `routeHandlerSymbols` holds `SemanticModel` node ids, and a hit there is
-       * a claim about the model's registries, not evidence that the matching
-       * definition node reached `ctx.graph`. This phase already assumed the
-       * lookup can miss — `handlerPathFor` has always fallen back to
-       * `entry.filePath` when `getNode` came back empty — but the id was then
-       * stamped onto `Route.handlerSymbolId` and (below) anchored a
-       * definition-level HANDLES_ROUTE edge without being re-checked. A dangling
-       * id there is worse than no id: `http-route-extractor.ts` reads the stamp
-       * as its fast path and treats a route as fully resolved once it carries
-       * one, and an edge sourced on an absent node has no handler to traverse
-       * to.
-       *
-       * Resolving once, here, keeps content attribution, the stamped property
-       * and the definition-level edge on a single decision, so an unresolvable
-       * id degrades to exactly the file-level behavior — file-level
-       * HANDLES_ROUTE, whole-file content, no stamp — that a route with no
-       * handler resolution has always had.
-       *
-       * A pre-seeded route can never legitimately appear in
-       * `routeHandlerSymbols`, so a key that does is a route that LOST (#3049).
-       */
-      const resolveHandlerSymbol = (
-        routeKey: string,
-      ): { id: string; node: GraphNode } | undefined => {
-        if (preSeededKeys.has(routeKey)) return undefined;
-        const id = routeHandlerSymbols.get(routeKey);
-        if (id === undefined || id === '') return undefined;
-        const node = ctx.graph.getNode(id);
-        return node === undefined ? undefined : { id, node };
-      };
+      // Resolve once so content attribution, the route stamp, and the edge use
+      // the same live graph node. Pre-seeded routes never own handler symbols.
+      const routes = [...routeRegistry].map(([routeKey, entry]) => {
+        const id = preSeededKeys.has(routeKey) ? undefined : routeHandlerSymbols.get(routeKey);
+        const node = id ? ctx.graph.getNode(id) : undefined;
+        const handlerSymbol = id && node ? { id, node } : undefined;
+        const resolvedPath =
+          entry.source === DATA_ROUTE_TABLE_SOURCE
+            ? handlerSymbol?.node.properties.filePath
+            : undefined;
+        const handlerPath = typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
+        return { routeKey, entry, handlerSymbol, handlerPath };
+      });
+      handlerContents = await readFileContents(
+        ctx.repoPath,
+        routes.map(({ handlerPath }) => handlerPath),
+      );
 
-      const handlerPathFor = (routeKey: string, entry: RouteEntry): string => {
-        if (entry.source !== DATA_ROUTE_TABLE_SOURCE) return entry.filePath;
-        const resolvedPath = resolveHandlerSymbol(routeKey)?.node.properties.filePath;
-        return typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
-      };
-      const handlerPaths = [...routeRegistry].map(([key, entry]) => handlerPathFor(key, entry));
-      handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
-
-      for (const [routeKey, entry] of routeRegistry) {
+      for (const { routeKey, entry, handlerSymbol, handlerPath } of routes) {
         const { source: routeSource, method: routeMethod, url } = entry;
-        const handlerPath = handlerPathFor(routeKey, entry);
         const content = handlerContents.get(handlerPath);
-        const handlerSymbol = resolveHandlerSymbol(routeKey);
         const handlerSymbolId = handlerSymbol?.id;
         const analysisContent =
           entry.source === DATA_ROUTE_TABLE_SOURCE && content
@@ -425,27 +397,8 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           reason: routeSource,
         });
 
-        // Definition-level HANDLES_ROUTE, emitted alongside the file-level edge
-        // whenever the handler symbol resolved to a node that is in the graph.
-        //
-        // What it adds: a HANDLES_ROUTE traversal that lands on the handler
-        // DEFINITION rather than on its file. Today a consumer walking
-        // HANDLES_ROUTE from a Route reaches the file and must re-derive which
-        // definition in it serves the route — from `Route.handlerSymbolId`,
-        // which is a bare id property and not traversable, or from source. This
-        // edge makes that hop explicit, so graph queries over HANDLES_ROUTE
-        // answer at definition granularity instead of file granularity.
-        //
-        // Additive, not a replacement: the file-level edge above is what
-        // `http-route-extractor.ts` reads (its query is typed
-        // `(handlerFile:File)`), so it stays and every existing consumer keeps
-        // working unchanged.
-        //
-        // `Function|Route` and its siblings are already declared by the
-        // ATTACHMENT rule in `lbug/schema.ts`
-        // (`DEFINITION_ANCHOR_LABELS × ATTACHMENT_TARGET_LABELS`), which that
-        // file documents as deliberate headroom for exactly this case — so no
-        // new pair is needed and `assertDeclaredPair` cannot abort on it.
+        // Keep the file edge for existing extractor queries; add the live
+        // definition edge for explicit handler-level traversal.
         if (handlerSymbolId) {
           ctx.graph.addRelationship({
             id: generateId('HANDLES_ROUTE', `${handlerSymbolId}->${routeNodeId}`),
