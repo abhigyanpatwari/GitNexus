@@ -2,9 +2,9 @@
  * Method Registry
  *
  * Owner-scoped method index extracted from SymbolTable.
- * Stores Method/Constructor/Function-with-ownerId symbols keyed by
- * `ownerNodeId\0methodName` for O(1) lookup. Supports overloads
- * (array values) and arity-based filtering.
+ * Stores Method/Constructor/Function-with-ownerId symbols in a nested
+ * `Map<ownerNodeId, Map<methodName, defs[]>>` for O(1) lookup. Supports
+ * overloads (array values) and arity-based filtering.
  */
 
 import type { SymbolDefinition } from 'gitnexus-shared';

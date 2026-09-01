@@ -2,9 +2,9 @@
  * Field Registry
  *
  * Owner-scoped field/property index extracted from SymbolTable.
- * Stores Property / Variable / Const / Static symbols keyed by
- * `ownerNodeId\0fieldName` for O(1) lookup. Supports multiple defs
- * under the same (owner, name) — e.g. legacy Property plus a
+ * Stores Property / Variable / Const / Static symbols in a nested
+ * `Map<ownerNodeId, Map<fieldName, defs[]>>` for O(1) lookup. Supports
+ * multiple defs under the same (owner, name) — e.g. legacy Property plus a
  * scope-resolution Variable reconciliation entry.
  */
 
