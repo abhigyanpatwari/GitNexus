@@ -1149,9 +1149,23 @@ async function copyDirRecursive(src: string, dest: string): Promise<void> {
     const destPath = path.join(dest, entry.name);
     if (entry.isDirectory()) {
       await copyDirRecursive(srcPath, destPath);
-    } else {
-      await fs.copyFile(srcPath, destPath);
+      continue;
     }
+    const [srcBuf, destBuf] = await Promise.all([
+      fs.readFile(srcPath),
+      fs.readFile(destPath).catch((err) => {
+        if (!isEnoent(err)) throw err;
+        return null;
+      }),
+    ]);
+    if (destBuf !== null && !destBuf.equals(srcBuf)) {
+      console.log(
+        `[gitnexus] preserved customized skill ${destPath}; ` +
+          'delete the file and rerun setup to refresh it.',
+      );
+      continue;
+    }
+    await fs.writeFile(destPath, srcBuf);
   }
 }
 

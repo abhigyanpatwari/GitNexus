@@ -64,6 +64,11 @@ describe('setupAntigravity', () => {
     });
   };
 
+  const restoreSkillsRoot = (previous: string | undefined) => {
+    if (previous === undefined) delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
+    else process.env.GITNEXUS_TEST_SKILLS_ROOT = previous;
+  };
+
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
@@ -263,6 +268,7 @@ describe('setupAntigravity', () => {
       '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
       'utf-8',
     );
+    const originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
     process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
 
     try {
@@ -278,7 +284,7 @@ describe('setupAntigravity', () => {
         fs.access(path.join(skillsDir, 'gitnexus-test', 'SKILL.md')),
       ).resolves.toBeUndefined();
     } finally {
-      delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
+      restoreSkillsRoot(originalSkillsRoot);
     }
   });
 
@@ -298,6 +304,7 @@ describe('setupAntigravity', () => {
       '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
       'utf-8',
     );
+    const originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
     process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
 
     try {
@@ -309,7 +316,43 @@ describe('setupAntigravity', () => {
 
       await expect(fs.readFile(installedSkill, 'utf-8')).resolves.toBe('customized by operator\n');
     } finally {
-      delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
+      restoreSkillsRoot(originalSkillsRoot);
+    }
+  });
+
+  it('preserves customized files inside a directory skill when SKILL.md still matches', async () => {
+    const fixtureSkillsRoot = path.join(tempHome, 'fixture-skills');
+    const skillDir = path.join(tempHome, '.gemini', 'antigravity', 'skills', 'gitnexus-test');
+    const referencePath = path.join(skillDir, 'references', 'note.md');
+    await fs.mkdir(path.join(fixtureSkillsRoot, 'gitnexus-test', 'references'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test', 'SKILL.md'),
+      '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      'utf-8',
+    );
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test', 'references', 'note.md'),
+      'bundled note\n',
+      'utf-8',
+    );
+    const originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
+    process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
+
+    try {
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+      await fs.writeFile(referencePath, 'operator note\n', 'utf-8');
+
+      await setupCommand();
+
+      await expect(fs.readFile(referencePath, 'utf-8')).resolves.toBe('operator note\n');
+      await expect(fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')).resolves.toBe(
+        '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      );
+    } finally {
+      restoreSkillsRoot(originalSkillsRoot);
     }
   });
 });
