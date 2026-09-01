@@ -372,3 +372,12 @@ describe('hasFunctionMethods flag', () => {
     expect(reg.hasFunctionMethods).toBe(false);
   });
 });
+
+describe('MethodRegistry — EMPTY identity', () => {
+  it('returns the same frozen empty array on miss', () => {
+    const reg = createMethodRegistry();
+    expect(reg.lookupMethodByName('missing')).toBe(reg.lookupMethodByName('other'));
+    expect(reg.lookupAllByOwner('class:Nope', 'x')).toBe(reg.lookupAllByOwner('class:Nope', 'y'));
+    expect(Object.isFrozen(reg.lookupAllByOwner('class:Nope', 'x'))).toBe(true);
+  });
+});
