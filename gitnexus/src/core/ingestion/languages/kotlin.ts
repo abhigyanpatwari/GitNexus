@@ -232,4 +232,9 @@ export const kotlinProvider = defineLanguage({
     handlers: getKotlinSpringNonHttpHandlerFacts(filePath),
     producers: getKotlinSpringMessageProducerFacts(filePath),
   }),
+  // Kotlin string literals interpolate: `"orders-$env"` and `"orders-${env}"`
+  // are string templates, and a Spring property placeholder has to escape the
+  // dollar (`"\${app.topic}"`). Destination resolution needs this to keep a
+  // runtime template out of the address namespace.
+  interpolatesStringLiterals: true,
 });

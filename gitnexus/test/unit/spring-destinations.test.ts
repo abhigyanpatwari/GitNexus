@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  hasUnescapedStringInterpolation,
   isAddressShaped,
-  isSpringDestinationAnnotation,
   parseSpringStringLiteral,
   resolveSpringDestination,
   resolveSpringPlaceholders,
@@ -98,6 +98,35 @@ describe('parseSpringStringLiteral', () => {
     expect(parseSpringStringLiteral('"a" + "b"')).toBeNull();
     expect(parseSpringStringLiteral('{"a"}')).toBeNull();
   });
+
+  it('does not fold a concatenation of two raw strings into one literal', () => {
+    // A greedy triple-quote body swallowed the operator and produced the single
+    // address `a""" + """b`, which no source ever wrote.
+    expect(parseSpringStringLiteral('"""a""" + """b"""')).toBeNull();
+    expect(parseSpringStringLiteral('"""a"""+"""b"""')).toBeNull();
+  });
+});
+
+describe('hasUnescapedStringInterpolation', () => {
+  it('sees the two Kotlin template forms', () => {
+    expect(hasUnescapedStringInterpolation('"orders-$env"')).toBe(true);
+    expect(hasUnescapedStringInterpolation('"orders-${env}"')).toBe(true);
+  });
+
+  it('does not see an ESCAPED dollar, which is how a Spring placeholder is written', () => {
+    expect(hasUnescapedStringInterpolation('"\\${app.topic}"')).toBe(false);
+  });
+
+  it('treats every dollar in a raw string as an interpolation', () => {
+    // Kotlin raw strings have no backslash escapes at all.
+    expect(hasUnescapedStringInterpolation('"""orders-$env"""')).toBe(true);
+    expect(hasUnescapedStringInterpolation('"""orders"""')).toBe(false);
+  });
+
+  it('ignores a dollar that starts no template', () => {
+    expect(hasUnescapedStringInterpolation('"price-$"')).toBe(false);
+    expect(hasUnescapedStringInterpolation('"cost-$9"')).toBe(false);
+  });
 });
 
 describe('resolveSpringPlaceholders', () => {
@@ -105,37 +134,54 @@ describe('resolveSpringPlaceholders', () => {
     expect(resolveSpringPlaceholders('orders')).toEqual({ plain: true });
   });
 
-  it('resolves a default, because the default is written in the source', () => {
+  it('reports a default without substituting it', () => {
+    // The default is written in the source, so it is READ — but configuration
+    // can override it and this graph never sees configuration values, so it is
+    // provenance, not an address and not an identity.
     expect(resolveSpringPlaceholders('${app.orders.topic:orders}')).toEqual({
       plain: false,
-      value: 'orders',
+      key: 'app.orders.topic',
+      defaultValue: 'orders',
     });
   });
 
   it('splits on the first colon only', () => {
-    expect(resolveSpringPlaceholders('${app.topic:a:b}')).toEqual({ plain: false, value: 'a:b' });
+    expect(resolveSpringPlaceholders('${app.topic:a:b}')).toEqual({
+      plain: false,
+      key: 'app.topic',
+      defaultValue: 'a:b',
+    });
   });
 
-  it('substitutes a placeholder embedded in a larger value', () => {
+  it('reads the first placeholder of a larger value', () => {
     expect(resolveSpringPlaceholders('prefix-${env:dev}-orders')).toEqual({
       plain: false,
-      value: 'prefix-dev-orders',
+      key: 'env',
+      defaultValue: 'dev',
     });
   });
 
-  it('reports the key, and no value, when there is no default', () => {
+  it('reports the key, and no default, when there is none', () => {
     expect(resolveSpringPlaceholders('${app.orders.topic}')).toEqual({
       plain: false,
-      unresolvedKey: 'app.orders.topic',
+      key: 'app.orders.topic',
     });
   });
 
-  it('refuses to half-expand a nested placeholder', () => {
-    expect(resolveSpringPlaceholders('${a:${b}}')).toEqual({ plain: false, unresolvedKey: 'a' });
+  it('reports a nested default as written, without expanding it', () => {
+    expect(resolveSpringPlaceholders('${a:${b}}')).toEqual({
+      plain: false,
+      key: 'a',
+      defaultValue: '${b}',
+    });
+  });
+
+  it('reports an empty key for a placeholder that names none', () => {
+    expect(resolveSpringPlaceholders('${}')).toEqual({ plain: false, key: '' });
   });
 
   it('refuses an unterminated placeholder rather than treating it as text', () => {
-    expect(resolveSpringPlaceholders('${app.topic').unresolvedKey).toBe('app.topic');
+    expect(resolveSpringPlaceholders('${app.topic').key).toBe('app.topic');
   });
 });
 
@@ -162,12 +208,29 @@ describe('the resolution cascade', () => {
     });
   });
 
-  it('step 3 resolves a placeholder default to that default', () => {
+  it('step 3 does NOT resolve a placeholder default, and keeps both key and default', () => {
+    // A default holds only while the key is not overridden, and configuration
+    // VALUES are deliberately absent from this graph, so the code cannot know
+    // whether it holds. Keying on it merged every service that copy-pasted the
+    // same fallback.
     expect(resolveSpringDestination(candidate('"${app.orders.topic:orders}"'))).toEqual({
-      kind: 'resolved',
-      address: 'orders',
-      via: 'config-default',
+      kind: 'unresolved',
+      reason: 'overridable-config-default',
+      configKey: 'app.orders.topic',
+      configDefault: 'orders',
     });
+  });
+
+  it('does not merge two DIFFERENT keys that share a default', () => {
+    // The reproduction: `${a.topic:events}` in one service and
+    // `${b.topic:events}` in another collapsed onto one `Destination:events`
+    // and reported a producer/consumer pair between two unrelated services.
+    const a = resolveSpringDestination(candidate('"${a.topic:events}"'));
+    const b = resolveSpringDestination(candidate('"${b.topic:events}"'));
+    expect(a).not.toHaveProperty('address');
+    expect(b).not.toHaveProperty('address');
+    expect(a).toMatchObject({ configKey: 'a.topic', configDefault: 'events' });
+    expect(b).toMatchObject({ configKey: 'b.topic', configDefault: 'events' });
   });
 
   it('step 3 does NOT resolve a placeholder without a default, and records the key', () => {
@@ -205,13 +268,129 @@ describe('the resolution cascade', () => {
     });
   });
 
-  it('refuses an address that folds to the empty string', () => {
-    // `${key:}` means "default to empty". An empty address addresses nothing,
-    // and letting it through would give every such site one shared identity.
+  it('refuses an empty literal, and says which kind of empty it was', () => {
+    // An empty address addresses nothing, and letting it through would give
+    // every such site one shared `''` identity.
+    expect(resolveSpringDestination(candidate('""'))).toEqual({
+      kind: 'unresolved',
+      reason: 'empty-literal-address',
+    });
+    expect(resolveSpringDestination(candidate('"   "'))).toEqual({
+      kind: 'unresolved',
+      reason: 'empty-literal-address',
+    });
+    expect(
+      resolveSpringDestination(candidate('Topics.EMPTY'), { constant: () => '' }),
+    ).toEqual({ kind: 'unresolved', reason: 'empty-constant-address' });
+  });
+
+  it('files `${key:}` as an overridable default, keeping the key it used to drop', () => {
+    // It used to land in `empty-address`, which threw the key away and merged
+    // the case with three unrelated causes.
     expect(resolveSpringDestination(candidate('"${app.topic:}"'))).toEqual({
       kind: 'unresolved',
-      reason: 'empty-address',
+      reason: 'overridable-config-default',
+      configKey: 'app.topic',
+      configDefault: '',
     });
+  });
+
+  it('refuses `${}` without ever reporting an empty configuration key', () => {
+    const resolution = resolveSpringDestination(candidate('"${}"'));
+    expect(resolution).toEqual({ kind: 'unresolved', reason: 'empty-config-key' });
+    expect(resolution).not.toHaveProperty('configKey');
+  });
+
+  it('keeps an address exactly as written, whitespace included', () => {
+    // The emptiness test trims; the address does not. `" orders "` gets its own
+    // node rather than joining `orders` — a missing connection, which is the
+    // direction this module errs in everywhere.
+    expect(resolveSpringDestination(candidate('" orders "'))).toEqual({
+      kind: 'resolved',
+      address: ' orders ',
+      via: 'literal',
+    });
+  });
+
+  // ── SpEL: a runtime bean expression is not an address ────────────────────
+
+  it('refuses a SpEL expression instead of filing it as a literal address', () => {
+    // Reproduced before the fix: two unrelated services that each wrote
+    // `@KafkaListener(topics = "#{@kafkaProps.ordersTopic}")` produced ONE node
+    // with `address = "#{@kafkaProps.ordersTopic}"` and a CONSUMES_FROM edge
+    // from each.
+    for (const spel of [
+      '"#{@kafkaProps.ordersTopic}"',
+      '"#{environment[\'app.topic\']}"',
+      '"#{T(Topics).ORDERS}"',
+      '"orders-#{@env.suffix}"',
+    ]) {
+      const resolution = resolveSpringDestination(candidate(spel));
+      expect(resolution).toEqual({ kind: 'unresolved', reason: 'spel-expression' });
+      expect(resolution).not.toHaveProperty('address');
+    }
+  });
+
+  it('calls a SpEL expression that wraps a placeholder SpEL, not a config key', () => {
+    // `"#{'${app.topics}'.split(',')}"` was caught only by accident, because it
+    // happens to contain `${`. The diagnosis has to name what it really is.
+    expect(resolveSpringDestination(candidate('"#{\'${app.topics}\'.split(\',\')}"'))).toEqual({
+      kind: 'unresolved',
+      reason: 'spel-expression',
+    });
+  });
+
+  // ── String templates in a language that interpolates ─────────────────────
+
+  it('refuses an unescaped interpolation where literals interpolate', () => {
+    for (const template of ['"orders-$env"', '"orders-${env}"', '"""orders-$env"""']) {
+      const resolution = resolveSpringDestination(candidate(template), {
+        interpolatesStringLiterals: true,
+      });
+      expect(resolution).toEqual({ kind: 'unresolved', reason: 'unescaped-interpolation' });
+      expect(resolution).not.toHaveProperty('address');
+      expect(resolution).not.toHaveProperty('configKey');
+    }
+  });
+
+  it('still reads the ESCAPED form as a Spring placeholder where literals interpolate', () => {
+    expect(
+      resolveSpringDestination(candidate('"\\${app.topic}"'), {
+        interpolatesStringLiterals: true,
+      }),
+    ).toEqual({ kind: 'unresolved', reason: 'unresolved-config-key', configKey: 'app.topic' });
+  });
+
+  it('leaves a non-interpolating language exactly as it was', () => {
+    // In Java `$` is an ordinary character and `${...}` is a Spring placeholder.
+    expect(resolveSpringDestination(candidate('"orders-$env"'))).toEqual({
+      kind: 'resolved',
+      address: 'orders-$env',
+      via: 'literal',
+    });
+    expect(resolveSpringDestination(candidate('"${app.topic}"'))).toEqual({
+      kind: 'unresolved',
+      reason: 'unresolved-config-key',
+      configKey: 'app.topic',
+    });
+  });
+
+  it('does not invent a configKey from a Kotlin `${var}` template', () => {
+    // The old reading produced `configKey: "env"` and the phase then emitted a
+    // USES edge to any Property named `env` — provenance with no source.
+    const resolution = resolveSpringDestination(candidate('"orders-${env}"'), {
+      interpolatesStringLiterals: true,
+    });
+    expect(resolution).not.toHaveProperty('configKey');
+  });
+
+  it('refuses an interpolating constant rather than folding it to an address', () => {
+    expect(
+      resolveSpringDestination(candidate('Topics.TEMPLATE'), {
+        constant: () => 'orders-$env',
+        interpolatesStringLiterals: true,
+      }),
+    ).toEqual({ kind: 'unresolved', reason: 'unescaped-interpolation' });
   });
 
   it('leaves step 4 unimplemented, and consults it only when supplied', () => {
@@ -306,13 +485,18 @@ describe('consumer argument selection', () => {
     expect(selection?.refusals.map((r) => r.reason)).toEqual(['empty-destination-list']);
   });
 
-  it('records absent arguments as their own refusal', () => {
+  it('keeps unread arguments and an empty argument list apart', () => {
+    // Absent = the capture never read the list. Empty = a list WAS read and it
+    // was empty, which is a fact about the source. Filing a source-level gap
+    // under a tooling gap corrupts the reason breakdown this feature is
+    // measured on, and the producer side of this module already distinguishes
+    // them.
     expect(
       selectConsumerDestinationArguments('KafkaListener', undefined)?.refusals.map((r) => r.reason),
     ).toEqual(['annotation-arguments-unavailable']);
     expect(
       selectConsumerDestinationArguments('KafkaListener', [])?.refusals.map((r) => r.reason),
-    ).toEqual(['annotation-arguments-unavailable']);
+    ).toEqual(['annotation-arguments-empty']);
   });
 
   it('records a listener whose arguments name no destination', () => {
@@ -332,15 +516,31 @@ describe('consumer argument selection', () => {
     expect(
       selectConsumerDestinationArguments('SubscribeMapping', [{ text: '"/topic/prices"' }]),
     ).toBeNull();
-    expect(isSpringDestinationAnnotation('MessageMapping')).toBe(false);
-    expect(isSpringDestinationAnnotation('KafkaListener')).toBe(true);
   });
 
-  it('recognizes repeated-listener containers without reporting them as unknown', () => {
-    const selection = selectConsumerDestinationArguments('KafkaListeners', [
-      { text: '{@KafkaListener(topics = "a")}' },
-    ]);
-    expect(selection).toEqual({ candidates: [], refusals: [] });
+  it('records a repeated-listener container as a refusal, not as nothing', () => {
+    // Capture does not descend into the nested annotations, so a repository
+    // using these really does lose those destinations. Returning an empty
+    // selection made that indistinguishable from a repository with no
+    // listeners, and was observationally identical to returning `null` — the
+    // caller skips both — so the stated reason for the branch did not hold.
+    for (const [container, broker] of [
+      ['KafkaListeners', 'kafka'],
+      ['RabbitListeners', 'rabbit'],
+      ['JmsListeners', 'jms'],
+      ['PulsarListeners', 'pulsar'],
+    ] as const) {
+      const selection = selectConsumerDestinationArguments(container, [
+        { text: '{@Listener(topics = "a")}' },
+      ]);
+      expect(selection?.candidates).toEqual([]);
+      expect(selection?.refusals).toHaveLength(1);
+      expect(selection?.refusals[0]).toMatchObject({
+        reason: 'repeated-listener-container',
+        broker,
+        source: container,
+      });
+    }
   });
 });
 

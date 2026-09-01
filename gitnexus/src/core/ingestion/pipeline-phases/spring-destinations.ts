@@ -33,9 +33,17 @@
  * The same rule governs the `address` PROPERTY, which is the join key a
  * cross-repository pass would match on. It is written only when resolved. An
  * absent property cannot match another absent property, so the structural
- * guarantee survives being read back out of the database. The placeholder text
- * is kept in `name`, for a human reading the node; `name` must never be joined
- * on, and nothing in this repository does.
+ * guarantee survives being read back out of the database. The unresolved
+ * spelling is kept in `name`, for a human reading the node.
+ *
+ * `name` must never be used to join two destinations, and nothing does — but
+ * the stronger claim that nothing reads it at all would be false. `Destination`
+ * is in `VALID_NODE_LABELS`, and `mcp/local/local-backend.ts` resolves a
+ * symbol with an unlabeled `WHERE n.name = $symName`, so a destination can be
+ * returned by name like any other node. That is a lookup, not a join: it
+ * matches a caller-supplied string against one node, never one destination
+ * against another, so it cannot manufacture the connection this phase exists to
+ * prevent.
  *
  * @deps    parse, scopeResolution, springConfig
  * @reads   Spring messaging capture facts, Method/Function nodes, Property nodes
@@ -48,6 +56,7 @@ import { logger } from '../../logger.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { SPRING_CONFIG_DESCRIPTION } from '../frameworks/spring/config-bindings.js';
 import {
+  parseSpringStringLiteral,
   resolveSpringDestination,
   selectConsumerDestinationArguments,
   selectProducerDestinationArguments,
@@ -168,6 +177,10 @@ interface DestinationSite {
   readonly filePath: string;
   /** Owner callable's capture range, when the fact carried one. */
   readonly ownerRange?: Range;
+  /** Owner callable's scope id. Unique per callable even when the range is
+   *  absent, which is the only reason an unresolved key is site-unique on the
+   *  handler side — see {@link destinationNodeId}. */
+  readonly ownerScopeId: string;
   readonly candidate: SpringDestinationCandidate;
   readonly resolution: SpringDestinationResolution;
 }
@@ -180,25 +193,43 @@ interface DestinationSite {
  * meet on one node, which is the entire point. The broker rides as a property
  * precisely so a mistaken broker guess cannot split a real pair.
  *
- * The unresolved key is the SITE. It carries the file path, so no second file
- * can ever produce it, which is the structural guarantee. It also carries the
- * raw text, because file plus owner line plus argument position is not by
- * itself unique — two publishes to two different placeholders inside one method
- * share all three, and merging those would be a false identity of exactly the
- * kind this key exists to prevent, merely at a smaller scale. Adding the text
- * cannot weaken the cross-file guarantee: the file path is still in the key.
+ * The unresolved key is the SITE, and it has to identify the site EXACTLY. It
+ * carries the file path, so no second file can ever produce it — that is the
+ * cross-repository guarantee, and nothing added below can weaken it. Everything
+ * else in the key is there to keep two sites inside ONE file apart, which is
+ * the same false identity at a smaller scale:
+ *
+ *   - the owner SCOPE ID, because two callables can start on the same line and
+ *     because `ownerRange` is optional on a handler fact — keyed on the line
+ *     alone, a file whose handlers carried no range collapsed every consumer in
+ *     it onto line 0;
+ *   - the full owner RANGE, which separates two sites the scope id cannot (a
+ *     scope id is stable, but two callables that share one are still two
+ *     callables);
+ *   - the raw TEXT plus argument and element position, because two publishes to
+ *     two different placeholders inside one method share the owner entirely.
+ *
+ * The residual: two publishes with identical text at identical argument
+ * positions inside ONE callable share a node. They are indistinguishable to
+ * this phase — a producer fact carries the owner's range, not the call's — and
+ * merging two publishes of the same unreadable address from one method is the
+ * one collapse that asserts nothing false about anybody.
  */
 function destinationNodeId(site: DestinationSite): string {
   if (site.resolution.kind === 'resolved') {
     return generateId('Destination', site.resolution.address);
   }
-  const { candidate } = site;
-  const line = site.ownerRange?.startLine ?? 0;
+  const { candidate, ownerRange } = site;
+  const position =
+    ownerRange === undefined
+      ? 'no-range'
+      : `${ownerRange.startLine}:${ownerRange.startCol}:${ownerRange.endLine}:${ownerRange.endCol}`;
   return generateId(
     'Destination',
     [
       site.filePath,
-      line,
+      site.ownerScopeId,
+      position,
       candidate.role,
       candidate.source,
       candidate.argIndex,
@@ -206,6 +237,19 @@ function destinationNodeId(site: DestinationSite): string {
       candidate.rawText,
     ].join(':'),
   );
+}
+
+/**
+ * Display spelling for a destination's `name`.
+ *
+ * A resolved destination's `name` is its address, bare. An unresolved one keeps
+ * the source text — but unquoted, so the two are spelled the same way. Keeping
+ * the quotes on one and not the other made the same value read differently
+ * depending on whether it resolved, for no gain to the human the property
+ * exists for.
+ */
+function destinationDisplayName(rawText: string): string {
+  return parseSpringStringLiteral(rawText) ?? rawText.trim();
 }
 
 function edgeReason(candidate: SpringDestinationCandidate): string {
@@ -256,17 +300,29 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
       // per-call, but resolving the provider and checking the table is not free
       // and every candidate in the file wants the same closure.
       const constant = makeConstantResolver(filePath, moduleConstants);
+      // The owning language's capability, not its name. In an interpolating
+      // language `"orders-$env"` is a runtime template rather than an address
+      // and `"${app.topic}"` is a template rather than a Spring placeholder;
+      // the resolver needs to know which regime it is in, and this phase must
+      // not learn which language that is (AGENTS.md — shared ingestion code
+      // plugs language behaviour in through provider hooks).
+      const interpolatesStringLiterals = provider?.interpolatesStringLiterals === true;
       const record = (
         selection: SpringDestinationSelection,
+        ownerScopeId: string,
         ownerRange: Range | undefined,
       ): void => {
         for (const refusal of selection.refusals) countRefusal(refusal.reason);
         for (const candidate of selection.candidates) {
-          const resolution = resolveSpringDestination(candidate, { constant });
+          const resolution = resolveSpringDestination(candidate, {
+            constant,
+            interpolatesStringLiterals,
+          });
           if (resolution.kind === 'unresolved') countRefusal(resolution.reason);
           sites.push({
             filePath,
             ...(ownerRange === undefined ? {} : { ownerRange }),
+            ownerScopeId,
             candidate,
             resolution,
           });
@@ -280,11 +336,15 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
           if (annotation.useSiteTarget !== undefined) continue;
           const selection = selectConsumerDestinationArguments(annotation.name, annotation.args);
           if (selection === null) continue;
-          record(selection, handler.ownerRange);
+          record(selection, String(handler.ownerScopeId), handler.ownerRange);
         }
       }
       for (const producer of facts.producers) {
-        record(selectProducerDestinationArguments(producer), producer.ownerRange);
+        record(
+          selectProducerDestinationArguments(producer),
+          String(producer.ownerScopeId),
+          producer.ownerRange,
+        );
       }
     }
     if (sites.length === 0) {
@@ -320,10 +380,13 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
           label: 'Destination',
           properties: {
             // For a resolved destination this equals `address`. For an
-            // unresolved one it is the UNRESOLVED SPELLING, kept so a human
-            // reading the node sees what the source actually said — and kept
-            // out of `address` so nothing joins on it.
-            name: resolution.kind === 'resolved' ? resolution.address : candidate.rawText,
+            // unresolved one it is the UNRESOLVED SPELLING, unquoted, kept so a
+            // human reading the node sees what the source actually said — and
+            // kept out of `address` so nothing joins on it.
+            name:
+              resolution.kind === 'resolved'
+                ? resolution.address
+                : destinationDisplayName(candidate.rawText),
             // A RESOLVED destination carries NO location, and that is load
             // bearing rather than cosmetic.
             //
@@ -374,6 +437,14 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
             ...(resolution.kind === 'unresolved' && resolution.configKey !== undefined
               ? { configKey: resolution.configKey }
               : {}),
+            // The `${key:default}` default text. Kept because the source wrote
+            // it and throwing it away would make an overridable default
+            // indistinguishable from a bare `${key}`; NOT an address and never
+            // part of the id, because configuration can override it and this
+            // graph cannot see whether it did.
+            ...(resolution.kind === 'unresolved' && resolution.configDefault !== undefined
+              ? { configDefault: resolution.configDefault }
+              : {}),
             broker: candidate.broker,
           },
         });
@@ -389,12 +460,15 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
       }
       brokers.add(candidate.broker);
 
-      // Link an unresolvable `${key}` to the configuration keys that could
-      // supply it. This is PROVENANCE, not resolution: the node stays
-      // unresolved and keeps its location-based id even when Property nodes are
-      // found, because the VALUE is still not in the graph and letting a
-      // Property sighting upgrade the node would reintroduce the false
-      // connection the keying rule exists to prevent.
+      // Link a placeholder's KEY to the configuration entries that could supply
+      // it — `${key}` and `${key:default}` alike, since a default changes
+      // nothing about where the real value comes from. This is PROVENANCE, not
+      // resolution: the node stays unresolved and keeps its location-based id
+      // even when Property nodes are found, because the VALUE is still not in
+      // the graph and letting a Property sighting upgrade the node would
+      // reintroduce the false connection the keying rule exists to prevent.
+      // `${}` names no key at all and reports none, so nothing is ever looked
+      // up under the empty string.
       if (resolution.kind === 'unresolved' && resolution.configKey !== undefined) {
         for (const propertyId of configProperties.get(resolution.configKey) ?? []) {
           const linkId = `${nodeId}->${propertyId}`;
@@ -451,7 +525,10 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
       // more likely to be a bad guess than two real brokers sharing an address
       // — and dropping the node on that suspicion would delete a connection the
       // two sides genuinely agree on. The disagreement is recorded instead, in
-      // full, so a reader can see it and a query can filter on it.
+      // full, so a reader can see it and a query can filter on it: the property
+      // has a `brokerConflict` column in DESTINATION_SCHEMA and a field in the
+      // CSV writer, without which it was written here and then dropped at the
+      // database boundary with no warning.
       node.properties.brokerConflict = [...brokers].sort().join(',');
     }
 

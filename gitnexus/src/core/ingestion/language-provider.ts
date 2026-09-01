@@ -571,6 +571,24 @@ interface LanguageProviderConfig {
   readonly getSpringMessagingFacts?: (filePath: string) => SpringMessagingFacts;
 
   /**
+   * Whether this language INTERPOLATES its string literals — Kotlin's
+   * `"orders-$env"` and `"orders-${env}"` are string templates evaluated at
+   * runtime, while Java's are ordinary characters.
+   *
+   * A capability rather than a language name, because shared ingestion code may
+   * not branch on a language (see AGENTS.md) and because the capability is what
+   * the consumer actually needs. Spring destination resolution is the caller:
+   * in an interpolating language an unescaped `$` in a destination literal is a
+   * runtime value and must be refused, and `"${app.topic}"` is a TEMPLATE, not
+   * a Spring property placeholder — the placeholder has to be written
+   * `"\${app.topic}"` there. Reading either as an address gives two unrelated
+   * services one shared destination node.
+   *
+   * Default: false — literals are literal, `$` is a character.
+   */
+  readonly interpolatesStringLiterals?: boolean;
+
+  /**
    * Fold one file's non-literal route-path operand list
    * (`routePathExpr`/`routePathOperands` of an `ExtractedDecoratorRoute`)
    * against the repo-wide, file-path-keyed constant map, or null when it cannot

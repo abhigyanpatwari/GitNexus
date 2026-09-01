@@ -53,12 +53,32 @@ export type SpringDestinationBroker =
 /**
  * Why a candidate produced no address. Closed set: each member is a distinct,
  * countable diagnosis, and no path may decline without naming one.
+ *
+ * Members are split rather than merged wherever the two causes are different
+ * FACTS about the repository. The unresolved fraction is only useful if its
+ * breakdown says what to go and fix, and a bucket that means "either the
+ * capture could not read this or the source really did write it that way"
+ * answers neither question.
  */
 export type SpringDestinationRefusal =
-  /** The annotation is a recognized listener but its arguments were never read. */
+  /** The annotation is a recognized listener but its arguments were never read
+   *  — a CAPTURE limitation, not a statement about the source. */
   | 'annotation-arguments-unavailable'
+  /** The annotation's argument list was read and it was EMPTY: `@KafkaListener`
+   *  with no elements at all. A real source-level gap, and deliberately not the
+   *  same bucket as `annotation-arguments-unavailable` — see
+   *  `SpringNonHttpHandlerAnnotationFact.args`, which keeps absent and `[]`
+   *  apart precisely so a consumer of the fact does not have to guess. */
+  | 'annotation-arguments-empty'
   /** Recognized listener, argument list present, no element names a destination. */
   | 'no-destination-argument'
+  /** `@KafkaListeners({@KafkaListener(...), ...})` and its siblings. The
+   *  container's single argument is a list of NESTED annotations, and capture
+   *  does not descend into them, so their destinations are unreadable here.
+   *  Recorded rather than skipped: a repository using repeated-listener
+   *  containers loses real destinations, and that has to show up in the count
+   *  instead of looking like a repository with no listeners. */
+  | 'repeated-listener-container'
   /** `@KafkaListener(topicPattern = ...)` — a regex over topics, not an address. */
   | 'topic-pattern'
   /** A destination form this module deliberately does not read, e.g.
@@ -68,6 +88,11 @@ export type SpringDestinationRefusal =
   | 'producer-arguments-unavailable'
   /** The call's arity matches none of the overloads that carry a destination. */
   | 'producer-arity-unrecognized'
+  /** The call used NAMED arguments and none of them names a destination
+   *  parameter this module knows. Selecting by position instead would read
+   *  whatever the author happened to write first — see
+   *  {@link selectProducerDestinationArguments}. */
+  | 'producer-named-argument-unrecognized'
   /** `rabbitTemplate.convertAndSend(message)` — default exchange, empty routing
    *  key. There is no address in the source to record. */
   | 'rabbit-default-exchange'
@@ -82,17 +107,53 @@ export type SpringDestinationRefusal =
   | 'not-a-literal-or-constant'
   /** A constant reference no constant resolver could fold to a string. */
   | 'unresolved-constant'
+  /** `#{...}` — a SpEL expression, evaluated by the container against beans and
+   *  the environment at RUNTIME. `#{@kafkaProps.ordersTopic}` is the archetypal
+   *  unresolvable address: nothing in the source says what it evaluates to, and
+   *  two services that merely wrote the same expression have said nothing about
+   *  each other. */
+  | 'spel-expression'
+  /** An unescaped `$` interpolation in a language whose string literals
+   *  interpolate. In Kotlin `"orders-$env"` and `"orders-${env}"` are STRING
+   *  TEMPLATES evaluated at runtime, not addresses and not Spring placeholders
+   *  — the escaped `"\${app.topic}"` is how a Spring placeholder has to be
+   *  written there. Java does not interpolate, so `$` is an ordinary character
+   *  and this never fires for it. */
+  | 'unescaped-interpolation'
   /** `${key}` with no default. The KEY is recorded; the VALUE is deliberately
    *  absent from the graph (config values may hold credentials — see the header
    *  of `pipeline-phases/spring-config.ts`), so this can never resolve here. */
   | 'unresolved-config-key'
-  /** Everything folded, and the result was the empty string. An empty address
+  /** `${key:default}`. The default IS written in the source, and it is kept on
+   *  the node — but it is not an IDENTITY. It holds only while the key is not
+   *  overridden in configuration, and configuration VALUES are deliberately
+   *  absent from this graph, so the code cannot know whether it holds. Keying
+   *  on it merges every service that copy-pasted the same fallback: `${a:events}`
+   *  and `${b:events}` are two different addresses that happen to share a
+   *  default. Both the key and the default text survive as properties, so the
+   *  case stays countable and distinguishable from a bare `${key}`. */
+  | 'overridable-config-default'
+  /** `${}` — a placeholder that names no key. There is nothing to record and
+   *  nothing to look up; kept separate so an empty key never reaches the
+   *  `Property` lookup as if it were a real one. */
+  | 'empty-config-key'
+  /** A string literal that is empty or nothing but whitespace. An empty address
    *  addresses nothing, and letting it through would give every such site one
    *  shared `''` identity — the same false join the placeholder rule prevents. */
-  | 'empty-address';
+  | 'empty-literal-address'
+  /** A constant reference that folded to an empty or whitespace-only string.
+   *  Same outcome as `empty-literal-address`, different repository fact: there
+   *  the source wrote `""`, here a constant declaration did. */
+  | 'empty-constant-address';
 
-/** How an address was arrived at, kept on the node for provenance. */
-export type SpringDestinationVia = 'literal' | 'constant' | 'config-default' | 'specification';
+/**
+ * How an address was arrived at, kept on the node for provenance.
+ *
+ * There is deliberately no `config-default` member. A `${key:default}` does not
+ * resolve — see `overridable-config-default` — so no address can be reached
+ * that way.
+ */
+export type SpringDestinationVia = 'literal' | 'constant' | 'specification';
 
 export type SpringDestinationRole = 'consumer' | 'producer';
 
@@ -146,14 +207,32 @@ export type SpringDestinationResolution =
        *  the phase link the node to the `Property` nodes for that key without
        *  ever learning the key's value. */
       readonly configKey?: string;
+      /** Default text of a `${key:default}`, exactly as the source wrote it.
+       *  Kept as PROVENANCE only — it is never an address and never a key, for
+       *  the reason `overridable-config-default` gives. */
+      readonly configDefault?: string;
     };
 
 /**
- * The cascade's pluggable steps. Both are supplied by the phase, which owns the
- * language-specific machinery; keeping them as callbacks is what lets this
- * module stay language-neutral and testable with a plain map.
+ * The cascade's pluggable steps plus the one language capability it needs.
+ *
+ * The steps are supplied by the phase, which owns the language-specific
+ * machinery; keeping them as callbacks is what lets this module stay
+ * language-neutral and testable with a plain map.
  */
 export interface SpringDestinationResolvers {
+  /**
+   * Whether the owning language INTERPOLATES string literals — Kotlin does,
+   * Java does not. A capability, deliberately not a language name: shared
+   * ingestion code may not branch on a language (see AGENTS.md), and the
+   * capability is also the thing that actually matters. Supplied alongside
+   * `getSpringMessagingFacts` by the provider and threaded in by the phase.
+   *
+   * When true, an unescaped `$` inside a literal is a runtime template and the
+   * candidate is refused. When false (the default) `$` is an ordinary
+   * character and `"${app.topic}"` is a Spring placeholder.
+   */
+  readonly interpolatesStringLiterals?: boolean;
   /**
    * Step 2 — fold a constant reference (`Topics.ORDERS`, `ORDERS`) to its
    * string value, or `null` when it cannot be folded. Backed by
@@ -265,24 +344,26 @@ const CONSUMER_ANNOTATIONS: ReadonlyMap<string, ConsumerAnnotationRule> = new Ma
  * Plural container annotations (`@KafkaListeners`, `@RabbitListeners`, …) wrap
  * repeated listeners. Their single argument is a list of nested annotations,
  * whose own arguments the capture does not descend into, so there is nothing
- * here to read. Recognizing them by name keeps them from being reported as an
- * unrecognized annotation, which would make the refusal counts misleading.
+ * here to read.
+ *
+ * They are recognized rather than ignored so the loss is COUNTED. A repository
+ * that declares its listeners this way really does lose those destinations, and
+ * returning an empty selection would make it indistinguishable from a
+ * repository with no listeners at all — the module header promises that every
+ * path which declines to produce an address records why, and an empty
+ * `refusals` array records nothing. The broker comes from the container's own
+ * name, which is the one thing the annotation does state.
  */
-const CONSUMER_CONTAINER_ANNOTATIONS: ReadonlySet<string> = new Set([
-  'KafkaListeners',
-  'RabbitListeners',
-  'JmsListeners',
-  'PulsarListeners',
+const CONSUMER_CONTAINER_ANNOTATIONS: ReadonlyMap<string, SpringDestinationBroker> = new Map([
+  ['KafkaListeners', 'kafka' as const],
+  ['RabbitListeners', 'rabbit' as const],
+  ['JmsListeners', 'jms' as const],
+  ['PulsarListeners', 'pulsar' as const],
 ]);
 
 function simpleName(name: string): string {
   const separator = name.lastIndexOf('.');
   return separator === -1 ? name : name.slice(separator + 1);
-}
-
-/** True when the annotation is one this module reads destinations from. */
-export function isSpringDestinationAnnotation(annotationName: string): boolean {
-  return CONSUMER_ANNOTATIONS.has(simpleName(annotationName));
 }
 
 /**
@@ -298,8 +379,20 @@ export function selectConsumerDestinationArguments(
   args: readonly SpringArgumentFact[] | undefined,
 ): SpringDestinationSelection | null {
   const name = simpleName(annotationName);
-  if (CONSUMER_CONTAINER_ANNOTATIONS.has(name)) {
-    return { candidates: [], refusals: [] };
+  const containerBroker = CONSUMER_CONTAINER_ANNOTATIONS.get(name);
+  if (containerBroker !== undefined) {
+    return {
+      candidates: [],
+      refusals: [
+        {
+          role: 'consumer',
+          source: name,
+          broker: containerBroker,
+          reason: 'repeated-listener-container',
+          ...(args === undefined || args[0] === undefined ? {} : { rawText: args[0].text }),
+        },
+      ],
+    };
   }
   const rule = CONSUMER_ANNOTATIONS.get(name);
   if (rule === undefined) return null;
@@ -312,13 +405,20 @@ export function selectConsumerDestinationArguments(
     refusals.push({ role: 'consumer', source: name, broker: rule.broker, reason, ...extra });
   };
 
-  // Absent arguments have two causes and only one is a statement about the
-  // source (see `SpringNonHttpHandlerAnnotationFact.args`). Neither is
-  // distinguishable here, and both mean the same thing to this module: the
-  // destination cannot be read. An empty ARRAY, by contrast, means an empty
-  // argument list really was written, which for a listener means no address.
-  if (args === undefined || args.length === 0) {
+  // ABSENT arguments are a capture limitation: the annotation was recognized
+  // but its argument list was never read (see
+  // `SpringNonHttpHandlerAnnotationFact.args`). An empty ARRAY is a different
+  // fact entirely — an argument list WAS read and it was empty, so the source
+  // really does declare a listener that names no destination. Capture keeps the
+  // two apart on purpose, the producer side of this module already does, and
+  // merging them here would file a source-level gap under a tooling gap and
+  // corrupt the one breakdown this feature is measured on.
+  if (args === undefined) {
     refuse('annotation-arguments-unavailable');
+    return { candidates: [], refusals };
+  }
+  if (args.length === 0) {
+    refuse('annotation-arguments-empty');
     return { candidates: [], refusals };
   }
 
@@ -373,34 +473,94 @@ export function selectConsumerDestinationArguments(
 // ── Producer side: which call argument names the destination ───────────────
 
 /**
+ * Parameter names that carry a destination, per template, for calls that pass
+ * their arguments BY NAME.
+ *
+ * Kotlin call sites may name arguments, and a named argument list is in source
+ * order, not parameter order — `send(data = payload, topic = "orders")` is
+ * legal and puts the payload in slot 0. Reading slot 0 there publishes the
+ * PAYLOAD as an address. The name is captured
+ * ({@link SpringArgumentFact.name}), so the honest rule is to use it: select by
+ * name when there is one, and refuse when the names present say nothing this
+ * module recognizes. Selecting by position while ignoring a name that
+ * contradicts it is the one option that is never defensible.
+ *
+ * `exchange` is listed for rabbit but is NOT an address — it is the companion
+ * provenance the routing key carries (see the arity notes below).
+ */
+const PRODUCER_DESTINATION_PARAMETERS: Readonly<
+  Record<SpringMessageProducerTemplate, readonly string[]>
+> = {
+  kafka: ['topic'],
+  // `RabbitTemplate.convertAndSend(String exchange, String routingKey, Object message, …)`.
+  rabbit: ['routingKey'],
+  // `JmsTemplate.convertAndSend(Destination destination, …)` and the
+  // `String destinationName` overloads.
+  jms: ['destination', 'destinationName'],
+  // `StreamBridge.send(String bindingName, Object data, …)`.
+  'stream-bridge': ['bindingName'],
+};
+
+/** Rabbit's exchange parameter, carried as provenance rather than as an address. */
+const RABBIT_EXCHANGE_PARAMETER = 'exchange';
+
+/**
  * Choose the destination-bearing arguments of one messaging-template publish.
  *
- * Arity decides where it CAN decide, and shape decides where it cannot.
+ * A NAME beats a position, arity decides where it can decide, and shape decides
+ * where it cannot.
+ *
+ * When any argument is passed by name, {@link PRODUCER_DESTINATION_PARAMETERS}
+ * decides — position is not consulted at all, because a named argument list
+ * need not be in parameter order. When the slot this module would have read
+ * positionally is itself named with something it does not recognize, that is a
+ * contradiction and the publish is refused rather than read.
  *
  * `KafkaTemplate.send` and `StreamBridge.send` put the destination first in
- * every multi-argument overload they have, so once a call has two or more
- * arguments its slot 0 is the destination and nothing further needs deciding.
- * Those slots use the PERMISSIVE gate ({@link isAddressShaped}): a bare
- * identifier is let through to the cascade, which refuses it by name if no
+ * every multi-argument positional overload they have, so once such a call has
+ * two or more arguments its slot 0 is the destination and nothing further needs
+ * deciding. Those slots use the PERMISSIVE gate ({@link isAddressShaped}): a
+ * bare identifier is let through to the cascade, which refuses it by name if no
  * constant folds. That keeps `unresolved-constant` — a thing we tried to
  * resolve — distinct from `producer-argument-not-address-shaped`, a thing we
  * declined to read at all.
  *
- * The `convertAndSend` families are different. Both admit a trailing
- * `MessagePostProcessor`, which collides two overloads onto one arity:
+ * The `convertAndSend` families are different. Both admit trailing
+ * `MessagePostProcessor` and `CorrelationData` parameters, and arity does not
+ * separate the overloads in EITHER direction:
  *
- *   jms    (destination, message)     vs (message, postProcessor)          — 2
- *   rabbit (routingKey, message)      vs (message, postProcessor)          — 2
- *   rabbit (exchange, routingKey, msg) vs (routingKey, msg, postProcessor) — 3
+ *   jms    (destination, message)                2  vs (message, postProcessor)          2
+ *   rabbit (routingKey, message)                 2  vs (message, postProcessor)          2
+ *   rabbit (exchange, routingKey, message)       3  vs (routingKey, message, pp)         3
+ *                                                   vs (routingKey, message, correlation) 3
+ *   rabbit (exchange, routingKey, message, pp)   4  vs (routingKey, message, pp, corr)   4
  *
- * At those arities the tie is broken by the STRICT gate
- * ({@link isConfidentAddressShape}) — a string literal, a qualified reference,
- * or a screaming-snake constant, all of which a payload variable is not. A
- * lowercase bare identifier is NOT confident evidence there, so
- * `convertAndSend(topic, payload)` is refused rather than read: the same
- * spelling is how a payload variable looks, and there is nothing in the syntax
- * that separates them. That refusal is the deliberate cost. A refusal is
- * counted and recoverable; a wrong address enters reports as a fact.
+ * So the tie is broken by the STRICT gate ({@link isConfidentAddressShape}) — a
+ * string literal, a qualified reference, or a screaming-snake constant, all of
+ * which a payload variable is not. A lowercase bare identifier is NOT confident
+ * evidence, so `convertAndSend(topic, payload)` is refused rather than read:
+ * the same spelling is how a payload variable looks, and nothing in the syntax
+ * separates them. That refusal is the deliberate cost. A refusal is counted and
+ * recoverable; a wrong address enters reports as a fact.
+ *
+ * There is NO positional fallback at rabbit arity 3+. An earlier revision fell
+ * back to accepting slot 0 when slot 1 was not confident, which turned the
+ * ordinary `convertAndSend(EXCHANGE, routingKey, event)` — routing key in a
+ * variable — into a destination whose address was the EXCHANGE NAME. That is
+ * the worst possible outcome: an address that looks entirely plausible and can
+ * join a `@RabbitListener(queues = "orders")` that has nothing to do with it.
+ *
+ * ── ONE AMBIGUITY THAT SURVIVES, STATED PLAINLY ──────────────────────────
+ *
+ * `convertAndSend("orders.rk", "body", correlationData)` is read as
+ * exchange + routing key, so `"body"` becomes the address. A String payload is
+ * syntactically indistinguishable from a routing key, and no rule over the
+ * syntax can separate them. The exchange reading is taken because
+ * `(exchange, routingKey, message)` is the overload that idiomatically carries
+ * two leading strings, while `(routingKey, Object, CorrelationData)` with a
+ * String payload is rare. This module is NOT certain here, and this comment is
+ * the only place that says so — do not read the accepted candidate as evidence
+ * that the ambiguity was resolved.
  */
 export function selectProducerDestinationArguments(fact: {
   readonly template: SpringMessageProducerTemplate;
@@ -448,29 +608,62 @@ export function selectProducerDestinationArguments(fact: {
     refuse('producer-argument-not-address-shaped', { rawText: textAt(index), argIndex: index });
   };
 
+  // ── Named arguments: the name decides, or nothing does ──────────────────
+  if (args.some((arg) => arg.name !== undefined)) {
+    const names = PRODUCER_DESTINATION_PARAMETERS[fact.template];
+    const destinationIndex = args.findIndex(
+      (arg) => arg.name !== undefined && names.includes(arg.name),
+    );
+    if (destinationIndex === -1) {
+      // Some argument was named and none of them is a destination parameter.
+      // The positional reading cannot be trusted — a named list need not be in
+      // parameter order — so this refuses instead of guessing.
+      refuse('producer-named-argument-unrecognized', { rawText: textAt(0), argIndex: 0 });
+      return { candidates, refusals };
+    }
+    const exchangeIndex =
+      fact.template === 'rabbit'
+        ? args.findIndex((arg) => arg.name === RABBIT_EXCHANGE_PARAMETER)
+        : -1;
+    accept(
+      destinationIndex,
+      exchangeIndex === -1 ? undefined : unquoteForProvenance(textAt(exchangeIndex)),
+    );
+    return { candidates, refusals };
+  }
+
   if (fact.template === 'rabbit') {
     // `convertAndSend` overloads, by what occupies the leading slots:
-    //   (message)                              → default exchange, no address
-    //   (routingKey, message)                  → arg0 is the routing key
-    //   (message, postProcessor)               → NO address, same arity
-    //   (exchange, routingKey, message)        → arg0 + arg1
-    //   (routingKey, message, postProcessor)   → arg0 only, same arity
-    //   (exchange, routingKey, message, pp)    → arg0 + arg1
+    //   (message)                                  → default exchange, no address
+    //   (routingKey, message)                      → arg0 is the routing key
+    //   (message, postProcessor)                   → NO address, same arity
+    //   (exchange, routingKey, message)            → arg0 + arg1
+    //   (routingKey, message, postProcessor)       → arg0 only, same arity
+    //   (routingKey, message, correlationData)     → arg0 only, same arity
+    //   (exchange, routingKey, message, pp)        → arg0 + arg1
+    //   (routingKey, message, pp, correlationData) → arg0 only, same arity
+    //   (exchange, routingKey, message, pp, corr)  → arg0 + arg1
     if (args.length === 1) {
       refuse('rabbit-default-exchange', { rawText: textAt(0), argIndex: 0 });
       return { candidates, refusals };
     }
-    if (args.length >= 4) {
-      // Only the exchange form reaches four arguments, so this is unambiguous
-      // and slot 1 may use the permissive gate.
-      if (!isAddressShaped(textAt(1))) {
-        refuseShape(1);
+    if (args.length === 2) {
+      // (routingKey, message) versus (message, postProcessor).
+      if (confident(0)) {
+        accept(0);
         return { candidates, refusals };
       }
-      accept(1, unquoteForProvenance(textAt(0)));
+      refuseShape(0);
       return { candidates, refusals };
     }
-    if (args.length === 3 && confident(1)) {
+    // Three arguments and up. Arity separates NOTHING here — every count from
+    // three on admits both an exchange form and a routing-key form — so the
+    // ONLY acceptance is confident evidence in slot 1, and there is no
+    // positional fallback. `convertAndSend(EXCHANGE, routingKey, event)` fails
+    // that test and is refused; the discarded fallback published `EXCHANGE`
+    // as the address, which is a wrong answer wearing the costume of a right
+    // one.
+    if (confident(1)) {
       // The ADDRESS is the routing key. The exchange rides along as provenance
       // on the edge rather than becoming part of the address: composing
       // `exchange/routingKey` would invent a spelling no consumer ever writes,
@@ -480,11 +673,7 @@ export function selectProducerDestinationArguments(fact: {
       accept(1, unquoteForProvenance(textAt(0)));
       return { candidates, refusals };
     }
-    if (confident(0)) {
-      accept(0);
-      return { candidates, refusals };
-    }
-    refuseShape(0);
+    refuseShape(1);
     return { candidates, refusals };
   }
 
@@ -588,7 +777,18 @@ export function splitSpringDestinationList(text: string): readonly string[] {
   return elements.filter((element) => element !== '');
 }
 
-const STRING_LITERAL = /^(?:"""([\s\S]*)"""|"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)')$/;
+/**
+ * ONE string literal, whole.
+ *
+ * The triple-quoted alternative excludes `"""` from its body rather than
+ * matching greedily: `"""a""" + """b"""` is a concatenation, not a literal, and
+ * a greedy body swallowed the operator and folded it to the single address
+ * `a""" + """b`. Excluding the terminator makes the whole-string anchor fail
+ * there, so the text falls through to the constant test and is refused as
+ * `not-a-literal-or-constant`, which is what it is.
+ */
+const STRING_LITERAL =
+  /^(?:"""((?:(?!""")[\s\S])*)"""|"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]|\\[\s\S])*)')$/;
 
 /**
  * Unquote a string literal to its value, or `null` when the text is not a
@@ -600,6 +800,10 @@ const STRING_LITERAL = /^(?:"""([\s\S]*)"""|"((?:[^"\\]|\\[\s\S])*)"|'((?:[^'\\]
  * (`"\${app.topic}"`) or the compiler reads it as a string template, so without
  * undoing it every Kotlin placeholder would fail the `${` test below and be
  * misfiled as a plain literal address named `\${app.topic}`.
+ *
+ * The unescaping is also why {@link hasUnescapedStringInterpolation} has to run
+ * against the RAW text: once `\$` has become `$`, the escaped placeholder and
+ * the runtime template are the same string.
  */
 export function parseSpringStringLiteral(text: string): string | null {
   const match = STRING_LITERAL.exec(text.trim());
@@ -611,6 +815,48 @@ export function parseSpringStringLiteral(text: string): string | null {
     if (escaped === 't') return '\t';
     return escaped;
   });
+}
+
+/** `$` followed by a brace or an identifier start — the two template forms. */
+const INTERPOLATION_START = /^[{A-Za-z_]/;
+
+/**
+ * Whether a string literal contains an UNESCAPED interpolation, for a language
+ * whose literals interpolate.
+ *
+ * Only meaningful for such a language; Java never calls it. In Kotlin:
+ *
+ *     "orders-$env"        template — the value is decided at runtime
+ *     "orders-${env}"      template — NOT a Spring placeholder
+ *     "\${app.topic}"      escaped  — this is how a Spring placeholder is written
+ *     """orders-$env"""    template — raw strings interpolate and cannot escape
+ *
+ * Reads the RAW literal text on purpose: {@link parseSpringStringLiteral}
+ * resolves `\$` to `$`, after which the second and third rows above are the
+ * same string and the distinction is gone. A raw (`"""`) literal has no
+ * backslash escapes at all — `${'$'}` is the only way to write a dollar there —
+ * so every `$` in one is an interpolation.
+ */
+export function hasUnescapedStringInterpolation(text: string): boolean {
+  const trimmed = text.trim();
+  const match = STRING_LITERAL.exec(trimmed);
+  if (match === null) return false;
+  const raw = match[1] ?? match[2] ?? match[3] ?? '';
+  const escapable = match[1] === undefined;
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index] as string;
+    if (escapable && char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (char === '$' && INTERPOLATION_START.test(raw.slice(index + 1))) return true;
+  }
+  return false;
+}
+
+/** `#{...}` — a SpEL expression the container evaluates at runtime. */
+function containsSpelExpression(value: string): boolean {
+  return value.includes('#{');
 }
 
 /** A dotted or bare identifier — the only non-literal shape read as a constant. */
@@ -664,68 +910,68 @@ function unquoteForProvenance(text: string): string {
 }
 
 export interface SpringPlaceholderResult {
-  /** Fully substituted value when every placeholder carried a default. */
-  readonly value?: string;
-  /** First key that had no default, in `${key}` order. */
-  readonly unresolvedKey?: string;
   /** True when the text contained no `${…}` at all. */
   readonly plain: boolean;
+  /** Key of the FIRST placeholder, in source order. Present whenever `plain`
+   *  is false; the empty string when the placeholder named no key (`${}`). */
+  readonly key?: string;
+  /** Default text of that placeholder, exactly as written, when it had one.
+   *  Absent for a bare `${key}`. The empty string for `${key:}`, which is a
+   *  default that was written and is empty. */
+  readonly defaultValue?: string;
 }
 
 /**
- * Interpret Spring property placeholders in an already-unquoted value.
+ * Read the FIRST Spring property placeholder out of an already-unquoted value.
  *
- * `${key:default}` resolves to `default`, because that default is written in
- * the SOURCE — reading it is not reading configuration, and refusing it would
- * throw away an address the repository states outright.
+ * NOTHING IS SUBSTITUTED, and that is the rule, not an omission.
  *
- * `${key}` does not resolve, ever. The value lives in a configuration file that
- * this index deliberately does not read into the graph (values may hold
- * credentials — see `pipeline-phases/spring-config.ts`), so there is nothing to
- * substitute. The KEY comes back instead, so the caller can link the node to
- * the `Property` nodes for that key without learning its value.
+ * `${key}` cannot resolve: the value lives in a configuration file this index
+ * deliberately does not read into the graph (values may hold credentials — see
+ * `pipeline-phases/spring-config.ts`). The KEY comes back instead, so the
+ * caller can link the node to the `Property` nodes for that key without ever
+ * learning its value.
  *
- * A default that itself contains `${` is not expanded: nested placeholders
- * would need the same configuration this module refuses to read, and expanding
- * only the outer level would produce a half-substituted string that looks like
- * an address. The inner key is reported unresolved instead.
+ * `${key:default}` cannot resolve EITHER, which is a correction to this
+ * module's original rule. The default is written in the source, so reading it
+ * is legitimate and it is returned — but it is provenance, never an identity.
+ * A default holds only while the key is not overridden, and whether it is
+ * overridden is a fact about configuration VALUES, which are absent from this
+ * graph by design. Substituting it made `${a.topic:events}` and
+ * `${b.topic:events}` one node and reported a producer/consumer pair between
+ * two services that shared nothing but a copy-pasted fallback. The same
+ * reasoning applies to any placeholder-derived value: a value the configuration
+ * can override is not an identity.
+ *
+ * Only the first placeholder is read because there is nothing to do with the
+ * rest — the value is already unresolvable, and the first key is the one a
+ * reader would look up. A nested default (`${a:${b}}`) needs no special case
+ * under this rule: `a` is the key and `${b}` is the default text, both reported
+ * as written.
  */
 export function resolveSpringPlaceholders(value: string): SpringPlaceholderResult {
-  if (!value.includes('${')) return { plain: true };
-  let out = '';
-  let index = 0;
-  while (index < value.length) {
-    const start = value.indexOf('${', index);
-    if (start === -1) {
-      out += value.slice(index);
-      break;
+  const start = value.indexOf('${');
+  if (start === -1) return { plain: true };
+  let depth = 1;
+  let cursor = start + 2;
+  while (cursor < value.length && depth > 0) {
+    if (value.startsWith('${', cursor)) {
+      depth += 1;
+      cursor += 2;
+      continue;
     }
-    out += value.slice(index, start);
-    let depth = 1;
-    let cursor = start + 2;
-    while (cursor < value.length && depth > 0) {
-      if (value.startsWith('${', cursor)) {
-        depth += 1;
-        cursor += 2;
-        continue;
-      }
-      if (value[cursor] === '}') depth -= 1;
-      cursor += 1;
-    }
-    // An unterminated `${` is not a placeholder this module can read. Treating
-    // the tail as a literal would mint an address containing `${`.
-    if (depth > 0) return { plain: false, unresolvedKey: value.slice(start + 2) };
-    const body = value.slice(start + 2, cursor - 1);
-    const separator = body.indexOf(':');
-    // Spring splits on the FIRST colon, so `${a:b:c}` defaults to `b:c`.
-    const key = (separator === -1 ? body : body.slice(0, separator)).trim();
-    if (separator === -1) return { plain: false, unresolvedKey: key };
-    const fallback = body.slice(separator + 1);
-    if (fallback.includes('${')) return { plain: false, unresolvedKey: key };
-    out += fallback;
-    index = cursor;
+    if (value[cursor] === '}') depth -= 1;
+    cursor += 1;
   }
-  return { plain: false, value: out };
+  // An unterminated `${` is not a placeholder this module can read. Treating
+  // the tail as a literal would mint an address containing `${`; treating it as
+  // a key at least names the thing the author was reaching for.
+  if (depth > 0) return { plain: false, key: value.slice(start + 2).trim() };
+  const body = value.slice(start + 2, cursor - 1);
+  const separator = body.indexOf(':');
+  // Spring splits on the FIRST colon, so `${a:b:c}` defaults to `b:c`.
+  if (separator === -1) return { plain: false, key: body.trim() };
+  return { plain: false, key: body.slice(0, separator).trim(), defaultValue: body.slice(separator + 1) };
 }
 
 // ── The cascade ────────────────────────────────────────────────────────────
@@ -737,9 +983,9 @@ export function resolveSpringPlaceholders(value: string): SpringPlaceholderResul
  *
  *  1. literal        — `"orders.v1"`, including one element of an array form.
  *  2. constant       — `Topics.ORDERS`, through the supplied constant resolver.
- *  3. configuration  — `${app.topic:orders}` resolves to its SOURCE-written
- *                      default; `${app.topic}` does not resolve and reports the
- *                      key instead.
+ *  3. configuration  — neither `${app.topic}` nor `${app.topic:orders}`
+ *                      resolves; the key, and the default text when there is
+ *                      one, are reported instead.
  *  4. specification  — the deferred seam; see {@link SpringDestinationResolvers}.
  *
  * Steps 1 and 2 both feed step 3: a literal may be a placeholder, and so may
@@ -747,6 +993,21 @@ export function resolveSpringPlaceholders(value: string): SpringPlaceholderResul
  * is an ordinary way to write one). Skipping step 3 after step 2 would file
  * that constant's placeholder text as a resolved address — the exact false
  * identity this module exists to prevent, arrived at one step later.
+ *
+ * Two classes of text are rejected BEFORE step 3, because they are not
+ * addresses in any configuration: a SpEL expression, which the container
+ * evaluates against live beans, and an unescaped string-template interpolation
+ * in a language that interpolates. Order matters between them and the
+ * placeholder rule — `"#{'${app.topics}'.split(',')}"` contains a `${` and
+ * would otherwise be filed under a configuration key that is not really what
+ * it is.
+ *
+ * WHITESPACE. An address is kept exactly as the source wrote it, `" orders "`
+ * included, so `" orders "` is its own node and does not join `"orders"`. That
+ * is a missing connection rather than a false one, which is the trade this
+ * module makes everywhere. The emptiness test below trims, because a
+ * whitespace-only address addresses nothing — the two rules disagree on
+ * purpose, and this is the statement of it.
  */
 export function resolveSpringDestination(
   candidate: SpringDestinationCandidate,
@@ -760,6 +1021,14 @@ export function resolveSpringDestination(
 
   const literal = parseSpringStringLiteral(candidate.rawText);
   if (literal !== null) {
+    // The raw spelling, not the unquoted value: unquoting has already turned
+    // `\$` into `$` and the escaped placeholder into the runtime template.
+    if (
+      resolvers.interpolatesStringLiterals === true &&
+      hasUnescapedStringInterpolation(candidate.rawText)
+    ) {
+      return specification() ?? { kind: 'unresolved', reason: 'unescaped-interpolation' };
+    }
     return finish(literal, 'literal', specification);
   }
 
@@ -768,6 +1037,16 @@ export function resolveSpringDestination(
     const folded = resolvers.constant?.(trimmed.replace(/\s*\.\s*/g, '.')) ?? null;
     if (folded === null)
       return specification() ?? { kind: 'unresolved', reason: 'unresolved-constant' };
+    // A folded value has already lost its escapes, so an interpolating language
+    // cannot tell `"\${app.topic}"` from `"${app.topic}"` here the way the
+    // literal branch can. Both are unresolved either way, so the cost is a
+    // reason filed under `unescaped-interpolation` that might have belonged
+    // under `unresolved-config-key` — never a false address. (No JVM provider
+    // supplies a constant fold for an interpolating language today, so this
+    // branch is a guard for when one does, not a live path.)
+    if (resolvers.interpolatesStringLiterals === true && /\$[{A-Za-z_]/.test(folded)) {
+      return specification() ?? { kind: 'unresolved', reason: 'unescaped-interpolation' };
+    }
     return finish(folded, 'constant', specification);
   }
 
@@ -779,21 +1058,38 @@ function finish(
   via: 'literal' | 'constant',
   specification: () => SpringDestinationResolution | null,
 ): SpringDestinationResolution {
+  const decline = (
+    reason: SpringDestinationRefusal,
+    extra: { configKey?: string; configDefault?: string } = {},
+  ): SpringDestinationResolution =>
+    specification() ?? {
+      kind: 'unresolved',
+      reason,
+      ...(extra.configKey === undefined ? {} : { configKey: extra.configKey }),
+      ...(extra.configDefault === undefined ? {} : { configDefault: extra.configDefault }),
+    };
+
+  // Before the placeholder rule: a SpEL expression may CONTAIN a `${…}`, and
+  // calling that a configuration key would name the wrong diagnosis.
+  if (containsSpelExpression(value)) return decline('spel-expression');
+
   const placeholders = resolveSpringPlaceholders(value);
-  if (placeholders.unresolvedKey !== undefined) {
-    return (
-      specification() ?? {
-        kind: 'unresolved',
-        reason: 'unresolved-config-key',
-        configKey: placeholders.unresolvedKey,
-      }
-    );
+  if (!placeholders.plain) {
+    const key = placeholders.key ?? '';
+    if (key === '') return decline('empty-config-key');
+    if (placeholders.defaultValue !== undefined) {
+      return decline('overridable-config-default', {
+        configKey: key,
+        configDefault: placeholders.defaultValue,
+      });
+    }
+    return decline('unresolved-config-key', { configKey: key });
   }
-  const address = placeholders.plain ? value : (placeholders.value as string);
-  if (address.trim() === '') {
-    return specification() ?? { kind: 'unresolved', reason: 'empty-address' };
+
+  if (value.trim() === '') {
+    return decline(via === 'literal' ? 'empty-literal-address' : 'empty-constant-address');
   }
-  return { kind: 'resolved', address, via: placeholders.plain ? via : 'config-default' };
+  return { kind: 'resolved', address: value, via };
 }
 
 /**
