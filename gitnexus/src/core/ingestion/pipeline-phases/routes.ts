@@ -14,6 +14,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { ParseOutput } from './parse.js';
+import type { GraphNode } from 'gitnexus-shared';
 import { isBladeTemplateFilename } from 'gitnexus-shared';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
@@ -336,12 +337,44 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
 
     let handlerContents: Map<string, string> | undefined;
     if (routeRegistry.size > 0) {
+      /**
+       * The route's handler symbol, resolved to a node that is actually IN the
+       * graph — or `undefined`.
+       *
+       * `routeHandlerSymbols` holds `SemanticModel` node ids, and a hit there is
+       * a claim about the model's registries, not evidence that the matching
+       * definition node reached `ctx.graph`. This phase already assumed the
+       * lookup can miss — `handlerPathFor` has always fallen back to
+       * `entry.filePath` when `getNode` came back empty — but the id was then
+       * stamped onto `Route.handlerSymbolId` and (below) anchored a
+       * definition-level HANDLES_ROUTE edge without being re-checked. A dangling
+       * id there is worse than no id: `http-route-extractor.ts` reads the stamp
+       * as its fast path and treats a route as fully resolved once it carries
+       * one, and an edge sourced on an absent node has no handler to traverse
+       * to.
+       *
+       * Resolving once, here, keeps content attribution, the stamped property
+       * and the definition-level edge on a single decision, so an unresolvable
+       * id degrades to exactly the file-level behavior — file-level
+       * HANDLES_ROUTE, whole-file content, no stamp — that a route with no
+       * handler resolution has always had.
+       *
+       * A pre-seeded route can never legitimately appear in
+       * `routeHandlerSymbols`, so a key that does is a route that LOST (#3049).
+       */
+      const resolveHandlerSymbol = (
+        routeKey: string,
+      ): { id: string; node: GraphNode } | undefined => {
+        if (preSeededKeys.has(routeKey)) return undefined;
+        const id = routeHandlerSymbols.get(routeKey);
+        if (id === undefined || id === '') return undefined;
+        const node = ctx.graph.getNode(id);
+        return node === undefined ? undefined : { id, node };
+      };
+
       const handlerPathFor = (routeKey: string, entry: RouteEntry): string => {
         if (entry.source !== DATA_ROUTE_TABLE_SOURCE) return entry.filePath;
-        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
-        const resolvedPath = handlerSymbolId
-          ? ctx.graph.getNode(handlerSymbolId)?.properties.filePath
-          : undefined;
+        const resolvedPath = resolveHandlerSymbol(routeKey)?.node.properties.filePath;
         return typeof resolvedPath === 'string' ? resolvedPath : entry.filePath;
       };
       const handlerPaths = [...routeRegistry].map(([key, entry]) => handlerPathFor(key, entry));
@@ -351,17 +384,11 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         const { source: routeSource, method: routeMethod, url } = entry;
         const handlerPath = handlerPathFor(routeKey, entry);
         const content = handlerContents.get(handlerPath);
-        // A pre-seeded route can never legitimately appear in
-        // `routeHandlerSymbols`, so a key that does is a route that LOST (#3049).
-        const handlerSymbolId = preSeededKeys.has(routeKey)
-          ? undefined
-          : routeHandlerSymbols.get(routeKey);
+        const handlerSymbol = resolveHandlerSymbol(routeKey);
+        const handlerSymbolId = handlerSymbol?.id;
         const analysisContent =
           entry.source === DATA_ROUTE_TABLE_SOURCE && content
-            ? handlerSymbolContent(
-                content,
-                handlerSymbolId ? ctx.graph.getNode(handlerSymbolId) : undefined,
-              )
+            ? handlerSymbolContent(content, handlerSymbol?.node)
             : content;
 
         const { responseKeys, errorKeys } = analysisContent
@@ -399,19 +426,20 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         });
 
         // Definition-level HANDLES_ROUTE, emitted alongside the file-level edge
-        // whenever the handler symbol resolved.
+        // whenever the handler symbol resolved to a node that is in the graph.
         //
-        // Why both: the file-level edge is what `http-route-extractor.ts` reads
-        // (its query is typed `(handlerFile:File)`), so it stays. But a FILE does
-        // not handle a route — a function does, and without an edge to it the
-        // handler carries no relationship at all beyond `DEFINES`. Every
-        // decorated handler then looks exactly like dead code even though the
-        // framework invokes it, and blast-radius analysis from a route stops at
-        // file granularity.
+        // What it adds: a HANDLES_ROUTE traversal that lands on the handler
+        // DEFINITION rather than on its file. Today a consumer walking
+        // HANDLES_ROUTE from a Route reaches the file and must re-derive which
+        // definition in it serves the route — from `Route.handlerSymbolId`,
+        // which is a bare id property and not traversable, or from source. This
+        // edge makes that hop explicit, so graph queries over HANDLES_ROUTE
+        // answer at definition granularity instead of file granularity.
         //
-        // This mirrors the sibling decorator overlay: `pipeline-phases/tools.ts`
-        // already anchors HANDLES_TOOL on the definition the decorator sat on,
-        // not on its file. Routes were the outlier.
+        // Additive, not a replacement: the file-level edge above is what
+        // `http-route-extractor.ts` reads (its query is typed
+        // `(handlerFile:File)`), so it stays and every existing consumer keeps
+        // working unchanged.
         //
         // `Function|Route` and its siblings are already declared by the
         // ATTACHMENT rule in `lbug/schema.ts`

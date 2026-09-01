@@ -698,6 +698,24 @@ export class HttpRouteExtractor implements ContractExtractor {
     // language plugin declares `routeCoverage: 'complete'`. Such files can skip
     // the source scan + parse entirely — the graph is authoritative for them.
     const fileAllResolved = new Map<string, boolean>();
+    // CONTAINING_QUERY is a per-FILE lookup, but the resolved-handler fast path
+    // below runs per ROUTE — a controller with N resolved routes would scan its
+    // whole file N times on every group sync. Memoize by filePath for this pass.
+    // A failed lookup caches as empty, which is the same outcome the fast path's
+    // catch already took (keep the authoritative uid + basename fallback).
+    const fileSymbolCache = new Map<string, Record<string, unknown>[]>();
+    const loadFileSymbols = async (filePath: string): Promise<Record<string, unknown>[]> => {
+      const cached = fileSymbolCache.get(filePath);
+      if (cached) return cached;
+      let syms: Record<string, unknown>[] = [];
+      try {
+        syms = await db(CONTAINING_QUERY, { filePath });
+      } catch {
+        syms = [];
+      }
+      fileSymbolCache.set(filePath, syms);
+      return syms;
+    };
     let rows: Record<string, unknown>[];
     try {
       rows = await db(HANDLES_ROUTE_QUERY);
@@ -749,15 +767,11 @@ export class HttpRouteExtractor implements ContractExtractor {
         if (!method) method = 'GET';
         symbolUid = handlerSymbolId;
         if (filePath) {
-          try {
-            const syms = await db(CONTAINING_QUERY, { filePath });
-            const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
-            if (hit) {
-              symbolName = String(hit.name ?? hit[1]) || symbolName;
-              symPath = String(hit.filePath ?? hit[2]) || filePath;
-            }
-          } catch {
-            /* keep the authoritative uid + basename fallback */
+          const syms = await loadFileSymbols(filePath);
+          const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
+          if (hit) {
+            symbolName = String(hit.name ?? hit[1]) || symbolName;
+            symPath = String(hit.filePath ?? hit[2]) || filePath;
           }
         }
       } else {

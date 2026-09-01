@@ -692,7 +692,21 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // 87 -> 88: Java ModuleConstants now preserves unfoldable declaration names
 // across worker/cache replay so wildcard expansion cannot resurrect an imported
 // member hidden by a local field. A warm v87 cache lacks that shadow metadata.
-const SCHEMA_BUMP = 88;
+// 88 -> 90 (#2865): route decorator captures now carry `handlerName` in
+// `decoratorRoutes`, which is what lets `resolveRouteHandlerSymbols` stamp
+// `handlerSymbolId` and the routes phase emit the definition-level
+// HANDLES_ROUTE edge. The field is minted in the parse WORKER and persisted
+// verbatim, so a warm v88 cache replays handler-less decorator routes: every
+// route loses its definition-level association on incremental analyze while
+// every cold-run test passes — the inert-feature trap the entries above record.
+// 89 is NOT free: open PR #3128 (Spring handler annotation arguments) holds it,
+// and package.json is unchanged on both sides, so sharing 89 would make
+// PARSE_CACHE_VERSION byte-identical across two branches with incompatible
+// worker output. 90 is the next free value above origin/main (88) and above
+// every in-flight claim found by scanning open PRs' parse-cache.ts at their
+// exact head SHAs. RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY
+// BEFORE MERGING.
+const SCHEMA_BUMP = 90;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

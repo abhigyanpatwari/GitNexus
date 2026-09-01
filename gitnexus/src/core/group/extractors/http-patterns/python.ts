@@ -1137,13 +1137,17 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'python-http',
   language: Python,
   // routeCoverage intentionally LEFT at the default 'partial' (#2138 Part 2).
-  // It would be a no-op even if set to 'complete': FastAPI decorator routes set
-  // no handlerName (generic worker path) and Django sets methodName: null, so no
-  // Python file ever resolves a handlerSymbolId and none would be parse-skipped.
-  // Declaring 'complete' now is only a latent trap for the moment a follow-up
-  // gives FastAPI routes a handlerName. `hasConsumerSignals` is kept (and is a
-  // true superset of scan()'s consumer shapes) so the precondition already holds
-  // when Python is later flipped to 'complete'.
+  // 'complete' is now an active data-loss risk rather than a no-op: FastAPI and
+  // Flask decorator routes do carry a handlerName (Python's
+  // `decoratorRouteHandlerName` hook reads the `decorated_definition`), so their
+  // files can resolve every handlerSymbolId and become parse-skip candidates.
+  // The flag asserts more than that — it asserts ingestion emits a Route node
+  // for EVERY provider route this scan() finds, and it does not: Flask's
+  // imperative `add_url_rule('/p', view_func=handler)` registration below has no
+  // ingestion counterpart, so skipping a file that mixes it with resolved
+  // decorator routes would drop those providers. `hasConsumerSignals` is kept
+  // (and is a true superset of scan()'s consumer shapes) so the consumer half of
+  // the precondition already holds once provider parity is closed.
   // Consumer signals scan() can detect: `requests.<verb>`/`requests.request`,
   // `httpx` (sync/async client), the `uri=`/`url=` keyword/variable wrapper
   // calls, plus aiohttp/urllib. Conservative — over-matching only costs a parse.

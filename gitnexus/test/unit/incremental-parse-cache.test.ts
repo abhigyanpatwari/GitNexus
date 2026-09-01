@@ -244,12 +244,17 @@ describe('PARSE_CACHE_VERSION', () => {
   // collided, because each re-checked once and neither re-checked after the
   // other moved — which is why the rule is re-applied AT MERGE, not when the
   // number is picked.
-  it('pins SCHEMA_BUMP to 88 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(88);
+  // Moved 88 -> 90 for #2865's decorator-route `handlerName`, skipping 89
+  // because open PR #3128 holds it: origin/main is 88 and package.json is
+  // unchanged on both branches, so 89 would be the byte-identical cache key on
+  // two branches with incompatible worker output — the same collision the
+  // paragraph above describes, caught this time by re-checking at merge.
+  it('pins SCHEMA_BUMP to 90 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #2865)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(90);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87,
+      82, 83, 84, 85, 86, 87, 88, 89,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

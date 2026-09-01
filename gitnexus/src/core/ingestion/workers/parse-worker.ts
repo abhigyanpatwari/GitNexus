@@ -1407,53 +1407,6 @@ const ROUTE_DECORATOR_NAMES = new Set([
   'PatchMapping',
 ]);
 
-/**
- * Name of the function/method a route decorator is attached to, for
- * `ExtractedDecoratorRoute.handlerName`.
- *
- * A decorator's parent is the `decorated_definition` (Python) /
- * `decorated_*` wrapper that also holds the definition itself, so the handler
- * name is in hand at decorator-extraction time. Without it the routes phase
- * cannot stamp `handlerSymbolId`, and every decorated handler ends up with no
- * incoming edge — indistinguishable from dead code even though the framework
- * invokes it.
- *
- * Walks up through consecutive decorators so stacked decorators
- * (`@router.get(...)` above `@requires_auth`) still find the definition.
- * Returns undefined rather than guessing when the shape is unfamiliar; the
- * routes phase already treats a missing name as "fall back to file-level".
- */
-const decoratedDefinitionName = (decoratorNode: {
-  parent?: unknown;
-  type?: string;
-}): string | undefined => {
-  type N = {
-    type?: string;
-    parent?: N | null;
-    childForFieldName?: (f: string) => N | null | undefined;
-    text?: string;
-  };
-  let cursor = (decoratorNode as N).parent ?? null;
-  // Bounded walk: a decorated definition is the immediate parent, but stacked
-  // decorators can nest. Cap the climb so a malformed tree cannot loop.
-  for (let depth = 0; cursor !== null && depth < 8; depth++) {
-    const definition = cursor.childForFieldName?.('definition') ?? null;
-    if (definition) {
-      const nameNode = definition.childForFieldName?.('name') ?? null;
-      const text = nameNode?.text;
-      if (typeof text === 'string' && text.length > 0) return text;
-      return undefined;
-    }
-    // Some grammars expose the definition as a direct named child rather than
-    // through a `definition` field.
-    const nameNode = cursor.childForFieldName?.('name') ?? null;
-    const text = nameNode?.text;
-    if (typeof text === 'string' && text.length > 0) return text;
-    cursor = cursor.parent ?? null;
-  }
-  return undefined;
-};
-
 // ============================================================================
 // ORM Query Detection (Prisma + Supabase)
 // ============================================================================
@@ -1842,7 +1795,12 @@ const processFileGroup = (
           const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
             ? method
             : 'GET';
-          const handlerName = decoratedDefinitionName(decoratorNode);
+          // Which definition a decorator attaches to is grammar-specific, so
+          // the name comes from the language, not from this loop. Without it the
+          // routes phase cannot stamp `handlerSymbolId` or emit a traversable
+          // definition-level HANDLES_ROUTE edge. Languages with a dedicated
+          // `extractDecoratorRoutes` set `handlerName` there instead.
+          const handlerName = provider.decoratorRouteHandlerName?.(decoratorNode);
           const base = {
             filePath: file.path,
             httpMethod,
