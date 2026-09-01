@@ -467,6 +467,25 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     runtimeConfirmed: table === 'Route' ? (row.runtimeConfirmed ?? false) : undefined,
     runtimeSource: table === 'Route' ? row.runtimeSource : undefined,
     runtimeStatus: table === 'Route' ? row.runtimeStatus : undefined,
+    // The Destination overlay written by `pipeline-phases/spring-destinations.ts`.
+    // Gated on the label for the same reason as the Route columns above: no
+    // other node query projects them, so an ungated read would put a key on
+    // every node in the graph.
+    //
+    // `?? undefined` is not decoration. LadybugDB returns NULL columns as
+    // `null`, and `address` is the cross-repository JOIN KEY that a destination
+    // carries ONLY when it resolved. Passing the `null` straight through would
+    // serialize `"address": null` for every unresolved destination, turning an
+    // ABSENT property — which cannot match anything — into a PRESENT one that
+    // every other unresolved destination shares. That is the false connection
+    // the keying rule exists to prevent, reintroduced at the API boundary, so
+    // the null is normalized back to absent for all six columns alike.
+    address: table === 'Destination' ? (row.address ?? undefined) : undefined,
+    broker: table === 'Destination' ? (row.broker ?? undefined) : undefined,
+    resolution: table === 'Destination' ? (row.resolution ?? undefined) : undefined,
+    configKey: table === 'Destination' ? (row.configKey ?? undefined) : undefined,
+    configDefault: table === 'Destination' ? (row.configDefault ?? undefined) : undefined,
+    brokerConflict: table === 'Destination' ? (row.brokerConflict ?? undefined) : undefined,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,

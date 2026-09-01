@@ -374,3 +374,147 @@ describe('streamGraphNdjson', () => {
     expect(blocks[1].data.properties.name).toBe('');
   });
 });
+
+/**
+ * The Destination overlay across the API boundary.
+ *
+ * `getNodeQuery` has projected the six overlay columns since the phase landed,
+ * but `mapGraphNodeRow` built `properties` from an explicit literal and copied
+ * none of them, so every client of `/api/graph` saw a `Destination` stripped of
+ * the only fields that make it one. Both entry points share that mapper, so
+ * both are asserted here: a fix that reached only the streaming path would look
+ * complete and leave `buildGraph` exactly as broken.
+ */
+const RESOLVED_DESTINATION_ROW = {
+  id: 'Destination:orders.v1',
+  name: 'orders.v1',
+  filePath: '',
+  startLine: null,
+  endLine: null,
+  address: 'orders.v1',
+  broker: 'kafka',
+  resolution: 'literal',
+  configKey: null,
+  configDefault: null,
+  brokerConflict: null,
+};
+
+const UNRESOLVED_DESTINATION_ROW = {
+  id: 'Destination:site:src/main/java/com/example/OrderConsumer.java',
+  name: '${app.topic}',
+  filePath: 'src/main/java/com/example/OrderConsumer.java',
+  startLine: 11,
+  endLine: 14,
+  address: null,
+  broker: 'kafka',
+  resolution: 'unresolved-config-key',
+  configKey: 'app.topic',
+  configDefault: null,
+  brokerConflict: null,
+};
+
+describe('Destination overlay properties', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('carries the overlay through buildGraph', async () => {
+    lbugMocks.executeQuery.mockImplementation(async (query: string) => {
+      if (!query.includes('MATCH (n:`Destination`)')) return [];
+      expect(query).toContain('n.address AS address');
+      return [RESOLVED_DESTINATION_ROW, UNRESOLVED_DESTINATION_ROW];
+    });
+
+    const graph = await buildGraph(false);
+    const destinations = graph.nodes.filter((node) => node.label === 'Destination');
+    expect(destinations).toHaveLength(2);
+
+    expect(destinations[0]?.properties).toMatchObject({
+      name: 'orders.v1',
+      address: 'orders.v1',
+      broker: 'kafka',
+      resolution: 'literal',
+    });
+    expect(destinations[1]?.properties).toMatchObject({
+      name: '${app.topic}',
+      broker: 'kafka',
+      resolution: 'unresolved-config-key',
+      configKey: 'app.topic',
+    });
+  });
+
+  it('carries the overlay through streamGraphNdjson', async () => {
+    lbugMocks.streamQuery.mockImplementation(
+      async (query: string, onRow: (row: any) => Promise<void>) => {
+        if (!query.includes('MATCH (n:`Destination`)')) return 0;
+        await onRow(RESOLVED_DESTINATION_ROW);
+        await onRow(UNRESOLVED_DESTINATION_ROW);
+        return 2;
+      },
+    );
+
+    const writes: string[] = [];
+    const response = createMockResponse((chunk) => {
+      writes.push(chunk);
+      return true;
+    });
+
+    await expect(streamGraphNdjson(response, false)).resolves.toBeUndefined();
+
+    const destinations = writes
+      .map((chunk) => JSON.parse(chunk))
+      .filter((record) => record.type === 'node' && record.data.label === 'Destination');
+    expect(destinations).toHaveLength(2);
+    expect(destinations[0].data.properties).toMatchObject({
+      address: 'orders.v1',
+      broker: 'kafka',
+      resolution: 'literal',
+    });
+    expect(destinations[1].data.properties).toMatchObject({
+      broker: 'kafka',
+      resolution: 'unresolved-config-key',
+      configKey: 'app.topic',
+    });
+  });
+
+  it('keeps an unresolved address ABSENT rather than serializing it as null', async () => {
+    // The whole feature rests on an unresolved destination having no `address`.
+    // A `null` survives JSON, and two nulls are as equal as two empty strings:
+    // a client grouping destinations by `address` would join every unresolved
+    // one in the repository into a single connected blob. `toMatchObject`
+    // cannot see this — only the serialized text can.
+    lbugMocks.streamQuery.mockImplementation(
+      async (query: string, onRow: (row: any) => Promise<void>) => {
+        if (!query.includes('MATCH (n:`Destination`)')) return 0;
+        await onRow(UNRESOLVED_DESTINATION_ROW);
+        return 1;
+      },
+    );
+
+    const writes: string[] = [];
+    const response = createMockResponse((chunk) => {
+      writes.push(chunk);
+      return true;
+    });
+    await expect(streamGraphNdjson(response, false)).resolves.toBeUndefined();
+
+    const [chunk] = writes.filter((written) => written.includes('"Destination"'));
+    expect(chunk).toBeDefined();
+    expect(chunk).not.toContain('"address"');
+    const properties = JSON.parse(chunk as string).data.properties;
+    expect('address' in properties).toBe(false);
+    expect('brokerConflict' in properties).toBe(false);
+  });
+
+  it('does not put the overlay keys on nodes of other labels', async () => {
+    lbugMocks.executeQuery.mockImplementation(async (query: string) => {
+      if (!query.includes('MATCH (n:`File`)')) return [];
+      return [{ id: 'File:src/app.ts', name: 'app.ts', filePath: 'src/app.ts', address: 'oops' }];
+    });
+
+    const graph = await buildGraph(false);
+    const [file] = graph.nodes.filter((node) => node.label === 'File');
+    expect(file?.properties.address).toBeUndefined();
+    expect(file?.properties.broker).toBeUndefined();
+  });
+});

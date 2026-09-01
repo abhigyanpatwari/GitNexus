@@ -114,6 +114,25 @@ export type NodeProperties = {
   runtimeSource?: string;
   /** Runtime result such as runtime-confirmed or handler-conflict. */
   runtimeStatus?: string;
+  // Destination (async messaging overlay). See the `Destination` label above.
+  /** The RESOLVED broker address, and the key a cross-repository pass joins on.
+   *  Present only when the address resolved: absent is the load-bearing state,
+   *  because an absent property cannot match another absent property. */
+  address?: string;
+  /** Broker family the syntax attests to (`kafka`, `rabbit`, `jms`, …). */
+  broker?: string;
+  /** How the address was arrived at (`literal`, `constant`) when it resolved,
+   *  or the named reason it did not. */
+  resolution?: string;
+  /** Configuration key named by an unresolvable `${…}` placeholder. The key
+   *  only — configuration VALUES are deliberately absent from this graph. */
+  configKey?: string;
+  /** The `${key:default}` default text. Not an address: configuration can
+   *  override it and the graph cannot see whether it did. */
+  configDefault?: string;
+  /** One address claimed with two different brokers, as a sorted comma-joined
+   *  list. Diagnostics for a disagreement the syntax cannot settle. */
+  brokerConflict?: string;
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
   /** BasicBlock: space-joined leaf callee names invoked in the block — the
