@@ -356,6 +356,8 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
   it.each(['AGENTS.md', 'CLAUDE.md'])('%s managed block documents the policy', (file) => {
     const block = extractManagedBlock(file);
     for (const fragment of REQUIRED_FRAGMENTS) expect(block).toContain(fragment);
+    expect(block).not.toContain('Explore with');
+    expect(block).not.toContain('Use `context({name: "symbolName"})` for callers, callees, and flows.');
   });
 
   it.each(['AGENTS.md', 'CLAUDE.md'])(

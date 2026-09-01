@@ -20,6 +20,16 @@ describe('generateGitNexusContent emits a read-path MUST (#3076)', () => {
     expect(content).not.toContain('Use `context({name: "symbolName"})` for callers, callees, and flows.');
     expect(content).toContain('query({search_query: "concept"})');
     expect(content).toContain('context({name: "symbolName"})');
+    if (hasPdg) {
+      expect(content).toContain('pdg_query');
+    }
+  });
+
+  it('keeps the MUST beside the Spring Actuator Always-Do line', () => {
+    const content = generateGitNexusContent('SpringProject', stats, { hasSpringActuator: true });
+    expect(content).toContain(mustLead);
+    expect(content).toContain('Spring Actuator runtime evidence is enabled');
+    expect(content).not.toContain('Explore with');
   });
 
   it('keeps pdg_query gated on hasPdg while the read-path MUST stays always-emitted', () => {
