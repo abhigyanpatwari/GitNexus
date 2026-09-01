@@ -37,22 +37,15 @@ const PRODUCER_METHOD_NAMES: ReadonlySet<string> = new Set(
 const PLAIN_IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
 /**
- * Join a receiver chain that the source wrapped across lines.
+ * Fold a receiver's simple name to the form the type-name match runs against.
  *
- * A chain written as `outer\n    .inner\n    .kafkaTemplate` is the same
- * receiver as its single-line spelling, but the raw node text would carry the
- * newlines and the enclosing block's indentation across the worker boundary,
- * so two spellings of one receiver would not compare equal downstream.
- *
- * Only a run of whitespace that CONTAINS A NEWLINE and sits next to a dot is
- * removed. Single-line spacing is left alone, which keeps the rewrite away
- * from string literals nested in the receiver: `registry.get("a . b").template`
- * keeps its argument exactly as written.
+ * `_` and `$` are word separators in the spellings this has to accept, not part
+ * of the words: `KAFKA_TEMPLATE` and `kafka_template` are the same bean name as
+ * `kafkaTemplate`, written to the constant and snake conventions. Digits stay,
+ * because they are part of a name (`kafkaTemplate2`), never a separator.
  */
-export function normalizeSpringProducerReceiverName(receiverName: string): string {
-  return receiverName
-    .trim()
-    .replace(/\s*\.\s*/g, (separator) => (separator.includes('\n') ? '.' : separator));
+function foldReceiverName(receiverSimpleName: string): string {
+  return receiverSimpleName.replace(/[_$]/g, '').toLowerCase();
 }
 
 /**
@@ -69,11 +62,28 @@ export function isSpringMessageProducerMethod(methodName: string): boolean {
  *
  * `receiverName` is the receiver expression as written; only its last
  * dot-separated segment participates, so `this.kafkaTemplate` and
- * `outer.inner.kafkaTemplate` match while `templates.get("k")` does not. The
- * segment matches case-insensitively as a SUFFIX of the template type name, so
- * both `kafkaTemplate` and `orderKafkaTemplate` are recognized. A receiver
- * named only `template` is deliberately not: without type information that
- * would attribute any `send` in the repository to Kafka.
+ * `outer.inner.kafkaTemplate` match while `templates.get("k")` does not.
+ *
+ * The PLAIN_IDENTIFIER gate runs BEFORE the fold and is load-bearing, because
+ * the last-dot split is textual: in `config.get("a.kafkaTemplate")` it yields
+ * `kafkaTemplate")`, which folds to something a name match would accept. Only
+ * an identifier survives the gate, which is also what rejects `templates["k"]`,
+ * `getTemplate()`, and a receiver whose dot is separated by a comment.
+ *
+ * The folded segment then matches case-insensitively when it CONTAINS the
+ * template type name, so every convention a template bean is really declared
+ * with is recognized — decorated by prefix (`orderKafkaTemplate`), by suffix
+ * (`kafkaTemplateDlq`, `kafkaTemplateV2`, `rabbitTemplate1`), or written as a
+ * constant (`KAFKA_TEMPLATE`, `STREAM_BRIDGE`). A suffix-only rule accepted
+ * one of those and silently dropped the rest, which are exactly the publishes
+ * this capture exists to find. A receiver named only `template` still does not
+ * match: without type information that would attribute any `send` in the
+ * repository to Kafka.
+ *
+ * The bare type name (`KafkaTemplate.send(...)`) contains itself and so is
+ * accepted. That is left as it is: the match is by NAME, a name equal to the
+ * type is the strongest evidence the rule has, and a later phase that owns type
+ * information can discard a static-looking receiver.
  */
 export function springMessageProducerTemplateOf(
   receiverName: string,
@@ -82,10 +92,10 @@ export function springMessageProducerTemplateOf(
   if (!isSpringMessageProducerMethod(methodName)) return null;
   const receiverSimpleName = receiverName.slice(receiverName.lastIndexOf('.') + 1).trim();
   if (!PLAIN_IDENTIFIER.test(receiverSimpleName)) return null;
-  const lowered = receiverSimpleName.toLowerCase();
+  const folded = foldReceiverName(receiverSimpleName);
   for (const signature of PRODUCER_SIGNATURES) {
     if (signature.methodName !== methodName) continue;
-    if (lowered.endsWith(signature.typeName.toLowerCase())) return signature.template;
+    if (folded.includes(signature.typeName.toLowerCase())) return signature.template;
   }
   return null;
 }

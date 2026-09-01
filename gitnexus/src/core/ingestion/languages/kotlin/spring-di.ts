@@ -1,6 +1,9 @@
 import { makeScopeId } from 'gitnexus-shared';
 import { parseSpringInjectionType } from '../../di-extractors/spring.js';
-import type { SpringArgumentFact } from '../../frameworks/spring/argument-facts.js';
+import {
+  normalizeSpringFactText,
+  type SpringArgumentFact,
+} from '../../frameworks/spring/argument-facts.js';
 import {
   createSpringDiMetadataAttacher,
   hasSpringDiRelevantAnnotation,
@@ -14,7 +17,7 @@ import {
   hasSpringBeanFactorySyntax,
   type SpringBeanFactoryMethodFact,
 } from '../../frameworks/spring/bean-factories.js';
-import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { hasRecoveredSyntax, nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getKotlinSpringDiFacts } from './capture-side-channel.js';
 import { isKotlinPackageSiblingVisibilityIncomplete } from './package-siblings.js';
 
@@ -28,10 +31,12 @@ export interface KotlinAnnotationSyntaxFact extends SpringDiAnnotationFact {
 /**
  * Options for `kotlinSpringAnnotationFacts`.
  *
- * Arguments are opt-in because DI captures every annotated constructor
- * parameter, property, and function in the repository; carrying their
- * arguments would grow the worker to main-thread side-channel payload for
- * facts that never read them.
+ * The STRUCTURED arguments are opt-in because DI captures every annotated
+ * constructor parameter, property, and function in the repository, and none of
+ * its consumers reads them. Note what this does and does not save: every fact
+ * already carries `text`, the annotation's full source, so the argument TEXT
+ * crosses the worker boundary either way. What the opt-in avoids is a second,
+ * parsed copy of that same text on facts that would never look at it.
  */
 export interface KotlinSpringAnnotationFactOptions {
   readonly includeArguments?: boolean;
@@ -78,6 +83,21 @@ const KOTLIN_COMMENT_NODE_TYPES = new Set(['line_comment', 'multiline_comment'])
  * A named argument keeps its key; everything else — positional values, spreads,
  * collection literals, and interpolated strings — is kept as raw text, because
  * evaluating it would be resolution.
+ *
+ * The caller MUST reject a list with `hasRecoveredSyntax` before calling this.
+ * Nothing here re-checks: `hasError` propagates from any argument up to the
+ * list, so a per-argument check behind a list-level one can never fire, and a
+ * branch that cannot fire is a branch nobody can test.
+ *
+ * A named argument is identified by the `=` TOKEN, and the two-child shape is
+ * only a corroborating detail. Today nothing well formed reaches two children
+ * without an `=`: an annotated positional argument such as
+ * `@Suppress("UNCHECKED_CAST") "orders"` arrives as ONE `prefix_expression`, not
+ * as two children, so the token test is currently redundant. It is kept as the
+ * leading condition anyway, because the failure it prevents is asymmetric —
+ * dropping it would let any future two-child positional shape be reported under
+ * an argument key the source never wrote, which is the failure mode this whole
+ * change set is about.
  */
 export function kotlinValueArgumentFacts(valueArguments: SyntaxNode): SpringArgumentFact[] {
   const args: SpringArgumentFact[] = [];
@@ -90,10 +110,10 @@ export function kotlinValueArgumentFacts(valueArguments: SyntaxNode): SpringArgu
     const name = parts[0];
     const value = parts[1];
     if (named && parts.length === 2 && name !== undefined && value !== undefined) {
-      args.push({ name: name.text.trim(), text: value.text.trim() });
+      args.push({ name: name.text.trim(), text: normalizeSpringFactText(value.text) });
       continue;
     }
-    args.push({ text: argument.text.trim() });
+    args.push({ text: normalizeSpringFactText(argument.text) });
   }
   return args;
 }
@@ -106,6 +126,10 @@ export function kotlinValueArgumentFacts(valueArguments: SyntaxNode): SpringArgu
  * read, which is the same element `annotationFact` names. That matters for the
  * multi-annotation form `@field:[Alpha Beta("x")]`, where naively taking the
  * first constructor invocation would hand Beta's arguments to Alpha.
+ *
+ * An argument list that did not parse also yields `undefined`, collapsing into
+ * the marker-annotation case on purpose: both say there is nothing readable to
+ * resolve, while the recovered tree would offer values nobody wrote.
  */
 function kotlinAnnotationArgumentFacts(annotation: SyntaxNode): SpringArgumentFact[] | undefined {
   const named = annotation.namedChildren.find(
@@ -113,7 +137,7 @@ function kotlinAnnotationArgumentFacts(annotation: SyntaxNode): SpringArgumentFa
   );
   if (named === undefined || named.type !== 'constructor_invocation') return undefined;
   const valueArguments = named.namedChildren.find((child) => child.type === 'value_arguments');
-  if (valueArguments === undefined) return undefined;
+  if (valueArguments === undefined || hasRecoveredSyntax(valueArguments)) return undefined;
   return kotlinValueArgumentFacts(valueArguments);
 }
 

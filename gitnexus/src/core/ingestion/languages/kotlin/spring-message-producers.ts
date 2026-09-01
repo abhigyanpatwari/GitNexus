@@ -1,12 +1,13 @@
 import { makeScopeId } from 'gitnexus-shared';
+import { normalizeSpringFactText } from '../../frameworks/spring/argument-facts.js';
 import {
   isSpringMessageProducerMethod,
-  normalizeSpringProducerReceiverName,
   springMessageProducerTemplateOf,
   type SpringMessageProducerFact,
 } from '../../frameworks/spring/message-producers.js';
 import {
   findAncestorBeforeBoundary,
+  hasRecoveredSyntax,
   nodeToCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
@@ -17,7 +18,15 @@ import { kotlinValueArgumentFacts } from './spring-di.js';
 // attributing their publishes to the enclosing Class would violate graph
 // semantics.
 const CALLABLE_NODE_TYPES = new Set(['function_declaration', 'secondary_constructor']);
-const NO_CALLABLE_BOUNDARIES = new Set<string>();
+/**
+ * A class body ends the search, so the rule above holds at every depth.
+ *
+ * Without it the walk passes THROUGH the body of a class or object declared
+ * inside a function, and the publish in that body's property initializer — which
+ * likewise has no callable of its own — is attributed to the enclosing function
+ * instead of being dropped the way its top-level twin is.
+ */
+const TYPE_BODY_BOUNDARIES = new Set(['class_body', 'enum_class_body']);
 
 /**
  * Strip null-assertion operators from a receiver.
@@ -60,7 +69,7 @@ function navigationParts(
     ?.text.trim();
   if (methodName === undefined) return null;
   return {
-    receiverName: normalizeSpringProducerReceiverName(withoutNullAssertions(receiver).text),
+    receiverName: normalizeSpringFactText(withoutNullAssertions(receiver).text),
     methodName,
   };
 }
@@ -72,6 +81,10 @@ function navigationParts(
  * The destination argument may be a literal, a reference to a constant that
  * lives in another file, or a `${...}` placeholder resolved from configuration;
  * all three are recorded as written and left to a later phase.
+ *
+ * A call whose argument list did not parse yields NO fact, for the reason given
+ * on the Java side: error recovery guesses argument boundaries, and this fact
+ * has no way to say "published somewhere unreadable".
  */
 export function captureKotlinSpringMessageProducerFact(
   node: SyntaxNode,
@@ -91,7 +104,8 @@ export function captureKotlinSpringMessageProducerFact(
   const valueArguments = callSuffix?.namedChildren.find(
     (child) => child.type === 'value_arguments',
   );
-  const owner = findAncestorBeforeBoundary(node, CALLABLE_NODE_TYPES, NO_CALLABLE_BOUNDARIES);
+  if (valueArguments !== undefined && hasRecoveredSyntax(valueArguments)) return null;
+  const owner = findAncestorBeforeBoundary(node, CALLABLE_NODE_TYPES, TYPE_BODY_BOUNDARIES);
   if (owner === null) return null;
   const ownerCapture = nodeToCapture('@spring-message-producer.owner', owner);
   return {

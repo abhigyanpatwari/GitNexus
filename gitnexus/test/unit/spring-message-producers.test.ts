@@ -845,3 +845,398 @@ describe('Spring messaging producer destination kinds per template', () => {
     expect(texts.some((argument) => argument.text.includes('${app.messaging'))).toBe(false);
   });
 });
+
+describe('Spring messaging producer receiver decorations', () => {
+  // Template beans are declared under every naming convention a Java or Kotlin
+  // codebase uses: a qualifying prefix, a qualifying suffix, a version or index
+  // tail, and the constant spelling that `static final` fields take. A rule that
+  // only accepted a decorating PREFIX silently dropped the rest, which are the
+  // publishes this capture exists to find.
+  const facts = javaProducers(`
+    package com.example.messaging;
+
+    public class DecoratedTemplates {
+        public void suffixed(String payload) { kafkaTemplateDlq.send("a", payload); }
+        public void constantCase(String payload) { KAFKA_TEMPLATE.send("b", payload); }
+        public void snakeCase(String payload) { kafka_template.send("c", payload); }
+        public void versioned(String payload) { kafkaTemplateV2.send("d", payload); }
+        public void indexed(String payload) { kafkaTemplate2.send("e", payload); }
+        public void constantBridge(String payload) { STREAM_BRIDGE.send("f", payload); }
+        public void indexedBridge(String payload) { streamBridge2.send("g", payload); }
+        public void indexedRabbit(String key, String payload) {
+            rabbitTemplate1.convertAndSend(key, payload);
+        }
+        public void prefixed(String payload) { orderKafkaTemplate.send("h", payload); }
+        public void plain(String payload) { kafkaTemplate.send("i", payload); }
+    }
+  `);
+
+  it('recognizes a template decorated by prefix, suffix, index, or constant case', () => {
+    expect(facts.map(signature)).toEqual([
+      'kafka kafkaTemplateDlq.send',
+      'kafka KAFKA_TEMPLATE.send',
+      'kafka kafka_template.send',
+      'kafka kafkaTemplateV2.send',
+      'kafka kafkaTemplate2.send',
+      'stream-bridge STREAM_BRIDGE.send',
+      'stream-bridge streamBridge2.send',
+      'rabbit rabbitTemplate1.convertAndSend',
+      'kafka orderKafkaTemplate.send',
+      'kafka kafkaTemplate.send',
+    ]);
+  });
+
+  it('recognizes the same decorations in Kotlin', () => {
+    const kotlin = kotlinProducers(`
+      package com.example.messaging
+
+      class DecoratedTemplates {
+          fun suffixed(payload: String) { kafkaTemplateDlq.send("a", payload) }
+          fun constantCase(payload: String) { KAFKA_TEMPLATE.send("b", payload) }
+          fun indexedBridge(payload: String) { streamBridge2.send("c", payload) }
+      }
+    `);
+    expect(kotlin.map(signature)).toEqual([
+      'kafka kafkaTemplateDlq.send',
+      'kafka KAFKA_TEMPLATE.send',
+      'stream-bridge streamBridge2.send',
+    ]);
+  });
+
+  it('still refuses a receiver that only a type could make a template', () => {
+    // Widening the name match must not reach any of these: an undecorated
+    // `template` would attribute every `send` in the repository to Kafka, and
+    // the rest are not names at all. `config.get("a.kafkaTemplate")` is the
+    // sharp one — splitting on the last dot lands inside the string literal.
+    expect(
+      javaProducers(`
+        package com.example.messaging;
+
+        public class NotTemplates {
+            public void bare(String payload) { template.send("t", payload); }
+            public void lookup(String payload) { templates.get("k").send("t", payload); }
+            public void factory(String payload) { getTemplate().send("t", payload); }
+            public void indexed(String payload) { templates["k"].send("t", payload); }
+            public void configured(String payload) {
+                config.get("a.kafkaTemplate").send("t", payload);
+            }
+            public void unrelated(String payload) { mailer.send("t", payload); }
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('refuses a receiver whose last segment is not a bare identifier', () => {
+    // The identifier gate, not the name match, is what rejects this: strip it
+    // and `/*c*/kafkaTemplate` matches the type name and the publish is
+    // attributed to a receiver spelling that includes a comment.
+    expect(
+      javaProducers(`
+        package com.example.messaging;
+
+        public class Commented {
+            public void commented(String payload) {
+                this./*which*/kafkaTemplate.send("orders", payload);
+            }
+        }
+      `),
+    ).toEqual([]);
+  });
+});
+
+describe('Spring messaging producer error recovery', () => {
+  it('produces no Java fact when the argument list did not parse', () => {
+    // Recovery keeps the tree well formed while inventing what it contains: the
+    // unterminated call below absorbs the next method's source and offers it as
+    // an argument. A fact whose whole purpose is to name a destination must not
+    // report one that was never written.
+    expect(
+      javaProducers(`
+        package com.example.messaging;
+
+        public class Unfinished {
+            public void publish(String payload) {
+                kafkaTemplate.send(ORDERS_TOPIC,
+            }
+
+            public void other(String value) {
+                System.out.println(value);
+            }
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('produces no Kotlin fact when the argument list did not parse', () => {
+    expect(
+      kotlinProducers(`
+        package com.example.messaging
+
+        class Unfinished {
+            fun publish(payload: String) {
+                kafkaTemplate.send(ORDERS_TOPIC,
+            }
+
+            fun other(value: String) { println(value) }
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('still captures a well-formed publish in a file that fails to parse elsewhere', () => {
+    // Failing closed is scoped to the broken call, not to the file: a watcher
+    // reparse mid-edit must not blank out the publishes that are still intact.
+    const facts = javaProducers(`
+      package com.example.messaging;
+
+      public class PartlyBroken {
+          public void good(String payload) {
+              kafkaTemplate.send("orders", payload);
+          }
+
+          public void broken(String payload) {
+              kafkaTemplate.send(ORDERS_TOPIC,
+          }
+      }
+    `);
+    expect(facts.map(destination)).toEqual(['"orders"']);
+  });
+});
+
+describe('Spring messaging producer argument spellings', () => {
+  it('gives one Java argument one spelling however the source wrapped it', () => {
+    // The receiver already normalized its wraps; leaving the argument raw made
+    // the same constant compare unequal to itself, because the text carries the
+    // ENCLOSING block's indentation and so changes with nesting depth.
+    const facts = javaProducers(`
+      package com.example.messaging;
+
+      public class WrappedArguments {
+          public void single(String payload) {
+              kafkaTemplate.send(Destinations.ORDERS, payload);
+          }
+
+          public void wrapped(String payload) {
+              kafkaTemplate.send(Destinations
+                  .ORDERS, payload);
+          }
+
+          public void wrappedDeeper(String payload) {
+              if (payload != null) {
+                  kafkaTemplate.send(Destinations
+                          .ORDERS, payload);
+              }
+          }
+      }
+    `);
+    expect(facts.map(destination)).toEqual([
+      'Destinations.ORDERS',
+      'Destinations.ORDERS',
+      'Destinations.ORDERS',
+    ]);
+  });
+
+  it('gives one Kotlin argument one spelling however the source wrapped it', () => {
+    const facts = kotlinProducers(`
+      package com.example.messaging
+
+      class WrappedArguments {
+          fun single(payload: String) {
+              kafkaTemplate.send(Destinations.ORDERS, payload)
+          }
+
+          fun wrapped(payload: String) {
+              kafkaTemplate.send(topic = Destinations
+                  .ORDERS, data = payload)
+          }
+      }
+    `);
+    expect(facts.map(destination)).toEqual(['Destinations.ORDERS', 'Destinations.ORDERS']);
+  });
+
+  it('keeps the newlines inside a multi-line string literal argument', () => {
+    // The wrap rule may not reach inside a literal: a Java text block or Kotlin
+    // raw string whose newline sits next to a dot is a different VALUE once the
+    // newline is removed.
+    const java = javaProducers(`
+      package com.example.messaging;
+
+      public class LiteralArguments {
+          public void publish(String payload) {
+              kafkaTemplate.send("""
+line-a
+.line-b""", payload);
+          }
+      }
+    `);
+    expect(java.map(destination)).toEqual(['"""\nline-a\n.line-b"""']);
+  });
+
+  it('keeps the newlines inside a multi-line literal nested in the receiver', () => {
+    // The single-line form of this is already pinned above; the doc comment on
+    // the normalizer promised the same for nested literals, and only the
+    // single-line case delivered it.
+    const java = javaProducers(`
+      package com.example.messaging;
+
+      public class LiteralReceiver {
+          public void publish(String payload) {
+              registry.get("""
+line-a
+.line-b""").kafkaTemplate.send("orders", payload);
+          }
+      }
+    `);
+    expect(java.map((fact) => fact.receiverName)).toEqual([
+      'registry.get("""\nline-a\n.line-b""").kafkaTemplate',
+    ]);
+  });
+
+  it('drops a comment between Java arguments without shifting their positions', () => {
+    // Comments are named children of a Java argument list, so an unfiltered
+    // read reports three arguments for a two-argument call and moves the
+    // payload into the destination slot for anything reading by position.
+    const facts = javaProducers(`
+      package com.example.messaging;
+
+      public class CommentedArguments {
+          public void publish(String payload) {
+              kafkaTemplate.send(/* why */ "orders", payload);
+          }
+      }
+    `);
+    expect(facts.map((fact) => fact.args)).toEqual([[{ text: '"orders"' }, { text: 'payload' }]]);
+  });
+
+  it('reads a Kotlin named argument through a comment between name and value', () => {
+    const facts = kotlinProducers(`
+      package com.example.messaging
+
+      class CommentedArguments {
+          fun publish(payload: String) {
+              kafkaTemplate.send(topic /* which */ = "orders")
+          }
+      }
+    `);
+    expect(facts.map((fact) => fact.args)).toEqual([[{ name: 'topic', text: '"orders"' }]]);
+  });
+
+  it('does not read an annotated Kotlin positional argument as a named one', () => {
+    // `@Suppress("x") "orders"` has the same two-child shape as `name = value`.
+    // Only the `=` token tells them apart, and inventing a name here would
+    // hand a consumer an argument key that does not exist.
+    const facts = kotlinProducers(`
+      package com.example.messaging
+
+      class AnnotatedArguments {
+          fun publish(payload: String) {
+              kafkaTemplate.send(@Suppress("UNCHECKED_CAST") "orders", payload)
+          }
+      }
+    `);
+    expect(facts.map((fact) => fact.args)).toEqual([
+      [{ text: '@Suppress("UNCHECKED_CAST") "orders"' }, { text: 'payload' }],
+    ]);
+  });
+});
+
+describe('Spring messaging producer owner boundaries', () => {
+  it('does not attribute a Java publish across a nested type body', () => {
+    // A publish in the field initializer of a class declared inside a method is
+    // run when that class is instantiated, which the method may never do. The
+    // same construct at the top level of a class already yields no fact, and
+    // the rule has to read the same at both depths.
+    expect(
+      javaProducers(`
+        package com.example.messaging;
+
+        public class Nested {
+            public void outer(String payload) {
+                class Local {
+                    private final Object sent = kafkaTemplate.send("local-field", payload);
+                }
+            }
+
+            public void anonymous(String payload) {
+                Runnable task = new Runnable() {
+                    private final Object sent = kafkaTemplate.send("anon-field", payload);
+                    public void run() {}
+                };
+            }
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('still attributes a Java publish to a method of a nested type', () => {
+    const facts = javaProducers(`
+      package com.example.messaging;
+
+      public class Nested {
+          public void anonymous(String payload) {
+              Runnable task = new Runnable() {
+                  public void run() { kafkaTemplate.send("anon-method", payload); }
+              };
+          }
+
+          class Inner {
+              void publish(String payload) { kafkaTemplate.send("inner-method", payload); }
+          }
+      }
+    `);
+    expect(facts.map(destination)).toEqual(['"anon-method"', '"inner-method"']);
+  });
+
+  it('does not attribute a Kotlin publish across a nested class body', () => {
+    expect(
+      kotlinProducers(`
+        package com.example.messaging
+
+        class Nested {
+            fun outer(payload: String) {
+                class Local {
+                    val sent = kafkaTemplate.send("local-property", payload)
+                }
+
+                val task = object : Runnable {
+                    val sent = kafkaTemplate.send("object-property", payload)
+                    override fun run() {}
+                }
+            }
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('still attributes a Kotlin publish to a function of a nested class body', () => {
+    const facts = kotlinProducers(`
+      package com.example.messaging
+
+      class Nested {
+          fun outer(payload: String) {
+              val task = object : Runnable {
+                  override fun run() { kafkaTemplate.send("object-method", payload) }
+              }
+          }
+      }
+    `);
+    expect(facts.map(destination)).toEqual(['"object-method"']);
+  });
+
+  it('does not unwrap a Kotlin postfix operator that only looks like an assertion', () => {
+    // The existing coverage used `counter++`, which the name match rejects on
+    // its own. Only a receiver that WOULD match makes the unwrap guard the
+    // reason for the rejection.
+    expect(
+      kotlinProducers(`
+        package com.example.messaging
+
+        class Incremented {
+            fun publish(payload: String) {
+                kafkaTemplate++.send("orders", payload)
+            }
+        }
+      `),
+    ).toEqual([]);
+  });
+});
