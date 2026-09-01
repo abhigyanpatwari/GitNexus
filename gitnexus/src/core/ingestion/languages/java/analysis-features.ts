@@ -5,7 +5,7 @@ function isSpringApplicationConfig(filePath: string): boolean {
   return /^application(?:-[^.]+)?\.(?:properties|ya?ml)$/i.test(base);
 }
 
-/** Durable completeness contract for Java Spring configuration bindings. */
+/** Durable completeness contract for Java and Kotlin Spring configuration bindings. */
 export const SPRING_CONFIG_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
   id: 'spring.config-bindings',
   version: 2,

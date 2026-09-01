@@ -7,7 +7,10 @@ import {
   type SpringConfigConsumer,
 } from '../../frameworks/spring/config-bindings.js';
 import { createSpringAnnotationNameResolver } from '../../frameworks/spring/bean-candidates.js';
-import { parseSpringAnnotationArguments } from '../../frameworks/spring/annotation-arguments.js';
+import {
+  parseSpringAnnotationArguments,
+  parseStaticStringLiteral,
+} from '../../frameworks/spring/annotation-arguments.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { getKotlinParser } from './query.js';
@@ -45,7 +48,7 @@ interface KotlinAnnotation {
 interface KotlinImports {
   readonly exact: ReadonlyMap<string, string>;
   readonly wildcard: ReadonlySet<string>;
-  readonly localTypes: ReadonlySet<string>;
+  readonly localTypes: ReadonlyMap<string, readonly SyntaxNode[]>;
 }
 
 function firstDescendantOfType(node: SyntaxNode, type: string): SyntaxNode | undefined {
@@ -93,7 +96,7 @@ function classScopeId(filePath: string, declaration: SyntaxNode): ScopeId {
 function collectKotlinImports(root: SyntaxNode): KotlinImports {
   const exact = new Map<string, string>();
   const wildcard = new Set<string>();
-  const localTypes = new Set<string>();
+  const localTypes = new Map<string, SyntaxNode[]>();
 
   for (const header of root.descendantsOfType('import_header')) {
     const text = header.text.replace(/^import\s+/, '').trim();
@@ -112,7 +115,11 @@ function collectKotlinImports(root: SyntaxNode): KotlinImports {
   for (const type of ['class_declaration', 'object_declaration']) {
     for (const declaration of root.descendantsOfType(type)) {
       const name = ownerName(declaration);
-      if (name) localTypes.add(name);
+      if (name) {
+        const declarations = localTypes.get(name) ?? [];
+        declarations.push(declaration);
+        localTypes.set(name, declarations);
+      }
     }
   }
   return { exact, wildcard, localTypes };
@@ -167,36 +174,56 @@ function importedAs(
   return imports.exact.get(simple) === fqn || imports.wildcard.has(wildcardPackage);
 }
 
+function hasVisibleLocalType(
+  imports: KotlinImports,
+  simple: string,
+  annotation: SyntaxNode,
+): boolean {
+  for (const declaration of imports.localTypes.get(simple) ?? []) {
+    const declarationOwner = enclosingOwner(declaration);
+    if (declarationOwner === undefined) return true;
+    let current: SyntaxNode | null = annotation;
+    while (current !== null) {
+      if (current.id === declarationOwner.id) return true;
+      current = current.parent;
+    }
+  }
+  return false;
+}
+
+const SIMPLE_CONFIG_ANNOTATIONS = [
+  {
+    simple: VALUE_SIMPLE,
+    kind: 'value',
+    fqn: VALUE_ANNOTATION,
+    wildcardPackage: 'org.springframework.beans.factory.annotation',
+  },
+  {
+    simple: CONFIGURATION_PROPERTIES_SIMPLE,
+    kind: 'configuration-properties',
+    fqn: CONFIGURATION_PROPERTIES_ANNOTATION,
+    wildcardPackage: 'org.springframework.boot.context.properties',
+  },
+] as const;
+
 function configAnnotationKind(
-  rawName: string,
+  annotation: KotlinAnnotation,
   imports: KotlinImports,
 ): 'value' | 'configuration-properties' | null {
+  const rawName = annotation.name;
   if (rawName === VALUE_ANNOTATION) return 'value';
   if (rawName === CONFIGURATION_PROPERTIES_ANNOTATION) return 'configuration-properties';
   const simple = simpleName(rawName);
   const aliased = imports.exact.get(simple);
   if (aliased === VALUE_ANNOTATION) return 'value';
   if (aliased === CONFIGURATION_PROPERTIES_ANNOTATION) return 'configuration-properties';
-  if (simple === VALUE_SIMPLE) {
-    if (imports.localTypes.has(simple) && !imports.exact.has(simple)) return null;
-    return importedAs(
-      imports,
-      simple,
-      VALUE_ANNOTATION,
-      'org.springframework.beans.factory.annotation',
-    )
-      ? 'value'
-      : null;
-  }
-  if (simple === CONFIGURATION_PROPERTIES_SIMPLE) {
-    if (imports.localTypes.has(simple) && !imports.exact.has(simple)) return null;
-    return importedAs(
-      imports,
-      simple,
-      CONFIGURATION_PROPERTIES_ANNOTATION,
-      'org.springframework.boot.context.properties',
-    )
-      ? 'configuration-properties'
+  for (const candidate of SIMPLE_CONFIG_ANNOTATIONS) {
+    if (simple !== candidate.simple) continue;
+    if (hasVisibleLocalType(imports, simple, annotation.node) && !imports.exact.has(simple)) {
+      return null;
+    }
+    return importedAs(imports, simple, candidate.fqn, candidate.wildcardPackage)
+      ? candidate.kind
       : null;
   }
   return null;
@@ -272,13 +299,16 @@ function parseConfigurationPropertiesPrefix(annotation: SyntaxNode): string | nu
     const named = argumentsList.filter(
       (argument) => argument.name === 'prefix' || argument.name === 'value',
     );
-    const chosen =
-      named.length === 1 ? named[0] : named.length === 0 ? argumentsList[0] : undefined;
+    const positional = argumentsList.filter((argument) => argument.name === undefined);
+    const chosen = named.length === 1 ? named[0] : named.length === 0 ? positional[0] : undefined;
     if (chosen !== undefined) {
-      const decoded = decodeKotlinStringLiteral(chosen.value.trim()) ?? chosen.value.trim();
-      const prefix = decoded.replace(/^["']|["']$/g, '').replace(/^\.+|\.+$/g, '');
+      const decoded = parseStaticStringLiteral(chosen.value);
+      if (decoded === null) return null;
+      const prefix = decoded.replace(/^\.+|\.+$/g, '');
       if (/^[A-Za-z0-9_.-]+$/.test(prefix)) return prefix;
+      return null;
     }
+    if (argumentsList.length > 0) return null;
   }
   const literals = kotlinStringLiterals(annotation);
   if (literals.length !== 1) return null;
@@ -326,7 +356,7 @@ function pushValueFacts(
   if (fieldName === undefined) return;
   for (const annotation of annotationsOn(member)) {
     if (!allowedUseSite(annotation.useSiteTarget)) continue;
-    if (configAnnotationKind(annotation.name, imports) !== 'value') continue;
+    if (configAnnotationKind(annotation, imports) !== 'value') continue;
     const keys = parseValuePlaceholderKeys(annotation.node);
     if (keys.length === 0) continue;
     facts.push({
@@ -364,7 +394,7 @@ export function captureKotlinSpringConfigConsumerFacts(
       const className = ownerName(declaration);
       if (className === undefined) continue;
       for (const annotation of annotationsOn(declaration)) {
-        if (configAnnotationKind(annotation.name, imports) !== 'configuration-properties') {
+        if (configAnnotationKind(annotation, imports) !== 'configuration-properties') {
           continue;
         }
         const prefix = parseConfigurationPropertiesPrefix(annotation.node);

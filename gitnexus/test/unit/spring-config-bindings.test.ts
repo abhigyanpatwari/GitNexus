@@ -309,6 +309,50 @@ describe('Kotlin Spring configuration consumers', () => {
     ).toEqual([]);
   });
 
+  it('limits nested annotation shadows to their lexical owner', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    const consumers = extractKotlinSpringConfigConsumers(`
+      import org.springframework.beans.factory.annotation.*
+
+      class ShadowOwner {
+        annotation class Value(val value: String)
+
+        @Value("\\\${ignored.local}")
+        var local: String = ""
+      }
+
+      class SpringConsumer {
+        @Value("\\\${service.timeout}")
+        var timeout: Int = 0
+      }
+    `);
+
+    expect(consumers).toEqual([
+      expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['service.timeout'] }),
+    ]);
+  });
+
+  it('rejects non-literal ConfigurationProperties prefixes', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.boot.context.properties.ConfigurationProperties
+
+        const val SERVICE_PREFIX = "service"
+
+        @ConfigurationProperties(prefix = SERVICE_PREFIX)
+        class ConstantPrefix
+
+        @ConfigurationProperties(ignoreUnknownFields = true)
+        class BooleanFirstArgument
+      `),
+    ).toEqual([]);
+  });
+
   it('binds constructor properties, setters, and import aliases, not getters or unbound params', async () => {
     const { extractKotlinSpringConfigConsumers } =
       await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');

@@ -213,6 +213,24 @@ async function setupSpringConfigIncrementalRepo() {
   return repo;
 }
 
+async function setupKotlinSpringConfigConsumerIncrementalRepo() {
+  const repo = await setupSpringConfigIncrementalRepo();
+  const kotlin = path.join(repo.dbPath, 'src', 'main', 'kotlin', 'com', 'example');
+  await mkdir(kotlin, { recursive: true });
+  await writeFile(
+    path.join(kotlin, 'ConfigConsumer.kt'),
+    'package com.example\n' +
+      'import org.springframework.beans.factory.annotation.Value\n\n' +
+      'class ConfigConsumer {\n' +
+      '  @Value("\\${service.timeout}")\n' +
+      '  var timeout: Int = 0\n' +
+      '}\n',
+    'utf-8',
+  );
+  gitCommitAll(repo.dbPath, 'add Kotlin Spring config consumer');
+  return repo;
+}
+
 async function readWildcardServiceAnnotations(repoPath: string): Promise<string[]> {
   const adapter = await import('../../src/core/lbug/lbug-adapter.js');
   const { lbugPath } = getStoragePaths(repoPath);
@@ -241,6 +259,32 @@ async function readSpringConfigPropertyNames(repoPath: string): Promise<string[]
         'RETURN p.name AS name ORDER BY p.name',
     )) as Array<{ name?: unknown }>;
     return rows.map((row) => String(row.name));
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function readKotlinConfigConsumerState(repoPath: string): Promise<{
+  description: string;
+  bindingCount: number;
+}> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      "MATCH (p:Property) WHERE p.name = 'timeout' " +
+        'RETURN p.description AS description LIMIT 1',
+    )) as Array<{ description?: unknown }>;
+    const bindings = (await adapter.executeQuery(
+      "MATCH (p:Property {name: 'timeout'})-[r:CodeRelation]->(c:Property) " +
+        "WHERE r.type = 'USES' AND r.reason STARTS WITH 'spring-config:' " +
+        'RETURN count(r) AS count',
+    )) as Array<{ count?: number | bigint }>;
+    return {
+      description: String(rows[0]?.description ?? ''),
+      bindingCount: Number(bindings[0]?.count ?? 0),
+    };
   } finally {
     await adapter.closeLbug();
   }
@@ -805,6 +849,43 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
         [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
         [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('persists Kotlin unresolved markers when a Spring config key is deleted incrementally', async () => {
+    const repo = await setupKotlinSpringConfigConsumerIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readKotlinConfigConsumerState(repo.dbPath)).toEqual({
+        description: '',
+        bindingCount: 1,
+      });
+
+      const configPath = path.join(
+        repo.dbPath,
+        'src',
+        'main',
+        'resources',
+        'application.properties',
+      );
+      await writeFile(configPath, '', 'utf-8');
+      gitCommitAll(repo.dbPath, 'delete Spring config key');
+
+      const logs: string[] = [];
+      await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(logs.join('\n')).toContain('Spring config consumer property drift');
+      expect(await readKotlinConfigConsumerState(repo.dbPath)).toEqual({
+        description: 'Spring config unresolved: service.timeout',
+        bindingCount: 0,
       });
     } finally {
       await repo.cleanup();
