@@ -367,6 +367,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  indexed_at: ${JSON.stringify(freshMeta?.indexedAt ?? null)}`);
   lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
   lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
+  lines.push(`  spring_actuator: ${JSON.stringify(freshMeta?.springActuator ?? null)}`);
   const indexedRunnerSchema = (freshMeta?.runnerIdentity as { schemaVersion?: unknown } | undefined)
     ?.schemaVersion;
   lines.push(

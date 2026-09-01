@@ -194,4 +194,13 @@ describeBlock('POST /api/analyze token validation (real server)', () => {
     expect(status).toBe(400);
     expect(JSON.parse(body).error).toContain('Provide');
   });
+
+  it('rejects an empty Spring Actuator snapshot path', async () => {
+    const { status, body } = await postAnalyze(port, {
+      path: '/tmp/gitnexus-nonexistent-abs-path',
+      springActuatorPath: '   ',
+    });
+    expect(status).toBe(400);
+    expect(JSON.parse(body).error).toContain('"springActuatorPath" must be a non-empty string');
+  });
 });
