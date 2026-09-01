@@ -21,15 +21,6 @@ import {
   type Operand,
 } from './kotlin-const-resolver.js';
 
-const ROUTE_ANNOTATIONS = new Set([
-  'GetMapping',
-  'PostMapping',
-  'PutMapping',
-  'DeleteMapping',
-  'PatchMapping',
-  'RequestMapping',
-]);
-
 /** Direct declaration annotations in source order. */
 function declarationAnnotations(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
   const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
@@ -103,6 +94,19 @@ function isKotlinInterface(node: Parser.SyntaxNode): boolean {
   return node.children.some((child) => child.type === 'interface');
 }
 
+function isAbstractOrSealedClass(node: Parser.SyntaxNode): boolean {
+  const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
+  return (
+    modifiers?.namedChildren.some((child) => {
+      if (child.type !== 'inheritance_modifier' && child.type !== 'class_modifier') {
+        return false;
+      }
+      const text = child.text.trim();
+      return text === 'abstract' || text === 'sealed';
+    }) === true
+  );
+}
+
 function directFunctions(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
   const body = node.namedChildren.find((child) => child.type === 'class_body');
   return body?.namedChildren.filter((child) => child.type === 'function_declaration') ?? [];
@@ -118,9 +122,8 @@ function functionName(node: Parser.SyntaxNode): string | null {
 }
 
 /**
- * `springAnnotationHttpMethods` intentionally parses Java's `{A, B}` collection
- * spelling. Translate only Kotlin's `method = [A, B]` member before delegating;
- * no Kotlin node names leak into the shared helper.
+ * `springAnnotationHttpMethods` parses Java `{A, B}` collections.
+ * Translate only Kotlin `method = [A, B]` before delegating.
  */
 function kotlinSpringHttpMethods(name: string, annotation: Parser.SyntaxNode): readonly string[] {
   if (name !== 'RequestMapping') return springAnnotationHttpMethods(name, annotation.text);
@@ -229,7 +232,7 @@ export function extractKotlinSpringRoutes(
   let moduleConstants: KotlinModuleConstants | undefined;
 
   for (const classNode of tree.rootNode.descendantsOfType('class_declaration')) {
-    if (isKotlinInterface(classNode)) continue;
+    if (isKotlinInterface(classNode) || isAbstractOrSealedClass(classNode)) continue;
     const annotations = declarationAnnotations(classNode);
     const annotationNames = annotations.map(annotationName);
     if (!annotationNames.includes('RestController')) continue;
@@ -244,7 +247,7 @@ export function extractKotlinSpringRoutes(
 
       for (const annotation of declarationAnnotations(functionNode)) {
         const decoratorName = annotationName(annotation);
-        if (!decoratorName || !ROUTE_ANNOTATIONS.has(decoratorName)) continue;
+        if (!decoratorName) continue;
 
         const methodMethods = kotlinSpringHttpMethods(decoratorName, annotation);
         const methods = intersectSpringHttpMethods(ownerMapping.methods, methodMethods);

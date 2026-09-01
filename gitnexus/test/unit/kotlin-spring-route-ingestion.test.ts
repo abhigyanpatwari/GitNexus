@@ -237,6 +237,59 @@ class Concrete {
     });
   });
 
+  it('drops abstract and sealed RestController classes', () => {
+    const routes = extractKotlinSpringRoutes(
+      parse(`
+package app
+
+@RestController
+abstract class AbstractApi {
+    @GetMapping("/abstract")
+    fun abstractHandler() {}
+}
+
+@RestController
+sealed class SealedApi {
+    @GetMapping("/sealed")
+    fun sealedHandler() {}
+}
+
+@RestController
+class ConcreteApi {
+    @GetMapping("/ok")
+    fun ok() {}
+}
+`),
+      'Abstract.kt',
+    );
+
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({
+      httpMethod: 'GET',
+      routePath: '/ok',
+      handlerName: 'ok',
+    });
+  });
+
+  it('parses Kotlin RequestMapping method arrays without changing Java brace parsing', () => {
+    const routes = extractKotlinSpringRoutes(
+      parse(`
+package app
+
+@RestController
+class Api {
+    @RequestMapping("/items", method = [RequestMethod.GET, RequestMethod.HEAD])
+    fun items() {}
+}
+`),
+      'Items.kt',
+    );
+
+    expect(routes).toHaveLength(2);
+    expect(routes.map((route) => route.httpMethod).sort()).toEqual(['GET', 'HEAD']);
+    expect(routes.every((route) => route.routePath === '/items')).toBe(true);
+  });
+
   it('does not manufacture a handler from class-only annotations', () => {
     const routes = extractKotlinSpringRoutes(
       parse(`
