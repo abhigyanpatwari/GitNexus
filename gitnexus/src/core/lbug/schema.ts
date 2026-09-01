@@ -258,6 +258,16 @@ CREATE NODE TABLE Tool (
 // on it. `name` carries the placeholder text for display and must never be used
 // as a join key — it is exactly the value that would produce the false match.
 // See `pipeline-phases/spring-destinations.ts`.
+//
+// `configKey` / `configDefault` record what a `${key:default}` said WITHOUT
+// resolving it: the default is written in the source, but configuration can
+// override it and this graph does not read configuration values, so the default
+// is provenance rather than identity.
+//
+// `brokerConflict` records one address seen with two brokers. Surfacing that
+// disagreement is part of the design — it is a finding, not something to merge
+// away — which means it has to be queryable, so it needs a column here as well
+// as a property in the phase.
 export const DESTINATION_SCHEMA = `
 CREATE NODE TABLE Destination (
   id STRING,
@@ -269,6 +279,8 @@ CREATE NODE TABLE Destination (
   broker STRING,
   resolution STRING,
   configKey STRING,
+  configDefault STRING,
+  brokerConflict STRING,
   description STRING,
   PRIMARY KEY (id)
 )`;

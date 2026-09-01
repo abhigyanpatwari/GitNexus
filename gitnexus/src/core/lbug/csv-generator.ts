@@ -122,6 +122,17 @@ export const escapeCSVNumber = (
   return String(value);
 };
 
+/**
+ * A numeric column that may legitimately have NO value.
+ *
+ * `escapeCSVNumber` substitutes a sentinel (-1) for absence, which is right
+ * where every row has a span and wrong where absence is the fact being
+ * recorded. An empty field is loaded as NULL by COPY, so the column can say
+ * "there is no line here" instead of pointing at line -1.
+ */
+export const escapeCSVNullableNumber = (value: unknown): string =>
+  typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+
 const formatCSVStringArray = (value: unknown): string => {
   const items = Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
@@ -539,7 +550,7 @@ export const streamAllCSVsToDisk = async (
     // Destination nodes for async messaging (Kafka topics, Rabbit exchanges, …)
     const destinationWriter = new BufferedCSVWriter(
       path.join(csvDir, 'destination.csv'),
-      'id,name,filePath,startLine,endLine,address,broker,resolution,configKey,description',
+      'id,name,filePath,startLine,endLine,address,broker,resolution,configKey,configDefault,brokerConflict,description',
     );
 
     // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
@@ -744,17 +755,32 @@ export const streamAllCSVsToDisk = async (
           // below the database line the exact false connection the
           // location-based node id prevents above it. The placeholder is
           // carried by `name`, which nothing joins on.
+          //
+          // The line columns are written EMPTY (→ NULL) rather than defaulted
+          // to -1 when the node carries none. A resolved destination has no
+          // location at all — that is the point of the `filePath` rule two
+          // fields to the left — and a row saying `filePath` NULL but
+          // `startLine` -1 makes the two columns disagree about one fact and
+          // renders as "line -1" in the UI.
+          //
+          // `brokerConflict` is a REQUIREMENT, not decoration: one address seen
+          // with two brokers is a finding to surface, and while the phase wrote
+          // the property this column did not exist, so it was dropped at the
+          // database boundary without a warning and `d.brokerConflict` raised a
+          // binder error.
           pending = destinationWriter.addRow(
             [
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
-              escapeCSVNumber(node.properties.startLine, -1),
-              escapeCSVNumber(node.properties.endLine, -1),
+              escapeCSVNullableNumber(node.properties.startLine),
+              escapeCSVNullableNumber(node.properties.endLine),
               escapeCSVField(String(node.properties.address ?? '')),
               escapeCSVField(String(node.properties.broker ?? '')),
               escapeCSVField(String(node.properties.resolution ?? '')),
               escapeCSVField(String(node.properties.configKey ?? '')),
+              escapeCSVField(String(node.properties.configDefault ?? '')),
+              escapeCSVField(String(node.properties.brokerConflict ?? '')),
               escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
