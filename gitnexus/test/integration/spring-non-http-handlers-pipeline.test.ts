@@ -152,7 +152,6 @@ describe('Spring non-HTTP handler entry points (#2417)', () => {
         '"orders"',
         'Destinations.SHIPMENTS',
         'ordersTopic',
-        '"orders"',
         'exchange',
         '"queue.orders"',
         '"orders-out-0"',
@@ -323,7 +322,6 @@ describe('Spring non-HTTP handler durable warm parse cache (#2417)', () => {
       expect(rowsIn('OrderPublishers.kt', 'producer').map((row) => row.detail)).toEqual([
         'kafka kafkaTemplate.send',
         'kafka this.kafkaTemplate.send',
-        'kafka kafkaTemplate.send',
         'kafka kafkaTemplate.send',
         'rabbit rabbitTemplate.convertAndSend',
         'jms jmsTemplate.convertAndSend',

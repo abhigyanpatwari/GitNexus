@@ -215,6 +215,11 @@ describe('Java Spring messaging producer owners', () => {
   });
 });
 
+// Named arguments are illegal when the callee is a Java method — parameter
+// names are not guaranteed in bytecode — so every named-argument example here
+// publishes through a template DECLARED IN KOTLIN. `KotlinKafkaTemplate` is
+// matched by the same receiver-name rule as the Spring class and keeps the
+// examples compilable Kotlin rather than a shape no source could take.
 describe('Kotlin Spring messaging producers', () => {
   const facts = kotlinProducers(`
     package com.example.messaging
@@ -222,7 +227,12 @@ describe('Kotlin Spring messaging producers', () => {
     import com.example.messaging.support.Destinations
     import org.springframework.kafka.core.KafkaTemplate
 
+    class KotlinKafkaTemplate {
+        fun send(topic: String, data: String) {}
+    }
+
     class OrderPublishers(private val kafkaTemplate: KafkaTemplate<String, String>) {
+        private val kotlinKafkaTemplate = KotlinKafkaTemplate()
         private lateinit var ordersTopic: String
 
         fun literalDestination(payload: String) {
@@ -238,7 +248,7 @@ describe('Kotlin Spring messaging producers', () => {
         }
 
         fun namedArguments(payload: String) {
-            kafkaTemplate.send(topic = Destinations.ORDERS, data = payload)
+            kotlinKafkaTemplate.send(topic = Destinations.ORDERS, data = payload)
         }
 
         fun safeCallReceiver(payload: String) {
@@ -264,7 +274,7 @@ describe('Kotlin Spring messaging producers', () => {
       'kafka kafkaTemplate.send',
       'kafka this.kafkaTemplate.send',
       'kafka kafkaTemplate.send',
-      'kafka kafkaTemplate.send',
+      'kafka kotlinKafkaTemplate.send',
       'kafka kafkaTemplate.send',
       'rabbit rabbitTemplate.convertAndSend',
       'jms jmsTemplate.convertAndSend',
@@ -579,13 +589,19 @@ describe('Kotlin Spring messaging producer call shapes', () => {
   const facts = kotlinProducers(`
     package com.example.messaging
 
+    class KotlinKafkaTemplate {
+        fun send(topic: String, data: String) {}
+    }
+
     class CallShapes {
+        private val kotlinKafkaTemplate = KotlinKafkaTemplate()
+
         fun argumentsAndTrailingLambda(payload: String) {
             kafkaTemplate.send("orders", payload) { result -> println(result) }
         }
 
         fun namedArgumentHoldingComparison(payload: String, flag: Boolean) {
-            kafkaTemplate.send(topic = if (flag == true) "a" else "b", data = payload)
+            kotlinKafkaTemplate.send(topic = if (flag == true) "a" else "b", data = payload)
         }
 
         fun trailingComma(payload: String) {
@@ -1040,13 +1056,19 @@ describe('Spring messaging producer argument spellings', () => {
     const facts = kotlinProducers(`
       package com.example.messaging
 
+      class KotlinKafkaTemplate {
+          fun send(topic: String, data: String) {}
+      }
+
       class WrappedArguments {
+          private val kotlinKafkaTemplate = KotlinKafkaTemplate()
+
           fun single(payload: String) {
               kafkaTemplate.send(Destinations.ORDERS, payload)
           }
 
           fun wrapped(payload: String) {
-              kafkaTemplate.send(topic = Destinations
+              kotlinKafkaTemplate.send(topic = Destinations
                   .ORDERS, data = payload)
           }
       }
@@ -1112,9 +1134,15 @@ line-a
     const facts = kotlinProducers(`
       package com.example.messaging
 
+      class KotlinKafkaTemplate {
+          fun send(topic: String) {}
+      }
+
       class CommentedArguments {
+          private val kotlinKafkaTemplate = KotlinKafkaTemplate()
+
           fun publish(payload: String) {
-              kafkaTemplate.send(topic /* which */ = "orders")
+              kotlinKafkaTemplate.send(topic /* which */ = "orders")
           }
       }
     `);

@@ -27,10 +27,6 @@ class KotlinOrderPublishers(
         kafkaTemplate.send(ordersTopic, payload)
     }
 
-    fun publishWithNamedArguments(payload: String) {
-        kafkaTemplate.send(topic = "orders", data = payload)
-    }
-
     fun publishToExchange(exchange: String, routingKey: String, payload: String) {
         rabbitTemplate.convertAndSend(exchange, routingKey, payload)
     }
