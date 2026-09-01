@@ -366,7 +366,8 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
     (file) => {
       const alwaysDo = alwaysDoSection(extractManagedBlock(file));
       expect(alwaysDo).toMatch(/^- \*\*MUST use `query\(\{search_query: "concept"\}\)`/m);
-      expect(alwaysDo).toContain('Prefer graph edges to grep strings');
+      expect(alwaysDo).toContain('Graph first');
+      expect(alwaysDo).toContain('text search only for empty/');
       expect(alwaysDo).not.toMatch(/Explore\s+with/);
       expect(alwaysDo).not.toMatch(/Use\s+`context\(\{name:/);
       expect(alwaysDo).not.toMatch(/^- [^\n]*Explore/m);

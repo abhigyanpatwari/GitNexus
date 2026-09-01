@@ -8,7 +8,7 @@ import { generateGitNexusContent } from '../../src/cli/ai-context.js';
 describe('generateGitNexusContent emits a read-path MUST (#3076)', () => {
   const stats = { nodes: 50, edges: 100, processes: 5 };
   const mustBullet =
-    '- **MUST use `query({search_query: "concept"})`, `context({name: "symbolName"})`, or `impact` for read-only questions about callers, dependencies, imports, blast radius, or execution flow.** Prefer graph edges to grep strings; use text search to confirm gaps or literals.';
+    '- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.';
 
   function alwaysDoSection(content: string): string {
     return content.slice(content.indexOf('## Always Do'), content.indexOf('## Never Do'));
