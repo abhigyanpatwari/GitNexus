@@ -1104,14 +1104,14 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
 
       const preserved =
         destinationSkillContent !== null && destinationSkillContent !== sourceSkillContent;
-      if (preserved) {
+      if (preserved && !source.isDirectory) {
         console.log(
           `[gitnexus] preserved customized skill ${destinationSkillPath}; ` +
             'delete the file and rerun setup to refresh it.',
         );
       } else if (source.isDirectory) {
         await copyDirRecursive(path.join(skillsRoot, skillName), skillDir);
-      } else {
+      } else if (!preserved) {
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(destinationSkillPath, sourceSkillContent, 'utf-8');
       }
