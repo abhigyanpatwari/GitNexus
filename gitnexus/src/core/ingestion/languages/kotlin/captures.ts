@@ -25,11 +25,13 @@ import {
   setKotlinSpringDiFacts,
   setKotlinSpringDynamicLookupFacts,
   setKotlinSpringNonHttpHandlerFacts,
+  setKotlinSpringConfigConsumerFacts,
 } from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
+import { captureKotlinSpringConfigConsumerFacts } from './spring-config-bindings.js';
 import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
 import { captureKotlinSpringDynamicLookupFact } from './spring-dynamic-lookup.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
@@ -372,6 +374,10 @@ export function emitKotlinScopeCaptures(
   setKotlinSpringDiFacts(filePath, springDiFacts);
   setKotlinSpringDynamicLookupFacts(filePath, springDynamicLookupFacts);
   setKotlinSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
+  setKotlinSpringConfigConsumerFacts(
+    filePath,
+    captureKotlinSpringConfigConsumerFacts(tree.rootNode, filePath),
+  );
   out.push(...synthesizeLombokAccessorCaptures(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;

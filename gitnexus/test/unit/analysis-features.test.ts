@@ -40,7 +40,15 @@ describe('analysis feature versions', () => {
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
-      'spring.config-bindings': 1,
+      'spring.config-bindings': 2,
+      'spring.non-http-handlers': 1,
+    });
+    expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.kt'])).toEqual({
+      'graph.class-framework-annotations': 1,
+      'spring.aop-advice': 1,
+      'spring.bean-inventory': 2,
+      'spring.conditionals-auto-configuration': 1,
+      'spring.config-bindings': 2,
       'spring.non-http-handlers': 1,
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
@@ -57,7 +65,7 @@ describe('analysis feature versions', () => {
       ]),
     ).toEqual({
       'graph.class-framework-annotations': 1,
-      'spring.config-bindings': 1,
+      'spring.config-bindings': 2,
     });
     expect(
       resolveAnalysisFeatureVersions(FEATURES, [

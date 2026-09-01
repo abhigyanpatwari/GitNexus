@@ -537,6 +537,17 @@ jobs:
         run: node --import tsx bench/kotlin-jvm-accessors/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Kotlin Spring config-consumer capture guards (#2412)
+        if: ${{ !cancelled() }}
+        # Build-free: explicit-import control vs wildcard-import feature path;
+        # fingerprints @Value / @ConfigurationProperties facts and guards scaling
+        # + widening overhead. The parity check is the regression gate: each file
+        # declares a sibling nested type named `Value`, which must not suppress
+        # the imported Spring annotation (file-wide shadowing dropped 2 of every
+        # 3 facts on this corpus).
+        run: node --import tsx bench/spring-config-bindings/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Re-export closure scaling guards (#2864)
         # Build-free: asserts buildReexportClosures stays linear in chain depth
         # and within an absolute ceiling on a wide package corpus. #2864 changed
