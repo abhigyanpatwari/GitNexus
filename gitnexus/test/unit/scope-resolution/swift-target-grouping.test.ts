@@ -12,6 +12,16 @@ describe('groupSwiftFilesBySpmTarget', () => {
     expect(groups.get('__default__')).toBeUndefined();
   });
 
+  it('keeps an earlier segment-aligned match when a later occurrence is partial', () => {
+    const targets = new Map([['Core', 'Modules/Core']]);
+    const items = ['Modules/Core/Thing/SubModules/Core/Thing.swift'];
+
+    const groups = groupSwiftFilesBySpmTarget(items, (item) => item, targets);
+
+    expect(groups.get('Core')).toEqual(items);
+    expect(groups.get('__default__')).toBeUndefined();
+  });
+
   it('does not treat a partial path segment as a target match', () => {
     const targets = new Map([['Core', 'Modules/Core']]);
     const item = 'vendor/SubModules/Core/Thing.swift';
