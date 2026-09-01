@@ -11,6 +11,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
+import { isEnoent } from './editor-targets.js';
 import { logger } from '../core/logger.js';
 
 // ESM equivalent of __dirname
@@ -448,21 +449,57 @@ async function readUtf8IfPresent(filePath: string): Promise<string | null> {
   try {
     return await fs.readFile(filePath, 'utf-8');
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') return null;
+    if (isEnoent(err)) return null;
     throw err;
   }
 }
 
-/** Write bundled skill bytes unless an existing file already differs (#3080). */
-async function writeSkillUnlessDivergent(filePath: string, content: string): Promise<void> {
+function skillBytesDiverge(existing: string | null, bundled: string): boolean {
+  return existing !== null && existing !== bundled;
+}
+
+/** Write bundled skill bytes unless an existing file already differs. */
+async function writeSkillUnlessDivergent(filePath: string, content: string): Promise<boolean> {
   const existing = await readUtf8IfPresent(filePath);
-  if (existing !== null && existing !== content) {
+  if (skillBytesDiverge(existing, content)) {
     logger.warn(`Preserved customized skill ${filePath}; ${SKILL_PRESERVE_HINT}.`);
-    return;
+    return true;
   }
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, content, 'utf-8');
+  return false;
+}
+
+async function inspectLegacySkillDir(
+  legacyDir: string,
+): Promise<{ nestedExisting: string | null; hasSiblings: boolean } | null> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(legacyDir);
+  } catch (err) {
+    if (isEnoent(err)) return null;
+    throw err;
+  }
+  const nestedExisting = entries.includes('SKILL.md')
+    ? await fs.readFile(path.join(legacyDir, 'SKILL.md'), 'utf-8')
+    : null;
+  return {
+    nestedExisting,
+    hasSiblings: entries.some((entry) => entry !== 'SKILL.md'),
+  };
+}
+
+function formatSkillInstallLine(
+  prefix: string,
+  total: number,
+  preserved: number,
+  allWrittenSuffix: string,
+  partialSuffix: string,
+): string {
+  if (preserved > 0) {
+    return `${prefix} (${total - preserved} written, ${preserved} ${partialSuffix})`;
+  }
+  return `${prefix} (${total} ${allWrittenSuffix})`;
 }
 
 /**
@@ -470,12 +507,19 @@ async function writeSkillUnlessDivergent(filePath: string, content: string): Pro
  * Works natively with Claude Code, Cursor, and GitHub Copilot.
  * Mirrored to .agents/skills/ when .agents/ exists.
  */
-async function installSkills(
-  repoPath: string,
-): Promise<{ skills: string[]; agentsMirror: boolean }> {
+async function installSkills(repoPath: string): Promise<{
+  skills: string[];
+  agentsMirror: boolean;
+  claudePreserved: number;
+  agentsPreserved: number;
+  legacyPreserved: number;
+}> {
   const skillsDir = path.join(repoPath, '.claude', 'skills');
   const legacySkillsDir = path.join(skillsDir, 'gitnexus');
   const installedSkills: string[] = [];
+  let claudePreserved = 0;
+  let agentsPreserved = 0;
+  let legacyPreserved = 0;
   const agentsMirror = await shouldMirrorSkillsToAgents(repoPath);
 
   for (const skill of STANDARD_SKILL_CATALOG.filter(
@@ -506,13 +550,13 @@ Use GitNexus tools to accomplish this task.
 `;
       }
 
-      await writeSkillUnlessDivergent(skillPath, skillContent);
+      if (await writeSkillUnlessDivergent(skillPath, skillContent)) claudePreserved += 1;
 
       // Mirror to .agents/skills/ for agents that read repo-local skills
       if (agentsMirror) {
         try {
           const agentsSkillPath = path.join(repoPath, '.agents', 'skills', skill.name, 'SKILL.md');
-          await writeSkillUnlessDivergent(agentsSkillPath, skillContent);
+          if (await writeSkillUnlessDivergent(agentsSkillPath, skillContent)) agentsPreserved += 1;
         } catch (err) {
           logger.warn({ err }, `Warning: Could not mirror skill ${skill.name} to .agents/skills:`);
         }
@@ -523,14 +567,19 @@ Use GitNexus tools to accomplish this task.
       // Previous releases installed these known standard skills one level too
       // deep. Remove only the child owned by this installer; unknown siblings
       // under the legacy grouping directory may be user-authored and survive.
-      // Skip rm when nested SKILL.md exists and differs from the bundle (#3080).
       try {
         const legacyDir = path.join(legacySkillsDir, skill.name);
         const nestedSkill = path.join(legacyDir, 'SKILL.md');
-        const nestedExisting = await readUtf8IfPresent(nestedSkill);
-        if (nestedExisting !== null && nestedExisting !== skillContent) {
+        const leftover = await inspectLegacySkillDir(legacyDir);
+        if (leftover !== null && skillBytesDiverge(leftover.nestedExisting, skillContent)) {
           logger.warn(`Preserved customized skill ${nestedSkill}; ${SKILL_PRESERVE_HINT}.`);
-        } else {
+          legacyPreserved += 1;
+        } else if (leftover?.hasSiblings) {
+          logger.warn(
+            `Preserved legacy skill directory ${legacyDir} because it contains operator-owned files.`,
+          );
+          legacyPreserved += 1;
+        } else if (leftover !== null) {
           await fs.rm(legacyDir, { recursive: true, force: true });
         }
       } catch (err) {
@@ -542,7 +591,13 @@ Use GitNexus tools to accomplish this task.
     }
   }
 
-  return { skills: installedSkills, agentsMirror };
+  return {
+    skills: installedSkills,
+    agentsMirror,
+    claudePreserved,
+    agentsPreserved,
+    legacyPreserved,
+  };
 }
 
 /**
@@ -621,12 +676,37 @@ export async function generateAIContextFiles(
 
   // Install standard skills directly under .claude/skills/ (unless --skip-skills)
   if (!options?.skipSkills) {
-    const { skills: installedSkills, agentsMirror } = await installSkills(repoPath);
+    const {
+      skills: installedSkills,
+      agentsMirror,
+      claudePreserved,
+      agentsPreserved,
+      legacyPreserved,
+    } = await installSkills(repoPath);
     if (installedSkills.length > 0) {
-      createdFiles.push(`.claude/skills/gitnexus-*/ (${installedSkills.length} skills)`);
+      createdFiles.push(
+        formatSkillInstallLine(
+          '.claude/skills/gitnexus-*/',
+          installedSkills.length,
+          claudePreserved,
+          'skills',
+          'preserved',
+        ),
+      );
       if (agentsMirror) {
         createdFiles.push(
-          `.agents/skills/gitnexus-*/ (${installedSkills.length} skills mirrored for .agents)`,
+          formatSkillInstallLine(
+            '.agents/skills/gitnexus-*/',
+            installedSkills.length,
+            agentsPreserved,
+            'skills mirrored for .agents',
+            'preserved for .agents',
+          ),
+        );
+      }
+      if (legacyPreserved > 0) {
+        createdFiles.push(
+          `.claude/skills/gitnexus/<name>/ (legacy directories preserved: ${legacyPreserved})`,
         );
       }
     }

@@ -281,6 +281,37 @@ describe('setupAntigravity', () => {
       delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
     }
   });
+
+  it('preserves a customized installed skill when setup is rerun', async () => {
+    const fixtureSkillsRoot = path.join(tempHome, 'fixture-skills');
+    const installedSkill = path.join(
+      tempHome,
+      '.gemini',
+      'antigravity',
+      'skills',
+      'gitnexus-test',
+      'SKILL.md',
+    );
+    await fs.mkdir(fixtureSkillsRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test.md'),
+      '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      'utf-8',
+    );
+    process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
+
+    try {
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+      await fs.writeFile(installedSkill, 'customized by operator\n', 'utf-8');
+
+      await setupCommand();
+
+      await expect(fs.readFile(installedSkill, 'utf-8')).resolves.toBe('customized by operator\n');
+    } finally {
+      delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
+    }
+  });
 });
 
 // ─── Hook adapter smoke tests ──────────────────────────────────────

@@ -1090,14 +1090,30 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
     const skillDir = path.join(targetDir, skillName);
 
     try {
-      if (source.isDirectory) {
-        const dirSource = path.join(skillsRoot, skillName);
-        await copyDirRecursive(dirSource, skillDir);
+      const sourceSkillPath = source.isDirectory
+        ? path.join(skillsRoot, skillName, 'SKILL.md')
+        : path.join(skillsRoot, `${skillName}.md`);
+      const destinationSkillPath = path.join(skillDir, 'SKILL.md');
+      const [sourceSkillContent, destinationSkillContent] = await Promise.all([
+        fs.readFile(sourceSkillPath, 'utf-8'),
+        fs.readFile(destinationSkillPath, 'utf-8').catch((err) => {
+          if (!isEnoent(err)) throw err;
+          return null;
+        }),
+      ]);
+
+      const preserved =
+        destinationSkillContent !== null && destinationSkillContent !== sourceSkillContent;
+      if (preserved) {
+        console.log(
+          `[gitnexus] preserved customized skill ${destinationSkillPath}; ` +
+            'delete the file and rerun setup to refresh it.',
+        );
+      } else if (source.isDirectory) {
+        await copyDirRecursive(path.join(skillsRoot, skillName), skillDir);
       } else {
-        const flatSource = path.join(skillsRoot, `${skillName}.md`);
-        const content = await fs.readFile(flatSource, 'utf-8');
         await fs.mkdir(skillDir, { recursive: true });
-        await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
+        await fs.writeFile(destinationSkillPath, sourceSkillContent, 'utf-8');
       }
 
       // A directory superseded by a shipped rename is warned about, never
@@ -1113,7 +1129,7 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
           );
         }
       }
-      installed.push(skillName);
+      if (!preserved) installed.push(skillName);
     } catch {
       // Source skill not found — skip
     }
