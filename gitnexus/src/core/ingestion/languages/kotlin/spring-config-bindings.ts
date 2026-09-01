@@ -27,14 +27,8 @@ const INTERPOLATION_TYPES = new Set([
   'interpolated_identifier',
   'interpolated_expression',
   'interpolation_expression_start',
-  'string_expression',
 ]);
-const STRING_LITERAL_TYPES = new Set([
-  'string_literal',
-  'line_string_literal',
-  'multi_line_string_literal',
-  'character_literal',
-]);
+const STRING_LITERAL_TYPES = new Set(['string_literal', 'character_literal']);
 
 export interface KotlinSpringConfigConsumerFact {
   readonly consumer: SpringConfigConsumer;
@@ -74,7 +68,6 @@ function ownerName(declaration: SyntaxNode): string | undefined {
     return named?.text.trim() || 'Companion';
   }
   return (
-    declaration.childForFieldName('name')?.text.trim() ??
     declaration.namedChildren.find((child) => child.type === 'type_identifier')?.text.trim() ??
     declaration.namedChildren.find((child) => child.type === 'simple_identifier')?.text.trim()
   );
