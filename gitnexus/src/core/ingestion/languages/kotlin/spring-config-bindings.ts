@@ -171,9 +171,7 @@ function importedAs(
   fqn: string,
   wildcardPackage: string,
 ): boolean {
-  const aliased = imports.exact.get(simple);
-  if (aliased === fqn || aliased?.endsWith(`.${simpleName(fqn)}`) === true) return true;
-  return imports.wildcard.has(wildcardPackage);
+  return imports.exact.get(simple) === fqn || imports.wildcard.has(wildcardPackage);
 }
 
 function configAnnotationKind(
@@ -184,15 +182,8 @@ function configAnnotationKind(
   if (rawName === CONFIGURATION_PROPERTIES_ANNOTATION) return 'configuration-properties';
   const simple = simpleName(rawName);
   const aliased = imports.exact.get(simple);
-  if (aliased === VALUE_ANNOTATION || aliased?.endsWith(`.${VALUE_SIMPLE}`) === true) {
-    return 'value';
-  }
-  if (
-    aliased === CONFIGURATION_PROPERTIES_ANNOTATION ||
-    aliased?.endsWith(`.${CONFIGURATION_PROPERTIES_SIMPLE}`) === true
-  ) {
-    return 'configuration-properties';
-  }
+  if (aliased === VALUE_ANNOTATION) return 'value';
+  if (aliased === CONFIGURATION_PROPERTIES_ANNOTATION) return 'configuration-properties';
   if (simple === VALUE_SIMPLE) {
     if (imports.localTypes.has(simple) && !imports.exact.has(simple)) return null;
     return importedAs(
@@ -235,6 +226,7 @@ function decodeKotlinStringLiteral(literal: string): string | null {
   if (literal.length < delimiterLength * 2) return null;
   const body = literal.slice(delimiterLength, -delimiterLength);
   if (!raw && /(?<!\\)\$\{/.test(body)) return null;
+  if (raw) return body;
   return body
     .replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) =>
       String.fromCharCode(Number.parseInt(hex, 16)),

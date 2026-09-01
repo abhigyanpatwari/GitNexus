@@ -392,6 +392,34 @@ describe('Kotlin Spring configuration consumers', () => {
       expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['payment.timeout'] }),
     ]);
   });
+
+  it('does not treat similarly named third-party imports as Spring annotations', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import com.example.Value
+        class Local {
+          @Value("\\\${fake.key}")
+          var field: String = ""
+        }
+      `),
+    ).toEqual([]);
+  });
+
+  it('does not decode escapes inside Kotlin raw string prefixes', async () => {
+    const { extractKotlinSpringConfigConsumers } =
+      await import('../../src/core/ingestion/languages/kotlin/spring-config-bindings.js');
+
+    expect(
+      extractKotlinSpringConfigConsumers(`
+        import org.springframework.boot.context.properties.ConfigurationProperties
+        @ConfigurationProperties("""service\\u002eendpoint""")
+        class RawProps
+      `),
+    ).toEqual([]);
+  });
 });
 
 describe('Spring configuration graph binding', () => {
