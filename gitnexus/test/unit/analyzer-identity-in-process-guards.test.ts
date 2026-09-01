@@ -16,9 +16,8 @@ const spawnCtx = vi.hoisted(() => ({
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  spawnCtx.spawnSync.mockImplementation(
-    ((...args: Parameters<typeof actual.spawnSync>) => actual.spawnSync(...args)) as typeof actual.spawnSync,
-  );
+  spawnCtx.spawnSync.mockImplementation(((...args: Parameters<typeof actual.spawnSync>) =>
+    actual.spawnSync(...args)) as typeof actual.spawnSync);
   return {
     ...actual,
     spawnSync: ((...args: Parameters<typeof actual.spawnSync>) =>
@@ -33,7 +32,10 @@ const fsCtx = vi.hoisted(() => ({
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
-  fsCtx.accessSync.mockImplementation(((p: Parameters<typeof actual.accessSync>[0], mode?: number) => {
+  fsCtx.accessSync.mockImplementation(((
+    p: Parameters<typeof actual.accessSync>[0],
+    mode?: number,
+  ) => {
     const pathStr = String(p);
     if (mode === actual.constants.W_OK && fsCtx.unwritableExact.has(pathStr)) {
       const err = new Error('EACCES') as NodeJS.ErrnoException;

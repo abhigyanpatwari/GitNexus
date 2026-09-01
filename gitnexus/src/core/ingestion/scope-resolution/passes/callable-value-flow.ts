@@ -516,8 +516,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     targetIndexes,
     aliasesByTargetId,
   );
-  const callSignaturesBySite =
-    input.callSignaturesBySite ?? indexCallSignatures(input.parsedFiles);
+  const callSignaturesBySite = input.callSignaturesBySite ?? indexCallSignatures(input.parsedFiles);
   const dynamicCallees = new Map<string, Map<string, Target>>();
   const dynamicOverflow = new Set<string>();
   const dynamicTargetHistory = new Map<string, Set<string>>();

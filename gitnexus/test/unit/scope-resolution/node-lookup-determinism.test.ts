@@ -197,6 +197,28 @@ describe('parse-result graph insertion determinism', () => {
   });
 });
 
+function countingLookup(inner: ReturnType<typeof buildLookup>): {
+  lookup: ReturnType<typeof buildLookup>;
+  gets: () => number;
+} {
+  let n = 0;
+  const lookup = new Proxy(inner, {
+    get(target, prop, receiver) {
+      if (prop === 'get') {
+        return (key: string) => {
+          n += 1;
+          return target.get(key);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      return typeof value === 'function'
+        ? (value as (...args: never[]) => unknown).bind(target)
+        : value;
+    },
+  });
+  return { lookup, gets: () => n };
+}
+
 describe('resolveDefGraphId memo', () => {
   it('returns the same id on a repeated lookup and does not leak across rebuilt lookups', () => {
     const method = {
@@ -206,19 +228,23 @@ describe('resolveDefGraphId memo', () => {
       qualifiedName: 'Service.save',
       startLine: 10,
     };
-    const lookupA = buildLookup([method]);
-    const lookupB = buildLookup([method]);
+    const countedA = countingLookup(buildLookup([method]));
+    const countedB = countingLookup(buildLookup([method]));
     const def = {
       type: 'Method' as const,
       qualifiedName: 'Service.save',
       nodeId: 'def:src/service.ts#11:0:Method:Service.save',
     };
-    const first = resolveDefGraphId(FILE, def, lookupA);
-    const second = resolveDefGraphId(FILE, def, lookupA);
-    const otherLookup = resolveDefGraphId(FILE, def, lookupB);
+    const first = resolveDefGraphId(FILE, def, countedA.lookup);
+    const getsAfterFirst = countedA.gets();
+    const second = resolveDefGraphId(FILE, def, countedA.lookup);
     expect(first).toBe(method.id);
     expect(second).toBe(first);
+    expect(getsAfterFirst).toBeGreaterThan(0);
+    expect(countedA.gets()).toBe(getsAfterFirst);
+    const otherLookup = resolveDefGraphId(FILE, def, countedB.lookup);
     expect(otherLookup).toBe(method.id);
-    expect(lookupA).not.toBe(lookupB);
+    expect(countedB.gets()).toBeGreaterThan(0);
+    expect(countedA.lookup).not.toBe(countedB.lookup);
   });
 });

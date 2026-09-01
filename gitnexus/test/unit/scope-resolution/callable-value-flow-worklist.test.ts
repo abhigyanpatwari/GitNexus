@@ -17,7 +17,10 @@ import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { buildGraphNodeLookup } from '../../../src/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
 import { createCalleeIdAccumulator } from '../../../src/core/ingestion/scope-resolution/graph-bridge/callee-id-sink.js';
-import { emitCallableValueFlow, collectDeferredIndirectCollection } from '../../../src/core/ingestion/scope-resolution/passes/callable-value-flow.js';
+import {
+  emitCallableValueFlow,
+  collectDeferredIndirectCollection,
+} from '../../../src/core/ingestion/scope-resolution/passes/callable-value-flow.js';
 
 const FILE = 'chain.ts';
 const MODULE = 'scope:module' as ScopeId;
