@@ -2544,11 +2544,17 @@ export const deleteNodesForFile = async (
 /**
  * Chunk size for {@link deleteNodesForFiles}. 200 paths keeps each
  * statement ~13KB (well inside parser limits) while a ~700-file write set
- * still collapses from ~13,000 statements to 124: 31 statements per chunk
- * (1 CodeEmbedding join-delete + 30 filePath-bearing node tables — the
- * 32-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
+ * still collapses from ~13,000 statements to 128: 32 statements per chunk
+ * (1 CodeEmbedding join-delete + 31 filePath-bearing node tables — the
+ * 33-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
  * original "~40" claim under-counted the per-chunk statement fan-out
  * (tri-review 4669518496 accuracy sweep).
+ *
+ * `Destination` is counted in that 31 because the table IS visited, but a
+ * RESOLVED destination stores no `filePath` and so never matches the
+ * predicate — deliberately, because it is shared across files. See the node
+ * property block in `pipeline-phases/spring-destinations.ts` for why deleting
+ * one here would cut edges belonging to files outside the write set.
  */
 export const DELETE_FILES_CHUNK_SIZE = 200;
 

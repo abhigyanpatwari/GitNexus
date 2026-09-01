@@ -112,6 +112,20 @@ describe('Spring destination resolution', () => {
     expect(files.size).toBe(unresolved.length);
   });
 
+  it('gives a RESOLVED destination no location, so an incremental delete cannot cut it', () => {
+    // `deleteNodesForFiles` removes nodes with `n.filePath IN [changed files]`
+    // and DETACH DELETEs their edges. A shared destination stamped with its
+    // first-seen file would be collateral damage whenever that file changed,
+    // taking edges from files outside the write set with it — a publisher and
+    // a subscriber that agree on an address would silently stop being
+    // connected. An unresolved destination belongs to one site and SHOULD be
+    // deleted with its file.
+    for (const node of destinations) {
+      const isResolved = node.properties.address !== undefined;
+      expect((node.properties.filePath ?? '') === '').toBe(isResolved);
+    }
+  });
+
   it('never gives an unresolved destination an address property', () => {
     // The join key. An absent property cannot match another absent property,
     // so the guarantee survives being read back out of the database.

@@ -324,13 +324,48 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
             // reading the node sees what the source actually said — and kept
             // out of `address` so nothing joins on it.
             name: resolution.kind === 'resolved' ? resolution.address : candidate.rawText,
-            // Provenance only. A resolved node is shared by every site that
-            // names the address, so no single file identifies it; this records
-            // the first one seen, which is where a reader should start looking.
-            filePath: site.filePath,
-            ...(site.ownerRange === undefined
-              ? {}
-              : { startLine: site.ownerRange.startLine - 1, endLine: site.ownerRange.endLine - 1 }),
+            // A RESOLVED destination carries NO location, and that is load
+            // bearing rather than cosmetic.
+            //
+            // It is shared by every site that names the address, so no single
+            // file identifies it — but more importantly, the incremental
+            // writeback deletes by location: `deleteNodesForFiles` issues
+            // `MATCH (n:<table>) WHERE n.filePath IN [...] DETACH DELETE n` for
+            // every changed file. Stamping the first-seen file here would make
+            // a shared destination collateral damage whenever THAT file
+            // changed, and DETACH DELETE would take its edges from every OTHER
+            // file with it. Those files are not in the write set, so their
+            // edges would never be rebuilt: a publisher and a subscriber that
+            // genuinely agree on an address would silently stop being
+            // connected, depending on which of them the indexer happened to
+            // walk first. Omitting the property makes the `IN` predicate unable
+            // to match, so the node survives the writeback and every referrer
+            // keeps its edge.
+            //
+            // The cost is the opposite error, and it is the one worth taking: a
+            // destination whose last referrer is deleted lingers with no edges
+            // until a full rebuild. That is additive and visible, where the
+            // other is subtractive and silent.
+            //
+            // An UNRESOLVED destination is the opposite case — it belongs to
+            // exactly one site, its id already says so, and it SHOULD be
+            // deleted and re-created with its file.
+            // `''`, not absent: `NodeProperties.filePath` is required, and the
+            // empty string is the established spelling for a node with no file
+            // (`pipeline-phases/communities.ts` does the same). It is equally
+            // unmatchable by the `IN` predicate and the CSV writes it as an
+            // empty field, which COPY loads as NULL.
+            ...(resolution.kind === 'resolved'
+              ? { filePath: '' }
+              : {
+                  filePath: site.filePath,
+                  ...(site.ownerRange === undefined
+                    ? {}
+                    : {
+                        startLine: site.ownerRange.startLine - 1,
+                        endLine: site.ownerRange.endLine - 1,
+                      }),
+                }),
             // WRITTEN ONLY WHEN RESOLVED. See the module header: this is the
             // cross-repository join key, and an absent property cannot match.
             ...(resolution.kind === 'resolved'
