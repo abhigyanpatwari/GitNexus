@@ -13,7 +13,8 @@
  * They answered "is this a test file?" differently, so the same path could be a
  * test in one code path and not the other. The MCP copy recognized no C#, Java,
  * or Swift test convention at all, meaning `includeTests: false` silently failed
- * to filter them; the scoring copy missed `/test/fixtures/` and `/conftest.`.
+ * to filter them; the scoring copy missed `/conftest.` (it already matched
+ * `/test/`, so `/test/fixtures/` was never a scoring gap).
  *
  * The duplication was not gratuitous: `entry-point-scoring.ts` imports the
  * language-provider registry, and #2802 deliberately cut that closure out of MCP
