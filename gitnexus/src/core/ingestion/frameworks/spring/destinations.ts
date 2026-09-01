@@ -246,13 +246,19 @@ const CONSUMER_ANNOTATIONS: ReadonlyMap<string, ConsumerAnnotationRule> = new Ma
       unsupportedArgs: ['bindings', 'queuesToDeclare'],
     },
   ],
-  ['JmsListener', { broker: 'jms' as const, addressArgs: ['destination'], positionalIsAddress: false }],
+  [
+    'JmsListener',
+    { broker: 'jms' as const, addressArgs: ['destination'], positionalIsAddress: false },
+  ],
   [
     'ServiceActivator',
     { broker: 'integration' as const, addressArgs: ['inputChannel'], positionalIsAddress: false },
   ],
   ['SqsListener', { broker: 'sqs' as const, addressArgs: ['value'], positionalIsAddress: true }],
-  ['StreamListener', { broker: 'stream' as const, addressArgs: ['value'], positionalIsAddress: true }],
+  [
+    'StreamListener',
+    { broker: 'stream' as const, addressArgs: ['value'], positionalIsAddress: true },
+  ],
 ]);
 
 /**
@@ -401,7 +407,8 @@ export function selectProducerDestinationArguments(fact: {
   readonly methodName: string;
   readonly args?: readonly SpringArgumentFact[];
 }): SpringDestinationSelection {
-  const broker: SpringDestinationBroker = fact.template === 'stream-bridge' ? 'stream' : fact.template;
+  const broker: SpringDestinationBroker =
+    fact.template === 'stream-bridge' ? 'stream' : fact.template;
   const source = fact.template;
   const refusals: SpringDestinationRefusalRecord[] = [];
   const refuse = (
@@ -759,7 +766,8 @@ export function resolveSpringDestination(
   const trimmed = candidate.rawText.trim();
   if (CONSTANT_REFERENCE.test(trimmed)) {
     const folded = resolvers.constant?.(trimmed.replace(/\s*\.\s*/g, '.')) ?? null;
-    if (folded === null) return specification() ?? { kind: 'unresolved', reason: 'unresolved-constant' };
+    if (folded === null)
+      return specification() ?? { kind: 'unresolved', reason: 'unresolved-constant' };
     return finish(folded, 'constant', specification);
   }
 

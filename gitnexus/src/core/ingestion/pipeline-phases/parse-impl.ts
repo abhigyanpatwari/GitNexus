@@ -1274,10 +1274,12 @@ export async function runChunkedParseAndResolve(
   // Built (and prepared) UNCONDITIONALLY when anything was harvested, because
   // the map is also handed to downstream phases on `ParseOutput.moduleConstants`
   // — `springDestinations` folds broker-address constants against exactly the
-  // same table. Preparation is idempotent per provider but must happen once, on
-  // one map, before either consumer folds: doing it lazily in each consumer
-  // would either repeat the wildcard-binding materialization or leave whichever
-  // consumer ran first folding against unprepared constants.
+  // same table. Preparation runs exactly once, here, on one map, before either
+  // consumer folds. Deferring it into each consumer instead would need
+  // `prepareRouteConstants` to be safe to call twice — it materializes deferred
+  // wildcard bindings IN PLACE — or would leave whichever consumer ran first
+  // folding against unprepared constants. Neither is worth the coupling; the
+  // cost here is one pass over the harvested constants of a repo that has some.
   const repoConstants = new Map<string, ModuleConstants>();
   for (const { filePath, constants } of allModuleConstants) {
     repoConstants.set(filePath, constants);

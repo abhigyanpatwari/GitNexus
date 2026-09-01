@@ -734,12 +734,15 @@ export const streamAllCSVsToDisk = async (
           );
           break;
         case 'Destination':
-          // `address` is the cross-service join key and stays EMPTY for an
-          // unresolved destination, mirroring the in-memory rule that the
-          // property is absent there. Writing the placeholder text into this
-          // column instead would make two services that merely both wrote
-          // `${app.topic}` join on it — the exact false connection the
-          // location-based node id exists to prevent. The placeholder is
+          // `address` is the cross-service join key and is written as an EMPTY
+          // field for an unresolved destination, which COPY loads as NULL —
+          // mirroring the in-memory rule that the property is absent there, and
+          // measured on a real index (`spring-destinations-lbug.test.ts` asserts
+          // both the NULL and the zero-false-join it buys). Writing the
+          // placeholder text into this column instead would make two services
+          // that merely both wrote `${app.topic}` join on it, reintroducing
+          // below the database line the exact false connection the
+          // location-based node id prevents above it. The placeholder is
           // carried by `name`, which nothing joins on.
           pending = destinationWriter.addRow(
             [

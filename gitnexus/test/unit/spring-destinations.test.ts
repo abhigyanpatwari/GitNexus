@@ -256,10 +256,12 @@ describe('consumer argument selection', () => {
   });
 
   it('reads a positional argument only where `value` really is the destination', () => {
-    expect(selectConsumerDestinationArguments('SqsListener', [{ text: '"orders"' }])?.candidates)
-      .toHaveLength(1);
-    expect(selectConsumerDestinationArguments('StreamListener', [{ text: '"orders"' }])?.candidates)
-      .toHaveLength(1);
+    expect(
+      selectConsumerDestinationArguments('SqsListener', [{ text: '"orders"' }])?.candidates,
+    ).toHaveLength(1);
+    expect(
+      selectConsumerDestinationArguments('StreamListener', [{ text: '"orders"' }])?.candidates,
+    ).toHaveLength(1);
     // @KafkaListener declares no `value` alias for its topics, so a positional
     // argument there is a different element and must not be guessed at.
     const kafka = selectConsumerDestinationArguments('KafkaListener', [{ text: '"orders"' }]);
@@ -324,7 +326,9 @@ describe('consumer argument selection', () => {
     // @MessageMapping and @SubscribeMapping are session-scoped application
     // routes, not broker addresses. Modelling them as destinations would put a
     // STOMP path in the same namespace as a Kafka topic.
-    expect(selectConsumerDestinationArguments('MessageMapping', [{ text: '"/topic/prices"' }])).toBeNull();
+    expect(
+      selectConsumerDestinationArguments('MessageMapping', [{ text: '"/topic/prices"' }]),
+    ).toBeNull();
     expect(
       selectConsumerDestinationArguments('SubscribeMapping', [{ text: '"/topic/prices"' }]),
     ).toBeNull();
@@ -378,7 +382,8 @@ describe('producer argument selection', () => {
     for (const template of ['kafka', 'jms', 'stream-bridge'] as const) {
       const selection = selectProducerDestinationArguments({
         template,
-        methodName: template === 'kafka' || template === 'stream-bridge' ? 'send' : 'convertAndSend',
+        methodName:
+          template === 'kafka' || template === 'stream-bridge' ? 'send' : 'convertAndSend',
         args: args('record'),
       });
       expect(selection.candidates).toEqual([]);
@@ -523,10 +528,10 @@ describe('producer argument selection', () => {
       args: args('topic', 'payload'),
     });
     expect(selection.candidates).toHaveLength(1);
-    expect(resolveSpringDestination(selection.candidates[0]!, { constant: () => null })).toEqual({
-      kind: 'unresolved',
-      reason: 'unresolved-constant',
-    });
+    const [only] = selection.candidates;
+    expect(
+      resolveSpringDestination(only as SpringDestinationCandidate, { constant: () => null }),
+    ).toEqual({ kind: 'unresolved', reason: 'unresolved-constant' });
   });
 });
 
@@ -547,8 +552,8 @@ describe('isAddressShaped', () => {
   it('accepts a bare identifier, which a resolver may still refuse', () => {
     // The shape gate says "this could be an address", never "this resolves".
     expect(isAddressShaped('topic')).toBe(true);
-    expect(
-      resolveSpringDestination(candidate('topic'), { constant: () => null }).kind,
-    ).toBe('unresolved');
+    expect(resolveSpringDestination(candidate('topic'), { constant: () => null }).kind).toBe(
+      'unresolved',
+    );
   });
 });
