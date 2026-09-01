@@ -123,16 +123,11 @@
  *
  * WHERE THIS IS WIRED. Java reaches its binding from BOTH layers: the group
  * extractor (`group/extractors/http-patterns/java.ts`) and the ingestion
- * provider (`languages/java.ts`, via `extractModuleConstants` +
- * `foldRoutePathOperands`). Kotlin is wired into the GROUP layer only, because
- * the ingestion fold in `pipeline-phases/parse-impl.ts` runs exclusively over
- * `decoratorRoutes` — and `languages/kotlin.ts` declares no
- * `extractDecoratorRoutes`, since the ingestion Spring extractor (`spring.ts`)
- * is bound to `tree-sitter-java` and its node types. Declaring the constant
- * hooks on the Kotlin provider today would harvest a map on every Kotlin file
- * that nothing consumes. An ingestion-side Kotlin route extractor is the
- * prerequisite; when it lands, this binding is what its provider hooks should
- * point at, and no change here is needed.
+ * provider (`languages/java.ts`). Kotlin now does the same: the group extractor
+ * (`group/extractors/http-patterns/kotlin.ts`) plus `languages/kotlin.ts`
+ * (`extractDecoratorRoutes`, `extractModuleConstants`, `foldRoutePathOperands`).
+ * The dedicated ingestion walker is `route-extractors/kotlin-spring.ts`; it
+ * does not reuse Java `spring.ts`.
  */
 
 import type Parser from 'tree-sitter';
