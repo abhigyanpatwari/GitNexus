@@ -95,7 +95,9 @@ export function captureKotlinSpringNonHttpHandlerFacts(
     let readArguments = hasSpringNonHttpHandlerRelevantAnnotation(named);
     if (!readArguments) {
       aliasedHandlerNames ??= aliasedHandlerAnnotationNames(classNode);
-      readArguments = named.some((annotation) => aliasedHandlerNames?.has(annotation.name) === true);
+      readArguments = named.some(
+        (annotation) => aliasedHandlerNames?.has(annotation.name) === true,
+      );
     }
     const annotations = readArguments
       ? kotlinSpringAnnotationFacts(member, { includeArguments: true })

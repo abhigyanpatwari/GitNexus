@@ -259,10 +259,7 @@ describe('non-HTTP handler capture regressions', () => {
       annotations.map((fact) =>
         fact.map((annotation) => [annotation.name, annotation.useSiteTarget]),
       ),
-    ).toEqual([
-      [['SpringEvent', undefined]],
-      [['Scheduled', 'setparam']],
-    ]);
+    ).toEqual([[['SpringEvent', undefined]], [['Scheduled', 'setparam']]]);
   });
 
   it('leaves Spring DI annotation facts free of argument text', () => {

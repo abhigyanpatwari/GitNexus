@@ -57,9 +57,7 @@ function withoutNullAssertions(receiver: SyntaxNode): SyntaxNode {
  * Text splitting would leave the safe-call marker on the receiver
  * (`kafkaTemplate?` for `kafkaTemplate?.send(...)`).
  */
-function navigationParts(
-  callee: SyntaxNode,
-): { receiverName: string; methodName: string } | null {
+function navigationParts(callee: SyntaxNode): { receiverName: string; methodName: string } | null {
   if (callee.type !== 'navigation_expression') return null;
   const suffix = callee.namedChildren.find((child) => child.type === 'navigation_suffix');
   const receiver = callee.namedChildren.find((child) => child.type !== 'navigation_suffix');

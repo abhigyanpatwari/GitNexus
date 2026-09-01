@@ -135,7 +135,14 @@ describe('Spring non-HTTP handler entry points (#2417)', () => {
       'OrderPublishers.java',
       'publishLiteralDestination',
       getJavaSpringMessageProducerFacts,
-      ['"orders"', 'SHIPMENTS_TOPIC', 'ordersTopic', 'exchange', '"queue.orders"', '"orders-out-0"'],
+      [
+        '"orders"',
+        'SHIPMENTS_TOPIC',
+        'ordersTopic',
+        'exchange',
+        '"queue.orders"',
+        '"orders-out-0"',
+      ],
     ],
     [
       'OrderPublishers.kt',
