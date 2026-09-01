@@ -279,9 +279,10 @@ describe('the resolution cascade', () => {
       kind: 'unresolved',
       reason: 'empty-literal-address',
     });
-    expect(
-      resolveSpringDestination(candidate('Topics.EMPTY'), { constant: () => '' }),
-    ).toEqual({ kind: 'unresolved', reason: 'empty-constant-address' });
+    expect(resolveSpringDestination(candidate('Topics.EMPTY'), { constant: () => '' })).toEqual({
+      kind: 'unresolved',
+      reason: 'empty-constant-address',
+    });
   });
 
   it('files `${key:}` as an overridable default, keeping the key it used to drop', () => {
@@ -334,7 +335,7 @@ describe('the resolution cascade', () => {
   it('calls a SpEL expression that wraps a placeholder SpEL, not a config key', () => {
     // `"#{'${app.topics}'.split(',')}"` was caught only by accident, because it
     // happens to contain `${`. The diagnosis has to name what it really is.
-    expect(resolveSpringDestination(candidate('"#{\'${app.topics}\'.split(\',\')}"'))).toEqual({
+    expect(resolveSpringDestination(candidate("\"#{'${app.topics}'.split(',')}\""))).toEqual({
       kind: 'unresolved',
       reason: 'spel-expression',
     });

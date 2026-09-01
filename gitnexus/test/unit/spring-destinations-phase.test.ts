@@ -229,12 +229,16 @@ describe('springDestinations phase', () => {
       {
         ownerScopeId: `${filePath}#first` as never,
         ownerFilePath: filePath,
-        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }],
+        annotations: [
+          { name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] },
+        ],
       },
       {
         ownerScopeId: `${filePath}#second` as never,
         ownerFilePath: filePath,
-        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }],
+        annotations: [
+          { name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] },
+        ],
       },
     ]);
     setJavaSpringMessageProducerFacts(filePath, []);

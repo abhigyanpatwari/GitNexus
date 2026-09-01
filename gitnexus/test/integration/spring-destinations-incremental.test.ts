@@ -85,7 +85,8 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
   let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
   let repo: string;
   let savedHome: string | undefined;
-  const srcDir = (): string => path.join(repo, 'src', 'main', 'java', 'com', 'example', 'messaging');
+  const srcDir = (): string =>
+    path.join(repo, 'src', 'main', 'java', 'com', 'example', 'messaging');
 
   const commit = (message: string): void => {
     execSync(`git add -A && git -c user.name=t -c user.email=t@t commit -q -m ${message}`, {

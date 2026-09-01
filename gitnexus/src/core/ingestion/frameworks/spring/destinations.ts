@@ -989,7 +989,11 @@ export function resolveSpringPlaceholders(value: string): SpringPlaceholderResul
   const separator = body.indexOf(':');
   // Spring splits on the FIRST colon, so `${a:b:c}` defaults to `b:c`.
   if (separator === -1) return { plain: false, key: body.trim() };
-  return { plain: false, key: body.slice(0, separator).trim(), defaultValue: body.slice(separator + 1) };
+  return {
+    plain: false,
+    key: body.slice(0, separator).trim(),
+    defaultValue: body.slice(separator + 1),
+  };
 }
 
 // ── The cascade ────────────────────────────────────────────────────────────

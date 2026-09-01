@@ -405,10 +405,15 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
             // to match, so the node survives the writeback and every referrer
             // keeps its edge.
             //
-            // The cost is the opposite error, and it is the one worth taking: a
-            // destination whose last referrer is deleted lingers with no edges
-            // until a full rebuild. That is additive and visible, where the
-            // other is subtractive and silent.
+            // The cost used to be the opposite error — a destination whose
+            // last referrer was deleted lingered as an edgeless orphan until a
+            // full rebuild — and that is no longer paid. Because the per-file
+            // predicate can neither remove such a node nor admit a newly
+            // introduced one, the whole layer is instead delete-alled
+            // (`deleteAllDestinations`) and re-included graph-wide
+            // (`isGraphWideNode`) on every incremental writeback. Both halves
+            // move together: the delete without the re-include drops the layer,
+            // and the re-include without the delete duplicates every edge.
             //
             // An UNRESOLVED destination is the opposite case — it belongs to
             // exactly one site, its id already says so, and it SHOULD be

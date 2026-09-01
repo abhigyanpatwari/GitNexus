@@ -214,9 +214,9 @@ describe('Spring destination resolution', () => {
     // fallback made the exchange the address, where it could join a listener on
     // a queue of that name.
     expect(withAddress('orders.exchange')).toEqual([]);
-    expect(
-      destinations.some((node) => String(node.properties.name) === 'orders.exchange'),
-    ).toBe(false);
+    expect(destinations.some((node) => String(node.properties.name) === 'orders.exchange')).toBe(
+      false,
+    );
     const sources = new Set(
       messagingEdges.map((edge) => result.graph.getNode(edge.sourceId)?.properties.name),
     );

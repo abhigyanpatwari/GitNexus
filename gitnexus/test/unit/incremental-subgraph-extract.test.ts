@@ -127,10 +127,7 @@ describe('extractChangedSubgraph', () => {
 
     const sub = extractChangedSubgraph(g, new Set(['/repo/new-publisher.java']));
 
-    expect(sub.nodes.map((n) => n.id).sort()).toEqual([
-      'Destination:orders.v1',
-      'new:publish',
-    ]);
+    expect(sub.nodes.map((n) => n.id).sort()).toEqual(['Destination:orders.v1', 'new:publish']);
     expect(sub.relationships.map((r) => r.id)).toEqual(['e1']);
   });
 
@@ -147,7 +144,13 @@ describe('extractChangedSubgraph', () => {
     });
     g.addNode(makeFileNode('old:consume', '/repo/untouched.java', 'Method'));
     g.addRelationship(
-      makeRel('e1', 'old:consume', 'Destination:orders.v1', 'CONSUMES_FROM', 'spring-KafkaListener'),
+      makeRel(
+        'e1',
+        'old:consume',
+        'Destination:orders.v1',
+        'CONSUMES_FROM',
+        'spring-KafkaListener',
+      ),
     );
 
     const sub = extractChangedSubgraph(g, new Set(['/repo/somewhere-else.java']));
