@@ -34,6 +34,8 @@ import { attachJavaSpringAopMetadata } from './spring-aop.js';
 import { attachJavaSpringConfigBindings } from './spring-config-bindings.js';
 import { attachJavaSpringConditionalMetadata } from './spring-conditionals.js';
 import { attachJavaSpringDiMetadata } from './spring-di.js';
+import { attachJavaSpringNonHttpHandlerMetadata } from './spring-non-http-handlers.js';
+import { attachJavaSpringDynamicLookup } from './spring-dynamic-lookup.js';
 import {
   applyJavaCaptureSideChannel,
   clearJavaClassAnnotationFacts,
@@ -54,8 +56,10 @@ const javaScopeResolver: ScopeResolver = {
     return undefined;
   },
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: JavaResolveContext = { fromFile, allFilePaths };
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, _resolutionConfig, context) => {
+    // `context.parsedFiles` is the whole input now: a Java import names a type
+    // in a DECLARED package, and the declarations live on those files (#2953).
+    const ws: JavaResolveContext = { fromFile, allFilePaths, parsedFiles: context?.parsedFiles };
     return resolveJavaImportTarget(
       { kind: 'named', localName: '_', importedName: '_', targetRaw },
       ws,
@@ -92,7 +96,9 @@ const javaScopeResolver: ScopeResolver = {
     attachJavaSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringConditionalMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringDiMetadata(graph, parsedFiles, nodeLookup, indexes);
+    attachJavaSpringNonHttpHandlerMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringConfigBindings(graph, parsedFiles, nodeLookup, indexes, ctx);
+    attachJavaSpringDynamicLookup(graph, parsedFiles, nodeLookup, indexes);
   },
 };
 

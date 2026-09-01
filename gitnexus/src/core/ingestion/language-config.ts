@@ -2,11 +2,11 @@ import fs from 'fs/promises';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
-import type { ImportConfigs } from './import-resolvers/types.js';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
 
 import { isDev } from './utils/env.js';
 
+import { mapConcurrent } from '../../lib/utils.js';
 import { logger } from '../logger.js';
 // ============================================================================
 // LANGUAGE-SPECIFIC CONFIG TYPES
@@ -30,9 +30,101 @@ export interface GoModuleConfig {
 export interface ComposerConfig {
   /** Map of namespace prefix -> directory (e.g., "App\\" -> "app/") */
   psr4: Map<string, string>;
+  /** Production `autoload.psr-4` prefixes that may gate external namespaces.
+   *  Absent on legacy/manual configs, where every mapping remains authoritative. */
+  authoritativePsr4?: ReadonlySet<string>;
+  /** True when Composer also declares an autoload mechanism this resolver does not model. */
+  hasUnmodeledAutoload?: boolean;
   /** PSR-4 entries sorted by namespace length descending (longest match wins).
    *  Cached once at config load time to avoid re-sorting on every import. */
   psr4Sorted?: readonly [string, string][];
+}
+
+function normalizeComposerDirectory(baseDir: string, directory: string): string {
+  const normalizedBase = baseDir.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  const normalizedDirectory = directory
+    .replace(/\\/g, '/')
+    .replace(/^(?:\.\/)+/, '')
+    .replace(/\/+$/, '');
+  if (normalizedBase === '') return normalizedDirectory;
+  if (normalizedDirectory === '') return normalizedBase;
+  return path.posix.normalize(`${normalizedBase}/${normalizedDirectory}`);
+}
+
+/** Parse one Composer manifest without performing I/O. */
+export function parseComposerConfig(value: unknown, baseDir = ''): ComposerConfig | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+
+  const composer = value as Record<string, unknown>;
+  const autoload = composer.autoload;
+  const autoloadDev = composer['autoload-dev'];
+  if (autoload === undefined && autoloadDev === undefined) return null;
+
+  const psr4 = new Map<string, string>();
+  const authoritativePsr4 = new Set<string>();
+  let hasUnmodeledAutoload = false;
+
+  const addSection = (sectionValue: unknown, authoritative: boolean): void => {
+    if (typeof sectionValue !== 'object' || sectionValue === null || Array.isArray(sectionValue)) {
+      return;
+    }
+    const section = sectionValue as Record<string, unknown>;
+    if ('psr-0' in section || 'classmap' in section) hasUnmodeledAutoload = true;
+
+    const rawPsr4 = section['psr-4'];
+    if (typeof rawPsr4 !== 'object' || rawPsr4 === null || Array.isArray(rawPsr4)) return;
+
+    for (const [namespace, directories] of Object.entries(rawPsr4)) {
+      const stringDirectories = Array.isArray(directories)
+        ? directories.filter((entry): entry is string => typeof entry === 'string')
+        : typeof directories === 'string'
+          ? [directories]
+          : [];
+      if (stringDirectories.length === 0) continue;
+      if (stringDirectories.length > 1) hasUnmodeledAutoload = true;
+
+      const normalizedNamespace = namespace.replace(/\\+$/, '');
+      const normalizedDirectory = normalizeComposerDirectory(baseDir, stringDirectories[0]);
+      const existing = psr4.get(normalizedNamespace);
+      if (existing !== undefined && existing !== normalizedDirectory) {
+        hasUnmodeledAutoload = true;
+        continue;
+      }
+      if (existing === undefined) psr4.set(normalizedNamespace, normalizedDirectory);
+      if (authoritative) authoritativePsr4.add(normalizedNamespace);
+    }
+  };
+
+  // Production mappings win duplicate prefixes. Development mappings remain
+  // usable for test code but do not establish authority for the external gate.
+  addSection(autoload, true);
+  addSection(autoloadDev, false);
+
+  return { psr4, authoritativePsr4, hasUnmodeledAutoload };
+}
+
+/** Merge package-local Composer manifests into one repository-relative config. */
+export function mergeComposerConfigs(configs: readonly ComposerConfig[]): ComposerConfig | null {
+  if (configs.length === 0) return null;
+
+  const psr4 = new Map<string, string>();
+  const authoritativePsr4 = new Set<string>();
+  let hasUnmodeledAutoload = false;
+  for (const config of configs) {
+    hasUnmodeledAutoload ||= config.hasUnmodeledAutoload === true;
+    for (const [namespace, directory] of config.psr4) {
+      const existing = psr4.get(namespace);
+      if (existing !== undefined && existing !== directory) {
+        hasUnmodeledAutoload = true;
+        continue;
+      }
+      if (existing === undefined) psr4.set(namespace, directory);
+    }
+    for (const namespace of config.authoritativePsr4 ?? config.psr4.keys()) {
+      authoritativePsr4.add(namespace);
+    }
+  }
+  return { psr4, authoritativePsr4, hasUnmodeledAutoload };
 }
 
 /** C# project config parsed from .csproj files */
@@ -161,22 +253,13 @@ export async function loadComposerConfig(repoRoot: string): Promise<ComposerConf
   try {
     const composerPath = path.join(repoRoot, 'composer.json');
     const raw = await fs.readFile(composerPath, 'utf-8');
-    const composer = JSON.parse(raw);
-    const psr4Raw = composer.autoload?.['psr-4'] ?? {};
-    const psr4Dev = composer['autoload-dev']?.['psr-4'] ?? {};
-    const merged = { ...psr4Raw, ...psr4Dev };
-
-    const psr4 = new Map<string, string>();
-    for (const [ns, dir] of Object.entries(merged)) {
-      const nsNorm = (ns as string).replace(/\\+$/, '');
-      const dirNorm = (dir as string).replace(/\\/g, '/').replace(/\/+$/, '');
-      psr4.set(nsNorm, dirNorm);
-    }
+    const config = parseComposerConfig(JSON.parse(raw));
+    if (config === null) return null;
 
     if (isDev) {
-      logger.info(`📦 Loaded ${psr4.size} PSR-4 mappings from composer.json`);
+      logger.info(`📦 Loaded ${config.psr4.size} PSR-4 mappings from composer.json`);
     }
-    return { psr4 };
+    return config;
   } catch {
     return null;
   }
@@ -276,33 +359,32 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
         csNames.push(entry.name);
       }
     }
-    for (let i = 0; i < csprojNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
-      const batch = csprojNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map((name) => readCsprojConfig(path.join(dir, name), name, repoRoot, dir)),
-      );
-      for (const r of settled) {
-        const config = r.status === 'fulfilled' ? r.value : null;
-        if (config) {
-          configs.push(config);
-          rootNamespaces.add(config.rootNamespace);
-        }
+    // `mapConcurrent` runs the same bounded waves and degrades per item
+    // (a rejection becomes `undefined`), so entry order is still preserved.
+    const csprojResults = await mapConcurrent(
+      csprojNames,
+      (name) => readCsprojConfig(path.join(dir, name), name, repoRoot, dir),
+      { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
+    );
+    for (const config of csprojResults) {
+      if (config) {
+        configs.push(config);
+        rootNamespaces.add(config.rootNamespace);
       }
     }
-    for (let i = 0; i < csNames.length; i += CSHARP_SCAN_READ_CONCURRENCY) {
-      const batch = csNames.slice(i, i + CSHARP_SCAN_READ_CONCURRENCY);
-      const settled = await Promise.allSettled(
-        batch.map((name) =>
-          collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
-        ),
-      );
-      // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
-      // leaves its namespaces uncollected → mark truncated to fail the #1881
-      // gate OPEN rather than wrongly suppress an import. The scan streams each
-      // file, so file size no longer trips truncation.
-      for (const r of settled) {
-        if (r.status !== 'fulfilled' || r.value === 'truncated') truncated = true;
-      }
+    const csResults = await mapConcurrent(
+      csNames,
+      (name) => collectDeclaredNamespaces(path.join(dir, name), declaredNamespaces, rootNamespaces),
+      { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
+    );
+    // A `.cs` that was unreadable (or whose read/scan unexpectedly rejected)
+    // leaves its namespaces uncollected → mark truncated to fail the #1881
+    // gate OPEN rather than wrongly suppress an import. The scan streams each
+    // file, so file size no longer trips truncation. A rejected read arrives
+    // here as `undefined`, which is `!== 'ok'` just like the old
+    // `r.status !== 'fulfilled'` arm.
+    for (const r of csResults) {
+      if (r !== 'ok') truncated = true;
     }
   }
 
@@ -469,6 +551,27 @@ export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPac
 // ============================================================================
 // BUNDLED CONFIG LOADER
 // ============================================================================
+
+/**
+ * Bundled language-specific configs loaded once per ingestion run — the
+ * result of {@link loadImportConfigs}, and every field's type is declared
+ * above in this module.
+ *
+ * It lives here rather than in `import-resolvers/types.ts` (its consumer, via
+ * `ResolveCtx`) so the dependency runs one way: the import-resolver types
+ * import this bundle, and this module imports nothing from them. Homing the
+ * producer's result type with the producer also keeps `import-resolvers/
+ * types.ts` free of per-language names.
+ */
+export interface ImportConfigs {
+  tsconfigPaths: TsconfigPaths | null;
+  goModule: GoModuleConfig | null;
+  composerConfig: ComposerConfig | null;
+  swiftPackageConfig: SwiftPackageConfig | null;
+  csharpConfigs: CSharpProjectConfig[];
+  /** In-repo namespace evidence gating C# suffix-fallback resolution (#1881). */
+  csharpNamespaces?: CSharpNamespaceEvidence;
+}
 
 /** Load all language-specific configs once for an ingestion run. */
 export async function loadImportConfigs(repoRoot: string): Promise<ImportConfigs> {

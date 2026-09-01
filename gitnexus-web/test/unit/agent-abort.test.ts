@@ -95,3 +95,34 @@ describe('streamAgentResponse abort', () => {
     expect(chunks).toEqual([{ type: 'error', error: 'Cannot abort the current transaction' }]);
   });
 });
+
+describe('streamAgentResponse content blocks', () => {
+  const userMessage: AgentMessage[] = [{ role: 'user', content: 'hello' }];
+
+  it('emits thinking blocks as reasoning', async () => {
+    const agent = {
+      stream: async function* () {
+        yield [
+          'messages',
+          [
+            {
+              _getType: () => 'ai',
+              content: [{ type: 'thinking', thinking: 'Reviewing the repository context.' }],
+              tool_calls: [],
+            },
+          ],
+        ];
+      },
+    };
+
+    const chunks = [];
+    for await (const chunk of streamAgentResponse(agent as any, userMessage)) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks).toEqual([
+      { type: 'reasoning', reasoning: 'Reviewing the repository context.' },
+      { type: 'done', historyMessages: undefined },
+    ]);
+  });
+});

@@ -119,8 +119,96 @@ export type ParsedImport =
       readonly importedName: string;
       readonly targetRaw: string;
       /** Provider-specific imported symbol category when module and symbol
-       * namespaces have distinct resolution rules (for example PHP). */
+       * namespaces have distinct resolution rules (for example PHP).
+       *
+       * **Not** the same fact as {@link ParsedImport.typeOnly} — see the note
+       * on `typeOnly` below, which is documented on this variant. */
       readonly importedSymbolKind?: 'type' | 'function' | 'const';
+      /**
+       * Is this import ERASED before the module ever runs?
+       *
+       * TypeScript `import type { X } from './m'` and `import { type X }` are
+       * deleted by `tsc`: no `require`/`import` for `./m` survives in the
+       * emitted JavaScript, so the pair cannot force a module-INITIALIZATION
+       * order and cannot participate in an init cycle. That is the one thing
+       * `check --cycles` exists to find, so the fact has to survive from the
+       * syntax down to the emitted `IMPORTS` edge — see `ImportEdge.typeOnly`
+       * and `graph-bridge/imports-to-edges.ts`.
+       *
+       * **Distinct from `importedSymbolKind: 'type'`, which is NOT a substitute.**
+       * That field is a resolution-NAMESPACE category (PHP's `use function` /
+       * `use const` split), it exists only on this variant, and it says "the
+       * thing imported is a type". A symbol being a type says nothing about
+       * whether the import STATEMENT is erased, and PHP erases nothing at all.
+       * This field is about the statement's runtime existence, not the symbol's
+       * category.
+       *
+       * Set only by providers whose syntax marks it. Absent everywhere else,
+       * which reads as "not erased" — the fail-safe direction, since it only
+       * makes `check --cycles` over-report.
+       *
+       * That fail-safe matters more than it first looks, because an explicit
+       * `type` is a SUFFICIENT signal of erasure and not a necessary one. With
+       * neither `verbatimModuleSyntax` nor `importsNotUsedAsValues: preserve`
+       * set — this repo sets neither — `tsc` also elides a plain
+       * `import { SomeInterface }` whose bindings are every one of them used in
+       * type position. Those statements are erased at run time and carry no
+       * marker, so they stay tagged as initializing and `check --cycles` can
+       * still report a cycle that cannot exist. Closing that gap needs
+       * whole-program binding USE information, not import syntax, which is why
+       * this field stops at what the syntax states.
+       */
+      readonly typeOnly?: boolean;
+      /**
+       * Was this import written inside a function body — so that it runs only
+       * when something CALLS that function, never while the module itself is
+       * initializing?
+       *
+       * Python's `def f(): from x import Y` and a CommonJS
+       * `function f() { const { Y } = require('./x'); }` are the spellings.
+       * Both are syntactically ordinary imports — no `kind` tells them apart
+       * from a top-level one, and nothing about the target does either. Only
+       * their POSITION defers them.
+       *
+       * Not every language's imports are like that, and the rule is wrong for
+       * the ones that are not: Rust's `use` and C/C++'s `#include` are legal
+       * in a function body and are deferred by NOTHING, because neither is an
+       * executed statement. Those providers opt out — see
+       * `LanguageProvider.importsExecuteWhereWritten`, below.
+       *
+       * **Why this cannot be re-derived downstream — the whole reason the
+       * field exists.** The natural place to decide it looks like the graph
+       * bridge, by walking the scope the finalized edges hang off; that is
+       * exactly what `graph-bridge/imports-to-edges.ts` once attempted, and it
+       * is dead code by construction. `finalize-algorithm.ts:295` publishes
+       * every file's finalized edges as
+       * `linkedByScope.set(file.moduleScope, …)`, so the map the bridge
+       * receives is keyed by the file's **Module** scope and by nothing else:
+       * the walk starts at a `Module` every time and answers `false` for every
+       * import in the tree. Finalize cannot recover the position either —
+       * `FinalizeFile.parsedImports` is a flat per-file `ParsedImport[]` with
+       * no scope attached. The extractor is the last stage that still knows
+       * where the statement sat (`scope-extractor.ts`, Pass 3), so it marks the
+       * fact here and it rides the edge from there — see
+       * {@link ImportEdge.runsOnlyWhenCalled}.
+       *
+       * Consumed by `check --cycles`, which asks "can these modules be
+       * initialized in any order?". A deferred import carries no
+       * initialization order, and deferring one is the standard way to BREAK
+       * an init cycle, so counting it reports the fix as the bug.
+       *
+       * Set by the central extractor for every language, not by providers —
+       * except that a provider may declare that its imports do not execute
+       * where they are written (`LanguageProvider.importsExecuteWhereWritten:
+       * false`) and be skipped entirely. C, C++, Rust and COBOL do. A `#include`
+       * or a `use` inside a function body is not deferred: the header is
+       * spliced and the path alias is resolved before anything runs, so the
+       * pair really is a dependency and the cycle it can form is real.
+       *
+       * Absent reads as "runs at initialization" — the fail-safe direction,
+       * since it only makes `check --cycles` over-report.
+       */
+      readonly runsOnlyWhenCalled?: boolean;
       /**
        * Set by providers when `targetRaw` already names the imported symbol
        * rather than only its containing module. Consumers that compose
@@ -128,6 +216,40 @@ export type ParsedImport =
        * duplicating `importedName`.
        */
       readonly targetIncludesImportedName?: boolean;
+      /**
+       * Set by providers whose import syntax *also* republishes the name from
+       * the importing module, so a third file can import it from there.
+       *
+       * Python has no dedicated re-export form: a module-level
+       * `from pkg.impl import X` binds `X` locally **and** publishes it as
+       * `pkg.X`, which is the standard way a package `__init__.py` declares
+       * its public surface. Languages with an explicit form (TS `export … from`,
+       * Rust `pub use`) emit `kind: 'reexport'` instead and leave this unset.
+       *
+       * **The flag must track actual republication, not syntax.** Only a
+       * module-level statement publishes: the same `from m import X` inside a
+       * `def` or `class` body binds locally and puts nothing in the module
+       * namespace, so flagging it fabricates a re-export of a name no importer
+       * can reach. `if` / `try` / `for` / `with` do not suppress it — Python
+       * has no block scope. A provider that cannot tell these apart at
+       * interpret time must carry the fact down from its capture emitter,
+       * where the syntax node is still available.
+       *
+       * **Why not `kind: 'reexport'`.** Not because that form drops the local
+       * binding — `materializeBindings` creates a module-scope `BindingRef`
+       * for every linked edge, re-export included. It is that `reexport`
+       * changes what the binding *is*: `origin` flips to `'reexport'`, which
+       * carries different evidence weight and `ORIGIN_PRIORITY`, and it
+       * misreports the parse-time syntax Python actually wrote. A flag adds
+       * the export-surface fact without restating the import as something the
+       * source does not say.
+       *
+       * Consumed by `buildReexportClosures` (`finalize-algorithm.ts`), which
+       * also documents how ambiguous duplicates of one published name are
+       * handled — the precedence rules that hold for an explicit re-export do
+       * not carry over.
+       */
+      readonly reexportsName?: boolean;
     }
   /**
    * Per-name import with rename.
@@ -144,8 +266,18 @@ export type ParsedImport =
       readonly targetRaw: string;
       /** See the same field on the `named` variant. */
       readonly importedSymbolKind?: 'type' | 'function' | 'const';
+      /** See the same field on the `named` variant — including why it is not
+       *  interchangeable with `importedSymbolKind`. Reaches this variant from
+       *  `import type D from './m'` and `import { type X as Y } from './m'`. */
+      readonly typeOnly?: boolean;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  Python's `def f(): from x import Y as Z` and a CommonJS
+       *  `function f() { const { Y: Z } = require('./x'); }`. */
+      readonly runsOnlyWhenCalled?: boolean;
       /** See the same field on the `named` variant. */
       readonly targetIncludesImportedName?: boolean;
+      /** See the same field on the `named` variant. */
+      readonly reexportsName?: boolean;
     }
   /**
    * Qualified module handle, with or without rename. `importedName` is the
@@ -165,6 +297,12 @@ export type ParsedImport =
       /** Module being aliased (e.g. `numpy` in `import numpy as np`). */
       readonly importedName: string;
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  TypeScript `import type * as N from './m'`. */
+      readonly typeOnly?: boolean;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  Python's `def f(): import numpy as np`. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Syntactically-detectable parse-time re-export. Finalize may still produce
@@ -186,6 +324,19 @@ export type ParsedImport =
       readonly targetRaw: string;
       /** Set when the re-export renames the symbol (e.g. `export { X as Y } from './y'`). */
       readonly alias?: string;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  TypeScript `export type { X } from './y'` and `export { type X } from './y'`. */
+      readonly typeOnly?: boolean;
+      /** See the same field on the `named` variant. NO spelling reaches this
+       *  variant today: the two providers that emit `reexport` are TypeScript
+       *  / JavaScript, whose `export … from` is a module-top-level-only
+       *  declaration, and Rust, whose `pub use` is a compile-time path alias
+       *  that its provider exempts from the position rule outright
+       *  (`LanguageProvider.importsExecuteWhereWritten`). Kept because the
+       *  extractor sets the field with no `switch` on `kind`, so a re-export
+       *  form that IS an executed statement would be tagged the moment one
+       *  appears — not because anything sets it now. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Wildcard import — brings every exported name from the target module into
@@ -197,10 +348,26 @@ export type ParsedImport =
    *   - Python `from foo import *`   → `{ kind: 'wildcard', targetRaw: 'foo' }`
    *   - JS `export * from './foo'`   → `{ kind: 'wildcard', targetRaw: './foo' }`
    *   - Rust `pub use foo::*`         → `{ kind: 'wildcard', targetRaw: 'foo' }`
+   *
+   * No `typeOnly` here on purpose. The one syntax that would set it,
+   * TypeScript 5.0's `export type * from './m'`, is not parsed by the
+   * vendored tree-sitter-typescript grammar — it yields an `ERROR` node
+   * holding the bare `type` token, so the fact is not readable at the
+   * statement level (see `typescript/import-decomposer.ts`). Add the field
+   * with the grammar that can express it, not before.
    */
   | {
       readonly kind: 'wildcard';
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Present here although
+       *  `typeOnly` is not: erasure is a syntactic fact this spelling cannot
+       *  express, but POSITION is not — Ruby's `def f; require './m'; end` is
+       *  a wildcard (everything in the required file becomes visible) and IS
+       *  deferred. Python cannot reach it: `from x import *` inside a `def` is
+       *  a SyntaxError. Rust's fn-local `use foo::*` is legal but not
+       *  deferred — `use` does not execute
+       *  (`LanguageProvider.importsExecuteWhereWritten`). */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Runtime-computed target — the import path is not a static literal at
@@ -217,6 +384,9 @@ export type ParsedImport =
       readonly localName: string;
       /** Source text of the unresolved expression when available; `null` otherwise. */
       readonly targetRaw: string | null;
+      /** See the same field on the `named` variant. Set by position like every
+       *  other variant; this kind links no target, so nothing reads it here. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Lazy / dynamic import whose target IS a static string literal at parse
@@ -238,6 +408,10 @@ export type ParsedImport =
   | {
       readonly kind: 'dynamic-resolved';
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Redundant on this kind —
+       *  `import()` is already deferred wherever it is written — but set
+       *  uniformly, because position is decided without consulting `kind`. */
+      readonly runsOnlyWhenCalled?: boolean;
     }
   /**
    * Bare-source / side-effect import that introduces no local name binding
@@ -253,6 +427,10 @@ export type ParsedImport =
   | {
       readonly kind: 'side-effect';
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. Reaches this variant from
+       *  a bare CommonJS `function f() { require('./polyfill'); }` — the ESM
+       *  spelling `import './polyfill'` cannot, being top-level only. */
+      readonly runsOnlyWhenCalled?: boolean;
     };
 
 /**
@@ -348,6 +526,37 @@ export interface ImportEdge {
     | 'side-effect';
   /** Re-export chain, for provenance (e.g., `['./y']` when re-exported via `./y`). */
   readonly transitiveVia?: readonly string[];
+  /**
+   * The import is erased before the module runs — see `ParsedImport`'s
+   * `typeOnly` on the `named` variant for the full note, including why
+   * `importedSymbolKind: 'type'` is a different fact and not a substitute.
+   *
+   * Carried straight from the `ParsedImport` by `makeEdgeDrafts`. The edge is
+   * still emitted: a type-only import is a real source-level dependency that
+   * `impact` and `trace` must see, and editing the target still breaks the
+   * importer's typecheck. What the flag removes is the claim that the pair
+   * forces an INITIALIZATION order.
+   */
+  readonly typeOnly?: boolean;
+  /**
+   * The import was written inside a function body, so it runs only when that
+   * function is called — never during module initialization. See
+   * `ParsedImport`'s `runsOnlyWhenCalled` on the `named` variant for the full
+   * note, including why the consumer cannot re-derive this from the scope tree
+   * and therefore has to be told (`finalize-algorithm.ts:295`).
+   *
+   * Carried straight from the `ParsedImport` by `makeEdgeDrafts`, for the same
+   * reason `typeOnly` is: the edge is where `graph-bridge/imports-to-edges.ts`
+   * can still see it. The edge is still emitted either way — a deferred import
+   * is a real dependency. What the flag removes is the claim that the pair
+   * forces an INITIALIZATION order.
+   *
+   * Distinct from `kind === 'dynamic-resolved'`, which records the OTHER way an
+   * import can be deferred (`import('./m')`). Neither implies the other: a
+   * top-level `import()` is deferred with this flag unset, and a function-local
+   * `from x import Y` is deferred with an ordinary `named` kind.
+   */
+  readonly runsOnlyWhenCalled?: boolean;
   /** Set to `'unresolved'` when the SCC fixpoint could not link this edge. */
   readonly linkStatus?: 'unresolved';
 }

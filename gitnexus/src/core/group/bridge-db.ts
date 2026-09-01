@@ -1,18 +1,27 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import lbug from '@ladybugdb/core';
 import type { LbugValue } from '@ladybugdb/core';
-import type { BridgeHandle, BridgeMeta, StoredContract, CrossLink, RepoSnapshot } from './types.js';
+import type {
+  BridgeHandle,
+  BridgeMeta,
+  StoredContract,
+  CrossLink,
+  RepoSnapshot,
+  MatchType,
+} from './types.js';
 import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
+import { recordedMatchStages, recordedRepoList } from './completeness.js';
 import {
   closeLbugConnection,
   openLbugConnection,
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
+import { withGroupSyncLock } from './group-lock.js';
 import { createLogger } from '../logger.js';
-import { retryRename } from '../../storage/fs-atomic.js';
+import { retryRename, writeFileAtomic } from '../../storage/fs-atomic.js';
 
 const bridgeLogger = createLogger('bridge-db', {
   debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE',
@@ -647,38 +656,347 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 export async function writeBridgeMeta(groupDir: string, meta: BridgeMeta): Promise<void> {
-  const target = path.join(groupDir, 'meta.json');
-  // Unpredictable suffix + O_EXCL via `'wx'` flag closes the symlink/
-  // pre-create attack window. The third argument `0o600` is the
-  // user-only mode mask — CodeQL's `js/insecure-temporary-file` query
-  // sources its verdict from the `mode` argument, NOT from `flags`:
-  // its `isSecureMode(mode)` predicate requires the low 6 bits to be
-  // zero (no group/world bits). Without an explicit mode the file is
-  // created with the process umask (typically 0o644 = group/world
-  // readable), which the query treats as the actual vulnerability.
-  // Both `'wx'` (runtime O_EXCL) AND `0o600` (CodeQL-credited mode)
-  // are needed: one closes the symlink race, the other closes the
-  // permissions exposure.
-  const tmp = `${target}.tmp.${randomBytes(8).toString('hex')}`;
-  const handle = await fsp.open(tmp, 'wx', 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
-  } finally {
-    await handle.close();
-  }
-  // Use retryRename for consistency with writeBridge's atomic swap — on
-  // Windows a concurrent reader can cause EBUSY/EPERM even on a tiny
-  // meta.json, and we don't want meta write to be less robust than the
-  // bridge.lbug swap it accompanies.
-  await retryRename(tmp, target);
+  // Strip the reader-only fields HERE rather than at each writer. `readBridgeMeta`
+  // sets both on what it returns, so any caller that reads-modifies-writes would
+  // round-trip them to disk — and `pairedWithDatabase` is the poisonous one:
+  // persisted, it tells every future reader the pair was verified when nothing
+  // verified it. That rule used to live in the body of the only such caller,
+  // which held exactly as long as there was one. There are now three writers and
+  // two of them read first. Enforced at the boundary, no writer can get it wrong.
+  const { repoListsUnreadable: _reader1, pairedWithDatabase: _reader2, ...persisted } = meta;
+  await writeFileAtomic(path.join(groupDir, 'meta.json'), JSON.stringify(persisted, null, 2));
 }
 
+/**
+ * Does `meta` still describe the `bridge.lbug` sitting next to it?
+ *
+ * `writeBridge` stamps the database's size and mtime into the metadata it
+ * writes, so a metadata file left over from an earlier sync cannot match a
+ * database that was replaced after it. Callers whose answer depends on the
+ * metadata being true of THIS database (cross-repo impact reads completeness
+ * from it) must not treat a mismatch as fact.
+ *
+ * When BOTH halves of the stamp are absent the metadata predates stamping, and
+ * it is judged on the write order of the two files instead — see
+ * {@link unstampedMetaPairsByWriteOrder}. Failing every unstamped metadata
+ * closed would mark all pre-existing bridges as incomplete until re-synced,
+ * trading a narrow window for a repo-wide regression; accepting them all hands
+ * back "verified" for the very window this pairing exists to catch.
+ *
+ * A stamp is a PAIR, so exactly one half present is rejected rather than waved
+ * through. That is not the legacy shape: something wrote a stamp and did not
+ * finish, which is the very condition stamping was added to detect. Joining the
+ * two `undefined` checks with `||` returned "verified" for precisely the shape
+ * that most deserves suspicion.
+ *
+ * Returns `false` when the database itself cannot be stat'd, on either path,
+ * since metadata describing a file that is not there describes nothing.
+ *
+ * The checks are ORDERED by how strong their evidence is, strongest first, and
+ * each later one is reached only because every earlier one had nothing to say.
+ * `provenanceUnknown` therefore comes first: a metadata file whose own writer
+ * says it cannot vouch for the database beside it has settled the question, and
+ * neither the stamp nor the write-order heuristic may overturn that.
+ *
+ * The marker is not decoration. `refreshPreservedBridgeMeta` rewrites this file
+ * atomically without touching the database, which leaves `meta.mtime` newer —
+ * the write order a paired write produces, and the one the unstamped branch
+ * ACCEPTS. Reading the marker after that branch (or not at all) hands back
+ * "verified" for a pair the same code path had just found broken.
+ */
+export async function bridgeMetaMatchesFile(groupDir: string, meta: BridgeMeta): Promise<boolean> {
+  if (meta.provenanceUnknown) return false;
+  const stampedSize = meta.bridgeSize !== undefined;
+  const stampedMtime = meta.bridgeMtimeMs !== undefined;
+  if (!stampedSize && !stampedMtime) return unstampedMetaPairsByWriteOrder(groupDir);
+  if (!stampedSize || !stampedMtime) return false;
+  try {
+    const stat = await fsp.stat(path.join(groupDir, 'bridge.lbug'));
+    return stat.size === meta.bridgeSize && stat.mtimeMs === meta.bridgeMtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Could the unstamped `meta.json` plausibly have been written by the sync that
+ * put this `bridge.lbug` beside it?
+ *
+ * `writeBridge` renames the database into place and writes the metadata AFTER,
+ * so `meta.mtime >= db.mtime` holds for any pair written together — including
+ * pairs written by builds from before the stamp existed, which is what makes
+ * this usable as back-compat rather than a repo-wide "re-sync everything".
+ * The only way to reach a database strictly NEWER than the metadata beside it
+ * is a swap whose metadata write did not land: the stale-meta-beside-a-new-
+ * database window, whose completeness `runGroupImpact` would otherwise spend as
+ * fact.
+ *
+ * This is a HEURISTIC ON WRITE ORDER, not proof of provenance. It answers "were
+ * these two written in the order a successful sync writes them?", and treats
+ * that as a proxy for "do these two belong together". It is wrong in two
+ * directions, and neither is theoretical:
+ *   - FALSE ACCEPT, from a non-monotonic wall clock. `mtimeMs` is realtime, not
+ *     monotonic, so an NTP step backwards, a VM snapshot restore or container
+ *     clock skew between the database write and the metadata write can leave a
+ *     genuinely mis-paired set reading as ordered. Anything that touches the
+ *     stale metadata after a swap does the same — a restore from backup, an
+ *     editor save, a copy that preserves only the database's times. The STAMP
+ *     is what actually closes this; a pair that has one never reaches here.
+ *
+ *     Coarse filesystem mtime granularity is NOT this hazard, despite looking
+ *     like it: it collapses a pair written together to equal times, and equal
+ *     is accepted, which is the correct verdict for that pair.
+ *
+ *   - FALSE REJECT, from anything that rewrites the database's mtime after the
+ *     metadata's — `cp -r`, `rsync` without `-t`, a machine move, a restore
+ *     that replays files in directory order. An intact legacy pair is then
+ *     demoted to a lower bound and stays there until the next successful sync
+ *     re-stamps it; there is no other recovery, because nothing on the read
+ *     path can distinguish it from the swap window it is imitating.
+ *
+ *     This direction is the safe one — it degrades an answer to a floor rather
+ *     than vouching for one — but it is a real, reachable cost, not a
+ *     theoretical one, and it is NOT true that the rule can only ever demote
+ *     pairs that were already broken.
+ *
+ * Equality counts as paired. On a filesystem with coarse mtime granularity both
+ * writes land in the same tick, and demanding a strictly newer metadata file
+ * would reject every legacy bridge there for a reason that is about the
+ * filesystem rather than about the bridge.
+ *
+ * A timestamp that cannot be measured is no match, the same convention the
+ * read-only handle cache applies to a bridge it could not stat: a comparison
+ * that could not be made is not a comparison that succeeded.
+ */
+async function unstampedMetaPairsByWriteOrder(groupDir: string): Promise<boolean> {
+  try {
+    const [dbStat, metaStat] = await Promise.all([
+      fsp.stat(path.join(groupDir, 'bridge.lbug')),
+      fsp.stat(path.join(groupDir, 'meta.json')),
+    ]);
+    return metaStat.mtimeMs >= dbStat.mtimeMs;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read `meta.json`, validating the SHAPE of what it holds.
+ *
+ * The read and the parse have always been guarded — an absent or unparseable
+ * file answers `version: 0`, which every caller already treats as "no
+ * provenance". What was not guarded is a file that parses into something that
+ * is not this shape: `runGroupImpact` spread both repo lists directly into a
+ * `Set`, so a non-iterable there threw a TypeError out of the whole cross-repo
+ * query, from a point where the bridge lease had been taken and not yet
+ * released. A malformed file is a reason to answer "provenance unknown", never
+ * a reason to crash the question.
+ */
 export async function readBridgeMeta(groupDir: string): Promise<BridgeMeta> {
+  const unreadable: BridgeMeta = { version: 0, generatedAt: '', missingRepos: [] };
+  let parsed: unknown;
   try {
     const content = await fsp.readFile(path.join(groupDir, 'meta.json'), 'utf-8');
-    return JSON.parse(content) as BridgeMeta;
+    parsed = JSON.parse(content);
   } catch {
-    return { version: 0, generatedAt: '', missingRepos: [] };
+    return unreadable;
+  }
+  // `JSON.parse` succeeds on `null`, `7` and `[]` too, and none of them are
+  // metadata. Reading `.version` off the first of those is a thrown TypeError;
+  // reading it off the others silently yields `undefined`, which passes the
+  // version gate as if the bridge had been vouched for.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return unreadable;
+
+  const raw = parsed as Partial<BridgeMeta>;
+  const missingRepos = recordedRepoList(raw.missingRepos);
+  const unreadableRepos = recordedRepoList(raw.unreadableRepos);
+  // Each list is judged on its own: a file whose `unreadableRepos` is garbage
+  // can still carry a `missingRepos` that was genuinely measured, and throwing
+  // that away would turn one unknown into two.
+  const repoListsUnreadable =
+    (raw.missingRepos !== undefined && missingRepos === undefined) ||
+    (raw.unreadableRepos !== undefined && unreadableRepos === undefined);
+
+  const meta: BridgeMeta = {
+    ...raw,
+    // A version that is not a number cannot be compared against
+    // BRIDGE_SCHEMA_VERSION; `0` is this file's existing word for "provenance
+    // unknown", which is exactly what such a file gives us.
+    // `0` is this file's word for "no provenance". A version that is not a
+    // positive integer is not a schema version, and letting one through splits
+    // the four gates that read this field: `ensureBridgeReady` and
+    // `openBridgeDbReadOnly` both compare `> 0 && !== CURRENT` and would open
+    // the bridge, `bridgeExists` compares `=== 0 || === CURRENT` and would say
+    // it is not there, and `bridgeProvenanceUnknown` compares `=== 0` and would
+    // call the answer complete. Normalizing here keeps all four agreeing
+    // instead of teaching each one the same new case.
+    version:
+      Number.isInteger(raw.version) && (raw.version as number) > 0 ? (raw.version as number) : 0,
+    generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : '',
+    missingRepos: missingRepos ?? [],
+  };
+  // Absent, not empty. `unreadableRepos` is optional and "not recorded" is a
+  // distinct state from "measured none", so an unusable value is dropped rather
+  // than carried through — `repoListsUnreadable` is what records that something
+  // was there and could not be read.
+  if (unreadableRepos) meta.unreadableRepos = unreadableRepos;
+  else delete meta.unreadableRepos;
+  // Same absent-vs-empty rule, through the one shared reader.
+  const suppressed = recordedMatchStages(raw.suppressedMatchStages);
+  if (suppressed) meta.suppressedMatchStages = suppressed;
+  else delete meta.suppressedMatchStages;
+  if (repoListsUnreadable) meta.repoListsUnreadable = true;
+  return meta;
+}
+
+/* ------------------------------------------------------------------ */
+/*  refreshPreservedBridgeMeta                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What a refresh did to `meta.json`.
+ *
+ * - `restamped`          — the pair still matched, so the lists were refreshed
+ *                          and the stamp re-taken from the database on disk.
+ * - `provenance-unknown` — the pair did NOT match (or there is no database to
+ *                          match), so the lists were refreshed and the metadata
+ *                          marked as unable to vouch for the file beside it.
+ * - `no-bridge`          — neither `meta.json` nor `bridge.lbug` exists, so
+ *                          there is no pair to keep honest and nothing written.
+ */
+export type PreservedBridgeMetaOutcome = 'restamped' | 'provenance-unknown' | 'no-bridge';
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fsp.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bring `meta.json`'s diagnostic lists up to date with a sync that PRESERVED
+ * the bridge instead of rebuilding it, without ever making the metadata claim
+ * more about the database than it did before.
+ *
+ * `syncGroup`'s total-failure path keeps the previous run's contracts and
+ * deliberately leaves `bridge.lbug` alone — the contracts that bridge holds are
+ * the ones being preserved. But `runGroupImpact` reads completeness from
+ * `meta.json`, not from `contracts.json`, so leaving the metadata alone too left
+ * the two files telling different stories: the registry said "this sync could
+ * not read svc/users" while a cross-repo query answered "complete, nothing
+ * depends on this" (R4/R6).
+ *
+ * The refresh is the whole difficulty. It rewrites `meta.json` atomically, so
+ * the file's mtime becomes now while the database's stays old — which is the
+ * write order a paired write produces, and precisely what
+ * `unstampedMetaPairsByWriteOrder` accepts. Three rules follow, and each of them
+ * is load-bearing:
+ *
+ *  1. Ask `bridgeMetaMatchesFile` FIRST, on the file as it stands. After the
+ *     write the question is unanswerable, because the write is what destroys
+ *     the evidence.
+ *  2. Re-stamp only when that answer was yes. Re-stamping a pair that already
+ *     failed would MANUFACTURE the provenance the failure just denied — the
+ *     same metadata/database mis-pairing stamping exists to prevent (KTD6).
+ *  3. When it was no, record `provenanceUnknown` explicitly and carry the
+ *     existing stamp fields through verbatim. Writing "no stamp" instead is
+ *     worse, not better: an unstamped file is judged on the two file times,
+ *     and this write has just put them in the accepting order.
+ *
+ * Nothing here opens, reads, or writes the database. The only `stat` of it
+ * happens on the branch where the pair was just verified.
+ *
+ * NOT SPLIT into locked/unlocked halves the way {@link writeBridge} is, and
+ * deliberately. Its one caller is `syncGroup`'s preserve branch, which is
+ * already inside `withGroupSyncLock` — so this write is ALREADY serialized
+ * against every other sync of the group, and taking the lock here would be the
+ * second acquisition of a non-reentrant primitive that the split exists to
+ * avoid. An acquiring wrapper would therefore have zero production callers,
+ * and no test calls this function at all: it would be dead code standing in for
+ * a guarantee the caller already provides. If a caller outside the critical
+ * section ever appears, it needs the same treatment `writeBridge` got — a
+ * wrapper, not a lock moved down here.
+ */
+export async function refreshPreservedBridgeMeta(
+  groupDir: string,
+  // Deliberately NOT `suppressedMatchStages`. This path preserves an EARLIER
+  // sync's database, so stamping it with this run's request would claim the
+  // untouched bridge was built with a flag it never saw. The registry's own
+  // preserve write (`{ ...prior, missingRepos, unreadableRepos }`) omits it for
+  // exactly this reason, and the two artifacts have to agree about which run
+  // they describe.
+  diagnostics: { missingRepos: string[]; unreadableRepos: string[] },
+): Promise<PreservedBridgeMetaOutcome> {
+  const dbPath = path.join(groupDir, 'bridge.lbug');
+  const [metaOnDisk, dbOnDisk] = await Promise.all([
+    fileExists(path.join(groupDir, 'meta.json')),
+    fileExists(dbPath),
+  ]);
+  // Nothing on either side of the pair. `readBridgeMeta` already answers
+  // `version: 0` — provenance unknown — for an absent file, so a file written
+  // here would say what the absence already says while inventing state for a
+  // bridge that has never existed.
+  if (!metaOnDisk && !dbOnDisk) return 'no-bridge';
+
+  const existing = await readBridgeMeta(groupDir);
+  const paired = await bridgeMetaMatchesFile(groupDir, existing);
+
+  const refreshed: BridgeMeta = { ...existing, ...diagnostics };
+  // NEVER PERSISTED (see `BridgeMeta`): both are things a READER computes ABOUT
+  // a file, and this is the first code in the repo that reads metadata and
+  // writes it back. The strip itself now lives in `writeBridgeMeta`, so every
+  // writer inherits it rather than each remembering.
+
+  if (paired) {
+    const stat = await fsp.stat(dbPath).catch(() => null);
+    if (stat) {
+      refreshed.bridgeSize = stat.size;
+      refreshed.bridgeMtimeMs = stat.mtimeMs;
+      await writeBridgeMeta(groupDir, refreshed);
+      return 'restamped';
+    }
+    // The database disappeared between the pairing check and this stat. There
+    // is nothing left to stamp, so fall through and say so rather than write a
+    // stamp describing a file that is gone.
+  }
+
+  refreshed.provenanceUnknown = true;
+  await writeBridgeMeta(groupDir, refreshed);
+  return 'provenance-unknown';
+}
+
+/**
+ * Withdraw the bridge's claim to be complete, without touching the database.
+ *
+ * The one path this exists for: `contracts.json` committed, then the bridge
+ * replacement failed. The old database is still physically usable and still
+ * answers queries, but it now describes an EARLIER sync than the canonical
+ * registry beside it — so `group_contracts` can report a narrowed or advanced
+ * contract set while `group_impact` traverses the old graph and calls its
+ * answer complete. Two public surfaces, contradictory epistemic claims, from
+ * one sync.
+ *
+ * Setting `provenanceUnknown` is the smallest thing that makes that safe:
+ * `bridgeMetaMatchesFile` gives it highest precedence and refuses to vouch for
+ * the pair, so every cross-repo answer downgrades to a floor until a sync
+ * succeeds. Deliberately NOT a re-stamp — the metadata still describes the
+ * database it was written for, and claiming otherwise is the mis-pairing the
+ * preserve path is careful to avoid. Deliberately not a delete either: the
+ * previous graph is better than nothing as long as nobody calls it complete.
+ *
+ * Best-effort by construction. It runs inside a failure handler, so a throw
+ * here would replace a reported bridge failure with an unrelated one.
+ */
+export async function markBridgeProvenanceUnknown(groupDir: string): Promise<boolean> {
+  try {
+    const existing = await readBridgeMeta(groupDir);
+    if (existing.version === 0) return false;
+    await writeBridgeMeta(groupDir, { ...existing, provenanceUnknown: true });
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -691,6 +1009,29 @@ export interface WriteBridgeInput {
   crossLinks: CrossLink[];
   repoSnapshots: Record<string, RepoSnapshot>;
   missingRepos: string[];
+  /**
+   * Repos this sync could not extract from — see
+   * `ContractRegistry.unreadableRepos` for the full definition, which this
+   * field carries unchanged.
+   *
+   * Deliberately not restated here. The narrower wording this once had ("whose
+   * index could not be opened") described one of the two causes and silently
+   * excluded the other, an extractor that threw partway through — so the same
+   * field meant one thing on the registry, another on the bridge input, and a
+   * third on the result. One definition, referenced twice, cannot drift.
+   *
+   * Recorded in meta.json so cross-repo impact can tell "nothing depends on
+   * this" from "we could not look": the bridge built here is missing every
+   * contract those repos own.
+   */
+  unreadableRepos?: string[];
+  /**
+   * Matching stages the sync was asked to skip. Recorded here for the same
+   * reason `unreadableRepos` is: a later cross-repo query reads this bridge
+   * with no access to the run that built it, and a graph narrowed by request
+   * looks exactly like a complete one.
+   */
+  suppressedMatchStages?: MatchType[];
 }
 
 /**
@@ -725,7 +1066,33 @@ function errMessage(err: unknown): string {
   }
 }
 
-export async function writeBridge(
+/**
+ * Rebuild `bridge.lbug` and its `meta.json`, ASSUMING THE CALLER ALREADY HOLDS
+ * THE GROUP SYNC LOCK for `groupDir` (R9).
+ *
+ * PRECONDITION — the group lock is held. There is exactly one production call
+ * site, `syncGroup` in sync.ts, and it is already inside
+ * `withGroupSyncLock(groupDir, …)` when it gets here. Enforced by this comment
+ * rather than by a type, matching `registerRepoUnlocked` / `withRegistryLock`
+ * in repo-manager.ts, which splits the same shape for the same reason.
+ *
+ * WHY THE SPLIT EXISTS AT ALL. The swap this function performs — old database
+ * aside, temp database into place, then `meta.json` written as a SECOND
+ * operation — is the write two concurrent syncs can interleave into a pairing
+ * that never existed: one sync's metadata beside the other's database. That
+ * needs mutual exclusion. But taking the lock HERE would be a second
+ * acquisition of a non-reentrant primitive inside a region that already holds
+ * it, and it would hang every single sync on the happy path, not some rare
+ * interleave. So the exclusion is the caller's, and this function only states
+ * the precondition. {@link writeBridge} is the acquiring wrapper for callers
+ * who are not already inside that region.
+ *
+ * SCOPE — writer-writer only. The reader-side promotion of a leftover
+ * `bridge.lbug.bak` runs on ordinary reads, outside anybody's critical section;
+ * `bridgeMetaMatchesFile` remains the reader's defense there and is not
+ * replaced by this lock.
+ */
+export async function writeBridgeUnlocked(
   groupDir: string,
   input: WriteBridgeInput,
 ): Promise<WriteBridgeReport> {
@@ -985,11 +1352,42 @@ export async function writeBridge(
     }
     await removeLbugFile(bakPath);
 
-    // 4. Write meta.json
+    // 4. Write the new meta.json, STAMPED WITH THE FILE IT DESCRIBES.
+    //
+    // meta.json carries the bridge's completeness, and since #3011 that is
+    // load-bearing: `runGroupImpact` folds `unreadableRepos ∪ missingRepos`
+    // into its truncation fields. The swap above and this write are two
+    // operations, so a sync that stops between them leaves the previous sync's
+    // meta beside a new database — and reading that as fact is a confidently
+    // wrong answer about the one thing this channel exists to make legible.
+    //
+    // Deleting the old meta before the swap would decide which way that window
+    // fails, but at an unacceptable price: the rename of the old database is
+    // wrapped in a catch that also swallows a FAILED rename (a held read-only
+    // handle does this on Windows), so `writeBridge` can throw with the old,
+    // perfectly good database still in place — and its metadata already gone,
+    // unrecoverably, for as long as the swap keeps failing.
+    //
+    // So destroy nothing and pair the two instead: record the size and mtime of
+    // the database this metadata describes, and let readers check that the pair
+    // still belongs together (`bridgeMetaMatchesFile`). A stale meta cannot match
+    // a freshly renamed database, and a sync that fails before the swap leaves a
+    // matching pair untouched.
+    const finalStat = await fsp.stat(finalPath);
     await writeBridgeMeta(groupDir, {
       version: BRIDGE_SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
+      bridgeSize: finalStat.size,
+      bridgeMtimeMs: finalStat.mtimeMs,
       missingRepos: input.missingRepos,
+      // Persisted whenever the caller supplied it, `[]` included: an empty list
+      // is the measurement "this sync accounted for every repo", and it is a
+      // different claim from a bridge that never recorded the field. Omitted
+      // only when the caller passed nothing to record.
+      ...(input.unreadableRepos ? { unreadableRepos: input.unreadableRepos } : {}),
+      ...(input.suppressedMatchStages
+        ? { suppressedMatchStages: input.suppressedMatchStages }
+        : {}),
     });
 
     return report;
@@ -1003,6 +1401,33 @@ export async function writeBridge(
       /* best-effort cleanup */
     });
   }
+}
+
+/**
+ * Rebuild `bridge.lbug` and its `meta.json` as the only writer of `groupDir`.
+ *
+ * The acquiring half of the split described on {@link writeBridgeUnlocked}: for
+ * callers that are NOT already inside the group's critical section, this takes
+ * the group sync lock around the whole swap and releases it afterwards. Two
+ * concurrent calls therefore run one after the other, so the `meta.json` left
+ * on disk is stamped for the `bridge.lbug` left on disk instead of for the
+ * loser's, which is the pairing the swap-plus-metadata sequence would otherwise
+ * let them interleave into.
+ *
+ * NOT used by `syncGroup`, and it must not be: that path already holds this
+ * lock, and `acquireIndexLock` is not reentrant, so routing it here would make
+ * every ordinary sync wait out the full `GROUP_SYNC_LOCK_TIMEOUT_MS` ceiling
+ * against itself. It calls {@link writeBridgeUnlocked} directly.
+ *
+ * Fails closed exactly as `withGroupSyncLock` does: if the lock cannot be
+ * acquired, a `GroupSyncLockError` is thrown and NOTHING is written —
+ * `bridge.lbug` and `meta.json` are left as they were.
+ */
+export async function writeBridge(
+  groupDir: string,
+  input: WriteBridgeInput,
+): Promise<WriteBridgeReport> {
+  return withGroupSyncLock(groupDir, () => writeBridgeUnlocked(groupDir, input));
 }
 
 /* ------------------------------------------------------------------ */

@@ -20,6 +20,71 @@ export type LLMProvider =
   | 'glm'
   | 'deepseek';
 
+export const MINIMAX_ANTHROPIC_BASE_URLS = {
+  global_en: 'https://api.minimax.io/anthropic',
+  cn_zh: 'https://api.minimaxi.com/anthropic',
+} as const;
+
+export const MINIMAX_DOCS_ROOTS = {
+  global_en: 'https://platform.minimax.io/docs',
+  cn_zh: 'https://platform.minimaxi.com/docs',
+} as const;
+
+export const MINIMAX_MODEL_IDS = ['MiniMax-M3', 'MiniMax-M2.7'] as const;
+
+export type MiniMaxModelId = (typeof MINIMAX_MODEL_IDS)[number];
+export type MiniMaxThinkingMode = 'adaptive' | 'disabled' | 'always_on';
+export type MiniMaxInputModality = 'text' | 'image' | 'video';
+
+export interface MiniMaxModelCapabilities {
+  contextWindow: number;
+  inputModalities: readonly MiniMaxInputModality[];
+  thinkingModes: readonly MiniMaxThinkingMode[];
+}
+
+export const MINIMAX_MODEL_CAPABILITIES: Record<MiniMaxModelId, MiniMaxModelCapabilities> = {
+  'MiniMax-M3': {
+    contextWindow: 1_000_000,
+    inputModalities: ['text', 'image', 'video'],
+    thinkingModes: ['adaptive', 'disabled'],
+  },
+  'MiniMax-M2.7': {
+    contextWindow: 204_800,
+    inputModalities: ['text'],
+    thinkingModes: ['always_on'],
+  },
+};
+
+export const getMiniMaxModelCapabilities = (model: string): MiniMaxModelCapabilities | undefined =>
+  MINIMAX_MODEL_CAPABILITIES[model as MiniMaxModelId];
+
+export type MiniMaxMediaDetail = 'low' | 'default' | 'high';
+
+export type MiniMaxMediaSource =
+  | {
+      type: 'url';
+      url: string;
+      detail?: MiniMaxMediaDetail;
+      fps?: number;
+      max_long_side_pixel?: number;
+    }
+  | {
+      type: 'base64';
+      media_type: string;
+      data: string;
+      detail?: MiniMaxMediaDetail;
+      fps?: number;
+      max_long_side_pixel?: number;
+    };
+
+export type AgentUserContent =
+  | string
+  | Array<
+      | { type: 'text'; text: string }
+      | { type: 'image'; source: MiniMaxMediaSource }
+      | { type: 'video'; source: MiniMaxMediaSource }
+    >;
+
 /**
  * Base configuration shared by all providers
  */
@@ -94,7 +159,9 @@ export interface OpenRouterConfig extends BaseProviderConfig {
 export interface MiniMaxConfig extends BaseProviderConfig {
   provider: 'minimax';
   apiKey: string;
-  model: string; // e.g., 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed'
+  model: string;
+  baseUrl?: string;
+  thinkingMode?: MiniMaxThinkingMode;
 }
 
 /**
@@ -200,7 +267,9 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   },
   minimax: {
     apiKey: '',
-    model: 'MiniMax-M2.5',
+    model: MINIMAX_MODEL_IDS[0],
+    baseUrl: MINIMAX_ANTHROPIC_BASE_URLS.global_en,
+    thinkingMode: 'adaptive',
     temperature: 0.1,
   },
   glm: {

@@ -45,6 +45,7 @@ import {
 import { logger } from '../core/logger.js';
 import { cliInfo, cliWarn, cliError } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
+import { formatSymbolLine } from './format-symbol.js';
 
 export { formatDetectChangesResult } from './detect-changes-format.js';
 
@@ -209,7 +210,7 @@ export function formatQueryResult(result: any): string {
   if (defs.length > 0) {
     lines.push(`Standalone definitions:`);
     for (const d of defs.slice(0, 8)) {
-      lines.push(`  ${d.type || 'Symbol'} ${d.name} → ${d.filePath || '?'}`);
+      lines.push(formatSymbolLine(d.type, d.name, d.filePath));
     }
     if (defs.length > 8) lines.push(`  ... and ${defs.length - 8} more`);
   }
@@ -299,6 +300,20 @@ function formatTruncationSuffix(result: {
       ? result.truncatedBy
       : '';
   return label ? ` (by ${label})` : '';
+}
+
+function pushCallgraphRiskLines(lines: string[], result: any): void {
+  if (result.risk) {
+    lines.push(`Risk: ${result.risk}`);
+  }
+  if (result.riskNote) {
+    lines.push(String(result.riskNote));
+  }
+  if (result.riskScale?.comparableAcrossKinds === false && result.riskSharedAxes) {
+    lines.push(
+      `Shared-axes risk: ${result.riskSharedAxes} (process/module axes are unavailable — compare File vs symbol only; do not use this to waive a HIGH/CRITICAL risk warning)`,
+    );
+  }
 }
 
 export function formatImpactResult(result: any): string {
@@ -566,14 +581,21 @@ export function formatImpactResult(result: any): string {
     // #1858 — "isolated" is a confident claim. If an interface / indirection
     // boundary is on the path, the true count is a lower bound, not zero;
     // callers binding via DI / dynamic dispatch were not traced. Say so instead.
+    const lines: string[] = [];
     if (result.epistemic === 'lower-bound') {
-      const lines = [
+      lines.push(
         `${target?.name || '?'}: no direct ${direction} dependencies traced, but this is a LOWER BOUND — unresolved indirection on the path (actual impact may be higher):`,
-      ];
+      );
       for (const b of result.boundaries || []) lines.push(`    • ${b}`);
-      return lines.join('\n');
+    } else if (direction === 'upstream') {
+      lines.push(
+        `${target?.name || '?'}: No ${direction} callers resolved. This is not evidence the symbol is unused or isolated.`,
+      );
+    } else {
+      lines.push(`${target?.name || '?'}: No ${direction} dependencies found.`);
     }
-    return `${target?.name || '?'}: No ${direction} dependencies found. This symbol appears isolated.`;
+    pushCallgraphRiskLines(lines, result);
+    return lines.join('\n');
   }
 
   const lines: string[] = [];
@@ -593,6 +615,7 @@ export function formatImpactResult(result: any): string {
     );
     for (const b of result.boundaries || []) lines.push(`    • ${b}`);
   }
+  pushCallgraphRiskLines(lines, result);
   lines.push('');
 
   const depthLabels: Record<number, string> = {

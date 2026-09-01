@@ -114,6 +114,15 @@ describe('group impact fan-out is bounded by a count, not by the clock (#2787)',
       ...Array.from({ length: REPO_COUNT }, (_, i) => repoKey(i)),
     ]);
     await fsp.writeFile(path.join(groupDir, 'bridge.lbug'), '');
+    // The metadata this suite's `readBridgeMeta` mock hands back has to exist on
+    // disk as well as in the mock. It carries no size/mtime stamp, so
+    // `bridgeMetaMatchesFile` pairs it to the database by write order — and a
+    // metadata file that is not there cannot be paired to anything. Written
+    // AFTER `bridge.lbug`, which is the order a real sync produces.
+    await fsp.writeFile(
+      path.join(groupDir, 'meta.json'),
+      JSON.stringify({ version: 1, generatedAt: '', missingRepos: [] }),
+    );
   });
 
   afterEach(async () => {
@@ -164,6 +173,32 @@ describe('group impact fan-out is bounded by a count, not by the clock (#2787)',
     expect(vi.mocked(port.impactByUid).mock.calls).toHaveLength(3);
     expect(result).toMatchObject({ truncated: false, risk: 'CRITICAL' });
     expect(result).not.toHaveProperty('riskEpistemic');
+  });
+
+  it('applies crossing risk to shared axes while preserving local scale metadata', async () => {
+    bridgeRows.value = [crossingRow(0, 0.9)];
+    const riskScale = {
+      comparableAcrossKinds: true,
+      unusedAxes: [],
+    } as const;
+    const port = makePort({
+      impact: vi.fn(async () => ({
+        target: { id: 'Function:src/api.ts:publish', filePath: 'src/api.ts' },
+        byDepth: { 1: [{ id: 'u1', filePath: 'src/a.ts' }] },
+        summary: { direct: 1, processes_affected: 4, modules_affected: 0 },
+        risk: 'HIGH',
+        riskSharedAxes: 'LOW',
+        riskScale,
+      })) as GroupToolPort['impact'],
+    });
+
+    const result = await run(port);
+
+    expect(result).toMatchObject({
+      risk: 'HIGH',
+      riskSharedAxes: 'HIGH',
+      riskScale,
+    });
   });
 
   it('marks risk as a floor when a crossing is dropped, and does NOT clamp the value down', async () => {

@@ -15,6 +15,10 @@ import {
   springResourceDefaultName,
   springResourceInjectionMatch,
 } from '../../src/core/ingestion/frameworks/spring/resource-injection.js';
+import {
+  intersectSpringHttpMethods,
+  springAnnotationHttpMethods,
+} from '../../src/core/ingestion/route-extractors/spring-shared.js';
 
 describe('Spring annotation static arguments', () => {
   it('parses Java and Kotlin named arrays without splitting nested values', () => {
@@ -77,6 +81,77 @@ describe('Spring annotation static arguments', () => {
     expect(normalizeSpringBeanType('outputStream')).toBe('outputStream');
     expect(normalizeSpringBeanType('inside.Type')).toBe('inside.Type');
     expect(normalizeSpringBeanType('Unit')).toBeNull();
+  });
+});
+
+describe('Spring request mapping methods', () => {
+  it('resolves shortcut, wildcard, scalar, and array method declarations', () => {
+    expect(springAnnotationHttpMethods('GetMapping', '@GetMapping("/x")')).toEqual(['GET']);
+    expect(springAnnotationHttpMethods('RequestMapping', '@RequestMapping("/x")')).toEqual(['*']);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod.POST)',
+      ),
+    ).toEqual(['POST']);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = {RequestMethod.GET, RequestMethod.HEAD})',
+      ),
+    ).toEqual(['GET', 'HEAD']);
+    expect(
+      springAnnotationHttpMethods('RequestMapping', '@RequestMapping(path = "/x", method = {})'),
+    ).toEqual(['*']);
+  });
+
+  it('accepts a terminal array comma and intersects class/method constraints', () => {
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(method = {RequestMethod.GET, RequestMethod.HEAD,})',
+      ),
+    ).toEqual(['GET', 'HEAD']);
+    expect(intersectSpringHttpMethods(['GET'], ['*'])).toEqual(['GET']);
+    expect(intersectSpringHttpMethods(['*'], ['POST'])).toEqual(['POST']);
+    expect(intersectSpringHttpMethods(['GET', 'HEAD'], ['HEAD', 'POST'])).toEqual(['HEAD']);
+    expect(intersectSpringHttpMethods(['GET'], ['POST'])).toEqual([]);
+  });
+
+  it('accepts Java whitespace and comments around static RequestMethod values', () => {
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod . GET)',
+      ),
+    ).toEqual(['GET']);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        `@RequestMapping(method = {
+          RequestMethod.GET, // read
+          /* write */ RequestMethod.POST,
+        })`,
+      ),
+    ).toEqual(['GET', 'POST']);
+  });
+
+  it('fails closed for runtime, malformed, and duplicate method members', () => {
+    expect(
+      springAnnotationHttpMethods('RequestMapping', '@RequestMapping(path = "/x", method = VERB)'),
+    ).toEqual([]);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod.GET, method = RequestMethod.POST)',
+      ),
+    ).toEqual([]);
+    expect(
+      springAnnotationHttpMethods(
+        'RequestMapping',
+        '@RequestMapping(path = "/x", method = RequestMethod./* unterminated)',
+      ),
+    ).toEqual([]);
   });
 });
 

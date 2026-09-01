@@ -40,6 +40,7 @@ import {
   repoIdentity as repoIdentityOf,
   type BackendRepo,
   type ConnectResult,
+  type GrepOptions,
   type JobProgress,
 } from '../services/backend-client';
 import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
@@ -671,7 +672,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const backend = {
           executeQuery,
           search: (query: string, opts?: any) => backendSearch(query, { ...opts, repo }),
-          grep: (pattern: string, limit?: number) => backendGrep(pattern, repo, limit),
+          grep: (pattern: string, limit?: number, opts?: GrepOptions) =>
+            backendGrep(pattern, repo, limit, opts),
           readFile: (filePath: string) =>
             backendReadFile(filePath, { repo }).then((r) => r.content),
         };

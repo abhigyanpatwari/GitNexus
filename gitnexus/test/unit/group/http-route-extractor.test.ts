@@ -219,6 +219,7 @@ export default router;
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
           return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('filePath IN $filePaths')) return [];
         if (query.includes('n.name = $name'))
           return params?.name === 'listUsers'
             ? [{ uid: 'fn-listUsers-xfile', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
@@ -227,6 +228,36 @@ export default router;
       };
       const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
       expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
+
+    it('retains unique-name fallback for a Flask handler imported from a bare module', async () => {
+      const dir = path.join(tmpDir, 'py-flask-bare-import');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from shared_handlers import list_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=list_users)
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') || query.includes('filePath IN $filePaths')) return [];
+        if (query.includes('n.name = $name') && params?.name === 'list_users') {
+          return [{ uid: 'fn-list-users', name: 'list_users', filePath: 'shared/handlers.py' }];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (contract) =>
+          contract.role === 'provider' && contract.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list-users', symbolName: 'list_users' });
     });
 
     it('leaves symbolUid empty when the repo-wide name is AMBIGUOUS (multiple matches)', async () => {
@@ -589,6 +620,49 @@ app.add_url_rule('/api/users', view_func=handle_users)
       );
       expect(provider).toMatchObject({ symbolUid: 'fn-list_users', symbolName: 'list_users' });
       expect(queriedNames).not.toContain('module:handle_users');
+    });
+
+    it('retains legacy package-prefix resolution for a Python re-export', async () => {
+      const dir = path.join(tmpDir, 'py-flask-reexport');
+      fs.mkdirSync(path.join(dir, 'app', 'handlers'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from .handlers import list_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=list_users)
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'app', 'handlers', '__init__.py'),
+        `from .users import list_users\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'app', 'handlers', 'users.py'),
+        `def list_users(): return []\n`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH') && String(params?.fileSlash) === 'app/handlers/') {
+          return [
+            {
+              uid: 'fn-list-users',
+              name: 'list_users',
+              filePath: 'app/handlers/users.py',
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (contract) =>
+          contract.role === 'provider' && contract.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list-users', symbolName: 'list_users' });
     });
 
     // ── Inline / closure provider handlers (#2276) ──────────────────────
@@ -1605,10 +1679,8 @@ public class UserController {
       expect(route).toBeDefined();
     });
 
-    it('does NOT emit a provider for @GetMapping(produces = ...) without path/value', async () => {
-      // Anti-regression: without the `key:` constraint, the named-arg
-      // query would capture `produces = "application/json"` and emit
-      // a bogus `http::GET::/application/json` contract.
+    it('emits a root provider for pathless @GetMapping without leaking produces', async () => {
+      // A pathless mapping is valid, but produces metadata must never become a path.
       const dir = path.join(tmpDir, 'spring-produces-only');
       fs.mkdirSync(path.join(dir, 'src/controller'), { recursive: true });
       fs.writeFileSync(
@@ -1628,17 +1700,16 @@ public class MisleadingController {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const providers = contracts.filter((c) => c.role === 'provider');
 
-      // No GET provider should be emitted for this method — the only
-      // string literal in the annotation is a non-route attribute.
+      // The non-route string must not become an /application/json provider.
       expect(
         providers.find((c) => c.contractId === 'http::GET::/application/json'),
       ).toBeUndefined();
-      // And the controller has no other route, so providers list for
-      // this file should be empty.
+      // The mapping itself still contributes one pathless root provider.
       const fromThisFile = providers.filter((c) =>
         c.symbolRef.filePath.endsWith('MisleadingController.java'),
       );
-      expect(fromThisFile).toHaveLength(0);
+      expect(fromThisFile).toHaveLength(1);
+      expect(fromThisFile[0].contractId).toBe('http::GET::/');
     });
 
     it('emits exactly one provider for @GetMapping(name = "...", value = "/users")', async () => {

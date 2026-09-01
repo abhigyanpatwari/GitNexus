@@ -21,6 +21,7 @@ import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
   .version;
@@ -61,6 +62,11 @@ describe('setupAntigravity', () => {
       value,
       configurable: true,
     });
+  };
+
+  const restoreSkillsRoot = (previous: string | undefined) => {
+    if (previous === undefined) delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
+    else process.env.GITNEXUS_TEST_SKILLS_ROOT = previous;
   };
 
   beforeEach(async () => {
@@ -262,6 +268,7 @@ describe('setupAntigravity', () => {
       '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
       'utf-8',
     );
+    const originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
     process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
 
     try {
@@ -277,7 +284,117 @@ describe('setupAntigravity', () => {
         fs.access(path.join(skillsDir, 'gitnexus-test', 'SKILL.md')),
       ).resolves.toBeUndefined();
     } finally {
-      delete process.env.GITNEXUS_TEST_SKILLS_ROOT;
+      restoreSkillsRoot(originalSkillsRoot);
+    }
+  });
+
+  it('preserves a customized installed skill when setup is rerun', async () => {
+    const fixtureSkillsRoot = path.join(tempHome, 'fixture-skills');
+    const installedSkill = path.join(
+      tempHome,
+      '.gemini',
+      'antigravity',
+      'skills',
+      'gitnexus-test',
+      'SKILL.md',
+    );
+    await fs.mkdir(fixtureSkillsRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test.md'),
+      '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      'utf-8',
+    );
+    const originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
+    process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
+
+    try {
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+      await fs.writeFile(installedSkill, 'customized by operator\n', 'utf-8');
+
+      await setupCommand();
+
+      await expect(fs.readFile(installedSkill, 'utf-8')).resolves.toBe('customized by operator\n');
+    } finally {
+      restoreSkillsRoot(originalSkillsRoot);
+    }
+  });
+
+  it('preserves customized files inside a directory skill when SKILL.md still matches', async () => {
+    const fixtureSkillsRoot = path.join(tempHome, 'fixture-skills');
+    const skillDir = path.join(tempHome, '.gemini', 'antigravity', 'skills', 'gitnexus-test');
+    const referencePath = path.join(skillDir, 'references', 'note.md');
+    await fs.mkdir(path.join(fixtureSkillsRoot, 'gitnexus-test', 'references'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test', 'SKILL.md'),
+      '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      'utf-8',
+    );
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test', 'references', 'note.md'),
+      'bundled note\n',
+      'utf-8',
+    );
+    const originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
+    process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
+
+    try {
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+      await fs.writeFile(referencePath, 'operator note\n', 'utf-8');
+
+      await setupCommand();
+
+      await expect(fs.readFile(referencePath, 'utf-8')).resolves.toBe('operator note\n');
+      await expect(fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')).resolves.toBe(
+        '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      );
+    } finally {
+      restoreSkillsRoot(originalSkillsRoot);
+    }
+  });
+
+  it('copies new bundled companions even when SKILL.md was customized', async () => {
+    const fixtureSkillsRoot = path.join(tempHome, 'fixture-skills');
+    const skillDir = path.join(tempHome, '.gemini', 'antigravity', 'skills', 'gitnexus-test');
+    await fs.mkdir(path.join(fixtureSkillsRoot, 'gitnexus-test', 'references'), {
+      recursive: true,
+    });
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test', 'SKILL.md'),
+      '---\nname: gitnexus-test\ndescription: fixture\n---\nbody\n',
+      'utf-8',
+    );
+    await fs.writeFile(
+      path.join(fixtureSkillsRoot, 'gitnexus-test', 'references', 'note.md'),
+      'bundled note\n',
+      'utf-8',
+    );
+    const originalSkillsRoot = process.env.GITNEXUS_TEST_SKILLS_ROOT;
+    process.env.GITNEXUS_TEST_SKILLS_ROOT = fixtureSkillsRoot;
+
+    try {
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+      await fs.writeFile(path.join(skillDir, 'SKILL.md'), 'customized by operator\n', 'utf-8');
+      await fs.writeFile(
+        path.join(fixtureSkillsRoot, 'gitnexus-test', 'references', 'added.md'),
+        'new bundled companion\n',
+        'utf-8',
+      );
+
+      await setupCommand();
+
+      await expect(fs.readFile(path.join(skillDir, 'SKILL.md'), 'utf-8')).resolves.toBe(
+        'customized by operator\n',
+      );
+      await expect(
+        fs.readFile(path.join(skillDir, 'references', 'added.md'), 'utf-8'),
+      ).resolves.toBe('new bundled companion\n');
+    } finally {
+      restoreSkillsRoot(originalSkillsRoot);
     }
   });
 });
@@ -413,12 +530,9 @@ describe('gitnexus-antigravity-hook adapter', () => {
 
   it('AfterTool emits stale-index hint after a successful git commit', async () => {
     // Initialize a git repo and a stale .gitnexus/meta.json.
-    spawnSync('git', ['init', '-q'], { cwd: workdir });
-    spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: workdir });
-    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: workdir });
+    initGitRepo(workdir);
     await fs.writeFile(path.join(workdir, 'a.txt'), 'hello', 'utf-8');
-    spawnSync('git', ['add', '.'], { cwd: workdir });
-    spawnSync('git', ['commit', '-q', '-m', 'init'], { cwd: workdir });
+    commitAll(workdir, 'init');
 
     const gnDir = path.join(workdir, '.gitnexus');
     await fs.mkdir(gnDir, { recursive: true });

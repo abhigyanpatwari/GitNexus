@@ -30,6 +30,7 @@ import {
   createFakeProcRoot,
   hookEnv,
 } from '../utils/hook-test-helpers.js';
+import { commitAll, initGitRepo, type GitIdentity } from '../helpers/temp-git-repo.js';
 
 // ─── Paths to both hook variants ────────────────────────────────────
 
@@ -172,18 +173,17 @@ process.exit(child.status ?? 0);
 let tmpDir: string;
 let gitNexusDir: string;
 
+const HOOK_TEST_IDENTITY: GitIdentity = { name: 'Test', email: 'test@test.com' };
+
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-test-'));
   gitNexusDir = path.join(tmpDir, '.gitnexus');
   fs.mkdirSync(gitNexusDir, { recursive: true });
 
   // Initialize a bare git repo so git rev-parse HEAD works
-  runGit(tmpDir, ['init']);
-  runGit(tmpDir, ['config', 'user.email', 'test@test.com']);
-  runGit(tmpDir, ['config', 'user.name', 'Test']);
+  initGitRepo(tmpDir, HOOK_TEST_IDENTITY);
   fs.writeFileSync(path.join(tmpDir, 'dummy.txt'), 'hello');
-  runGit(tmpDir, ['add', '.']);
-  runGit(tmpDir, ['commit', '-m', 'init']);
+  commitAll(tmpDir, 'init');
 });
 
 afterAll(() => {
@@ -211,13 +211,11 @@ function getHeadCommit(): string {
   return (result.stdout || '').trim();
 }
 
-function initGitRepo(dir: string) {
-  runGit(dir, ['init']);
-  runGit(dir, ['config', 'user.email', 'test@test.com']);
-  runGit(dir, ['config', 'user.name', 'Test']);
+/** A repo with one commit — `worktree add` and `rev-parse HEAD` need one. */
+function initRepoWithCommit(dir: string) {
+  initGitRepo(dir, HOOK_TEST_IDENTITY);
   fs.writeFileSync(path.join(dir, 'file.txt'), 'hello');
-  runGit(dir, ['add', '.']);
-  runGit(dir, ['commit', '-m', 'init']);
+  commitAll(dir, 'init');
 }
 
 function createGlobalRegistry(homeDir: string, marker: 'both' | 'registry' | 'repos' = 'both') {
@@ -3094,7 +3092,7 @@ describe('Global registry lookup', () => {
       try {
         createGlobalRegistry(homeDir);
         fs.mkdirSync(repoDir, { recursive: true });
-        initGitRepo(repoDir);
+        initRepoWithCommit(repoDir);
 
         const result = runHook(hookPath, {
           hook_event_name: 'PostToolUse',
@@ -3116,7 +3114,7 @@ describe('Global registry lookup', () => {
       try {
         createGlobalRegistry(homeDir);
         fs.mkdirSync(repoDir, { recursive: true });
-        initGitRepo(repoDir);
+        initRepoWithCommit(repoDir);
 
         const result = runHook(hookPath, {
           hook_event_name: 'PreToolUse',
@@ -3137,7 +3135,7 @@ describe('Global registry lookup', () => {
       try {
         createGlobalRegistry(homeDir);
         fs.mkdirSync(path.join(repoDir, '.gitnexus'), { recursive: true });
-        initGitRepo(repoDir);
+        initRepoWithCommit(repoDir);
         fs.writeFileSync(
           path.join(repoDir, '.gitnexus', 'meta.json'),
           JSON.stringify({ lastCommit: 'oldcommit', stats: {} }),
@@ -3166,7 +3164,7 @@ describe('Global registry lookup', () => {
         try {
           createGlobalRegistry(homeDir, marker);
           fs.mkdirSync(repoDir, { recursive: true });
-          initGitRepo(repoDir);
+          initRepoWithCommit(repoDir);
 
           const result = runHook(hookPath, {
             hook_event_name: 'PostToolUse',
@@ -3202,7 +3200,7 @@ describe('Linked git worktree resolution', () => {
       const worktreePath = path.join(root, 'main-repo-worktrees', 'feat');
       try {
         fs.mkdirSync(mainRepo, { recursive: true });
-        initGitRepo(mainRepo);
+        initRepoWithCommit(mainRepo);
         fs.mkdirSync(path.join(mainRepo, '.gitnexus'), { recursive: true });
         fs.writeFileSync(
           path.join(mainRepo, '.gitnexus', 'meta.json'),
@@ -3239,7 +3237,7 @@ describe('Linked git worktree resolution', () => {
       const worktreePath = path.join(root, 'main-repo-worktrees', 'feat');
       try {
         fs.mkdirSync(mainRepo, { recursive: true });
-        initGitRepo(mainRepo);
+        initRepoWithCommit(mainRepo);
         // Note: NO .gitnexus/ in the canonical repo.
 
         fs.mkdirSync(path.dirname(worktreePath), { recursive: true });

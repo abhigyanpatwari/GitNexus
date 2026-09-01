@@ -6,7 +6,9 @@ import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { toZeroBasedLine } from '../../ingestion/utils/line-base.js';
 import { logger } from '../../logger.js';
+import { DATA_ROUTE_TABLE_SOURCE } from '../../ingestion/route-extractors/data-route-table.js';
 import {
   getPluginForFile,
   HTTP_SCAN_GLOB,
@@ -114,7 +116,7 @@ LIMIT 2`;
 
 // Resolve an IMPORTED handler by pinning it to the import's target module: the
 // declared export `$name` whose file is the module the handler was imported from
-// (`$fileDot` matches `mod.ext`, `$fileSlash` matches `mod/index.ext`). This is
+// (`$filePaths` contains exact source-file and directory-index candidates). This is
 // the precise rung — it survives aliases and local same-name collisions that a
 // repo-wide name lookup cannot, and only resolves on a unique match within that
 // module. `LIMIT 2` keeps the uniqueness count exact (see RESOLVE_BY_NAME_QUERY).
@@ -128,13 +130,22 @@ MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
 LIMIT 2`;
 
+// determinism: probe — uniqueness discriminator, not a window. The consumer
+// accepts exactly one row and rejects a 2-row result whole, so row identity
+// cannot affect the resolution decision.
+export const RESOLVE_IN_EXACT_MODULE_QUERY = `
+MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
+  AND n.name = $name AND n.filePath IN $filePaths
+RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+LIMIT 2`;
+
 // Source-file extensions an import specifier may resolve to (stripped before
 // building the module file-prefix so `./h/users` and `./h/users.ts` agree).
 const SOURCE_EXT_RE = /\.(?:m|c)?[jt]sx?$/;
 
 /**
  * Resolve an import specifier to a repo-relative FILE BASE (path without
- * extension) so the target module can be matched by `filePath STARTS WITH`.
+ * extension) so exact target-file candidates can be constructed.
  * Handles two relative-import dialects and returns null for bare/absolute
  * imports (which fall back to a repo-wide name lookup):
  *   - path-style (JS/TS): `./handlers/users`, `../x` → joined against the
@@ -160,6 +171,27 @@ function resolveModuleBase(fromFile: string, module: string): string | null {
   return null; // bare / absolute import — repo-wide fallback
 }
 
+const MODULE_SOURCE_EXTENSIONS = [
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.py',
+];
+
+function moduleFileCandidates(base: string): string[] {
+  return [
+    ...MODULE_SOURCE_EXTENSIONS.map((extension) => `${base}${extension}`),
+    ...MODULE_SOURCE_EXTENSIONS.map((extension) =>
+      extension === '.py' ? `${base}/__init__.py` : `${base}/index${extension}`,
+    ),
+  ];
+}
+
 interface ResolvedSymbol {
   uid: string;
   name: string;
@@ -179,13 +211,17 @@ function resolveContainingSymbol(
   line: number,
 ): ResolvedSymbol | null {
   const norm = (x: unknown): string => String(x ?? '');
-  // Detection lines are 1-based; symbol spans are stored 0-based for the
-  // languages indexed today (parse-worker records `startPosition.row`). So the
-  // base-correct probe is `line - 1`. Pick the INNERMOST (smallest-span) symbol
-  // whose span contains the probe. Only if nothing contains `line - 1` do we
-  // retry with the raw `line` — a defensive fallback for any future language
-  // that stores 1-based spans. Probing `line - 1` first (rather than OR-ing both)
-  // avoids the +1 slack mis-picking a one-line sibling that sits on `line`.
+  // Detection lines are 1-based (`HttpDetection.line`); symbol spans are stored
+  // 0-based for the languages indexed today (parse-worker records
+  // `startPosition.row`). So the base-correct probe is `toZeroBasedLine(line)` —
+  // the same named 1-based→graph-space conversion the ingestion emitters use
+  // (#2377), rather than a bare literal. Pick the INNERMOST (smallest-span)
+  // symbol whose span contains the probe. Only if nothing contains the 0-based
+  // probe do we retry with the raw `line` — a defensive fallback for any future
+  // language that stores 1-based spans. Probing 0-based first (rather than
+  // OR-ing both) avoids the +1 slack mis-picking a one-line sibling that sits on
+  // `line`. The helper's `Math.max(0, …)` clamp is inert here: every plugin sets
+  // `line` from `startPosition.row + 1`, so it is always >= 1.
   const pick = (probe: number): ResolvedSymbol | null => {
     let best: ResolvedSymbol | null = null;
     let bestSpan = Number.POSITIVE_INFINITY;
@@ -208,7 +244,7 @@ function resolveContainingSymbol(
     }
     return best && best.uid ? best : null;
   };
-  return pick(line - 1) ?? pick(line);
+  return pick(toZeroBasedLine(line)) ?? pick(line);
 }
 
 /** A Function/Method in the file matching `name` exactly (for named handlers). */
@@ -222,6 +258,17 @@ function resolveSymbolByName(rows: Record<string, unknown>[], name: string): Res
     if (uid) return { uid, name, filePath: norm(r.filePath ?? r[2]) };
   }
   return null;
+}
+
+function resolveFileSymbolByNameUnique(
+  rows: Record<string, unknown>[],
+  name: string,
+): ResolvedSymbol | null {
+  const matches = rows
+    .map((row) => resolveSymbolByName([row], name))
+    .filter((match): match is ResolvedSymbol => match !== null);
+  const byUid = new Map(matches.map((match) => [match.uid, match]));
+  return byUid.size === 1 ? (byUid.values().next().value ?? null) : null;
 }
 
 // ─── Path normalization (shared between provider / consumer paths) ──
@@ -479,28 +526,29 @@ export class HttpRouteExtractor implements ContractExtractor {
       globalNameCache.set(name, result);
       return result;
     };
-    // Resolve a handler imported from a RELATIVE module to the unique declared
-    // symbol of that name inside the import's target file. Returns null for
-    // non-relative (bare/aliased-path) imports — those fall back to the repo-wide
-    // name lookup. Cached by (target-file-prefix, declared name).
+    // Resolve a handler imported from a relative module to the unique declared
+    // symbol inside its target file. The caller decides whether a miss may use
+    // the historical unique repository-wide fallback.
     const importedSymbolCache = new Map<string, ResolvedSymbol | null>();
     const resolveImportedSymbol = async (
       fromFile: string,
       imp: { name: string; module: string },
+      strict = false,
     ): Promise<ResolvedSymbol | null> => {
       if (!dbExecutor) return null;
       const base = resolveModuleBase(fromFile, imp.module);
-      if (base === null) return null; // bare/absolute import → repo-wide fallback
-      const cacheKey = JSON.stringify([base, imp.name]);
+      if (base === null) return null;
+      const cacheKey = JSON.stringify([base, imp.name, strict]);
       const cached = importedSymbolCache.get(cacheKey);
       if (cached !== undefined) return cached;
       let rows: Record<string, unknown>[] = [];
       try {
-        rows = await dbExecutor(RESOLVE_IN_MODULE_QUERY, {
-          name: imp.name,
-          fileDot: `${base}.`,
-          fileSlash: `${base}/`,
-        });
+        rows = await dbExecutor(
+          strict ? RESOLVE_IN_EXACT_MODULE_QUERY : RESOLVE_IN_MODULE_QUERY,
+          strict
+            ? { name: imp.name, filePaths: moduleFileCandidates(base) }
+            : { name: imp.name, fileDot: `${base}.`, fileSlash: `${base}/` },
+        );
       } catch {
         rows = [];
       }
@@ -513,6 +561,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       d: HttpDetection,
     ): Promise<ResolvedSymbol | null> => {
       if (!dbExecutor) return null;
+      if (d.role === 'provider' && d.unresolvedHandler) return null;
       const syms = await loadFileSymbols(filePath);
       // Name resolution does NOT need a detection line — a named provider
       // handler (Spring/Go/etc. method name) resolves by name even when the
@@ -526,14 +575,20 @@ export class HttpRouteExtractor implements ContractExtractor {
         // its (declared) name would be wrong; on a miss go straight to a unique
         // repo-wide match on the declared name, never file-scoped.
         if (d.handlerImport) {
-          const byImport = await resolveImportedSymbol(filePath, d.handlerImport);
+          const byImport = await resolveImportedSymbol(
+            filePath,
+            d.handlerImport,
+            d.strictHandlerResolution,
+          );
           if (byImport) return byImport;
-          const byGlobal = await resolveSymbolByNameUnique(d.handlerImport.name);
-          if (byGlobal) return byGlobal;
-          return null;
+          if (d.strictHandlerResolution) return null;
+          return resolveSymbolByNameUnique(d.handlerImport.name);
         }
-        const byName = resolveSymbolByName(syms, d.name);
+        const byName = d.strictHandlerResolution
+          ? resolveFileSymbolByNameUnique(syms, d.name)
+          : resolveSymbolByName(syms, d.name);
         if (byName) return byName;
+        if (d.strictHandlerResolution) return null;
         const byGlobal = await resolveSymbolByNameUnique(d.name);
         if (byGlobal) return byGlobal;
         // A NAMED handler we could not resolve by name (neither file-scoped nor
@@ -784,7 +839,12 @@ export class HttpRouteExtractor implements ContractExtractor {
     getDetections: (rel: string) => Promise<HttpDetection[]>,
     resolveSymbol: (filePath: string, d: HttpDetection) => Promise<ResolvedSymbol | null>,
   ): Promise<ExtractedContract[]> {
-    const out: ExtractedContract[] = [];
+    const candidates: Array<{
+      detection: HttpDetection;
+      filePath: string;
+      pathNorm: string;
+      resolved: ResolvedSymbol | null;
+    }> = [];
     for (const rel of files) {
       const detections = await getDetections(rel);
       const filePath = normalizeRepoRelPath(rel);
@@ -795,26 +855,56 @@ export class HttpRouteExtractor implements ContractExtractor {
         // arrow that encloses the registration line) so the contract carries a
         // real symbolUid; fall back to the file + detection name otherwise.
         const resolved = await resolveSymbol(filePath, d);
-        out.push({
-          contractId: contractIdFor(d.method, pathNorm),
-          type: 'http',
-          role: 'provider',
-          symbolUid: resolved?.uid ?? '',
-          symbolRef: {
-            filePath: resolved?.filePath || filePath,
-            name: resolved?.name ?? d.name ?? 'handler',
-          },
-          symbolName: resolved?.name ?? d.name ?? 'handler',
-          confidence: d.confidence,
-          meta: {
-            method: d.method,
-            path: pathNorm,
-            pathSegments: pathNorm.split('/').filter(Boolean),
-            extractionStrategy: resolved ? 'source_scan_resolved' : 'source_scan',
-            framework: d.framework,
-          },
-        });
+        candidates.push({ detection: d, filePath, pathNorm, resolved });
       }
+    }
+
+    const dataCandidatesByIdentity = new Map<string, typeof candidates>();
+    for (const candidate of candidates) {
+      if (candidate.detection.framework !== DATA_ROUTE_TABLE_SOURCE) continue;
+      const identity = contractIdFor(candidate.detection.method, candidate.pathNorm);
+      const grouped = dataCandidatesByIdentity.get(identity) ?? [];
+      grouped.push(candidate);
+      dataCandidatesByIdentity.set(identity, grouped);
+    }
+    const ambiguousDataIdentities = new Set<string>();
+    for (const [identity, grouped] of dataCandidatesByIdentity) {
+      if (grouped.length < 2) continue;
+      const resolvedIds = new Set(
+        grouped.flatMap((candidate) =>
+          candidate.resolved === null ? [] : [candidate.resolved.uid],
+        ),
+      );
+      if (grouped.some((candidate) => candidate.resolved === null) || resolvedIds.size !== 1) {
+        ambiguousDataIdentities.add(identity);
+      }
+    }
+
+    const out: ExtractedContract[] = [];
+    for (const { detection: d, filePath, pathNorm, resolved } of candidates) {
+      const contractId = contractIdFor(d.method, pathNorm);
+      if (d.framework === DATA_ROUTE_TABLE_SOURCE && ambiguousDataIdentities.has(contractId)) {
+        continue;
+      }
+      out.push({
+        contractId,
+        type: 'http',
+        role: 'provider',
+        symbolUid: resolved?.uid ?? '',
+        symbolRef: {
+          filePath: resolved?.filePath || filePath,
+          name: resolved?.name ?? d.name ?? 'handler',
+        },
+        symbolName: resolved?.name ?? d.name ?? 'handler',
+        confidence: d.confidence,
+        meta: {
+          method: d.method,
+          path: pathNorm,
+          pathSegments: pathNorm.split('/').filter(Boolean),
+          extractionStrategy: resolved ? 'source_scan_resolved' : 'source_scan',
+          framework: d.framework,
+        },
+      });
     }
     return this.dedupeContracts(out);
   }

@@ -65,11 +65,32 @@ describe('parseDiffHunks', () => {
     expect(result[0].hunks).toEqual([{ startLine: 6, endLine: 6 }]);
   });
 
-  it('skips pure-deletion hunks (count=0)', () => {
+  it('anchors a pure-deletion hunk (count=0) on the line the removed text followed', () => {
+    // A unified diff spells an empty new range as the line BEFORE it: `+10,0`
+    // means the removed text sat between new lines 10 and 11. Line 10 alone,
+    // never the pair straddling the gap — a symbol that CONTAINED the deleted
+    // text also contains 10, whereas extending to 11 would additionally claim a
+    // symbol that merely STARTS after the gap, the widening `coalesceHunks`
+    // guarantees never happens.
+    //
+    // Dropping the hunk left the file entry with no hunks, so `detect_changes`
+    // contributed no bound for the path and a deletion-only commit reported
+    // `{changed_count: 0, changed_files: 1, risk_level: 'low'}` — rendered as
+    // "No changes detected." for a commit that deleted a function (#2915).
     const diff = ['+++ b/src/del.ts', '@@ -10,3 +10,0 @@ context'].join('\n');
     const result = parseDiffHunks(diff);
     expect(result).toHaveLength(1);
-    expect(result[0].hunks).toHaveLength(0);
+    expect(result[0].hunks).toEqual([{ startLine: 10, endLine: 10 }]);
+  });
+
+  it('clamps a head-of-file deletion (+0,0) to line 1', () => {
+    // git writes `+0,0` when the deletion takes the very first lines: there is
+    // no "line before" to anchor on. Line numbers here are 1-based (#2377), so
+    // an unclamped 0 would convert to the graph line -1 and match nothing.
+    const diff = ['+++ b/src/head.ts', '@@ -1,2 +0,0 @@'].join('\n');
+    const result = parseDiffHunks(diff);
+    expect(result).toHaveLength(1);
+    expect(result[0].hunks).toEqual([{ startLine: 1, endLine: 1 }]);
   });
 
   it('returns empty array for empty diff output', () => {

@@ -38,7 +38,7 @@ const PLUGIN_CJS = path.resolve(
 
 interface CjsModule {
   formatAnalyzeCommand: (
-    o?: { embeddings?: boolean },
+    o?: { embeddings?: boolean; indexOnly?: boolean },
     deps?: { npmMajor?: number | null; pnpmMajor?: number | null; pnpmMinor?: number | null },
   ) => string;
   formatBunxCommand: (args: string) => string;
@@ -113,6 +113,16 @@ describe('resolve-analyze-cmd.cjs (canonical invocation resolver)', () => {
         withEmbeddings,
       );
     }
+  });
+
+  it('appends --index-only for the routine stale-index nudge (#2907)', () => {
+    process.env.GITNEXUS_INVOCATION = 'gitnexus';
+    expect(cjs.formatAnalyzeCommand({ indexOnly: true })).toBe('gitnexus analyze --index-only');
+    expect(cjs.formatAnalyzeCommand({ indexOnly: true, embeddings: true })).toBe(
+      'gitnexus analyze --index-only --embeddings',
+    );
+    // Absent/false leaves the doc-refreshing form untouched.
+    expect(cjs.formatAnalyzeCommand({ indexOnly: false })).toBe('gitnexus analyze');
   });
 
   it('auto-selects global gitnexus first', () => {

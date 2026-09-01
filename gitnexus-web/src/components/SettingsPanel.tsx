@@ -21,7 +21,13 @@ import {
   fetchOpenRouterModels,
 } from '../core/llm/settings-service';
 import { getAuthToken, setAuthToken } from '../services/backend-client';
-import type { LLMSettings, LLMProvider } from '../core/llm/types';
+import type { LLMSettings, LLMProvider, MiniMaxThinkingMode } from '../core/llm/types';
+import {
+  getMiniMaxModelCapabilities,
+  MINIMAX_ANTHROPIC_BASE_URLS,
+  MINIMAX_DOCS_ROOTS,
+  MINIMAX_MODEL_IDS,
+} from '../core/llm/types';
 import { DEFAULT_OLLAMA_BASE_URL } from '../config/ui-constants';
 import { ProviderConfigCard } from './settings/ProviderConfigCard';
 import { SecretInput } from './settings/SecretInput';
@@ -340,6 +346,20 @@ export const SettingsPanel = ({
   };
 
   if (!isOpen) return null;
+
+  const miniMaxModel = settings.minimax?.model ?? MINIMAX_MODEL_IDS[0];
+  const miniMaxCapabilities = getMiniMaxModelCapabilities(miniMaxModel);
+  const configuredMiniMaxThinkingMode = settings.minimax?.thinkingMode;
+  const miniMaxThinkingMode =
+    configuredMiniMaxThinkingMode &&
+    miniMaxCapabilities?.thinkingModes.includes(configuredMiniMaxThinkingMode)
+      ? configuredMiniMaxThinkingMode
+      : (miniMaxCapabilities?.thinkingModes[0] ?? configuredMiniMaxThinkingMode ?? 'adaptive');
+  const miniMaxBaseUrl = settings.minimax?.baseUrl ?? MINIMAX_ANTHROPIC_BASE_URLS.global_en;
+  const miniMaxDocsRoot =
+    miniMaxBaseUrl === MINIMAX_ANTHROPIC_BASE_URLS.cn_zh
+      ? MINIMAX_DOCS_ROOTS.cn_zh
+      : MINIMAX_DOCS_ROOTS.global_en;
 
   const providers: LLMProvider[] = [
     'openai',
@@ -864,7 +884,7 @@ export const SettingsPanel = ({
                 value: settings.minimax?.apiKey ?? '',
                 placeholder: t('settings:providers.minimax.apiKeyPlaceholder'),
                 helperText: t('settings:providers.minimax.helperText'),
-                helperLink: 'https://platform.minimax.io',
+                helperLink: miniMaxDocsRoot,
                 helperLinkLabel: t('settings:providers.minimax.helperLinkLabel'),
                 isVisible: !!showApiKey['minimax'],
                 onChange: (value) =>
@@ -875,16 +895,79 @@ export const SettingsPanel = ({
                 onToggleVisibility: () => toggleApiKeyVisibility('minimax'),
               }}
               model={{
-                value: settings.minimax?.model ?? 'MiniMax-M2.5',
+                value: miniMaxModel,
                 placeholder: t('settings:providers.minimax.modelPlaceholder'),
                 onChange: (value) =>
                   setSettings((prev) => ({
                     ...prev,
-                    minimax: { ...prev.minimax!, model: value },
+                    minimax: {
+                      ...prev.minimax!,
+                      model: value,
+                      thinkingMode:
+                        getMiniMaxModelCapabilities(value)?.thinkingModes[0] ??
+                        prev.minimax?.thinkingMode,
+                    },
                   })),
                 helperText: t('settings:providers.minimax.helperModel'),
               }}
-            />
+            >
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">
+                  {t('settings:providers.minimax.endpoint')}
+                </label>
+                <select
+                  value={miniMaxBaseUrl}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      minimax: { ...prev.minimax!, baseUrl: event.target.value },
+                    }))
+                  }
+                  className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 font-mono text-sm text-text-primary transition-all outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
+                >
+                  <option value={MINIMAX_ANTHROPIC_BASE_URLS.global_en}>
+                    {t('settings:providers.minimax.endpoints.global')}
+                  </option>
+                  <option value={MINIMAX_ANTHROPIC_BASE_URLS.cn_zh}>
+                    {t('settings:providers.minimax.endpoints.china')}
+                  </option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-text-secondary">
+                  {t('settings:providers.minimax.thinking')}
+                </label>
+                <select
+                  value={miniMaxThinkingMode}
+                  disabled={miniMaxCapabilities?.thinkingModes.length === 1}
+                  onChange={(event) =>
+                    setSettings((prev) => ({
+                      ...prev,
+                      minimax: {
+                        ...prev.minimax!,
+                        thinkingMode: event.target.value as MiniMaxThinkingMode,
+                      },
+                    }))
+                  }
+                  className="w-full rounded-xl border border-border-subtle bg-elevated px-4 py-3 text-sm text-text-primary transition-all outline-none focus:border-accent focus:ring-2 focus:ring-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {(miniMaxCapabilities?.thinkingModes ?? ['adaptive', 'disabled']).map((mode) => (
+                    <option key={mode} value={mode}>
+                      {t(`settings:providers.minimax.thinkingModes.${mode}`)}
+                    </option>
+                  ))}
+                </select>
+                {miniMaxCapabilities && (
+                  <p className="text-xs text-text-muted">
+                    {t('settings:providers.minimax.capabilities', {
+                      contextWindow: miniMaxCapabilities.contextWindow.toLocaleString(),
+                      modalities: miniMaxCapabilities.inputModalities.join(', '),
+                    })}
+                  </p>
+                )}
+              </div>
+            </ProviderConfigCard>
           )}
 
           {/* DeepSeek Settings */}

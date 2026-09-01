@@ -3,10 +3,10 @@
  *
  * `src/core/lbug/schema.ts` declares its relation pairs from two cross products
  * plus a small hand-written remainder, and it justifies NOT adding a third cross
- * product with a number: anchored queries cost ~1.04× at 450 declared pairs but
- * 1.6× at 786 and 2.1× at 1024. That measurement previously lived in a scratch
- * directory, so the claim could not be re-checked when someone proposed
- * widening a rule. This is it, committed.
+ * product with a number: anchored queries cost ~1.04× near production's pair
+ * count but 1.6× at 786 and 2.1× at 1024. That measurement previously lived in
+ * a scratch directory, so the claim could not be re-checked when someone
+ * proposed widening a rule. This is it, committed.
  *
  * WHAT IT MEASURES. Against a real `@ladybugdb/core` database, with byte-identical
  * DATA at every size, it times the query shape whose plan actually depends on the
@@ -34,7 +34,8 @@
  * same query at every size, and the only variable is how many UNUSED pairs the
  * table declares:
  *   -  332 — the pre-#2792 hand-written list (the historical baseline);
- *   -  450 — production today (two cross products + 72 hand-declared);
+ *   -  450 — production before Record became linkable (#2801);
+ *   -  461 — production today (two cross products + 69 hand-declared);
  *   -  641 — the third cross product schema.ts defers
  *            (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef, Union,
  *            Namespace, Impl, TypeAlias, Static, Template}`), which would leave
@@ -43,8 +44,8 @@
  *            third rule (it is 641; 786 is kept as a measured waypoint);
  *   - 1024 — the full cross product, the ceiling.
  *
- * Ratios are reported against 332, the smallest size — `ratio_450` is the
- * number schema.ts quotes.
+ * Ratios are reported against 332, the smallest size — the production-size
+ * ratio is the number schema.ts quotes.
  *
  * CORRECTNESS GATE. Before timing anything it round-trips the REAL
  * `SCHEMA_QUERIES` through a real database and asserts that
@@ -61,9 +62,9 @@
  *   node --import tsx bench/schema-pairs/measure.mjs           # print JSON lines
  *   node --import tsx bench/schema-pairs/measure.mjs --check    # gate vs baselines.json
  *
- * `--check` fails if the correctness gate breaks, or if `ratio_450` exceeds its
- * budget — i.e. if production's own pair count starts costing materially more
- * than the hand-written list it replaced.
+ * `--check` fails if the correctness gate breaks, or if the production-size
+ * ratio exceeds its budget — i.e. if production's own pair count starts
+ * costing materially more than the hand-written list it replaced.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -85,9 +86,14 @@ const lbug = (await import('@ladybugdb/core')).default;
 
 // ---- sizes + the pair enumeration every size is a prefix of ----
 
-const SIZES = [332, 450, 641, 786, 1024];
 const REFERENCE_SIZE = 332; // ratios are relative to this
-const PRODUCTION_SIZE = 450; // the size schema.ts ships
+// Derive production from the same executable DDL the correctness gate
+// round-trips. A LINKABLE_LABELS widening must not require a second copied
+// count here — and cannot silently select a stale/missing budget key.
+const PRODUCTION_SIZE = parseRelationSchemaPairs(RELATION_SCHEMA).size;
+const SIZES = [...new Set([REFERENCE_SIZE, 450, PRODUCTION_SIZE, 641, 786, 1024])].sort(
+  (a, b) => a - b,
+);
 
 // The four pairs the synthetic data uses. Pinned to the FRONT of the
 // enumeration so they are declared at every size — otherwise a smaller pair set
@@ -338,8 +344,13 @@ if (!CHECK) {
   process.stdout.write(JSON.stringify(summary) + '\n');
 } else {
   const baselines = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
-  const budget = baselines[`ratio_${PRODUCTION_SIZE}_budget`];
-  if (budget !== undefined && summary[`ratio_${PRODUCTION_SIZE}`] >= budget) {
+  const budgetKey = `ratio_${PRODUCTION_SIZE}_budget`;
+  const budget = baselines[budgetKey];
+  if (budget === undefined) {
+    failures.push(`no ${budgetKey} in baselines.json — the production gate is disarmed`);
+  } else if (typeof budget !== 'number' || !Number.isFinite(budget)) {
+    failures.push(`${budgetKey} must be a finite number (got ${JSON.stringify(budget)})`);
+  } else if (summary[`ratio_${PRODUCTION_SIZE}`] >= budget) {
     failures.push(
       `production pair set (${PRODUCTION_SIZE}) costs ${summary[`ratio_${PRODUCTION_SIZE}`]}× vs ` +
         `${REFERENCE_SIZE} pairs, >= budget ${budget} (untyped ${reference.untyped_ms}ms -> ` +
