@@ -288,6 +288,11 @@ describe('Spring Boot Actuator Kotlin runtime enrichment', () => {
       springActuatorPath: 'actuator',
     });
     const nodes = [...result.graph.iterNodes()];
+    const kotlinControllerFile = nodes.find(
+      (node) =>
+        node.label === 'File' &&
+        node.properties.filePath === 'src/main/kotlin/com/example/KotlinControllers.kt',
+    );
     const route = (name: string): GraphNode | undefined =>
       nodes.find((node) => node.label === 'Route' && node.properties.name === name);
 
@@ -327,6 +332,11 @@ describe('Spring Boot Actuator Kotlin runtime enrichment', () => {
     ).toBe(false);
 
     const regularRoute = route('/runtime-regular');
+    expect(
+      [...result.graph.iterRelationshipsByType('HANDLES_ROUTE')].some(
+        (edge) => edge.sourceId === kotlinControllerFile?.id && edge.targetId === regularRoute?.id,
+      ),
+    ).toBe(true);
     expect(
       [...result.graph.iterRelationshipsByType('ENTRY_POINT_OF')].some(
         (edge) =>
