@@ -307,11 +307,36 @@ jobs:
               echo "::warning::Evidence from run ${previous} could not be downloaded (expired or absent); trying an older run."
               continue
             fi
+            unsafe="$(find "${run_root}" ! -type d ! -type f -print -quit)"
+            if [[ -n "${unsafe}" ]]; then
+              echo "::warning::Run ${previous} contains a non-regular artifact entry; trying an older run."
+              continue
+            fi
+            # upload-artifact normalizes directories/files to 0755/0644, while
+            # the evidence reader deliberately requires transcript paths to be
+            # owner-only. Restore that trust-boundary invariant after download.
+            if ! chmod -R go-rwx "${run_root}"; then
+              echo "::warning::Evidence permissions from run ${previous} could not be restricted; trying an older run."
+              continue
+            fi
             # The artifact holds gen-N/bench/{results.jsonl,promotion.json,...};
             # the highest generation is the one that actually reached the gate.
             latest="$(find "${run_root}" -type f -path '*/gen-*/bench/results.jsonl' | sort -V | tail -1)"
             if [[ -z "${latest}" || -L "${latest}" || ! -f "${latest}" ]]; then
               echo "::warning::Run ${previous} uploaded no usable benchmark results; trying an older run."
+              continue
+            fi
+            # Existence is insufficient: an interrupted run may leave an empty,
+            # malformed, or session/infra-only JSONL. Reuse the same bounded
+            # selection and transcript/digest preflight the proposer will use,
+            # so an unusable newer run cannot hide an older useful one.
+            if uv run --project eval --locked --extra dev python -c \
+              'from pathlib import Path; import json, sys; from workflow_bench.evolve import load_jsonl, proposer_evidence_entries, select_evidence, summarize_gate; result = Path(sys.argv[1]); root = result.parent; rows = select_evidence(load_jsonl(result)); rows or sys.exit(10); promotion = root / "promotion.json"; gate = summarize_gate(json.loads(promotion.read_text())) if promotion.is_file() else []; proposer_evidence_entries(results_dir=root, evidence=rows, learnings=[], gate_summary=gate)' \
+              "${latest}"; then
+              :
+            else
+              usability_status=$?
+              echo "::warning::Run ${previous} failed evidence preflight (exit ${usability_status}); trying an older run."
               continue
             fi
             seed="$(dirname "${latest}")"

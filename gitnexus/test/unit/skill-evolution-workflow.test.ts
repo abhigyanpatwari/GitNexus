@@ -1,5 +1,14 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { load } from 'js-yaml';
@@ -47,7 +56,12 @@ function stepRun(stepName: string): string {
   return typeof step?.run === 'string' ? step.run : '';
 }
 
-function runSeedStep(ghImplementation: string): { output: string; trace: string } {
+function runSeedStep(ghImplementation: string): {
+  output: string;
+  trace: string;
+  transcriptDirectoryMode?: number;
+  transcriptMode?: number;
+} {
   const root = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-evolution-seed-'));
   try {
     const bin = path.join(root, 'bin');
@@ -60,6 +74,19 @@ function runSeedStep(ghImplementation: string): { output: string; trace: string 
     const gh = path.join(bin, 'gh');
     writeFileSync(gh, `#!/usr/bin/env bash\nset -euo pipefail\n${ghImplementation}\n`);
     chmodSync(gh, 0o700);
+    const uv = path.join(bin, 'uv');
+    writeFileSync(
+      uv,
+      `#!/usr/bin/env bash
+set -euo pipefail
+results=''
+for argument in "$@"; do results="$argument"; done
+content="$(cat "$results")"
+if [[ -z "$content" || "$content" == *'"error_kind":"session-error"'* ]]; then exit 10; fi
+exit 0
+`,
+    );
+    chmodSync(uv, 0o700);
 
     execFileSync(
       '/bin/bash',
@@ -77,9 +104,21 @@ function runSeedStep(ghImplementation: string): { output: string; trace: string 
         stdio: 'pipe',
       },
     );
+    const output = readFileSync(githubOutput, 'utf8');
+    const seed = output.match(/^seed=(.+)$/m)?.[1];
+    const transcriptDirectory = seed ? path.join(seed, 'transcripts') : undefined;
+    const transcript = transcriptDirectory
+      ? path.join(transcriptDirectory, 'session.jsonl')
+      : undefined;
     return {
-      output: readFileSync(githubOutput, 'utf8'),
+      output,
       trace: readFileSync(trace, 'utf8'),
+      transcriptDirectoryMode:
+        transcriptDirectory && existsSync(transcriptDirectory)
+          ? statSync(transcriptDirectory).mode & 0o777
+          : undefined,
+      transcriptMode:
+        transcript && existsSync(transcript) ? statSync(transcript).mode & 0o777 : undefined,
     };
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -117,6 +156,8 @@ describe('gitnexus skill-evolution workflow contract', () => {
     expect(seed).toContain('for previous in ${previous_runs}');
     expect(seed).toContain('continue');
     expect(seed).toContain('gen-*/bench/results.jsonl');
+    expect(seed).toContain('chmod -R go-rwx');
+    expect(seed).toContain('select_evidence(load_jsonl');
     expect(seed).toContain('break');
   });
 
@@ -136,9 +177,16 @@ if [[ "$1 $2" == 'run download' ]]; then
     if [[ "$1" == '--dir' ]]; then destination="$2"; shift 2; else shift; fi
   done
   printf '%s\\n' "\${run_id}" >> "\${TRACE}"
-  if [[ "\${run_id}" == '200' ]]; then
+  if [[ "\${run_id}" == '300' ]]; then
+    mkdir -p "\${destination}/artifact/gen-3/bench"
+    printf '%s\\n' '{"error_kind":"session-error","resolved":false}' > "\${destination}/artifact/gen-3/bench/results.jsonl"
+  elif [[ "\${run_id}" == '200' ]]; then
     mkdir -p "\${destination}/artifact/gen-2/bench"
-    printf '{}\\n' > "\${destination}/artifact/gen-2/bench/results.jsonl"
+    mkdir -p "\${destination}/artifact/gen-2/bench/transcripts"
+    printf '%s\\n' '{"task":"demo","arm":"workflow","run":0,"resolved":false,"error_kind":"oracle-failed","transcript_artifacts":[{"path":"transcripts/session.jsonl","sha256":"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356","bytes":3,"source":"parent-captured-stream-json"}]}' > "\${destination}/artifact/gen-2/bench/results.jsonl"
+    printf '{}\\n' > "\${destination}/artifact/gen-2/bench/transcripts/session.jsonl"
+    chmod 0755 "\${destination}/artifact/gen-2/bench/transcripts"
+    chmod 0644 "\${destination}/artifact/gen-2/bench/transcripts/session.jsonl"
   fi
   exit 0
 fi
@@ -146,6 +194,8 @@ exit 1`);
 
       expect(result.trace).toBe('300\n200\n');
       expect(result.output).toMatch(/seed=.*\/200\/artifact\/gen-2\/bench\n/);
+      expect(result.transcriptDirectoryMode).toBe(0o700);
+      expect(result.transcriptMode).toBe(0o600);
     },
   );
 

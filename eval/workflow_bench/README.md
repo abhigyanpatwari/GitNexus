@@ -161,7 +161,7 @@ paid work. For a work overlay:
 cd eval
 uv run --locked --extra dev python -m workflow_bench.runner \
   --tasks workflow_bench/tasks.scenarios.yaml \
-  --runs 3 --model claude-sonnet-4-20250514 \
+  --runs 3 --workers 1 --model claude-sonnet-4-20250514 \
   --arms workflow candidate_workflow \
          workflow_direct candidate_workflow_direct \
   --candidate-overlay /tmp/gn-skill-candidate
@@ -177,7 +177,7 @@ artifacts. Those artifacts are the trajectory evidence: cluster failures and
 expensive detours, propose one bounded prompt change, and feed it back as the
 next overlay.
 
-When candidate arms are present the runner also writes schema-3
+When candidate arms are present the runner also writes schema-4
 `promotion.json`. It
 binds the immutable overlay digest, benchmark model, truthful candidate origin
 (a named proposer model or `manual-initial-overlay`), selected
@@ -188,7 +188,11 @@ deterministic gate is deliberately conservative:
 
 - at least 3 paired VALID runs per task, zero excluded runs in either arm
   (session/infra-error rows therefore block promotion), and a named model;
-- the candidate must pass the hidden oracle on every valid run for every task;
+- a fully measured task that neither arm ever resolves remains reported but is
+  ungated from quality and efficiency comparisons; if every task is ungated,
+  the generation is `insufficient_evidence`;
+- the candidate must pass the hidden oracle on every valid run for every gated
+  task;
 - no per-task resolution-rate regression (quality is lexicographically first);
 - promotion by resolution needs a margin of at least 2 resolved runs —
   a 1-run difference is noise at this run count and falls through to the
@@ -227,6 +231,7 @@ cd eval
 uv run --locked --extra dev python -m workflow_bench.evolve \
   --tasks workflow_bench/tasks.scenarios.yaml \
   --model claude-sonnet-4-20250514 --generations 2 \
+  --workers 1 \
   --seed-results results/wfbench-<prior-run>   # optional gen-0 evidence
 ```
 
@@ -258,9 +263,11 @@ ground truth: a learning only reaches a shipped skill by surviving the same
 paired benchmark as any other candidate. Legacy review/LFG rows are ignored;
 those skills do not yet have honest candidate lanes or promotion gates.
 
-Run the driver on the existing re-evaluation triggers (model/harness change,
-90-day staleness), not on a tight schedule — every generation costs ≥3 paired
-runs per task, and `--generations` is the only loop bound.
+For ad-hoc use, run the driver on the existing re-evaluation triggers
+(model/harness change or 90-day staleness). The repository workflow runs a
+deliberate weekly drift check: scheduled concurrency stays serial unless
+`GITNEXUS_EVOLUTION_WORKERS` is raised after a funded host-sized proof, and
+`--generations` remains the only loop bound.
 
 ## Free-model setup (no paid tokens)
 

@@ -685,16 +685,24 @@ def sweep_task_cells(
                 # for it, so skipping this would turn a harness bug into a
                 # silently missing run rather than a crash.
                 records = [future.result() for future in futures]
+        wave_tripped = False
         for (run_idx, arm), record in zip(wave, records, strict=True):
+            # Every future in this wave has already completed and incurred its
+            # cost. Persist all of them in canonical submission order even if
+            # an earlier row trips the breaker; only later waves are skipped.
             on_record(run_idx, arm, record)
+            if wave_tripped:
+                continue
             outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
             if outage_limit and outage_streak >= outage_limit:
-                print(
-                    f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
-                    "failures — aborting the remaining sweep; report and promotion are written "
-                    "from partial evidence and the run exits non-zero."
-                )
-                return outage_streak, True
+                wave_tripped = True
+        if wave_tripped:
+            print(
+                f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
+                "failures — aborting the remaining sweep; report and promotion are written "
+                "from partial evidence and the run exits non-zero."
+            )
+            return outage_streak, True
     return outage_streak, False
 
 

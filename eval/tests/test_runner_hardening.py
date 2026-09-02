@@ -625,16 +625,16 @@ def test_sweep_keeps_rows_in_submission_order_whatever_order_they_finish(tmp_pat
 @pytest.mark.parametrize("workers", [1, 2, 3])
 def test_sweep_trips_the_breaker_within_one_wave_of_the_serial_point(workers):
     # Serial stops after the 5th consecutive systemic failure. Cells already in
-    # flight when the breaker trips cannot be recalled, so the overrun is
-    # bounded by the wave — the point of waves is that it is never the whole
-    # task. Ten cells, so the bound is visible rather than hidden by the end.
+    # flight when the breaker trips cannot be recalled or erased from the
+    # evidence, so the overrun is bounded by the wave and every completed row
+    # is kept. Ten cells make the bound visible rather than hidden by the end.
     long_task = [(run_idx, arm) for run_idx in range(5) for arm in ("workflow", "candidate_workflow")]
 
     result = _sweep(long_task, workers=workers, run=lambda *_: _row("session-error"))
 
     assert result.tripped is True
-    assert len(result.kept) == 5
     assert 5 <= len(result.started) <= 5 + workers - 1
+    assert result.kept == result.started
     assert len(result.started) < len(long_task)
 
 
