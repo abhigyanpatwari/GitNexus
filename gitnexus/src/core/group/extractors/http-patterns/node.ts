@@ -273,14 +273,17 @@ function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]
  * string/template, or supplied only via object spread → `*` so matching
  * can still link without pinning GET.
  */
-function readRequestMethod(objectNode: Parser.SyntaxNode): string {
-  const rawMethod = readStringProp(objectNode, ['method', 'type']);
+function readRequestMethod(
+  objectNode: Parser.SyntaxNode,
+  keyNames: readonly string[] = ['method', 'type'],
+): string {
+  const rawMethod = readStringProp(objectNode, keyNames);
   if (rawMethod !== null) {
     // `` method: `${verb}` `` is a template_string, not a verb literal.
     if (rawMethod.includes('${')) return '*';
     return rawMethod.toUpperCase();
   }
-  if (hasObjectKey(objectNode, ['method', 'type'])) return '*';
+  if (hasObjectKey(objectNode, keyNames)) return '*';
   return 'GET';
 }
 
@@ -776,7 +779,7 @@ function scanBundle(
     if (!optionsNode) continue;
     const path = readStringProp(optionsNode, ['url']);
     if (path === null) continue;
-    const method = readRequestMethod(optionsNode);
+    const method = readRequestMethod(optionsNode, ['method']);
     out.push({
       role: 'consumer',
       framework: 'axios',

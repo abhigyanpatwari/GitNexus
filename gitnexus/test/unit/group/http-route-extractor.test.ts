@@ -2764,6 +2764,12 @@ export function updateUser(id: string, data: unknown) {
 export function listDefaults() {
   return axios({ url: '/api/defaults' });
 }
+export function ignoreJqueryTypeKey() {
+  return axios({ url: '/api/typed', type: 'POST' });
+}
+export function quotedAxiosMethod() {
+  return axios({ url: '/api/quoted-ax', "method": 'DELETE' });
+}
 `,
       );
 
@@ -2773,6 +2779,9 @@ export function listDefaults() {
       expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
       expect(consumers.find((c) => c.contractId === 'http::PUT::/api/users/{param}')).toBeDefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/defaults')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/typed')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/typed')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::DELETE::/api/quoted-ax')).toBeDefined();
     });
 
     it('extracts wrapped X.request({ url, method }) with shared prefix-strip and * verbs', async () => {
