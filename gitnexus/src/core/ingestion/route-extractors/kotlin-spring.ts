@@ -11,6 +11,7 @@ import {
   intersectSpringHttpMethods,
   springAnnotationHttpMethods,
   unquoteSpringLiteral,
+  type SharedSpringType,
 } from './spring-shared.js';
 import {
   extractKotlinModuleConstants,
@@ -323,4 +324,62 @@ export function extractKotlinSpringRoutes(
   }
 
   return routes;
+}
+
+function implementedInterfaces(node: Parser.SyntaxNode): string[] {
+  return node.namedChildren
+    .filter((child) => child.type === 'delegation_specifier')
+    .map((child) => {
+      const userType = child.namedChildren.find((item) => item.type === 'user_type');
+      const names = userType?.namedChildren.filter((item) => item.type === 'type_identifier');
+      return names?.at(-1)?.text ?? '';
+    })
+    .filter((name) => name.length > 0);
+}
+
+/** Collect the language-neutral view used by Spring interface inheritance. */
+export function extractKotlinSpringTypes(tree: Parser.Tree, filePath: string): SharedSpringType[] {
+  return tree.rootNode.descendantsOfType('class_declaration').flatMap((type) => {
+    const name = typeName(type);
+    if (!name) return [];
+    const annotations = declarationAnnotations(type);
+    const mapping = classMapping(annotations);
+    if (mapping === null) return [];
+    const methods = directFunctions(type).map((fn) => {
+      const routes = declarationAnnotations(fn).flatMap((annotation) => {
+        const annotationNameValue = annotationName(annotation);
+        if (!annotationNameValue) return [];
+        const methods = intersectSpringHttpMethods(
+          mapping.methods,
+          kotlinSpringHttpMethods(annotationNameValue, annotation),
+        );
+        const paths = routeArguments(annotation);
+        if (paths === null || paths.length > 1 || methods.length === 0) return [];
+        if (paths.length === 0) return methods.map((method) => ({ method, path: '' }));
+        const path = paths[0].expression;
+        if (isEmptyKotlinPathCollection(path))
+          return methods.map((method) => ({ method, path: '' }));
+        if (!isPlainStringLiteral(path)) return [];
+        const literal = unquoteSpringLiteral(path.text);
+        return literal === null ? [] : methods.map((method) => ({ method, path: literal }));
+      });
+      return { name: functionName(fn) ?? '', routes };
+    });
+    return [
+      {
+        filePath,
+        kind: isKotlinInterface(type) ? 'interface' : 'class',
+        name,
+        classPrefixes: [mapping.prefix],
+        classHttpMethods: mapping.methods,
+        implementedInterfaces: isKotlinInterface(type) ? [] : implementedInterfaces(type),
+        isController:
+          !isKotlinInterface(type) &&
+          annotations.some((annotation) =>
+            ['RestController', 'Controller'].includes(annotationName(annotation) ?? ''),
+          ),
+        methods,
+      },
+    ];
+  });
 }

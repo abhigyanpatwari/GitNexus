@@ -560,6 +560,7 @@ interface LanguageProviderConfig {
     filePath: string,
     operands: readonly Operand[],
     repo: RepoConstants,
+    enclosingTypes?: readonly string[],
   ) => string | null;
 
   // ── Noise filtering ────────────────────────────────────────────────

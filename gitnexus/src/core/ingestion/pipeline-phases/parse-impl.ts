@@ -1290,7 +1290,7 @@ export async function runChunkedParseAndResolve(
       const fold = getProviderForFile(dr.filePath)?.foldRoutePathOperands;
       const value = dr.routePathOperands
         ? fold
-          ? fold(dr.filePath, dr.routePathOperands, repoConstants)
+          ? fold(dr.filePath, dr.routePathOperands, repoConstants, dr.routePathEnclosingTypes)
           : resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
         : null;
       if (value === null) {
@@ -1504,6 +1504,7 @@ export async function runChunkedParseAndResolve(
         decoratorName: 'inherited-mapping',
         lineNumber: 0,
         handlerName: inherited.methodName,
+        handlerOwnerName: inherited.controllerName,
       });
     }
   }

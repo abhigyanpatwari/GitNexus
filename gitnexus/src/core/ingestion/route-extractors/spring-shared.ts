@@ -249,6 +249,8 @@ export interface SharedSpringType {
   name: string;
   /** Class-level `@RequestMapping` prefixes — one per array element. */
   classPrefixes: string[];
+  /** Optional class-level HTTP constraint (absent means unrestricted). */
+  classHttpMethods?: readonly string[];
   implementedInterfaces: string[];
   isController: boolean;
   methods: Array<{ name: string; routes: Array<{ method: string; path: string }> }>;
@@ -260,6 +262,7 @@ interface InheritedSpringRoute {
   filePath: string;
   /** Name of the controller method that inherits the route. */
   methodName: string;
+  controllerName: string;
   method: string;
   path: string;
 }
@@ -272,6 +275,7 @@ interface IntermediateRoute {
   method: string;
   path: string;
   ownerPrefix: string;
+  methodConstraint: readonly string[];
 }
 
 /**
@@ -298,6 +302,7 @@ export function resolveInheritedSpringRoutes(types: SharedSpringType[]): Inherit
       continue;
     }
     const prefixes = type.classPrefixes.length ? type.classPrefixes : [''];
+    const classMethods = type.classHttpMethods?.length ? type.classHttpMethods : ['*'];
     const methodMap = new Map<string, IntermediateRoute[]>();
     for (const method of type.methods) {
       // Cross-product the interface's class prefixes with each method route, so a
@@ -306,6 +311,8 @@ export function resolveInheritedSpringRoutes(types: SharedSpringType[]): Inherit
         prefixes.map((prefix) => ({
           method: route.method,
           path: prefix ? joinPath(prefix, route.path) : route.path,
+          methodConstraint: classMethods,
+
           ownerPrefix: prefix,
         })),
       );
@@ -328,10 +335,15 @@ export function resolveInheritedSpringRoutes(types: SharedSpringType[]): Inherit
         if (!routeMap) return [];
         const routes = routeMap.get(method.name) ?? [];
         return routes.flatMap((route) =>
-          controllerPrefixes.map((controllerPrefix) => ({
-            method: route.method,
-            path: joinInheritedSpringPath(controllerPrefix, route.path, route.ownerPrefix),
-          })),
+          intersectSpringHttpMethods(
+            type.classHttpMethods?.length ? type.classHttpMethods : ['*'],
+            route.methodConstraint,
+          ).length === 0
+            ? []
+            : controllerPrefixes.map((controllerPrefix) => ({
+                method: route.method,
+                path: joinInheritedSpringPath(controllerPrefix, route.path, route.ownerPrefix),
+              })),
         );
       });
       const seen = new Set<string>();
@@ -342,6 +354,7 @@ export function resolveInheritedSpringRoutes(types: SharedSpringType[]): Inherit
         out.push({
           filePath: type.filePath,
           methodName: method.name,
+          controllerName: type.name,
           method: route.method,
           path: route.path,
         });

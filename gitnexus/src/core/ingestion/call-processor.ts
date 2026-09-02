@@ -308,6 +308,11 @@ export function resolveRouteHandlerSymbols(
     const defs = model.symbols.lookupExactAll(filePath, name);
     return defs.length === 1 ? defs[0]?.nodeId : undefined;
   };
+  const ownerSymbolId = (filePath: string, ownerName: string, name: string): string | undefined => {
+    const defs = model.symbols.lookupExactAll(filePath, name);
+    const owned = defs.filter((def) => def.nodeId.includes(`:${ownerName}.${name}#`));
+    return owned.length === 1 ? owned[0]?.nodeId : undefined;
+  };
 
   const uniqueById = (defs: readonly SymbolDefinition[]): SymbolDefinition | undefined => {
     const byId = new Map(defs.map((def) => [def.nodeId, def]));
@@ -406,9 +411,7 @@ export function resolveRouteHandlerSymbols(
     httpMethod: string | null | undefined,
     symbolId: string | undefined,
   ) => {
-    // An empty path is a valid, pathless mapping and normalizes to either `/`
-    // or its class/router prefix. Only null means the extractor had no route.
-    if (routePath === null) return;
+    if (!routePath) return;
     const url = normalizeExtractedRoutePath(routePath, prefix);
     const key = routeNodeKey(normalizeRouteMethod(httpMethod), url);
     if (claimed.has(key)) return; // first-writer-wins: later same-key routes can't override
@@ -465,7 +468,15 @@ export function resolveRouteHandlerSymbols(
       dr.source === DATA_ROUTE_TABLE_SOURCE
         ? dataHandlerByRoute.get(dr)
         : dr.handlerName
-          ? uniqueSymbolId(dr.filePath, dr.handlerName)
+          ? (() => {
+              if (dr.handlerOwnerName) {
+                const owners = model.types.lookupClassByName(dr.handlerOwnerName);
+                if (owners.length === 1) {
+                  return ownerSymbolId(owners[0].filePath, dr.handlerOwnerName, dr.handlerName);
+                }
+              }
+              return uniqueSymbolId(dr.filePath, dr.handlerName);
+            })()
           : undefined;
     // An unproven data-table entry never becomes a Route node, so it must not
     // reserve the identity and suppress a later, valid framework declaration.

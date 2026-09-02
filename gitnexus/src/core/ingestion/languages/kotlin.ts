@@ -46,7 +46,10 @@ import {
   extractKotlinRuntimeSymbolProperties,
   kotlinRuntimeSymbolStrategy,
 } from './kotlin/spring-actuator.js';
-import { extractKotlinSpringRoutes } from '../route-extractors/kotlin-spring.js';
+import {
+  extractKotlinSpringRoutes,
+  extractKotlinSpringTypes,
+} from '../route-extractors/kotlin-spring.js';
 import {
   extractKotlinModuleConstants,
   foldKotlinOperands,
@@ -218,6 +221,7 @@ export const kotlinProvider = defineLanguage({
 
   // ── Spring decorator routes + composed path constants (#3130) ──
   extractDecoratorRoutes: extractKotlinSpringRoutes,
+  extractRouteInheritanceTypes: extractKotlinSpringTypes,
   extractModuleConstants: extractKotlinModuleConstants,
   foldRoutePathOperands: foldKotlinOperands,
 });

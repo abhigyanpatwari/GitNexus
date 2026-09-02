@@ -33,6 +33,7 @@ import {
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { SkippedPath } from './clone-safety.js';
 import { postResultCloneSafe } from './post-result.js';
+import { unfoldableDeclarationsOf } from '../route-extractors/constant-resolver.js';
 import { mergeResult } from './result-merge.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
@@ -354,6 +355,8 @@ export interface ExtractedDecoratorRoute {
    * attribute access), in which case the route is dropped at resolution.
    */
   routePathOperands?: Operand[];
+  /** Kotlin type scopes containing the route expression, innermost first. */
+  routePathEnclosingTypes?: readonly string[];
   /**
    * FastAPI `app.include_router(prefix='/x')` prefix that applies to
    * this route. Filled by parse-impl after cross-file aggregation; the
@@ -371,6 +374,8 @@ export interface ExtractedDecoratorRoute {
    * resolution then falls back (the Route node simply carries no handlerSymbolId).
    */
   handlerName?: string;
+  /** Concrete owner type used to disambiguate inherited same-name methods. */
+  handlerOwnerName?: string;
   /**
    * Provenance for the `HANDLES_ROUTE` edge, overriding the default
    * `decorator-<decoratorName>`. Present when the route was extracted from a
@@ -535,8 +540,7 @@ export interface ParseWorkerInput {
 }
 
 type WorkerIncomingMessage =
-  | { type: 'sub-batch'; files: ParseWorkerInput[] }
-  | { type: 'flush'; chunkHash?: string };
+  { type: 'sub-batch'; files: ParseWorkerInput[] } | { type: 'flush'; chunkHash?: string };
 
 // ============================================================================
 // Worker-local parser + language map
@@ -1476,7 +1480,6 @@ import {
   type ModuleConstants,
   type Operand,
 } from '../route-extractors/python-const-resolver.js';
-import { unfoldableDeclarationsOf } from '../route-extractors/constant-resolver.js';
 
 /**
  * Report a non-fatal worker issue to the pool over IPC so a caught error is not
@@ -3090,16 +3093,12 @@ const processFileGroup = (
     // without booting a worker.
     if (provider.extractModuleConstants && shouldHarvestModuleConstants(provider, parseContent)) {
       const constants = provider.extractModuleConstants(tree);
-      const topLevelDeclarations = (
-        constants as ModuleConstants & { readonly topLevelDeclarations?: unknown }
-      ).topLevelDeclarations;
       if (
         constants.literals.size > 0 ||
         constants.exprs.size > 0 ||
         constants.imports.size > 0 ||
         (constants.wildcardImports?.length ?? 0) > 0 ||
-        unfoldableDeclarationsOf(constants).size > 0 ||
-        (topLevelDeclarations instanceof Set && topLevelDeclarations.size > 0)
+        unfoldableDeclarationsOf(constants).size > 0
       ) {
         (result.moduleConstants ??= []).push({ filePath: file.path, constants });
       }
