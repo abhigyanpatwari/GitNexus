@@ -303,22 +303,13 @@ function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-/**
- * Decode one JSON Pointer reference token.
- *
- * Two encodings stack here and their order is fixed by RFC 6901: the pointer
- * lives in a URI fragment, so percent-encoding comes off first, and only then
- * the pointer's own escapes — `~1` before `~0`, or a literal `~1` produced by
- * decoding `~01` would be mistaken for a slash.
- */
+/** URI-fragment percent-decode. Malformed `%` sequences refuse the pointer. */
 function decodeFragment(ref: string): string | undefined {
   try {
     return decodeURIComponent(ref);
-  } catch {
-    // A malformed escape is REFUSED, not passed through raw. `%zz` means the
-    // pointer cannot be known, and resolving it to whatever the undecoded text
-    // happens to spell is how a reference nobody can read becomes an address
-    // somebody joins on.
+  } catch (err) {
+    // Malformed percent-escapes throw URIError. Anything else is a real bug.
+    if (!(err instanceof URIError)) throw err;
     return undefined;
   }
 }
@@ -330,37 +321,24 @@ function unescapePointerToken(token: string): string {
 }
 
 /**
- * `#/channels/<token>` → the channel name, or `undefined` for anything else.
+ * Trailing name of `<prefix><token>` on an already-decoded fragment.
  *
- * DECODE, THEN SEGMENT. The order is RFC 6901's, not a preference: the pointer
- * travels inside a URI fragment, so percent-decoding comes off first and only
- * then is the result split on `/`. Testing the RAW text for a separator is the
- * wrong order and lets `#/channels/orders%2Fv1` through — it carries no literal
- * slash, so a raw test sees a single segment, and the decode that follows turns
- * it into two. That pointer addresses `channels.orders.v1`, which this reader
- * does not follow; treating it as a channel named `orders/v1` invents a channel
- * the document never declared and keys a destination on it.
- *
- * A channel whose name genuinely contains a slash is spelled `~1`, and that
- * still resolves — the pointer escape is applied after segmentation, where it
- * belongs.
+ * DECODE, THEN SEGMENT. RFC 6901 percent-decodes the URI fragment first; only
+ * then is the result split on `/`. Testing the raw text for a separator lets
+ * `#/channels/orders%2Fv1` through as one segment and then decode it into two,
+ * inventing a channel named `orders/v1`. A real slash in a name is `~1`.
  */
-function channelNameFromRef(ref: string): string | undefined {
-  return pointerName(ref, '#/channels/');
-}
-
-/**
- * The single trailing name of `<prefix><token>`, decoded in RFC 6901's order.
- *
- * Returns `undefined` — never a guess — when the fragment does not decode, does
- * not start with the prefix, is empty, or resolves to more than one segment.
- */
-function pointerName(ref: string, prefix: string): string | undefined {
-  const decoded = decodeFragment(ref);
-  if (decoded === undefined || !decoded.startsWith(prefix)) return undefined;
+function nameAfterPrefix(decoded: string, prefix: string): string | undefined {
+  if (!decoded.startsWith(prefix)) return undefined;
   const token = decoded.slice(prefix.length);
   if (token === '' || token.includes('/')) return undefined;
   return unescapePointerToken(token);
+}
+
+function pointerName(ref: string, prefix: string): string | undefined {
+  const decoded = decodeFragment(ref);
+  if (decoded === undefined) return undefined;
+  return nameAfterPrefix(decoded, prefix);
 }
 
 /**
@@ -418,9 +396,11 @@ function resolveLocalServerRef(
   ref: string,
   root: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
-  const direct = pointerName(ref, '#/servers/');
+  const decoded = decodeFragment(ref);
+  if (decoded === undefined) return undefined;
+  const direct = nameAfterPrefix(decoded, '#/servers/');
   if (direct !== undefined) return asRecord(own(asRecord(own(root, 'servers')), direct));
-  const inComponents = pointerName(ref, '#/components/servers/');
+  const inComponents = nameAfterPrefix(decoded, '#/components/servers/');
   if (inComponents === undefined) return undefined;
   const components = asRecord(own(asRecord(own(root, 'components')), 'servers'));
   return asRecord(own(components, inComponents));
@@ -484,15 +464,24 @@ function brokersOfAllServers(root: Record<string, unknown>): {
   const out = new Set<string>();
   const servers = asRecord(own(root, 'servers'));
   if (servers === undefined) return { brokers: out, capped: false, unresolved: false };
-  const names = Object.keys(servers);
-  const capped = names.length > MAX_SERVERS_PER_DOCUMENT;
+  let seen = 0;
+  for (const name in servers) {
+    if (!Object.prototype.hasOwnProperty.call(servers, name)) continue;
+    seen += 1;
+    if (seen > MAX_SERVERS_PER_DOCUMENT) {
+      // Inherited resolution refuses a capped map before asking it to agree
+      // with itself, so the brokers of the first thousand entries are unused.
+      return { brokers: out, capped: true, unresolved: false };
+    }
+  }
   let unresolved = false;
-  for (const name of names.slice(0, MAX_SERVERS_PER_DOCUMENT)) {
+  for (const name in servers) {
+    if (!Object.prototype.hasOwnProperty.call(servers, name)) continue;
     const resolved = serverBroker(own(servers, name), root);
     if (resolved.unresolved) unresolved = true;
     else if (resolved.broker !== undefined) out.add(resolved.broker);
   }
-  return { brokers: out, capped, unresolved };
+  return { brokers: out, capped: false, unresolved };
 }
 
 /**
@@ -553,7 +542,6 @@ export function normalizeAsyncApiDocument(
   const operationsRaw = asRecord(own(raw, 'operations'));
   if (operationsRaw === undefined) return { operations, refusals, examined, truncated };
 
-  // Once per document, not once per operation.
   const allServers = brokersOfAllServers(raw);
   if (allServers.capped) {
     tally.count('server-cap');
@@ -591,7 +579,7 @@ export function normalizeAsyncApiDocument(
     }
 
     const ref = asString(own(own(operation, 'channel'), '$ref'));
-    const channelName = ref === undefined ? undefined : channelNameFromRef(ref);
+    const channelName = ref === undefined ? undefined : pointerName(ref, '#/channels/');
     if (channelName === undefined) {
       tally.count('no-channel-reference');
       continue;
@@ -649,23 +637,15 @@ export function normalizeAsyncApiDocument(
     // `protocol-unknown` while the document had said plainly which broker it
     // meant. Where both levels speak and disagree, the document contradicts
     // itself and neither answer may be used.
-    const operationBindings = brokersFromBindings(own(operation, 'bindings'));
-    const channelBindings = brokersFromBindings(own(channel, 'bindings'));
-    if (operationBindings.size > 1 || channelBindings.size > 1) {
+    const fromBindings = brokersFromBindings(own(operation, 'bindings'));
+    for (const broker of brokersFromBindings(own(channel, 'bindings'))) {
+      fromBindings.add(broker);
+    }
+    if (fromBindings.size > 1) {
       tally.count('protocol-disagreement');
       continue;
     }
-    const operationBroker = [...operationBindings][0];
-    const channelBroker = [...channelBindings][0];
-    if (
-      operationBroker !== undefined &&
-      channelBroker !== undefined &&
-      operationBroker !== channelBroker
-    ) {
-      tally.count('protocol-disagreement');
-      continue;
-    }
-    const bindingBroker = operationBroker ?? channelBroker;
+    const bindingBroker = [...fromBindings][0];
 
     const explicitServers = brokersFromChannelRefs(channel, raw);
     let broker: string | undefined;
@@ -673,9 +653,9 @@ export function normalizeAsyncApiDocument(
       // Cross-check only against servers the channel named itself, and only
       // when they are unanimous. An inherited multi-protocol server set is not
       // a claim about THIS operation.
-      const serverBroker =
+      const explicitBroker =
         explicitServers.brokers.size === 1 ? [...explicitServers.brokers][0] : undefined;
-      if (serverBroker !== undefined && serverBroker !== bindingBroker) {
+      if (explicitBroker !== undefined && explicitBroker !== bindingBroker) {
         tally.count('protocol-disagreement');
         continue;
       }
@@ -736,6 +716,7 @@ export function normalizeAsyncApiDocument(
  * PARSE, which is the expensive half; a linear scan of the same bytes is not.
  */
 function looksLikeDocument(text: string): boolean {
+  if (!text.includes('asyncapi')) return false;
   return /(^|[\s{,"'])["']?asyncapi["']?\s*:/m.test(text);
 }
 
@@ -930,9 +911,6 @@ export async function readAsyncApiDocuments(
       continue;
     }
 
-    // A UTF-8 BOM sits in front of the root key and would otherwise make both
-    // the sniff and the parse read a document that begins with one code point
-    // of nothing.
     const text = content.startsWith(BOM) ? content.slice(BOM.length) : content;
 
     // Sniff before parsing. A configured directory may hold hundreds of

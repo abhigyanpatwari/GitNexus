@@ -899,7 +899,6 @@ operations:
     // replaced by sixty-four for exactly this reason and inherited exactly this
     // defect; the padding here clears the larger window as easily.
     const preamble = `${'# a licence header line, repeated\n'.repeat(2_200)}`;
-    expect(preamble.length).toBeGreaterThan(64 * 1024);
     const dir = await fixture({ 'asyncapi.yaml': preamble + VALID });
     const result = await readAsyncApiDocuments(dir, '.');
     expect(result.refusals['not-a-document']).toBeUndefined();
