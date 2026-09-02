@@ -173,7 +173,7 @@ const REQUEST_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
       function: (member_expression
         object: (_) @obj
         property: (property_identifier) @fn (#eq? @fn "request"))
-      arguments: (arguments (object) @options))
+      arguments: (arguments . (object) @options))
   `,
 };
 

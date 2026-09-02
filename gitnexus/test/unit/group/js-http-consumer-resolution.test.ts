@@ -898,6 +898,17 @@ queue.request({ url: '/admin', method: 'DELETE' });
     expect(detections).toHaveLength(0);
   });
 
+  it('ignores a config object that is not the first request argument', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(
+          "httpClient.request('/actual', { url: '/metadata', method: 'GET' });",
+        ),
+      ),
+    );
+    expect(detections).toHaveLength(0);
+  });
+
   it('admits $http by spelling but not a bare api without axios proof', () => {
     const detections = consumers(
       JAVASCRIPT_HTTP_PLUGIN.scan(
