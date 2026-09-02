@@ -107,6 +107,27 @@ describe('analyzeCommand --workers validation', () => {
     );
   });
 
+  it('threads --asyncapi-spec through to the core pipeline', async () => {
+    // Without this the whole flag is inert-but-green: the option parses, the
+    // phase reads a property nobody sets, and every test still passes because
+    // the phase tests hand-build their own context.
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    runFullAnalysisMock.mockResolvedValue({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: {},
+      alreadyUpToDate: true,
+    });
+
+    await analyzeCommand(undefined, { asyncapiSpec: 'docs/asyncapi' });
+
+    expect(runFullAnalysisMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ asyncApiSpecPath: 'docs/asyncapi' }),
+      expect.any(Object),
+    );
+  });
+
   it('rejects --workers 0 with a CLI error (sequential parsing was removed)', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     runFullAnalysisMock.mockResolvedValue({
