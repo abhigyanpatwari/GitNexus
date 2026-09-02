@@ -872,17 +872,13 @@ describe('wrapped X.request({ url, method }) detections', () => {
   it('uses the last duplicate method key, matching JS evaluation', () => {
     const dynamicLast = consumers(
       JAVASCRIPT_HTTP_PLUGIN.scan(
-        jsParser.parse(
-          "httpClient.request({ url: '/api/orders', method: 'GET', method: verb });",
-        ),
+        jsParser.parse("httpClient.request({ url: '/api/orders', method: 'GET', method: verb });"),
       ),
     );
     expect(dynamicLast[0]?.method).toBe('*');
     const literalLast = consumers(
       JAVASCRIPT_HTTP_PLUGIN.scan(
-        jsParser.parse(
-          "httpClient.request({ url: '/api/orders', method: verb, method: 'POST' });",
-        ),
+        jsParser.parse("httpClient.request({ url: '/api/orders', method: verb, method: 'POST' });"),
       ),
     );
     expect(literalLast[0]?.method).toBe('POST');
@@ -920,9 +916,7 @@ queue.request({ url: '/admin', method: 'DELETE' });
   it('ignores a config object that is not the first request argument', () => {
     const detections = consumers(
       JAVASCRIPT_HTTP_PLUGIN.scan(
-        jsParser.parse(
-          "httpClient.request('/actual', { url: '/metadata', method: 'GET' });",
-        ),
+        jsParser.parse("httpClient.request('/actual', { url: '/metadata', method: 'GET' });"),
       ),
     );
     expect(detections).toHaveLength(0);
