@@ -17,7 +17,10 @@ import {
   createTerminalClaim,
   type WorkerAnalysisDeps,
 } from '../../src/server/analyze-worker-core.js';
-import type { AnalyzeResult } from '../../src/core/run-analyze.js';
+import {
+  StreamedIncrementalWritebackError,
+  type AnalyzeResult,
+} from '../../src/core/run-analyze.js';
 import type { WorkerMessage } from '../../src/server/analyze-worker.js';
 import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
 import { IndexLockTimeoutError, type LockRecord } from '../../src/storage/index-lock.js';
@@ -120,6 +123,36 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
     );
 
     expect(send).toHaveBeenCalledWith({ type: 'error', message: 'boom' });
+    expect(finalize).not.toHaveBeenCalled();
+  });
+
+  it('reports streamed incremental violations as one terminal non-retryable error', async () => {
+    const send = vi.fn<(msg: WorkerMessage) => void>();
+    const violation = new StreamedIncrementalWritebackError(['structural', 'PDG']);
+    const failingRun: WorkerAnalysisDeps['runFullAnalysis'] = vi.fn(async () => {
+      throw violation;
+    });
+    const finalize = vi.fn<WorkerAnalysisDeps['assertAnalysisFinalized']>(async () => undefined);
+
+    await runWorkerAnalysis(
+      '/repo',
+      {},
+      {
+        runFullAnalysis: failingRun,
+        assertAnalysisFinalized: finalize,
+        send,
+        claimTerminal: alwaysClaim,
+      },
+    );
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      type: 'error',
+      message: violation.message,
+    });
+    expect(send).not.toHaveBeenCalledWith(
+      expect.objectContaining({ retryable: true, code: 'index-lock-timeout' }),
+    );
     expect(finalize).not.toHaveBeenCalled();
   });
 

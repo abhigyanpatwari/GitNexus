@@ -229,8 +229,10 @@ describe('WatchRefreshQueue', () => {
   it('closes cleanly when a refresh failure triggers shutdown', async () => {
     vi.useFakeTimers();
     let closePromise: Promise<void> | undefined;
+    let attempts = 0;
     const queue = new WatchRefreshQueue(
       async () => {
+        attempts++;
         throw new Error('stop after failure');
       },
       () => {
@@ -244,6 +246,8 @@ describe('WatchRefreshQueue', () => {
 
     expect(closePromise).toBeDefined();
     await expect(closePromise).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(attempts).toBe(1);
   });
 
   it('flushes by max wait even when writes never become quiet', async () => {

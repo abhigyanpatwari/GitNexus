@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import { watch, type FSWatcher } from 'chokidar';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
 import {
+  StreamedIncrementalWritebackError,
   analyzeFailureMayHaveMutatedLiveIndex,
   runFullAnalysis,
   type AnalyzeOptions as CoreAnalyzeOptions,
@@ -237,8 +238,18 @@ export function shouldStopAfterWatchRefreshFailure(
   return (
     paths.length > 0 &&
     !(error instanceof WatchControlReloadError) &&
-    analyzeFailureMayHaveMutatedLiveIndex(error)
+    (error instanceof StreamedIncrementalWritebackError ||
+      analyzeFailureMayHaveMutatedLiveIndex(error))
   );
+}
+
+export function formatFatalWatchRefreshFailure(error: unknown, paths: readonly string[]): string {
+  const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
+  const reason =
+    error instanceof StreamedIncrementalWritebackError
+      ? 'Watch mode is stopping; the live index was not changed.'
+      : 'Watch mode is stopping because the live index may have been updated in place.';
+  return `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ${reason}`;
 }
 
 /** Start the real filesystem watcher with bounded, serialized refreshes. */
@@ -319,21 +330,30 @@ export async function startWatchFileLoop(
     onWatcherError(error);
   });
 
+  const close = (() => {
+    let closing: Promise<void> | undefined;
+    return () => {
+      closing ??= (async () => {
+        // Close the queue first so a fatal refresh cannot schedule a retry
+        // while a slow chokidar `close()` is still in flight.
+        await queue.close();
+        await watcher.close();
+      })();
+      return closing;
+    };
+  })();
+
   try {
     await waitUntilReady(watcher);
     await queue.runInitial();
   } catch (error) {
-    await watcher.close();
-    await queue.close();
+    await close();
     throw error;
   }
 
   return {
     waitForIdle: () => queue.waitForIdle(),
-    close: async () => {
-      await watcher.close();
-      await queue.close();
-    },
+    close,
   };
 }
 
@@ -395,7 +415,7 @@ export async function watchCommandWithRunnerIdentity(
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
     try {
-      let loop: WatchFileLoop;
+      let loop: WatchFileLoop | undefined;
       let fatalRefreshError: unknown;
       let configControlValid = true;
       let lastSuccessfulRefreshAt: string | undefined;
@@ -455,16 +475,14 @@ export async function watchCommandWithRunnerIdentity(
             }
           },
           (error, paths) => {
-            const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             if (shouldStopAfterWatchRefreshFailure(error, paths)) {
               fatalRefreshError = error;
-              cliError(
-                `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
-                  'Watch mode is stopping because the live index may have been updated in place.',
-              );
+              cliError(formatFatalWatchRefreshFailure(error, paths));
+              void loop?.close();
               stopWatching();
               return;
             }
+            const detail = paths.length > 0 ? ` (${paths.length} queued path(s))` : '';
             const lastSuccess = lastSuccessfulRefreshAt ?? 'none yet';
             cliWarn(
               `Refresh failed${detail}: ${error instanceof Error ? error.message : String(error)}. ` +
@@ -477,6 +495,7 @@ export async function watchCommandWithRunnerIdentity(
               `Watcher failed: ${error instanceof Error ? error.message : String(error)}. ` +
                 'Watch mode is stopping.',
             );
+            void loop?.close();
             stopWatching();
           },
         );
@@ -489,6 +508,7 @@ export async function watchCommandWithRunnerIdentity(
       }
 
       await stopped;
+      if (loop === undefined) return;
       await loop.close();
       if (fatalRefreshError !== undefined) process.exitCode = 1;
     } finally {

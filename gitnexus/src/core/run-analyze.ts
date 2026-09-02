@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import type { PipelineResult } from '../types/pipeline.js';
 import {
   logUnresolvedReceiverFiles,
   summarizeUnresolvedReceivers,
@@ -866,15 +867,56 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
       }
     : undefined;
 
+export type StreamedManifestKind = 'structural' | 'PDG';
+
+export class StreamedIncrementalWritebackError extends Error {
+  readonly manifestKinds: readonly StreamedManifestKind[];
+
+  constructor(manifestKinds: readonly StreamedManifestKind[]) {
+    const kinds = manifestKinds.join(' and ');
+    super(
+      `Incremental writeback cannot persist the streamed ${kinds} manifest${
+        manifestKinds.length === 1 ? '' : 's'
+      }. The live graph index was not changed. Disable incremental streaming or run a supported ` +
+        'forced rebuild with `gitnexus analyze --force`.',
+    );
+    this.name = 'StreamedIncrementalWritebackError';
+    this.manifestKinds = manifestKinds;
+  }
+}
+
+/**
+ * Reject a streamed representation after the final write-mode decision.
+ *
+ * A defined manifest is the capability signal even when it contains zero rows:
+ * `PipelineResult.graph` is the raw backing graph, while each manifest covers
+ * the whole repository. Incremental persistence needs a complete, delta-scoped
+ * graph, so neither forwarding nor ignoring these manifests is sound.
+ */
+export function assertIncrementalWritebackSupportsPipelineResult(
+  isIncremental: boolean,
+  pipelineResult: Pick<PipelineResult, 'graphEmitManifest' | 'pdgEmitManifest'>,
+): void {
+  if (!isIncremental) return;
+
+  const manifestKinds: StreamedManifestKind[] = [];
+  if (pipelineResult.graphEmitManifest !== undefined) manifestKinds.push('structural');
+  if (pipelineResult.pdgEmitManifest !== undefined) manifestKinds.push('PDG');
+  if (manifestKinds.length > 0) {
+    throw new StreamedIncrementalWritebackError(manifestKinds);
+  }
+}
+
 /**
  * Whether streaming/chunked PDG graph emit (#2202) engages this run.
  *
  * Streaming flushes the BasicBlock + intra-file PDG-edge layer to CSV-on-disk
  * during the emit loop and never lands it in the in-memory graph, bounding peak
  * RSS to O(chunk). It is sound ONLY on a full rebuild: the incremental
- * writeback (`extractChangedSubgraph`) reads BasicBlock nodes back out of the
- * in-memory graph, which streaming has already offloaded. `force === true` is
- * the pre-pipeline guarantee of a full rebuild — `isIncremental` has
+ * writeback (`extractChangedSubgraph`) reads the raw graph after streaming has
+ * offloaded BasicBlocks, while the manifest describes the full repository
+ * rather than a surgical write set. `force === true` is the pre-pipeline
+ * guarantee of a full rebuild — `isIncremental` has
  * `!force` as a necessary condition — so gating on it avoids the deliberately
  * absent pre-pipeline incremental prediction (see the `isIncremental` note).
  *
@@ -905,8 +947,9 @@ export const resolveStreamPdgEmit = (options: {
  * Two conditions still bound it:
  *
  * - `force === true`. Sound only on a full rebuild, because the incremental
- *   writeback (`extractChangedSubgraph`) reads relationships back out of the
- *   in-memory graph. Same gate, and same reason, as {@link resolveStreamPdgEmit}.
+ *   writeback (`extractChangedSubgraph`) reads the raw graph after streamed
+ *   relationships have left it, while the manifest covers the full repository,
+ *   not the surgical write set. Same gate and reason as {@link resolveStreamPdgEmit}.
  * - `GITNEXUS_STREAM_GRAPH_EMIT=0` (or an explicit `streamGraphEmit: false`)
  *   turns it off. The escape hatch exists for bisecting a suspected
  *   streaming-related fault, not as a routine choice.
@@ -2081,6 +2124,8 @@ async function runFullAnalysisInner(
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
     : undefined;
 
+  assertIncrementalWritebackSupportsPipelineResult(isIncremental, pipelineResult);
+
   // #3016: `skipDerivedGraphPhases` was decided BEFORE the pipeline, from the
   // persisted metadata alone, so it can only ever be a bet that this run stays
   // surgical. Settle the bet here, where `isIncremental` and the deletion set
@@ -2994,6 +3039,9 @@ async function runFullAnalysisInner(
         //    only that. Unchanged-file rows in the DB stay untouched. Pass
         //    the SAME effectiveWriteSet so the subgraph and the deletes
         //    cover identical files (asymmetry would silently corrupt).
+        // Streamed manifests are intentionally absent here: they cover the
+        // repository, not this effective write set. The final-mode guard above
+        // rejects any raw-graph result whose surgical extraction is incomplete.
         const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet, {
           includeDerivedGraphWide: !preserveDerivedLayer,
         });
