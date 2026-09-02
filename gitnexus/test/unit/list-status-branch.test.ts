@@ -51,6 +51,10 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   })),
   loadMeta: vi.fn(),
   hasKuzuIndex: vi.fn().mockResolvedValue(false),
+  readRegistryStrict: vi.fn(),
+  resolveRegistryEntry: vi.fn(),
+  RegistryNotFoundError: class RegistryNotFoundError extends Error {},
+  RegistryAmbiguousTargetError: class RegistryAmbiguousTargetError extends Error {},
 }));
 
 vi.mock('../../src/core/analyzer-identity.js', () => ({
@@ -71,7 +75,13 @@ vi.mock('../../src/storage/git.js', () => ({
 
 import { listCommand } from '../../src/cli/list.js';
 import { statusCommand } from '../../src/cli/status.js';
-import { listRegisteredRepos, findRepo, loadMeta } from '../../src/storage/repo-manager.js';
+import {
+  listRegisteredRepos,
+  findRepo,
+  loadMeta,
+  readRegistryStrict,
+  resolveRegistryEntry,
+} from '../../src/storage/repo-manager.js';
 import { getCurrentBranch, getCurrentCommit, isWorkingTreeDirty } from '../../src/storage/git.js';
 
 let logSpy: ReturnType<typeof vi.spyOn>;
@@ -141,6 +151,14 @@ describe('status branch rendering (#2106)', () => {
       scopeExtractionReceipt: 1 as const,
     },
   };
+
+  it('uses the strict registry reader for status --repo', async () => {
+    const corrupt = new Error('registry is corrupt: entry 0 is malformed');
+    vi.mocked(readRegistryStrict).mockRejectedValueOnce(corrupt);
+
+    await expect(statusCommand({ repo: 'demo' })).rejects.toBe(corrupt);
+    expect(resolveRegistryEntry).not.toHaveBeenCalled();
+  });
 
   it('renders indexed and current typed runner receipts for exact comparison', async () => {
     (findRepo as any).mockResolvedValue(baseRepo);

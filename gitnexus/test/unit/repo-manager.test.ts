@@ -1789,6 +1789,21 @@ describe('assertSafeStoragePath (#1003)', () => {
     await expect(assertSafeStoragePath(entry)).rejects.toBeInstanceOf(UnsafeStoragePathError);
   });
 
+  it.each([null, 42])('rejects malformed storagePath %p with the safety error', async (value) => {
+    const entry = {
+      ...base,
+      storagePath: value,
+    } as unknown as RegistryEntry;
+
+    try {
+      await assertSafeStoragePath(entry);
+      expect.unreachable('expected malformed storagePath to be rejected');
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnsafeStoragePathError);
+      expect((error as UnsafeStoragePathError).actualStoragePath).toBe(String(value));
+    }
+  });
+
   it('rejects when storagePath points somewhere totally unrelated', async () => {
     const entry: RegistryEntry = {
       ...base,

@@ -1092,7 +1092,6 @@ export async function runFullAnalysis(
   };
 
   let writeTarget = await resolveWriteTarget(repoPath, options);
-  await ensureStoragePathWritable(writeTarget.storagePath);
   let lock = await acquireIndexLock(writeTarget.metaDir, acquireOpts);
   try {
     // #2658 review H2: acquireIndexLock can wait up to the timeout ceiling,
@@ -1161,6 +1160,11 @@ async function runFullAnalysisInner(
   // does not own the flat slot. See resolveWriteTarget for the full contract.
   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
     writeTarget;
+  let storageWritable: Promise<void> | undefined;
+  const ensureWritableStorage = (): Promise<void> => {
+    storageWritable ??= ensureStoragePathWritable(storagePath);
+    return storageWritable;
+  };
   const ftsProfile = ftsProfileForContentRetention(contentRetention);
   const ftsIndexes = getFtsIndexes(ftsProfile);
 
@@ -1249,6 +1253,7 @@ async function runFullAnalysisInner(
           'Run `gitnexus analyze` (full) to rebuild from scratch.',
       );
     }
+    await ensureWritableStorage();
     try {
       await initLbug(lbugPath);
       // Gate on FTS availability BEFORE touching any index. createSearchFTSIndexes
@@ -1476,6 +1481,7 @@ async function runFullAnalysisInner(
     // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
     // now, while nothing is open, so every open in this run is replay-free.
     // The rebuild wipes the DB regardless, so no committed data is at stake.
+    await ensureWritableStorage();
     const { removed, failed } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
     if (removed.length > 0) {
       log(
@@ -1887,6 +1893,8 @@ async function runFullAnalysisInner(
       }
     }
   }
+
+  await ensureWritableStorage();
 
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:

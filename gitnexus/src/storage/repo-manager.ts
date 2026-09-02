@@ -1422,11 +1422,14 @@ export class UnsafeStoragePathError extends Error {
  */
 export const assertSafeStoragePath = async (entry: RegistryEntry): Promise<void> => {
   const expected = defaultStoragePath(entry.path);
+  const rawStoragePath: unknown = entry.storagePath;
   let actual: string;
   try {
-    actual = validateConfiguredStoragePath(entry.storagePath);
+    actual = validateConfiguredStoragePath(rawStoragePath as string);
   } catch {
-    throw new UnsafeStoragePathError(entry, expected, path.resolve(entry.storagePath));
+    const reportedStoragePath =
+      typeof rawStoragePath === 'string' ? path.resolve(rawStoragePath) : String(rawStoragePath);
+    throw new UnsafeStoragePathError(entry, expected, reportedStoragePath);
   }
 
   if (registryPathEquals(expected, actual)) return;

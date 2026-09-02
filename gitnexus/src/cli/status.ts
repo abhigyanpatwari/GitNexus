@@ -10,7 +10,7 @@ import {
   getStoragePaths,
   loadMeta,
   hasKuzuIndex,
-  readRegistry,
+  readRegistryStrict,
   resolveRegistryEntry,
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
@@ -100,7 +100,7 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   if (options.repo) {
     let entry;
     try {
-      entry = resolveRegistryEntry(await readRegistry(), options.repo);
+      entry = resolveRegistryEntry(await readRegistryStrict(), options.repo);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
       if (options.json) {
