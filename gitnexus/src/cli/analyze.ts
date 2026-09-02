@@ -1375,6 +1375,7 @@ const analyzeCommandImpl = async (
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
       springActuatorPath: options.springActuator,
+      asyncApiSpecPath: options.asyncapiSpec,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free

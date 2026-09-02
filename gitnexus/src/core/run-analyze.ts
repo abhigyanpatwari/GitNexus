@@ -490,6 +490,11 @@ export interface AnalyzeOptions {
    */
   springActuatorPath?: string;
   /**
+   * Explicit local AsyncAPI 3.x document input, forwarded to the destination
+   * phase. Undefined keeps source-only address resolution.
+   */
+  asyncApiSpecPath?: string;
+  /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
    * durability but skips the native `conn.close()`/`db.close()`, which can
@@ -2021,6 +2026,7 @@ async function runFullAnalysisInner(
       fetchWrappers: options.fetchWrappers,
       skipDerivedGraphPhases,
       springActuatorPath: options.springActuatorPath,
+      asyncApiSpecPath: options.asyncApiSpecPath,
       springActuatorScanExclusions,
     },
   );

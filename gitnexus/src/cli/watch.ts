@@ -115,6 +115,11 @@ export async function resolveWatchOptions(
     ['--index-only', cli.indexOnly],
     ['--skip-git', cli.skipGit],
     ['--spring-actuator', cli.springActuator],
+    // Rejected under --watch for the same reason as --spring-actuator: the
+    // watcher reacts to source changes, and nothing watches an out-of-band
+    // document directory. Honouring the flag here would read the documents once
+    // and then quietly serve a stale answer for the rest of the session.
+    ['--asyncapi-spec', cli.asyncapiSpec],
     ['walCheckpointThreshold', cli.walCheckpointThreshold],
     ['embeddingThreads', cli.embeddingThreads],
     ['embeddingBatchSize', cli.embeddingBatchSize],
