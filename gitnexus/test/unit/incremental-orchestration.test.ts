@@ -48,7 +48,9 @@ import {
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
   SPRING_NON_HTTP_HANDLERS_FEATURE,
+  SPRING_ROUTE_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import { springVendorPrefixesKey } from '../../src/core/ingestion/frameworks/spring/vendor-prefixes.js';
 import {
   decodeSpringAopReason,
   SPRING_AOP_EVIDENCE_ID_PREFIX,
@@ -799,6 +801,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
         [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
+        [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
 
       await saveMeta(storagePath, withoutAnalysisFeature(meta!, SPRING_BEAN_INVENTORY_FEATURE.id));
@@ -819,7 +822,40 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
         [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
+        [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('rebuilds a JVM index when the registered Spring vendor prefixes change', async () => {
+    const repo = await setupSpringBeanIncrementalRepo();
+    try {
+      vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      expect((await loadMeta(storagePath))?.springVendorPrefixes).toBe(springVendorPrefixesKey());
+
+      vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Acme,Win');
+      const logs: string[] = [];
+      const rebuilt = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(rebuilt.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain('Spring vendor mapping prefixes changed');
+      expect((await loadMeta(storagePath))?.springVendorPrefixes).toBe(springVendorPrefixesKey());
+
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
     } finally {
       await repo.cleanup();
     }
@@ -927,6 +963,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
         [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
+        [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();
