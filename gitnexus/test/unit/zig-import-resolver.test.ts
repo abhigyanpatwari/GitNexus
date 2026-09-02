@@ -317,12 +317,24 @@ describe('resolveZigImportInternal', () => {
       buildModules: [{ root: 'src/main.zig', imports: new Map([['cfg', 'src/cfg.zig']]) }],
     };
     expect(resolveZigImportInternal('src/main.zig', 'mylib', files, config)).toBe('src/lib.zig');
-    // A table entry whose root is not indexed is not an answer either.
+    // A table entry whose root is not indexed is not an answer either — and
+    // it does not fall through: the module's table is the authority for the
+    // alias, so a same-named repo-wide `addModule("cfg")` pointing elsewhere
+    // must not answer in its place (gitnexus-check on 5299c552).
     const stale = {
       ...config,
+      rootModules: new Map([
+        ['mylib', 'src/lib.zig'],
+        ['cfg', 'src/cfg.zig'],
+      ]),
       buildModules: [{ root: 'src/main.zig', imports: new Map([['cfg', 'src/gone.zig']]) }],
     };
     expect(resolveZigImportInternal('src/main.zig', 'cfg', files, stale)).toBeNull();
+    // …while a file OUTSIDE that module (`src/lib.zig` shares the root's
+    // directory and so belongs to it; `other/x.zig` does not) still reaches
+    // the repo-wide name.
+    const outside = new Set<string>([...files, 'other/x.zig']);
+    expect(resolveZigImportInternal('other/x.zig', 'cfg', outside, stale)).toBe('src/cfg.zig');
   });
 
   it('returns null for an unknown bare name not in build.zig.zon', () => {
