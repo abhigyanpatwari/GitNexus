@@ -479,9 +479,20 @@ async function emitSpecDestinations(
   // identical from outside, which is why `spring-auto-configuration.ts` warns
   // unconditionally for the same class of input.
   if (stats.accepted === 0 || stats.truncated) {
+    // Repo-relative when the path is inside the repository, bare name when it
+    // is not. The same change refuses to persist this path to index metadata on
+    // the grounds that it would record an operator's directory layout; applying
+    // that reasoning to metadata and not to logs would be holding one rule in
+    // two places.
+    const resolved = path.resolve(ctx.repoPath, specPath);
+    const relative = path.relative(ctx.repoPath, resolved);
+    const reportedPath =
+      relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
+        ? relative.split(path.sep).join('/')
+        : path.basename(resolved);
     logger.warn(
       {
-        asyncApiSpecPath: specPath,
+        asyncApiSpecPath: reportedPath,
         ...stats,
       },
       stats.accepted === 0

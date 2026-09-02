@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtemp, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { _captureLogger } from '../../src/core/logger.js';
 import {
   setJavaSpringMessageProducerFacts,
   setJavaSpringNonHttpHandlerFacts,
@@ -670,8 +671,16 @@ operations:
     channel: { $ref: "#/channels/inbound" }
 `;
 
+  // Tracked and removed; an earlier version of this suite left hundreds of
+  // temporary directories behind on developer machines.
+  const createdDirs: string[] = [];
+  afterAll(async () => {
+    for (const dir of createdDirs) await rm(dir, { recursive: true, force: true });
+  });
+
   async function specDir(body: string = KAFKA_DOCUMENT): Promise<string> {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-phase-spec-'));
+    createdDirs.push(dir);
     await writeFile(path.join(dir, 'asyncapi.yaml'), body, 'utf-8');
     return dir;
   }
@@ -846,6 +855,48 @@ operations:
     const source = [...graph.iterNodes()].find((n) => n.id === edge.sourceId);
     expect(source?.label).toBe('File');
     expect(String(source?.properties.filePath)).toBe('asyncapi:asyncapi.yaml');
+  });
+
+  it('forwards a non-zero symlink count out of the reader', async () => {
+    // The phase's stats block is the operator's only view of what was read.
+    // Hard-coding these to zero passed every test, because the only assertion
+    // on them was an all-zeros comparison on an empty directory.
+    const dir = await specDir();
+    await symlink(path.join(dir, 'asyncapi.yaml'), path.join(dir, 'linked.yaml'));
+    const output = await runWithSpec([], dir);
+    expect(output.specDocuments?.symlinksSkipped).toBe(1);
+  });
+
+  it('warns, out loud, when a configured path yielded nothing', async () => {
+    // The stats block is justified on the grounds that an operator must be able
+    // to tell a mistyped directory from a repository with no documents. That is
+    // only true if the warn actually fires, and nothing asserted that it did —
+    // the block could be deleted with the suite green.
+    const empty = await mkdtemp(path.join(tmpdir(), 'gnx-phase-empty-'));
+    createdDirs.push(empty);
+    const populated = await specDir();
+
+    const capture = _captureLogger();
+    try {
+      await runWithSpec([], empty);
+      const warnings = capture
+        .records()
+        .filter((record) => (record as { level?: number }).level === 40);
+      expect(warnings).toHaveLength(1);
+      expect((warnings[0] as { accepted?: number }).accepted).toBe(0);
+    } finally {
+      capture.restore();
+    }
+
+    const quiet = _captureLogger();
+    try {
+      await runWithSpec([], populated);
+      expect(
+        quiet.records().filter((record) => (record as { level?: number }).level === 40),
+      ).toHaveLength(0);
+    } finally {
+      quiet.restore();
+    }
   });
 
   it('omits the stats block entirely when no path was configured', async () => {

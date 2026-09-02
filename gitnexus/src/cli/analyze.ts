@@ -1006,6 +1006,17 @@ const analyzeCommandImpl = async (
     return;
   }
 
+  // An empty value resolves to the repository root, so `--asyncapi-spec ""`
+  // walks the whole tree — defeating the module's own rule that there is no
+  // glob-based auto-discovery, and spending the walk budget on `node_modules`.
+  // The HTTP entry point already rejects exactly this value; two doors onto one
+  // option must not hold different rules.
+  if (options.asyncapiSpec !== undefined && options.asyncapiSpec.trim() === '') {
+    cliError('  --asyncapi-spec must be a non-empty path.\n');
+    process.exitCode = 1;
+    return;
+  }
+
   if (options.embeddingDevice) {
     const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
     if (!allowed.has(options.embeddingDevice)) {
