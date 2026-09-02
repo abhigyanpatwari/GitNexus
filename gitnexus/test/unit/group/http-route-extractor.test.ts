@@ -2824,9 +2824,7 @@ export async function literalSentinelSegment() {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/x')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/orders')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/{param}')).toBeDefined();
-      expect(
-        consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d'),
-      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/__gitnexus_http_param__'),
       ).toBeDefined();
