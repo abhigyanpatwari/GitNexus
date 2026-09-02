@@ -631,7 +631,10 @@ async function collectCandidateFiles(root: string): Promise<WalkResult> {
         symlinksSkipped += 1;
       } else if (entry.isDirectory()) {
         await walk(full, depth + 1);
-      } else if (entry.isFile() && DOCUMENT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
+      } else if (
+        entry.isFile() &&
+        DOCUMENT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
+      ) {
         files.push(full);
       }
     }

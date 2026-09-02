@@ -798,7 +798,10 @@ operations:
     const dir = await specDir();
     // `repoPath` is the fixture directory, so the document resolves inside it.
     const deps = new Map<string, PhaseResult<unknown>>([
-      ['parse', { phaseName: 'parse', durationMs: 0, output: { allPaths: [], moduleConstants: new Map() } }],
+      [
+        'parse',
+        { phaseName: 'parse', durationMs: 0, output: { allPaths: [], moduleConstants: new Map() } },
+      ],
       ['scopeResolution', { phaseName: 'scopeResolution', durationMs: 0, output: {} }],
       ['springConfig', { phaseName: 'springConfig', durationMs: 0, output: {} }],
     ]);
@@ -830,7 +833,9 @@ operations:
         ownerScopeId: `${filePath}#consume` as never,
         ownerFilePath: filePath,
         ownerRange: OWNER_RANGE,
-        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }],
+        annotations: [
+          { name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] },
+        ],
       },
     ]);
     setJavaSpringMessageProducerFacts(filePath, []);

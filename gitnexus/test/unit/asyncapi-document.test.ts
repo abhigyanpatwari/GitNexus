@@ -439,7 +439,9 @@ describe('normalizeAsyncApiDocument — addressing', () => {
     // the `{` test covers documents that template without declaring.
     const d = doc({
       servers: kafka,
-      channels: { c: { address: 'payments.v1', parameters: {}, servers: [{ $ref: '#/servers/s' }] } },
+      channels: {
+        c: { address: 'payments.v1', parameters: {}, servers: [{ $ref: '#/servers/s' }] },
+      },
       operations: { op: { action: 'send', channel: { $ref: '#/channels/c' } } },
     });
     const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
@@ -525,9 +527,7 @@ describe('normalizeAsyncApiDocument — addressing', () => {
       channels: { c: { address: '{env}.orders', servers: [{ $ref: '#/servers/s' }] } },
       operations: { op: { action: 'send', channel: { $ref: '#/channels/c' } } },
     });
-    expect(
-      normalizeAsyncApiDocument(d, '/spec.yaml').refusals['templated-address'],
-    ).toBe(1);
+    expect(normalizeAsyncApiDocument(d, '/spec.yaml').refusals['templated-address']).toBe(1);
   });
 
   it('refuses an address longer than the identifier bound', () => {
