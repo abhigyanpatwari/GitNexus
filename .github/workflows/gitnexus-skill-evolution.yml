@@ -4,7 +4,7 @@
 # overlay. The gate is evidence FOR a PR, never a bypass of one — nothing
 # merges without review.
 #
-# Activation checklist (the scheduled lane is OFF by default).
+# Activation and operations checklist.
 # [x] Configure the repository secret GITNEXUS_BENCH_AUTH_TOKEN (an Anthropic
 #     API key — benchmark sessions bill real usage; the Claude Code OAuth
 #     subscription token does not work here). Scoped to the
@@ -58,13 +58,14 @@
 #     uploads, and a promotion (if any) opens a well-formed PR. Run
 #     29907431284 (2026-07-22) went green end to end in 14h45m and reached a
 #     gate decision (`insufficient_evidence`, no promotion).
-# [ ] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true. This is the
-#     only remaining gap: until it is set the scheduled lane skips the job in
-#     seconds — while the EventBridge schedule still starts the runner for the
-#     day — so the Saturday cron costs instance time and produces nothing.
-# Roll back by setting that variable to false. Note: workflow_dispatch always
-# runs the full benchmark loop regardless of GITNEXUS_EVOLUTION_ENABLED and
-# bills real API usage on GITNEXUS_BENCH_AUTH_TOKEN.
+# [x] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true. Roll back
+#     the scheduled lane by setting it to false. workflow_dispatch always runs
+#     the full benchmark loop regardless and bills real API usage on
+#     GITNEXUS_BENCH_AUTH_TOKEN.
+# [ ] After resizing the runner, prove a manual workers=3 run has zero excluded
+#     runs and does not stretch the 48-minute serial mean toward the session
+#     ceiling; then set GITNEXUS_EVOLUTION_WORKERS=3 for scheduled runs. Leave
+#     it unset or set it to 1 for the serial fallback and immediate rollback.
 name: GitNexus skill evolution
 
 on:
@@ -146,9 +147,9 @@ jobs:
     env:
       GENERATIONS: ${{ inputs.generations || '1' }}
       RUNS: ${{ inputs.runs || '3' }}
-      # Serial by default — see workflow_bench.runner --workers for why, and
-      # raise it only to match the runner's vCPUs.
-      WORKERS: ${{ inputs.workers || '1' }}
+      # A manual input wins; scheduled runs use the repository rollout knob.
+      # Both fall back to serial — see workflow_bench.runner --workers for why.
+      WORKERS: ${{ inputs.workers || vars.GITNEXUS_EVOLUTION_WORKERS || '1' }}
       MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
       PROPOSER_MODEL: ${{ inputs.proposer_model || 'claude-opus-4-8' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
@@ -272,34 +273,56 @@ jobs:
             echo '::warning::gh is not installed on this runner — proposing without prior evidence. The promotion-PR step needs gh too.'
             exit 0
           fi
-          previous="$(gh run list \
+          if ! previous_runs="$(gh run list \
             --repo "${GITHUB_REPOSITORY}" \
             --workflow gitnexus-skill-evolution.yml \
             --branch main \
-            --status success \
-            --limit 5 \
+            --status completed \
+            --limit 10 \
             --json databaseId \
-            --jq "map(.databaseId) | map(select(. != ${GITHUB_RUN_ID})) | first // empty")"
-          if [[ -z "${previous}" ]]; then
-            echo 'No prior successful run to seed from; the proposer starts from the learnings queue only.'
+            --jq "map(.databaseId) | map(select(. != ${GITHUB_RUN_ID})) | .[]")"; then
+            echo '::warning::Prior workflow runs could not be listed; proposing without prior evidence.'
+            exit 0
+          fi
+          if [[ -z "${previous_runs}" ]]; then
+            echo 'No prior completed run to seed from; the proposer starts from the learnings queue only.'
             exit 0
           fi
           seed_root="${RUNNER_TEMP}/wfseed"
           rm -rf "${seed_root}"
-          mkdir -p "${seed_root}"
-          if ! gh run download "${previous}" --repo "${GITHUB_REPOSITORY}" --dir "${seed_root}"; then
-            echo "::warning::Evidence from run ${previous} could not be downloaded (expired past its retention?); proposing without it."
+          install -d -m 0700 "${seed_root}"
+          seed=''
+          # Failed sweeps deliberately upload partial evidence, so "completed"
+          # is the right population. Walk newest-first until one still-retained
+          # artifact actually contains benchmark rows; an empty latest run must
+          # not hide an older useful one.
+          for previous in ${previous_runs}; do
+            if [[ ! "${previous}" =~ ^[0-9]+$ ]]; then
+              echo "::warning::Ignoring malformed prior run id: ${previous}"
+              continue
+            fi
+            run_root="${seed_root}/${previous}"
+            install -d -m 0700 "${run_root}"
+            if ! gh run download "${previous}" --repo "${GITHUB_REPOSITORY}" --dir "${run_root}"; then
+              echo "::warning::Evidence from run ${previous} could not be downloaded (expired or absent); trying an older run."
+              continue
+            fi
+            # The artifact holds gen-N/bench/{results.jsonl,promotion.json,...};
+            # the highest generation is the one that actually reached the gate.
+            latest="$(find "${run_root}" -type f -path '*/gen-*/bench/results.jsonl' | sort -V | tail -1)"
+            if [[ -z "${latest}" || -L "${latest}" || ! -f "${latest}" ]]; then
+              echo "::warning::Run ${previous} uploaded no usable benchmark results; trying an older run."
+              continue
+            fi
+            seed="$(dirname "${latest}")"
+            echo "Seeding the proposer from run ${previous}: ${seed}"
+            break
+          done
+          if [[ -z "${seed}" ]]; then
+            echo '::warning::No usable prior benchmark artifact found; proposing without prior evidence.'
             exit 0
           fi
-          # The artifact holds gen-N/bench/{results.jsonl,promotion.json,...};
-          # the highest generation is the one that actually reached the gate.
-          latest="$(find "${seed_root}" -type f -path '*/gen-*/bench/results.jsonl' | sort -V | tail -1)"
-          if [[ -z "${latest}" ]]; then
-            echo "::warning::Run ${previous} uploaded no benchmark results; proposing without prior evidence."
-            exit 0
-          fi
-          echo "Seeding the proposer from run ${previous}: $(dirname "${latest}")"
-          echo "seed=$(dirname "${latest}")" >> "${GITHUB_OUTPUT}"
+          echo "seed=${seed}" >> "${GITHUB_OUTPUT}"
 
       - name: Run the propose → benchmark → gate loop
         id: loop

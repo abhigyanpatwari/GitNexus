@@ -432,6 +432,8 @@ def test_runner_argv_pairs_each_incumbent_with_its_candidate(tmp_path):
             "pinned",
             "--arms",
             "workflow",
+            "--workers",
+            "3",
             "--include-expensive",
         ]
     )
@@ -455,6 +457,7 @@ def test_runner_argv_pairs_each_incumbent_with_its_candidate(tmp_path):
     assert str(tmp_path / "bench") in argv
     assert "pinned" in argv
     assert argv[argv.index("--proposer-model") + 1] == "pinned"
+    assert argv[argv.index("--workers") + 1] == "3"
     assert "--include-expensive" in argv
     assert json.loads(argv[argv.index("--task-bindings-json") + 1]) == task_bindings
     assert json.loads(argv[argv.index("--promotion-target-bases-json") + 1]) == target_bases

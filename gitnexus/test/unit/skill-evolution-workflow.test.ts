@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { load } from 'js-yaml';
 import { describe, expect, it } from 'vitest';
@@ -45,6 +47,45 @@ function stepRun(stepName: string): string {
   return typeof step?.run === 'string' ? step.run : '';
 }
 
+function runSeedStep(ghImplementation: string): { output: string; trace: string } {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-evolution-seed-'));
+  try {
+    const bin = path.join(root, 'bin');
+    const runnerTemp = path.join(root, 'runner-temp');
+    const githubOutput = path.join(root, 'github-output');
+    const trace = path.join(root, 'gh-trace');
+    mkdirSync(bin);
+    mkdirSync(runnerTemp);
+    writeFileSync(githubOutput, '');
+    const gh = path.join(bin, 'gh');
+    writeFileSync(gh, `#!/usr/bin/env bash\nset -euo pipefail\n${ghImplementation}\n`);
+    chmodSync(gh, 0o700);
+
+    execFileSync(
+      '/bin/bash',
+      ['-c', stepRun("Seed the proposer with the previous run's evidence")],
+      {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          GITHUB_OUTPUT: githubOutput,
+          GITHUB_REPOSITORY: 'abhigyanpatwari/GitNexus',
+          GITHUB_RUN_ID: '999',
+          RUNNER_TEMP: runnerTemp,
+          TRACE: trace,
+        },
+        stdio: 'pipe',
+      },
+    );
+    return {
+      output: readFileSync(githubOutput, 'utf8'),
+      trace: readFileSync(trace, 'utf8'),
+    };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 describe('gitnexus skill-evolution workflow contract', () => {
   it('applies gate-passing overlays so the promotion-PR path is reachable', () => {
     const loop = stepRun('Run the propose → benchmark → gate loop');
@@ -59,8 +100,73 @@ describe('gitnexus skill-evolution workflow contract', () => {
     // the runner has the vCPUs for it, and a cell starved of CPU drifts toward
     // its session timeout, which the gate counts as an excluded run.
     expect(stepRun('Run the propose → benchmark → gate loop')).toContain('--workers "${WORKERS}"');
-    expect(evolveJob?.env?.WORKERS).toBe("${{ inputs.workers || '1' }}");
+    expect(evolveJob?.env?.WORKERS).toBe(
+      "${{ inputs.workers || vars.GITNEXUS_EVOLUTION_WORKERS || '1' }}",
+    );
   });
+
+  it('seeds from the newest usable completed main run, including failed runs', () => {
+    const seed = stepRun("Seed the proposer with the previous run's evidence");
+
+    // Failed sweeps deliberately upload partial evidence. Looking only at
+    // successful runs makes that evidence unreachable and leaves the weekly
+    // proposer memoryless once the last successful artifact expires.
+    expect(seed).toContain('--status completed');
+    expect(seed).not.toContain('--status success');
+    expect(seed).toContain('--limit 10');
+    expect(seed).toContain('for previous in ${previous_runs}');
+    expect(seed).toContain('continue');
+    expect(seed).toContain('gen-*/bench/results.jsonl');
+    expect(seed).toContain('break');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'falls back past an empty newer artifact to an older usable run',
+    () => {
+      const result = runSeedStep(`
+if [[ "$1 $2" == 'run list' ]]; then
+  printf '300\\n200\\n'
+  exit 0
+fi
+if [[ "$1 $2" == 'run download' ]]; then
+  run_id="$3"
+  shift 3
+  destination=''
+  while (( $# )); do
+    if [[ "$1" == '--dir' ]]; then destination="$2"; shift 2; else shift; fi
+  done
+  printf '%s\\n' "\${run_id}" >> "\${TRACE}"
+  if [[ "\${run_id}" == '200' ]]; then
+    mkdir -p "\${destination}/artifact/gen-2/bench"
+    printf '{}\\n' > "\${destination}/artifact/gen-2/bench/results.jsonl"
+  fi
+  exit 0
+fi
+exit 1`);
+
+      expect(result.trace).toBe('300\n200\n');
+      expect(result.output).toMatch(/seed=.*\/200\/artifact\/gen-2\/bench\n/);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'continues without a seed when every prior artifact is unavailable',
+    () => {
+      const result = runSeedStep(`
+if [[ "$1 $2" == 'run list' ]]; then
+  printf '300\\n'
+  exit 0
+fi
+if [[ "$1 $2" == 'run download' ]]; then
+  printf '%s\\n' "$3" >> "\${TRACE}"
+  exit 1
+fi
+exit 1`);
+
+      expect(result.trace).toBe('300\n');
+      expect(result.output).toBe('');
+    },
+  );
 
   it('runs the proposer on its own model, separate from the benchmark arms', () => {
     const loop = stepRun('Run the propose → benchmark → gate loop');
@@ -166,5 +272,7 @@ describe('gitnexus skill-evolution workflow contract', () => {
     expect(workflow).toContain('RELEASE_APP_ID');
     expect(workflow).toContain('RELEASE_APP_PRIVATE_KEY');
     expect(workflow).toContain('gitnexus-evolution');
+    expect(workflow).toContain('[x] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true');
+    expect(workflow).toContain('GITNEXUS_EVOLUTION_WORKERS');
   });
 });
