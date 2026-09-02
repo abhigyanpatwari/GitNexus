@@ -90,6 +90,7 @@ const PLATFORM_LOGIC = [
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
   'test/unit/group/bridge-db-edge.test.ts',
+  'test/unit/group/fs-utils.test.ts',
   'test/unit/onnxruntime-node-resolver.test.ts',
   // Windows cmd.exe arg-quoting + compose-and-spawn for the npm install (#2372):
   // the quoting rules and win32 single-string spawn shape are OS-sensitive, so
@@ -113,6 +114,9 @@ const PLATFORM_LOGIC = [
   // POSIX and Windows — the fail-closed path-claim semantics must hold on the
   // real windows-latest path implementation (#2419/#2420).
   'test/unit/server-api-repo-resolution.test.ts',
+  // #3073: cwd-based repository selection canonicalizes real paths, compares
+  // platform separators/case, and rejects nested Git-boundary fallthrough.
+  'test/unit/calltool-dispatch.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.
@@ -140,6 +144,7 @@ const LBUG_NATIVE = [
   // opens them through the pool adapter (native addon + bridge file locking).
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
+  'test/integration/group/graphql-resolve-symbol.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
@@ -208,6 +213,18 @@ const SPAWN_CLI = [
   // exposed a file-backend double-admit race here (#2658 review); the reclaim is
   // now judgment-verified so a live holder is never displaced.
   'test/integration/analyze-index-lock-concurrency.test.ts',
+  // The per-group sync lock (R9), same class of guarantee one level up: real
+  // child processes contend for one group's lock while this process runs a real
+  // `syncGroup`, and the CLI case spawns the real command. Everything that
+  // varies here is platform-owned — which backend `selectBackend()` picks
+  // (Windows named pipe / Linux abstract socket / macOS file lock), kernel
+  // auto-release on SIGKILL vs. the file backend's pid-liveness reclaim, and
+  // `mkdir` over an occupied path. The fail-closed cases pin
+  // GITNEXUS_INDEX_LOCK_BACKEND=file so the filesystem branch is exercised on
+  // every OS rather than only where it is the default; no case is skipped on
+  // any platform, because a skipped case turns "a sync that cannot be protected
+  // does not run" into a claim that holds on Ubuntu only.
+  'test/integration/group/group-sync-lock-concurrency.test.ts',
   // The three `dist/` module-load closure guards, all built on the shared
   // child-process probe in `test/helpers/module-load-probe.ts`. That probe IS
   // the platform-varying part: it spawns `process.execPath` in array form,
@@ -220,7 +237,7 @@ const SPAWN_CLI = [
   // Cheap: measured on the Windows runner at 448 ms, 53 ms and sub-second. An
   // earlier attempt to register them still turned the matrix red — not from
   // their own cost, but because vitest sharded by file COUNT, so inserting any
-  // file re-partitioned the list and happened to cluster `cli-e2e` (361 s) with
+  // file re-partitioned the list and happened to cluster `cli-e2e` (621 s) with
   // `cli-limit-e2e` (75 s) on one shard. The split is weight-aware now
   // (`scripts/cross-platform-shard.ts`), so a cheap file can no longer move a
   // heavy one.
@@ -259,8 +276,31 @@ const NATIVE_ADDON_SMOKE = [
 // platforms (CRLF, symlinks, permissions, temp dirs)
 const FILESYSTEM = [
   'test/integration/filesystem-walker.test.ts',
+  'test/integration/watch-filesystem.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
   'test/integration/ignore-and-skip-e2e.test.ts',
+  // Pins that the bridge pairing verdict is measured before the database is
+  // opened. The property it protects is about mtime behavior across OS and
+  // filesystem, and the alternative — really opening the bridge — cannot run on
+  // Windows at all (in-process write→read reopen of the same bridge.lbug is a
+  // documented limitation). Running it on every platform is the whole point:
+  // Windows is where an unverified assumption about mtime would hurt most.
+  'test/unit/group/bridge-pairing-precedes-open.test.ts',
+  // The raw-control-byte guard reads every tracked text file `git ls-files`
+  // reports — 4893 of them — and decides membership from the git path, which is
+  // always `/`-separated no matter what the host separator is. Both halves of
+  // that are platform-varying: the collector basename-matches with
+  // `path.posix.basename` against `git ls-files -z` output while the reads go
+  // through `path.join`, so on Windows the same string is consumed under two
+  // separator conventions in one pass, and only a real windows-latest run
+  // proves they agree. It is also the file-count-heaviest read loop in the
+  // suite, so it is where a per-file filesystem cost (NTFS + Defender, or
+  // macOS's slower stat path) would show up first. No case is skipped on any
+  // platform: a guard that only holds on Ubuntu is not a guard on the file
+  // whose NUL it exists to catch. Budget: the heaviest single case is one
+  // 4893-file pass — 2.3 s on a slow virtualised filesystem, 0.34 s on a local
+  // disk — against a 30 s testTimeout.
+  'test/unit/source-control-bytes.test.ts',
 ];
 
 const ALL_CROSS_PLATFORM = [

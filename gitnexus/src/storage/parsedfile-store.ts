@@ -24,11 +24,11 @@
  *
  * ## Shape
  *
- * `<storagePath>/parsedfile-store/<shardId>.json` — one shard per parse chunk,
- * a JSON array of `ParsedFile` serialized with the same `mapReplacer` the parse
- * cache uses (Scope.bindings / Scope.typeBindings are `Map`s). The store is
- * cleared at the start of each parse and after scope-resolution consumes it, so
- * it never lingers and never goes stale across runs.
+ * `<storagePath>/parsedfile-store/<shardId>.v8` — one shard per parse chunk,
+ * a V8 envelope of `ParsedFile[]` (Scope.bindings / Scope.typeBindings stay
+ * `Map`s). The store is cleared at the start of each parse and after
+ * scope-resolution consumes it, so it never lingers and never goes stale
+ * across runs.
  *
  * ## Durable sibling store (`parsedfile-cache/`, warm-cache coverage)
  *
@@ -41,14 +41,14 @@
  * that gap we ALSO write the worker's ParsedFiles to a second, CONTENT-ADDRESSED
  * store keyed by the parse chunk hash (`getDurableParsedFileDir`), which mirrors
  * the parse cache's lifecycle (persists across runs, pruned by `usedKeys`,
- * version-tied via `PARSE_CACHE_VERSION`). On a warm hit the chunk's durable
- * shards are byte-COPIED into the run-scoped store (no re-parse, no
- * re-serialize → byte-identical), so scope-resolution streams them exactly as
- * on a cold run. Content-addressing makes stale reuse impossible: a changed
- * file changes its chunk hash, which misses BOTH stores and re-dispatches.
+ * version-tied via `PARSE_CACHE_VERSION`). On a warm hit the chunk's immutable
+ * durable shards are hardlinked (or atomically copied) into the run store after
+ * their envelope metadata proves complete coverage. That pins a stable snapshot
+ * before workers are skipped, even when another branch refreshes the shared
+ * durable directory concurrently.
  */
 
-import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
+import { promises as fs, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
@@ -60,7 +60,14 @@ import type {
 } from 'gitnexus-shared';
 import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-codec.js';
 import { logger } from '../core/logger.js';
-import { mapReplacer, mapReviver } from './parse-cache.js';
+import { mapReviver } from './parse-cache.js';
+import { linkOrCopyFile } from './fs-atomic.js';
+import {
+  inspectV8Cache,
+  tryLoadV8Cache,
+  writeV8CacheFile,
+  writeV8CacheFileSync,
+} from './v8-sidecar.js';
 
 const STORE_DIRNAME = 'parsedfile-store';
 const DURABLE_DIRNAME = 'parsedfile-cache';
@@ -164,37 +171,42 @@ export const clearParsedFileStore = async (storagePath: string): Promise<void> =
   await fs.rm(getParsedFileStoreDir(storagePath), { recursive: true, force: true });
 };
 
-/**
- * Single source of truth for a shard's bytes. Returns `null` for an empty
- * chunk (caller writes nothing). Both the async (`persistParsedFileChunk`) and
- * sync (`persistParsedFileShardSync`) writers go through this so the two paths
- * are guaranteed byte-identical — the shards must round-trip through the same
- * `mapReviver`, and matching bytes by having both authors type the same
- * `mapReplacer` call would be a coincidence, not a guarantee.
- */
-const serializeParsedFileShard = (parsedFiles: readonly ParsedFile[]): string | null => {
-  if (parsedFiles.length === 0) return null;
-  return JSON.stringify(parsedFiles, mapReplacer);
-};
+const isV8ShardName = (name: string): boolean => name.endsWith('.v8') && !name.includes('.v8.');
 
 const shardPath = (storagePath: string, shardId: string): string =>
-  path.join(getParsedFileStoreDir(storagePath), `${shardId}.json`);
+  path.join(getParsedFileStoreDir(storagePath), `${shardId}.v8`);
+
+const shardFilePaths = (parsedFiles: readonly ParsedFile[]): string[] =>
+  parsedFiles.map((pf) => pf.filePath);
+
+const LOAD_YIELD_EVERY_SHARDS = 128;
 
 /**
- * Write one parse chunk's `ParsedFile[]` to the store as a single shard (async).
- * No-op for an empty chunk. `shardId` must be unique within a run. Used by the
- * main-thread no-store-disabled fallback and any non-worker writer; the worker
- * store path uses {@link persistParsedFileShardSync}.
+ * Test seam for #3086. Production always calls {@link forceGc}; unit tests
+ * replace `run` to count cadence without requiring `--expose-gc`.
+ */
+export const parsedFileLoadGc = {
+  run: forceGc,
+  /** V8 envelope bytes visited between GCs (#3086). Tests may lower this. */
+  byteBudget: 128 * 1024 * 1024,
+};
+
+/**
+ * Write one parse chunk's `ParsedFile[]` to the store as a single `.v8` shard.
+ * No-op for an empty chunk. `shardId` must be unique within a run.
  */
 export const persistParsedFileChunk = async (
   storagePath: string,
   shardId: string,
   parsedFiles: readonly ParsedFile[],
-): Promise<void> => {
-  const payload = serializeParsedFileShard(parsedFiles);
-  if (payload === null) return;
+): Promise<boolean> => {
+  if (parsedFiles.length === 0) return true;
   await fs.mkdir(getParsedFileStoreDir(storagePath), { recursive: true });
-  await fs.writeFile(shardPath(storagePath, shardId), payload, 'utf-8');
+  return writeV8CacheFile(
+    shardPath(storagePath, shardId),
+    parsedFiles,
+    shardFilePaths(parsedFiles),
+  );
 };
 
 // Per-process set of store dirs we've already `mkdir`ed, so the sync worker
@@ -204,120 +216,113 @@ const createdStoreDirs = new Set<string>();
 
 /**
  * Synchronous shard writer for use INSIDE a parse worker (#1983 parallel
- * serialization). The worker is a dedicated thread, so a blocking write there
- * protects the main thread, and a sync write avoids threading `async`/`await`
- * through the synchronous per-file extract loop. Produces byte-identical shards
- * to {@link persistParsedFileChunk} via the shared {@link serializeParsedFileShard}.
- * No-op for an empty chunk. `shardId` must be globally unique for the run (the
- * worker uses `w<threadId>-<seq>`); a duplicate would silently overwrite.
+ * serialization). Returns false on write failure so the worker can keep
+ * ParsedFiles in the result instead of dropping them.
  */
 export const persistParsedFileShardSync = (
   storagePath: string,
   shardId: string,
   parsedFiles: readonly ParsedFile[],
-): void => {
-  const payload = serializeParsedFileShard(parsedFiles);
-  if (payload === null) return;
+): boolean => {
+  if (parsedFiles.length === 0) return true;
   const dir = getParsedFileStoreDir(storagePath);
   if (!createdStoreDirs.has(dir)) {
     mkdirSync(dir, { recursive: true });
     createdStoreDirs.add(dir);
   }
-  writeFileSync(shardPath(storagePath, shardId), payload, 'utf-8');
+  return writeV8CacheFileSync(
+    shardPath(storagePath, shardId),
+    parsedFiles,
+    shardFilePaths(parsedFiles),
+  );
 };
 
-/**
- * Stream the store and return the `ParsedFile`s whose `filePath` is in
- * `wantPaths`, keyed by path. Loads one shard at a time and retains only the
- * matching entries, so peak heap is bounded by (matched set) + (one shard)
- * rather than the whole store. Returns an empty map when the store is absent
- * (e.g. tests, or a run with no worker pool) — callers fall back to a fresh
- * extract for the missing files.
- */
+const listV8Shards = async (dir: string): Promise<string[]> => {
+  try {
+    return (await fs.readdir(dir)).filter(isV8ShardName).map((name) => path.join(dir, name));
+  } catch {
+    return [];
+  }
+};
+
 export const loadParsedFilesForPaths = async (
   storagePath: string,
   wantPaths: ReadonlySet<string>,
 ): Promise<Map<string, ParsedFile>> => {
   const out = new Map<string, ParsedFile>();
   if (wantPaths.size === 0) return out;
-  const dir = getParsedFileStoreDir(storagePath);
-  let shards: string[];
-  try {
-    shards = (await fs.readdir(dir)).filter((f) => f.endsWith('.json'));
-  } catch {
-    return out; // store absent
-  }
-  // Shared interning pool for this load — deduplicates strings ACROSS shards
-  // (one `int` / one repeated filePath for the whole language), which is where
-  // most of the saving comes from. Dropped when this function returns.
+  const shardPaths = await listV8Shards(getParsedFileStoreDir(storagePath));
   const pool = new Map<string, string>();
   let droppedSites = 0;
   let filesWithDroppedSites = 0;
   let droppedChains = 0;
   let rejectedFiles = 0;
-  for (let i = 0; i < shards.length; i++) {
-    // Per-shard def pool: a SymbolDefinition's three serialized copies live within
-    // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
-    // pool would retain defs of files NOT in `wantPaths` (loaded-but-discarded
-    // shards), reintroducing the leak; per-shard drops them with the shard.
-    const defPool = new Map<string, SymbolDefinition>();
-    const reviver = makeInterningReviver(pool, defPool);
-    let parsed: ParsedFile[];
-    try {
-      const raw = await fs.readFile(path.join(dir, shards[i]), 'utf-8');
-      parsed = JSON.parse(raw, reviver) as ParsedFile[];
-    } catch {
-      continue; // skip a corrupt shard; missing files fall back to fresh extract
+  let bytesSinceGc = 0;
+  let shardsSinceYield = 0;
+  const maybeYieldAndGc = async (forceByteGc: boolean): Promise<void> => {
+    if (forceByteGc) {
+      parsedFileLoadGc.run();
+      bytesSinceGc = 0;
+      shardsSinceYield = 0;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      return;
     }
-    if (!Array.isArray(parsed)) continue;
-    for (const pf of parsed) {
-      if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
-      const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
-      if (flow === undefined) {
-        // non-array garbage → distrust the file, re-extract
-        rejectedFiles++;
-        continue;
-      }
-      const chains = sanitizeReceiverChains(pf.referenceSites);
-      if (chains === undefined) {
-        rejectedFiles++;
-        continue;
-      }
-      if (flow.dropped === 0 && chains.dropped === 0) {
-        out.set(pf.filePath, pf);
-      } else {
-        droppedSites += flow.dropped;
-        droppedChains += chains.dropped;
-        filesWithDroppedSites++;
-        out.set(pf.filePath, {
-          ...pf,
-          ...(flow.dropped === 0 ? {} : { callableFlowSites: flow.sites }),
-          ...(chains.dropped === 0 ? {} : { referenceSites: chains.sites }),
-        });
-      }
-    }
-    // Every few shards, reclaim the transient pre-intern parse churn before it
-    // piles up against the heap limit (~5 GB avoidable on the kernel), and
-    // yield so the GC + any pending I/O can run.
-    if ((i & 7) === 7) {
-      forceGc();
+    shardsSinceYield++;
+    if (shardsSinceYield >= LOAD_YIELD_EVERY_SHARDS) {
+      shardsSinceYield = 0;
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
+  };
+  for (const shardFull of shardPaths) {
+    const loaded = await tryLoadV8Cache(shardFull, pool, wantPaths);
+    if (loaded === undefined) {
+      await maybeYieldAndGc(false);
+      continue;
+    }
+    if (loaded.kind === 'skip') {
+      bytesSinceGc += loaded.bytes;
+      await maybeYieldAndGc(bytesSinceGc >= parsedFileLoadGc.byteBudget);
+      continue;
+    }
+    bytesSinceGc += loaded.bytes;
+    const parsed = Array.isArray(loaded.value) ? (loaded.value as ParsedFile[]) : undefined;
+    const crossedBudget = bytesSinceGc >= parsedFileLoadGc.byteBudget;
+    if (Array.isArray(parsed)) {
+      for (const pf of parsed) {
+        if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
+        const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
+        if (flow === undefined) {
+          rejectedFiles++;
+          continue;
+        }
+        const chains = sanitizeReceiverChains(pf.referenceSites);
+        if (chains === undefined) {
+          rejectedFiles++;
+          continue;
+        }
+        if (flow.dropped === 0 && chains.dropped === 0) {
+          out.set(pf.filePath, pf);
+        } else {
+          droppedSites += flow.dropped;
+          droppedChains += chains.dropped;
+          filesWithDroppedSites++;
+          out.set(pf.filePath, {
+            ...pf,
+            ...(flow.dropped === 0 ? {} : { callableFlowSites: flow.sites }),
+            ...(chains.dropped === 0 ? {} : { referenceSites: chains.sites }),
+          });
+        }
+      }
+    }
+    await maybeYieldAndGc(crossedBudget);
   }
   if (droppedSites > 0 || droppedChains > 0) {
-    // Facts for the dropped sites are omitted this run (the file itself is
-    // retained, so no re-extract happens) — surface it so a recurring drop
-    // on every warm load is observable rather than silent (#2522 review).
     logger.warn(
       { droppedSites, droppedChains, files: filesWithDroppedSites },
       'parsedfile-store: dropped malformed/over-bound sites at load; files retained without those facts',
     );
   }
   if (rejectedFiles > 0) {
-    // The other half of the same defect. A rejected file silently falls back to
-    // a fresh extract EVERY load, so a writer that keeps minting what this
-    // reader keeps refusing is a permanent warm-cache miss that costs real time
-    // and says nothing about why.
     logger.warn(
       { rejectedFiles },
       'parsedfile-store: rejected shard entries at load (untrusted shape); those files re-extract every run',
@@ -326,16 +331,6 @@ export const loadParsedFilesForPaths = async (
   return out;
 };
 
-/**
- * Treat the durable ParsedFile store as an untrusted serialization boundary.
- * Sanitation is per-SITE, not per-file: one malformed or over-bound fact drops
- * only itself (counted, logged by the caller), so a legitimately pathological
- * source file cannot push its whole ParsedFile into a permanent, silent
- * warm-cache-miss reparse loop (#2522 review). Only a non-array field —
- * i.e. garbage that says the serialization itself is untrustworthy — rejects
- * the file, and `undefined` (never emitted / no facts) passes through.
- * Returns `undefined` for the reject-file case.
- */
 function sanitizeCallableFlowSites(
   value: unknown,
 ): { sites: readonly CallableFlowSite[] | undefined; dropped: number } | undefined {
@@ -533,16 +528,15 @@ function isSafeIndex(value: unknown): boolean {
 
 // ─── Durable, content-addressed sibling store (warm-cache coverage) ──────────
 //
-// Layout: `<durableDir>/<chunkHash>/<chunkHash>-w<tid>-<seq>.json` plus a
-// top-level `<durableDir>/index.json` = `{version, keys:[chunkHash…]}`. One
-// subdir per chunk hash so a chunk's (possibly several) shards collect and
-// prune as a unit, and so `readdir(<chunkHash>/)` is O(shards-of-this-chunk),
-// not O(all-history). Shards are byte-identical to run-scoped shards (same
-// `serializeParsedFileShard`); restore is a verbatim copy, never a re-serialize.
+// Layout: `<durableDir>/<chunkHash>/<chunkHash>-w<tid>-<seq>.v8` plus a
+// top-level `<durableDir>/index.json` that records each chunk hash's actual
+// persisted file-path coverage. One subdir per chunk hash so a chunk's
+// (possibly several) shards collect and prune as a unit. Warm hits snapshot
+// these files into the run store before worker dispatch is skipped.
 
 interface DurableParsedFileIndex {
   version: string;
-  keys: string[];
+  entries: Record<string, string[]>;
 }
 
 /** Durable store dir — a sibling of `parsedfile-store/`, NEVER cleared per run. */
@@ -568,10 +562,6 @@ export const prepareDurableParsedFileChunk = async (
   await fs.mkdir(dir, { recursive: true });
 };
 
-// Per-process set of durable chunk subdirs already `mkdir`ed (mirrors
-// `createdStoreDirs`) so the worker doesn't `mkdirSync` on every shard.
-const createdDurableDirs = new Set<string>();
-
 /**
  * Synchronous durable-shard writer for use INSIDE a parse worker, alongside
  * {@link persistParsedFileShardSync}. Writes the SAME bytes to a content-addressed
@@ -581,73 +571,99 @@ const createdDurableDirs = new Set<string>();
  * uniqueness that makes the run-scoped `w<tid>-<seq>` name safe, prefixed by
  * content. No-op for an empty chunk.
  */
+
+const createdDurableDirs = new Set<string>();
+
 export const persistDurableParsedFileShardSync = (
   durableDir: string,
   chunkHash: string,
   threadId: number,
   shardSeq: number,
   parsedFiles: readonly ParsedFile[],
-): void => {
-  const payload = serializeParsedFileShard(parsedFiles);
-  if (payload === null) return;
+): boolean => {
+  if (parsedFiles.length === 0) return true;
   const dir = durableChunkDir(durableDir, chunkHash);
   if (!createdDurableDirs.has(dir)) {
     mkdirSync(dir, { recursive: true });
     createdDurableDirs.add(dir);
   }
-  writeFileSync(path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.json`), payload, 'utf-8');
+  const dest = path.join(dir, `${chunkHash}-w${threadId}-${shardSeq}.v8`);
+  return writeV8CacheFileSync(dest, parsedFiles, shardFilePaths(parsedFiles));
 };
 
 /**
- * Restore a cached chunk's durable shards into the run-scoped store on a warm
- * hit. A verbatim byte copy (no parse, no re-serialize), so the restored
- * ParsedFiles are byte-identical to a cold run and `loadParsedFilesForPaths`
- * (which keys on `filePath`, not shard name) gives scope-resolution full
- * coverage. The durable shard names already carry the chunk hash, so they never
- * collide with the worker's run-scoped `w<tid>-<seq>` shards. Returns the number
- * of shards restored (0 ⇒ no durable coverage for this chunk; caller treats it
- * as a miss).
+ * Validate and snapshot one durable chunk into the run store. Every envelope
+ * must be runtime-compatible and integrity-valid, and together they must match
+ * the path coverage recorded when the durable index was published. Linking
+ * before returning pins the inodes against concurrent branch-cache rotation.
  */
-export const restoreDurableParsedFileShard = async (
-  durableDir: string,
+export const durableChunkHasShards = async (
   runStoragePath: string,
   chunkHash: string,
-): Promise<number> => {
-  const src = durableChunkDir(durableDir, chunkHash);
-  let shards: string[];
+  expectedPaths: ReadonlySet<string>,
+): Promise<boolean> => {
+  const sourceDir = durableChunkDir(getDurableParsedFileDir(runStoragePath), chunkHash);
+  const shards = await listV8Shards(sourceDir);
+  if (shards.length === 0 || expectedPaths.size === 0) return false;
+
+  const runDir = getParsedFileStoreDir(runStoragePath);
   try {
-    shards = (await fs.readdir(src)).filter((f) => f.endsWith('.json'));
+    await fs.mkdir(runDir, { recursive: true });
   } catch {
-    return 0; // no durable shards for this chunk
+    return false;
   }
-  if (shards.length === 0) return 0;
-  const dst = getParsedFileStoreDir(runStoragePath);
-  await fs.mkdir(dst, { recursive: true });
-  for (const name of shards) {
-    await fs.copyFile(path.join(src, name), path.join(dst, name));
+  const restored: string[] = [];
+  const covered = new Set<string>();
+  const rollback = async (): Promise<boolean> => {
+    await Promise.all(restored.map((filePath) => fs.rm(filePath, { force: true }).catch(() => {})));
+    return false;
+  };
+
+  for (const sourcePath of shards) {
+    const name = path.basename(sourcePath);
+    const destinationPath = path.join(runDir, name);
+    try {
+      await linkOrCopyFile(sourcePath, destinationPath);
+      restored.push(destinationPath);
+    } catch {
+      return rollback();
+    }
+    const inspected = await inspectV8Cache(destinationPath);
+    if (!inspected) return rollback();
+    for (const filePath of inspected.paths) {
+      if (!expectedPaths.has(filePath)) return rollback();
+      covered.add(filePath);
+    }
   }
-  return shards.length;
+
+  if (covered.size !== expectedPaths.size) return rollback();
+  return true;
 };
 
-/**
- * Read the durable index and return the set of chunk hashes it vouches for,
- * gated on `expectedVersion` (`PARSE_CACHE_VERSION`). A version mismatch or a
- * missing/corrupt index returns the empty set — the caller then treats every
- * chunk as a durable miss and re-dispatches workers (NEVER the main-thread
- * `extractParsedFile` fallback), which rewrites the durable store under the new
- * version. Mirrors `loadParseCache`'s version-invalidation contract.
- */
 export const loadDurableParsedFileIndex = async (
   durableDir: string,
   expectedVersion: string,
-): Promise<Set<string>> => {
+): Promise<Map<string, ReadonlySet<string>>> => {
   try {
     const raw = await fs.readFile(path.join(durableDir, DURABLE_INDEX_FILENAME), 'utf-8');
-    const idx = JSON.parse(raw) as DurableParsedFileIndex;
-    if (idx?.version !== expectedVersion || !Array.isArray(idx.keys)) return new Set();
-    return new Set(idx.keys);
+    const idx: unknown = JSON.parse(raw);
+    if (!isRecord(idx) || idx.version !== expectedVersion || !isRecord(idx.entries)) {
+      return new Map();
+    }
+    const entries = new Map<string, ReadonlySet<string>>();
+    for (const [key, paths] of Object.entries(idx.entries)) {
+      if (
+        !Array.isArray(paths) ||
+        paths.length === 0 ||
+        paths.some((filePath) => typeof filePath !== 'string')
+      ) {
+        return new Map();
+      }
+      entries.set(key, new Set(paths));
+    }
+    return entries;
   } catch {
-    return new Set();
+    return new Map();
   }
 };
 
@@ -656,9 +672,9 @@ export const loadDurableParsedFileIndex = async (
  * be the parse cache's surviving on-disk keys (so the two stores stay coherent:
  * a chunk is "cached" iff BOTH its parse-cache shard and its durable shards
  * exist; a quarantined chunk — no parse-cache shard — drops its durable subdir
- * here and re-dispatches next run). Only subdirs with ≥1 shard are indexed
- * (mirrors `saveParseCache`'s written-keys discipline — never vouch for a chunk
- * hash with no backing shard). The index write is tmp+rename atomic.
+ * here and re-dispatches next run). Only chunks whose envelopes all validate
+ * are indexed, together with their exact persisted path coverage (never vouch
+ * for a missing/corrupt shard). The index write is tmp+rename atomic.
  */
 export const pruneAndSaveDurableParsedFileStore = async (
   durableDir: string,
@@ -671,16 +687,28 @@ export const pruneAndSaveDurableParsedFileStore = async (
   } catch {
     return; // nothing written this run
   }
-  const survivors: string[] = [];
+  const survivors: Record<string, string[]> = {};
   for (const name of entries) {
     if (name === DURABLE_INDEX_FILENAME) continue;
     const full = path.join(durableDir, name);
     if (keepKeys.has(name)) {
       try {
-        const shards = (await fs.readdir(full)).filter((f) => f.endsWith('.json'));
+        const shards = await listV8Shards(full);
         if (shards.length > 0) {
-          survivors.push(name);
-          continue;
+          const covered = new Set<string>();
+          let valid = true;
+          for (const shard of shards) {
+            const inspected = await inspectV8Cache(shard);
+            if (!inspected) {
+              valid = false;
+              break;
+            }
+            for (const filePath of inspected.paths) covered.add(filePath);
+          }
+          if (valid && covered.size > 0) {
+            survivors[name] = [...covered].sort();
+            continue;
+          }
         }
       } catch {
         /* not a readable dir → drop below */
@@ -688,7 +716,7 @@ export const pruneAndSaveDurableParsedFileStore = async (
     }
     await fs.rm(full, { recursive: true, force: true });
   }
-  const idx: DurableParsedFileIndex = { version, keys: survivors };
+  const idx: DurableParsedFileIndex = { version, entries: survivors };
   const tmp = path.join(durableDir, `${DURABLE_INDEX_FILENAME}.tmp`);
   await fs.mkdir(durableDir, { recursive: true });
   await fs.writeFile(tmp, JSON.stringify(idx), 'utf-8');

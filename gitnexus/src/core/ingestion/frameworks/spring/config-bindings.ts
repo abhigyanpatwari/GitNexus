@@ -3,6 +3,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 
 export const SPRING_CONFIG_DESCRIPTION = 'Spring configuration property';
+export const SPRING_CONFIG_UNRESOLVED_PREFIX = 'Spring config unresolved: ';
 
 export interface SpringValueConsumer {
   readonly kind: 'value';
@@ -41,7 +42,7 @@ function closestNode(
 }
 
 function markUnresolved(node: GraphNode, key: string): void {
-  const marker = `Spring config unresolved: ${key}`;
+  const marker = `${SPRING_CONFIG_UNRESOLVED_PREFIX}${key}`;
   const existing =
     typeof node.properties.description === 'string' ? node.properties.description : '';
   if (existing.includes(marker)) return;

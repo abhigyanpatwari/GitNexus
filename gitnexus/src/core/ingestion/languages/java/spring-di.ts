@@ -12,13 +12,72 @@ import {
   hasSpringBeanFactorySyntax,
   type SpringBeanFactoryMethodFact,
 } from '../../frameworks/spring/bean-factories.js';
+import {
+  normalizeSpringFactText,
+  type SpringArgumentFact,
+} from '../../frameworks/spring/argument-facts.js';
 import { parseSpringInjectionType } from '../../di-extractors/spring.js';
-import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { hasRecoveredSyntax, nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { isJavaPackageSiblingVisibilityIncomplete } from './package-siblings.js';
 import { getJavaSpringDiFacts } from './capture-side-channel.js';
 
 export interface JavaAnnotationSyntaxFact extends SpringDiAnnotationFact {
   readonly line: number;
+  /** Present only for callers that opt in via `javaSpringAnnotationFacts`. */
+  readonly args?: readonly SpringArgumentFact[];
+}
+
+/**
+ * Options for `javaSpringAnnotationFacts`.
+ *
+ * The STRUCTURED arguments are opt-in because DI captures every annotated
+ * field, constructor, and method in the repository, and none of its consumers
+ * reads them. Note what this does and does not save: every fact already carries
+ * `text`, the annotation's full source, so the argument TEXT crosses the worker
+ * boundary either way. What the opt-in avoids is a second, parsed copy of that
+ * same text on facts that would never look at it.
+ */
+export interface JavaSpringAnnotationFactOptions {
+  readonly includeArguments?: boolean;
+}
+
+const JAVA_COMMENT_NODE_TYPES = new Set(['line_comment', 'block_comment']);
+
+/**
+ * Annotation arguments as written, or `undefined` for a marker annotation.
+ *
+ * `@Scheduled` yields `undefined` (no argument list in the syntax) while
+ * `@Scheduled()` yields `[]` (an empty list was written). Named arguments keep
+ * their key, single-element ones stay positional, and array initializers are
+ * kept as one raw `{...}` text — splitting or dereferencing them would be
+ * resolution, which does not belong at capture time.
+ *
+ * An argument list that did not parse also yields `undefined`. Error recovery
+ * fills gaps with invented nodes — `@KafkaListener(topics = "orders", groupId =`
+ * hands back a `groupId` whose value is a `{}` that nobody wrote — and there is
+ * no fourth state here for "unreadable". Collapsing it into the marker case is
+ * deliberate: both tell a consumer there is nothing here to resolve, which is
+ * true, whereas a fabricated value would send it somewhere real and wrong.
+ */
+function javaAnnotationArgumentFacts(annotation: SyntaxNode): SpringArgumentFact[] | undefined {
+  const argumentList = annotation.childForFieldName('arguments');
+  if (argumentList === null || hasRecoveredSyntax(argumentList)) return undefined;
+  const args: SpringArgumentFact[] = [];
+  for (const child of argumentList.namedChildren) {
+    if (JAVA_COMMENT_NODE_TYPES.has(child.type)) continue;
+    if (child.type === 'element_value_pair') {
+      const key = child.childForFieldName('key');
+      const value = child.childForFieldName('value');
+      if (key === null || value === null) {
+        args.push({ text: normalizeSpringFactText(child.text) });
+        continue;
+      }
+      args.push({ name: key.text.trim(), text: normalizeSpringFactText(value.text) });
+      continue;
+    }
+    args.push({ text: normalizeSpringFactText(child.text) });
+  }
+  return args;
 }
 
 export type JavaSpringDependencyFact = SpringDiDependencyFact<JavaAnnotationSyntaxFact>;
@@ -36,7 +95,10 @@ export type JavaSpringDiClassFact = SpringDiClassFact<
 >;
 type JavaSpringBeanFactoryMethodFact = SpringBeanFactoryMethodFact<JavaAnnotationSyntaxFact>;
 
-export function javaSpringAnnotationFacts(node: SyntaxNode): JavaAnnotationSyntaxFact[] {
+export function javaSpringAnnotationFacts(
+  node: SyntaxNode,
+  options: JavaSpringAnnotationFactOptions = {},
+): JavaAnnotationSyntaxFact[] {
   const facts: JavaAnnotationSyntaxFact[] = [];
   for (const child of node.namedChildren) {
     if (child.type !== 'modifiers') continue;
@@ -44,10 +106,13 @@ export function javaSpringAnnotationFacts(node: SyntaxNode): JavaAnnotationSynta
       if (modifier.type !== 'marker_annotation' && modifier.type !== 'annotation') continue;
       const nameNode = modifier.childForFieldName('name') ?? modifier.firstNamedChild;
       if (nameNode === null) continue;
+      const args =
+        options.includeArguments === true ? javaAnnotationArgumentFacts(modifier) : undefined;
       facts.push({
         name: nameNode.text.trim(),
         text: modifier.text.trim(),
         line: modifier.startPosition.row + 1,
+        ...(args === undefined ? {} : { args }),
       });
     }
   }

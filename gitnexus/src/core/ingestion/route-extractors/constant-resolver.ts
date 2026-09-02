@@ -33,7 +33,7 @@ const MAX_RESOLVE_DEPTH = 8;
  * whose true value is genuinely huge — building it risks a `RangeError`/heap OOM,
  * so we floor to `null` (skip) instead (#2393). The depth cap bounds recursion but
  * NOT output size, which grows multiplicatively; this bounds the output. */
-const MAX_FOLD_LENGTH = 8192;
+export const MAX_FOLD_LENGTH = 8192;
 
 /**
  * One term of a constant's right-hand side. A `+`-concatenation
@@ -66,6 +66,30 @@ export interface ModuleConstants {
   readonly literals: Map<string, string>;
   readonly exprs: Map<string, readonly Operand[]>;
   readonly imports: Map<string, ImportBinding>;
+  /**
+   * On-demand (wildcard) import specifiers whose bound member names could not
+   * be enumerated at extract time — Java `import static a.b.C.*;`, Python
+   * `from m import *`. The agnostic fold never reads this (it has no way to
+   * enumerate a target module's exports); a language binding materializes the
+   * promised bindings from a repo-wide map after extraction — see
+   * `expandJavaWildcardStaticImports` in the Java binding — so they resolve
+   * through the plain `imports` path with no special cases in the fold.
+   */
+  readonly wildcardImports?: readonly string[];
+}
+
+const NO_UNFOLDABLE_DECLARATIONS: ReadonlySet<string> = new Set<string>();
+
+/**
+ * Declaration keys a language extractor found but could not fold. Java and
+ * Kotlin both use this metadata to keep lower-priority imports from replacing
+ * a real local declaration; other producers simply return the empty set.
+ */
+export function unfoldableDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
+  const declarations = (
+    mc as (ModuleConstants & { readonly unfoldableDeclarations?: unknown }) | undefined
+  )?.unfoldableDeclarations;
+  return declarations instanceof Set ? declarations : NO_UNFOLDABLE_DECLARATIONS;
 }
 
 /** Repo-wide map: unique file key (e.g. `app/constants.py`) → that file's
@@ -175,10 +199,18 @@ function computeFold(
   return null;
 }
 
-function newState(repo: RepoConstants, resolveImport: ImportResolver): ResolveState {
+function newState(
+  repo: RepoConstants,
+  resolveImport: ImportResolver,
+  repoKeys?: ReadonlySet<string>,
+): ResolveState {
   return {
     repo,
-    repoKeys: new Set(repo.keys()),
+    // Materializing the key set here is O(files), and this runs once per fold —
+    // which is once per import hop, not once per scan. A binding that already
+    // holds the set (every one of them does; it is a projection of the same map
+    // it builds `repo` from) passes it in and skips the copy entirely.
+    repoKeys: repoKeys ?? new Set(repo.keys()),
     resolveImport,
     visited: new Set(),
     memo: new Map(),
@@ -195,8 +227,9 @@ export function resolveConstant(
   name: string,
   repo: RepoConstants,
   resolveImport: ImportResolver,
+  repoKeys?: ReadonlySet<string>,
 ): string | null {
-  return foldName(fileKey, name, newState(repo, resolveImport), 0);
+  return foldName(fileKey, name, newState(repo, resolveImport, repoKeys), 0);
 }
 
 /**
@@ -209,6 +242,7 @@ export function resolveOperands(
   operands: readonly Operand[],
   repo: RepoConstants,
   resolveImport: ImportResolver,
+  repoKeys?: ReadonlySet<string>,
 ): string | null {
-  return foldExpr(fileKey, operands, newState(repo, resolveImport), 0);
+  return foldExpr(fileKey, operands, newState(repo, resolveImport, repoKeys), 0);
 }

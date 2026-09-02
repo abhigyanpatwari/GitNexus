@@ -19,6 +19,19 @@ import {
   type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
 import {
+  buildKotlinConstantIndex,
+  extractKotlinModuleConstants,
+  foldKotlinOperands,
+  isKotlinConstantFile,
+  overlayKotlinConstantIndex,
+  parseKotlinConstOperands,
+  unfoldableDeclarationsOf,
+  unquoteKotlinIdentifier,
+  type KotlinConstantIndex,
+  type ModuleConstants,
+  type RepoConstants,
+} from '../../../ingestion/route-extractors/kotlin-const-resolver.js';
+import {
   REST_TEMPLATE_TO_HTTP,
   WEB_CLIENT_SHORT_TO_HTTP,
   WEB_CLIENT_LONG_VERB_RE,
@@ -41,6 +54,24 @@ import {
  * controllers. Both positional shorthand (`@GetMapping("/x")`) and
  * named annotation arguments (`@GetMapping(value = "/x")` and
  * `@GetMapping(path = "/x")`) are supported.
+ *
+ * A method path that is a CONSTANT rather than a literal —
+ * `@GetMapping(ApiPaths.ORDERS)`, `@PostMapping(value = ApiPaths.BASE + "/create")` —
+ * is folded against a repo-wide Kotlin constant map built once per `extract()`
+ * run by `prepareRepo`, mirroring what the Java plugin does for the same shape
+ * in `java.ts`. An unresolvable fold skips the route (never a guessed path), and
+ * a class prefix that resolves to NO literal at all suppresses every method
+ * route under that class — the rule `java.ts` applies too, because emitting
+ * those routes unprefixed would publish paths the application does not serve.
+ * A prefix that resolves only PARTLY (Kotlin's vararg spelling
+ * `@RequestMapping("/lit", ApiPaths.BASE)`) still publishes its resolvable arm:
+ * suppression exists to avoid wrong routes, not to discard right ones. An EMPTY
+ * path array (`@RequestMapping(arrayOf())`) is not a prefix at all and
+ * suppresses nothing — see `classifyPathArgument`. On a
+ * `@FeignClient` the same rule is applied to whichever prefix GOVERNS, in the
+ * "path wins" order the URL is assembled in — `@FeignClient(path)` first, then
+ * the interface's `@RequestMapping` — and to both consumer lanes, `@(Get|...)Mapping`
+ * and `@RequestLine`.
  *
  * **Consumers** — four call-site patterns common in Kotlin
  * Spring projects:
@@ -130,6 +161,180 @@ try {
 const arrayOfArg = (cap: string): string => `(call_expression
   (simple_identifier) @arrayOf (#eq? @arrayOf "arrayOf")
   (call_suffix (value_arguments (value_argument (string_literal) ${cap}))))`;
+
+/**
+ * Expression node types a METHOD route path can be FOLDED from. A
+ * `string_literal` is deliberately absent: literal paths are already captured by
+ * the dedicated literal patterns, so admitting one here would emit the same
+ * route twice.
+ *
+ * This is an allow-list on purpose, and only safe because it gates FOLDING: a
+ * shape missing from it yields no route, which is the skip floor. The
+ * unfoldable-CLASS-PREFIX analysis must not be written this way — there a shape
+ * missing from the list means "emit unprefixed", a wrong route — so it inverts
+ * the test instead (see `classifyPathArgument`).
+ */
+const FOLDABLE_PATH_EXPRESSIONS: ReadonlySet<string> = new Set([
+  'simple_identifier',
+  'navigation_expression',
+  'additive_expression',
+]);
+
+/**
+ * Repo-relative path in the POSIX form the Kotlin constant map is keyed by.
+ *
+ * The orchestrator's file list comes from glob v13, which has no `posix: true`
+ * option and joins with the platform separator, so on Windows `prepareRepo`
+ * receives `src\main\kotlin\com\example\ApiPaths.kt` and `scan` receives the
+ * same for `fileRel`. `resolveKotlinImport` turns an import specifier into
+ * `com/example/ApiPaths.kt` and asks whether a key ENDS WITH it — a test no
+ * backslashed key can pass. Left unnormalized, every cross-file constant fold
+ * returns null on Windows and on Windows only: the pre-pass still runs, the
+ * context is still built, and the feature is simply, silently absent. The unit
+ * fixtures build POSIX keys by hand, so CI cannot see it.
+ *
+ * Normalizing at this boundary — write side (the map keys below) and read side
+ * (`fileRel`) — is the same fix `node.ts` (`normalizeRel`) and `python.ts`
+ * (`fileShortKey` / `fileLongKey`) already apply for the same reason, and it is
+ * the only coherent place: the resolver returns the key it matched, so
+ * normalizing inside it would hand back a value that misses in a map nobody
+ * normalized. `readFile` still receives the ORIGINAL `rel`, since the filesystem
+ * wants the platform's own spelling.
+ */
+function normalizeRel(rel: string): string {
+  return rel.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+/**
+ * The path expression carried by one route-annotation argument, or null when the
+ * argument does not designate a path.
+ *
+ * tree-sitter-kotlin gives positional and named arguments the same
+ * `value_argument` node, distinguished only by a leading `simple_identifier` and
+ * an `=` token — so the key must be read here rather than constrained in the
+ * query. Non-route keys (`produces`, `consumes`, `headers`, …) return null,
+ * matching the `#match? @key "^(path|value)$"` guard the literal patterns use.
+ */
+function kotlinRouteArgumentExpression(arg: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  const first = arg.namedChild(0);
+  if (!first) return null;
+  if (!arg.children.some((c) => c.type === '=')) return first; // positional
+  if (first.type !== 'simple_identifier') return null;
+  if (first.text !== 'path' && first.text !== 'value') return null;
+  return arg.namedChild(1);
+}
+
+/**
+ * The `path = …` expression of one `@FeignClient` argument, or null.
+ *
+ * Deliberately narrower than {@link kotlinRouteArgumentExpression}: on a Feign
+ * client the positional argument and `value =` name a SERVICE, not a path, so
+ * only the explicit `path` key contributes a URL prefix. This mirrors the
+ * `#eq? @key "path"` guard the literal `@FeignClient` patterns use, and the
+ * `keyNode.text !== 'path'` guard `java.ts` applies to the same annotation.
+ */
+function kotlinFeignPathArgumentExpression(arg: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  const first = arg.namedChild(0);
+  if (!first || first.type !== 'simple_identifier') return null;
+  if (!arg.children.some((c) => c.type === '=')) return null;
+  if (first.text !== 'path') return null;
+  return arg.namedChild(1);
+}
+
+/**
+ * Is `node` a string literal whose value is fully known at parse time — that is,
+ * a literal carrying no interpolation?
+ *
+ * tree-sitter-kotlin models `"$base/x"` and `"${base}/x"` as a `string_literal`
+ * whose named children INTERLEAVE `string_content` runs with interpolation nodes
+ * — `interpolation_identifier_start`/`interpolated_identifier` for the `$name`
+ * form, `interpolation_expression_start`/`interpolated_expression`/
+ * `interpolation_expression_end` for `${…}` — so the test has to be `every`, not
+ * `some`: `"pre${A.B}post"` carries `string_content` too. The route layer
+ * unquotes the RAW TEXT, so treating one as a literal publishes the source
+ * spelling — `/${ApiPaths.BASE}/orders` — as though the application served it.
+ * Escape sequences are NOT separate nodes in this grammar (`"/a\nb"` is one
+ * `string_content`), so this accepts exactly what it accepted before; a future
+ * grammar that split them would floor to "unknown" rather than to a de-escaped
+ * guess. Same test the constant resolver's `stringLiteralValue` applies, so a
+ * path is either literal on both sides or folded on neither.
+ */
+function isPlainStringLiteral(node: Parser.SyntaxNode): boolean {
+  if (node.type !== 'string_literal') return false;
+  return node.namedChildren.every((child) => child.type === 'string_content');
+}
+
+/**
+ * Element expressions of a Kotlin `arrayOf(...)` call, or null when `node` is
+ * not one. The JS mirror of the {@link arrayOfArg} query fragment, so the
+ * unfoldable-prefix analysis inspects exactly the elements the literal prefix
+ * patterns harvest.
+ */
+function kotlinArrayOfElements(node: Parser.SyntaxNode): Parser.SyntaxNode[] | null {
+  if (node.type !== 'call_expression') return null;
+  const callee = node.namedChild(0);
+  if (callee?.type !== 'simple_identifier' || callee.text !== 'arrayOf') return null;
+  const suffix = node.namedChildren.find((c) => c.type === 'call_suffix');
+  const args = suffix?.namedChildren.find((c) => c.type === 'value_arguments');
+  if (!args) return null;
+  return args.namedChildren
+    .filter((c) => c.type === 'value_argument')
+    .map((c) => c.namedChild(0))
+    .filter((c): c is Parser.SyntaxNode => c !== null);
+}
+
+/**
+ * What a route-annotation path argument says about the prefix it designates.
+ * Only `'unresolvable'` may suppress a route:
+ *
+ *  - `'literal'` — at least one element is a plain literal, already harvested by
+ *    the literal prefix patterns, so there is nothing to suppress.
+ *  - `'none'` — no prefix. Empty `arrayOf()` or `[]` is Spring's "map at the root".
+ *    Kept distinct from `'unresolvable'` because conflating them suppressed even
+ *    plain literal routes below such a class, which no constant fold was ever
+ *    involved in. tree-sitter-kotlin (fwcd) represents empty `[]` with a
+ *    zero-width recovery child; filtering it is required for route interfaces,
+ *    which do parse as `class_declaration`.
+ *  - `'unresolvable'` — a non-empty argument with no literal element
+ *    (`ApiPaths.BASE`, `buildPath()`, a template). Served path is unknowable.
+ */
+type PathArgumentPrefix = 'literal' | 'none' | 'unresolvable';
+
+function classifyPathArgument(expr: Parser.SyntaxNode): PathArgumentPrefix {
+  if (isPlainStringLiteral(expr)) return 'literal';
+  if (expr.type === 'collection_literal') {
+    const elements = expr.namedChildren.filter((child) => child.text.length > 0);
+    if (elements.length === 0) return 'none';
+    return elements.some(isPlainStringLiteral) ? 'literal' : 'unresolvable';
+  }
+  const elements = kotlinArrayOfElements(expr);
+  if (elements) {
+    if (elements.length === 0) return 'none';
+    return elements.some(isPlainStringLiteral) ? 'literal' : 'unresolvable';
+  }
+  return 'unresolvable';
+}
+
+/**
+ * Type declarations enclosing `node`, innermost first, by qualified type path.
+ *
+ * The scope a bare constant in a route annotation is resolved against; passed to
+ * `foldKotlinOperands`, which applies it. Collects `class_declaration` (including
+ * interfaces) and `object_declaration`. A `companion_object` adds no link of
+ * its own — members are keyed under the enclosing class one hop up. For a node
+ * inside `Outer.Inner`, returns `['Outer.Inner', 'Outer']`, matching the keys
+ * produced by `extractKotlinModuleConstants`. Skips unnamed types rather than
+ * guessing.
+ */
+function kotlinEnclosingTypeNames(node: Parser.SyntaxNode): string[] {
+  const simpleNames: string[] = [];
+  for (let cur = node.parent; cur; cur = cur.parent) {
+    if (cur.type !== 'class_declaration' && cur.type !== 'object_declaration') continue;
+    const ident = cur.children.find((c) => c.type === 'type_identifier');
+    if (ident) simpleNames.push(unquoteKotlinIdentifier(ident.text));
+  }
+  return simpleNames.map((_, index) => simpleNames.slice(index).reverse().join('.'));
+}
 
 // ─── Kotlin OkHttp builder verb-walk (parity with java-static-path.ts) ──
 // Mirrors `inferOkHttpMethod`, adapted to the Kotlin grammar: a call `X.name(args)`
@@ -398,6 +603,151 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       },
     ],
   } satisfies LanguagePatterns<Record<string, never>>);
+
+  // ─── Provider: constant-valued @RequestMapping / @(Get|...)Mapping ────
+  // The literal patterns above pin the path node itself (`(string_literal) @path`),
+  // which structurally cannot match `@GetMapping(ApiPaths.ORDERS)`. These two
+  // capture the whole `value_argument` instead and let
+  // `kotlinRouteArgumentExpression` sort out positional vs `path =`/`value =`
+  // in JS — a query-level split is not available here, because tree-sitter-kotlin
+  // uses one `value_argument` node for both forms and 0.21.x has no negation to
+  // test the `=` token with.
+  //
+  // These deliberately match LITERAL arguments too (any `value_argument` does).
+  // The method-route loop drops those via `FOLDABLE_PATH_EXPRESSIONS` so a
+  // literal route is emitted once, by the literal patterns; the class-prefix
+  // collector instead KEEPS them and tests them for literalness, which is how a
+  // prefix that no literal pattern could resolve gets noticed at all.
+  const SPRING_CONST_CLASS_PREFIX_PATTERNS = compilePatterns({
+    name: 'kotlin-spring-const-class-prefix',
+    language,
+    patterns: [
+      {
+        meta: {},
+        query: `
+          (class_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (value_arguments (value_argument) @arg))))
+            (type_identifier) @cls) @class
+        `,
+      },
+    ],
+  } satisfies LanguagePatterns<Record<string, never>>);
+
+  const SPRING_CONST_METHOD_ROUTE_PATTERNS = compilePatterns({
+    name: 'kotlin-spring-const-method-route',
+    language,
+    patterns: [
+      {
+        meta: {},
+        query: `
+          (function_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (value_arguments (value_argument) @arg))))
+            (simple_identifier) @method_name) @method
+        `,
+      },
+    ],
+  } satisfies LanguagePatterns<Record<string, never>>);
+
+  const SPRING_CONST_FEIGN_PATH_PATTERNS = compilePatterns({
+    name: 'kotlin-spring-const-feign-path',
+    language,
+    patterns: [
+      {
+        meta: {},
+        query: `
+          (class_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "FeignClient"))
+                  (value_arguments (value_argument) @arg))))) @class
+        `,
+      },
+    ],
+  } satisfies LanguagePatterns<Record<string, never>>);
+
+  /**
+   * Ids of classes whose `@RequestMapping` prefix cannot be resolved to any
+   * literal, so no route under them can be published at a path the application
+   * actually serves.
+   *
+   * The predicate is INVERTED rather than an allow-list of non-literal node
+   * types: a class is marked unless its `path`/`value` argument is provably
+   * literal (recursing into `[…]` and `arrayOf(…)` elements, and refusing an
+   * interpolated `string_literal`). An allow-list has to enumerate every
+   * non-literal spelling and silently passes the ones it forgot —
+   * `[ApiPaths.BASE]`, `arrayOf(ApiPaths.BASE)`, `buildPath()`,
+   * `if (…) "/a" else "/b"` — each of which then publishes its methods at their
+   * UNPREFIXED path, a route the application does not serve. `java.ts` gates on
+   * the ABSENCE of a literal (`if (!valueNode)`) for the same reason.
+   *
+   * `resolvedPrefixes` is the literal prefix map built by the pass ABOVE, and a
+   * class holding an entry there is deliberately NOT marked: Kotlin's vararg
+   * spelling `@RequestMapping("/lit", ApiPaths.BASE)` leaves a resolvable `/lit`
+   * behind, and suppressing it would drop a route that IS derivable — trading a
+   * wrong route for a missing one, which is not the bargain this suppression
+   * exists to make. The prefix set is then partial (the constant arm is absent)
+   * exactly as it was before constant folding existed.
+   *
+   * The prefix is never folded here: it also feeds the cross-file
+   * interface-inheritance pass, which has no repo context, so folding it in
+   * `scan` alone would make the two views disagree. Same rule `java.ts` applies
+   * (`typesWithUnfoldablePrefix`); folding class prefixes cross-file is a
+   * follow-up on both sides. Used by BOTH `scan` and the inheritance-view
+   * collector — with the prefix map each has already built — so the two cannot
+   * drift apart.
+   */
+  const collectUnfoldablePrefixClassIds = (
+    tree: Parser.Tree,
+    resolvedPrefixes: ReadonlyMap<number, string[]>,
+  ): Set<number> => {
+    const ids = new Set<number>();
+    for (const match of runCompiledPatterns(SPRING_CONST_CLASS_PREFIX_PATTERNS, tree)) {
+      const argNode = match.captures.arg;
+      const classNode = match.captures.class;
+      if (!argNode || !classNode) continue;
+      if ((resolvedPrefixes.get(classNode.id) ?? []).length > 0) continue;
+      const expr = kotlinRouteArgumentExpression(argNode);
+      if (!expr || classifyPathArgument(expr) !== 'unresolvable') continue;
+      ids.add(classNode.id);
+    }
+    return ids;
+  };
+
+  /**
+   * Ids of `@FeignClient` interfaces whose `path` argument is present but not
+   * resolvable to a literal.
+   *
+   * `collectUnfoldablePrefixClassIds` cannot see these: it matches
+   * `@RequestMapping` only, so `@FeignClient(path = ApiPaths.BASE)` fell through
+   * to the `['']` prefix fallback and published the consumer at its unprefixed
+   * path — a call the service never makes. Kept as its own set rather than
+   * merged into the `@RequestMapping` one because `path` OUTRANKS
+   * `@RequestMapping` on a Feign client: an unresolvable `path` is fatal
+   * whatever the `@RequestMapping` says, and a resolvable `path` rescues a route
+   * whose `@RequestMapping` is a constant. The consumer lanes therefore consult
+   * the two in that same "path wins" order.
+   */
+  const collectFeignUnfoldablePathClassIds = (tree: Parser.Tree): Set<number> => {
+    const ids = new Set<number>();
+    for (const match of runCompiledPatterns(SPRING_CONST_FEIGN_PATH_PATTERNS, tree)) {
+      const argNode = match.captures.arg;
+      const classNode = match.captures.class;
+      if (!argNode || !classNode) continue;
+      const expr = kotlinFeignPathArgumentExpression(argNode);
+      if (!expr || classifyPathArgument(expr) !== 'unresolvable') continue;
+      ids.add(classNode.id);
+    }
+    return ids;
+  };
 
   // ─── Consumer: Spring RestTemplate ────────────────────────────────────
   // Kotlin call-site shape mirrors the Java plugin's
@@ -875,11 +1225,24 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       const prefixNode = match.captures.prefix;
       const classNode = match.captures.class;
       if (!prefixNode || !classNode) continue;
+      // An INTERPOLATED literal (`"${ApiPaths.BASE}"`) is not a path — unquoting
+      // its raw text would carry the source spelling into the shared type view
+      // as a served prefix. Refusing it here is also what lets the unfoldable
+      // analysis below mark such a class (it skips classes with a resolved
+      // prefix), so the two stay one decision rather than two.
+      if (!isPlainStringLiteral(prefixNode)) continue;
       const prefix = unquoteLiteral(prefixNode.text);
       if (prefix !== null) pushPrefix(prefixByClassId, classNode.id, prefix);
     }
     // Method @(Get|...)Mapping routes keyed by the function_declaration node id.
+    //
+    // Only LITERAL paths land here. A constant-valued path is folded in `scan`
+    // against the repo constant map, which this inheritance-view collector has
+    // no access to; publishing it as an empty path would put `POST /`-shaped
+    // noise into the shared type view, so it is left out — the same skip floor
+    // `java.ts`'s `collectSpringTypes` keeps.
     const routesByMethodId = new Map<number, Array<{ method: string; path: string }>>();
+    const unfoldablePrefixClassIds = collectUnfoldablePrefixClassIds(tree, prefixByClassId);
     for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
       const annNode = match.captures.ann;
       const pathNode = match.captures.path;
@@ -889,6 +1252,10 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       if (!httpMethod) continue;
       const rawPath = unquoteLiteral(pathNode.text);
       if (rawPath === null) continue;
+      // A constant class prefix leaves no single prefix string for the
+      // inheritance view to carry, so this route would be published unprefixed.
+      const owner = findEnclosingClass(methodNode);
+      if (owner && unfoldablePrefixClassIds.has(owner.id)) continue;
       const arr = routesByMethodId.get(methodNode.id) ?? [];
       arr.push({ method: httpMethod, path: rawPath });
       routesByMethodId.set(methodNode.id, arr);
@@ -931,8 +1298,92 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   return {
     name: 'kotlin-http',
     language,
-    scan(tree) {
+    prepareRepo(args) {
+      // Build the repo-wide Kotlin string-constant map and import index once per
+      // extract() run. The orchestrator hands over a bare Parser with no language
+      // bound; bind Kotlin explicitly or `parseSource` spins to its whole time
+      // budget on every file.
+      try {
+        args.parser.setLanguage(language);
+      } catch {
+        // A parser that rejects binding cannot produce a constant map; the
+        // per-file try/catch below then skips everything harmlessly.
+      }
+      const constants = new Map<string, ModuleConstants>();
+      for (const rel of args.files) {
+        if (!rel.endsWith('.kt') && !rel.endsWith('.kts')) continue;
+        try {
+          const src = args.readFile(rel);
+          // Cheap content gate: only constant-DEFINITION candidates are parsed
+          // here. Import-only files (every controller) are deliberately NOT
+          // parsed in this pass — `scan` extracts the importing file's own
+          // import table from the tree it already holds, on demand, for the
+          // rare file that actually references a constant. A gate that also
+          // matched `import …` would parse the entire repository here.
+          if (!src || !isKotlinConstantFile(src)) continue;
+          const tree = args.parseSource(args.parser, src);
+          if (!tree) continue;
+          const mc = extractKotlinModuleConstants(tree);
+          if (
+            mc.literals.size > 0 ||
+            mc.exprs.size > 0 ||
+            mc.imports.size > 0 ||
+            (mc.wildcardImports?.length ?? 0) > 0 ||
+            unfoldableDeclarationsOf(mc).size > 0
+          ) {
+            // POSIX key (see `normalizeRel`); `readFile` above got the raw `rel`.
+            constants.set(normalizeRel(rel), mc);
+          }
+        } catch {
+          // Per-file resilience: one unreadable/oversized/ill-formed file must
+          // not forfeit the whole repo's constant map.
+          continue;
+        }
+      }
+      return { constants, index: buildKotlinConstantIndex(constants) };
+    },
+    scan(tree, repoContext, fileRel) {
       const out: HttpDetection[] = [];
+      const kotlinCtx = repoContext as
+        | { constants: RepoConstants; index: KotlinConstantIndex }
+        | undefined;
+
+      // Read side of the POSIX keying (see `normalizeRel`): the map `prepareRepo`
+      // built is keyed by normalized path, so every lookup and every fold entry
+      // point below uses `fileKey`, never the raw `fileRel`.
+      const fileKey = fileRel === undefined ? undefined : normalizeRel(fileRel);
+
+      // Lazy per-file constants/index view. `prepareRepo` only indexes constant-
+      // DEFINING files, so an importing controller is absent from that map. When
+      // a route references a constant, extract THIS file's import table from the
+      // tree `scan` already holds and overlay it. Import-only overlays reuse the
+      // prepared package projections; files whose routes are all literal never
+      // pay this cost.
+      let foldIndex: KotlinConstantIndex | undefined;
+      const getFoldIndex = (): KotlinConstantIndex | undefined => {
+        if (foldIndex !== undefined) return foldIndex;
+        foldIndex = kotlinCtx?.index;
+        if (!kotlinCtx || !fileKey) return foldIndex;
+        if (kotlinCtx.constants.has(fileKey)) return foldIndex;
+        try {
+          const mc = extractKotlinModuleConstants(tree);
+          // Same admission test the pre-pass applies above. Keeping the complete
+          // test here also makes this overlay correct if a future gate safely
+          // excludes another declaration shape.
+          if (
+            mc.literals.size > 0 ||
+            mc.exprs.size > 0 ||
+            mc.imports.size > 0 ||
+            (mc.wildcardImports?.length ?? 0) > 0 ||
+            unfoldableDeclarationsOf(mc).size > 0
+          ) {
+            foldIndex = overlayKotlinConstantIndex(kotlinCtx.index, fileKey, mc);
+          }
+        } catch {
+          // fold falls back to the repo-wide map (imports stay unresolved)
+        }
+        return foldIndex;
+      };
 
       // ─── Class prefixes ─────────────────────────────────────────────
       const prefixByClassId = new Map<number, string[]>();
@@ -940,9 +1391,16 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         const prefixNode = match.captures.prefix;
         const classNode = match.captures.class;
         if (!prefixNode || !classNode) continue;
+        // An INTERPOLATED literal (`"${ApiPaths.BASE}"`) is not a path — see
+        // `isPlainStringLiteral`. Refusing it here also lets the unfoldable
+        // analysis below mark such a class, since that skips classes whose
+        // prefix already resolved.
+        if (!isPlainStringLiteral(prefixNode)) continue;
         const prefix = unquoteLiteral(prefixNode.text);
         if (prefix !== null) pushPrefix(prefixByClassId, classNode.id, prefix);
       }
+
+      const classesWithUnfoldablePrefix = collectUnfoldablePrefixClassIds(tree, prefixByClassId);
 
       // ─── OpenFeign client interfaces + HTTP Interface type prefixes ──
       // In tree-sitter-kotlin an `interface` is a `class_declaration`, so a
@@ -956,11 +1414,12 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         if (!classNode) continue;
         feignClassIds.add(classNode.id);
         const prefixNode = match.captures.prefix;
-        if (prefixNode) {
+        if (prefixNode && isPlainStringLiteral(prefixNode)) {
           const prefix = unquoteLiteral(prefixNode.text);
           if (prefix !== null) pushPrefix(feignPrefixByClassId, classNode.id, prefix);
         }
       }
+      const feignClassesWithUnfoldablePath = collectFeignUnfoldablePathClassIds(tree);
       const httpExchangePrefixByClassId = new Map<number, string[]>();
       for (const match of runCompiledPatterns(SPRING_HTTP_EXCHANGE_CLASS_PATTERNS, tree)) {
         const classNode = match.captures.class;
@@ -971,24 +1430,91 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       }
 
       // ─── Method routes (Spring providers) + OpenFeign consumers ─────
+      // Literal and constant-valued paths are normalized into one candidate list
+      // so both reach the same Feign/interface/prefix classification below.
+      const methodRoutes: Array<{
+        httpMethod: string;
+        rawPath: string;
+        nameNode: Parser.SyntaxNode | undefined;
+        methodNode: Parser.SyntaxNode;
+      }> = [];
       for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
         const annNode = match.captures.ann;
         const pathNode = match.captures.path;
-        const nameNode = match.captures.method_name;
         const methodNode = match.captures.method;
         if (!annNode || !pathNode || !methodNode) continue;
         const httpMethod = METHOD_ANNOTATION_TO_HTTP[annNode.text];
         if (!httpMethod) continue;
         const rawPath = unquoteLiteral(pathNode.text);
         if (rawPath === null) continue;
+        methodRoutes.push({
+          httpMethod,
+          rawPath,
+          nameNode: match.captures.method_name,
+          methodNode,
+        });
+      }
+      for (const match of runCompiledPatterns(SPRING_CONST_METHOD_ROUTE_PATTERNS, tree)) {
+        const annNode = match.captures.ann;
+        const argNode = match.captures.arg;
+        const methodNode = match.captures.method;
+        if (!annNode || !argNode || !methodNode) continue;
+        const httpMethod = METHOD_ANNOTATION_TO_HTTP[annNode.text];
+        if (!httpMethod) continue;
+        const expr = kotlinRouteArgumentExpression(argNode);
+        if (!expr || !FOLDABLE_PATH_EXPRESSIONS.has(expr.type)) continue;
+        // No repo context (context-less fallback scanning) means no constant map
+        // and therefore no honest answer — skip rather than guess a path.
+        if (!fileKey) continue;
+        const index = getFoldIndex();
+        if (!index) continue;
+        const operands = parseKotlinConstOperands(expr);
+        if (operands === null) continue;
+        // A bare reference means whatever the ENCLOSING types bind it to before
+        // it means anything at file level — Kotlin's rule for a companion
+        // member, which is in scope unqualified only inside its own class body.
+        const rawPath = foldKotlinOperands(
+          fileKey,
+          operands,
+          index.repo,
+          kotlinEnclosingTypeNames(methodNode),
+          index,
+        );
+        if (rawPath === null) continue;
+        methodRoutes.push({
+          httpMethod,
+          rawPath,
+          nameNode: match.captures.method_name,
+          methodNode,
+        });
+      }
+
+      for (const { httpMethod, rawPath, nameNode, methodNode } of methodRoutes) {
         const enclosingClass = findEnclosingClass(methodNode);
         // A @(Get|...)Mapping inside a @FeignClient interface is an OpenFeign
         // consumer (a remote call), not a route this service serves.
         if (enclosingClass && feignClassIds.has(enclosingClass.id)) {
+          // Whichever prefix GOVERNS must be resolvable, or the remote URL is
+          // unknowable and an unprefixed consumer would be a call this service
+          // never makes. Checked in the same "path wins" order the fallback
+          // below resolves in, so an unresolvable `@RequestMapping` does not
+          // suppress a client whose literal `@FeignClient(path)` outranks it,
+          // and an unresolvable `path` is fatal even when `@RequestMapping` is
+          // a literal.
+          //
+          // This reaches a Feign INTERFACE at all because tree-sitter-kotlin
+          // models `interface` as a `class_declaration`, and it should: Spring
+          // Cloud prepends the governing prefix to every method of the client.
+          // Java diverges only by accident of its grammar — `findEnclosingClass`
+          // skips `interface_declaration`, so `java.ts` still emits such a
+          // consumer at its unprefixed path. Aligning Java is a change to Java's
+          // behavior and belongs in its own follow-up, not in the Kotlin binding.
+          if (feignClassesWithUnfoldablePath.has(enclosingClass.id)) continue;
+          const feignPrefixes = feignPrefixByClassId.get(enclosingClass.id);
+          if (!feignPrefixes && classesWithUnfoldablePrefix.has(enclosingClass.id)) continue;
           // @FeignClient(path) wins over @RequestMapping; a multi-element prefix
           // yields one consumer per (prefix × this route).
-          const prefixes = feignPrefixByClassId.get(enclosingClass.id) ??
-            prefixByClassId.get(enclosingClass.id) ?? [''];
+          const prefixes = feignPrefixes ?? prefixByClassId.get(enclosingClass.id) ?? [''];
           for (const prefix of prefixes) {
             out.push({
               role: 'consumer',
@@ -1002,6 +1528,10 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           }
           continue;
         }
+        // An unresolvable class prefix leaves no path this service serves, so
+        // every route under such a class is dropped rather than emitted at a
+        // wrong (unprefixed) one — the rule `java.ts` applies for Java.
+        if (enclosingClass && classesWithUnfoldablePrefix.has(enclosingClass.id)) continue;
         // A @(Get|...)Mapping on a (non-Feign) interface declares a route
         // *contract*, not a route this service serves — the implementing
         // @RestController is the provider, emitted via scanProject's interface
@@ -1171,13 +1701,21 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         if (!parsed) continue;
         const enclosingClass = findEnclosingClass(methodNode);
         if (!enclosingClass || !isKotlinInterface(enclosingClass)) continue;
+        // The same governing-prefix resolvability guard the @(Get|...)Mapping-in-Feign
+        // lane applies, in the same "path wins" order — this loop resolves through
+        // the identical fallback chain, so an unresolvable governing prefix leaves
+        // the remote URL just as unknowable here. Without it a single interface
+        // could suppress its @(Get|...)Mapping routes and publish its @RequestLine
+        // routes under the very same unresolvable prefix.
+        if (feignClassesWithUnfoldablePath.has(enclosingClass.id)) continue;
+        const feignPrefixes = feignPrefixByClassId.get(enclosingClass.id);
+        if (!feignPrefixes && classesWithUnfoldablePrefix.has(enclosingClass.id)) continue;
         // Mirror java.ts (which pre-merges the @RequestMapping fallback into
         // feignPrefixByInterfaceId, "path wins"): @FeignClient(path) wins, else
         // the interface's class-level @RequestMapping prefix, else none. Without
         // the prefixByClassId fallback Kotlin dropped the class prefix that Java
         // applies — the same fallback chain the @GetMapping-in-Feign path uses above.
-        const prefixes = feignPrefixByClassId.get(enclosingClass.id) ??
-          prefixByClassId.get(enclosingClass.id) ?? [''];
+        const prefixes = feignPrefixes ?? prefixByClassId.get(enclosingClass.id) ?? [''];
         for (const prefix of prefixes) {
           out.push({
             role: 'consumer',

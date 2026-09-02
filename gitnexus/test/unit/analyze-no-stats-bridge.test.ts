@@ -181,6 +181,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
         noStats: true,
         // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
         hasPdg: false,
+        hasSpringActuator: false,
       });
     } finally {
       exitSpy.mockRestore();

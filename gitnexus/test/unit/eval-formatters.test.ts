@@ -409,6 +409,35 @@ describe('formatImpactResult', () => {
     expect(result).toContain('caller2');
   });
 
+  it('prints the shared-axes comparison when a target has unavailable risk axes', () => {
+    const result = formatImpactResult({
+      target: { kind: 'File', name: 'crypto.ts' },
+      direction: 'upstream',
+      impactedCount: 13,
+      risk: 'MEDIUM',
+      riskSharedAxes: 'MEDIUM',
+      riskScale: {
+        comparableAcrossKinds: false,
+        unusedAxes: [
+          {
+            axis: 'processes',
+            reason: 'file-nodes-have-no-process-or-community-membership',
+          },
+          {
+            axis: 'modules',
+            reason: 'file-nodes-have-no-process-or-community-membership',
+          },
+        ],
+      },
+      byDepthCounts: { 1: 13 },
+    });
+
+    expect(result).toContain('Risk: MEDIUM');
+    expect(result).toContain('Shared-axes risk: MEDIUM');
+    expect(result).toContain('process/module axes are unavailable');
+    expect(result).toContain('do not use this to waive a HIGH/CRITICAL risk warning');
+  });
+
   it('handles zero impact', () => {
     const result = formatImpactResult({
       target: { name: 'foo' },
@@ -416,7 +445,22 @@ describe('formatImpactResult', () => {
       impactedCount: 0,
       byDepth: {},
     });
-    expect(result).toContain('No upstream dependencies');
+    expect(result).toContain('No upstream callers resolved');
+    expect(result).not.toContain('appears isolated');
+  });
+
+  it('prints UNKNOWN and riskNote for an empty upstream walk', () => {
+    const result = formatImpactResult({
+      target: { name: 'foo' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+      riskNote: 'safe to change is a claim about callers and there were none to reason about',
+      byDepth: {},
+    });
+    expect(result).toContain('Risk: UNKNOWN');
+    expect(result).toContain('safe to change is a claim about callers');
+    expect(result).not.toContain('appears isolated');
   });
 
   it('formats impact by depth', () => {
@@ -560,7 +604,8 @@ describe('formatDetectChangesResult', () => {
     // counts at zero. Without the note the pre-commit gate reads as "clean".
     const result = formatDetectChangesResult({ partial: true, summary: { changed_count: 0 } });
     expect(result).toContain('PARTIAL RESULT');
-    expect(result).toContain('No changes detected.');
+    expect(result).toContain('a graph query failed');
+    expect(result).not.toContain('No changes detected.');
   });
 
   it('flags a degraded run that still found symbols', () => {

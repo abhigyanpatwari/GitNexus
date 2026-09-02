@@ -6,10 +6,12 @@
  * does is skip the tree-sitter worker dispatch when a chunk's contents
  * haven't changed since the last run.
  *
- * Granularity: chunk-level. The parse phase chunks files into ~20MB byte
- * budgets. The cache key is `sha256(joined(filePath:contentHash for each
- * file in the chunk, sorted))`. A change to a single file invalidates only
- * that file's chunk — typically 1 of ~50 chunks on a 1000-file repo.
+ * Granularity: chunk-level. Files are assigned to a stable
+ * `(language, hash(path) mod 128)` bucket, then packed to a 2 MiB (or
+ * operator) byte budget *inside* that bucket. Membership does not depend
+ * on worker count. The cache key is `sha256(joined(filePath:contentHash
+ * for each file in the chunk, sorted))`. A content edit invalidates only
+ * that file's pack; add/delete/rename only the affected bucket.
  *
  * Why not per-file:
  * - Workers process sub-batches and emit aggregated `ParseWorkerResult`s.
@@ -27,7 +29,9 @@ import { createRequire } from 'module';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { compareCodeUnits } from '../lib/utils.js';
 import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.js';
+import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sidecar.js';
 
 /**
  * Cache version composed of:
@@ -538,7 +542,197 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // cache would replay unchanged worker results without those routes. Version 70
 // then adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so Java
 // and Kotlin caches persist scheduled, event, messaging, and managed-job facts.
-const SCHEMA_BUMP = 70;
+//
+// 70 -> 71 adds the Java constant-route capture set (#2980):
+// `route-extractors/java-const-resolver.ts`, the `spring.ts` operand branch,
+// and the parse-worker's provider-driven constant harvest. A warm pre-feature
+// cache replays those files' worker results with `moduleConstants` absent and
+// `routePathOperands` unset, so every constant-based Spring route on an
+// unchanged file is silently dropped — the feature is inert until something
+// else invalidates the cache.
+//
+// This branch briefly reasoned that no bump was needed because the ledger
+// "already sits at 70, whose capture set post-dates and includes this harvest".
+// It does not: v70 was cut by fe3d7e56b for Spring non-HTTP handler facts
+// (#2417 / #2891), an ancestor of this PR's base, and it cannot include a
+// harvest that does not exist on main. Because
+// `PARSE_CACHE_VERSION = ${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}` and
+// package.json is untouched here, leaving 70 makes the key BYTE-IDENTICAL
+// before and after this merge — precisely the inert-feature trap the v33/v34
+// notes above warn about. Exposure is bounded by the package version (a
+// released upgrade invalidates anyway), but same-version warm caches — dev
+// builds, CI caches, anyone who indexed with an unreleased build — replay the
+// stale captures.
+//
+// 72, not 71: open PR #3017 (`fix/nest-decorator-routes`, NestJS decorator route
+// indexing) already claims 71, with an identical pin test. Re-checking
+// origin/main alone would not catch that — main is 70 and stays 70 until one of
+// the two merges, at which point the second lands a byte-identical
+// PARSE_CACHE_VERSION and is inert. This is exactly the rule the ledger states
+// and the v37/v38 clash it was written for: the next free value above every
+// IN-FLIGHT claim, not above origin/main. Every open PR touching gitnexus/ was
+// scanned; #3017 is the only other claimant.
+//
+// 72 -> 74 adds import-proven Convex endpoint metadata to Const/Function worker
+// output. A warm v72 cache has no convexEndpointFactory property, so the MCP
+// impact probe would keep claiming exact results for unchanged endpoints. The
+// parse-cache bump makes unchanged files re-parse; analyzer runner identity
+// drift separately forces the graph re-emit (run-analyze.ts), and an id/schema
+// migration needs both guarantees. Version 73 is intentionally skipped because
+// concurrent PR #3046 (fixes #3041) claims it. Re-check main and open PRs
+// immediately before merge.
+//
+// 74 -> 76 makes object-literal Function and Method members owner-qualified
+// (#3041). A warm v74 cache replays the old collapsed callable ids and omits
+// the new Const/Variable -> callable HAS_METHOD ownership edges, so this bump
+// makes unchanged files re-parse rather than waiting for a source edit. The
+// persisted graph is rebuilt separately when `analyzerRunnerIdentitiesEqual`
+// detects the changed analyzer build in run-analyze.ts. Both guards are
+// required; a parse-cache bump alone must never be read as a graph rebuild.
+// Version 75 is intentionally skipped because concurrent PR #3017 claims it.
+//
+// 74 -> 75 adds #3009's NestJS decorator routes to the JS/TS decoratorRoutes
+// channel. Same reasoning as 69: a warm pre-feature cache replays unchanged
+// worker results, which for every already-indexed NestJS repo means replaying
+// the empty route set this change exists to fix — the fix would appear to do
+// nothing until something else invalidated the cache.
+//
+// 75, not 71 (this branch's original claim) and not 74: origin/main cascaded
+// past both while this PR was open. #2980 took 71, #3046 claims 73, and the
+// Convex endpoint-metadata change took 74 (skipping 73 for exactly that
+// reason). 75 is the next free value above origin/main AND above every
+// in-flight claim — the rule the ledger states, not "one above main". Every
+// open PR touching gitnexus/src/storage/parse-cache.ts was scanned at this
+// merge: #3046 (73) and #1616 (a stale 2) are the only other claimants.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+//
+// 75 -> 76 for the NestJS multi-path (array) form: `@Get(['a','b'])` now yields
+// one `decoratorRoutes` entry per path where it previously yielded none. That
+// changes worker output for the same file, and 75 was already claimed earlier
+// on this same branch — so a warm cache written by a dev or CI build at v75,
+// before the array form landed, would replay the pre-feature captures under a
+// BYTE-IDENTICAL `PARSE_CACHE_VERSION` and the array form would be inert. The
+// package version is untouched here, so it cannot rescue that case. Same-branch
+// re-bumping is unusual, but the ledger's rule is about what a warm cache can
+// replay, not about how the value was reached.
+//
+// 76 -> 77 because 76 was NOT free. While this branch sat in review, origin/main
+// advanced to ac68f5254 and #3046 took 76 — the value this branch already held.
+// `gitnexus/package.json` is 1.6.9 on both sides, so `PARSE_CACHE_VERSION` was
+// the byte-identical string `76+1.6.9` on two branches that changed
+// incompatible worker output. Every warm cache would have been reused across
+// both features, making both inert while every test stayed green.
+//
+// The sharpest part: #3046 skipped 75 BECAUSE this branch held it, then took
+// 76 — and this branch had meanwhile moved 75 -> 76 for the array form. Two
+// PRs each doing the bookkeeping correctly still collided, because each
+// re-checked once and neither re-checked after the other moved. That is what
+// the re-check line below is for, and why it says AT MERGE rather than
+// when you pick the number.
+//
+// 78 was claimed concurrently by #3060 while this branch was in review. Both
+// branches keep the same package version, so sharing 78 would replay
+// incompatible worker output without a textual merge conflict. This branch
+// therefore takes 79, the next free value above origin/main and every open PR
+// found by the contents-API scan at their exact head SHAs.
+//
+// 79 -> 80 for #3088: parse-cache membership is `(language, sha256(path) mod
+// 128)` then the byte budget *inside* that bucket. Worker count is no longer a
+// membership input, so a warm v79 cache keyed sequential scan-order packs (and
+// on multi-worker hosts, pool×2 MiB mega-chunks) must miss. Sidecar-era
+// ParsedFile stores (#3086/#3087) share PARSE_CACHE_VERSION, so both stores
+// invalidate in lockstep. origin/main at allocation is 79; open PRs that still
+// touch gitnexus/src/storage/parse-cache.ts claim 78 (#3060), 71 (#2840), and
+// 2 (#1616) — none claim 80. RE-CHECK AGAINST origin/main AND OPEN PRs
+// IMMEDIATELY BEFORE MERGING.
+//
+// WHY THIS IS STILL A HAND-PICKED NUMBER, when `SCHEMA_FINGERPRINT` next door
+// is a derived sha256 that cannot collide. The derivation exists and already
+// runs: `resolveAnalyzerRunnerIdentity` computes `build.digest` over the
+// analyzer build tree on every analyze. It is not used here because it moves on
+// ANY build change — a comment-only edit, this paragraph included — so every
+// dev and CI rebuild would force a full re-parse of every repo. That is the
+// expensive half of the trade, and `PARSE_CACHE_VERSION` already carries the
+// package version, so this counter's only job is separating builds that SHARE
+// one: dev, CI, unreleased. Exactly the population a whole-build digest would
+// punish, and exactly the population that hits the exact-clash failure.
+//
+// So the counter stays, and the open cost is that a bump nobody makes is
+// invisible: a capture change with no bump ships inert and no check can see it.
+// #2860 (a base-branch CI comparison) closes the "not greater than main" axis
+// only. A digest over just the determinant subset — the language queries plus
+// `route-extractors/` and `workers/` module content — would close the missing-
+// bump axis without invalidating on unrelated churn, and is the real follow-up.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+// 80 -> 81: ParsedFile and parse-cache shards are one immutable `.v8` envelope
+// each (no JSON/path/generation siblings). A v80 index still names `.json`
+// keys and would skip workers while scope-resolution found nothing — the
+// #1983 main-thread reparse. origin/main at allocation is 80.
+// 81 -> 82: Java and Kotlin ParsedFile capture side channels now carry
+// programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
+// would skip workers and silently omit the new INJECTS edges. origin/main at
+// allocation is 81.
+// 82 -> 83: Java Lombok @Data/@Getter/@Setter accessor synthesis emits
+// synthetic Method nodes, HAS_METHOD edges, and matching scope captures into
+// ParseWorkerResult / ParsedFile. A warm v82 cache replays pre-Lombok worker
+// output and silently omits those callables. origin/main at allocation is 82.
+// 83 -> 84: Kotlin val/var properties synthesize JVM get/set Method nodes
+// (same provider hook as Java Lombok). A warm v83 cache omits those callables.
+// origin/main at allocation is 83 (Java Lombok on this branch).
+// 84 -> 85: JVM synthetic accessor captures now use the declaration
+// qualified_name key consumed by scope extraction, and Kotlin accessor planning
+// follows JvmAbi naming plus conservative @JvmName suppression. A warm v84
+// cache can replay stale names and declaration metadata.
+// 85 -> 86: Kotlin interface property accessors now record isAbstract on the
+// synthetic Method. A warm v85 cache replays them as concrete.
+// 86 -> 87: ModuleConstants gained wildcardImports (static-import-asterisk
+// materialization) — a warm v86 cache has no wildcard bindings, so folding
+// would skip them and drop wildcard-imported route constants. origin/main at
+// allocation is 86 (#2885).
+// 87 -> 88: Java ModuleConstants now preserves unfoldable declaration names
+// across worker/cache replay so wildcard expansion cannot resurrect an imported
+// member hidden by a local field. A warm v87 cache lacks that shadow metadata.
+// 88 -> 89: the same side channels now carry Spring messaging facts — the
+// arguments of non-HTTP handler annotations (`@KafkaListener(topics = ...)`)
+// and a new `springMessageProducerFacts` list for template publishes
+// (`KafkaTemplate.send`, `RabbitTemplate`/`JmsTemplate.convertAndSend`,
+// `StreamBridge.send`). Both are parse-time worker output replayed verbatim
+// from `ParsedFile.captureSideChannel`, so a warm v88 cache would skip workers
+// and hand the annotation facts back with no `args` and the producer list
+// empty. Measured on the fixture app: a warm all-cache-hit run
+// (`usedWorkerPool=false`, `reparsedFileCount=0`) reproduces 6 Java and 7
+// Kotlin producer facts purely from the store, which is exactly the state a
+// pre-change cache would have served as zero. origin/main at allocation is 88.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING — this
+// entry was allocated 83 first, and five bumps landed upstream before it merged.
+// 89 -> 90 (#2865): route decorator captures now carry `handlerName` in
+// `decoratorRoutes`, which is what lets `resolveRouteHandlerSymbols` stamp
+// `handlerSymbolId` and the routes phase emit the definition-level
+// HANDLES_ROUTE edge. The field is minted in the parse WORKER and persisted
+// verbatim, so a warm v89 cache replays handler-less decorator routes: every
+// route loses its definition-level association on incremental analyze while
+// every cold-run test passes — the inert-feature trap the entries above record.
+// 89 is now taken by merged #3128. 90 is the next free value above origin/main
+// (89) and above every in-flight claim found by scanning open PRs'
+// parse-cache.ts at their exact head SHAs (highest other open claim was still
+// ≤88). RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+// 90 -> 91 (#3130): Kotlin providers now emit Spring decoratorRoutes plus
+// ModuleConstants shadow metadata. A warm v90 cache would replay unchanged
+// Kotlin files with neither route candidates nor the constant declarations
+// needed to fold them, leaving the new ingestion path silently inert.
+// 91 -> 92 (#1432): the shared callable-flow reader (`callable-flow-captures.ts`)
+// no longer names a callee by simple name for a MEMBER call and gates a
+// field-stored-callable invoke on a visible member store — parse-time capture
+// facts for Kotlin / C++ / C# / TypeScript member calls change (the
+// scope-capture bench re-baselined all four), and Zig files are captured for
+// the first time, with rules that changed within the PR (qualified struct
+// literals, enum-variant field bindings, receiver tagging). A warm v91 cache
+// replays the old facts verbatim, `--force` included: a reviewer re-testing a
+// later head of this PR on an index built from an earlier one measured a
+// byte-identical graph until `parse-cache/` and `parsedfile-cache/` were
+// deleted by hand. 92 is the next free value above origin/main (91) at merge
+// time. RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+const SCHEMA_BUMP = 92;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -563,6 +757,58 @@ const GITNEXUS_PKG_VERSION = (() => {
   return '0.0.0-unknown';
 })();
 export const PARSE_CACHE_VERSION = `${SCHEMA_BUMP}+${GITNEXUS_PKG_VERSION}`;
+
+/** SHA-256 hex of a string or buffer (paths for bucket ids, contents for cache keys). */
+const sha256Hex = (input: Buffer | string): string =>
+  createHash('sha256')
+    .update(typeof input === 'string' ? Buffer.from(input) : input)
+    .digest('hex');
+
+/** Stable parse-cache bucket count (#3088). Changing this requires SCHEMA_BUMP. */
+export const PARSE_CACHE_BUCKET_COUNT = 128;
+
+/** Bucket id for cache membership: `sha256(path) mod N` without IEEE-754 truncation. */
+export const parseCacheBucketId = (filePath: string): number =>
+  Number(BigInt(`0x${sha256Hex(filePath)}`) % BigInt(PARSE_CACHE_BUCKET_COUNT));
+
+export type ParseCachePackFile = { path: string; size: number; language: string };
+
+/**
+ * Pack files into parse-cache chunks: group by (language, bucket id), sort
+ * paths inside the group, then cut at `byteBudget`. Bucket visit order is
+ * the lexicographic order of `${language}\\0${bucketId}` keys (deterministic,
+ * independent of scan order and worker count).
+ */
+export const packParseCacheChunks = (
+  files: readonly ParseCachePackFile[],
+  byteBudget: number,
+): string[][] => {
+  const buckets = new Map<string, ParseCachePackFile[]>();
+  for (const file of files) {
+    const key = `${file.language}\0${parseCacheBucketId(file.path)}`;
+    const list = buckets.get(key);
+    if (list) list.push(file);
+    else buckets.set(key, [file]);
+  }
+  const chunks: string[][] = [];
+  for (const key of [...buckets.keys()].sort()) {
+    const group = buckets.get(key)!;
+    group.sort((a, b) => compareCodeUnits(a.path, b.path));
+    let current: string[] = [];
+    let bytes = 0;
+    for (const file of group) {
+      if (current.length > 0 && bytes + file.size > byteBudget) {
+        chunks.push(current);
+        current = [];
+        bytes = 0;
+      }
+      current.push(file.path);
+      bytes += file.size;
+    }
+    if (current.length > 0) chunks.push(current);
+  }
+  return chunks;
+};
 
 const LEGACY_CACHE_FILENAME = 'parse-cache.json';
 const CACHE_DIRNAME = 'parse-cache';
@@ -607,12 +853,6 @@ export interface ParseCache {
   /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
   onDiskKeys?: Set<string>;
 }
-
-/** SHA-256 hex of a single string or buffer. */
-const sha256Hex = (input: Buffer | string): string =>
-  createHash('sha256')
-    .update(typeof input === 'string' ? Buffer.from(input) : input)
-    .digest('hex');
 
 /** Stable hash of a single file's contents — used by callers to compose a chunk hash. */
 export const fileContentHash = (content: Buffer | string): string => sha256Hex(content);
@@ -728,7 +968,7 @@ const getCacheIndexPath = (storagePath: string): string =>
   path.join(getCacheDirPath(storagePath), CACHE_INDEX_FILENAME);
 
 const getCacheChunkPath = (storagePath: string, chunkHash: string): string =>
-  path.join(getCacheDirPath(storagePath), `${chunkHash}.json`);
+  path.join(getCacheDirPath(storagePath), `${chunkHash}.v8`);
 
 /**
  * Drop fields that are not replayed by `mergeChunkResults` / parse-impl after
@@ -759,9 +999,12 @@ const readParseCacheChunkFromDisk = async (
 ): Promise<ParseWorkerResult[] | undefined> => {
   if (!isValidChunkCacheKey(chunkHash)) return undefined;
   try {
-    const chunkRaw = await fs.readFile(getCacheChunkPath(storagePath, chunkHash), 'utf-8');
-    const chunkData = JSON.parse(chunkRaw, mapReviver) as ParseWorkerResult[];
-    return Array.isArray(chunkData) ? chunkData : undefined;
+    const chunkPath = getCacheChunkPath(storagePath, chunkHash);
+    const v8Hit = await tryLoadV8Cache(chunkPath);
+    if (v8Hit?.kind === 'hit' && Array.isArray(v8Hit.value)) {
+      return v8Hit.value as ParseWorkerResult[];
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -804,8 +1047,17 @@ export const persistParseCacheChunk = async (
       await fs.mkdir(cacheDir, { recursive: true });
       createdCacheDirs.add(cacheDir);
     }
-    const payload = JSON.stringify(slim, mapReplacer);
-    await fs.writeFile(getCacheChunkPath(cache.storagePath, chunkHash), payload, 'utf-8');
+    const chunkPath = getCacheChunkPath(cache.storagePath, chunkHash);
+    let ok = await writeV8CacheFile(chunkPath, slim);
+    if (!ok) {
+      await fs.mkdir(cacheDir, { recursive: true });
+      createdCacheDirs.add(cacheDir);
+      ok = await writeV8CacheFile(chunkPath, slim);
+    }
+    if (!ok) {
+      cache.entries.set(chunkHash, slim);
+      return;
+    }
     cache.onDiskKeys ??= new Set<string>();
     cache.onDiskKeys.add(chunkHash);
     cache.entries.delete(chunkHash);
@@ -908,25 +1160,17 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
   // index from what we persisted, not from the raw usedKeys snapshot.
   const writtenKeys: string[] = [];
   for (const chunkHash of keys) {
-    const chunkPath = path.join(tmpDir, `${chunkHash}.json`);
+    const chunkPath = path.join(tmpDir, `${chunkHash}.v8`);
     const inMemory = cache.entries.get(chunkHash);
     if (inMemory !== undefined) {
-      let payload: string;
-      try {
-        payload = JSON.stringify(inMemory, mapReplacer);
-      } catch {
-        continue;
+      if (await writeV8CacheFile(chunkPath, inMemory)) {
+        writtenKeys.push(chunkHash);
       }
-      await fs.writeFile(chunkPath, payload, 'utf-8');
-      writtenKeys.push(chunkHash);
       continue;
     }
     const existingPath = getCacheChunkPath(storagePath, chunkHash);
-    try {
-      await fs.copyFile(existingPath, chunkPath);
+    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
       writtenKeys.push(chunkHash);
-    } catch {
-      /* shard missing — skip; next run treats as cache miss */
     }
   }
 

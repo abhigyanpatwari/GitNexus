@@ -90,7 +90,7 @@ import {
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import {
   callableFlowSiteKey,
-  collectDeferredIndirectSites,
+  collectDeferredIndirectCollection,
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
@@ -464,6 +464,8 @@ interface RunScopeResolutionInput {
 interface RunScopeResolutionStats {
   readonly filesProcessed: number;
   readonly filesSkipped: number;
+  /** Files still missing a ParsedFile after the main-thread fallback. */
+  readonly scopeExtractionFailedPaths: readonly string[];
   readonly importsEmitted: number;
   readonly resolve: ResolveStats;
   readonly referenceEdgesEmitted: number;
@@ -564,6 +566,7 @@ export function runScopeResolution(
 
   // ── Phase 1: extract each file → ParsedFile ────────────────────────────
   const parsedFiles: ParsedFile[] = [];
+  const scopeExtractionFailedPaths: string[] = [];
   let filesSkipped = 0;
   const treeCache = input.treeCache;
   const preExtracted = input.preExtractedParsedFiles;
@@ -587,15 +590,20 @@ export function runScopeResolution(
     }
     if (parsed === undefined) {
       const cachedTree = treeCache?.get(file.path);
+      let extractionWarned = false;
       parsed = extractParsedFile(
         provider.languageProvider,
         file.content,
         file.path,
-        onWarn,
+        (warning) => {
+          extractionWarned = true;
+          onWarn(warning);
+        },
         cachedTree,
       );
       if (parsed === undefined) {
         filesSkipped++;
+        if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
     }
@@ -643,6 +651,7 @@ export function runScopeResolution(
     return {
       filesProcessed: parsedFiles.length,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -680,6 +689,7 @@ export function runScopeResolution(
     return {
       filesProcessed: 0,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -978,7 +988,8 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
-  const deferredIndirectSites = collectDeferredIndirectSites(emitParsedFiles, indexes);
+  const deferredIndirectCollection = collectDeferredIndirectCollection(emitParsedFiles, indexes);
+  const deferredIndirectSites = deferredIndirectCollection.sites;
   const callableArgumentSites = new Set<string>();
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
     for (const parsed of emitParsedFiles) {
@@ -1229,6 +1240,8 @@ export function runScopeResolution(
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          deferredIndirectSites,
+          callSignaturesBySite: deferredIndirectCollection.callSignaturesBySite,
           onWarn: (warning) =>
             logger.warn(
               warning,
@@ -1646,6 +1659,7 @@ export function runScopeResolution(
   return {
     filesProcessed: parsedFiles.length,
     filesSkipped,
+    scopeExtractionFailedPaths,
     importsEmitted,
     resolve: resolveStats,
     referenceEdgesEmitted:
