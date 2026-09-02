@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { startWatchFileLoop, type WatchFileLoop } from '../../src/cli/watch.js';
+import { startWatchFileLoop, type WatchFileLoop } from '../../src/cli/analyze-watch.js';
 import { cleanupTempDir } from '../helpers/test-db.js';
 
 const tempDirs: string[] = [];

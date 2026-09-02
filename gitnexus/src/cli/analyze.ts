@@ -776,7 +776,7 @@ export async function analyzeOrWatchCommandWithRunnerIdentity(
   options: AnalyzeOptions = {},
 ): Promise<void> {
   if (options.watch) {
-    const { watchCommandWithRunnerIdentity } = await import('./watch.js');
+    const { watchCommandWithRunnerIdentity } = await import('./analyze-watch.js');
     await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
     return;
   }

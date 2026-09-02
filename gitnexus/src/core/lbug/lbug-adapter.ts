@@ -72,6 +72,7 @@ import {
   shadowSidecarRecoveryMessage,
   sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
+import { isProcessAlive } from '../../utils/process-identity.js';
 
 import { logger } from '../logger.js';
 import {
@@ -329,20 +330,6 @@ const INIT_LOCK_MAX_ATTEMPTS = 6;
 const INIT_LOCK_RETRY_DELAY_MS = 500;
 
 const initLockPath = (dbPath: string): string => `${dbPath}.init.lock`;
-
-/**
- * Returns true when the process identified by `pid` is still running.
- * Uses `process.kill(pid, 0)` which sends signal 0 (a no-op probe) —
- * it throws ESRCH when the process does not exist.
- */
-const isProcessAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 /**
  * Try to break a stale lock whose owning process has exited.
