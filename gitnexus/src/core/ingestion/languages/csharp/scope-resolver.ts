@@ -22,6 +22,7 @@ import {
 import { populateCsharpNamespaceSiblings } from './namespace-siblings.js';
 import { loadCsharpResolutionConfig, type CsharpResolutionConfig } from './resolution-config.js';
 import { unwrapCsharpElementType } from './accessor-unwrap.js';
+import { emitRazorViewComponentEdges } from './razor-view-components.js';
 
 const csharpScopeResolver: ScopeResolver = {
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
@@ -106,6 +107,20 @@ const csharpScopeResolver: ScopeResolver = {
   // `IValidator<string>` and `IValidator<String>` are one instantiation, so the
   // dispatch fan-out must not read them as two (#2912). See the alias table.
   normalizeTypeArgument: normalizeCsharpTypeArgument,
+
+  // Razor views stay out of the C# parser. Bind literal ViewComponent names
+  // only onto in-repo classes (Spring-style: skip the SDK type, hop to the
+  // workspace implementor).
+  emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, _indexes, ctx) => {
+    const config = ctx.resolutionConfig as CsharpResolutionConfig | undefined;
+    emitRazorViewComponentEdges(
+      graph,
+      parsedFiles,
+      nodeLookup,
+      config?.razorViewComponents,
+      ctx.fileContents,
+    );
+  },
 };
 
 /**

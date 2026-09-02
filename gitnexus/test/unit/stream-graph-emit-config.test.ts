@@ -137,7 +137,7 @@ describe('buildPhaseList under streamGraphEmit', () => {
 });
 
 describe('RETAINED_REL_TYPES tracks its readers', () => {
-  it('streams write-only conditional and declaration evidence', () => {
+  it('streams Actuator relationship types that no later phase reads', () => {
     expect(RETAINED_REL_TYPES.has('CONDITIONAL_ON')).toBe(false);
     expect(RETAINED_REL_TYPES.has('DECLARES')).toBe(false);
   });

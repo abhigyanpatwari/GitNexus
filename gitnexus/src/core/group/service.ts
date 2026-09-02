@@ -51,6 +51,17 @@ export interface GroupToolPort {
     repo: GroupRepoHandle,
     params: {
       target: string;
+      /**
+       * Target-selector params, same semantics as the single-repo `impact`
+       * tool: `target_uid` is the zero-ambiguity lookup (it wins over the
+       * name), `file_path`/`kind` narrow a name shared by several symbols
+       * (e.g. same-named Api/Impl/Controller layers). The port implementation
+       * consumes them directly; the Phase-1 caller in cross-impact.ts is
+       * responsible for threading them from the MCP `impact` args.
+       */
+      target_uid?: string;
+      file_path?: string;
+      kind?: string;
       direction: 'upstream' | 'downstream';
       maxDepth?: number;
       relationTypes?: string[];
@@ -517,6 +528,14 @@ export class GroupService {
       // can otherwise see contract counts that disagree with this payload, with
       // nothing here explaining why the write was skipped.
       registryOutcome: result.registryOutcome,
+      // Data-quality signals surfaced from the sync run: links whose provider
+      // endpoint never resolved to a graph symbol, per-repo extraction
+      // failures with reasons, and operator warnings (e.g. bridge.lbug write
+      // failed after contracts.json was written). Always present so MCP
+      // consumers can branch on them without existence checks.
+      degradedLinks: result.degradedLinks,
+      failedRepos: result.failedRepos,
+      warnings: result.warnings,
     };
   }
 

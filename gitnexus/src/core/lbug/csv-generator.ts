@@ -122,6 +122,17 @@ export const escapeCSVNumber = (
   return String(value);
 };
 
+/**
+ * A numeric column that may legitimately have NO value.
+ *
+ * `escapeCSVNumber` substitutes a sentinel (-1) for absence, which is right
+ * where every row has a span and wrong where absence is the fact being
+ * recorded. An empty field is loaded as NULL by COPY, so the column can say
+ * "there is no line here" instead of pointing at line -1.
+ */
+export const escapeCSVNullableNumber = (value: unknown): string =>
+  typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+
 const formatCSVStringArray = (value: unknown): string => {
   const items = Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
@@ -177,14 +188,22 @@ export const isBinaryContent = (content: string): boolean => {
   return nonPrintable / end > 0.1;
 };
 
+interface PreparedFileContent {
+  readonly content: string;
+  readonly lines: string[];
+  readonly isBinary: boolean;
+}
+
+const EMPTY_PREPARED: PreparedFileContent = { content: '', lines: [''], isBinary: false };
+
 /**
  * LRU content cache — avoids re-reading the same source file for every
  * symbol defined in it. Sized generously so most files stay cached during
- * the single-pass node iteration.
+ * the single-pass node iteration. Insertion order on the Map is LRU
+ * (delete+set on touch).
  */
 class FileContentCache {
-  private cache = new Map<string, string>();
-  private accessOrder: string[] = [];
+  private cache = new Map<string, PreparedFileContent>();
   private maxSize: number;
   private repoPath: string;
 
@@ -193,36 +212,36 @@ class FileContentCache {
     this.maxSize = maxSize;
   }
 
-  async get(relativePath: string): Promise<string> {
-    if (!relativePath) return '';
+  async get(relativePath: string): Promise<PreparedFileContent> {
+    if (!relativePath) return EMPTY_PREPARED;
     const cached = this.cache.get(relativePath);
     if (cached !== undefined) {
-      // Move to end of accessOrder (LRU promotion)
-      const idx = this.accessOrder.indexOf(relativePath);
-      if (idx !== -1) {
-        this.accessOrder.splice(idx, 1);
-        this.accessOrder.push(relativePath);
-      }
+      this.cache.delete(relativePath);
+      this.cache.set(relativePath, cached);
       return cached;
     }
     try {
       const fullPath = path.join(this.repoPath, relativePath);
       const content = await fs.readFile(fullPath, 'utf-8');
-      this.set(relativePath, content);
-      return content;
+      const prepared: PreparedFileContent = {
+        content,
+        lines: content.split('\n'),
+        isBinary: isBinaryContent(content),
+      };
+      this.set(relativePath, prepared);
+      return prepared;
     } catch {
-      this.set(relativePath, '');
-      return '';
+      this.set(relativePath, EMPTY_PREPARED);
+      return EMPTY_PREPARED;
     }
   }
 
-  private set(key: string, value: string) {
-    if (this.cache.size >= this.maxSize) {
-      const oldest = this.accessOrder.shift();
-      if (oldest) this.cache.delete(oldest);
+  private set(key: string, value: PreparedFileContent) {
+    if (this.cache.size >= this.maxSize && !this.cache.has(key)) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
     }
     this.cache.set(key, value);
-    this.accessOrder.push(key);
   }
 }
 
@@ -277,10 +296,11 @@ const EXACT_SYMBOL_CONTENT_LABELS = SYMBOL_NODE_LABELS;
 
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
-  const content = await contentCache.get(filePath);
+  const prepared = await contentCache.get(filePath);
+  const content = prepared.content;
   if (!content) return '';
   if (node.label === 'Folder') return '';
-  if (isBinaryContent(content)) return '[Binary file - content not stored]';
+  if (prepared.isBinary) return '[Binary file - content not stored]';
 
   // File content is stored in full — intentionally NOT length-capped here, so
   // text past the old 10KB cutoff stays FTS-searchable (#2317). It is already
@@ -295,7 +315,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   const endLine = node.properties.endLine;
   if (startLine === undefined || endLine === undefined) return '';
 
-  const lines = content.split('\n');
+  const lines = prepared.lines;
   const exactSymbolContent = EXACT_SYMBOL_CONTENT_LABELS.has(node.label);
   const start = Math.max(0, exactSymbolContent ? startLine : startLine - 2);
   const end = Math.min(lines.length - 1, exactSymbolContent ? endLine : endLine + 2);
@@ -518,13 +538,19 @@ export const streamAllCSVsToDisk = async (
     // Route nodes for API endpoint mapping
     const routeWriter = new BufferedCSVWriter(
       path.join(csvDir, 'route.csv'),
-      'id,name,filePath,responseKeys,errorKeys,middleware,method,handlerSymbolId',
+      'id,name,filePath,responseKeys,errorKeys,middleware,method,handlerSymbolId,runtimeConfirmed,runtimeSource,runtimeStatus',
     );
 
     // Tool nodes for MCP tool definitions
     const toolWriter = new BufferedCSVWriter(
       path.join(csvDir, 'tool.csv'),
       'id,name,filePath,description',
+    );
+
+    // Destination nodes for async messaging (Kafka topics, Rabbit exchanges, …)
+    const destinationWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'destination.csv'),
+      'id,name,filePath,startLine,endLine,address,broker,resolution,configKey,configDefault,description',
     );
 
     // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
@@ -701,6 +727,9 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(middlewareStr),
               escapeCSVField(String(node.properties.method ?? '')),
               escapeCSVField(String(node.properties.handlerSymbolId ?? '')),
+              node.properties.runtimeConfirmed === true ? 'true' : 'false',
+              escapeCSVField(String(node.properties.runtimeSource ?? '')),
+              escapeCSVField(String(node.properties.runtimeStatus ?? '')),
             ].join(','),
           );
           break;
@@ -711,6 +740,50 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
+            ].join(','),
+          );
+          break;
+        case 'Destination':
+          // `address` is the cross-service join key and is written as an EMPTY
+          // field for an unresolved destination, which COPY loads as NULL —
+          // mirroring the in-memory rule that the property is absent there, and
+          // measured on a real index (`spring-destinations-lbug.test.ts` asserts
+          // both the NULL and the zero-false-join it buys). Writing the
+          // placeholder text into this column instead would make two services
+          // that merely both wrote `${app.topic}` join on it, reintroducing
+          // below the database line the exact false connection the
+          // location-based node id prevents above it. The placeholder is
+          // carried by `name`, which nothing joins on.
+          //
+          // The line columns are written EMPTY (→ NULL) rather than defaulted
+          // to -1 when the node carries none. A resolved destination has no
+          // location at all — that is the point of the `filePath` rule two
+          // fields to the left — and a row saying `filePath` NULL but
+          // `startLine` -1 makes the two columns disagree about one fact and
+          // renders as "line -1" in the UI.
+          //
+          // `broker` is written for every destination, resolved or not. It is
+          // part of the resolved node's IDENTITY — the id is minted from
+          // `(broker, address)` — so a reader who joins on `address` alone and
+          // sees two rows needs this column to tell them apart, not merely to
+          // decorate them. Every column named in this row list must also be
+          // named in DESTINATION_SCHEMA and in the COPY statement in
+          // `lbug-adapter.ts`; a property the phase writes but those two omit is
+          // dropped at the database boundary without a warning, and the query
+          // that reads it back raises a binder error instead.
+          pending = destinationWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVNullableNumber(node.properties.startLine),
+              escapeCSVNullableNumber(node.properties.endLine),
+              escapeCSVField(String(node.properties.address ?? '')),
+              escapeCSVField(String(node.properties.broker ?? '')),
+              escapeCSVField(String(node.properties.resolution ?? '')),
+              escapeCSVField(String(node.properties.configKey ?? '')),
+              escapeCSVField(String(node.properties.configDefault ?? '')),
               escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
@@ -794,6 +867,13 @@ export const streamAllCSVsToDisk = async (
       sectionWriter,
       routeWriter,
       toolWriter,
+      // A writer missing from THIS list is not a loud failure. `finish()` is
+      // what flushes the buffered rows, while the header is written eagerly and
+      // `.rows` counts rows as they are added — so an unflushed writer still
+      // produces a valid, header-only CSV and a manifest entry claiming rows.
+      // The COPY then succeeds and loads nothing. Adding a node table means
+      // adding it here as well as to the switch and the manifest.
+      destinationWriter,
       basicBlockWriter,
       ...multiLangWriters.values(),
     ];
@@ -818,6 +898,7 @@ export const streamAllCSVsToDisk = async (
       ['Section' as NodeTableName, sectionWriter],
       ['Route' as NodeTableName, routeWriter],
       ['Tool' as NodeTableName, toolWriter],
+      ['Destination' as NodeTableName, destinationWriter],
       ['BasicBlock' as NodeTableName, basicBlockWriter],
       ...Array.from(multiLangWriters.entries()).map(
         ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],

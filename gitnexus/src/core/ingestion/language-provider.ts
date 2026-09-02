@@ -36,7 +36,7 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type {
@@ -46,6 +46,16 @@ import type {
 } from './route-extractors/constant-resolver.js';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
+import type { SpringNonHttpHandlerFact } from './frameworks/spring/non-http-handlers.js';
+import type { SpringMessageProducerFact } from './frameworks/spring/message-producers.js';
+
+/** One file's captured Spring async messaging facts, in both directions. */
+export interface SpringMessagingFacts {
+  /** Callables carrying a listener annotation — the inbound side. */
+  readonly handlers: readonly SpringNonHttpHandlerFact[];
+  /** Messaging-template publishes — the outbound side. */
+  readonly producers: readonly SpringMessageProducerFact[];
+}
 
 // ── Shared type aliases ────────────────────────────────────────────────────
 /** Tree-sitter query captures: capture name → AST node (or undefined if not captured). */
@@ -54,6 +64,7 @@ export type CaptureMap = Record<string, SyntaxNode | undefined>;
 export interface DefinitionPropertiesContext {
   readonly nodeLabel: NodeLabel;
   readonly nodeName: string;
+  readonly filePath: string;
   readonly definitionNode: SyntaxNode;
   readonly parsedImports: readonly ParsedImport[];
   readonly isExported: boolean;
@@ -62,6 +73,26 @@ export interface DefinitionPropertiesContext {
 export type DefinitionPropertiesExtractor = (
   context: DefinitionPropertiesContext,
 ) => Readonly<Record<string, unknown>> | undefined;
+
+export interface RuntimeCallableIdentity {
+  readonly name: string;
+  readonly descriptorParameterTypes: readonly string[] | undefined;
+}
+
+/**
+ * Optional language-owned bridge from runtime/compiler symbol identities to
+ * source graph symbols. Framework importers use this instead of naming
+ * languages or reproducing compiler conventions in shared ingestion code.
+ */
+export interface RuntimeSymbolStrategy {
+  /** Runtime owner names that may contain this callable/property. */
+  readonly callableOwnerAliases?: (
+    node: GraphNode,
+    owner: GraphNode | undefined,
+  ) => readonly string[];
+  /** Whether a runtime callable identity can conservatively identify a node. */
+  readonly matchesCallable: (node: GraphNode, runtime: RuntimeCallableIdentity) => boolean;
+}
 
 /** Run optional provider enrichment without allowing one hook failure to drop
  * the rest of the worker's language batch. */
@@ -191,6 +222,13 @@ interface LanguageProviderConfig {
    * Default: undefined (no preprocessing — `file.content` is parsed verbatim).
    */
   readonly preprocessSource?: (sourceText: string, filePath: string) => string;
+
+  /**
+   * Runtime/compiler identity reconciliation for framework metadata. The
+   * central importer owns ambiguity handling; providers only supply aliases
+   * and language-specific callable compatibility.
+   */
+  readonly runtimeSymbolStrategy?: RuntimeSymbolStrategy;
 
   // ── Core (required) ───────────────────────────────────────────────
   /** Type extraction: declarations, initializers, for-loop bindings */
@@ -386,6 +424,28 @@ interface LanguageProviderConfig {
   ) => ExtractedDecoratorRoute[];
 
   /**
+   * Name of the function a route decorator captured by the worker's generic
+   * `@decorator` query applies to, given the decorator's own AST node.
+   *
+   * The worker knows a decorator is a route decorator but not how this
+   * language's grammar attaches it to a definition, so it hands the node over
+   * unchanged and takes whatever the language returns. Only languages that
+   * declare route handlers through the generic decorator captures need this;
+   * languages with a dedicated {@link extractDecoratorRoutes} extractor
+   * (JS/TS via `nest.ts`, Java via `spring.ts`) already set
+   * `ExtractedDecoratorRoute.handlerName` there and should leave this undefined.
+   *
+   * Implementations must read their own decorated-definition shape directly and
+   * return undefined for anything else — never climb ancestors to find a name,
+   * since a decorator that is not attached to a function has no handler and a
+   * borrowed enclosing name resolves `handlerSymbolId` to the wrong symbol. The
+   * routes phase treats undefined as "fall back to the file-level edge".
+   *
+   * Default: undefined (no handler name from generic decorator captures).
+   */
+  readonly decoratorRouteHandlerName?: (decoratorNode: SyntaxNode) => string | undefined;
+
+  /**
    * Collect a project-wide, language-agnostic view of route-defining
    * class/interface declarations (`SharedSpringType`) from a parsed file.
    *
@@ -401,6 +461,54 @@ interface LanguageProviderConfig {
     tree: Parser.Tree,
     filePath: string,
   ) => SharedSpringType[];
+
+  /**
+   * Optional post-capture emission of synthetic structure members (nodes,
+   * symbols, ownership edges) that have no AST method node — e.g. Lombok
+   * accessors. Called once per file after the capture loop, at the same
+   * post-capture site as {@link extractDecoratorRoutes}.
+   *
+   * `classOwnersByNodeId` maps in-memory tree-sitter node ids of type
+   * declarations materialized in THIS file's capture loop to their graph
+   * node ids. Keys are never persisted; they exist only for the duration
+   * of the worker pass.
+   *
+   * Default: undefined (no synthetic structure members).
+   */
+  readonly synthesizeStructureMembers?: (
+    tree: Parser.Tree,
+    filePath: string,
+    classOwnersByNodeId: ReadonlyMap<number, string>,
+  ) => {
+    nodes: ReadonlyArray<{
+      id: string;
+      label: string;
+      properties: Record<string, unknown>;
+    }>;
+    symbols: ReadonlyArray<{
+      filePath: string;
+      name: string;
+      nodeId: string;
+      type: string;
+      ownerId?: string;
+      parameterCount?: number;
+      requiredParameterCount?: number;
+      parameterTypes?: string[];
+      returnType?: string;
+      visibility?: string;
+      isStatic?: boolean;
+      isAbstract?: boolean;
+      isFinal?: boolean;
+    }>;
+    relationships: ReadonlyArray<{
+      id: string;
+      sourceId: string;
+      targetId: string;
+      type: string;
+      confidence: number;
+      reason: string;
+    }>;
+  };
 
   /**
    * Harvest this file's module-level string constants (#2391 core, #2980 Java
@@ -435,6 +543,50 @@ interface LanguageProviderConfig {
    * {@link extractModuleConstants} accepts.
    */
   readonly moduleConstantHeuristic?: (content: string) => boolean;
+
+  /**
+   * Prepare this language's harvested constants once the complete repo map is
+   * available and before route operands are folded. The parse phase passes only
+   * entries owned by this provider, so implementations can build one reusable
+   * language-specific index and may materialize deferred bindings in place.
+   *
+   * Default: undefined (the harvested constants are already fold-ready).
+   */
+  readonly prepareRouteConstants?: (repo: RepoConstants) => void;
+
+  /**
+   * Spring async messaging facts captured for one file — the listener
+   * annotations that subscribe to a broker destination and the template calls
+   * that publish to one.
+   *
+   * Both families are collected during capture and restored on the main thread
+   * by {@link LanguageProviderConfig.applyCaptureSideChannel}, so they are only
+   * readable AFTER scope resolution has run. The `springDestinations` phase is
+   * the caller; routing through a provider hook is what keeps that phase from
+   * naming a language to reach a per-language fact store.
+   *
+   * Default: undefined — this language captures no Spring messaging facts, and
+   * the phase contributes nothing for its files.
+   */
+  readonly getSpringMessagingFacts?: (filePath: string) => SpringMessagingFacts;
+
+  /**
+   * Whether this language INTERPOLATES its string literals — Kotlin's
+   * `"orders-$env"` and `"orders-${env}"` are string templates evaluated at
+   * runtime, while Java's are ordinary characters.
+   *
+   * A capability rather than a language name, because shared ingestion code may
+   * not branch on a language (see AGENTS.md) and because the capability is what
+   * the consumer actually needs. Spring destination resolution is the caller:
+   * in an interpolating language an unescaped `$` in a destination literal is a
+   * runtime value and must be refused, and `"${app.topic}"` is a TEMPLATE, not
+   * a Spring property placeholder — the placeholder has to be written
+   * `"\${app.topic}"` there. Reading either as an address gives two unrelated
+   * services one shared destination node.
+   *
+   * Default: false — literals are literal, `$` is a character.
+   */
+  readonly interpolatesStringLiterals?: boolean;
 
   /**
    * Fold one file's non-literal route-path operand list
@@ -852,6 +1004,34 @@ export interface LanguageProvider extends Omit<LanguageProviderConfig, 'mroStrat
   readonly mroStrategy: MroStrategy;
   /** Check if a name is a built-in/stdlib function that should be filtered from the call graph. */
   readonly isBuiltInName: (name: string) => boolean;
+}
+
+/**
+ * Run each provider's repo-constant preparation hook once over only the files
+ * that provider owns. Values are shared with `repo`, so in-place preparation
+ * is visible to the subsequent fold without copying the complete map.
+ */
+export function prepareRouteConstantsByProvider(
+  repo: RepoConstants,
+  providerForFile: (filePath: string) => Pick<LanguageProvider, 'prepareRouteConstants'> | null,
+): void {
+  const slices = new Map<
+    Pick<LanguageProvider, 'prepareRouteConstants'>,
+    Map<string, ModuleConstants>
+  >();
+  for (const [filePath, constants] of repo) {
+    const provider = providerForFile(filePath);
+    if (!provider?.prepareRouteConstants) continue;
+    let slice = slices.get(provider);
+    if (!slice) {
+      slice = new Map();
+      slices.set(provider, slice);
+    }
+    slice.set(filePath, constants);
+  }
+  for (const [provider, slice] of slices) {
+    provider.prepareRouteConstants?.(slice);
+  }
 }
 
 const DEFAULTS: Pick<LanguageProvider, 'mroStrategy'> = {

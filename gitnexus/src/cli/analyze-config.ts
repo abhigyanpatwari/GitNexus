@@ -60,7 +60,8 @@ type ValueKind =
   | 'string-array'
   | 'numeric-string'
   | 'embeddings'
-  | 'branch';
+  | 'branch'
+  | 'path';
 
 interface KeySpec {
   /** The `AnalyzeOptions` field this config key normalizes into. */
@@ -108,6 +109,9 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
+  // Explicit local Actuator snapshot input (#2418). The path itself is safe in
+  // project config; payload contents are never copied into the graph wholesale.
+  springActuator: { target: 'springActuator', kind: 'path' },
   // Auth token AND dims are intentionally CLI/env-only — no embeddingAuthToken
   // or embeddingDims key here:
   //   - the token keeps secrets out of a committed .gitnexusrc;
@@ -226,6 +230,17 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         throw new GitNexusRcError(`${source} must be a string branch name.`);
       }
       return validateBranchName(value, source);
+    case 'path': {
+      if (typeof value !== 'string') {
+        throw new GitNexusRcError(`${source} must be a file or directory path.`);
+      }
+      const trimmed = value.trim();
+      if (!trimmed) {
+        throw new GitNexusRcError(`${source} must not be empty.`);
+      }
+      assertNoHiddenChars(trimmed, source);
+      return trimmed;
+    }
     case 'string': {
       if (typeof value !== 'string') {
         throw new GitNexusRcError(`${source} must be a string.`);

@@ -34,6 +34,7 @@ import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import {
+  expandJavaWildcardStaticImports,
   extractJavaModuleConstants,
   foldJavaOperands,
   isJavaConstantFile,
@@ -147,7 +148,7 @@ describe('extractJavaModuleConstants', () => {
     const mcStatic = extractJavaModuleConstants(parse(STATIC_IMPORT_CONTROLLER));
     expect(mcStatic.imports.get('DIAGNOSIS_SAVE_V1')).toEqual({
       module: 'com.winning.opt.diagnosis.api.constants.ApiPathConstants',
-      originalName: 'DIAGNOSIS_SAVE_V1',
+      originalName: 'ApiPathConstants.DIAGNOSIS_SAVE_V1',
     });
   });
 
@@ -790,5 +791,179 @@ describe('text blocks keep the skip floor', () => {
       '}',
     ].join('\n');
     expect(extractJavaModuleConstants(parse(src)).literals.has('X')).toBe(false);
+  });
+});
+
+describe('wildcard static imports (`import static a.b.C.*`)', () => {
+  const WILDCARD_CONTROLLER = `package com.y;
+import static com.x.ApiPaths.*;
+public class C {
+    @PostMapping(SAVE)
+    public void save() {}
+}`;
+
+  it('records the class FQN and does not bind the class simple name as a field', () => {
+    const mc = extractJavaModuleConstants(parse(WILDCARD_CONTROLLER));
+    expect(mc.wildcardImports).toEqual(['com.x.ApiPaths']);
+    expect(mc.imports.has('ApiPaths')).toBe(false);
+    expect(mc.imports.has('SAVE')).toBe(false);
+  });
+
+  it('materializes bare names and does not overwrite an explicit static import', () => {
+    const constants = extractJavaModuleConstants(
+      parse(`package com.x;
+public class ApiPaths {
+  public static final String SAVE = "/api/v1/save";
+  public static final String OTHER = "/api/v1/other";
+}`),
+    );
+    const controller = extractJavaModuleConstants(
+      parse(`package com.y;
+import static com.x.ApiPaths.SAVE;
+import static com.x.ApiPaths.*;
+public class C {}`),
+    );
+    expect(controller.wildcardImports).toEqual(['com.x.ApiPaths']);
+    expect(controller.imports.get('SAVE')).toEqual({
+      module: 'com.x.ApiPaths',
+      originalName: 'ApiPaths.SAVE',
+    });
+    const repo: RepoConstants = new Map([
+      ['src/com/x/ApiPaths.java', constants],
+      ['src/com/y/C.java', controller],
+    ]);
+    expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
+    expect(controller.imports.get('SAVE')).toEqual({
+      module: 'com.x.ApiPaths',
+      originalName: 'ApiPaths.SAVE',
+    });
+    expect(controller.imports.get('OTHER')).toEqual({
+      module: 'com.x.ApiPaths',
+      originalName: 'ApiPaths.OTHER',
+    });
+  });
+
+  it('folds a wildcard-imported route constant', () => {
+    const repo = repoOf({
+      'src/main/java/com/x/ApiPaths.java': `package com.x;
+public class ApiPaths { public static final String SAVE = "/api/v1/save"; }`,
+      'src/main/java/com/y/C.java': WILDCARD_CONTROLLER,
+    });
+    expandJavaWildcardStaticImports(
+      repo.get('src/main/java/com/y/C.java')!,
+      'src/main/java/com/y/C.java',
+      repo,
+    );
+    expect(
+      foldJavaOperands('src/main/java/com/y/C.java', [{ kind: 'ref', name: 'SAVE' }], repo),
+    ).toBe('/api/v1/save');
+  });
+
+  it('unresolved wildcard target stays at the skip floor', () => {
+    const mc = extractJavaModuleConstants(parse(WILDCARD_CONTROLLER));
+    const repo: RepoConstants = new Map([['src/com/y/C.java', mc]]);
+    expandJavaWildcardStaticImports(mc, 'src/com/y/C.java', repo);
+    expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'SAVE' }], repo)).toBeNull();
+  });
+
+  it('does not resurrect a wildcard member shadowed by an unfoldable local field', () => {
+    const repo = repoOf({
+      'src/com/x/ApiPaths.java': `package com.x;
+public class ApiPaths { public static final String SAVE = "/imported"; }`,
+      'src/com/y/C.java': `package com.y;
+import static com.x.ApiPaths.*;
+public class C {
+  static final String SAVE = compute();
+  @PostMapping(SAVE) public void save() {}
+}`,
+    });
+    const controller = repo.get('src/com/y/C.java')!;
+    expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
+    expect(controller.imports.has('SAVE')).toBe(false);
+    expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'SAVE' }], repo)).toBeNull();
+  });
+
+  it('binds only fields owned by the wildcard target type', () => {
+    const repo = repoOf({
+      'src/com/x/ApiPaths.java': `package com.x;
+public class ApiPaths { public static final String ROUTE = "/right"; }
+class Other {
+  public static final String ROUTE = "/wrong";
+  public static final String OTHER_ONLY = "/other";
+}`,
+      'src/com/y/C.java': `package com.y;
+import static com.x.ApiPaths.*;
+public class C {}`,
+    });
+    const controller = repo.get('src/com/y/C.java')!;
+    expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
+    expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'ROUTE' }], repo)).toBe(
+      '/right',
+    );
+    expect(controller.imports.has('OTHER_ONLY')).toBe(false);
+  });
+
+  it('floors duplicate wildcard members while preserving an explicit import', () => {
+    const sources = {
+      'src/a/A.java': `package a;
+public class A { public static final String ROUTE = "/a"; }`,
+      'src/b/B.java': `package b;
+public class B { public static final String ROUTE = "/b"; }`,
+    };
+    const ambiguous = repoOf({
+      ...sources,
+      'src/c/C.java': `package c;
+import static a.A.*;
+import static b.B.*;
+public class C {}`,
+    });
+    expandJavaWildcardStaticImports(ambiguous.get('src/c/C.java')!, 'src/c/C.java', ambiguous);
+    expect(
+      foldJavaOperands('src/c/C.java', [{ kind: 'ref', name: 'ROUTE' }], ambiguous),
+    ).toBeNull();
+
+    const explicit = repoOf({
+      ...sources,
+      'src/c/C.java': `package c;
+import static a.A.*;
+import static b.B.*;
+import static b.B.ROUTE;
+public class C {}`,
+    });
+    expandJavaWildcardStaticImports(explicit.get('src/c/C.java')!, 'src/c/C.java', explicit);
+    expect(foldJavaOperands('src/c/C.java', [{ kind: 'ref', name: 'ROUTE' }], explicit)).toBe('/b');
+  });
+
+  it('does not bind the wildcard target type name', () => {
+    const repo = repoOf({
+      'src/com/x/ApiPaths.java': `package com.x;
+public class ApiPaths { public static final String SAVE = "/api/v1/save"; }`,
+      'src/com/y/C.java': WILDCARD_CONTROLLER,
+    });
+    const controller = repo.get('src/com/y/C.java')!;
+    expandJavaWildcardStaticImports(controller, 'src/com/y/C.java', repo);
+    expect(controller.imports.has('ApiPaths')).toBe(false);
+    expect(
+      foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'ApiPaths.SAVE' }], repo),
+    ).toBeNull();
+    expect(foldJavaOperands('src/com/y/C.java', [{ kind: 'ref', name: 'SAVE' }], repo)).toBe(
+      '/api/v1/save',
+    );
+  });
+
+  it('admits wildcard-only files on the harvest heuristic', () => {
+    expect(javaProvider.moduleConstantHeuristic?.(WILDCARD_CONTROLLER)).toBe(true);
+    expect(javaProvider.moduleConstantHeuristic?.('import com.example.api.*;\nclass C {}')).toBe(
+      false,
+    );
+  });
+});
+
+describe('resolveJavaImport POSIX key compare', () => {
+  it('matches a backslash-keyed Windows repo path', () => {
+    const keys = new Set(['src\\main\\java\\com\\x\\ApiPath.java']);
+    expect(resolveJavaImport('a\\A.java', 'com.x.ApiPath', keys)).toBe(
+      'src\\main\\java\\com\\x\\ApiPath.java',
+    );
   });
 });

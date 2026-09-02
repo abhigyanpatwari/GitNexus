@@ -36,6 +36,9 @@ import {
   closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFiles,
+  nodeTablesWithRowsForFiles,
+  snapshotDerivedRelsForFiles,
+  restoreDerivedRels,
   ensureEmbeddingRowDmlSafe,
   ensureFtsRowDmlSafe,
   readIndexCatalogSnapshot,
@@ -45,6 +48,7 @@ import {
   deleteAllCallSummaries,
   deleteAllInjects,
   deleteAllAdvisedBy,
+  deleteAllDestinations,
   deleteSpringAopEvidenceNodes,
   deleteSpringAutoConfigurationDeclarations,
   deleteSpringAutoConfigurationSyntheticClasses,
@@ -67,6 +71,7 @@ import {
   createSearchFTSIndexes,
   summarizeFtsIndexBuildFailures,
   dropSearchFTSIndexes,
+  missingSearchFTSIndexTables,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
@@ -134,8 +139,19 @@ import {
   extractChangedSubgraph,
   computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
+import {
+  collectSpringConfigConsumerDriftFiles,
+  type PersistedSpringConfigConsumerRow,
+} from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
+import {
+  ftsTablesAmong,
+  incrementalFtsTablesFromGraph,
+  nodeTablesForIncrementalDelete,
+  shouldPreservePersistedDerivedGraph,
+} from './incremental/derived-writeback.js';
+import { NODE_TABLES } from './lbug/schema.js';
 import {
   loadParseCache,
   saveParseCache,
@@ -172,6 +188,8 @@ import {
 } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
+import { SPRING_CONFIG_UNRESOLVED_PREFIX } from './ingestion/frameworks/spring/config-bindings.js';
+import { classifySpringConfigFile } from './ingestion/pipeline-phases/spring-config.js';
 import {
   SPRING_AOP_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
@@ -466,6 +484,11 @@ export interface AnalyzeOptions {
    * consumer scan unchanged.
    */
   fetchWrappers?: string[];
+  /**
+   * Explicit local Spring Boot Actuator snapshot input (#2418), forwarded to
+   * the Spring enrichment phase. Undefined keeps static-only analysis.
+   */
+  springActuatorPath?: string;
   /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
@@ -1642,6 +1665,55 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Actuator snapshots are external runtime inputs and are intentionally not
+  // hashed or persisted. Rebuild on every enabled run so updated snapshots
+  // cannot hit the git freshness fast path; rebuild once when the option is
+  // removed so stale runtime-only evidence is cleared from the index.
+  const springActuatorRequested = options.springActuatorPath !== undefined;
+  const springActuatorPreviouslyEnabled = existingMeta?.springActuator?.enabled === true;
+  const previousActuatorInputs: unknown = existingMeta?.springActuator?.repoRelativeInputs;
+  const retainedActuatorInputs = Array.isArray(previousActuatorInputs)
+    ? previousActuatorInputs.filter((input): input is string => typeof input === 'string')
+    : [];
+  if (springActuatorRequested) {
+    const resolvedRepo = path.resolve(repoPath);
+    const resolvedInput = path.resolve(repoPath, options.springActuatorPath!);
+    const relativeInput = path.relative(resolvedRepo, resolvedInput);
+    const springActuatorRepoRelativeInput =
+      relativeInput === ''
+        ? '.'
+        : relativeInput === '..' ||
+            relativeInput.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relativeInput)
+          ? null
+          : relativeInput.split(path.sep).join('/');
+    if (
+      springActuatorRepoRelativeInput !== null &&
+      !retainedActuatorInputs.includes(springActuatorRepoRelativeInput)
+    ) {
+      retainedActuatorInputs.push(springActuatorRepoRelativeInput);
+    }
+    if (!options.force) {
+      log('Spring Actuator runtime enrichment requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (springActuatorPreviouslyEnabled) {
+    if (
+      !Array.isArray(previousActuatorInputs) ||
+      previousActuatorInputs.some((input) => typeof input !== 'string')
+    ) {
+      throw new Error(
+        'Cannot safely disable Spring Actuator runtime enrichment because the previous ' +
+          'index did not record whether its snapshot was inside the repository. Re-run once ' +
+          'with the previous --spring-actuator path, then run again without it.',
+      );
+    }
+    log('Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.');
+    options = { ...options, force: true };
+  }
+  const springActuatorScanExclusions =
+    retainedActuatorInputs.length === 0 ? undefined : retainedActuatorInputs;
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1716,6 +1788,7 @@ async function runFullAnalysisInner(
                   // Fast path does not re-run PDG. Using `options.pdg` would
                   // strip PDG bullets from AGENTS.md on a rename-only analyze.
                   hasPdg: existingMeta.pdg != null,
+                  hasSpringActuator: existingMeta.springActuator?.enabled === true,
                 },
               );
             } catch {
@@ -1885,6 +1958,25 @@ async function runFullAnalysisInner(
   // `resolveStreamPdgEmit` — read fresh at the same point — behaves.)
   const streamGraphEmitActive = resolveStreamGraphEmit(options);
 
+  // #3016: hold back Leiden and flow extraction when the persisted metadata
+  // says this run is a candidate for a surgical incremental write, whose
+  // derived layer is reused rather than recomputed. Deliberately the same
+  // conditions as the `isIncremental` decision below MINUS the two that only
+  // the pipeline can answer (the analysis-feature re-check and a non-empty
+  // file list), so this is a superset: every run that turns out incremental
+  // had the phases skipped, and the runs that do not are caught by
+  // `runDeferredDerivedPhases` once the write plan is known. Excluded on the
+  // streaming path because that is a full rebuild by construction, and the
+  // deferred phases must not write into a finalized emit sink.
+  const skipDerivedGraphPhases =
+    !streamGraphEmitActive &&
+    !options.force &&
+    !!existingMeta &&
+    !!existingMeta.fileHashes &&
+    Object.keys(existingMeta.fileHashes).length > 0 &&
+    repoHasGit &&
+    !schemaFingerprintMismatch(existingMeta.schemaFingerprint);
+
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
   const pipelineResult = await runPipelineFromRepo(
     repoPath,
@@ -1927,6 +2019,9 @@ async function runFullAnalysisInner(
         ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
         : undefined,
       fetchWrappers: options.fetchWrappers,
+      skipDerivedGraphPhases,
+      springActuatorPath: options.springActuatorPath,
+      springActuatorScanExclusions,
     },
   );
 
@@ -1985,6 +2080,28 @@ async function runFullAnalysisInner(
   const hashDiff = isIncremental
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
     : undefined;
+
+  // #3016: `skipDerivedGraphPhases` was decided BEFORE the pipeline, from the
+  // persisted metadata alone, so it can only ever be a bet that this run stays
+  // surgical. Settle the bet here, where `isIncremental` and the deletion set
+  // are both known, and pay it off by running the held-back phases whenever the
+  // write plan needs a freshly derived layer:
+  //   - not incremental      → full rebuild writes the whole graph, and a graph
+  //                            with no Community/Process nodes would publish an
+  //                            index with no communities and no flows;
+  //   - added/changed/deleted files → the persisted derived layer can miss new
+  //                            symbols, keep stale memberships, or reference
+  //                            removed ids. Only an empty file-hash diff is a
+  //                            proof that Leiden/flows still match.
+  const preserveDerivedLayer =
+    skipDerivedGraphPhases &&
+    isIncremental &&
+    !!hashDiff &&
+    shouldPreservePersistedDerivedGraph(hashDiff);
+  if (skipDerivedGraphPhases && !preserveDerivedLayer) {
+    progress('communities', 58, 'Detecting code communities and flows...');
+    await pipelineResult.runDeferredDerivedPhases?.();
+  }
 
   // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
   // path and swap it over the live index in one rename at the very end, so a
@@ -2196,6 +2313,7 @@ async function runFullAnalysisInner(
     // collapse check compares the whole in-memory graph against the whole DB,
     // which is only a like-for-like comparison on a full rebuild.
     let wroteChangedSubgraphOnly = false;
+    let incrementalFtsRebuildTables: Set<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -2341,6 +2459,37 @@ async function runFullAnalysisInner(
       //    and extractChangedSubgraph — asymmetry between the two would
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
+
+      const springConfigChanged =
+        hashDiff.toWrite.some((filePath) => classifySpringConfigFile(filePath) !== null) ||
+        hashDiff.deleted.some((filePath) => classifySpringConfigFile(filePath) !== null);
+      if (springConfigChanged) {
+        const unresolvedPrefix = escapeCypherString(SPRING_CONFIG_UNRESOLVED_PREFIX);
+        const persistedSpringConfigConsumers = (await executeQuery(
+          'MATCH (n:Property) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description ' +
+            'UNION ALL ' +
+            'MATCH (n:Class) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description ' +
+            'UNION ALL ' +
+            'MATCH (n:Record) ' +
+            `WHERE n.description CONTAINS '${unresolvedPrefix}' ` +
+            'RETURN n.id AS id, n.description AS description',
+        )) as PersistedSpringConfigConsumerRow[];
+        const springConfigConsumerDriftFiles = collectSpringConfigConsumerDriftFiles(
+          pipelineResult.graph,
+          persistedSpringConfigConsumers,
+        );
+        for (const filePath of springConfigConsumerDriftFiles) effectiveWriteSet.add(filePath);
+        if (springConfigConsumerDriftFiles.size > 0) {
+          log(
+            `Incremental: +${springConfigConsumerDriftFiles.size} file(s) added for ` +
+              'Spring config consumer property drift',
+          );
+        }
+      }
 
       // `frameworkAnnotations` is derived from cross-file JVM visibility, so
       // an unchanged Class row can change when a same-package declaration is
@@ -2490,6 +2639,14 @@ async function runFullAnalysisInner(
       );
       if (extensionForcedRebuild || sizeForcedRebuild) {
         escalatedFullWrite = true;
+        // #3016: escalation converts this run into a wipe + full bulk COPY of
+        // the in-memory graph, so the derived layer the skip was betting on
+        // preserving has to exist in that graph after all. Same reasoning as
+        // the not-incremental branch above, just discovered later.
+        if (preserveDerivedLayer) {
+          progress('communities', 63, 'Detecting code communities and flows...');
+          await pipelineResult.runDeferredDerivedPhases?.();
+        }
         // Every live cause is named, not just the first: a DB can carry BOTH a
         // vector index and FTS indexes, and reporting one cause while the other
         // is equally fatal is how #2841 stayed mis-diagnosed for so long. §5.D:
@@ -2701,7 +2858,53 @@ async function runFullAnalysisInner(
         // in between — so re-reading would only weaken the one-read invariant
         // the snapshot type exists to enforce.
         if (buildPath === lbugPath) liveIndexMutationStarted = true;
-        await dropSearchFTSIndexes(indexCatalogRows);
+        // FTS narrowing is independent of Leiden/flow reuse: even when this
+        // run re-derives communities, Ladybug still cannot DML a live FTS
+        // index (#2589), so only the tables this write set touches should
+        // lose their index. The probe is a question about the DB rather than
+        // the fresh graph — a symbol the edit DELETED is in no fresh graph
+        // but is still a row that has to go.
+        const tablesWithRows = await nodeTablesWithRowsForFiles(filesToDelete, NODE_TABLES);
+        // Narrowing 1 — the FTS sweep, from "every configured index" to "the
+        // indexes this run must touch". Three sources, and dropping any one of
+        // them strands something:
+        //   - what the writeback DELETES (the probe above), because a symbol
+        //     the edit removed is in no fresh graph but is still a row;
+        //   - what it INSERTS (the fresh graph), because inserting under a live
+        //     FTS index is the same #2589 hazard as deleting under one;
+        //   - what is MISSING right now, because narrowing to the written
+        //     tables would otherwise leave keyword search degraded forever on
+        //     tables whose index a previous escalation dropped — the next full
+        //     rebuild would be the only thing that ever restored them.
+        // An unreadable catalog proves nothing about that third set, so it
+        // withdraws the narrowing entirely rather than guess.
+        const missingFts = await missingSearchFTSIndexTables(indexCatalogRows);
+        const touchedFts = missingFts
+          ? new Set([
+              ...ftsTablesAmong(tablesWithRows),
+              ...incrementalFtsTablesFromGraph(pipelineResult.graph, new Set(filesToDelete)),
+              ...missingFts,
+            ])
+          : undefined;
+        // Graph-wide Spring synthetic Class nodes are DETACH DELETEd on this
+        // branch even when Class is not in the write set
+        // (`deleteSpringAutoConfigurationSyntheticClasses`). Always include
+        // Class so class_fts is not live across that DML (#2589), including
+        // when the fresh graph no longer materializes the synthetics but the
+        // DB still holds them.
+        if (touchedFts) {
+          touchedFts.add('Class');
+        }
+        incrementalFtsRebuildTables = touchedFts;
+        // MEMBER_OF / STEP_IN_PROCESS / ENTRY_POINT_OF edges hang off the nodes
+        // the DETACH DELETE below removes, so preserving the Community/Process
+        // nodes preserves only half the layer unless these are reattached after
+        // the subgraph write puts the member nodes back. Only the probed tables
+        // can own such an edge, so they are the only ones worth scanning.
+        const derivedSnapshot = preserveDerivedLayer
+          ? await snapshotDerivedRelsForFiles(filesToDelete, [...tablesWithRows])
+          : [];
+        await dropSearchFTSIndexes(indexCatalogRows, incrementalFtsRebuildTables);
         // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
         //     loop issued a count + delete per table per FILE — ~13k
@@ -2716,6 +2919,9 @@ async function runFullAnalysisInner(
         await deleteNodesForFiles(filesToDelete, {
           onChunk: (done, total) =>
             progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
+          nodeTables: incrementalFtsRebuildTables
+            ? nodeTablesForIncrementalDelete(NODE_TABLES, incrementalFtsRebuildTables)
+            : undefined,
         });
         // Surgical path: Phase 3.5 restores exactly these files' embedding
         // rows (FIX 3). Sound because deleteNodesForFiles propagates errors
@@ -2723,10 +2929,12 @@ async function runFullAnalysisInner(
         // deterministically — and this process holds the exclusive DB lock,
         // so no concurrent writer can disturb the derivation.
         deletedFilePathsForRestore = new Set(filesToDelete);
-        // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
-        //    from the fresh pipeline output below. Required for the
-        //    "Leiden runs on the FULL graph" correctness invariant.
-        await deleteAllCommunitiesAndProcesses();
+        if (!preserveDerivedLayer) {
+          // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
+          //    from the fresh pipeline output below. Required for the
+          //    "Leiden runs on the FULL graph" correctness invariant.
+          await deleteAllCommunitiesAndProcesses();
+        }
         // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
         //     validity is a whole-program property (a third-file change to the
         //     interface or an implementer creates/invalidates edges between two
@@ -2745,6 +2953,18 @@ async function runFullAnalysisInner(
         // Rebuild the complete ADVISED_BY set on every incremental writeback.
         await deleteAllAdvisedBy();
         await deleteSpringAopEvidenceNodes();
+        // 2b-bis. Drop the whole async messaging overlay. A RESOLVED
+        //     Destination deliberately stores no filePath (so the per-file
+        //     DETACH DELETE cannot cut a node shared across files), which also
+        //     means the per-file delete can never REMOVE one that is now
+        //     orphaned, and the endpoint-writability extract can never ADD one
+        //     introduced by a new file. Delete-all here plus the graph-wide
+        //     re-include in extractChangedSubgraph rebuilds the layer whole;
+        //     the springDestinations phase recomputes it from the full file
+        //     list on every persisting analyze, so nothing is lost. Both halves
+        //     must move together — deleting without the re-include drops the
+        //     layer, re-including without the delete duplicates its edges.
+        await deleteAllDestinations();
         // 2c. Drop Spring-owned DECLARES edges (#2415). The
         //     auto-configuration phase scans every metadata file and recomputes
         //     the full set each run; exact reason filtering leaves declarations
@@ -2774,7 +2994,9 @@ async function runFullAnalysisInner(
         //    only that. Unchanged-file rows in the DB stay untouched. Pass
         //    the SAME effectiveWriteSet so the subgraph and the deletes
         //    cover identical files (asymmetry would silently corrupt).
-        const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+        const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet, {
+          includeDerivedGraphWide: !preserveDerivedLayer,
+        });
         wroteChangedSubgraphOnly = true;
         await saveIncrementalDirtyState('load-graph', {
           importerExpansion,
@@ -2787,6 +3009,9 @@ async function runFullAnalysisInner(
           const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
           progress('lbug', pct, msg);
         });
+        if (preserveDerivedLayer && derivedSnapshot.length > 0) {
+          await restoreDerivedRels(derivedSnapshot);
+        }
       }
 
       // Boundary drain (#2409): checkpoint at the end of the incremental
@@ -2846,6 +3071,7 @@ async function runFullAnalysisInner(
       // pre-existing row (#2544/#2546) must not discard this run's otherwise-
       // successful graph/embeddings work — only keyword search degrades.
       const ftsResult = await buildSearchIndexesOrDegrade(executeQuery, {
+        tables: incrementalFtsRebuildTables,
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -3566,6 +3792,17 @@ async function runFullAnalysisInner(
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
       runnerIdentity,
+      // Persist only normalized repo-relative exclusions, never absolute paths
+      // or payloads. Keep them after runtime enrichment is disabled so a later
+      // ordinary scan cannot rediscover an unchanged snapshot as source/FTS.
+      ...(springActuatorRequested || retainedActuatorInputs.length > 0
+        ? {
+            springActuator: {
+              enabled: springActuatorRequested,
+              repoRelativeInputs: retainedActuatorInputs,
+            },
+          }
+        : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
@@ -3600,8 +3837,11 @@ async function runFullAnalysisInner(
         files: pipelineResult.totalFileCount,
         nodes: stats.nodes,
         edges: stats.edges,
-        communities: pipelineResult.communityResult?.stats.totalCommunities,
-        processes: pipelineResult.processResult?.stats.totalProcesses,
+        communities:
+          pipelineResult.communityResult?.stats.totalCommunities ??
+          existingMeta?.stats?.communities,
+        processes:
+          pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
         embeddings: persistedEmbeddingCount,
       },
       capabilities: {
@@ -3830,9 +4070,12 @@ async function runFullAnalysisInner(
             files: pipelineResult.totalFileCount,
             nodes: stats.nodes,
             edges: stats.edges,
-            communities: pipelineResult.communityResult?.stats.totalCommunities,
+            communities:
+              pipelineResult.communityResult?.stats.totalCommunities ??
+              existingMeta?.stats?.communities,
             clusters: aggregatedClusterCount,
-            processes: pipelineResult.processResult?.stats.totalProcesses,
+            processes:
+              pipelineResult.processResult?.stats.totalProcesses ?? existingMeta?.stats?.processes,
           },
           undefined,
           {
@@ -3841,6 +4084,7 @@ async function runFullAnalysisInner(
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,
             hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuatorPath !== undefined,
           },
         );
       } catch {

@@ -36,7 +36,7 @@ import {
   getDurableParsedFileDir,
   loadDurableParsedFileIndex,
   prepareDurableParsedFileChunk,
-  restoreDurableParsedFileShard,
+  durableChunkHasShards,
 } from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
@@ -89,10 +89,9 @@ import type {
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
-import {
-  resolveOperands,
-  type ModuleConstants,
-} from '../route-extractors/python-const-resolver.js';
+import { resolveOperands } from '../route-extractors/python-const-resolver.js';
+import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
+import { prepareRouteConstantsByProvider } from '../language-provider.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -463,6 +462,9 @@ export async function runChunkedParseAndResolve(
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  /** Repo-wide harvested constants, already prepared per provider. See
+   *  `ParseOutput.moduleConstants` for why this leaves the parse phase. */
+  moduleConstants: ReadonlyMap<string, ModuleConstants>;
   scopeExtractionFailures: string[];
   /** Files excluded because their non-standalone language parser was unavailable. */
   unavailableScopeLanguageFiles: number;
@@ -739,15 +741,15 @@ export async function runChunkedParseAndResolve(
   // a sibling of the run-scoped store, NOT cleared per run. Workers write a
   // shard per chunk hash; on a warm parse-cache hit we restore the chunk's
   // shards into the run-scoped store so scope-resolution streams them without
-  // re-parsing. `durableHitKeys` is the prior run's index, version-gated by
-  // PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk re-dispatches, which
-  // repopulates the durable store — never the main-thread extract fallback).
+  // re-parsing. `durableHitEntries` is the prior run's path-coverage index,
+  // version-gated by PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk
+  // re-dispatches, which repopulates the durable store).
   const durableParsedFileDir =
     parsedFileStorePath !== undefined ? getDurableParsedFileDir(parsedFileStorePath) : undefined;
-  const durableHitKeys =
+  const durableHitEntries =
     durableParsedFileDir !== undefined
       ? await loadDurableParsedFileIndex(durableParsedFileDir, PARSE_CACHE_VERSION)
-      : new Set<string>();
+      : new Map<string, ReadonlySet<string>>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
   let reparsedFileCount = 0;
@@ -825,11 +827,14 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.parsedFiles?.length) {
           if (parsedFileStorePath) {
-            await persistParsedFileChunk(
+            const wrote = await persistParsedFileChunk(
               parsedFileStorePath,
               `chunk-${chunkIdx}`,
               chunkWorkerData.parsedFiles,
             );
+            if (!wrote) {
+              for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
+            }
           } else {
             for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
           }
@@ -1019,8 +1024,16 @@ export async function runChunkedParseAndResolve(
       // store was introduced, or a pruned/version-stale shard — fall through to
       // a worker re-dispatch to repopulate them. NEVER let scope-resolution
       // re-extract on the main thread (the #1983 OOM the durable store closes).
+      const durableExpectedPaths =
+        chunkHash === null ? undefined : durableHitEntries.get(chunkHash);
       const durableHit =
-        chunkHash !== null && durableParsedFileDir !== undefined && durableHitKeys.has(chunkHash);
+        cachedRaw !== undefined &&
+        cachedRaw.length > 0 &&
+        chunkHash !== null &&
+        durableParsedFileDir !== undefined &&
+        parsedFileStorePath !== undefined &&
+        durableExpectedPaths !== undefined &&
+        (await durableChunkHasShards(parsedFileStorePath, chunkHash, durableExpectedPaths));
 
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
@@ -1053,22 +1066,8 @@ export async function runChunkedParseAndResolve(
             nodesCreated: graph.nodeCount,
           },
         });
-        // Restore the chunk's durable ParsedFile shards into the run-scoped
-        // store so scope-resolution finds full coverage with ZERO main-thread
-        // re-parse. A verbatim byte copy — byte-identical to a cold run.
-        if (durableHit && durableParsedFileDir && parsedFileStorePath && chunkHash) {
-          const restored = await restoreDurableParsedFileShard(
-            durableParsedFileDir,
-            parsedFileStorePath,
-            chunkHash,
-          );
-          if (restored === 0) {
-            logger.warn(
-              `parsedfile-cache: durable shards missing for cached chunk ` +
-                `${chunkHash.slice(0, 8)} — scope-resolution will re-extract these files`,
-            );
-          }
-        }
+        // The durable gate already snapshotted warm `.v8` shards into the
+        // run-scoped store for scope resolution.
         await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
       } else {
         // Cache miss: dispatch to workers, capture the raw results, store
@@ -1271,11 +1270,27 @@ export async function runChunkedParseAndResolve(
   // carries `routePathExpr`/`routePathOperands` and an empty `routePath`; we fold
   // the operands against the repo-wide, file-path-keyed constant map. On failure
   // we DROP the route (KTD5 skip floor) rather than emit a phantom `POST /`.
+  //
+  // Built (and prepared) UNCONDITIONALLY when anything was harvested, because
+  // the map is also handed to downstream phases on `ParseOutput.moduleConstants`
+  // — `springDestinations` folds broker-address constants against exactly the
+  // same table. Preparation runs exactly once, here, on one map, before either
+  // consumer folds. Deferring it into each consumer instead would need
+  // `prepareRouteConstants` to be safe to call twice — it materializes deferred
+  // wildcard bindings IN PLACE — or would leave whichever consumer ran first
+  // folding against unprepared constants. Neither is worth the coupling; the
+  // cost here is one pass over the harvested constants of a repo that has some.
+  const repoConstants = new Map<string, ModuleConstants>();
+  for (const { filePath, constants } of allModuleConstants) {
+    repoConstants.set(filePath, constants);
+  }
+  if (repoConstants.size > 0) {
+    // Let each language prepare only its own constants slice before folding.
+    // This is where deferred wildcard bindings can be materialized once per
+    // provider without naming a language in the shared parse phase.
+    prepareRouteConstantsByProvider(repoConstants, getProviderForFile);
+  }
   if (allDecoratorRoutes.some((dr) => dr.routePathExpr !== undefined)) {
-    const repoConstants = new Map<string, ModuleConstants>();
-    for (const { filePath, constants } of allModuleConstants) {
-      repoConstants.set(filePath, constants);
-    }
     const resolvedRoutes: ExtractedDecoratorRoute[] = [];
     let skipped = 0;
     for (const dr of allDecoratorRoutes) {
@@ -1601,6 +1616,10 @@ export async function runChunkedParseAndResolve(
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    // Repo-wide, file-path-keyed constants, already through each provider's
+    // `prepareRouteConstants` hook. Empty when no provider harvests constants
+    // for the languages in this repo.
+    moduleConstants: repoConstants,
     scopeExtractionFailures: [...scopeExtractionFailures].sort(),
     unavailableScopeLanguageFiles,
   };

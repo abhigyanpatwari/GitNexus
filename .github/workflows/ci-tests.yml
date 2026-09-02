@@ -481,6 +481,20 @@ jobs:
           node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
         working-directory: gitnexus
 
+      - name: Java wildcard-static route constant guards (#3110)
+        if: ${{ !cancelled() }}
+        # Build-free: named-import control vs wildcard materialization;
+        # fingerprints bindings and guards scaling + absolute wall time.
+        run: node --import tsx bench/java-wildcard-route-constants/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin package-star route constant guards (#3110)
+        if: ${{ !cancelled() }}
+        # Build-free: explicit-import control vs package-star folding;
+        # fingerprints route facts and guards scaling + widening overhead.
+        run: node --import tsx bench/kotlin-star-route-constants/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language scope-capture fingerprint + scaling guards
         # Runs even after an earlier guard fails (#2895). Every step here was
         # fail-fast, so the FIRST failing --check aborted the job and every guard
@@ -507,6 +521,31 @@ jobs:
         # position, never by name through resolveDefGraphId, whose label-agnostic
         # simpleKey fallback would alias a binding onto any same-named callable.
         run: node --import tsx bench/callable-value-flow/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Java Lombok accessor synthesis guards (#2885)
+        if: ${{ !cancelled() }}
+        # Build-free: no-Lombok vs Lombok-heavy corpora; fingerprint over
+        # synthetic Method ids; scaling + widening overhead budgets.
+        run: node --import tsx bench/java-lombok-synthesis/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin JVM accessor synthesis guards (#2885)
+        if: ${{ !cancelled() }}
+        # Build-free: no-property vs data-class corpora; fingerprint over
+        # synthetic Method ids; scaling + widening overhead budgets.
+        run: node --import tsx bench/kotlin-jvm-accessors/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Kotlin Spring config-consumer capture guards (#2412)
+        if: ${{ !cancelled() }}
+        # Build-free: explicit-import control vs wildcard-import feature path;
+        # fingerprints @Value / @ConfigurationProperties facts and guards scaling
+        # + widening overhead. The parity check is the regression gate: each file
+        # declares a sibling nested type named `Value`, which must not suppress
+        # the imported Spring annotation (file-wide shadowing dropped 2 of every
+        # 3 facts on this corpus).
+        run: node --import tsx bench/spring-config-bindings/measure.mjs --check
         working-directory: gitnexus
 
       - name: Re-export closure scaling guards (#2864)
@@ -711,20 +750,22 @@ jobs:
 
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         if: ${{ !cancelled() }}
-        # cpp-adl-benchmark.test.ts is not a `*-pipeline-benchmark.test.ts` but
-        # belongs here for the same reason: it is skipIf-gated on GITNEXUS_BENCH,
-        # so it had never run in CI and the PR #1990 ADL emit-scaling guard it
-        # holds was dead. ~45s of test time.
+        # cpp-adl-benchmark.test.ts and csharp-razor-view-components-benchmark.test.ts
+        # are not `*-pipeline-benchmark.test.ts` files but belong here for the
+        # same reason: they are skipIf-gated on GITNEXUS_BENCH, so the scaling
+        # guards they hold never run in the main coverage job.
         env:
           GITNEXUS_BENCH: '1'
         run: >-
           npx vitest run --no-file-parallelism
           test/integration/cobol-pipeline-benchmark.test.ts
           test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/csharp-razor-view-components-benchmark.test.ts
           test/integration/cpp-adl-benchmark.test.ts
           test/integration/data-route-table-benchmark.test.ts
           test/integration/instance-ownership-pipeline-benchmark.test.ts
           test/integration/spring-bean-resource-benchmark.test.ts
+          test/integration/spring-dynamic-lookup-benchmark.test.ts
           test/integration/rust-pipeline-benchmark.test.ts
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts

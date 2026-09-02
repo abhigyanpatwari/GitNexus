@@ -1,5 +1,5 @@
 import type { NodeLabel } from 'gitnexus-shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
@@ -194,5 +194,91 @@ describe('parse-result graph insertion determinism', () => {
         lookup,
       ),
     ).toBe(record.id);
+  });
+});
+
+function countingLookup(inner: ReturnType<typeof buildLookup>): {
+  lookup: ReturnType<typeof buildLookup>;
+  gets: () => number;
+} {
+  let n = 0;
+  const lookup = new Proxy(inner, {
+    get(target, prop, receiver) {
+      if (prop === 'get') {
+        return (key: string) => {
+          n += 1;
+          return target.get(key);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      return typeof value === 'function'
+        ? (value as (...args: never[]) => unknown).bind(target)
+        : value;
+    },
+  });
+  return { lookup, gets: () => n };
+}
+
+describe('resolveDefGraphId memo', () => {
+  const MEMO_ENV = 'GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO';
+  let previousMemoEnv: string | undefined;
+
+  beforeEach(() => {
+    previousMemoEnv = process.env[MEMO_ENV];
+    delete process.env[MEMO_ENV];
+  });
+
+  afterEach(() => {
+    if (previousMemoEnv === undefined) delete process.env[MEMO_ENV];
+    else process.env[MEMO_ENV] = previousMemoEnv;
+  });
+
+  it('returns the same id on a repeated lookup and does not leak across rebuilt lookups', () => {
+    const method = {
+      id: `Method:${FILE}:Service.save#1`,
+      label: 'Method' as const,
+      name: 'save',
+      qualifiedName: 'Service.save',
+      startLine: 10,
+    };
+    const countedA = countingLookup(buildLookup([method]));
+    const countedB = countingLookup(buildLookup([method]));
+    const def = {
+      type: 'Method' as const,
+      qualifiedName: 'Service.save',
+      nodeId: 'def:src/service.ts#11:0:Method:Service.save',
+    };
+    const first = resolveDefGraphId(FILE, def, countedA.lookup);
+    const getsAfterFirst = countedA.gets();
+    const second = resolveDefGraphId(FILE, def, countedA.lookup);
+    expect(first).toBe(method.id);
+    expect(second).toBe(first);
+    expect(getsAfterFirst).toBeGreaterThan(0);
+    expect(countedA.gets()).toBe(getsAfterFirst);
+    const otherLookup = resolveDefGraphId(FILE, def, countedB.lookup);
+    expect(otherLookup).toBe(method.id);
+    expect(countedB.gets()).toBeGreaterThan(0);
+    expect(countedA.lookup).not.toBe(countedB.lookup);
+  });
+
+  it('walks the lookup again when the memo env opt-out is set', () => {
+    process.env[MEMO_ENV] = '0';
+    const method = {
+      id: `Method:${FILE}:Service.save#1`,
+      label: 'Method' as const,
+      name: 'save',
+      qualifiedName: 'Service.save',
+      startLine: 10,
+    };
+    const counted = countingLookup(buildLookup([method]));
+    const def = {
+      type: 'Method' as const,
+      qualifiedName: 'Service.save',
+      nodeId: 'def:src/service.ts#11:0:Method:Service.save',
+    };
+    expect(resolveDefGraphId(FILE, def, counted.lookup)).toBe(method.id);
+    const getsAfterFirst = counted.gets();
+    expect(resolveDefGraphId(FILE, def, counted.lookup)).toBe(method.id);
+    expect(counted.gets()).toBeGreaterThan(getsAfterFirst);
   });
 });

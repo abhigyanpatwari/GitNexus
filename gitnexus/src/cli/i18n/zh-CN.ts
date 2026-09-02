@@ -188,7 +188,8 @@ export const zhCN = {
     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
   'help.option.analyze.skills':
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
-  'help.option.analyze.skipAgentsMd': '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块',
+  'help.option.analyze.skipAgentsMd':
+    '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
   'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',
   'help.option.analyze.selfCommit':
     '在 analyze 后自动提交 AGENTS.md/CLAUDE.md 的变更（默认关闭，需显式开启）。仅限这两个文件（绝不使用 `git add -A`）；若两者均不存在、均未变更，或仓库未配置 git 身份，则不执行任何操作。',
@@ -222,7 +223,7 @@ export const zhCN = {
   'help.option.mcp.host':
     'HTTP 绑定地址（仅与 --http 搭配使用）。默认：127.0.0.1（回环）。使用 0.0.0.0 向所有接口开放。',
   'help.option.mcp.authToken':
-    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
+    '要求 Authorization 头携带此 Bearer Token（仅与 --http 搭配使用）；也可通过 GITNEXUS_MCP_AUTH_TOKEN 环境变量设置，该变量同时为 gitnexus serve 的 /api/mcp 路由启用 MCP Bearer 认证。非回环绑定（--host 0.0.0.0/::）时必填，否则拒绝启动。',
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',

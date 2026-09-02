@@ -76,7 +76,10 @@ program
     'Generate repo-specific skill files from detected communities ' +
       '(no-op when --index-only is also set).',
   )
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option(
+    '--skip-agents-md',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
+  )
   .option(
     '--pdg',
     'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
@@ -138,6 +141,11 @@ program
   .option(
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
+  )
+  .option(
+    '--spring-actuator <path>',
+    'Import local Spring Boot Actuator JSON snapshots (mappings, beans, conditions, ' +
+      'configprops, env). Explicit opt-in; disabled by default.',
   )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
@@ -245,7 +253,7 @@ program
   )
   .option(
     '--auth-token <token>',
-    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+    "Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var, which also enables MCP Bearer auth on gitnexus serve's /api/mcp route. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.",
   )
   .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
