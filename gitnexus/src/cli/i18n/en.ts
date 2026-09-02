@@ -145,6 +145,16 @@ export const en = {
     'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
   'help.command.uninstall.description':
     'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
+  'help.command.autoSync.description':
+    'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
+  'help.autoSync.details':
+    '\nActions: init, start (default), restart, stop, status, reset\nConfiguration: GITNEXUS_HOME/watch_config.yml\nRuntime files: GITNEXUS_HOME/watch/watch.pid, watch.mutex, watch.owner.json, watch.status.json, auto-sync-state.json\nRecovery: mutexes with verified dead owners are reclaimed automatically; invalid or legacy mutexes fail closed and require manual removal after confirming no watch process is running.\nWrites: GITNEXUS_HOME/watch/project_commit_info.txt\nRemote URLs: only SSH URLs on github.com, gitlab.com, and gitee.com are allowed.\nRuns once immediately, then repeats on sync_interval_minutes.',
+  'help.command.watch.description':
+    'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
+  'help.watch.details':
+    '\n`gitnexus watch` does not start a watcher.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
+  'error.watch.ambiguous':
+    '`gitnexus watch` is ambiguous.\n  Local working-tree incremental index:  gitnexus analyze --watch\n  Scheduled remote clone/pull + analyze: gitnexus auto-sync start\n',
   'help.command.analyze.description': 'Index a repository (full analysis)',
   'help.command.index.description':
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',

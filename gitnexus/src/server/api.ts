@@ -58,7 +58,7 @@ import { assertString, BadRequestError, createRouteLimiter } from './validation.
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
 import { runGrepScanInWorker } from './grep-scan.js';
 import {
-  extractRepoName,
+  extractWebRepoName,
   getCloneDir,
   cloneOrPull,
   warnIfInsecureAzureConfig,
@@ -1598,7 +1598,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           try {
             // Clone if URL provided
             if (repoUrl && !repoLocalPath) {
-              const repoName = extractRepoName(repoUrl);
+              const repoName = extractWebRepoName(repoUrl);
               targetPath = getCloneDir(repoName);
 
               jobManager.updateJob(job.id, {

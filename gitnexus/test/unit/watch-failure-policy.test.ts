@@ -7,7 +7,7 @@ vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: vi.fn(),
 }));
 
-import { shouldStopAfterWatchRefreshFailure } from '../../src/cli/watch.js';
+import { shouldStopAfterWatchRefreshFailure } from '../../src/cli/analyze-watch.js';
 
 describe('watch refresh failure policy', () => {
   beforeEach(() => analyzeFailureMayHaveMutatedLiveIndex.mockReset());
