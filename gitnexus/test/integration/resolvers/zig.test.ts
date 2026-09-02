@@ -666,6 +666,32 @@ describe.skipIf(!zigAvailable)('Zig function-local and anonymous containers (F8)
     );
   });
 
+  it('marks a struct-literal construction site (`return Accessor{…}`) on its CALLS edge, unlike an invocation', () => {
+    // A struct literal `T{ .f = x }` (no parens) is deliberately modelled as a
+    // CALLS edge to the type — the same shape Rust `T { .. }` and Go `T{}`
+    // produce. The PR #1432 review found it indistinguishable from a real
+    // call: the marker in `reason` is what lets a consumer tell "constructs an
+    // instance of" apart from "invokes". `Reflect.string` / `Reflect.url`
+    // each `return Accessor{ .get = R.get, .set = R.set }` (reflect.zig).
+    // Same-file free-call fallback vocabulary, suffixed because the Zig
+    // resolver opts into `markConstructionSites`.
+    const calls = getRelationships(result, 'CALLS');
+    const reasonsOf = (source: string, target: string): string[] =>
+      calls.filter((e) => e.source === source && e.target === target).map((e) => e.rel.reason);
+    expect(reasonsOf('string', 'Accessor')).toEqual(['local-call (constructor)']);
+    expect(reasonsOf('url', 'Accessor')).toEqual(['local-call (constructor)']);
+    // The invocation next door keeps its plain reason: `util.helper()` in
+    // main.zig is a call, not a construction site.
+    expect(reasonsOf('main', 'helper')).toHaveLength(1);
+    expect(reasonsOf('main', 'helper')[0]).not.toContain('(constructor)');
+    // No construction site is emitted as anything but CALLS, and every other
+    // CALLS edge is an invocation.
+    const constructionSites = calls.filter((e) => e.rel.reason.endsWith('(constructor)'));
+    expect(constructionSites.map((e) => e.targetLabel)).toEqual(
+      constructionSites.map(() => 'Struct'),
+    );
+  });
+
   it('gives anonymous containers a host + ordinal identity, so no Method is ownerless and same-named fns never collide', () => {
     expect(idsIn('Struct', 'Sorter.zig')).toEqual([
       'Struct:src/Sorter.zig:Sorter',

@@ -24,6 +24,9 @@
 
 import type { NodeLabel } from '../graph/types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
+// Type-only, so the `reference-site.ts` → `types.ts` import cycle is erased
+// at compile time.
+import type { CallForm } from './reference-site.js';
 
 // ─── §2.1 Type aliases ──────────────────────────────────────────────────────
 
@@ -752,6 +755,15 @@ export interface Reference {
     | 'import-use'
     | 'value-ref'
     | 'macro';
+  /**
+   * Call form of the site this reference was resolved from, copied verbatim
+   * from `ReferenceSite.callForm`; set only when `kind === 'call'`. The
+   * emit phase reads it to tell a construction site (`T{…}`, `new T()`,
+   * `T { .. }` — form `'constructor'`) apart from an invocation, which in the
+   * graph are both `CALLS` edges. Optional and additive: a `Reference` built
+   * without it is emitted exactly as before.
+   */
+  readonly callForm?: CallForm;
   readonly confidence: number;
   readonly evidence: readonly ResolutionEvidence[];
 }

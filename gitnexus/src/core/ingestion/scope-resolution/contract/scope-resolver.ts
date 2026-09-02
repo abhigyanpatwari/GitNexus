@@ -879,6 +879,30 @@ export interface ScopeResolver {
   readonly constructorCallTargetsClass?: boolean;
 
   /**
+   * When true, the CALLS edge emitted for a constructor-form site
+   * (`callForm === 'constructor'`) carries ` (constructor)` appended to its
+   * `reason` — `local-call (constructor)`, `import-resolved (constructor)`,
+   * `scope-resolution: call (constructor)` — so a consumer can tell
+   * "constructs an instance of" apart from "invokes" on the edge alone.
+   *
+   * Opt-in because the unsuffixed strings are a pinned contract: the legacy
+   * DAG vocabulary (`'import-resolved' | 'local-call' | …`, see the
+   * same-graph guarantee above) is asserted verbatim by consumers and by the
+   * per-language resolver suites, constructor sites included. A language
+   * that links a construction site to the TYPE node itself — a struct
+   * literal `T{…}` in Zig, where nothing but the marker distinguishes the
+   * edge from an invocation in the schema (PR #1432 review) — opts in; the
+   * default leaves every existing edge byte-identical.
+   *
+   * The marker rides in `reason` because relationships carry no arbitrary
+   * properties (adding one moves SCHEMA_FINGERPRINT — the IMPLEMENTS
+   * `-pointer` precedent in `pipeline/run.ts`). Applies to the free-call
+   * fallback and the reference bridge; receiver-qualified construction sites
+   * are not tagged `constructor` by any provider today.
+   */
+  readonly markConstructionSites?: boolean;
+
+  /**
    * How this language spells a construction expression, so the compound
    * receiver resolver can type an INLINE constructor receiver — the
    * `Service(db).do_work()` shape, where the receiver is the constructed

@@ -24,6 +24,12 @@ export const zigScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Zig,
   languageProvider: zigProvider,
   importEdgeReason: 'zig-scope: import',
+  // A struct literal `T{ .f = x }` is a CALLS edge to the Struct node (the
+  // Rust `T { .. }` / Go `T{}` shape). Zig has no Constructor nodes, so
+  // nothing but this marker tells that edge from an invocation on the edge
+  // itself — `main → SpawnRequest` looked like a call to a function
+  // (PR #1432 review). Emits `local-call (constructor)` and friends.
+  markConstructionSites: true,
 
   loadResolutionConfig: (repoPath: string) => loadZigBuildConfig(repoPath),
 

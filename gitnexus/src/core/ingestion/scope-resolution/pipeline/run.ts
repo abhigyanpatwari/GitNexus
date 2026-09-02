@@ -1070,6 +1070,7 @@ export function runScopeResolution(
         {
           allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
           constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
+          markConstructionSites: provider.markConstructionSites === true,
           isFileLocalDef: provider.isFileLocalDef,
           isBuiltInName: provider.languageProvider.isBuiltInName,
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
@@ -1100,6 +1101,7 @@ export function runScopeResolution(
         // both correctly emit. See the build site above for why the earlier
         // allowlist could not be made safe this way.
         functionLocalValueDefIds,
+        { markConstructionSites: provider.markConstructionSites === true },
       );
   // Last-resort property resolution by workspace-unique name (A1/A5). Runs
   // after every precise pass and only sees what they left behind, so a
