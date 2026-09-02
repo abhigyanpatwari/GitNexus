@@ -648,16 +648,20 @@ describe('producer argument selection', () => {
     });
 
     it('reads three arguments as exchange + routingKey + message', () => {
+      // Slot 1 is a CONSTANT, which is why this one is readable at all: a
+      // literal there would be indistinguishable from a String payload under
+      // the competing `(routingKey, message, correlationData)` overload, and
+      // is refused instead (see the ambiguity test below).
       const selection = selectProducerDestinationArguments({
         template: 'rabbit',
         methodName: 'convertAndSend',
-        args: args('"orders.exchange"', '"orders.created"', 'payload'),
+        args: args('"orders.exchange"', 'Topics.ORDERS_KEY', 'payload'),
       });
       expect(selection.candidates).toHaveLength(1);
       // The routing key is the address; the exchange rides along as provenance.
       expect(selection.candidates[0]).toMatchObject({
         argIndex: 1,
-        rawText: '"orders.created"',
+        rawText: 'Topics.ORDERS_KEY',
         exchange: 'orders.exchange',
       });
     });
@@ -732,13 +736,23 @@ describe('producer argument selection', () => {
       const confident = selectProducerDestinationArguments({
         template: 'rabbit',
         methodName: 'convertAndSend',
-        args: args('"orders.exchange"', '"orders.created"', 'payload', 'postProcessor'),
+        args: args('"orders.exchange"', 'ORDERS_ROUTING_KEY', 'payload', 'postProcessor'),
       });
       expect(confident.candidates[0]).toMatchObject({
         argIndex: 1,
-        rawText: '"orders.created"',
+        rawText: 'ORDERS_ROUTING_KEY',
         exchange: 'orders.exchange',
       });
+
+      // ...and the ambiguity rule reaches four arguments too, because
+      // `(routingKey, message, postProcessor, correlationData)` also has four.
+      const ambiguous = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: args('"orders.exchange"', '"body"', 'payload', 'postProcessor'),
+      });
+      expect(ambiguous.candidates).toEqual([]);
+      expect(ambiguous.refusals.map((r) => r.reason)).toEqual(['ambiguous-producer-overload']);
     });
 
     it('applies the same rule to the five-argument overload', () => {
@@ -762,23 +776,123 @@ describe('producer argument selection', () => {
       ]);
     });
 
-    it('documents, rather than hides, the one ambiguity it cannot settle', () => {
-      // `convertAndSend("orders.rk", "body", correlationData)` — a String
-      // payload is syntactically indistinguishable from a routing key. The
-      // exchange reading is taken because that overload is the one that
-      // idiomatically carries two leading strings. This test exists to pin the
-      // CHOSEN reading so a future change to it is deliberate, not to claim the
-      // module is certain.
+    it('REFUSES the one ambiguity it cannot settle, rather than choosing', () => {
+      // `convertAndSend("orders.rk", "body", correlationData)` fits two real
+      // overloads that disagree about which slot is the address:
+      //
+      //   (exchange, routingKey, message)        → the address is `"body"`
+      //   (routingKey, message, correlationData) → the address is `"orders.rk"`
+      //
+      // Both are spelled (String, String, ref). This used to take the exchange
+      // reading, which made the String PAYLOAD the address — and a
+      // `@RabbitListener(queues = "body")` anywhere in the repository then
+      // joined a publisher that has never written to it. A refusal is counted
+      // and recoverable; that edge enters a report as a fact.
       const selection = selectProducerDestinationArguments({
         template: 'rabbit',
         methodName: 'convertAndSend',
         args: args('"orders.rk"', '"body"', 'correlationData'),
       });
+      expect(selection.candidates).toEqual([]);
+      expect(selection.refusals.map((r) => r.reason)).toEqual(['ambiguous-producer-overload']);
+      // The refusal names the slot that could not be read, not an arbitrary one.
+      expect(selection.refusals[0]).toMatchObject({ argIndex: 1, rawText: '"body"' });
+    });
+
+    // ── The refusal must not eat the cases that ARE decidable ──────────────
+    //
+    // The recurring way a suppression goes wrong here is by taking correct
+    // results down with the wrong one, and the loss is silent: a destination
+    // that stops being emitted looks exactly like a repository that never had
+    // one. Each case below is a reading the syntax really does settle.
+
+    it('still resolves a CONSTANT routing key at the ambiguous arities', () => {
+      // The spelling is the evidence — the same premise `isConfidentAddressShape`
+      // is built on. `ORDERS_ROUTING_KEY` and `Topics.ORDERS_KEY` are how a
+      // configured NAME is written; a payload computed at the call site is not.
+      for (const key of ['ORDERS_ROUTING_KEY', 'Topics.ORDERS_KEY']) {
+        for (const trailing of [['payload'], ['payload', 'postProcessor']]) {
+          const selection = selectProducerDestinationArguments({
+            template: 'rabbit',
+            methodName: 'convertAndSend',
+            args: args('"orders.exchange"', key, ...trailing),
+          });
+          expect(selection.refusals).toEqual([]);
+          expect(selection.candidates[0]).toMatchObject({
+            argIndex: 1,
+            rawText: key,
+            exchange: 'orders.exchange',
+          });
+        }
+      }
+    });
+
+    it('still resolves a string-literal routing key at FIVE arguments', () => {
+      // `(exchange, routingKey, message, postProcessor, correlationData)` is
+      // the only five-argument overload there is, so nothing competes for slot
+      // 1 and the literal is not ambiguous. A refusal written on the shape of
+      // the argument alone, without the arity, would have cut this.
+      const selection = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: args('"x"', '"orders.created"', 'payload', 'postProcessor', 'correlation'),
+      });
+      expect(selection.refusals).toEqual([]);
       expect(selection.candidates[0]).toMatchObject({
         argIndex: 1,
-        rawText: '"body"',
-        exchange: 'orders.rk',
+        rawText: '"orders.created"',
+        exchange: 'x',
       });
+    });
+
+    it('still resolves a string-literal routing key at TWO arguments', () => {
+      // `(routingKey, message)` competes only with `(message, postProcessor)`
+      // and `(message, correlationData)`, and slot 0 is the routing key in the
+      // only one of the three that carries an address at all.
+      const selection = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: args('"orders.created"', 'payload'),
+      });
+      expect(selection.refusals).toEqual([]);
+      expect(selection.candidates[0]).toMatchObject({ argIndex: 0 });
+    });
+
+    it('still resolves a string-literal routing key passed BY NAME', () => {
+      // A name settles which slot is which outright, so the ambiguity the
+      // refusal exists for does not arise. Refusing on the literal alone would
+      // have thrown away the one form that states the answer explicitly.
+      const selection = selectProducerDestinationArguments({
+        template: 'rabbit',
+        methodName: 'convertAndSend',
+        args: [
+          { text: '"orders.exchange"' },
+          { name: 'routingKey', text: '"orders.created"' },
+          { text: 'payload' },
+        ],
+      });
+      expect(selection.refusals).toEqual([]);
+      expect(selection.candidates[0]).toMatchObject({
+        argName: 'routingKey',
+        rawText: '"orders.created"',
+      });
+    });
+
+    it('does not apply the ambiguity rule to the other templates', () => {
+      // Only Rabbit has an overload family in which slot 1 can be either the
+      // routing key or the message. Kafka, JMS and StreamBridge put the
+      // destination first in every multi-argument overload they have, so a
+      // literal in slot 1 there is simply the payload and says nothing.
+      for (const template of ['kafka', 'jms', 'stream-bridge'] as const) {
+        const selection = selectProducerDestinationArguments({
+          template,
+          methodName:
+            template === 'kafka' || template === 'stream-bridge' ? 'send' : 'convertAndSend',
+          args: args('"orders.v1"', '"body"', 'extra'),
+        });
+        expect(selection.refusals).toEqual([]);
+        expect(selection.candidates[0]).toMatchObject({ argIndex: 0, rawText: '"orders.v1"' });
+      }
     });
   });
 

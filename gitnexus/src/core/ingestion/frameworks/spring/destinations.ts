@@ -100,6 +100,19 @@ export type SpringDestinationRefusal =
    *  (not a string literal, not a constant reference) — most often because the
    *  overload actually taken has the payload there. */
   | 'producer-argument-not-address-shaped'
+  /** Two overloads fit the call, they disagree about which slot is the address,
+   *  and the argument is spelled the same way under both readings. The
+   *  archetype is `convertAndSend("orders.rk", "body", correlationData)`: it is
+   *  `(exchange, routingKey, message)` with the address `"body"`, or
+   *  `(routingKey, message, correlationData)` with the address `"orders.rk"`
+   *  and `"body"` as a String PAYLOAD. Both are real overloads spelled
+   *  (String, String, ref).
+   *
+   *  Distinct from `producer-argument-not-address-shaped`, which says the slot
+   *  cannot hold an address at all. This one says it can, twice, and the module
+   *  will not pick — a payload published as an address joins a consumer of a
+   *  queue that happens to be named after the payload's text. */
+  | 'ambiguous-producer-overload'
   /** `topics = {}` / `topics = []` / `arrayOf()`. */
   | 'empty-destination-list'
   /** The element is an expression this module will not evaluate — a
@@ -550,17 +563,37 @@ const RABBIT_EXCHANGE_PARAMETER = 'exchange';
  * the worst possible outcome: an address that looks entirely plausible and can
  * join a `@RabbitListener(queues = "orders")` that has nothing to do with it.
  *
- * ── ONE AMBIGUITY THAT SURVIVES, STATED PLAINLY ──────────────────────────
+ * ── THE ONE AMBIGUITY, REFUSED RATHER THAN GUESSED ───────────────────────
  *
- * `convertAndSend("orders.rk", "body", correlationData)` is read as
- * exchange + routing key, so `"body"` becomes the address. A String payload is
- * syntactically indistinguishable from a routing key, and no rule over the
- * syntax can separate them. The exchange reading is taken because
- * `(exchange, routingKey, message)` is the overload that idiomatically carries
- * two leading strings, while `(routingKey, Object, CorrelationData)` with a
- * String payload is rare. This module is NOT certain here, and this comment is
- * the only place that says so — do not read the accepted candidate as evidence
- * that the ambiguity was resolved.
+ * `convertAndSend("orders.rk", "body", correlationData)` fits two overloads at
+ * once and they disagree about which slot is the address:
+ *
+ *     (exchange, routingKey, message)          → the address is `"body"`
+ *     (routingKey, message, correlationData)   → the address is `"orders.rk"`
+ *
+ * Both are real, both are spelled (String, String, ref), and no rule over the
+ * syntax separates them. Picking either one publishes the OTHER reading's
+ * payload as an address, where a consumer of a queue named after that text
+ * joins a publisher that never wrote to it. So neither is picked: the call is
+ * refused as `ambiguous-producer-overload` and yields no candidate and no edge.
+ *
+ * The refusal is narrow on purpose, because over-refusing here costs the
+ * ordinary case, and a suppression that eats correct results is the more
+ * expensive mistake. It fires ONLY on a STRING LITERAL in slot 1, at the
+ * arities where a competing overload exists:
+ *
+ *   - A literal is no evidence at all. An address and a payload are BOTH
+ *     ordinarily written as literals, so the spelling distinguishes nothing.
+ *   - A CONSTANT or QUALIFIED reference is evidence, which is the whole premise
+ *     of {@link isConfidentAddressShape}: `ORDERS_ROUTING_KEY` and
+ *     `Topics.ORDERS_KEY` are how a configured NAME is written, not how a
+ *     payload computed at the call site is. Those keep resolving.
+ *   - Arity 5 has no competing overload at all —
+ *     `(exchange, routingKey, message, pp, correlationData)` is the only
+ *     five-argument form — so slot 1 there is the routing key whatever it is
+ *     spelled like, and the refusal must not reach it.
+ *   - A NAMED argument settles the reading outright, and the name-beats-position
+ *     pre-pass above has already returned by then.
  */
 export function selectProducerDestinationArguments(fact: {
   readonly template: SpringMessageProducerTemplate;
@@ -674,13 +707,30 @@ export function selectProducerDestinationArguments(fact: {
       refuseShape(0);
       return { candidates, refusals };
     }
-    // Three arguments and up. Arity separates NOTHING here — every count from
-    // three on admits both an exchange form and a routing-key form — so the
-    // ONLY acceptance is confident evidence in slot 1, and there is no
-    // positional fallback. `convertAndSend(EXCHANGE, routingKey, event)` fails
-    // that test and is refused; the discarded fallback published `EXCHANGE`
-    // as the address, which is a wrong answer wearing the costume of a right
-    // one.
+    // Three arguments and up. Arity separates almost nothing here — three and
+    // four both admit an exchange form and a routing-key form — so the ONLY
+    // acceptance is confident evidence in slot 1, and there is no positional
+    // fallback. `convertAndSend(EXCHANGE, routingKey, event)` fails that test
+    // and is refused; the discarded fallback published `EXCHANGE` as the
+    // address, which is a wrong answer wearing the costume of a right one.
+    //
+    // And confident evidence in slot 1 is not enough when the evidence is a
+    // STRING LITERAL: under the competing overload that same literal is the
+    // String PAYLOAD, and the two readings are spelled identically. See the
+    // ambiguity section in this function's doc comment for why this is a
+    // refusal rather than a choice, and for each of the three cases it must not
+    // touch — a constant in slot 1 (spelling that IS evidence), arity 5 (no
+    // competing overload exists), and a named argument (already returned
+    // above, and its name settles the reading).
+    const competingOverload = args.length === 3 || args.length === 4;
+    if (
+      competingOverload &&
+      args[1]?.name === undefined &&
+      parseSpringStringLiteral(textAt(1)) !== null
+    ) {
+      refuse('ambiguous-producer-overload', { rawText: textAt(1), argIndex: 1 });
+      return { candidates, refusals };
+    }
     if (confident(1)) {
       // The ADDRESS is the routing key. The exchange rides along as provenance
       // on the edge rather than becoming part of the address: composing

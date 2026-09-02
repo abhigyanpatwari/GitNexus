@@ -222,6 +222,31 @@ describe('Spring destination resolution', () => {
     expect(sources.has('publishToExchangeWithVariableRoutingKey')).toBe(false);
   });
 
+  it('emits nothing for the ambiguous rabbit overload, and still reads the decidable one', () => {
+    // `convertAndSend("orders.rk", "body", correlationData)` is
+    // `(exchange, routingKey, message)` OR
+    // `(routingKey, message, correlationData)`, spelled identically. Reading
+    // it either way publishes the other reading's payload as an address.
+    expect(withAddress('body')).toEqual([]);
+    expect(withAddress('orders.rk')).toEqual([]);
+    const names = destinations.map((node) => String(node.properties.name));
+    expect(names).not.toContain('body');
+    expect(names).not.toContain('orders.rk');
+    const sources = new Set(
+      messagingEdges.map((edge) => result.graph.getNode(edge.sourceId)?.properties.name),
+    );
+    expect(sources.has('publishWithAmbiguousOverload')).toBe(false);
+
+    // The other half, which matters as much: the SAME arity with a constant in
+    // slot 1 is decidable and must still resolve. A refusal that took this
+    // with it would look identical in the graph — an absent destination — so
+    // only asserting both together catches an over-broad suppression.
+    const routingKey = withAddress('orders.created');
+    expect(routingKey).toHaveLength(1);
+    expect(routingKey[0]?.properties.resolution).toBe('constant');
+    expect(sources.has('publishToExchange')).toBe(true);
+  });
+
   it('does not connect the two unrelated placeholder consumers', () => {
     const inventory = destinations.find((node) =>
       String(node.properties.filePath).endsWith('InventoryConsumer.java'),

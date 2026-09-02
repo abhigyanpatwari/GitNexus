@@ -2,6 +2,7 @@ package com.example.messaging;
 
 import org.apache.kafka.clients.producer.ProducerRecord;
 import com.example.messaging.support.Topics;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.cloud.stream.function.StreamBridge;
 import org.springframework.jms.core.JmsTemplate;
@@ -39,8 +40,24 @@ public class OrderPublishers {
         kafkaTemplate.send(record);
     }
 
+    /**
+     * The routing key is a CONSTANT, and that is what makes this readable:
+     * (exchange, routingKey, message) and (routingKey, message,
+     * correlationData) are both three arguments, so only the shape of slot 1
+     * separates them. A constant is how a configured NAME is written.
+     */
     public void publishToExchange(String payload) {
-        rabbitTemplate.convertAndSend("orders.exchange", "orders.created", payload);
+        rabbitTemplate.convertAndSend("orders.exchange", Topics.ORDERS_ROUTING_KEY, payload);
+    }
+
+    /**
+     * The same arity with a string LITERAL in slot 1, which is no evidence at
+     * all: under (routingKey, message, correlationData) the literal is the
+     * PAYLOAD. Reading it as the address would join a listener on a queue that
+     * merely happens to be named after the payload text, so nothing is emitted.
+     */
+    public void publishWithAmbiguousOverload(CorrelationData correlationData) {
+        rabbitTemplate.convertAndSend("orders.rk", "body", correlationData);
     }
 
     /**
