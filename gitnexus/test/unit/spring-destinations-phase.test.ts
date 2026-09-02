@@ -722,6 +722,23 @@ operations:
     expect(edgesFrom('shipments').map((e) => e.type)).toEqual(['CONSUMES_FROM']);
   });
 
+  it('gives a spec-minted destination NO file path, and its own provenance', async () => {
+    await runWithSpec([], await specDir());
+    const node = [...graph.iterNodes()].find(
+      (n) => n.id === generateId('Destination', destinationNodeKey('kafka', 'orders')),
+    );
+    // `filePath: ''` is load-bearing, not cosmetic: a connecting destination is
+    // shared by every site that names it, and the incremental writeback deletes
+    // by file. Stamping it with the document's path would make a shared node
+    // collateral damage of that document's next change, taking every OTHER
+    // referrer's edge with it via DETACH DELETE.
+    expect(node?.properties.filePath).toBe('');
+    // Distinct from `'specification'`, which belongs to the address cascade and
+    // means a CODE candidate was resolved through the step-4 hook — a claim
+    // about source that this node is not making.
+    expect(node?.properties.resolution).toBe('asyncapi-document');
+  });
+
   it('reads documents even when the source pass found no messaging at all', async () => {
     // The early return used to be keyed on source sites alone. A repository
     // whose broker this codebase has no patterns for is exactly the case a
@@ -759,8 +776,42 @@ operations:
     expect(output.resolvedDestinations).toBe(1);
     expect(output.specDocuments?.destinations).toBe(1);
     // Two edges into one node — the publisher's and the document's — which is
-    // the whole point: both halves of a conversation meet on one node.
-    expect(edgesFrom('orders')).toHaveLength(2);
+    // the whole point: both halves of a conversation meet on one node. Asserted
+    // by TYPE rather than by count: a count of two survives a reversal in
+    // either of the two paths that produced them.
+    expect(edgesFrom('orders').map((e) => e.type)).toEqual(['PUBLISHES_TO', 'PUBLISHES_TO']);
+  });
+
+  it('hangs the edge off the document’s REAL File node when it is in the repo', async () => {
+    // The in-repo branch is the one the code calls "strictly better", and it is
+    // the branch that decides whether the graph grows a permanent pseudo-File
+    // node per document. Without a test, deleting it is invisible.
+    const dir = await specDir();
+    // `repoPath` is the fixture directory, so the document resolves inside it.
+    const deps = new Map<string, PhaseResult<unknown>>([
+      ['parse', { phaseName: 'parse', durationMs: 0, output: { allPaths: [], moduleConstants: new Map() } }],
+      ['scopeResolution', { phaseName: 'scopeResolution', durationMs: 0, output: {} }],
+      ['springConfig', { phaseName: 'springConfig', durationMs: 0, output: {} }],
+    ]);
+    const ctx = {
+      repoPath: dir,
+      graph,
+      onProgress: () => {},
+      pipelineStart: 0,
+      options: { asyncApiSpecPath: 'asyncapi.yaml' },
+    } as unknown as PipelineContext;
+    // The document sits at <dir>/asyncapi.yaml, so its repo-relative path is
+    // `asyncapi.yaml`; register that File node and expect the edge to use it.
+    const inRepoId = generateId('File', 'asyncapi.yaml');
+    graph.addNode({
+      id: inRepoId,
+      label: 'File',
+      properties: { name: 'asyncapi.yaml', filePath: 'asyncapi.yaml' },
+    });
+    await springDestinationsPhase.execute(ctx, deps);
+    const [edge] = edgesFrom('orders');
+    expect(edge.sourceId).toBe(inRepoId);
+    expect(edge.sourceId).not.toBe(generateId('File', 'asyncapi:asyncapi.yaml'));
   });
 
   it('never lets a document give an unresolved destination an address', async () => {
@@ -810,6 +861,8 @@ operations:
     const empty = await mkdtemp(path.join(tmpdir(), 'gnx-phase-spec-empty-'));
     const output = await runWithSpec([], empty);
     expect(output.specDocuments).toEqual({
+      symlinksSkipped: 0,
+      truncated: false,
       scanned: 0,
       accepted: 0,
       operations: 0,

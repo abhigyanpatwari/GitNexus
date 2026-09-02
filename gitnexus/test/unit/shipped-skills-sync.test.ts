@@ -120,6 +120,12 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     }
   });
 
+  it('documents the AsyncAPI analyze flag in every CLI copy', () => {
+    for (const file of standardSkillCopies('gitnexus-cli')) {
+      expect(fs.readFileSync(file, 'utf-8')).toContain('`--asyncapi-spec <path>`');
+    }
+  });
+
   // These copies are NOT byte-compared (only the engineering FAMILY above is),
   // so a runner added to resolve-analyze-cmd.cjs can silently miss them. The
   // audience that most needs bunx documented — a bun-only machine with no npm,

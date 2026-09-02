@@ -292,12 +292,13 @@ export interface SpringDestinationResolvers {
    * A document names addresses; it does not name the method that uses one. To
    * hand an address to THIS candidate, something has to choose which of the
    * document's operations belongs to it. Partitioning by (broker, action) is
-   * the only division both sides agree on, and on a real generated document
-   * those buckets usually hold more than one operation — measured: one bucket
-   * of four was unambiguous. Every assignment past a bucket of size one is a
-   * heuristic, and a wrong one puts a REAL address on a joining node under the
-   * wrong site, which is a false connection wearing the clothes of a resolved
-   * one — the exact outcome this module's keying rule exists to prevent.
+   * the only division both sides agree on, and it is a weak one: a service with
+   * several listeners on one broker puts them all in one bucket. Any bucket
+   * holding more than one operation forces a heuristic, and a wrong heuristic
+   * puts a REAL address on a joining node under the wrong site — a false
+   * connection wearing the clothes of a resolved one, which is the exact
+   * outcome this module's keying rule exists to prevent. Only a bucket of size
+   * one is a fact rather than a guess.
    *
    * Two things would change that, and neither is a heuristic: a document whose
    * operations carry the implementing symbol, or a configuration source that

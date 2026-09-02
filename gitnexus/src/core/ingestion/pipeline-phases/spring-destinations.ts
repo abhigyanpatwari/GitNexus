@@ -7,6 +7,15 @@
  * inbound and outbound facts are captured during parse and survive the parse
  * cache; until now nothing read them.
  *
+ * Since `asyncApiSpecPath`, the phase has a SECOND source that is not Spring
+ * and not source code at all: AsyncAPI documents read off disk
+ * (`ingestion/asyncapi/document.ts`). They mint the same `Destination` nodes on
+ * the same key, so both sources meet on one node. The reader is deliberately
+ * framework-neutral and lives outside `frameworks/spring/`; only the emit is
+ * hosted here, because this is where the node's keying rule is enforced and
+ * splitting that rule across two phases is how it drifts. The phase name is
+ * accurate about its origin rather than its current contents.
+ *
  * Shaped after `Route` + `HANDLES_ROUTE` in `routes.ts` — a framework overlay
  * node keyed by what it names, with the callable pointing at it, down to the
  * detail that the key pairs the address with the one dimension that can make
@@ -56,8 +65,10 @@
  * prevent.
  *
  * @deps    parse, scopeResolution, springConfig
- * @reads   Spring messaging capture facts, Method/Function nodes, Property nodes
- * @writes  Destination nodes; CONSUMES_FROM / PUBLISHES_TO / USES edges
+ * @reads   Spring messaging capture facts, Method/Function nodes, Property nodes,
+ *          AsyncAPI documents under `options.asyncApiSpecPath` (filesystem)
+ * @writes  Destination nodes; synthetic File nodes for out-of-tree documents;
+ *          CONSUMES_FROM / PUBLISHES_TO / USES edges
  */
 
 import path from 'node:path';
@@ -114,6 +125,11 @@ export interface SpringDestinationsOutput {
 }
 
 export interface SpecDocumentStats {
+  /** Entries skipped because they were symbolic links, and whether a bound
+   *  stopped the walk. Both make every other number here a FLOOR, and a floor
+   *  reported as a total is the failure this whole block exists to prevent. */
+  readonly symlinksSkipped: number;
+  readonly truncated: boolean;
   /** Files considered under the configured path. */
   readonly scanned: number;
   /** Files that parsed as an AsyncAPI 3.x document and yielded an operation. */
@@ -309,9 +325,17 @@ function edgeReason(candidate: SpringDestinationCandidate): string {
  * `File` that does not exist — so a document supplied from outside the working
  * tree needs an identity minted for it. The same answer
  * `frameworks/spring/actuator-runtime.ts` gives for Actuator snapshots
- * (`spring-actuator:<endpoint>`): a prefixed pseudo-path that cannot collide
- * with a real repo-relative one, because no repo-relative path contains a colon
- * in its first segment.
+ * (`spring-actuator:<endpoint>`): a prefixed pseudo-path that a real
+ * repo-relative path is not expected to take.
+ *
+ * That is a CONVENTION, not a guarantee, and the difference is worth stating
+ * because the neighbouring prefix states it too strongly. A colon is a legal
+ * POSIX filename character, so a committed file literally named
+ * `asyncapi:orders.yaml` would share this identity — costing one merged node
+ * and a misattributed edge, never a wrong address. Windows cannot express the
+ * collision at all. It is accepted on the same terms the Actuator prefix
+ * already is rather than escaped, because an escape would have to be applied to
+ * both prefixes at once to be worth anything.
  */
 const DOCUMENT_FILE_PREFIX = 'asyncapi:';
 
@@ -407,7 +431,15 @@ async function emitSpecDestinations(
           // would make it collateral damage of that path's next writeback.
           filePath: '',
           address: operation.address,
-          resolution: 'specification',
+          // NOT `'specification'`, though the address did come from one. That
+          // value belongs to `SpringDestinationVia` and means "a CODE
+          // CANDIDATE was resolved through the step-4 resolver hook" — a
+          // different fact with a code site behind it. Reusing it would make a
+          // query that groups destinations by provenance unable to separate an
+          // address a document merely states from one a document was used to
+          // resolve, and the second of those is a claim about source that this
+          // node is not making.
+          resolution: 'asyncapi-document',
           broker: operation.broker,
         },
       });
@@ -428,7 +460,9 @@ async function emitSpecDestinations(
     edges += 1;
   }
 
-  return {
+  const stats: SpecDocumentStats = {
+    symlinksSkipped: read.symlinksSkipped,
+    truncated: read.truncated,
     scanned: read.documentsScanned,
     accepted: read.documentsAccepted,
     operations: read.operations.length,
@@ -436,6 +470,27 @@ async function emitSpecDestinations(
     edges,
     refusalsByReason: read.refusals as Readonly<Record<string, number>>,
   };
+
+  // Unconditional, and not `isDev`-gated like the summary below it. The tally
+  // above is justified on the grounds that an operator must be able to tell a
+  // mistyped directory from a repository with no documents — and that
+  // justification is only true if the operator can SEE it. A configured path
+  // that produced nothing is the one outcome where silence and success look
+  // identical from outside, which is why `spring-auto-configuration.ts` warns
+  // unconditionally for the same class of input.
+  if (stats.accepted === 0 || stats.truncated) {
+    logger.warn(
+      {
+        asyncApiSpecPath: specPath,
+        ...stats,
+      },
+      stats.accepted === 0
+        ? '⚠️ No AsyncAPI document under the configured path yielded a destination.'
+        : '⚠️ AsyncAPI document reading hit a bound; the destinations below are a floor, not a total.',
+    );
+  }
+
+  return stats;
 }
 
 export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = {
@@ -734,7 +789,12 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
         specDocuments === undefined
           ? ''
           : `, +${specDocuments.destinations} from ${specDocuments.accepted} document(s)`;
+      // The breakdown, not just the totals. The unresolved FRACTION is the
+      // number this feature is judged on, and a bare count of unresolved
+      // destinations says how big the gap is without saying what would close
+      // it — which is the only question an operator can act on.
       logger.info(
+        { refusalsByReason, ...(specDocuments === undefined ? {} : { specDocuments }) },
         `📮 Spring destinations: ${resolvedDestinations} resolved, ${unresolvedDestinations} unresolved, ${edges} edges${fromSpec}`,
       );
     }

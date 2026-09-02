@@ -99,6 +99,23 @@ export interface RepoMeta {
     repoRelativeInputs: string[];
   };
   /**
+   * Whether the index was built with AsyncAPI document reading enabled.
+   *
+   * Only the FLAG is recorded, unlike `springActuator` above, because the two
+   * options need different things from this field. Actuator inputs are retained
+   * so future scans keep excluding them; documents are deliberately NOT
+   * excluded from scanning — a committed one wants its real `File` node — so
+   * there is nothing to retain, and recording the configured path would put an
+   * operator's absolute directory layout into index metadata for no consumer.
+   *
+   * The flag alone is what the disable transition needs: without it, dropping
+   * the option leaves document-derived destinations in an index with nothing
+   * able to notice they should go.
+   */
+  asyncApiSpec?: {
+    enabled: boolean;
+  };
+  /**
    * Analyzer/runtime receipt for the successful run represented by this
    * metadata. Optional so indexes written by older GitNexus releases remain
    * readable; a missing value means provenance is unknown, never that it
