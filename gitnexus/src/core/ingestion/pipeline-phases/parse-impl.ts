@@ -462,6 +462,9 @@ export async function runChunkedParseAndResolve(
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  /** Repo-wide harvested constants, already prepared per provider. See
+   *  `ParseOutput.moduleConstants` for why this leaves the parse phase. */
+  moduleConstants: ReadonlyMap<string, ModuleConstants>;
   scopeExtractionFailures: string[];
   /** Files excluded because their non-standalone language parser was unavailable. */
   unavailableScopeLanguageFiles: number;
@@ -1267,15 +1270,27 @@ export async function runChunkedParseAndResolve(
   // carries `routePathExpr`/`routePathOperands` and an empty `routePath`; we fold
   // the operands against the repo-wide, file-path-keyed constant map. On failure
   // we DROP the route (KTD5 skip floor) rather than emit a phantom `POST /`.
-  if (allDecoratorRoutes.some((dr) => dr.routePathExpr !== undefined)) {
-    const repoConstants = new Map<string, ModuleConstants>();
-    for (const { filePath, constants } of allModuleConstants) {
-      repoConstants.set(filePath, constants);
-    }
+  //
+  // Built (and prepared) UNCONDITIONALLY when anything was harvested, because
+  // the map is also handed to downstream phases on `ParseOutput.moduleConstants`
+  // — `springDestinations` folds broker-address constants against exactly the
+  // same table. Preparation runs exactly once, here, on one map, before either
+  // consumer folds. Deferring it into each consumer instead would need
+  // `prepareRouteConstants` to be safe to call twice — it materializes deferred
+  // wildcard bindings IN PLACE — or would leave whichever consumer ran first
+  // folding against unprepared constants. Neither is worth the coupling; the
+  // cost here is one pass over the harvested constants of a repo that has some.
+  const repoConstants = new Map<string, ModuleConstants>();
+  for (const { filePath, constants } of allModuleConstants) {
+    repoConstants.set(filePath, constants);
+  }
+  if (repoConstants.size > 0) {
     // Let each language prepare only its own constants slice before folding.
     // This is where deferred wildcard bindings can be materialized once per
     // provider without naming a language in the shared parse phase.
     prepareRouteConstantsByProvider(repoConstants, getProviderForFile);
+  }
+  if (allDecoratorRoutes.some((dr) => dr.routePathExpr !== undefined)) {
     const resolvedRoutes: ExtractedDecoratorRoute[] = [];
     let skipped = 0;
     for (const dr of allDecoratorRoutes) {
@@ -1601,6 +1616,10 @@ export async function runChunkedParseAndResolve(
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    // Repo-wide, file-path-keyed constants, already through each provider's
+    // `prepareRouteConstants` hook. Empty when no provider harvests constants
+    // for the languages in this repo.
+    moduleConstants: repoConstants,
     scopeExtractionFailures: [...scopeExtractionFailures].sort(),
     unavailableScopeLanguageFiles,
   };

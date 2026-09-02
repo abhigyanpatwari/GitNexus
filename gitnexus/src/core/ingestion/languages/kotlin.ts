@@ -24,6 +24,10 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { kotlinCallConfig } from '../call-extractors/configs/jvm.js';
 import { createKotlinCfgVisitor } from '../cfg/visitors/kotlin.js';
+import {
+  getKotlinSpringMessageProducerFacts,
+  getKotlinSpringNonHttpHandlerFacts,
+} from './kotlin/capture-side-channel.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { kotlinConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -46,6 +50,11 @@ import {
   extractKotlinRuntimeSymbolProperties,
   kotlinRuntimeSymbolStrategy,
 } from './kotlin/spring-actuator.js';
+import { extractKotlinSpringRoutes } from '../route-extractors/kotlin-spring.js';
+import {
+  extractKotlinModuleConstants,
+  foldKotlinOperands,
+} from '../route-extractors/kotlin-const-resolver.js';
 
 /** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
  *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
@@ -210,4 +219,22 @@ export const kotlinProvider = defineLanguage({
   receiverBinding: kotlinReceiverBinding,
   arityCompatibility: kotlinArityCompatibility,
   synthesizeStructureMembers: synthesizeLombokAccessors,
+
+  // ── Spring decorator routes + composed path constants (#3130) ──
+  extractDecoratorRoutes: extractKotlinSpringRoutes,
+  extractModuleConstants: extractKotlinModuleConstants,
+  foldRoutePathOperands: foldKotlinOperands,
+
+  // Async messaging facts for the `springDestinations` phase. Both stores are
+  // repopulated on the main thread by `applyKotlinCaptureSideChannel`, so this
+  // answers for cache hits and misses alike.
+  getSpringMessagingFacts: (filePath) => ({
+    handlers: getKotlinSpringNonHttpHandlerFacts(filePath),
+    producers: getKotlinSpringMessageProducerFacts(filePath),
+  }),
+  // Kotlin string literals interpolate: `"orders-$env"` and `"orders-${env}"`
+  // are string templates, and a Spring property placeholder has to escape the
+  // dollar (`"\${app.topic}"`). Destination resolution needs this to keep a
+  // runtime template out of the address namespace.
+  interpolatesStringLiterals: true,
 });

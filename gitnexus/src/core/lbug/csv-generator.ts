@@ -122,6 +122,17 @@ export const escapeCSVNumber = (
   return String(value);
 };
 
+/**
+ * A numeric column that may legitimately have NO value.
+ *
+ * `escapeCSVNumber` substitutes a sentinel (-1) for absence, which is right
+ * where every row has a span and wrong where absence is the fact being
+ * recorded. An empty field is loaded as NULL by COPY, so the column can say
+ * "there is no line here" instead of pointing at line -1.
+ */
+export const escapeCSVNullableNumber = (value: unknown): string =>
+  typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+
 const formatCSVStringArray = (value: unknown): string => {
   const items = Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
@@ -536,6 +547,12 @@ export const streamAllCSVsToDisk = async (
       'id,name,filePath,description',
     );
 
+    // Destination nodes for async messaging (Kafka topics, Rabbit exchanges, …)
+    const destinationWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'destination.csv'),
+      'id,name,filePath,startLine,endLine,address,broker,resolution,configKey,configDefault,description',
+    );
+
     // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
     // blocks are identified by id + source span. Emitted by no phase yet.
     const basicBlockWriter = new BufferedCSVWriter(
@@ -727,6 +744,50 @@ export const streamAllCSVsToDisk = async (
             ].join(','),
           );
           break;
+        case 'Destination':
+          // `address` is the cross-service join key and is written as an EMPTY
+          // field for an unresolved destination, which COPY loads as NULL —
+          // mirroring the in-memory rule that the property is absent there, and
+          // measured on a real index (`spring-destinations-lbug.test.ts` asserts
+          // both the NULL and the zero-false-join it buys). Writing the
+          // placeholder text into this column instead would make two services
+          // that merely both wrote `${app.topic}` join on it, reintroducing
+          // below the database line the exact false connection the
+          // location-based node id prevents above it. The placeholder is
+          // carried by `name`, which nothing joins on.
+          //
+          // The line columns are written EMPTY (→ NULL) rather than defaulted
+          // to -1 when the node carries none. A resolved destination has no
+          // location at all — that is the point of the `filePath` rule two
+          // fields to the left — and a row saying `filePath` NULL but
+          // `startLine` -1 makes the two columns disagree about one fact and
+          // renders as "line -1" in the UI.
+          //
+          // `broker` is written for every destination, resolved or not. It is
+          // part of the resolved node's IDENTITY — the id is minted from
+          // `(broker, address)` — so a reader who joins on `address` alone and
+          // sees two rows needs this column to tell them apart, not merely to
+          // decorate them. Every column named in this row list must also be
+          // named in DESTINATION_SCHEMA and in the COPY statement in
+          // `lbug-adapter.ts`; a property the phase writes but those two omit is
+          // dropped at the database boundary without a warning, and the query
+          // that reads it back raises a binder error instead.
+          pending = destinationWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVNullableNumber(node.properties.startLine),
+              escapeCSVNullableNumber(node.properties.endLine),
+              escapeCSVField(String(node.properties.address ?? '')),
+              escapeCSVField(String(node.properties.broker ?? '')),
+              escapeCSVField(String(node.properties.resolution ?? '')),
+              escapeCSVField(String(node.properties.configKey ?? '')),
+              escapeCSVField(String(node.properties.configDefault ?? '')),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
+            ].join(','),
+          );
+          break;
         case 'BasicBlock':
           pending = basicBlockWriter.addRow(buildBasicBlockRow(node));
           break;
@@ -806,6 +867,13 @@ export const streamAllCSVsToDisk = async (
       sectionWriter,
       routeWriter,
       toolWriter,
+      // A writer missing from THIS list is not a loud failure. `finish()` is
+      // what flushes the buffered rows, while the header is written eagerly and
+      // `.rows` counts rows as they are added — so an unflushed writer still
+      // produces a valid, header-only CSV and a manifest entry claiming rows.
+      // The COPY then succeeds and loads nothing. Adding a node table means
+      // adding it here as well as to the switch and the manifest.
+      destinationWriter,
       basicBlockWriter,
       ...multiLangWriters.values(),
     ];
@@ -830,6 +898,7 @@ export const streamAllCSVsToDisk = async (
       ['Section' as NodeTableName, sectionWriter],
       ['Route' as NodeTableName, routeWriter],
       ['Tool' as NodeTableName, toolWriter],
+      ['Destination' as NodeTableName, destinationWriter],
       ['BasicBlock' as NodeTableName, basicBlockWriter],
       ...Array.from(multiLangWriters.entries()).map(
         ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],

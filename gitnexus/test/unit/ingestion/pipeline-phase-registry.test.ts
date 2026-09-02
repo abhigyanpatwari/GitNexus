@@ -77,6 +77,7 @@ const FULL_ORDER = [
   'scopeResolution',
   'springAutoConfiguration',
   'springAop',
+  'springDestinations',
   'pruneLocalSymbols',
   'mro',
   'springAopInheritance',
