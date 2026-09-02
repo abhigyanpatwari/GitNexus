@@ -166,10 +166,14 @@ function findBodies(node: SyntaxNode, bodyNodeSet: Set<string>): SyntaxNode[] {
     result.push(bodyField);
     addNestedBodies(bodyField, bodyNodeSet, result);
   }
-  // Last resort: when no body wrapper exists (e.g. tree-sitter-zig's
-  // struct_declaration directly contains its function_declaration children),
-  // use the type-declaration node itself as the body. The downstream walk
-  // filters by `methodNodeTypes`, so unrelated children are ignored.
+  // Grammars with no body wrapper at all: a config that declares NO
+  // `bodyNodeTypes` (tree-sitter-zig's struct_declaration holds its
+  // function_declaration children directly) uses the type-declaration node
+  // itself as the body. The downstream walk filters by `methodNodeTypes`, so
+  // unrelated children are ignored. Deliberately NOT a fallback for configs
+  // that do declare body wrappers: for them a node without its wrapper is a
+  // bodiless declaration (forward declaration, `declare class`), and scanning
+  // it would change every such language for no method it could find.
   if (result.length === 0 && bodyNodeSet.size === 0) {
     result.push(node);
   }

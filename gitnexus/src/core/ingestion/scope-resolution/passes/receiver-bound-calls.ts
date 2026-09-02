@@ -86,6 +86,7 @@ import {
   tryEmitEdgeWithExplicitTargetId,
   type CalleeIdCaptureCtx,
 } from '../graph-bridge/edges.js';
+import { constructionSiteReason } from './free-call-fallback.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
   resolveCompoundReceiverClass,
@@ -135,6 +136,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'constraintCompatibility'
   | 'isStaticOnly'
   | 'normalizeTypeArgument'
+  | 'markConstructionSites'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -1293,7 +1295,15 @@ export function emitReceiverBoundCalls(
               nodeLookup,
               site,
               memberDef,
-              memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+              // A namespace-qualified construction site (`mod.T{…}`) resolves
+              // here like `mod.fn()` does; the provider's opt-in marker keeps
+              // it distinguishable from an invocation (see
+              // `ScopeResolver.markConstructionSites`).
+              constructionSiteReason(
+                memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                site,
+                provider.markConstructionSites,
+              ),
               seen,
               0.85,
               collapse,

@@ -149,10 +149,14 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       if (result.length === 0 && bodyField) {
         result.push(bodyField);
       }
-      // Last resort: when no body wrapper exists (e.g. tree-sitter-zig's
-      // struct_declaration directly contains its container_field children),
-      // use the type-declaration node itself as the body. The downstream
-      // walk filters by `fieldNodeTypes`, so unrelated children are ignored.
+      // Grammars with no body wrapper at all: a config that declares NO
+      // `bodyNodeTypes` (tree-sitter-zig's struct_declaration holds its
+      // container_field children directly) uses the type-declaration node
+      // itself as the body. The downstream walk filters by `fieldNodeTypes`,
+      // so unrelated children are ignored. Deliberately NOT a fallback for
+      // configs that do declare body wrappers: for them a node without its
+      // wrapper is a bodiless declaration, and scanning it would change every
+      // such language for no field it could find.
       if (result.length === 0 && bodyNodeSet.size === 0) {
         result.push(node);
       }

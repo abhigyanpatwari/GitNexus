@@ -356,6 +356,21 @@ const ZIG_SCOPE_QUERY = `
 ;; References — constructor uses: T{ ... }
 (struct_initializer
   (identifier) @reference.name) @reference.call.constructor
+
+;; References — qualified constructor uses: mod.T{ ... } / hub.sub.T{ ... }
+;; Captured with the RECEIVER, not as a free constructor with a raw qualified
+;; name, on purpose: the free-call fallback resolves a qualified constructor by
+;; its simple tail, and a workspace-unique \`Thing\` then answers for
+;; \`other.Thing{}\` whichever module the source named (measured: \`c.Thing{}\`
+;; with no \`Thing\` in c.zig bound to a.zig's). With the receiver the site goes
+;; through the receiver-bound namespace case, which resolves the member inside
+;; the module the receiver is bound to — the same path \`mod.fn()\` takes — so
+;; \`a.Thing{}\` and \`b.Thing{}\` each bind their own file and \`std.Thread.Mutex{}\`
+;; binds nothing even when a local \`Mutex\` exists.
+(struct_initializer
+  (field_expression
+    object: (_) @reference.receiver
+    member: (identifier) @reference.name)) @reference.call.constructor
 `;
 
 let _parser: Parser | null = null;

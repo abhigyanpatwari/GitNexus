@@ -684,9 +684,10 @@ describe.skipIf(!zigAvailable)('Zig function-local and anonymous containers (F8)
     // main.zig is a call, not a construction site.
     expect(reasonsOf('main', 'helper')).toHaveLength(1);
     expect(reasonsOf('main', 'helper')[0]).not.toContain('(constructor)');
-    // No construction site is emitted as anything but CALLS, and every other
-    // CALLS edge is an invocation.
+    // Every marked edge targets a container type: a construction site can
+    // never point at a callable.
     const constructionSites = calls.filter((e) => e.rel.reason.endsWith('(constructor)'));
+    expect(constructionSites.length).toBeGreaterThan(0);
     expect(constructionSites.map((e) => e.targetLabel)).toEqual(
       constructionSites.map(() => 'Struct'),
     );
@@ -773,3 +774,73 @@ describe.skipIf(!zigAvailable)('Zig function-local and anonymous containers (F8)
     );
   });
 });
+
+describe.skipIf(!zigAvailable)(
+  'Zig qualified struct literals (`mod.T{…}`) as construction sites',
+  () => {
+    // The 2026-09-02 review re-test found that only same-file literals were
+    // tracked: 163 `mod.Type{ … }` sites in a real project produced no CALLS
+    // edge at all. A first attempt captured them as free constructors, which
+    // resolve by the simple tail — `c.Thing{}` bound to a.zig's `Thing` although
+    // c.zig defines none. Captured WITH the receiver they take the namespace
+    // path `mod.fn()` takes, which resolves inside the module the receiver is
+    // bound to: this suite pins the qualifier being honoured, not just the
+    // edge appearing.
+    let result: PipelineResult;
+    let structCalls: ReturnType<typeof getRelationships>;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-qualified-literal'), () => {});
+      structCalls = getRelationships(result, 'CALLS').filter((e) => e.targetLabel === 'Struct');
+    }, 60000);
+
+    const edgesFrom = (source: string): string[] =>
+      structCalls
+        .filter((e) => e.source === source)
+        .map((e) => `${e.target} @ ${e.targetFilePath} [${e.rel.reason}]`)
+        .sort();
+
+    it('binds each same-named `Thing` to the module its qualifier names, marked as a construction site', () => {
+      expect(edgesFrom('useA')).toEqual(['Thing @ src/a.zig [import-resolved (constructor)]']);
+      expect(edgesFrom('useB')).toEqual(['Thing @ src/b.zig [import-resolved (constructor)]']);
+    });
+
+    it('emits nothing when the qualifier’s module has no such member (`c.Thing{}`)', () => {
+      // A tail-only resolution would have picked a.zig's or b.zig's `Thing`.
+      expect(edgesFrom('useMissing')).toEqual([]);
+    });
+
+    it('emits nothing for an external qualifier (`std.Thread.Mutex{}`), even with a same-named local and imported `Mutex`', () => {
+      expect(edgesFrom('useExternal')).toEqual([]);
+    });
+
+    it('keeps the same-file literal and the single-hop qualified literal apart by reason vocabulary', () => {
+      expect(edgesFrom('useLocal')).toEqual([
+        'Mutex @ src/d.zig [import-resolved (constructor)]',
+        'Mutex @ src/main.zig [local-call (constructor)]',
+      ]);
+    });
+  },
+);
+
+describe.skipIf(!zigAvailable)(
+  'Zig qualified struct literals — zig-basic (`pioneer.Pioneer{…}`, `pioneer.Tag{…}`)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-basic'), () => {});
+    }, 60000);
+
+    it('tracks a qualified struct AND union literal as marked construction sites', () => {
+      const marked = getRelationships(result, 'CALLS')
+        .filter((e) => e.source === 'main' && e.rel.reason.endsWith('(constructor)'))
+        .map((e) => `${e.target}:${e.targetLabel} [${e.rel.reason}]`)
+        .sort();
+      expect(marked).toEqual([
+        'Pioneer:Struct [import-resolved (constructor)]',
+        'Tag:Union [import-resolved (constructor)]',
+      ]);
+    });
+  },
+);
