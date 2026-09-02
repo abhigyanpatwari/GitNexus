@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises';
+import { describe, it, expect, afterAll } from 'vitest';
+import { mkdtemp, mkdir, writeFile, symlink, chmod, rm } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,7 +8,10 @@ import {
   readAsyncApiDocuments,
   type AsyncApiRefusal,
 } from '../../src/core/ingestion/asyncapi/document.js';
-import { brokerForProtocol } from '../../src/core/ingestion/asyncapi/protocol.js';
+import {
+  brokerForBindingKey,
+  brokerForProtocol,
+} from '../../src/core/ingestion/asyncapi/protocol.js';
 import { destinationNodeKey } from '../../src/core/ingestion/destination-key.js';
 
 /**
@@ -88,12 +91,43 @@ describe('brokerForProtocol', () => {
     expect(destinationNodeKey('kafka', 'orders x')).toBe('kafka orders x');
   });
 
-  it('rejects a JSON Pointer field name, which is not a protocol', () => {
-    // AsyncAPI allows `bindings` to be a Reference Object, so the map key can
-    // be `$ref`. Passed through it becomes half of a join key carrying no
-    // broker information at all, and two services that both reference shared
-    // bindings on one address would merge.
-    expect(brokerForProtocol('$ref')).toBeUndefined();
+  it('folds mqtt5 onto mqtt, by the same argument as the secure variants', () => {
+    expect(brokerForProtocol('mqtt5')).toBe('mqtt');
+  });
+
+  it('rejects a protocol long enough to be a mistake', () => {
+    // The broker is the THIRD string that reaches a graph identifier, and
+    // `generateId` concatenates rather than hashes: a one-megabyte protocol in
+    // an otherwise in-cap document was measured turning that document into a
+    // gigabyte of resident identifier strings.
+    expect(brokerForProtocol('k'.repeat(1_000_000))).toBeUndefined();
+    expect(brokerForProtocol('googlepubsub')).toBe('googlepubsub');
+  });
+});
+
+describe('brokerForBindingKey', () => {
+  // A `servers[].protocol` is a field DECLARED to hold a protocol, so an
+  // unrecognized value there is the document's claim and passes through. A
+  // `bindings` MAP KEY is not: the specification puts `$ref` and `x-`
+  // extensions in the same namespace, so a non-protocol key is the EXPECTED
+  // case and only known names may answer.
+  it('answers for AsyncAPI binding vocabulary', () => {
+    expect(brokerForBindingKey('kafka')).toBe('kafka');
+    expect(brokerForBindingKey('amqp')).toBe('rabbit');
+    expect(brokerForBindingKey('kafka-secure')).toBe('kafka');
+  });
+
+  it('stays silent for a reference field and for vendor extensions', () => {
+    expect(brokerForBindingKey('$ref')).toBeUndefined();
+    expect(brokerForBindingKey('x-scs-function')).toBeUndefined();
+    expect(brokerForBindingKey('x-internal-routing')).toBeUndefined();
+  });
+
+  it('stays silent for a protocol-shaped name that is not a binding', () => {
+    // The asymmetry with `brokerForProtocol` is the point: pass-through is
+    // right for a declared protocol field and wrong for a map key.
+    expect(brokerForProtocol('somethingnew')).toBe('somethingnew');
+    expect(brokerForBindingKey('somethingnew')).toBeUndefined();
   });
 });
 
@@ -208,7 +242,11 @@ describe('normalizeAsyncApiDocument — broker reading', () => {
     expect(operations[0].broker).toBe('kafka');
   });
 
-  it('refuses when a channel with no `servers` could mean two different brokers', () => {
+  it('refuses a channel with no `servers` when the document is multi-protocol', () => {
+    // Filed under its OWN reason, not `protocol-disagreement`: this document
+    // does not contradict itself, it is simply multi-protocol and this channel
+    // did not choose. A tally that says "the document contradicts itself" here
+    // sends an operator to fix something that is not broken.
     const d = doc({
       servers: {
         a: { host: 'example', protocol: 'kafka' },
@@ -219,7 +257,84 @@ describe('normalizeAsyncApiDocument — broker reading', () => {
     });
     const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
     expect(operations).toHaveLength(0);
-    expect(refusals['protocol-disagreement']).toBe(1);
+    expect(refusals['ambiguous-server-default']).toBe(1);
+    expect(refusals['protocol-disagreement']).toBeUndefined();
+  });
+
+  it('resolves a multi-protocol document when the operation names its own binding', () => {
+    // The operation has already answered the question. Unioning every server
+    // before consulting its bindings manufactured a contradiction and lost a
+    // destination the document states plainly — a document declaring both a
+    // REST server and a Kafka server is an ordinary shape.
+    const d = doc({
+      servers: {
+        a: { host: 'example', protocol: 'kafka' },
+        b: { host: 'example', protocol: 'mqtt' },
+      },
+      channels: { orders: { address: CHANNEL_ADDRESS } },
+      operations: {
+        op: { action: 'send', channel: { $ref: '#/channels/orders' }, bindings: { kafka: {} } },
+      },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(refusals).toEqual({});
+    expect(operations[0].broker).toBe('kafka');
+  });
+
+  it('ignores a Specification Extension key in bindings', () => {
+    // `x-` keys share the bindings namespace legitimately and generators emit
+    // them. Read as a broker, one of them either becomes half of a join key
+    // carrying no broker information, or reads as a second broker and destroys
+    // the destination — which would make any document author a one-line
+    // saboteur of their own cross-service links.
+    const d = doc({
+      servers: { s: { host: 'example', protocol: 'kafka' } },
+      channels: { orders: { address: CHANNEL_ADDRESS, servers: [{ $ref: '#/servers/s' }] } },
+      operations: {
+        op: {
+          action: 'send',
+          channel: { $ref: '#/channels/orders' },
+          bindings: { kafka: {}, 'x-internal-routing': { queue: 'x' } },
+        },
+      },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(refusals).toEqual({});
+    expect(operations[0].broker).toBe('kafka');
+  });
+
+  it('does not let a lone extension key become the broker', () => {
+    const d = doc({
+      servers: { s: { host: 'example', protocol: 'kafka' } },
+      channels: { orders: { address: CHANNEL_ADDRESS, servers: [{ $ref: '#/servers/s' }] } },
+      operations: {
+        op: {
+          action: 'send',
+          channel: { $ref: '#/channels/orders' },
+          bindings: { 'x-scs-function': { name: 'orders-out' } },
+        },
+      },
+    });
+    // Falls through to the channel's server rather than minting
+    // `Destination(broker='x-scs-function')`.
+    expect(normalizeAsyncApiDocument(d, '/spec.yaml').operations[0].broker).toBe('kafka');
+  });
+
+  it('refuses HTTP and WebSocket, where the host rather than the address names the place', () => {
+    // For a broker the topic IS the namespace; for HTTP the host is, and the
+    // address is only a path. Keying on the path alone would make every service
+    // exposing `/events` — or `/health` — one node. An HTTP endpoint is a
+    // `Route`, which the routes phase already models with its method.
+    for (const protocol of ['http', 'https', 'ws', 'wss']) {
+      const d = doc({
+        servers: { s: { host: 'service-a.example', pathname: '/v1', protocol } },
+        channels: { c: { address: '/events', servers: [{ $ref: '#/servers/s' }] } },
+        operations: { op: { action: 'send', channel: { $ref: '#/channels/c' } } },
+      });
+      const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+      expect(operations).toHaveLength(0);
+      expect(refusals['not-a-destination-protocol']).toBe(1);
+    }
   });
 
   it('refuses when bindings and server protocol name different brokers', () => {
@@ -307,6 +422,92 @@ describe('normalizeAsyncApiDocument — addressing', () => {
       channels: {
         c: {
           address: '{env}.orders',
+          parameters: { env: { description: 'deployment environment' } },
+          servers: [{ $ref: '#/servers/s' }],
+        },
+      },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/c' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['templated-address']).toBe(1);
+  });
+
+  it('accepts a literal address beside an EMPTY `parameters` map', () => {
+    // An empty container states nothing, and generators emit them routinely.
+    // Only a non-empty `parameters` is the specification declaring a template;
+    // the `{` test covers documents that template without declaring.
+    const d = doc({
+      servers: kafka,
+      channels: { c: { address: 'payments.v1', parameters: {}, servers: [{ $ref: '#/servers/s' }] } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/c' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(refusals['templated-address']).toBeUndefined();
+    expect(operations[0].address).toBe('payments.v1');
+  });
+
+  it('refuses a channel that is itself a Reference Object, under its own reason', () => {
+    // Filing this under `no-address` told an operator their documents omit
+    // addresses, when the real answer is that this reader stops one hop short.
+    const d = doc({
+      servers: kafka,
+      channels: { c: { $ref: '#/components/channels/orders' } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/c' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['unresolved-channel-reference']).toBe(1);
+    expect(refusals['no-address']).toBeUndefined();
+  });
+
+  it('marks the document truncated when the per-document cap stops it', () => {
+    // `truncated` is documented as "a bound stopped the walk OR the operation
+    // count", and this is a bound stopping the operation count. Reporting the
+    // cap without the flag let a truncated read present as a complete one.
+    const operations: Record<string, unknown> = {};
+    for (let i = 0; i < 5_010; i += 1) {
+      operations[`op${i}`] = { action: 'send', channel: { $ref: '#/channels/c' } };
+    }
+    const d = doc({
+      servers: kafka,
+      channels: { c: { address: CHANNEL_ADDRESS, servers: [{ $ref: '#/servers/s' }] } },
+      operations,
+    });
+    const result = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(result.refusals['operation-cap']).toBe(1);
+    expect(result.truncated).toBe(true);
+  });
+
+  it('spends the run budget on operations EXAMINED, not on those accepted', () => {
+    // A cap that counts successes does not bound work: a run whose every
+    // operation is refused never decrements the budget, so every document is
+    // processed in full and the result still claims to be complete.
+    const operations: Record<string, unknown> = {};
+    for (let i = 0; i < 6; i += 1) {
+      operations[`op${i}`] = { action: 'nope', channel: { $ref: '#/channels/c' } };
+    }
+    const d = doc({
+      servers: kafka,
+      channels: { c: { address: CHANNEL_ADDRESS, servers: [{ $ref: '#/servers/s' }] } },
+      operations,
+    });
+    const result = normalizeAsyncApiDocument(d, '/spec.yaml', 100);
+    expect(result.operations).toHaveLength(0);
+    expect(result.examined).toBe(6);
+  });
+
+  it('refuses a channel that declares `parameters` even when the address has no braces', () => {
+    // The two halves of this refusal are independent, and only the `{` half was
+    // pinned: the test above supplies BOTH a declaration and a braced address,
+    // so deleting the `parameters` clause changed no result. A generator that
+    // declares parameters and substitutes them elsewhere would then mint a
+    // joinable node on a template.
+    const d = doc({
+      servers: kafka,
+      channels: {
+        c: {
+          address: 'orders',
           parameters: { env: { description: 'deployment environment' } },
           servers: [{ $ref: '#/servers/s' }],
         },
@@ -467,8 +668,16 @@ describe('normalizeAsyncApiDocument — reference resolution', () => {
 });
 
 describe('readAsyncApiDocuments', () => {
+  // Tracked and removed: an earlier version of this suite left 162 temporary
+  // directories (and a named pipe) behind on one developer machine.
+  const created: string[] = [];
+  afterAll(async () => {
+    for (const dir of created) await rm(dir, { recursive: true, force: true });
+  });
+
   async function fixture(files: Record<string, string>): Promise<string> {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-asyncapi-'));
+    created.push(dir);
     for (const [rel, body] of Object.entries(files)) {
       const full = path.join(dir, rel);
       await mkdir(path.dirname(full), { recursive: true });
@@ -563,6 +772,7 @@ operations:
     // read until a writer appears — for the whole analyze, holding its
     // repository lock. The shared handle's `isFile` test is what stops it.
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-asyncapi-fifo-'));
+    created.push(dir);
     const fifo = path.join(dir, 'spec.yaml');
     try {
       execFileSync('mkfifo', [fifo]);
@@ -596,6 +806,84 @@ operations:
       'b.yaml',
       'c.yaml',
     ]);
+  });
+
+  it('does not let one over-deep subtree discard the rest of the walk', async () => {
+    // A shared abort flag made depth exhaustion in ONE branch terminate the
+    // whole traversal, so whether ten perfectly good documents survived was
+    // decided by whether the deep subtree sorted before or after them. Both
+    // orderings must now keep all ten.
+    for (const deepName of ['aaa-deep', 'zzz-deep']) {
+      const files: Record<string, string> = {};
+      for (let i = 0; i < 10; i += 1) files[`doc${i}.yaml`] = VALID;
+      files[`${deepName}/${'lvl/'.repeat(11)}leaf.txt`] = 'too deep to reach';
+      const dir = await fixture(files);
+      const result = await readAsyncApiDocuments(dir, '.');
+      expect(result.documentsAccepted).toBe(10);
+      // Still reported as a floor: a bound did stop part of the walk.
+      expect(result.truncated).toBe(true);
+    }
+  });
+
+  it('counts a subdirectory it could not list', async () => {
+    // Under a mixed-permission cache half the documents can be invisible while
+    // the run otherwise reports a clean, complete read.
+    const dir = await fixture({ 'ok.yaml': VALID, 'secret/hidden.yaml': VALID });
+    const secret = path.join(dir, 'secret');
+    await chmod(secret, 0o000);
+    try {
+      const result = await readAsyncApiDocuments(dir, '.');
+      expect(result.refusals['directory-unreadable']).toBe(1);
+      expect(result.truncated).toBe(true);
+    } finally {
+      await chmod(secret, 0o755);
+    }
+  });
+
+  it('reads a document whose root key sits behind a long header', async () => {
+    // The sniff window is a parse gate, not a read gate — the content is
+    // already in memory — so it can afford to be generous. Four kilobytes was
+    // not: a licence header longer than that refused a perfectly good document.
+    const dir = await fixture({ 'headed.yaml': `# ${'licence '.repeat(1500)}\n${VALID}` });
+    const result = await readAsyncApiDocuments(dir, '.');
+    expect(result.operations).toHaveLength(1);
+  });
+
+  it('reads a large document whole', async () => {
+    // Exercises the read loop. A single `read` was never short across seven
+    // hundred probes here, but POSIX permits it and the FUSE mounts this
+    // option's out-of-band cache typically lives on do return short counts —
+    // and a document truncated at a line boundary still parses, so operations
+    // would vanish with no refusal and no truncation flag.
+    const dir = await fixture({ 'big.yaml': `${VALID}\n# ${'x'.repeat(6 * 1024 * 1024)}\n` });
+    const result = await readAsyncApiDocuments(dir, '.');
+    expect(result.operations).toHaveLength(1);
+    expect(result.operations[0].address).toBe('orders');
+  });
+
+  it('reads a `.yml` document, the other spelling of the same extension', async () => {
+    const dir = await fixture({ 'asyncapi.yml': VALID });
+    expect((await readAsyncApiDocuments(dir, '.')).operations).toHaveLength(1);
+  });
+
+  it('names the bound that stopped a walk', async () => {
+    const files: Record<string, string> = { 'doc.yaml': VALID };
+    files[`deep/${'lvl/'.repeat(11)}leaf.txt`] = 'too deep to reach';
+    const dir = await fixture(files);
+    const result = await readAsyncApiDocuments(dir, '.');
+    expect(result.truncated).toBe(true);
+    expect(result.refusals['walk-truncated']).toBe(1);
+  });
+
+  it('refuses a character device without streaming it', async () => {
+    // The `isFile` test on the handle exists for this case, and the FIFO test
+    // does not reach it — `O_NONBLOCK` makes the read fail there by a different
+    // route. A device reports size 0 and would otherwise stream until Node
+    // throws at two gigabytes.
+    if (process.platform === 'win32') return;
+    const result = await readAsyncApiDocuments('/', '/dev/zero');
+    expect(result.refusals['unreadable']).toBe(1);
+    expect(result.operations).toHaveLength(0);
   });
 
   it('counts every refusal reason it emits under a known member', async () => {

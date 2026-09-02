@@ -57,7 +57,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
-import { brokerForProtocol } from './protocol.js';
+import { brokerForBindingKey, brokerForProtocol, isNonDestinationBroker } from './protocol.js';
 
 // `js-yaml` is CJS; the rest of this repository reaches it the same way
 // (`pipeline-phases/spring-config.ts`, `import-resolvers/node-workspace-packages.ts`).
@@ -80,10 +80,11 @@ const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
  *  refused operations costs the same walk as one with a hundred thousand good
  *  ones, and a cap that only counts successes does not bound the work. */
 const MAX_OPERATIONS_PER_DOCUMENT = 5_000;
-/** Bounded across the whole run, not just per document. The per-document cap
- *  alone still admits `MAX_DOCUMENTS × MAX_OPERATIONS_PER_DOCUMENT` — ten
- *  million nodes and ten million edges accumulated before the phase emits its
- *  first one. */
+/** The same bound across the whole run, and counted the same way — EXAMINED,
+ *  not accepted. Counting successes here reproduced the very defect the
+ *  per-document cap was corrected for: a run whose every operation was refused
+ *  never decremented the budget, so all two thousand documents were processed
+ *  in full and the result still reported `truncated: false`. */
 const MAX_TOTAL_OPERATIONS = 50_000;
 /** Bounded so a mis-aimed path (a whole repository, `/`) cannot walk forever. */
 const MAX_DOCUMENTS = 2_000;
@@ -91,16 +92,34 @@ const MAX_DOCUMENTS = 2_000;
  *  bounds nothing on a tree that contains no documents. */
 const MAX_WALK_ENTRIES = 100_000;
 const MAX_DIRECTORY_DEPTH = 8;
-/** Only the first chunk is sniffed for the root key before a full parse. */
-const SNIFF_BYTES = 4096;
+/** Servers per document. The channel-inherits-all-servers rule reads this map,
+ *  and YAML aliases make a server about sixteen bytes, so an in-cap document
+ *  can declare hundreds of thousands of them. */
+const MAX_SERVERS_PER_DOCUMENT = 1_000;
+/**
+ * How much of a file is searched for the root key before committing to a parse.
+ *
+ * The gate exists to skip the YAML PARSE of unrelated files in a configured
+ * directory, not to skip the read — the content is already in memory by the
+ * time this runs — so the window costs only a linear scan and can afford to be
+ * generous. Four kilobytes was not: a document behind a licence header longer
+ * than that was refused as `not-a-document`, which is a false negative on a
+ * perfectly good document, found by feeding the reader a padded file.
+ */
+const SNIFF_BYTES = 64 * 1024;
 /**
  * An address and an operation id both end up inside graph identifiers, and
  * `generateId` CONCATENATES rather than hashes (`lib/utils.ts`), so an
  * identifier is exactly as long as the text it was built from. One document
  * under every other cap — a multi-megabyte address plus five thousand
  * operations naming it — therefore mints five thousand multi-megabyte edge ids,
- * each flattened into a string key by the graph's `Map`. Bounding the two
- * strings that reach an id is what keeps every other cap meaningful.
+ * each flattened into a string key by the graph's `Map`.
+ *
+ * The BROKER is the third such string and is bounded in `protocol.ts`; the
+ * count matters because an earlier version of this comment said "the two
+ * strings that reach an id", left the third unbounded, and a one-megabyte
+ * protocol was measured turning a one-megabyte document into a gigabyte of
+ * resident identifiers.
  */
 const MAX_ADDRESS_LENGTH = 2_048;
 const MAX_OPERATION_ID_LENGTH = 512;
@@ -116,6 +135,11 @@ const DOCUMENT_EXTENSIONS: ReadonlySet<string> = new Set(['.yaml', '.yml', '.jso
  * work is judged on. Folding document-level failures into it would silently
  * change what that number means — a repository whose specification directory
  * was mistyped would report a worse SOURCE, which is the opposite of the truth.
+ *
+ * Members are split wherever two causes are different FACTS about the input.
+ * A tally whose member says "the document contradicts itself" when the document
+ * is merely multi-protocol sends an operator to fix the wrong thing, and this
+ * tally is the number the whole feature is judged on.
  */
 export type AsyncApiRefusal =
   /** The file parsed but has no root `asyncapi` key: not a document at all. */
@@ -128,12 +152,19 @@ export type AsyncApiRefusal =
   | 'unparsable'
   /** The file could not be read, or is not a regular file (a FIFO, a device). */
   | 'unreadable'
+  /** A subdirectory could not be listed. Counted rather than skipped: under a
+   *  mixed-permission cache half the documents can be invisible while the run
+   *  otherwise reports a clean, complete read. */
+  | 'directory-unreadable'
   /** Larger than {@link MAX_DOCUMENT_BYTES}. */
   | 'oversized'
-  /** The document held more operations than one run will read. */
+  /** The document held more operations than one run will examine. */
   | 'operation-cap'
   /** The run as a whole reached {@link MAX_TOTAL_OPERATIONS}. */
   | 'total-operation-cap'
+  /** The document declares more servers than the channel-inheritance rule will
+   *  read. */
+  | 'server-cap'
   /** The walk hit a bound before it finished, so the document set is a floor
    *  rather than the whole of what the configured path holds. A truncated read
    *  that reported nothing would be indistinguishable from a complete one. */
@@ -142,10 +173,16 @@ export type AsyncApiRefusal =
   | 'no-channel-reference'
   /** The `$ref` resolved to no channel in this document. */
   | 'channel-not-found'
+  /** The channel entry is itself a Reference Object, which this module does not
+   *  follow. Distinct from `no-address` on purpose: a `$ref`-ed channel HAS an
+   *  address, somewhere this reader did not look, and filing it under
+   *  `no-address` tells an operator their documents omit addresses when the
+   *  real answer is that the reader stops one hop short. */
+  | 'unresolved-channel-reference'
   /** The channel names no `address`, so there is nothing to key on. */
   | 'no-address'
   /**
-   * The address is a TEMPLATE, not an address: the channel declares
+   * The address is a TEMPLATE, not an address: the channel declares non-empty
    * `parameters`, or the address carries a `{…}` placeholder.
    *
    * This is the document-side twin of the source cascade's
@@ -156,11 +193,6 @@ export type AsyncApiRefusal =
    * node with a publisher on one side and a subscriber on the other. That is a
    * false connection built entirely from conformant AsyncAPI: `parameters` and
    * `{param}` are core 3.x vocabulary, not a vendor quirk.
-   *
-   * The detector is the specification's own statement rather than a guess: a
-   * channel that declares `parameters` is declaring that its address is
-   * parameterized. The `{` test catches the documents that template without
-   * declaring, which generators do.
    */
   | 'templated-address'
   /** Longer than {@link MAX_ADDRESS_LENGTH}. */
@@ -173,12 +205,19 @@ export type AsyncApiRefusal =
    *  name a protocol. Silence about the broker is not a claim about it, but a
    *  `Destination` cannot be keyed without one. */
   | 'protocol-unknown'
-  /** Two readings of the broker disagree, or one of them names several. A
-   *  destination keyed on the wrong broker joins a stranger; keyed on the right
-   *  one it joins its pair. With the document contradicting itself there is no
-   *  way to tell which, and a coin flip here is a false connection half the
-   *  time. */
-  | 'protocol-disagreement';
+  /** The operation's OWN two statements about its broker — its bindings and the
+   *  servers its channel explicitly lists — name different brokers. The
+   *  document contradicts itself, and a destination keyed on the wrong broker
+   *  joins a stranger. */
+  | 'protocol-disagreement'
+  /** The channel lists no `servers`, so it inherits all of them, and they do
+   *  not agree on one broker. The document does NOT contradict itself here —
+   *  it is simply multi-protocol and this channel did not choose — which is why
+   *  this is not `protocol-disagreement`. */
+  | 'ambiguous-server-default'
+  /** The broker is HTTP or WebSocket, where the host rather than the address is
+   *  the namespace. See `isNonDestinationBroker`. */
+  | 'not-a-destination-protocol';
 
 export interface AsyncApiOperation {
   /** Absolute path of the document this operation came from. */
@@ -198,10 +237,10 @@ export interface AsyncApiReadResult {
   readonly documentsScanned: number;
   /** Files that parsed as an AsyncAPI 3.x document and yielded an operation. */
   readonly documentsAccepted: number;
-  /** Entries the walk skipped because they were symbolic links. Not a refusal —
-   *  the skip is deliberate — but counted, because a cache written by other
-   *  tooling is very often a symlink farm, and an operator whose whole cache
-   *  was skipped would otherwise see a result identical to a wrong path. */
+  /** Entries skipped because they were symbolic links. Not a refusal — the skip
+   *  is deliberate — but counted, because a cache written by other tooling is
+   *  very often a symlink farm, and an operator whose whole cache was skipped
+   *  would otherwise see a result identical to a wrong path. */
   readonly symlinksSkipped: number;
   /** True when a bound stopped the walk or the operation count, so every number
    *  here is a floor rather than a total. */
@@ -274,48 +313,32 @@ function channelNameFromRef(ref: string): string | undefined {
 }
 
 /**
- * Distinct normalized brokers named by a bindings object's keys.
+ * Distinct brokers named by a bindings object's own keys.
  *
- * `brokerForProtocol` drops anything not shaped like a protocol name, which is
- * what keeps a Reference Object's `$ref` key out of the node key — see its
- * header for why that one matters.
+ * Routed through `brokerForBindingKey`, which answers only for AsyncAPI's
+ * binding vocabulary — `$ref` and `x-` extensions share this namespace
+ * legitimately and are not brokers. See `protocol.ts` for why this differs from
+ * the pass-through applied to `servers[].protocol`.
  */
 function brokersFromBindings(bindings: unknown): Set<string> {
   const out = new Set<string>();
   const record = asRecord(bindings);
   if (record === undefined) return out;
   for (const key of Object.keys(record)) {
-    const broker = brokerForProtocol(key);
+    const broker = brokerForBindingKey(key);
     if (broker !== undefined) out.add(broker);
   }
   return out;
 }
 
-/**
- * Distinct normalized brokers for the servers a channel resolves to.
- *
- * A channel that names no `servers` is available on ALL of the document's
- * servers — that is the specification's own default, not an inference. Reading
- * an absent `servers` as silence instead cost every single-server document its
- * destinations whenever its operations carried no bindings, which is an
- * entirely ordinary shape for a hand-written document.
- */
-function brokersFromChannelServers(
+/** Brokers of the servers a channel names explicitly. */
+function brokersFromChannelRefs(
   channel: Record<string, unknown>,
   servers: Record<string, unknown> | undefined,
-): Set<string> {
+): { brokers: Set<string>; explicit: boolean } {
   const out = new Set<string>();
-  if (servers === undefined) return out;
   const refs = own(channel, 'servers');
-
-  if (!Array.isArray(refs)) {
-    for (const name of Object.keys(servers)) {
-      const broker = brokerForProtocol(asString(own(own(servers, name), 'protocol')));
-      if (broker !== undefined) out.add(broker);
-    }
-    return out;
-  }
-
+  if (!Array.isArray(refs) || servers === undefined) return { brokers: out, explicit: false };
   for (const entry of refs) {
     const ref = asString(own(entry, '$ref'));
     if (ref === undefined) continue;
@@ -325,7 +348,30 @@ function brokersFromChannelServers(
     const broker = brokerForProtocol(asString(own(own(servers, name), 'protocol')));
     if (broker !== undefined) out.add(broker);
   }
-  return out;
+  return { brokers: out, explicit: true };
+}
+
+/**
+ * Every broker the document's servers name, computed ONCE per document.
+ *
+ * A channel that names no `servers` is available on all of them — the
+ * specification's own default, not an inference. Computing it per operation was
+ * quadratic in `servers × operations`, which an in-cap document can drive to
+ * minutes.
+ */
+function brokersOfAllServers(servers: Record<string, unknown> | undefined): {
+  brokers: Set<string>;
+  capped: boolean;
+} {
+  const out = new Set<string>();
+  if (servers === undefined) return { brokers: out, capped: false };
+  const names = Object.keys(servers);
+  const capped = names.length > MAX_SERVERS_PER_DOCUMENT;
+  for (const name of names.slice(0, MAX_SERVERS_PER_DOCUMENT)) {
+    const broker = brokerForProtocol(asString(own(own(servers, name), 'protocol')));
+    if (broker !== undefined) out.add(broker);
+  }
+  return { brokers: out, capped };
 }
 
 /**
@@ -344,52 +390,74 @@ function classifyVersion(raw: Record<string, unknown>): 'read' | AsyncApiRefusal
   return 'unsupported-version';
 }
 
+export interface NormalizedDocument {
+  operations: AsyncApiOperation[];
+  refusals: Partial<Record<AsyncApiRefusal, number>>;
+  /** Operations EXAMINED, which is what the caps count. */
+  examined: number;
+  /** A bound stopped this document short. */
+  truncated: boolean;
+}
+
 /**
  * Normalize one parsed document. Pure — no filesystem, so the whole refusal
  * surface is testable from inline document literals.
+ *
+ * `budget` is the number of operations the RUN may still examine.
  */
 export function normalizeAsyncApiDocument(
   parsed: unknown,
   documentPath: string,
   budget: number = MAX_TOTAL_OPERATIONS,
-): { operations: AsyncApiOperation[]; refusals: Partial<Record<AsyncApiRefusal, number>> } {
+): NormalizedDocument {
   const refusals: Partial<Record<AsyncApiRefusal, number>> = {};
   const tally = makeTally(refusals);
   const operations: AsyncApiOperation[] = [];
+  let examined = 0;
+  let truncated = false;
 
   const raw = asRecord(parsed);
   if (raw === undefined) {
     tally.count('unparsable');
-    return { operations, refusals };
+    return { operations, refusals, examined, truncated };
   }
 
   const verdict = classifyVersion(raw);
   if (verdict !== 'read') {
     tally.count(verdict);
-    return { operations, refusals };
+    return { operations, refusals, examined, truncated };
   }
 
   const channels = asRecord(own(raw, 'channels'));
   const servers = asRecord(own(raw, 'servers'));
   const operationsRaw = asRecord(own(raw, 'operations'));
-  if (operationsRaw === undefined) return { operations, refusals };
+  if (operationsRaw === undefined) return { operations, refusals, examined, truncated };
 
-  let examined = 0;
+  // Once per document, not once per operation.
+  const allServers = brokersOfAllServers(servers);
+  if (allServers.capped) {
+    tally.count('server-cap');
+    truncated = true;
+  }
+
   for (const operationId of Object.keys(operationsRaw)) {
-    // Counted against operations EXAMINED. A cap on accepted operations bounds
-    // the output but not the work, and the work is what a pathological document
-    // spends.
-    examined += 1;
-    if (examined > MAX_OPERATIONS_PER_DOCUMENT) {
+    if (examined >= MAX_OPERATIONS_PER_DOCUMENT) {
       tally.count('operation-cap');
+      truncated = true;
       break;
     }
-    if (operations.length >= budget) {
+    if (examined >= budget) {
       tally.count('total-operation-cap');
+      truncated = true;
       break;
     }
+    examined += 1;
+
     const operation = asRecord(own(operationsRaw, operationId));
-    if (operation === undefined) continue;
+    if (operation === undefined) {
+      tally.count('unparsable');
+      continue;
+    }
 
     if (operationId.length > MAX_OPERATION_ID_LENGTH) {
       tally.count('operation-id-too-long');
@@ -413,6 +481,10 @@ export function normalizeAsyncApiDocument(
       tally.count('channel-not-found');
       continue;
     }
+    if (own(channel, '$ref') !== undefined && own(channel, 'address') === undefined) {
+      tally.count('unresolved-channel-reference');
+      continue;
+    }
 
     // The `address` field, not the channel KEY. A generator is free to key a
     // channel by anything unique; only `address` is defined as the thing the
@@ -433,41 +505,69 @@ export function normalizeAsyncApiDocument(
       tally.count('address-too-long');
       continue;
     }
-    if (own(channel, 'parameters') !== undefined || address.includes('{')) {
+    // A non-empty `parameters` map is the specification's own statement that
+    // the address is a template. An EMPTY one states nothing — generators emit
+    // empty containers routinely — so it must not refuse a literal address; the
+    // `{` test below covers documents that template without declaring.
+    const parameters = asRecord(own(channel, 'parameters'));
+    if ((parameters !== undefined && Object.keys(parameters).length > 0) || address.includes('{')) {
       tally.count('templated-address');
       continue;
     }
 
-    // Two independent readings of the same fact, and they must agree WHEN BOTH
-    // ARE PRESENT. Neither is a vendor extension. A single unchallenged reading
-    // is accepted — it is the document's only statement about its broker, and
-    // refusing it would lose every document that names its protocol once.
+    // BINDINGS FIRST. They are the operation's own statement about its broker;
+    // the servers are the channel's. Unioning every server before consulting
+    // the bindings made a document that declares both a REST server and a Kafka
+    // server lose every operation it states, filed under a reason that says the
+    // document contradicts itself — when the contradiction was manufactured
+    // here by asking a question the operation had already answered.
     const fromBindings = brokersFromBindings(own(operation, 'bindings'));
-    const fromServers = brokersFromChannelServers(channel, servers);
-    if (fromBindings.size > 1 || fromServers.size > 1) {
+    if (fromBindings.size > 1) {
       tally.count('protocol-disagreement');
       continue;
     }
     const bindingBroker = [...fromBindings][0];
-    const serverBroker = [...fromServers][0];
-    if (
-      bindingBroker !== undefined &&
-      serverBroker !== undefined &&
-      bindingBroker !== serverBroker
-    ) {
-      tally.count('protocol-disagreement');
-      continue;
+
+    const explicitServers = brokersFromChannelRefs(channel, servers);
+    let broker: string | undefined;
+    if (bindingBroker !== undefined) {
+      // Cross-check only against servers the channel named itself, and only
+      // when they are unanimous. An inherited multi-protocol server set is not
+      // a claim about THIS operation.
+      const serverBroker =
+        explicitServers.brokers.size === 1 ? [...explicitServers.brokers][0] : undefined;
+      if (serverBroker !== undefined && serverBroker !== bindingBroker) {
+        tally.count('protocol-disagreement');
+        continue;
+      }
+      broker = bindingBroker;
+    } else if (explicitServers.explicit) {
+      if (explicitServers.brokers.size > 1) {
+        tally.count('protocol-disagreement');
+        continue;
+      }
+      broker = [...explicitServers.brokers][0];
+    } else {
+      if (allServers.brokers.size > 1) {
+        tally.count('ambiguous-server-default');
+        continue;
+      }
+      broker = [...allServers.brokers][0];
     }
-    const broker = bindingBroker ?? serverBroker;
+
     if (broker === undefined) {
       tally.count('protocol-unknown');
+      continue;
+    }
+    if (isNonDestinationBroker(broker)) {
+      tally.count('not-a-destination-protocol');
       continue;
     }
 
     operations.push({ documentPath, operationId, action, address, broker });
   }
 
-  return { operations, refusals };
+  return { operations, refusals, examined, truncated };
 }
 
 /** Cheap pre-parse gate: does this file even claim to be an AsyncAPI document? */
@@ -479,16 +579,25 @@ interface WalkResult {
   files: string[];
   symlinksSkipped: number;
   truncated: boolean;
+  unreadableDirectories: number;
 }
 
 async function collectCandidateFiles(root: string): Promise<WalkResult> {
   const files: string[] = [];
   let symlinksSkipped = 0;
+  let unreadableDirectories = 0;
   let visited = 0;
   let truncated = false;
+  // Distinct from `truncated`: a GLOBAL budget is exhausted and no further work
+  // is useful, whereas depth exhaustion in one branch says nothing about its
+  // siblings. Conflating them made a single over-deep subdirectory discard
+  // every remaining document in the walk, with the outcome decided by
+  // alphabetical ordering — a strictly worse failure than the one the
+  // truncation reporting was added to fix.
+  let exhausted = false;
 
   const walk = async (dir: string, depth: number): Promise<void> => {
-    if (truncated) return;
+    if (exhausted) return;
     if (depth > MAX_DIRECTORY_DEPTH) {
       truncated = true;
       return;
@@ -497,16 +606,19 @@ async function collectCandidateFiles(root: string): Promise<WalkResult> {
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {
+      unreadableDirectories += 1;
+      truncated = true;
       return;
     }
     // Sorted so the operation order a run produces is a function of the tree,
     // not of the order the filesystem happened to hand entries back.
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
-      if (truncated) return;
+      if (exhausted) return;
       visited += 1;
       if (visited > MAX_WALK_ENTRIES || files.length >= MAX_DOCUMENTS) {
         truncated = true;
+        exhausted = true;
         return;
       }
       const full = path.join(dir, entry.name);
@@ -526,20 +638,28 @@ async function collectCandidateFiles(root: string): Promise<WalkResult> {
   };
 
   await walk(root, 0);
-  return { files, symlinksSkipped, truncated };
+  return { files, symlinksSkipped, truncated, unreadableDirectories };
 }
 
 /**
  * Read one candidate file under a hard byte ceiling.
  *
- * Modelled line for line on `frameworks/spring/actuator-runtime.ts`'s
- * `readPayloadFile`, and for the reason its comment gives: the size gate and
- * the read share ONE handle so both observe the same inode. Checking
- * `fs.stat(path)` and then re-resolving that path in `fs.readFile` lets
- * whatever writes the directory swap the file between the two calls, which
- * makes the cap advisory (CodeQL js/file-system-race). The out-of-band cache
- * this option exists to read is written by other tooling by definition, so the
- * race is the normal condition here rather than an exotic one.
+ * Modelled on `frameworks/spring/actuator-runtime.ts`'s `readPayloadFile`, and
+ * for the reason its comment gives: the size gate and the read share ONE handle
+ * so both observe the same inode. Checking `fs.stat(path)` and then re-resolving
+ * that path in `fs.readFile` lets whatever writes the directory swap the file
+ * between the two calls, which makes the cap advisory (CodeQL
+ * js/file-system-race). The out-of-band cache this option exists to read is
+ * written by other tooling by definition, so the race is the normal condition
+ * here rather than an exotic one.
+ *
+ * The read LOOPS, like its model. POSIX permits a short read on a regular file,
+ * and a single read was measured never short across seven hundred reads on
+ * APFS — but the deployments this option targets put the cache on NFS, SMB or a
+ * FUSE mount, and FUSE filesystems using `direct_io` do return short counts.
+ * The consequence of one short read is silent: a document truncated at a line
+ * boundary still parses, so operations vanish with `refusals: {}` and
+ * `truncated: false`, indistinguishable from a document that had fewer.
  *
  * The `isFile` test on the same handle is what the path-based version could not
  * do at all. Without it the single-file configuration accepts anything `stat`
@@ -552,7 +672,8 @@ async function collectCandidateFiles(root: string): Promise<WalkResult> {
  * other end, so a type check performed after the open never runs: the analyze
  * hangs there, holding its repository lock, with no error to report. The flag
  * makes the open return immediately for a FIFO and is a no-op for the regular
- * files this actually wants, which is why it costs nothing to keep.
+ * files this actually wants (measured: identical byte count, digest and timing
+ * with and without it), which is why it costs nothing to keep.
  */
 async function readBoundedFile(file: string): Promise<string | 'oversized' | 'unreadable'> {
   let handle: import('node:fs/promises').FileHandle | undefined;
@@ -565,7 +686,12 @@ async function readBoundedFile(file: string): Promise<string | 'oversized' | 'un
     if (!stat.isFile()) return 'unreadable';
     if (stat.size > MAX_DOCUMENT_BYTES) return 'oversized';
     const buffer = Buffer.alloc(MAX_DOCUMENT_BYTES + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const chunk = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (chunk.bytesRead === 0) break;
+      bytesRead += chunk.bytesRead;
+    }
     if (bytesRead > MAX_DOCUMENT_BYTES) return 'oversized';
     return buffer.subarray(0, bytesRead).toString('utf-8');
   } catch {
@@ -580,9 +706,11 @@ async function readBoundedFile(file: string): Promise<string | 'oversized' | 'un
  *
  * `configuredPath` is resolved against the repository root, so an absolute path
  * to a cache populated out of band and a repo-relative directory of committed
- * documents are both natural — the same contract `springActuatorPath` offers
- * for Actuator snapshots, and for the same reason: the artifact is not a source
- * file, and where it comes from is the operator's business, not this module's.
+ * documents are both natural — the same shape `springActuatorPath` offers for
+ * Actuator snapshots. The READ is wider than that neighbour's, and the
+ * difference is worth stating rather than glossed as "the same contract": the
+ * Actuator loader probes five fixed filenames in one directory, while this
+ * walks recursively under the caps above and opens every candidate it finds.
  *
  * There is deliberately NO glob-based auto-discovery. Scanning a repository for
  * anything that parses as a document would make every existing index grow nodes
@@ -599,6 +727,7 @@ export async function readAsyncApiDocuments(
   let documentsAccepted = 0;
   let symlinksSkipped = 0;
   let truncated = false;
+  let examinedTotal = 0;
 
   const root = path.resolve(repoPath, configuredPath);
   let files: string[];
@@ -609,7 +738,8 @@ export async function readAsyncApiDocuments(
       files = walked.files;
       symlinksSkipped = walked.symlinksSkipped;
       truncated = walked.truncated;
-      if (truncated) tally.count('walk-truncated');
+      for (let i = 0; i < walked.unreadableDirectories; i += 1) tally.count('directory-unreadable');
+      if (truncated && walked.unreadableDirectories === 0) tally.count('walk-truncated');
     } else {
       files = [root];
     }
@@ -649,7 +779,7 @@ export async function readAsyncApiDocuments(
       continue;
     }
 
-    const remaining = MAX_TOTAL_OPERATIONS - operations.length;
+    const remaining = MAX_TOTAL_OPERATIONS - examinedTotal;
     if (remaining <= 0) {
       tally.count('total-operation-cap');
       truncated = true;
@@ -657,9 +787,10 @@ export async function readAsyncApiDocuments(
     }
 
     const result = normalizeAsyncApiDocument(parsed, file, remaining);
+    examinedTotal += result.examined;
+    if (result.truncated) truncated = true;
     for (const [reason, count] of Object.entries(result.refusals)) {
       refusals[reason as AsyncApiRefusal] = (refusals[reason as AsyncApiRefusal] ?? 0) + count;
-      if (reason === 'total-operation-cap') truncated = true;
     }
     if (result.operations.length > 0) documentsAccepted += 1;
     operations.push(...result.operations);
