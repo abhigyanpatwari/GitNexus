@@ -1,0 +1,8 @@
+{
+  "_comment": "Baselines for bench/kotlin-jvm-accessors/measure.mjs --check (#2885). fingerprint is sha256 over synthetic Method node ids on the data_large corpus (800 data classes × 4 vars × 2 accessors = 6400 methods). no_props arm uses @JvmField so kotlinc and the synthesizer emit 0 accessor methods. Budgets are timing gates with CI headroom.",
+  "fingerprint": "18e4f295a437a747c486699e8ec5d310d9bde54437d9a96356a1b1bf8442b0ef",
+  "scaling_budget": 1.6,
+  "_scaling_note": "(t_large/t_small)/(800/250) on the data-class arm. Measured ~1.02.",
+  "widening_overhead_budget": 2.5,
+  "_widening_overhead_note": "data_large_ms / no_props_large_ms. The @JvmField control preserves four property declarations without accessors; budget guards against a pathological synthesis-arm regression."
+}

@@ -245,10 +245,17 @@ describe('PARSE_CACHE_VERSION', () => {
   // collided, because each re-checked once and neither re-checked after the
   // other moved — which is why the rule is re-applied AT MERGE, not when the
   // number is picked.
-  // Version 83 merges upstream's v82 payload with the fork's Objective-C
+  // Moved 89 -> 90 for #2865's decorator-route `handlerName` after #3128
+  // merged and took 89. origin/main is 89; 90 is the next free value and
+  // still unused by other open PRs' parse-cache.ts heads — the same
+  // collision the paragraph above describes, caught this time by re-checking
+  // at merge.
+  // Moved 90 -> 91 for #3130's Kotlin Spring decoratorRoutes and Kotlin
+  // ModuleConstants shadow metadata, both persisted worker output.
+  // Version 92 merges upstream's v91 payload with the fork's Objective-C
   // semantic graph side-channel, so warm caches from either parent miss.
-  it('pins SCHEMA_BUMP to 83 so concurrent bumps cannot silently collide (#2766, #3015, #3088)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(83);
+  it('pins SCHEMA_BUMP to 92 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(92);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     // The PREVIOUS version must fail the reuse gate, not merely differ from the
     // current one — a hardcoded number outside the conflict hunk rebases cleanly
@@ -256,7 +263,7 @@ describe('PARSE_CACHE_VERSION', () => {
     // Every nearby historical or in-flight value is rejected.
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

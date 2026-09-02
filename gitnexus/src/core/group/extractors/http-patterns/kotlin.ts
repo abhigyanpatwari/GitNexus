@@ -1328,6 +1328,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             mc.literals.size > 0 ||
             mc.exprs.size > 0 ||
             mc.imports.size > 0 ||
+            (mc.wildcardImports?.length ?? 0) > 0 ||
             unfoldableDeclarationsOf(mc).size > 0
           ) {
             // POSIX key (see `normalizeRel`); `readFile` above got the raw `rel`.
@@ -1373,6 +1374,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             mc.literals.size > 0 ||
             mc.exprs.size > 0 ||
             mc.imports.size > 0 ||
+            (mc.wildcardImports?.length ?? 0) > 0 ||
             unfoldableDeclarationsOf(mc).size > 0
           ) {
             foldIndex = overlayKotlinConstantIndex(kotlinCtx.index, fileKey, mc);

@@ -99,6 +99,81 @@ describe('syncGroup', () => {
       }),
     ]);
   });
+  it('marks a cross-link degraded when the PROVIDER endpoint carries no resolved symbolUid', async () => {
+    // A provider whose symbol never resolved (empty symbolUid — e.g. a
+    // source-scan provider in a repo without graph symbols) still proves the
+    // service boundary, but cross-impact fan-out cannot anchor the link.
+    // isUnresolvedEndpoint is evaluated at the persistence boundary so exact,
+    // wildcard and manifest origins are covered by one truth point.
+    const config = makeConfig({ 'app/backend': 'backend-repo', 'app/frontend': 'frontend-repo' });
+    const mk = (role: 'provider' | 'consumer', uid: string): StoredContract => ({
+      contractId: 'http::GET::/api/users',
+      type: 'http',
+      role,
+      symbolUid: uid,
+      symbolRef: { filePath: `src/${role}.ts`, name: `fn-${role}` },
+      symbolName: `fn-${role}`,
+      confidence: 0.8,
+      meta: {},
+      repo: role === 'provider' ? 'app/backend' : 'app/frontend',
+    });
+
+    const degraded = await syncGroup(config, {
+      extractorOverride: async () => [mk('provider', ''), mk('consumer', 'uid-2')],
+      skipWrite: true,
+    });
+    expect(degraded.crossLinks).toHaveLength(1);
+    expect(degraded.crossLinks[0].degraded).toBe(true);
+    expect(degraded.degradedLinks).toBe(1);
+
+    // Control: a resolved provider keeps the flag absent (not false) so the
+    // field stays "carried only when meaningful" in contracts.json.
+    const resolved = await syncGroup(config, {
+      extractorOverride: async () => [mk('provider', 'uid-1'), mk('consumer', 'uid-2')],
+      skipWrite: true,
+    });
+    expect(resolved.crossLinks).toHaveLength(1);
+    expect('degraded' in resolved.crossLinks[0]).toBe(false);
+    expect(resolved.degradedLinks).toBe(0);
+  });
+
+  it('does NOT mark a manifest synthetic-UID link degraded — the manifest:: uid anchors fan-out', async () => {
+    // Manifest endpoints fall back to a deterministic
+    // `manifest::<repo>::<contractId>` uid exactly when the graph holds no
+    // symbol for them (dangling repo, or a string-dispatch provider with no
+    // symbol at all). Their `symbolRef.filePath` is empty by construction —
+    // which trips isUnresolvedEndpoint's field checks — but cross-impact
+    // anchors the crossing anyway (#2722: preserved with `fanout_status:
+    // 'not_attempted'` instead of cross=0). So the degraded flag ("cannot
+    // anchor a fan-out") must stay off: types.ts pins it as "distinct from
+    // manifest::… synthetic UIDs", which have their own downstream channel.
+    const links: GroupManifestLink[] = [
+      {
+        from: 'app/consumer',
+        to: 'app/dangling', // not in config.repos → unresolved → synthetic uid
+        type: 'http',
+        contract: 'GET::/api/orders',
+        role: 'consumer',
+      },
+    ];
+    const config: GroupConfig = { ...makeConfig({ 'app/consumer': 'consumer-repo' }), links };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [],
+      skipWrite: true,
+    });
+
+    expect(result.crossLinks).toHaveLength(1);
+    expect(result.crossLinks[0].matchType).toBe('manifest');
+    expect(result.crossLinks[0].to.symbolUid).toBe(
+      'manifest::app/dangling::http::GET::/api/orders',
+    );
+    // The empty filePath is what makes this a regression guard: without the
+    // manifest:: exemption in isUnresolvedEndpoint the flag fires on it.
+    expect(result.crossLinks[0].to.symbolRef.filePath).toBe('');
+    expect('degraded' in result.crossLinks[0]).toBe(false);
+    expect(result.degradedLinks).toBe(0);
+  });
 
   it('reports missing repos', async () => {
     const config = makeConfig({ 'app/backend': 'nonexistent-repo' });
@@ -836,6 +911,86 @@ service OrderService {
       expect(manifestLinks[0].contractId).toBe('custom::mathlex::Expression');
       expect(manifestLinks[0].from.repo).toBe('engine/thales');
       expect(manifestLinks[0].to.repo).toBe('parser/mathlex');
+    });
+
+    it('builds Maven manifest links when independent repositories share a parent POM', async () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-maven-parent-'));
+
+      const parentCoordinates = `<parent>
+        <groupId>com.example</groupId>
+        <artifactId>parent</artifactId>
+        <version>1</version>
+      </parent>`;
+      const childPom = (artifactId: string, dependency = '') => `<project>
+        ${parentCoordinates}
+        <artifactId>${artifactId}</artifactId>
+        <dependencies>${dependency}</dependencies>
+      </project>`;
+      const sharedDependency =
+        '<dependency><groupId>com.example</groupId><artifactId>shared-lib</artifactId></dependency>';
+
+      writeFileSync(
+        'parent/pom.xml',
+        '<project><groupId>com.example</groupId><artifactId>parent</artifactId><packaging>pom</packaging></project>',
+      );
+      writeFileSync('shared-lib/pom.xml', childPom('shared-lib'));
+      writeFileSync('service-a/pom.xml', childPom('service-a', sharedDependency));
+      writeFileSync(
+        'service-a/src/main/java/com/example/service/a/App.java',
+        'package com.example.service.a;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
+      );
+      writeFileSync('service-b/pom.xml', childPom('service-b', sharedDependency));
+      writeFileSync(
+        'service-b/src/main/kotlin/com/example/service/b/App.kt',
+        'package com.example.service.b\nimport com.example.shared.lib.SharedType\nclass App\n',
+      );
+
+      const repoPaths = ['parent', 'shared-lib', 'service-a', 'service-b'];
+      const mockEntries: RegistryEntry[] = repoPaths.map((repoPath) => ({
+        name: repoPath,
+        path: path.join(tmpDir, repoPath),
+        storagePath: path.join(tmpDir, repoPath, '.gitnexus'),
+        indexedAt: '',
+        lastCommit: '',
+      }));
+
+      const repoManager = await import('../../../src/storage/repo-manager.js');
+      vi.spyOn(repoManager, 'readRegistry').mockResolvedValue(mockEntries);
+
+      const config = makeWsConfig(
+        {
+          parent: 'parent',
+          'libs/shared-lib': 'shared-lib',
+          'services/service-a': 'service-a',
+          'services/service-b': 'service-b',
+        },
+        true,
+      );
+
+      const result = await syncGroup(config, {
+        extractorOverride: async () => [],
+        skipWrite: true,
+      });
+
+      const manifestLinks = result.crossLinks.filter((link) => link.matchType === 'manifest');
+      expect(
+        manifestLinks.map((link) => ({
+          from: link.from.repo,
+          to: link.to.repo,
+          contractId: link.contractId,
+        })),
+      ).toEqual([
+        {
+          from: 'services/service-a',
+          to: 'libs/shared-lib',
+          contractId: 'custom::shared-lib::SharedType',
+        },
+        {
+          from: 'services/service-b',
+          to: 'libs/shared-lib',
+          contractId: 'custom::shared-lib::SharedType',
+        },
+      ]);
     });
 
     it('workspace_deps: false skips workspace extraction entirely', async () => {

@@ -36,6 +36,32 @@ import {
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
+
+const defGraphIdMemoByLookup = new WeakMap<GraphNodeLookup, Map<string, string | undefined>>();
+
+const isResolveDefGraphIdMemoEnabled = (): boolean => {
+  const raw = process.env.GITNEXUS_RESOLVE_DEF_GRAPH_ID_MEMO;
+  if (raw === undefined || raw.trim() === '') return true;
+  const value = raw.trim().toLowerCase();
+  return value !== '0' && value !== 'false' && value !== 'off' && value !== 'no';
+};
+
+const defGraphIdMemoKey = (
+  filePath: string,
+  def: {
+    nodeId?: string;
+    qualifiedName?: string;
+    type?: NodeLabel;
+    parameterTypes?: readonly string[];
+    parameterTypeClasses?: readonly ParameterTypeClass[];
+    parameterCount?: number;
+    templateArguments?: readonly string[];
+    templateConstraints?: unknown;
+    namespacePrefix?: string;
+  },
+): string =>
+  `${filePath}\0${def.nodeId ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${(def.parameterTypeClasses ?? []).join(',')}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
+
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
  * source ("caller"). A Variable / Property can be the TARGET of an
@@ -229,6 +255,38 @@ export function resolveDefGraphId(
     templateArguments?: readonly string[];
     templateConstraints?: unknown;
     /** #1982 bridge-held namespace path; see `SymbolDefinition.namespacePrefix`. */
+    namespacePrefix?: string;
+  },
+  nodeLookup: GraphNodeLookup,
+): string | undefined {
+  if (!isResolveDefGraphIdMemoEnabled()) {
+    return resolveDefGraphIdUncached(filePath, def, nodeLookup);
+  }
+  const qn = def.qualifiedName;
+  if (qn === undefined || qn.length === 0) return undefined;
+  let bucket = defGraphIdMemoByLookup.get(nodeLookup);
+  if (bucket === undefined) {
+    bucket = new Map();
+    defGraphIdMemoByLookup.set(nodeLookup, bucket);
+  }
+  const key = defGraphIdMemoKey(filePath, def);
+  if (bucket.has(key)) return bucket.get(key);
+  const resolved = resolveDefGraphIdUncached(filePath, def, nodeLookup);
+  bucket.set(key, resolved);
+  return resolved;
+}
+
+function resolveDefGraphIdUncached(
+  filePath: string,
+  def: {
+    nodeId?: string;
+    qualifiedName?: string;
+    type?: NodeLabel;
+    parameterTypes?: readonly string[];
+    parameterTypeClasses?: readonly ParameterTypeClass[];
+    parameterCount?: number;
+    templateArguments?: readonly string[];
+    templateConstraints?: unknown;
     namespacePrefix?: string;
   },
   nodeLookup: GraphNodeLookup,

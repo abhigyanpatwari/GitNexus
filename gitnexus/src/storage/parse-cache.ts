@@ -678,11 +678,59 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // programmatic Spring lookup facts. A warm v81 cache has no such facts, so it
 // would skip workers and silently omit the new INJECTS edges. origin/main at
 // allocation is 81.
-// 82 -> 83 merges the fork's Objective-C semantic graph side-channel with
-// upstream's v82 payload. A warm cache from either parent must miss: v82 lacks
-// the Objective-C provider-owned graph facts, while v78 lacks the V8 envelope
-// and Spring dynamic-lookup captures added upstream.
-const SCHEMA_BUMP = 83;
+// 82 -> 83: Java Lombok @Data/@Getter/@Setter accessor synthesis emits
+// synthetic Method nodes, HAS_METHOD edges, and matching scope captures into
+// ParseWorkerResult / ParsedFile. A warm v82 cache replays pre-Lombok worker
+// output and silently omits those callables. origin/main at allocation is 82.
+// 83 -> 84: Kotlin val/var properties synthesize JVM get/set Method nodes
+// (same provider hook as Java Lombok). A warm v83 cache omits those callables.
+// origin/main at allocation is 83 (Java Lombok on this branch).
+// 84 -> 85: JVM synthetic accessor captures now use the declaration
+// qualified_name key consumed by scope extraction, and Kotlin accessor planning
+// follows JvmAbi naming plus conservative @JvmName suppression. A warm v84
+// cache can replay stale names and declaration metadata.
+// 85 -> 86: Kotlin interface property accessors now record isAbstract on the
+// synthetic Method. A warm v85 cache replays them as concrete.
+// 86 -> 87: ModuleConstants gained wildcardImports (static-import-asterisk
+// materialization) — a warm v86 cache has no wildcard bindings, so folding
+// would skip them and drop wildcard-imported route constants. origin/main at
+// allocation is 86 (#2885).
+// 87 -> 88: Java ModuleConstants now preserves unfoldable declaration names
+// across worker/cache replay so wildcard expansion cannot resurrect an imported
+// member hidden by a local field. A warm v87 cache lacks that shadow metadata.
+// 88 -> 89: the same side channels now carry Spring messaging facts — the
+// arguments of non-HTTP handler annotations (`@KafkaListener(topics = ...)`)
+// and a new `springMessageProducerFacts` list for template publishes
+// (`KafkaTemplate.send`, `RabbitTemplate`/`JmsTemplate.convertAndSend`,
+// `StreamBridge.send`). Both are parse-time worker output replayed verbatim
+// from `ParsedFile.captureSideChannel`, so a warm v88 cache would skip workers
+// and hand the annotation facts back with no `args` and the producer list
+// empty. Measured on the fixture app: a warm all-cache-hit run
+// (`usedWorkerPool=false`, `reparsedFileCount=0`) reproduces 6 Java and 7
+// Kotlin producer facts purely from the store, which is exactly the state a
+// pre-change cache would have served as zero. origin/main at allocation is 88.
+// RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING — this
+// entry was allocated 83 first, and five bumps landed upstream before it merged.
+// 89 -> 90 (#2865): route decorator captures now carry `handlerName` in
+// `decoratorRoutes`, which is what lets `resolveRouteHandlerSymbols` stamp
+// `handlerSymbolId` and the routes phase emit the definition-level
+// HANDLES_ROUTE edge. The field is minted in the parse WORKER and persisted
+// verbatim, so a warm v89 cache replays handler-less decorator routes: every
+// route loses its definition-level association on incremental analyze while
+// every cold-run test passes — the inert-feature trap the entries above record.
+// 89 is now taken by merged #3128. 90 is the next free value above origin/main
+// (89) and above every in-flight claim found by scanning open PRs'
+// parse-cache.ts at their exact head SHAs (highest other open claim was still
+// ≤88). RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+// 90 -> 91 (#3130): Kotlin providers now emit Spring decoratorRoutes plus
+// ModuleConstants shadow metadata. A warm v90 cache would replay unchanged
+// Kotlin files with neither route candidates nor the constant declarations
+// needed to fold them, leaving the new ingestion path silently inert.
+// 91 -> 92 merges the fork's Objective-C semantic graph side-channel with
+// upstream's v91 payload. A warm cache from either parent must miss: v91 lacks
+// the Objective-C provider-owned graph facts, while v83 lacks the JVM accessor,
+// wildcard-route, messaging, and Kotlin Spring route payloads added upstream.
+const SCHEMA_BUMP = 92;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

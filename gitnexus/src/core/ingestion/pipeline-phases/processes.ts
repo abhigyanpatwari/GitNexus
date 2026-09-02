@@ -4,7 +4,8 @@
  * Detects execution flows (processes) and creates Process nodes +
  * STEP_IN_PROCESS edges. Also links Route/Tool nodes to processes.
  *
- * @deps    communities, routes, tools, pruneLocalSymbols, structure, parse
+ * @deps    communities, routes, tools, springAutoConfiguration,
+ *          pruneLocalSymbols, structure, parse
  * @reads   graph (all nodes and relationships), communityResult, routeRegistry,
  *          toolDefs, parse's allFetchCalls + allORMQueries (R3-6 sink sites)
  * @writes  graph (Process nodes, STEP_IN_PROCESS edges, ENTRY_POINT_OF edges)
@@ -52,7 +53,15 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
   // sinks rather than failing the phase. `pruneLocalSymbols` is declared
   // explicitly so process extraction always reads the trimmed graph even if a
   // future option drops the intervening `mro`/`communities` phases.
-  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure', 'parse'],
+  deps: [
+    'communities',
+    'routes',
+    'tools',
+    'springAutoConfiguration',
+    'pruneLocalSymbols',
+    'structure',
+    'parse',
+  ],
 
   async execute(
     ctx: PipelineContext,
@@ -212,8 +221,38 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       });
     });
 
+    // The static registry is finalized before Spring runtime enrichment. Merge
+    // runtime-confirmed Route nodes from the graph after the explicit
+    // springAutoConfiguration dependency has completed, so Actuator-only
+    // mappings participate in the same process-linking path.
+    const processRouteRegistry = new Map(routeRegistry);
+    ctx.graph.forEachNode((node) => {
+      if (
+        node.label !== 'Route' ||
+        node.properties.runtimeSource !== 'spring-actuator' ||
+        node.properties.runtimeConfirmed !== true
+      ) {
+        return;
+      }
+      const url = typeof node.properties.name === 'string' ? node.properties.name : undefined;
+      const filePath =
+        typeof node.properties.filePath === 'string' ? node.properties.filePath : undefined;
+      const method =
+        typeof node.properties.method === 'string' ? node.properties.method : undefined;
+      if (url === undefined || filePath === undefined) return;
+      const key = routeNodeKey(method, url);
+      if (!processRouteRegistry.has(key)) {
+        processRouteRegistry.set(key, {
+          filePath,
+          source: 'spring-actuator-runtime',
+          url,
+          ...(method === undefined ? {} : { method }),
+        });
+      }
+    });
+
     // Link Route and Tool nodes to Processes
-    if (routeRegistry.size > 0 || toolDefs.length > 0) {
+    if (processRouteRegistry.size > 0 || toolDefs.length > 0) {
       // Two-tier route lookup, mirroring the tool tables 10 lines below.
       // Routes whose handler resolved key by `handlerSymbolId` (read from
       // the Route node's graph properties — routes.ts stamps it there) and
@@ -228,7 +267,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       // routes phase stamps on the Route node was never consulted.
       const routesByHandlerId = new Map<string, string[]>();
       const routesWithoutHandlerByFile = new Map<string, string[]>();
-      for (const [, entry] of routeRegistry) {
+      for (const [, entry] of processRouteRegistry) {
         // Push the Route node identity (`routeNodeKey`), not the bare URL, so the
         // ENTRY_POINT_OF edge targets the same node id the routes phase created
         // (#2289: a same-URL GET/POST pair is two distinct Route nodes).

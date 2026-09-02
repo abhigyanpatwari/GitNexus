@@ -95,6 +95,7 @@
  *   @PostMapping(ApiPaths.ORDERS)                      // qualified
  *   @PostMapping(com.example.app.api.ApiPaths.ORDERS)  // FQN-qualified
  *   @PostMapping(ORDERS)                               // single-name import
+ *   @PostMapping(ORDERS) after import com.example.api.* // package-star import
  *   @PostMapping(ApiPaths.BASE + "/orders")            // inline concat
  *
  * Which ANNOTATIONS count as routes is a separate question this module has no
@@ -122,22 +123,18 @@
  *
  * WHERE THIS IS WIRED. Java reaches its binding from BOTH layers: the group
  * extractor (`group/extractors/http-patterns/java.ts`) and the ingestion
- * provider (`languages/java.ts`, via `extractModuleConstants` +
- * `foldRoutePathOperands`). Kotlin is wired into the GROUP layer only, because
- * the ingestion fold in `pipeline-phases/parse-impl.ts` runs exclusively over
- * `decoratorRoutes` — and `languages/kotlin.ts` declares no
- * `extractDecoratorRoutes`, since the ingestion Spring extractor (`spring.ts`)
- * is bound to `tree-sitter-java` and its node types. Declaring the constant
- * hooks on the Kotlin provider today would harvest a map on every Kotlin file
- * that nothing consumes. An ingestion-side Kotlin route extractor is the
- * prerequisite; when it lands, this binding is what its provider hooks should
- * point at, and no change here is needed.
+ * provider (`languages/java.ts`). Kotlin now does the same: the group extractor
+ * (`group/extractors/http-patterns/kotlin.ts`) plus `languages/kotlin.ts`
+ * (`extractDecoratorRoutes`, `extractModuleConstants`, `foldRoutePathOperands`).
+ * The dedicated ingestion walker is `route-extractors/kotlin-spring.ts`; it
+ * does not reuse Java `spring.ts`.
  */
 
 import type Parser from 'tree-sitter';
 import { unquoteSpringLiteral } from './spring-shared.js';
 import {
   MAX_FOLD_LENGTH,
+  unfoldableDeclarationsOf,
   type ImportBinding,
   type ModuleConstants,
   type Operand,
@@ -150,6 +147,7 @@ export type {
   Operand,
   RepoConstants,
 } from './constant-resolver.js';
+export { unfoldableDeclarationsOf } from './constant-resolver.js';
 
 /**
  * What {@link extractKotlinModuleConstants} returns: the agnostic
@@ -177,6 +175,8 @@ export interface KotlinModuleConstants extends ModuleConstants {
   readonly packageName: string;
   /** Declaration keys whose initializer cannot be folded. */
   readonly unfoldableDeclarations: ReadonlySet<string>;
+  /** Top-level properties and types that shadow lower-priority star imports. */
+  readonly topLevelDeclarations: ReadonlySet<string>;
 }
 
 /**
@@ -189,15 +189,12 @@ function declaredPackageOf(mc: ModuleConstants | undefined): string | null {
   return typeof declared === 'string' ? declared : null;
 }
 
-const NO_UNFOLDABLE_DECLARATIONS: ReadonlySet<string> = new Set<string>();
+const NO_TOP_LEVEL_DECLARATIONS: ReadonlySet<string> = new Set<string>();
 
-/**
- * Kotlin declaration keys known to exist but not fold, or an empty set when
- * `mc` came from another language binding.
- */
-export function unfoldableDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
-  const declarations = (mc as KotlinModuleConstants | undefined)?.unfoldableDeclarations;
-  return declarations instanceof Set ? declarations : NO_UNFOLDABLE_DECLARATIONS;
+/** Kotlin top-level names known to shadow package-star imports. */
+function topLevelDeclarationsOf(mc: ModuleConstants | undefined): ReadonlySet<string> {
+  const declarations = (mc as KotlinModuleConstants | undefined)?.topLevelDeclarations;
+  return declarations instanceof Set ? declarations : NO_TOP_LEVEL_DECLARATIONS;
 }
 
 /** Source extensions a Kotlin declaration can live in. */
@@ -443,6 +440,16 @@ export interface KotlinConstantIndex {
 
 /** Does this file contribute declarations to Kotlin import ambiguity? */
 function contributesKotlinConstants(mc: ModuleConstants): boolean {
+  return (
+    mc.literals.size > 0 ||
+    mc.exprs.size > 0 ||
+    unfoldableDeclarationsOf(mc).size > 0 ||
+    topLevelDeclarationsOf(mc).size > 0
+  );
+}
+
+/** Foldable or explicitly unfoldable constants that must live in index projections. */
+function hasIndexedConstants(mc: ModuleConstants): boolean {
   return mc.literals.size > 0 || mc.exprs.size > 0 || unfoldableDeclarationsOf(mc).size > 0;
 }
 
@@ -459,6 +466,7 @@ function topLevelDeclarationNames(mc: ModuleConstants): Set<string> {
     const dot = key.indexOf('.');
     names.add(dot < 0 ? key : key.slice(0, dot));
   }
+  for (const name of topLevelDeclarationsOf(mc)) names.add(name);
   return names;
 }
 
@@ -509,6 +517,65 @@ export function buildKotlinConstantIndex(repo: RepoConstants): KotlinConstantInd
   return { repo, constantKeys, byPackage: mutablePackages, byFqn };
 }
 
+/** Read-only one-entry overlay without copying the repo-wide constant map. */
+class KotlinConstantOverlay implements ReadonlyMap<string, ModuleConstants> {
+  readonly [Symbol.toStringTag] = 'KotlinConstantOverlay';
+
+  constructor(
+    private readonly base: RepoConstants,
+    private readonly overlayKey: string,
+    private readonly overlayValue: ModuleConstants,
+  ) {}
+
+  get size(): number {
+    return this.base.size + (this.base.has(this.overlayKey) ? 0 : 1);
+  }
+
+  get(key: string): ModuleConstants | undefined {
+    return key === this.overlayKey ? this.overlayValue : this.base.get(key);
+  }
+
+  has(key: string): boolean {
+    return key === this.overlayKey || this.base.has(key);
+  }
+
+  *entries(): MapIterator<[string, ModuleConstants]> {
+    let replaced = false;
+    for (const [key, value] of this.base) {
+      if (key === this.overlayKey) {
+        replaced = true;
+        yield [key, this.overlayValue];
+      } else {
+        yield [key, value];
+      }
+    }
+    if (!replaced) yield [this.overlayKey, this.overlayValue];
+  }
+
+  *keys(): MapIterator<string> {
+    for (const [key] of this.entries()) yield key;
+  }
+
+  *values(): MapIterator<ModuleConstants> {
+    for (const [, value] of this.entries()) yield value;
+  }
+
+  [Symbol.iterator](): MapIterator<[string, ModuleConstants]> {
+    return this.entries();
+  }
+
+  forEach(
+    callbackfn: (
+      value: ModuleConstants,
+      key: string,
+      map: ReadonlyMap<string, ModuleConstants>,
+    ) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const [key, value] of this.entries()) callbackfn.call(thisArg, value, key, this);
+  }
+}
+
 /**
  * Add one scan-time file without rebuilding the base index when it only imports
  * constants. A newly discovered declaration is rare and rebuilds once for that
@@ -519,10 +586,15 @@ export function overlayKotlinConstantIndex(
   fileKey: string,
   mc: ModuleConstants,
 ): KotlinConstantIndex {
+  // Same-file shadows are read from `mc` itself. Rebuild only when this key's
+  // constant projections would change; a controller with a class name but no
+  // foldable constants stays on the overlay so scan stays linear.
+  const existing = index.repo.get(fileKey);
+  if (!hasIndexedConstants(mc) && (!existing || !hasIndexedConstants(existing))) {
+    return { ...index, repo: new KotlinConstantOverlay(index.repo, fileKey, mc) };
+  }
   const repo = new Map(index.repo);
-  const replacing = repo.has(fileKey);
   repo.set(fileKey, mc);
-  if (!replacing && !contributesKotlinConstants(mc)) return { ...index, repo };
   return buildKotlinConstantIndex(repo);
 }
 
@@ -858,9 +930,9 @@ function declaredPackage(root: Parser.SyntaxNode): string {
 }
 
 /**
- * Extract the declared package, file-level string constants and import bindings
- * of one parsed Kotlin file into the {@link KotlinModuleConstants} shape the
- * resolver consumes.
+ * Extract the declared package, file-level string constants, named imports and
+ * package-star import scopes of one parsed Kotlin file into the
+ * {@link KotlinModuleConstants} shape the resolver consumes.
  *
  * Constants come from the three carriers Kotlin allows a caller to reach without
  * an instance: file top level, `object` members, and `companion object` members.
@@ -907,21 +979,25 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
   const literals = new Map<string, string>();
   const exprs = new Map<string, readonly Operand[]>();
   const imports = new Map<string, ImportBinding>();
+  const wildcardImports: string[] = [];
   const unfoldableDeclarations = new Set<string>();
+  const topLevelDeclarations = new Set<string>();
 
   // Pass 1: imports.
   const walkImports = (node: Parser.SyntaxNode): void => {
     if (node.type === 'import_header') {
-      // `import a.b.*` binds no single name — nothing to key the fold on, and
-      // guessing which package member a bare reference came from is exactly the
-      // wrong answer. Skipped, so such a reference floors to skip.
       const isWildcard = node.children.some((c) => c.type === 'wildcard_import');
       const identifier = node.children.find((c) => c.type === 'identifier');
-      if (!isWildcard && identifier) {
+      if (identifier) {
         const segments = identifier.namedChildren
           .filter((c) => c.type === 'simple_identifier')
           .map((c) => unquoteKotlinIdentifier(c.text));
-        if (segments.length >= 2) {
+        if (isWildcard) {
+          // Package star (`pkg.*`) or classifier star (`Type.*`). Resolution
+          // decides which reading the specifier actually names.
+          const scope = segments.join('.');
+          if (scope.length > 0 && !wildcardImports.includes(scope)) wildcardImports.push(scope);
+        } else if (segments.length >= 2) {
           const spec = segments.join('.');
           const originalName = segments[segments.length - 1];
           const aliasNode = node.children
@@ -998,6 +1074,24 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
   /** Prepend a qualified scope unless it is already the innermost scope. */
   const withScope = (scope: string | null, scopes: readonly string[]): readonly string[] =>
     scope === null || scopes[0] === scope ? scopes : [scope, ...scopes];
+
+  // Package-star imports have lower priority than declarations in this file,
+  // including declarations the string-constant extractor intentionally does
+  // not harvest (a `var`, plain class, or unfoldable property). Record their
+  // names separately so a star import cannot turn one of those shadows into a
+  // false route constant.
+  for (const child of tree.rootNode.children ?? []) {
+    if (child.type === 'property_declaration') {
+      const declaration = child.children.find((c) => c.type === 'variable_declaration');
+      const name = declaration?.namedChildren.find((c) => c.type === 'simple_identifier');
+      if (name) topLevelDeclarations.add(unquoteKotlinIdentifier(name.text));
+      continue;
+    }
+    if (child.type === 'object_declaration' || child.type === 'class_declaration') {
+      const name = child.children.find((c) => c.type === 'type_identifier');
+      if (name) topLevelDeclarations.add(unquoteKotlinIdentifier(name.text));
+    }
+  }
 
   const walkDeclarations = (
     node: Parser.SyntaxNode,
@@ -1103,8 +1197,10 @@ export function extractKotlinModuleConstants(tree: Parser.Tree): KotlinModuleCon
     literals,
     exprs,
     imports,
+    wildcardImports,
     packageName: declaredPackage(tree.rootNode),
     unfoldableDeclarations,
+    topLevelDeclarations,
   };
 }
 
@@ -1211,6 +1307,87 @@ function resolveImportedName(
   return resolveWithState(owner.fileKey, `${owner.localName}.${imp.originalName}`, state, depth);
 }
 
+/**
+ * Resolve one name contributed by Kotlin star imports.
+ *
+ * Star imports have lower priority than local declarations and explicit
+ * imports; callers enforce that ordering before reaching this helper. A name
+ * must identify one declaration across every imported scope. Two stars
+ * exporting the same name, a duplicated FQN, or a package and a classifier
+ * that disagree on the target, floor to null rather than guessing.
+ *
+ * A specifier is tried as a package (`import pkg.*`) and as a classifier
+ * (`import Type.*` — object, class, or companion members). Kotlin allows both.
+ */
+function resolveKotlinWildcardImportTarget(
+  mc: ModuleConstants,
+  name: string,
+  index: KotlinConstantIndex,
+): KotlinImportTarget | null {
+  const scopes = mc.wildcardImports;
+  if (!scopes || scopes.length === 0) return null;
+
+  let resolved: KotlinImportTarget | null = null;
+  for (const rawScope of scopes) {
+    const scope = unquoteKotlinDottedName(rawScope);
+    const candidates: KotlinImportTarget[] = [];
+
+    const bucket = index.byPackage.get(scope);
+    if (bucket?.declarers.has(name)) {
+      const fileKey = bucket.declarers.get(name);
+      if (fileKey === null || fileKey === undefined) return null;
+      candidates.push({ fileKey, localName: name });
+    }
+
+    const owner = index.byFqn.get(scope);
+    if (owner === null) return null;
+    if (owner !== undefined) {
+      const localName = `${owner.localName}.${name}`;
+      const target = index.repo.get(owner.fileKey);
+      if (
+        target &&
+        (target.literals.has(localName) ||
+          target.exprs.has(localName) ||
+          unfoldableDeclarationsOf(target).has(localName))
+      ) {
+        candidates.push({ fileKey: owner.fileKey, localName });
+      }
+    }
+
+    for (const candidate of candidates) {
+      if (
+        resolved !== null &&
+        (resolved.fileKey !== candidate.fileKey || resolved.localName !== candidate.localName)
+      ) {
+        return null;
+      }
+      resolved = candidate;
+    }
+  }
+  return resolved;
+}
+
+/**
+ * Resolve a top-level name visible from the importing file's own package.
+ * `undefined` means the package does not declare the name; `null` means it is
+ * ambiguous and must floor rather than fall through to a star import.
+ */
+function resolveKotlinSamePackageTarget(
+  fileKey: string,
+  name: string,
+  index: KotlinConstantIndex,
+): KotlinImportTarget | null | undefined {
+  const packageName = declaredPackageOf(index.repo.get(fileKey));
+  if (packageName === null) return undefined;
+  const bucket = index.byPackage.get(packageName);
+  if (!bucket?.declarers.has(name)) return undefined;
+  const declaringFile = bucket.declarers.get(name);
+  if (declaringFile === null || declaringFile === undefined) return null;
+  // Same-file literals, expressions, and shadows are handled before this step.
+  if (declaringFile === fileKey) return undefined;
+  return { fileKey: declaringFile, localName: name };
+}
+
 function computeKotlinFold(
   fileKey: string,
   name: string,
@@ -1218,6 +1395,8 @@ function computeKotlinFold(
   depth: number,
 ): string | null {
   const { repo } = state.index;
+  const mc = repo.get(fileKey);
+  if (!mc) return null;
   // Qualified reference (`ApiPaths.ORDERS`): constants and imports are keyed by
   // their IN-FILE name, so a dotted name never hits directly. Split head.tail,
   // resolve the head through the importing file's type import, then look the
@@ -1238,6 +1417,28 @@ function computeKotlinFold(
       // `originalName` un-aliases `import … .ApiPaths as Paths`, so the lookup
       // uses the declaring type's real name.
       return resolveWithState(target.fileKey, `${target.localName}.${tail}`, state, depth + 1);
+    }
+    // A same-file top-level declaration outranks every star import.
+    if (!topLevelDeclarationsOf(mc).has(head)) {
+      const samePackageTarget = resolveKotlinSamePackageTarget(fileKey, head, state.index);
+      if (samePackageTarget === null) return null;
+      if (samePackageTarget !== undefined) {
+        return resolveWithState(
+          samePackageTarget.fileKey,
+          `${samePackageTarget.localName}.${tail}`,
+          state,
+          depth + 1,
+        );
+      }
+      const wildcardTarget = resolveKotlinWildcardImportTarget(mc, head, state.index);
+      if (wildcardTarget !== null) {
+        return resolveWithState(
+          wildcardTarget.fileKey,
+          `${wildcardTarget.localName}.${tail}`,
+          state,
+          depth + 1,
+        );
+      }
     }
     // Un-imported qualified name (FQN form `com.example.app.api.ApiPaths.ORDERS`):
     // try the longest dotted prefix that resolves to a file.
@@ -1261,14 +1462,29 @@ function computeKotlinFold(
   // an operand may itself be a QUALIFIED reference (`X = ApiPaths.Y + "/tail"`)
   // and the core only knows bare names: it would look `ApiPaths.Y` up in maps
   // keyed by simple name, miss, and floor the whole chain to null.
-  const mc = repo.get(fileKey);
-  if (!mc) return null;
   const literal = mc.literals.get(name);
   if (literal !== undefined) return literal;
   const expr = mc.exprs.get(name);
   if (expr !== undefined) return foldOperands(fileKey, expr, state, depth + 1);
   const imp = mc.imports.get(name);
   if (imp !== undefined) return resolveImportedName(fileKey, imp, state, depth + 1);
+  // Any local declaration still shadows a lower-priority package-star import,
+  // including a var/plain type that is absent from the constant maps.
+  if (topLevelDeclarationsOf(mc).has(name) || unfoldableDeclarationsOf(mc).has(name)) return null;
+  const samePackageTarget = resolveKotlinSamePackageTarget(fileKey, name, state.index);
+  if (samePackageTarget === null) return null;
+  if (samePackageTarget !== undefined) {
+    return resolveWithState(
+      samePackageTarget.fileKey,
+      samePackageTarget.localName,
+      state,
+      depth + 1,
+    );
+  }
+  const wildcardTarget = resolveKotlinWildcardImportTarget(mc, name, state.index);
+  if (wildcardTarget !== null) {
+    return resolveWithState(wildcardTarget.fileKey, wildcardTarget.localName, state, depth + 1);
+  }
   return null;
 }
 

@@ -98,6 +98,18 @@ export interface RepoMeta {
   contentRetentionSchemaVersion?: number;
   ftsProfile?: FtsProfile;
   /**
+   * Runtime enrichment mode plus redacted scan exclusions. Payload data and
+   * absolute/external paths are deliberately excluded from metadata.
+   */
+  springActuator?: {
+    enabled: boolean;
+    /**
+     * Normalized repo-relative inputs that must remain excluded from all future
+     * source scans. The list is empty when every configured input was external.
+     */
+    repoRelativeInputs: string[];
+  };
+  /**
    * Analyzer/runtime receipt for the successful run represented by this
    * metadata. Optional so indexes written by older GitNexus releases remain
    * readable; a missing value means provenance is unknown, never that it
