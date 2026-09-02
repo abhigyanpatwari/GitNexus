@@ -2844,19 +2844,13 @@ export async function literalSentinelSegment() {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/x')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/orders')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/{param}')).toBeDefined();
-<<<<<<< HEAD
-      expect(consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d')).toBeDefined();
-=======
       expect(consumers.find((c) => c.contractId === 'http::PATCH::/api/quoted')).toBeDefined();
       expect(consumers.find((c) => c.contractId === 'http::*::/api/spread')).toBeDefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/static')).toBeDefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/proto')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/host/api/proto')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
-      expect(
-        consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d'),
-      ).toBeDefined();
->>>>>>> 7d9e18265 (fix(http): honest wrapped-request methods and tighter admission (#3111))
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/__gitnexus_http_param__'),
       ).toBeDefined();
