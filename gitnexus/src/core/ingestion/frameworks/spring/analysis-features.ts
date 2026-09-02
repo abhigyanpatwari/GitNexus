@@ -50,3 +50,13 @@ export const SPRING_NON_HTTP_HANDLERS_FEATURE: AnalysisFeatureDescriptor = {
   version: 1,
   appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
 };
+
+/**
+ * Route/handler binding extraction, including vendor `@Win*Mapping` aliases.
+ * Existing indexes keep a stale Route set until this version is stamped.
+ */
+export const SPRING_ROUTE_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'spring.route-bindings',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
+};

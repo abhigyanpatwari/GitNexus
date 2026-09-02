@@ -246,13 +246,18 @@ public class AuditController {
   });
 
   it('P2: extra vendor prefixes can be registered via env', async () => {
+    const previous = process.env.GITNEXUS_SPRING_VENDOR_PREFIXES;
     process.env.GITNEXUS_SPRING_VENDOR_PREFIXES = 'Win,Acme';
     // Re-import a fresh copy of the module graph so the env is picked up.
     vi.resetModules();
-    const fresh = await import('../../src/core/ingestion/route-extractors/spring-shared.js');
-    expect(fresh.resolveSpringAnnotationAlias('AcmePostMapping')).toBe('PostMapping');
-    expect(fresh.resolveSpringAnnotationAlias('OtherPostMapping')).toBeUndefined();
-    delete process.env.GITNEXUS_SPRING_VENDOR_PREFIXES;
-    vi.resetModules();
+    try {
+      const fresh = await import('../../src/core/ingestion/route-extractors/spring-shared.js');
+      expect(fresh.resolveSpringAnnotationAlias('AcmePostMapping')).toBe('PostMapping');
+      expect(fresh.resolveSpringAnnotationAlias('OtherPostMapping')).toBeUndefined();
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_SPRING_VENDOR_PREFIXES;
+      else process.env.GITNEXUS_SPRING_VENDOR_PREFIXES = previous;
+      vi.resetModules();
+    }
   });
 });

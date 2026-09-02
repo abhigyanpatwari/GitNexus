@@ -9,6 +9,7 @@ import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 import {
   intersectSpringHttpMethods,
+  isClassLevelMappingAnnotation,
   springAnnotationHttpMethods,
   unquoteSpringLiteral,
 } from './spring-shared.js';
@@ -217,8 +218,8 @@ interface ClassMapping {
  * mappings, and dynamic expressions fail closed for the whole class.
  */
 function classMapping(annotations: readonly Parser.SyntaxNode[]): ClassMapping | null {
-  const mappings = annotations.filter(
-    (annotation) => annotationName(annotation) === 'RequestMapping',
+  const mappings = annotations.filter((annotation) =>
+    isClassLevelMappingAnnotation(annotationName(annotation) ?? ''),
   );
   if (mappings.length === 0) return { prefix: '', methods: ['*'] };
   if (mappings.length !== 1) return null;
@@ -241,7 +242,7 @@ function classMapping(annotations: readonly Parser.SyntaxNode[]): ClassMapping |
     }
   }
 
-  const methods = kotlinSpringHttpMethods('RequestMapping', mapping);
+  const methods = kotlinSpringHttpMethods(annotationName(mapping) ?? 'RequestMapping', mapping);
   return methods.length === 0 ? null : { prefix, methods };
 }
 

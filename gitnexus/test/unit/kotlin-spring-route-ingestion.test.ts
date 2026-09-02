@@ -627,4 +627,43 @@ class PetsController {
 
     expect(ingestion).toEqual(group);
   });
+
+  it('resolves vendor-derived mapping aliases like Java (WinGetMapping / WinRequestMapping)', () => {
+    expect(KOTLIN_HTTP_PLUGIN).not.toBeNull();
+    if (!KOTLIN_HTTP_PLUGIN) throw new Error('expected Kotlin HTTP plugin');
+    const source = `
+@RestController
+@WinRequestMapping("/vendor")
+class VendorController {
+    @WinGetMapping("/users")
+    fun users(): String = "ok"
+}
+`;
+    const tree = parse(source);
+    const ingestion = extractKotlinSpringRoutes(tree, 'VendorController.kt');
+    expect(ingestion).toHaveLength(1);
+    expect(ingestion[0]?.httpMethod).toBe('GET');
+    expect(ingestion[0]?.prefix).toBe('/vendor');
+    expect(ingestion[0]?.routePath).toBe('/users');
+
+    const group = KOTLIN_HTTP_PLUGIN.scan(tree, undefined, 'VendorController.kt').filter(
+      (detection) => detection.role === 'provider',
+    );
+    expect(group).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ method: 'GET', path: '/vendor/users' }),
+      ]),
+    );
+  });
+
+  it('does not treat unregistered suffix annotations as Kotlin routes', () => {
+    const source = `
+@RestController
+class AuditController {
+    @AuditPostMapping("/audit")
+    fun audit(): String = "x"
+}
+`;
+    expect(extractKotlinSpringRoutes(parse(source), 'AuditController.kt')).toHaveLength(0);
+  });
 });

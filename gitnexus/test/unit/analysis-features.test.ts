@@ -10,6 +10,7 @@ import {
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
   SPRING_NON_HTTP_HANDLERS_FEATURE,
+  SPRING_ROUTE_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 import {
   JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
@@ -23,6 +24,7 @@ const FEATURES = [
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
   SPRING_NON_HTTP_HANDLERS_FEATURE,
+  SPRING_ROUTE_BINDINGS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
   JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
   JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
@@ -42,6 +44,7 @@ describe('analysis feature versions', () => {
       'spring.conditionals-auto-configuration': 1,
       'spring.config-bindings': 2,
       'spring.non-http-handlers': 1,
+      'spring.route-bindings': 1,
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.kt'])).toEqual({
       'graph.class-framework-annotations': 1,
@@ -50,6 +53,7 @@ describe('analysis feature versions', () => {
       'spring.conditionals-auto-configuration': 1,
       'spring.config-bindings': 2,
       'spring.non-http-handlers': 1,
+      'spring.route-bindings': 1,
     });
     expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
       'graph.class-framework-annotations': 1,
@@ -57,6 +61,7 @@ describe('analysis feature versions', () => {
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
       'spring.non-http-handlers': 1,
+      'spring.route-bindings': 1,
     });
     expect(
       resolveAnalysisFeatureVersions(FEATURES, [

@@ -15,7 +15,9 @@ import type {
 import {
   METHOD_ANNOTATION_TO_HTTP,
   findEnclosingClass,
+  isClassLevelMappingAnnotation,
   joinPath,
+  resolveSpringAnnotationAlias,
   type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
 import {
@@ -453,6 +455,13 @@ function inferKotlinOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
  * the queries against a null grammar would throw at module load time
  * and abort the whole http-route-extractor module.
  */
+function kotlinShortcutHttpMethod(ann: string): string | undefined {
+  const exact = METHOD_ANNOTATION_TO_HTTP[ann];
+  if (exact) return exact;
+  const base = resolveSpringAnnotationAlias(ann);
+  return base ? METHOD_ANNOTATION_TO_HTTP[base] : undefined;
+}
+
 function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   // ─── Provider: Spring class-level @RequestMapping prefix ──────────────
   // Two patterns mirror the Java plugin's positional vs named split:
@@ -485,7 +494,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (user_type (type_identifier) @ann (#match? @ann "RequestMapping$"))
                   (value_arguments
                     (value_argument . [(string_literal) @prefix (collection_literal (string_literal) @prefix)])))))
             (type_identifier) @cls) @class
@@ -498,7 +507,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (user_type (type_identifier) @ann (#match? @ann "RequestMapping$"))
                   (value_arguments
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(path|value)$")
@@ -513,7 +522,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (user_type (type_identifier) @ann (#match? @ann "RequestMapping$"))
                   (value_arguments
                     (value_argument . ${arrayOfArg('@prefix')})))))
             (type_identifier) @cls) @class
@@ -526,7 +535,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (user_type (type_identifier) @ann (#match? @ann "RequestMapping$"))
                   (value_arguments
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(path|value)$")
@@ -552,7 +561,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument . [(string_literal) @path (collection_literal (string_literal) @path)])))))
             (simple_identifier) @method_name) @method
@@ -565,7 +574,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(path|value)$")
@@ -580,7 +589,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument . ${arrayOfArg('@path')})))))
             (simple_identifier) @method_name) @method
@@ -593,7 +602,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(path|value)$")
@@ -629,7 +638,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (user_type (type_identifier) @ann (#match? @ann "RequestMapping$"))
                   (value_arguments (value_argument) @arg))))
             (type_identifier) @cls) @class
         `,
@@ -648,7 +657,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments (value_argument) @arg))))
             (simple_identifier) @method_name) @method
         `,
@@ -713,7 +722,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     for (const match of runCompiledPatterns(SPRING_CONST_CLASS_PREFIX_PATTERNS, tree)) {
       const argNode = match.captures.arg;
       const classNode = match.captures.class;
+      const annNode = match.captures.ann;
       if (!argNode || !classNode) continue;
+      if (annNode && !isClassLevelMappingAnnotation(annNode.text)) continue;
       if ((resolvedPrefixes.get(classNode.id) ?? []).length > 0) continue;
       const expr = kotlinRouteArgumentExpression(argNode);
       if (!expr || classifyPathArgument(expr) !== 'unresolvable') continue;
@@ -1224,7 +1235,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     for (const match of runCompiledPatterns(SPRING_CLASS_PREFIX_PATTERNS, tree)) {
       const prefixNode = match.captures.prefix;
       const classNode = match.captures.class;
+      const annNode = match.captures.ann;
       if (!prefixNode || !classNode) continue;
+      if (annNode && !isClassLevelMappingAnnotation(annNode.text)) continue;
       // An INTERPOLATED literal (`"${ApiPaths.BASE}"`) is not a path — unquoting
       // its raw text would carry the source spelling into the shared type view
       // as a served prefix. Refusing it here is also what lets the unfoldable
@@ -1248,7 +1261,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       const pathNode = match.captures.path;
       const methodNode = match.captures.method;
       if (!annNode || !pathNode || !methodNode) continue;
-      const httpMethod = METHOD_ANNOTATION_TO_HTTP[annNode.text];
+      const httpMethod = kotlinShortcutHttpMethod(annNode.text);
       if (!httpMethod) continue;
       const rawPath = unquoteLiteral(pathNode.text);
       if (rawPath === null) continue;
@@ -1390,7 +1403,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       for (const match of runCompiledPatterns(SPRING_CLASS_PREFIX_PATTERNS, tree)) {
         const prefixNode = match.captures.prefix;
         const classNode = match.captures.class;
+        const annNode = match.captures.ann;
         if (!prefixNode || !classNode) continue;
+        if (annNode && !isClassLevelMappingAnnotation(annNode.text)) continue;
         // An INTERPOLATED literal (`"${ApiPaths.BASE}"`) is not a path — see
         // `isPlainStringLiteral`. Refusing it here also lets the unfoldable
         // analysis below mark such a class, since that skips classes whose
@@ -1443,7 +1458,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         const pathNode = match.captures.path;
         const methodNode = match.captures.method;
         if (!annNode || !pathNode || !methodNode) continue;
-        const httpMethod = METHOD_ANNOTATION_TO_HTTP[annNode.text];
+        const httpMethod = kotlinShortcutHttpMethod(annNode.text);
         if (!httpMethod) continue;
         const rawPath = unquoteLiteral(pathNode.text);
         if (rawPath === null) continue;
@@ -1459,7 +1474,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         const argNode = match.captures.arg;
         const methodNode = match.captures.method;
         if (!annNode || !argNode || !methodNode) continue;
-        const httpMethod = METHOD_ANNOTATION_TO_HTTP[annNode.text];
+        const httpMethod = kotlinShortcutHttpMethod(annNode.text);
         if (!httpMethod) continue;
         const expr = kotlinRouteArgumentExpression(argNode);
         if (!expr || !FOLDABLE_PATH_EXPRESSIONS.has(expr.type)) continue;
