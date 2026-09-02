@@ -2113,3 +2113,57 @@ export function findExportedDef(
   }
   return undefined;
 }
+
+/**
+ * `findExportedDef`, then — when the target file declares no such local — a
+ * name the target file IMPORTED and publishes as its own (a hub module).
+ *
+ * A Zig hub is a file made only of re-exports: `pub const Terminal =
+ * @import("Terminal.zig");`, `pub const Thing = @import("thing.zig").Thing;`.
+ * Its module scope owns NO local binding, so `findExportedDef` answers nothing
+ * for `terminal.Terminal.init()` or `t: stdx.Thing`, and the finalized channel
+ * (`lookupBindingsAt`) is the only place the published names exist — origin
+ * `import` / `namespace` / `reexport`, def already resolved to the declaring
+ * file. Measured on ghostty (788 Zig files) before and after this helper:
+ * CALLS into `src/terminal/` from outside that directory went from 46 to 253;
+ * on tigerbeetle, CALLS into its `stdx` hub from outside went from 837 to 1500.
+ *
+ * Opt-in per provider (`ScopeResolver.namespaceExportsIncludeImportedNames`):
+ * in most languages a module's imports are NOT its exports (a TypeScript
+ * `import { X }` publishes nothing), and the finalized edge cannot say whether
+ * the import was written `pub`. Zig opts in because a hub member a consumer
+ * can name through the hub IS public — a private import cannot be reached
+ * through the hub in code that compiles.
+ *
+ * Class-like defs win over anything else bound under the name (a re-exported
+ * type over a same-named value), and a name the finalized channel binds to
+ * several distinct defs is refused — never guess a namespace member.
+ */
+export function findExportedDefIncludingImportedNames(
+  targetFile: string,
+  memberName: string,
+  index: WorkspaceResolutionIndex,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const local = findExportedDef(targetFile, memberName, index);
+  if (local !== undefined) return local;
+  const moduleScope = index.moduleScopeByFile.get(targetFile);
+  if (moduleScope === undefined) return undefined;
+  let picked: SymbolDefinition | undefined;
+  for (const ref of lookupBindingsAt(moduleScope.id, memberName, scopes)) {
+    if (ref.origin !== 'import' && ref.origin !== 'namespace' && ref.origin !== 'reexport')
+      continue;
+    if (picked === undefined) {
+      picked = ref.def;
+      continue;
+    }
+    if (picked.nodeId === ref.def.nodeId) continue;
+    if (isClassLike(ref.def.type) && !isClassLike(picked.type)) {
+      picked = ref.def;
+      continue;
+    }
+    if (isClassLike(picked.type) && !isClassLike(ref.def.type)) continue;
+    return undefined; // two distinct defs under one published name → refuse
+  }
+  return picked;
+}

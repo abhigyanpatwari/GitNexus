@@ -59,7 +59,7 @@
  * resolved to a wrong target.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -73,6 +73,7 @@ import {
   findEnclosingClassDef,
   isReceiverOwnedButUnbound,
   findExportedDef,
+  findExportedDefIncludingImportedNames,
   findOwnedMember,
   findReceiverTypeBinding,
   findValueBindingInScope,
@@ -137,6 +138,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'isStaticOnly'
   | 'normalizeTypeArgument'
   | 'markConstructionSites'
+  | 'namespaceExportsIncludeImportedNames'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -331,9 +333,42 @@ export function emitReceiverBoundCalls(
   const fieldFallback = provider.fieldFallbackOnMethodLookup ?? true;
   const collapse = provider.collapseMemberCallsByCallerTarget === true;
   const hoistTypeBindingsToModule = provider.hoistTypeBindingsToModule === true;
+  // Namespace-member lookup for Case 1 / Case 3: local exports only, unless
+  // the provider publishes imported names too (hub modules — see
+  // `ScopeResolver.namespaceExportsIncludeImportedNames`).
+  const lookupNamespaceMember = (targetFile: string, name: string): SymbolDefinition | undefined =>
+    provider.namespaceExportsIncludeImportedNames === true
+      ? findExportedDefIncludingImportedNames(targetFile, name, index, scopes)
+      : findExportedDef(targetFile, name, index);
+  // `ns.Type` as a receiver, where `ns` is a verified namespace of the current
+  // file and `Type` a class-like member of it. Unique across the namespace's
+  // target files or nothing — two same-named classes behind one handle would
+  // mint a confident wrong edge.
+  const resolveNamespaceQualifiedClass = (
+    receiverName: string,
+    inScope: ScopeId,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+  ): SymbolDefinition | undefined => {
+    const dot = receiverName.lastIndexOf('.');
+    if (dot <= 0 || dot === receiverName.length - 1) return undefined;
+    const head = receiverName.slice(0, dot);
+    const tail = receiverName.slice(dot + 1);
+    if (tail.includes('(') || tail.includes('[')) return undefined;
+    const files = namespaceTargets.get(head);
+    if (files === undefined || isNamespaceNameShadowed(head, inScope, scopes)) return undefined;
+    let picked: SymbolDefinition | undefined;
+    for (const file of files) {
+      const def = lookupNamespaceMember(file, tail);
+      if (def === undefined || !isClassLike(def.type)) continue;
+      if (picked !== undefined && picked.nodeId !== def.nodeId) return undefined;
+      picked = def;
+    }
+    return picked;
+  };
   const compoundOpts = {
     fieldFallback,
     elementTypeOf: provider.elementTypeOf,
+    namespaceExportsIncludeImportedNames: provider.namespaceExportsIncludeImportedNames === true,
     hoistTypeBindingsToModule,
     stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
     constructionSyntax: provider.constructionSyntax,
@@ -1275,7 +1310,7 @@ export function emitReceiverBoundCalls(
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
         let found = false;
         for (const targetFile of targetFiles) {
-          const memberDef = findExportedDef(targetFile, memberName, index);
+          const memberDef = lookupNamespaceMember(targetFile, memberName);
           if (memberDef !== undefined) {
             if (
               suppressDeletedCallTarget(
@@ -1379,7 +1414,16 @@ export function emitReceiverBoundCalls(
       }
 
       // ── Case 2: class-name receiver ──────────────────────────────
-      const classDef = findClassBindingInScope(site.inScope, receiverName, scopes);
+      // A namespace-qualified class (`stdx.PRNG.from_seed()`, `terminal
+      // .Terminal.init()`) binds nothing in the caller's scope chain; when the
+      // head names a verified namespace, the tail is looked up as that
+      // module's member — through the same lookup Case 1 / Case 3 use, so a
+      // hub module (a file made only of re-exports) answers when the provider
+      // opted in. Only a bare tail is walked here; `ns.Type.field.m()` is the
+      // compound resolver's shape.
+      const classDef =
+        findClassBindingInScope(site.inScope, receiverName, scopes) ??
+        resolveNamespaceQualifiedClass(receiverName, site.inScope, namespaceTargets);
       if (classDef !== undefined) {
         const chain = [classDef.nodeId, ...scopes.methodDispatch.mroFor(classDef.nodeId)];
         let memberDef: SymbolDefinition | undefined;
@@ -1469,7 +1513,7 @@ export function emitReceiverBoundCalls(
         if (targetFiles3 !== undefined && className.length > 0) {
           let found3 = false;
           for (const targetFile3 of targetFiles3) {
-            const classDef3 = findExportedDef(targetFile3, className, index);
+            const classDef3 = lookupNamespaceMember(targetFile3, className);
             if (classDef3 !== undefined) {
               const picked =
                 site.kind === 'call'

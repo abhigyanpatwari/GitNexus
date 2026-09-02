@@ -30,6 +30,14 @@ export const zigScopeResolver: ScopeResolver = {
   // itself — `main → SpawnRequest` looked like a call to a function
   // (PR #1432 review). Emits `local-call (constructor)` and friends.
   markConstructionSites: true,
+  // Hub modules are how Zig projects publish their types: `pub const Terminal
+  // = @import("Terminal.zig");` / `pub const PRNG = @import("prng.zig");` in a
+  // file that declares nothing itself. Consumers then write
+  // `terminal.Terminal.init()`, `stdx.PRNG.from_seed()`, `t: stdx.Thing`.
+  // Measured on real projects before → after this flag: CALLS into ghostty's
+  // `src/terminal/` from outside it 46 → 253; into tigerbeetle's `stdx` hub
+  // from outside it 837 → 1500 (136 `stdx.Type.fn(` sites, 289 annotations).
+  namespaceExportsIncludeImportedNames: true,
 
   loadResolutionConfig: (repoPath: string) => loadZigBuildConfig(repoPath),
 

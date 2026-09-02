@@ -194,6 +194,61 @@ const S = struct {
     expect(result!.methods[0].parameters.map((p) => p.name)).toEqual(['other', 'self']);
     expect(result!.methods[0].receiverType).toBeNull();
   });
+
+  it('a FIRST parameter typed as the enclosing container is the receiver, whatever its name', () => {
+    // `self` is a convention, not a rule: tigerbeetle names the receiver after
+    // the type (777 of 1127 methods), mach writes `pool: *@This()` (764 of
+    // 833). Reading only `self` as the receiver labelled all of them static
+    // and counted the receiver in their arity.
+    const root = parse(`
+const Counter = struct {
+    n: u32,
+    const Self = @This();
+    pub fn incr(counter: *Counter) void { counter.n += 1; }
+    pub fn peek(counter: *const Counter) u32 { return counter.n; }
+    pub fn by_value(counter: Counter) u32 { return counter.n; }
+    pub fn via_this(c: *@This(), by: u32) void { c.n += by; }
+    pub fn via_alias(c: *Self) void { c.n = 0; }
+    pub fn make(n: u32) Counter { return .{ .n = n }; }
+    pub fn other(o: *Other) void { _ = o; }
+};
+const Other = struct { x: u32 };
+pub fn Pool(comptime Node: type) type {
+    return struct {
+        pub fn release(pool: *@This(), node: *Node) void { _ = pool; _ = node; }
+        pub fn acquire(pool: *Pool(Node)) ?*Node { _ = pool; return null; }
+    };
+}
+`).rootNode;
+    const counter = extractor.extract(find(root, 'struct_declaration'), ctx)!;
+    const byName = new Map(counter.methods.map((m) => [m.name, m]));
+    for (const [name, receiver] of [
+      ['incr', '*Counter'],
+      ['peek', '*const Counter'],
+      ['by_value', 'Counter'],
+      ['via_this', '*@This()'],
+      ['via_alias', '*Self'],
+    ] as const) {
+      expect(byName.get(name)!.receiverType, name).toBe(receiver);
+      expect(byName.get(name)!.isStatic, name).toBe(false);
+    }
+    expect(byName.get('via_this')!.parameters.map((p) => p.name)).toEqual(['by']);
+    // A factory (no container-typed first parameter) and a fn whose first
+    // parameter is ANOTHER type stay static — the type, not the position, is
+    // what makes a receiver.
+    expect(byName.get('make')!.isStatic).toBe(true);
+    expect(byName.get('other')!.isStatic).toBe(true);
+    expect(byName.get('other')!.parameters.map((p) => p.name)).toEqual(['o']);
+
+    const poolDecl = find(root, 'struct_declaration', 'struct {\n        pub fn release');
+    const pool = extractor.extract(poolDecl, ctx)!;
+    const poolByName = new Map(pool.methods.map((m) => [m.name, m]));
+    expect(poolByName.get('release')!.receiverType).toBe('*@This()');
+    expect(poolByName.get('release')!.parameters.map((p) => p.name)).toEqual(['node']);
+    // `Pool(Node)` names the generic constructor's container.
+    expect(poolByName.get('acquire')!.receiverType).toBe('*Pool(Node)');
+    expect(poolByName.get('acquire')!.isStatic).toBe(false);
+  });
 });
 
 describeZig('Zig VariableExtractor — container and import bindings are not variables', () => {
@@ -288,31 +343,53 @@ describeZig('Zig scope captures — `@import` in TYPE position is not an import 
   });
 });
 
-describeZig('Zig scope captures — receiver is the FIRST parameter named self', () => {
-  function parameterBindings(src: string) {
-    return emitZigScopeCaptures(src, 'test.zig')
-      .filter((m) => m['@type-binding.parameter'] !== undefined)
-      .map((m) => interpretZigTypeBinding(m))
-      .filter((b): b is NonNullable<typeof b> => b !== null)
-      .map((b) => `${b.boundName}:${b.source}`);
-  }
+describeZig(
+  'Zig scope captures — receiver is the FIRST parameter, named self or typed as the container',
+  () => {
+    function parameterBindings(src: string) {
+      return emitZigScopeCaptures(src, 'test.zig')
+        .filter((m) => m['@type-binding.parameter'] !== undefined)
+        .map((m) => interpretZigTypeBinding(m))
+        .filter((b): b is NonNullable<typeof b> => b !== null)
+        .map((b) => `${b.boundName}:${b.source}`);
+    }
 
-  it('marks a leading self as the receiver and later parameters as annotations', () => {
-    expect(parameterBindings('const S = struct { fn m(self: *S, other: u32) void {} };')).toEqual([
-      'self:self',
-      'other:parameter-annotation',
-    ]);
-  });
+    it('marks a leading self as the receiver and later parameters as annotations', () => {
+      expect(parameterBindings('const S = struct { fn m(self: *S, other: u32) void {} };')).toEqual(
+        ['self:self', 'other:parameter-annotation'],
+      );
+    });
 
-  it('a later parameter named self is an ordinary parameter, not a receiver', () => {
-    // Legal Zig; `zigReceiverBinding` picks the `self`-sourced binding, so
-    // sourcing this one as `self` would turn a static fn into an instance method.
-    expect(parameterBindings('const S = struct { fn f(other: u32, self: S) void {} };')).toEqual([
-      'other:parameter-annotation',
-      'self:parameter-annotation',
-    ]);
-  });
-});
+    it('a leading parameter typed as the enclosing container is the receiver, whatever its name', () => {
+      // Same rule as the method extractor (`zigReceiverParameter`): the two
+      // phases must agree on what a method is.
+      expect(
+        parameterBindings('const S = struct { fn m(state: *S, other: u32) void {} };'),
+      ).toEqual(['state:self', 'other:parameter-annotation']);
+      expect(parameterBindings('const S = struct { fn m(s: *@This()) void {} };')).toEqual([
+        's:self',
+      ]);
+      expect(
+        parameterBindings(
+          'const S = struct { const Self = @This(); fn m(s: *const Self) void {} };',
+        ),
+      ).toEqual(['s:self']);
+      // A first parameter of ANOTHER type is a plain parameter.
+      expect(
+        parameterBindings('const S = struct { fn m(o: *Other) void {} }; const Other = struct {};'),
+      ).toEqual(['o:parameter-annotation']);
+    });
+
+    it('a later parameter named self is an ordinary parameter, not a receiver', () => {
+      // Legal Zig; `zigReceiverBinding` picks the `self`-sourced binding, so
+      // sourcing this one as `self` would turn a static fn into an instance method.
+      expect(parameterBindings('const S = struct { fn f(other: u32, self: S) void {} };')).toEqual([
+        'other:parameter-annotation',
+        'self:parameter-annotation',
+      ]);
+    });
+  },
+);
 
 describeZig('Zig callable-flow captures — member calls, receiver formals, decl literals', () => {
   const src = `
@@ -1250,7 +1327,7 @@ pub const Kind = enum { a, b };
 pub const Payload = union(enum) { x: u32, y: Counter };
 `;
 
-    it('emits one @type-binding.field per TYPED field — the nominal type, sigils stripped, aliases rewritten', () => {
+    it('emits one @type-binding.field per typed field and per enum variant — the nominal type, sigils stripped, aliases rewritten', () => {
       const fields = emitZigScopeCaptures(SRC, 'src/Page.zig')
         .filter((m) => m['@type-binding.field'] !== undefined)
         .map((m) => {
@@ -1278,7 +1355,12 @@ pub const Payload = union(enum) { x: u32, y: Counter };
         ['next', '?*Holder', 'Holder', 'annotation'],
         // the anonymous inline struct's OWN field, not `inline_` itself
         ['a', 'u32', 'u32', 'annotation'],
-        // union variants carry a type; enum variants (`a`, `b`) do not
+        // enum variants carry no written type, but they HAVE one — the enum
+        // itself — so `Kind.a.method()` types `Kind.a` as `Kind` (tigerbeetle's
+        // `Operation.create_accounts.event_max()`, 147 sites)
+        ['a', 'Kind', 'Kind', 'annotation'],
+        ['b', 'Kind', 'Kind', 'annotation'],
+        // union variants carry a type
         ['x', 'u32', 'u32', 'annotation'],
         ['y', 'Counter', 'Counter', 'annotation'],
       ]);

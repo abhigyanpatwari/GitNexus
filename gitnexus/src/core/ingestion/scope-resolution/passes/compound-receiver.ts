@@ -38,6 +38,7 @@ import {
   findEnclosingClassDef,
   findExportedDef,
   findExportedDefByName,
+  findExportedDefIncludingImportedNames,
   findReceiverTypeBinding,
   isClassLike,
   isNamespaceNameShadowed,
@@ -128,6 +129,9 @@ interface ResolveCompoundReceiverOptions {
   readonly constructionSyntax?: ScopeResolver['constructionSyntax'];
   /** Verified namespace handles visible in the current file. */
   readonly namespaceTargets?: ReadonlyMap<string, readonly string[]>;
+  /** A namespace member may be a name the target module imported and
+   *  publishes (hub modules). See `ScopeResolver.namespaceExportsIncludeImportedNames`. */
+  readonly namespaceExportsIncludeImportedNames?: boolean;
   /** Compact receiver chain for THIS site (`ReferenceSite.receiverChain`), when
    *  the language's capture emitter produced one. Present ⇒ the structural fold
    *  is tried before the text cascade; absent ⇒ behaviour is exactly as before.
@@ -241,7 +245,11 @@ function resolveConstructionExpressionClass(
     if (namespaceFiles.length > 0) {
       if (isNamespaceNameShadowed(namespaceName, inScope, scopes)) return undefined;
       const namespaceMatches = namespaceFiles
-        .map((targetFile) => findExportedDef(targetFile, exportedName, index))
+        .map((targetFile) =>
+          options.namespaceExportsIncludeImportedNames === true
+            ? findExportedDefIncludingImportedNames(targetFile, exportedName, index, scopes)
+            : findExportedDef(targetFile, exportedName, index),
+        )
         .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
       return namespaceMatches.length === 1 ? namespaceMatches[0] : undefined;
     }

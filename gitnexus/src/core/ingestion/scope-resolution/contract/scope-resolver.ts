@@ -903,6 +903,26 @@ export interface ScopeResolver {
   readonly markConstructionSites?: boolean;
 
   /**
+   * When true, a namespace's exported member may also be a name the target
+   * module IMPORTED and publishes as its own — the hub-module shape, a file
+   * made only of re-exports (`pub const Terminal = @import("Terminal.zig");`,
+   * `pub const Thing = @import("thing.zig").Thing;`). Such a file owns no
+   * local binding, so the default local-only export lookup
+   * (`findExportedDef`) finds nothing for `terminal.Terminal.init()`,
+   * `t: stdx.Thing`, `var p = stdx.PRNG.from_seed()` or `var a:
+   * stdx.BoundedArrayType(u8, 4)`, and the receiver-bound namespace paths
+   * (Case 1, Case 3, the compound resolver's namespace branch) fall through.
+   * With the flag those paths use `findExportedDefIncludingImportedNames`,
+   * which reads the finalized channel where the published names live.
+   *
+   * Off by default: in most languages a module's imports are not its exports
+   * (TypeScript `import { X }` publishes nothing), and the finalized edge does
+   * not record whether the import was written `pub`. Zig opts in — a hub
+   * member a consumer can name through the hub is public by construction.
+   */
+  readonly namespaceExportsIncludeImportedNames?: boolean;
+
+  /**
    * How this language spells a construction expression, so the compound
    * receiver resolver can type an INLINE constructor receiver — the
    * `Service(db).do_work()` shape, where the receiver is the constructed

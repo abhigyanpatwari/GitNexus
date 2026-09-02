@@ -119,11 +119,13 @@ export function interpretZigTypeBinding(captures: CaptureMatch): ParsedTypeBindi
 
   let source: TypeRef['source'] = 'annotation';
   if (captures['@type-binding.parameter'] !== undefined) {
-    // Zig has no implicit receiver keyword; the convention is a FIRST
-    // parameter named `self`. `emitZigScopeCaptures` tags first-position
-    // parameters; the name alone is not enough — `fn f(a: u32, self: T)` is
-    // legal and `self` there is an ordinary parameter, not a receiver.
-    const isReceiver = name === 'self' && captures['@type-binding.first-parameter'] !== undefined;
+    // Zig has no implicit receiver keyword. `emitZigScopeCaptures` tags the
+    // receiver parameter (`@type-binding.receiver`, see `zigReceiverParameter`):
+    // the FIRST parameter when it is named `self` OR typed as the enclosing
+    // container (`counter: *Counter`, `pool: *@This()`, `prng: *PRNG` with
+    // `const PRNG = @This();`). Position matters — `fn f(a: u32, self: T)` is
+    // legal and `self` there is an ordinary parameter.
+    const isReceiver = captures['@type-binding.receiver'] !== undefined;
     source = isReceiver ? 'self' : 'parameter-annotation';
   } else if (captures['@type-binding.constructor'] !== undefined) {
     source = 'constructor-inferred';

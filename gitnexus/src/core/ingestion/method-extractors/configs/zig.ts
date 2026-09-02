@@ -2,7 +2,11 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import type { MethodExtractionConfig, ParameterInfo } from '../../method-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { hasZigPubKeyword } from '../../export-detection.js';
-import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captures.js';
+import {
+  ZIG_CONTAINER_TYPES,
+  zigContainerName,
+  zigReceiverParameter,
+} from '../../languages/zig/captures.js';
 
 /**
  * Zig method extraction.
@@ -13,8 +17,10 @@ import { ZIG_CONTAINER_TYPES, zigContainerName } from '../../languages/zig/captu
  * {…}; }`) — `zigContainerName` decides. Methods inside a container appear as
  * plain `function_declaration` children of the container node.
  *
- * The first parameter is the receiver iff it is named `self` (convention) —
- * unlike Rust, Zig has no dedicated `self_parameter` node type.
+ * The first parameter is the receiver when it is named `self` OR typed as the
+ * enclosing container (`replica: *Replica`, `pool: *@This()`) — see
+ * `zigReceiverParameter`; unlike Rust, Zig has no dedicated `self_parameter`
+ * node type and `self` is a convention, not a rule.
  */
 
 const extractZigOwnerName = (node: SyntaxNode, filePath?: string): string | undefined =>
@@ -44,7 +50,7 @@ const extractZigReturnType = (node: SyntaxNode): string | undefined => {
 };
 
 /**
- * Regular parameters only. A leading `self` parameter is the receiver — it is
+ * Regular parameters only. The receiver parameter (`zigReceiverParameter`) is
  * reported through `extractReceiverType`, not the parameter list (same split
  * as Rust's `self_parameter` skip in `configs/rust.ts`).
  */
@@ -52,15 +58,13 @@ const extractZigParameters = (node: SyntaxNode): ParameterInfo[] => {
   const paramList = zigParameterList(node);
   if (!paramList) return [];
   const params: ParameterInfo[] = [];
-  let seenParameter = false;
+  const receiver = zigReceiverParameter(node);
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);
     if (!param || param.type !== 'parameter') continue;
+    if (receiver !== null && param.id === receiver.id) continue;
     const nameNode = param.childForFieldName('name');
     const typeNode = param.childForFieldName('type');
-    const isReceiver = !seenParameter && nameNode?.text === 'self';
-    seenParameter = true;
-    if (isReceiver) continue;
     params.push({
       name: nameNode?.text ?? '?',
       type: typeNode?.text?.trim() ?? null,
@@ -72,16 +76,8 @@ const extractZigParameters = (node: SyntaxNode): ParameterInfo[] => {
   return params;
 };
 
-const extractZigReceiverType = (node: SyntaxNode): string | undefined => {
-  const paramList = zigParameterList(node);
-  if (!paramList) return undefined;
-  const first = paramList.namedChild(0);
-  if (!first || first.type !== 'parameter') return undefined;
-  const nameNode = first.childForFieldName('name');
-  if (nameNode?.text !== 'self') return undefined;
-  const typeNode = first.childForFieldName('type');
-  return typeNode?.text?.trim();
-};
+const extractZigReceiverType = (node: SyntaxNode): string | undefined =>
+  zigReceiverParameter(node)?.childForFieldName('type')?.text?.trim();
 
 /**
  * Names a `test_declaration` during the enclosing-function walk (parse-worker
@@ -124,13 +120,10 @@ export const zigMethodConfig: MethodExtractionConfig = {
   extractReceiverType: extractZigReceiverType,
 
   isStatic(node) {
-    // A Zig "method" is effectively static if its first parameter is not `self`.
-    const paramList = zigParameterList(node);
-    if (!paramList) return true;
-    const first = paramList.namedChild(0);
-    if (!first || first.type !== 'parameter') return true;
-    const nameNode = first.childForFieldName('name');
-    return nameNode?.text !== 'self';
+    // A Zig "method" is static when it has no receiver parameter — `self` OR
+    // a first parameter typed as the enclosing container (`replica:
+    // *Replica`, `pool: *@This()`); see `zigReceiverParameter`.
+    return zigReceiverParameter(node) === null;
   },
 
   isAbstract() {

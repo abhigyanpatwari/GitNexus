@@ -844,3 +844,135 @@ describe.skipIf(!zigAvailable)(
     });
   },
 );
+
+describe.skipIf(!zigAvailable)('Zig hub modules (`pub const X = @import(…)` re-exports)', () => {
+  // Audit of three real projects (tigerbeetle, mach, ghostty, 2026-09-02):
+  // a hub file made only of re-exports owns NO local binding, so the
+  // local-only export lookup answered nothing for `terminal.Terminal.init()`,
+  // `t: stdx.Thing`, `var p = stdx.PRNG.from_seed()`. Measured before → after:
+  // CALLS into ghostty's `src/terminal/` from outside it 46 → 253, into
+  // tigerbeetle's `stdx` hub from outside it 837 → 1500. The published names
+  // live in the finalized channel; `namespaceExportsIncludeImportedNames` lets
+  // the namespace paths read it.
+  let result: PipelineResult;
+  let calls: string[];
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-hub'), () => {});
+    calls = getRelationships(result, 'CALLS')
+      .filter((e) => e.sourceFilePath.endsWith('main.zig'))
+      .map((e) => `${e.source} → ${e.target} @ ${e.targetFilePath}`);
+  }, 60000);
+
+  it('resolves a static call through a hub-republished NAMED type (`stdx.Thing.make()`)', () => {
+    expect(calls).toContain('c1_hub_named_static → make @ src/stdx/thing.zig');
+  });
+
+  it('resolves a static call through a hub-republished MODULE (`stdx.PRNG.from_seed()`, `PRNG = @import("prng.zig")`)', () => {
+    // ghostty's `terminal.Terminal.init(…)` shape (150 sites).
+    expect(calls).toContain('c2_hub_module_static → from_seed @ src/stdx/prng.zig');
+  });
+
+  it('types a receiver ANNOTATED with the hub path (`t: stdx.Thing`, `p: stdx.PRNG`)', () => {
+    // tigerbeetle: 289 `: stdx.Type` annotations.
+    expect(calls).toContain('c3_hub_named_annotation → m @ src/stdx/thing.zig');
+    expect(calls).toContain('c4_hub_module_annotation → next @ src/stdx/prng.zig');
+  });
+
+  it('types a receiver from a constructor call through the hub (`var p = stdx.PRNG.from_seed()`)', () => {
+    expect(calls).toContain('c6_hub_call_return_typing → next @ src/stdx/prng.zig');
+    expect(calls).toContain('c6_hub_call_return_typing → from_seed @ src/stdx/prng.zig');
+  });
+
+  it('types a generic instantiation annotated through the hub (`h: stdx.BoundedArrayType(u8, 4)`)', () => {
+    expect(calls).toContain('c10_hub_generic_annotation → count @ src/stdx/bounded_array.zig');
+  });
+
+  it('resolves a hub-republished free function (`stdx.helper()`)', () => {
+    expect(calls).toContain('c11_hub_reexported_fn → helper @ src/stdx/util.zig');
+  });
+
+  it('still resolves the alias-then-use shape (`const PRNG = stdx.PRNG; PRNG.from_seed()`)', () => {
+    expect(calls).toContain('c5_alias_then_static → from_seed @ src/stdx/prng.zig');
+    expect(calls).toContain('c5_alias_then_static → next @ src/stdx/prng.zig');
+  });
+
+  it('never resolves a name through the hub that the hub does not publish', () => {
+    // `stdx.secret` (a private `const secret = @import(…)`) is not referenced
+    // by the fixture because it would not compile; the guard here is that no
+    // call from main.zig lands in util.zig except through the published
+    // `helper` — nothing leaks via the private import.
+    const intoUtil = calls.filter((c) => c.endsWith('@ src/stdx/util.zig'));
+    expect(intoUtil).toEqual(['c11_hub_reexported_fn → helper @ src/stdx/util.zig']);
+  });
+});
+
+describe.skipIf(!zigAvailable)(
+  'Zig enum variants as typed receivers (`Op.create.event_max()`)',
+  () => {
+    let result: PipelineResult;
+    let calls: string[];
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-hub'), () => {});
+      calls = getRelationships(result, 'CALLS')
+        .filter((e) => e.sourceFilePath.endsWith('main.zig'))
+        .map((e) => `${e.source} → ${e.target}`);
+    }, 60000);
+
+    it('dispatches a method called on a variant reached through the enum type', () => {
+      // tigerbeetle writes `Operation.<variant>.event_max(…)` 147 times. The
+      // variant has no written type; its type is the enum, so the field walk
+      // that already handles `self.session.name()` types `Op.create` as `Op`.
+      expect(calls).toContain('c7_enum_variant_receiver → event_max');
+    });
+
+    it('dispatches a method on an enum-typed parameter (`op: Op`)', () => {
+      expect(calls).toContain('c8_enum_param_receiver → event_max');
+    });
+  },
+);
+
+describe.skipIf(!zigAvailable)(
+  'Zig receivers named after their type (`counter: *Counter`, `pool: *@This()`)',
+  () => {
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-receivers'), () => {});
+    }, 60000);
+
+    it('labels container-typed first parameters as receivers: instance methods, receiver out of the arity', () => {
+      // `self` is a convention. tigerbeetle names the receiver after its type
+      // (777 of 1127 methods), mach writes `pool: *@This()` (764 of 833); both
+      // used to be `isStatic: true` with the receiver counted in `#<arity>`.
+      const methods = new Map<string, { isStatic: boolean }>();
+      result.graph.forEachNode((n) => {
+        if (n.label === 'Method') methods.set(n.id, { isStatic: n.properties.isStatic === true });
+      });
+      expect(methods.get('Method:src/counter.zig:Counter.incr#0')?.isStatic).toBe(false);
+      expect(methods.get('Method:src/counter.zig:Counter.incr_self#0')?.isStatic).toBe(false);
+      expect(methods.get('Method:src/counter.zig:Counter.by_value#0')?.isStatic).toBe(false);
+      expect(methods.get('Method:src/counter.zig:Pool.release#1')?.isStatic).toBe(false);
+      expect(methods.get('Method:src/counter.zig:Op.event_max#0')?.isStatic).toBe(false);
+      expect(methods.get('Method:src/stdx/prng.zig:prng.next#0')?.isStatic).toBe(false);
+      // A factory keeps its static label and full arity.
+      expect(methods.get('Method:src/stdx/prng.zig:prng.from_seed#1')?.isStatic).toBe(true);
+      // Nothing is left under the old receiver-counted ids.
+      expect(methods.has('Method:src/counter.zig:Counter.incr#1')).toBe(false);
+      expect(methods.has('Method:src/counter.zig:Pool.release#2')).toBe(false);
+    });
+
+    it('dispatches calls onto those methods exactly as onto `self` methods', () => {
+      const calls = edgeSet(getRelationships(result, 'CALLS'));
+      expect(calls).toEqual(
+        expect.arrayContaining([
+          'use_named_receiver → incr',
+          'use_named_receiver → incr_self',
+          'use_named_receiver → by_value',
+          'use_this_receiver → release',
+        ]),
+      );
+    });
+  },
+);

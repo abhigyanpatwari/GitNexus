@@ -199,6 +199,84 @@ export function zigContainerBindingName(
   return zigTypeConstructorOf(containerNode)?.childForFieldName('name')?.text;
 }
 
+/** The nominal type spelled at a parameter with its sigils stripped:
+ *  `*const Self` → `Self`, `?*T` → `T`, `Pool(Node)` → `Pool`; `@This()` is
+ *  kept whole (a builtin, not a constructor name). */
+function zigParameterNominalType(typeText: string): string {
+  let t = typeText.trim();
+  let previous: string;
+  do {
+    previous = t;
+    t = t.replace(/^(?:\*|\?|const\s+|\s+)/, '');
+  } while (t !== previous);
+  if (!t.startsWith('@')) {
+    const paren = t.indexOf('(');
+    if (paren > 0) t = t.slice(0, paren).trim();
+  }
+  return t;
+}
+
+/** The `const X = @This();` alias names declared DIRECTLY in `container` (a
+ *  container node, or the root of a file-struct). */
+function zigThisAliasNamesIn(container: SyntaxNode): Set<string> {
+  const out = new Set<string>();
+  for (let i = 0; i < container.namedChildCount; i++) {
+    const decl = container.namedChild(i);
+    if (decl === null || decl.type !== 'variable_declaration') continue;
+    const named = decl.namedChildren.filter((c): c is SyntaxNode => c !== null);
+    const value = named[named.length - 1];
+    if (
+      named.length === 2 &&
+      named[0]!.type === 'identifier' &&
+      value?.type === 'builtin_function' &&
+      value.namedChild(0)?.text === '@This' &&
+      isZigKeywordDeclaration(decl)
+    ) {
+      out.add(named[0]!.text);
+    }
+  }
+  return out;
+}
+
+/** The RECEIVER parameter of a container method, or null for a static fn.
+ *
+ *  Zig has no receiver keyword: `self` is a convention, not a rule, and real
+ *  code names the receiver after its type as often as not — tigerbeetle
+ *  (`replica: *Replica`, 777 of 1127 methods), mach (`pool: *@This()`, 764 of
+ *  833). Treating only `self` as the receiver labelled those methods static,
+ *  counted the receiver in their arity (`Counter.incr#1`) and left the
+ *  scope-side binding sourced as a plain parameter. The rule, applied to the
+ *  FIRST parameter only:
+ *    - named `self`, whatever its type; or
+ *    - typed as the enclosing container: `@This()`, the container's binding
+ *      name (`Counter`, the generic constructor `Pool` for `Pool(Node)`, the
+ *      file stem for a file-struct when `filePath` is known), or a
+ *      `const X = @This();` alias declared in that container (`Self`, `PRNG`
+ *      in `prng.zig`) — pointers, `const` and optionals stripped.
+ *  `fn` must be a direct child of a container (or the file root); a fn nested
+ *  in a body is never a method. Single source for the method extractor
+ *  (parameters / receiver type / `isStatic`) and `emitZigScopeCaptures`
+ *  (`@type-binding.receiver`), so the structure and scope phases agree. */
+export function zigReceiverParameter(fn: SyntaxNode, filePath?: string): SyntaxNode | null {
+  const paramList = fn.namedChildren.find(
+    (child): child is SyntaxNode => child?.type === 'parameters',
+  );
+  const first = paramList?.namedChild(0);
+  if (first === null || first === undefined || first.type !== 'parameter') return null;
+  if (first.childForFieldName('name')?.text === 'self') return first;
+  const typeNode = first.childForFieldName('type');
+  if (typeNode === null) return null;
+  const nominal = zigParameterNominalType(typeNode.text);
+  if (nominal.length === 0) return null;
+  if (nominal === '@This()') return first;
+  const container = fn.parent;
+  if (container === null || container === undefined) return null;
+  if (!ZIG_CONTAINER_TYPES.has(container.type) && container.type !== 'source_file') return null;
+  if (zigThisAliasNamesIn(container).has(nominal)) return first;
+  const binding = zigContainerBindingName(container, filePath);
+  return binding !== undefined && nominal === binding ? first : null;
+}
+
 /** The graph IDENTITY of a Zig container node — the name its class-like
  *  node, its members' owner segment (`Method:<file>:<name>.<fn>`) and the
  *  scope-side def all carry. Single source for the class/field/method
@@ -1229,12 +1307,13 @@ export function emitZigScopeCaptures(
       }
     }
 
-    // Zig's receiver convention is specifically the FIRST parameter named
-    // `self`. Tag first-position parameters so `interpretZigTypeBinding` can
-    // require the position and not just the name — a later `self` parameter
-    // (legal Zig) is an ordinary parameter, not a receiver. The synthetic
-    // capture sits on the name node (smaller than the `parameter` anchor), so
-    // it never displaces the anchor.
+    // The receiver is the FIRST parameter when it is named `self` or typed as
+    // the enclosing container — `zigReceiverParameter` is the single rule,
+    // shared with the method extractor so the two phases agree. Tag it so
+    // `interpretZigTypeBinding` sources the binding as `self`; a later `self`
+    // parameter (legal Zig) is an ordinary parameter, not a receiver. The
+    // synthetic captures sit on the name node (smaller than the `parameter`
+    // anchor), so they never displace the anchor.
     const paramAnchor = nodeMap['@type-binding.parameter'];
     const paramName = nodeMap['@type-binding.name'];
     if (
@@ -1247,6 +1326,18 @@ export function emitZigScopeCaptures(
         paramName,
         'true',
       );
+      const fnNode = paramAnchor.parent?.parent;
+      if (
+        fnNode !== null &&
+        fnNode !== undefined &&
+        zigReceiverParameter(fnNode, _filePath)?.id === paramAnchor.id
+      ) {
+        grouped['@type-binding.receiver'] = syntheticCapture(
+          '@type-binding.receiver',
+          paramName,
+          'true',
+        );
+      }
     }
 
     // Mark containers returned by a generic type constructor so
@@ -1341,6 +1432,29 @@ export function emitZigScopeCaptures(
             ? nodeToCapture('@type-binding.type', fieldType)
             : syntheticCapture('@type-binding.type', fieldType, rewritten),
       });
+    } else if (
+      fieldAnchor !== undefined &&
+      fieldType === undefined &&
+      fieldName !== undefined &&
+      fieldName.text !== '_' &&
+      fieldAnchor.parent?.type === 'enum_declaration'
+    ) {
+      // An enum VARIANT has no written type, but it has one: the enum itself.
+      // `Operation.create_accounts.event_max()` — a method called on a variant
+      // reached through the type — needs `Operation.create_accounts` typed as
+      // `Operation` for the compound resolver to walk the field like
+      // `self.session.name()`. tigerbeetle writes this shape 147 times
+      // (`Operation.<variant>.event_max(…)`, `TestOperation.create.event_size(`).
+      const enumName =
+        zigContainerBindingName(fieldAnchor.parent, _filePath) ??
+        zigContainerName(fieldAnchor.parent, _filePath);
+      if (enumName !== undefined) {
+        out.push({
+          '@type-binding.field': nodeToCapture('@type-binding.field', fieldName),
+          '@type-binding.name': nodeToCapture('@type-binding.name', fieldName),
+          '@type-binding.type': syntheticCapture('@type-binding.type', fieldName, enumName),
+        });
+      }
     }
 
     // `const Page = @import("Page.zig")` binds BOTH the module (namespace:
