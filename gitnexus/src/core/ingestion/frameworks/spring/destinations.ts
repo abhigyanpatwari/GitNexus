@@ -281,6 +281,31 @@ export interface SpringDestinationResolvers {
    * order is fixed now rather than renegotiated later. Nothing supplies it
    * today, so step 4 is a no-op and such destinations stay unresolved with the
    * reason the earlier step recorded.
+   *
+   * ── STILL UNSUPPLIED, AND NOW FOR A REASON RATHER THAN FOR WANT OF A READER ──
+   *
+   * `core/ingestion/asyncapi/document.ts` reads AsyncAPI 3.x documents, and
+   * `pipeline-phases/spring-destinations.ts` emits what they state as
+   * destinations of their own. It does NOT feed this hook, and the gap is a
+   * decision:
+   *
+   * A document names addresses; it does not name the method that uses one. To
+   * hand an address to THIS candidate, something has to choose which of the
+   * document's operations belongs to it. Partitioning by (broker, action) is
+   * the only division both sides agree on, and it is a weak one: a service with
+   * several listeners on one broker puts them all in one bucket. Any bucket
+   * holding more than one operation forces a heuristic, and a wrong heuristic
+   * puts a REAL address on a joining node under the wrong site — a false
+   * connection wearing the clothes of a resolved one, which is the exact
+   * outcome this module's keying rule exists to prevent. Only a bucket of size
+   * one is a fact rather than a guess.
+   *
+   * Two things would change that, and neither is a heuristic: a document whose
+   * operations carry the implementing symbol, or a configuration source that
+   * answers the `${key}` this candidate already recorded. The second is the
+   * stronger of the two — a key-to-value lookup is exact where a document match
+   * is a guess — and it wants its own resolver rather than this one, because
+   * what it needs is the placeholder key, not the candidate.
    */
   readonly specification?: (candidate: SpringDestinationCandidate) => string | null;
 }
