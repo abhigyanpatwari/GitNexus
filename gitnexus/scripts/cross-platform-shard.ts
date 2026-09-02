@@ -3,7 +3,7 @@
  *
  * WHY THIS EXISTS. `run-cross-platform.ts` used to hand vitest the whole file
  * list plus `--shard=i/n`, and vitest partitions by file COUNT. Runtime on this
- * suite is wildly uneven — measured on the Windows runner, `cli-e2e` is 361 s
+ * suite is wildly uneven — measured on the Windows runner, `cli-e2e` is 621 s
  * and `worker-pool` 221 s, while most files are under a second — so a
  * count-split routinely put several of the heaviest suites on one shard. That
  * is #2449, and this file's sibling header has documented the symptom ("the
@@ -44,7 +44,9 @@
  * partition depend on the very machine load it is trying to protect against.
  */
 export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
-  'test/integration/cli-e2e.test.ts': 361,
+  // Re-measured after the analyze --watch e2e landed in #3072. The previous
+  // 361 s entry undercharged this suite and left shard 1 close to the watchdog.
+  'test/integration/cli-e2e.test.ts': 621,
   'test/integration/worker-pool.test.ts': 222,
   'test/unit/incremental-vector-extension-ordering.test.ts': 87,
   // ESTIMATE, not a measurement (#2841): this suite drives more full
@@ -65,6 +67,16 @@ export const WINDOWS_WEIGHTS_SEC: Readonly<Record<string, number>> = {
   'test/integration/antigravity-hook-e2e.test.ts': 7,
   'test/unit/index-lock.test.ts': 5,
   'test/unit/setup.test.ts': 5,
+  // ESTIMATE, not a measurement. This file asserts almost nothing; it READS —
+  // one 4893-file pass over every tracked text file, plus an 830-file pass over
+  // `src/`. Measured at 2.3 s and 0.3 s per pass on a virtualised and a local
+  // Linux filesystem respectively, so the cost is entirely per-file open
+  // latency, which is the term Windows inflates most (NTFS plus Defender on
+  // every read). Scaled from the slower Linux figure to keep the split
+  // conservative rather than let the 8 s PER_FILE_OVERHEAD floor under-charge
+  // a file that touches more paths than anything else here. Replace with a real
+  // figure after the first green Windows matrix run.
+  'test/unit/source-control-bytes.test.ts': 15,
 };
 
 /**

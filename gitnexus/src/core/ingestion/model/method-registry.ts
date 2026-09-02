@@ -2,9 +2,9 @@
  * Method Registry
  *
  * Owner-scoped method index extracted from SymbolTable.
- * Stores Method/Constructor/Function-with-ownerId symbols keyed by
- * `ownerNodeId\0methodName` for O(1) lookup. Supports overloads
- * (array values) and arity-based filtering.
+ * Stores Method/Constructor/Function-with-ownerId symbols in a nested
+ * `Map<ownerNodeId, Map<methodName, defs[]>>` for O(1) lookup. Supports
+ * overloads (array values) and arity-based filtering.
  */
 
 import type { SymbolDefinition } from 'gitnexus-shared';
@@ -92,7 +92,7 @@ export interface MutableMethodRegistry extends MethodRegistry {
 // ---------------------------------------------------------------------------
 
 export const createMethodRegistry = (): MutableMethodRegistry => {
-  const methodByOwner = new Map<string, SymbolDefinition[]>();
+  const methodByOwner = new Map<string, Map<string, SymbolDefinition[]>>();
   // Secondary flat-by-name index. Values are the SAME SymbolDefinition
   // references stored under `methodByOwner` — no copy, just a second key.
   // Populated in lockstep by `register()` and emptied by `clear()`.
@@ -102,12 +102,15 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
   // dedup fast-path. Monotonic: never unset except on `clear()`.
   let hasFunctionMethodsFlag = false;
 
+  const ownerDefs = (ownerNodeId: string, methodName: string): SymbolDefinition[] | undefined =>
+    methodByOwner.get(ownerNodeId)?.get(methodName);
+
   const lookupMethodByOwner = (
     ownerNodeId: string,
     methodName: string,
     argCount?: number,
   ): SymbolDefinition | undefined => {
-    const defs = methodByOwner.get(`${ownerNodeId}\0${methodName}`);
+    const defs = ownerDefs(ownerNodeId, methodName);
     if (!defs || defs.length === 0) return undefined;
 
     // Arity narrowing: when an argCount is provided and there are multiple
@@ -176,16 +179,20 @@ export const createMethodRegistry = (): MutableMethodRegistry => {
     ownerNodeId: string,
     methodName: string,
   ): readonly SymbolDefinition[] => {
-    return methodByOwner.get(`${ownerNodeId}\0${methodName}`) ?? EMPTY;
+    return ownerDefs(ownerNodeId, methodName) ?? EMPTY;
   };
 
   const register = (ownerNodeId: string, methodName: string, def: SymbolDefinition): void => {
-    const key = `${ownerNodeId}\0${methodName}`;
-    const existing = methodByOwner.get(key);
+    let owned = methodByOwner.get(ownerNodeId);
+    if (!owned) {
+      owned = new Map();
+      methodByOwner.set(ownerNodeId, owned);
+    }
+    const existing = owned.get(methodName);
     if (existing) {
       existing.push(def);
     } else {
-      methodByOwner.set(key, [def]);
+      owned.set(methodName, [def]);
     }
     const byName = methodsByName.get(methodName);
     if (byName) {

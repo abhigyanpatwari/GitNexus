@@ -4,7 +4,8 @@
  * Detects execution flows (processes) and creates Process nodes +
  * STEP_IN_PROCESS edges. Also links Route/Tool nodes to processes.
  *
- * @deps    communities, routes, tools, pruneLocalSymbols, structure, parse
+ * @deps    communities, routes, tools, springAutoConfiguration,
+ *          pruneLocalSymbols, structure, parse
  * @reads   graph (all nodes and relationships), communityResult, routeRegistry,
  *          toolDefs, parse's allFetchCalls + allORMQueries (R3-6 sink sites)
  * @writes  graph (Process nodes, STEP_IN_PROCESS edges, ENTRY_POINT_OF edges)
@@ -52,7 +53,15 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
   // sinks rather than failing the phase. `pruneLocalSymbols` is declared
   // explicitly so process extraction always reads the trimmed graph even if a
   // future option drops the intervening `mro`/`communities` phases.
-  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure', 'parse'],
+  deps: [
+    'communities',
+    'routes',
+    'tools',
+    'springAutoConfiguration',
+    'pruneLocalSymbols',
+    'structure',
+    'parse',
+  ],
 
   async execute(
     ctx: PipelineContext,
@@ -124,6 +133,65 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       );
     }
 
+    // Not gated on `isDev`: this is the one line that tells a reader the process
+    // list is a SAMPLE. "823 flows" presented without it reads as the complete
+    // set, which is the confident-empty failure in its other direction — a
+    // confident-COMPLETE one.
+    //
+    // But it is only a `warn` when a ceiling removed WHOLE FLOWS from the
+    // report. That split is the one `ProcessTruncationStats` already documents —
+    // "unexplored entry points mean whole flows are missing, while a
+    // depth-capped trace means a flow is present but shorter than it really is"
+    // — and it is what keeps the line worth reading. Warning on every counter
+    // meant warning on every run: this phase overrides only `maxProcesses`, so
+    // at the shipped defaults (`maxBranching: 4`, `maxTraceDepth: 10`,
+    // per-entry trace budget 12) `calleesDropped` fires for any function with
+    // five callees, `tracesDepthCapped` for any chain deeper than ten, and
+    // `walksCutByBudget` for any entry point with twelve paths under it. All
+    // three are true of every non-trivial repository — and none of them removes
+    // an entry point or a completed flow from the list, they only bound how far
+    // an already-represented region was walked. A warning that always fires is a
+    // warning nobody reads, so those three go to `debug`.
+    //
+    // `entryPointCandidatesDropped` IS in the loud set even though it fires on
+    // any repository with more than 200 candidates, because it is the only
+    // ceiling that grows with the repository: `entryPointsUnexplored` and
+    // `processesDropped` can only fire while `maxProcesses` (symbols / 10) is
+    // small enough to bind, so gating on those two alone would go quiet on
+    // exactly the large repositories where 200 of several thousand entry points
+    // is the thinnest sample. The message leads with that ratio so the line
+    // carries a fact rather than an alarm.
+    //
+    // `stats.truncation` on the RESULT is untouched and still reports all six
+    // counters; this only decides which of them are loud.
+    const { truncation } = processResult.stats;
+    const entryPointCandidates =
+      processResult.stats.entryPointsFound + truncation.entryPointCandidatesDropped;
+    const flowsMissing =
+      truncation.entryPointCandidatesDropped > 0 ||
+      truncation.entryPointsUnexplored > 0 ||
+      truncation.processesDropped > 0;
+    const shape =
+      `${truncation.entryPointCandidatesDropped} of ${entryPointCandidates} candidate entry point(s) never ranked in, ` +
+      `${truncation.entryPointsUnexplored} ranked entry point(s) never traced, ` +
+      `${truncation.processesDropped} deduplicated flow(s) dropped at maxProcesses, ` +
+      `${truncation.tracesDepthCapped} trace(s) cut at maxTraceDepth, ` +
+      `${truncation.calleesDropped} callee(s) skipped at maxBranching, ` +
+      `${truncation.walksCutByBudget} walk(s) cut by the per-entry trace budget.`;
+    if (flowsMissing) {
+      logger.warn(
+        { truncation },
+        `[processes] ${processResult.stats.totalProcesses} flows reported, but whole flows are MISSING: ` +
+          `${shape} An absent flow does NOT mean the code path does not exist.`,
+      );
+    } else if (truncation.truncated) {
+      logger.debug(
+        { truncation },
+        `[processes] ${processResult.stats.totalProcesses} flows reported; every flow found is present, ` +
+          `but some are shorter than the code path they describe: ${shape}`,
+      );
+    }
+
     processResult.processes.forEach((proc) => {
       ctx.graph.addNode({
         id: proc.id,
@@ -153,8 +221,38 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       });
     });
 
+    // The static registry is finalized before Spring runtime enrichment. Merge
+    // runtime-confirmed Route nodes from the graph after the explicit
+    // springAutoConfiguration dependency has completed, so Actuator-only
+    // mappings participate in the same process-linking path.
+    const processRouteRegistry = new Map(routeRegistry);
+    ctx.graph.forEachNode((node) => {
+      if (
+        node.label !== 'Route' ||
+        node.properties.runtimeSource !== 'spring-actuator' ||
+        node.properties.runtimeConfirmed !== true
+      ) {
+        return;
+      }
+      const url = typeof node.properties.name === 'string' ? node.properties.name : undefined;
+      const filePath =
+        typeof node.properties.filePath === 'string' ? node.properties.filePath : undefined;
+      const method =
+        typeof node.properties.method === 'string' ? node.properties.method : undefined;
+      if (url === undefined || filePath === undefined) return;
+      const key = routeNodeKey(method, url);
+      if (!processRouteRegistry.has(key)) {
+        processRouteRegistry.set(key, {
+          filePath,
+          source: 'spring-actuator-runtime',
+          url,
+          ...(method === undefined ? {} : { method }),
+        });
+      }
+    });
+
     // Link Route and Tool nodes to Processes
-    if (routeRegistry.size > 0 || toolDefs.length > 0) {
+    if (processRouteRegistry.size > 0 || toolDefs.length > 0) {
       // Two-tier route lookup, mirroring the tool tables 10 lines below.
       // Routes whose handler resolved key by `handlerSymbolId` (read from
       // the Route node's graph properties — routes.ts stamps it there) and
@@ -169,7 +267,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       // routes phase stamps on the Route node was never consulted.
       const routesByHandlerId = new Map<string, string[]>();
       const routesWithoutHandlerByFile = new Map<string, string[]>();
-      for (const [, entry] of routeRegistry) {
+      for (const [, entry] of processRouteRegistry) {
         // Push the Route node identity (`routeNodeKey`), not the bare URL, so the
         // ENTRY_POINT_OF edge targets the same node id the routes phase created
         // (#2289: a same-URL GET/POST pair is two distinct Route nodes).

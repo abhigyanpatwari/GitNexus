@@ -6,6 +6,8 @@ import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
+import { chunk } from '../../lib/utils.js';
+import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
@@ -28,6 +30,7 @@ import {
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { GraphEmitManifest } from './graph-emit-sink.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
+import { PDG_EDGE_TYPES } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
 import {
@@ -69,6 +72,7 @@ import {
   shadowSidecarRecoveryMessage,
   sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
+import { isProcessAlive } from '../../utils/process-identity.js';
 
 import { logger } from '../logger.js';
 import {
@@ -328,20 +332,6 @@ const INIT_LOCK_RETRY_DELAY_MS = 500;
 const initLockPath = (dbPath: string): string => `${dbPath}.init.lock`;
 
 /**
- * Returns true when the process identified by `pid` is still running.
- * Uses `process.kill(pid, 0)` which sends signal 0 (a no-op probe) —
- * it throws ESRCH when the process does not exist.
- */
-const isProcessAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-/**
  * Try to break a stale lock whose owning process has exited.
  * Returns `true` if the stale lock was removed (caller should retry acquire).
  * Returns `false` if the lock is still valid (another live process owns it).
@@ -520,6 +510,12 @@ const readQueryRows = async (
   return rows;
 };
 
+// Deliberately NOT covered by `warnIfQueryTextUnbounded` (#2915): this is the
+// write/DDL raw path, and `batchInsertNodesToLbug` inlines a node's `content`
+// here, so any source file over the 64 KB text ceiling would trip the heuristic
+// on a query that is entirely legitimate. The guard sits on the read entry
+// points (`executePrepared`, `streamQuery`), which is where a caller-sized list
+// gets spliced into query TEXT.
 const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promise<void> => {
   const run = async (): Promise<void> => {
     const queryResult = await targetConn.query(cypher);
@@ -1521,10 +1517,13 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, startLine, endLine, level, content, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Route') {
-    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware, method, handlerSymbolId) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, responseKeys, errorKeys, middleware, method, handlerSymbolId, runtimeConfirmed, runtimeSource, runtimeStatus) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Tool') {
     return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Destination') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, address, broker, resolution, configKey, configDefault, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'BasicBlock') {
     // Taint/PDG substrate (issue #2080) — no name column. `callees` is the
@@ -1538,8 +1537,14 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Function') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, convexEndpointFactory) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Property') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType, isDetail) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Const') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, convexEndpointFactory) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {
@@ -1593,6 +1598,16 @@ export const insertNodeToLbug = async (
         ? `, description: ${formatCypherValue(properties.description)}`
         : '';
       query = `CREATE (n:Class {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, frameworkAnnotations: ${formatCypherStringArray(properties.frameworkAnnotations)}})`;
+    } else if (label === 'Function') {
+      const descPart = properties.description
+        ? `, description: ${formatCypherValue(properties.description)}`
+        : '';
+      query = `CREATE (n:Function {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, convexEndpointFactory: ${formatCypherValue(properties.convexEndpointFactory ?? '')}})`;
+    } else if (label === 'Const') {
+      const descPart = properties.description
+        ? `, description: ${formatCypherValue(properties.description)}`
+        : '';
+      query = `CREATE (n:Const {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, convexEndpointFactory: ${formatCypherValue(properties.convexEndpointFactory ?? '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
@@ -1683,6 +1698,16 @@ export const batchInsertNodesToLbug = async (
             ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
           query = `MERGE (n:Class {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.frameworkAnnotations = ${formatCypherStringArray(properties.frameworkAnnotations)}`;
+        } else if (label === 'Function') {
+          const descPart = properties.description
+            ? `, n.description = ${formatCypherValue(properties.description)}`
+            : '';
+          query = `MERGE (n:Function {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.convexEndpointFactory = ${formatCypherValue(properties.convexEndpointFactory ?? '')}`;
+        } else if (label === 'Const') {
+          const descPart = properties.description
+            ? `, n.description = ${formatCypherValue(properties.description)}`
+            : '';
+          query = `MERGE (n:Const {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.convexEndpointFactory = ${formatCypherValue(properties.convexEndpointFactory ?? '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
@@ -1714,6 +1739,8 @@ export const batchInsertNodesToLbug = async (
   return { inserted, failed };
 };
 
+// Guarded by `executePrepared` — a pure delegation, so warning here too would
+// double-report the same query text (#2915).
 export const executeQuery = async (cypher: string): Promise<any[]> => {
   return await executePrepared(cypher, {});
 };
@@ -1722,6 +1749,9 @@ export const streamQuery = async (
   cypher: string,
   onRow: (row: any) => void | Promise<void>,
 ): Promise<number> => {
+  // The other raw `conn.query` read entry point (`executePrepared` covers the
+  // prepared path, and `executeQuery` delegates to it). Never throws (#2915).
+  warnIfQueryTextUnbounded(cypher, 'streamQuery', (message) => logger.warn(message));
   if (isWalDriverActive()) {
     // streamQuery reads rows on the singleton connection WITHOUT withConnLock; if
     // the WAL-checkpoint driver is live, those reads could race a CHECKPOINT — the
@@ -1771,6 +1801,8 @@ export const executePrepared = async (
   cypher: string,
   params: Record<string, any>,
 ): Promise<any[]> => {
+  // A `.length` compare on text we already hold; never throws (#2915).
+  warnIfQueryTextUnbounded(cypher, 'executePrepared', (message) => logger.warn(message));
   const c = conn;
   if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -1797,8 +1829,8 @@ export const executeWithReusedStatement = async (
   if (paramsList.length === 0) return;
 
   const SUB_BATCH_SIZE = 4;
-  for (let i = 0; i < paramsList.length; i += SUB_BATCH_SIZE) {
-    const subBatch = paramsList.slice(i, i + SUB_BATCH_SIZE);
+  for (const [subBatchIndex, subBatch] of chunk(paramsList, SUB_BATCH_SIZE).entries()) {
+    const firstRow = subBatchIndex * SUB_BATCH_SIZE;
     // One critical section per sub-batch: the prepare + its executes run with
     // exclusive access to the connection (so the WAL checkpoint driver cannot
     // interleave a CHECKPOINT mid-batch), while the lock is released between
@@ -1817,7 +1849,7 @@ export const executeWithReusedStatement = async (
         const msg = e instanceof Error ? e.message : String(e);
         const queryPreview = cypher.replace(/\s+/g, ' ').slice(0, 120);
         throw new Error(
-          `Batch execution failed for rows ${i + 1}-${i + subBatch.length}: ${msg} (${queryPreview})`,
+          `Batch execution failed for rows ${firstRow + 1}-${firstRow + subBatch.length}: ${msg} (${queryPreview})`,
         );
       }
       // Note: LadybugDB PreparedStatement doesn't require explicit close()
@@ -1839,9 +1871,40 @@ export const executeWithReusedStatement = async (
 export const getLbugStats = async (): Promise<{
   nodes: number;
   edges: number | undefined;
+  /**
+   * Edges EXCLUDING the streamed PDG layers, or `undefined` when the count could
+   * not be taken (same distinction `edges` makes — an unmeasurable count is not
+   * a measured zero).
+   *
+   * The graph-write-collapse check compares what the pipeline produced against
+   * what the database holds, and `edges` counts every `CodeRelation` row — PDG
+   * writes into that same table. On a `--pdg` run the expected side is
+   * structural-only, so comparing it against the total let PDG volume mask
+   * structural loss outright: 1,000 structural edges expected, 4,000 PDG rows
+   * persisted, every structural edge gone, and the ratio still clears. This is
+   * the like-for-like counterpart.
+   */
+  structuralEdges: number | undefined;
+  /**
+   * Why `structuralEdges` is absent, when it is; `undefined` once the count was
+   * taken. Recorded rather than swallowed because this query is NEWER and
+   * NARROWER than `edges` — it filters on `r.type` with an `IN` predicate — and
+   * the collapse check consults only it, so a throw here disables the guard and
+   * (since the guard is now also the automatic-rebuild trigger) the repair it
+   * drives. A caller that cannot see the difference between "measured" and
+   * "could not measure" has no way to say so in its log or its metadata.
+   */
+  structuralEdgesError?: string;
 }> => {
   const c = conn;
-  if (!c) return { nodes: 0, edges: undefined };
+  if (!c) {
+    return {
+      nodes: 0,
+      edges: undefined,
+      structuralEdges: undefined,
+      structuralEdgesError: 'no open connection',
+    };
+  }
 
   // Called during analyze finalize while the WAL-checkpoint driver is still
   // running; each count read takes the connection lock so it cannot execute
@@ -1876,7 +1939,36 @@ export const getLbugStats = async (): Promise<{
     // here is what made a throwing query indistinguishable from an empty table.
   }
 
-  return { nodes: totalNodes, edges: totalEdges };
+  // Structural-only count for the collapse check. `TAINT_PATH` is deliberately
+  // NOT in `PDG_EDGE_TYPES` — it is a whole-program Function→Function edge that
+  // lives in the in-memory graph and is persisted by the normal emit, so it IS
+  // structural and must stay counted on both sides.
+  let structuralEdges: number | undefined;
+  let structuralEdgesError: string | undefined;
+  try {
+    const excluded = [...PDG_EDGE_TYPES].map((t) => `'${t}'`).join(', ');
+    structuralEdges = await withConnLock(async () => {
+      const queryResult = await c.query(
+        `MATCH ()-[r:${REL_TABLE_NAME}]->() WHERE NOT r.type IN [${excluded}] RETURN count(r) AS cnt`,
+      );
+      const rows = await readQueryRows(queryResult);
+      return rows.length > 0 ? Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0) : 0;
+    });
+  } catch (err) {
+    // Same contract as `edges`: leave undefined rather than report a zero the
+    // collapse check would read as a total wipeout. But NOT silent — the reason
+    // travels back on the result and is logged by the caller, so "the guard
+    // declined because it could not measure" is visible instead of looking
+    // identical to "the guard ran and found nothing wrong".
+    structuralEdgesError = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { err },
+      'Structural relationship count failed; the graph-write-collapse check will have no ' +
+        'structural measurement from this run.',
+    );
+  }
+
+  return { nodes: totalNodes, edges: totalEdges, structuralEdges, structuralEdgesError };
 };
 
 /**
@@ -2439,11 +2531,19 @@ export const deleteNodesForFile = async (
 /**
  * Chunk size for {@link deleteNodesForFiles}. 200 paths keeps each
  * statement ~13KB (well inside parser limits) while a ~700-file write set
- * still collapses from ~13,000 statements to 124: 31 statements per chunk
- * (1 CodeEmbedding join-delete + 30 filePath-bearing node tables — the
- * 32-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
+ * still collapses from ~13,000 statements to 128: 32 statements per chunk
+ * (1 CodeEmbedding join-delete + 31 filePath-bearing node tables — the
+ * 33-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
  * original "~40" claim under-counted the per-chunk statement fan-out
  * (tri-review 4669518496 accuracy sweep).
+ *
+ * `Destination` is counted in that 31 because the table IS visited, but a
+ * RESOLVED destination stores no `filePath` and so never matches the
+ * predicate — deliberately, because it is shared across files. See the node
+ * property block in `pipeline-phases/spring-destinations.ts` for why deleting
+ * one here would cut edges belonging to files outside the write set. Because
+ * this pass therefore cannot maintain the layer, {@link deleteAllDestinations}
+ * clears it separately and `extractChangedSubgraph` re-includes it whole.
  */
 export const DELETE_FILES_CHUNK_SIZE = 200;
 
@@ -2465,24 +2565,30 @@ export const DELETE_FILES_CHUNK_SIZE = 200;
  * EMBEDDING_SCHEMA cannot own embedding rows, so skipping that one
  * statement is sound, while failing would brick every incremental run on
  * such a DB until `--force`. Statement count per chunk is unchanged by the
- * multi-label join: 1 embedding join-delete + 30 node-table deletes = 31
- * (the rejected per-label fallback shape would have been 19 + 30 = 49).
+ * multi-label join: 1 embedding join-delete + 31 node-table deletes = 32
+ * (the rejected per-label fallback shape would have been 19 + 31 = 50).
+ * The 31 is the filePath-bearing half of the 33-table NODE_TABLES roster and
+ * moves whenever a node table is added — it went up by one when `Destination`
+ * joined, and the twin note on DELETE_FILES_CHUNK_SIZE has to move with it.
  * Singleton-connection only: the analyze writeback owns the write lock,
  * and `queryAndDrain` routes through `withConnLock` for it (the WAL
  * checkpoint driver is live during this).
  */
 export const deleteNodesForFiles = async (
   filePaths: readonly string[],
-  options: { onChunk?: (filesDone: number, filesTotal: number) => void } = {},
+  options: {
+    onChunk?: (filesDone: number, filesTotal: number) => void;
+    /** When set, only these node tables are DETACH DELETEd (#3016). */
+    nodeTables?: readonly string[];
+  } = {},
 ): Promise<void> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   const targetConn = conn;
   let warnedMissingEmbeddingTable = false;
-  for (let i = 0; i < filePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
-    const chunk = filePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
-    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+  for (const [chunkIndex, batch] of chunk(filePaths, DELETE_FILES_CHUNK_SIZE).entries()) {
+    const listLiteral = `[${batch.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
     // Embedding rows key on their OWNING NODE's id: generateId builds
     // label-first ids — `${label}:${name}` (src/lib/utils.ts) with qualified
     // names that embed the file path (e.g. `Function:src/f.ts:fn0:1`) — so
@@ -2518,7 +2624,8 @@ export const deleteNodesForFiles = async (
         );
       }
     }
-    for (const tableName of NODE_TABLES) {
+    const tables = options.nodeTables ?? NODE_TABLES;
+    for (const tableName of tables) {
       // Community/Process are graph-wide (no filePath); the orchestrator
       // drops them wholesale via deleteAllCommunitiesAndProcesses.
       if (tableName === 'Community' || tableName === 'Process') continue;
@@ -2528,7 +2635,189 @@ export const deleteNodesForFiles = async (
         `MATCH (n:${tn}) WHERE n.filePath IN ${listLiteral} DETACH DELETE n`,
       );
     }
-    options.onChunk?.(Math.min(i + DELETE_FILES_CHUNK_SIZE, filePaths.length), filePaths.length);
+    options.onChunk?.(
+      Math.min((chunkIndex + 1) * DELETE_FILES_CHUNK_SIZE, filePaths.length),
+      filePaths.length,
+    );
+  }
+};
+
+/**
+ * Which of `candidateTables` currently hold at least one row for `filePaths`.
+ *
+ * The incremental writeback uses this to decide which FTS-backed tables it is
+ * about to DML (#3016). It has to be a question about the DB, not about the
+ * freshly built graph: an edit that DELETES the last Rust trait in a file
+ * leaves no Trait node in the new graph, but the old row is still in the index
+ * and still has to be deleted — and its FTS index still has to come down first.
+ */
+export const nodeTablesWithRowsForFiles = async (
+  filePaths: readonly string[],
+  candidateTables: readonly string[],
+): Promise<Set<string>> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const found = new Set<string>();
+  return withConnLock(async () => {
+    for (const batch of chunk(filePaths, DELETE_FILES_CHUNK_SIZE)) {
+      const listLiteral = `[${batch.map((p) => formatCypherValue(p)).join(', ')}]`;
+      for (const tableName of candidateTables) {
+        // Graph-wide tables have no filePath column to filter on.
+        if (tableName === 'Community' || tableName === 'Process') continue;
+        if (found.has(tableName)) continue;
+        // determinism: probe — asks only whether the table has any row for
+        // these files, so which row comes back cannot change the answer.
+        const queryResult = await c.query(
+          `MATCH (n:${escapeTableName(tableName)}) WHERE n.filePath IN ${listLiteral} ` +
+            `RETURN n.id LIMIT 1`,
+        );
+        try {
+          const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+          if ((await result.getAll()).length > 0) found.add(tableName);
+        } finally {
+          await closeQueryResults(queryResult);
+        }
+      }
+    }
+    return found;
+  });
+};
+
+/**
+ * The graph-wide derived edges and the node table each one points at. Both are
+ * produced by the derived phases (Leiden, flow extraction) rather than by
+ * parsing, which is why an incremental run that skips those phases has to carry
+ * them across the writeback itself.
+ */
+const DERIVED_REL_KINDS = [
+  { type: 'MEMBER_OF', targetLabel: 'Community' },
+  { type: 'STEP_IN_PROCESS', targetLabel: 'Process' },
+  { type: 'ENTRY_POINT_OF', targetLabel: 'Process' },
+] as const;
+
+/**
+ * One MEMBER_OF / STEP_IN_PROCESS edge, carrying everything needed to recreate
+ * it byte-for-byte: both endpoint labels (so the re-MATCH is label-scoped
+ * rather than a scan of every node) and every column of the relationship
+ * table, `step` included — process traces order by it (`ORDER BY r.step`), so
+ * an edge restored without it silently scrambles the flow it belongs to.
+ */
+export interface DerivedRelSnapshot {
+  sourceId: string;
+  sourceLabel: string;
+  targetId: string;
+  targetLabel: string;
+  type: string;
+  confidence: number;
+  reason: string;
+  step: number;
+}
+
+/**
+ * Capture the MEMBER_OF / STEP_IN_PROCESS / ENTRY_POINT_OF edges owned by `filePaths`, before a
+ * surgical incremental write DETACH DELETEs their file-side endpoints (#3016).
+ *
+ * Only meaningful on the write plan that keeps the persisted Community/Process
+ * nodes: those nodes survive the delete, but the edges tying this run's changed
+ * files to them do not, and the pipeline did not re-derive them.
+ *
+ * Both endpoints are matched by an EXPLICIT label — `sourceTables` on one side,
+ * the edge type's fixed target table on the other — so the labels come from the
+ * query rather than the rows. `labels(n)[0]` over an unlabelled match returns
+ * an empty string on this engine, which silently produced a snapshot that
+ * restored nothing.
+ *
+ * Read failures propagate. This runs against a warm index whose derived tables
+ * the caller has already established exist, so a failure here is a real fault —
+ * and swallowing it would drop the edges silently, which looks identical to a
+ * repo that genuinely has no communities.
+ */
+export const snapshotDerivedRelsForFiles = async (
+  filePaths: readonly string[],
+  sourceTables: readonly string[],
+): Promise<DerivedRelSnapshot[]> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const out: DerivedRelSnapshot[] = [];
+  return withConnLock(async () => {
+    for (const batch of chunk(filePaths, DELETE_FILES_CHUNK_SIZE)) {
+      const listLiteral = `[${batch.map((p) => formatCypherValue(p)).join(', ')}]`;
+      for (const sourceLabel of sourceTables) {
+        if (sourceLabel === 'Community' || sourceLabel === 'Process') continue;
+        for (const { type, targetLabel } of DERIVED_REL_KINDS) {
+          const queryResult = await c.query(
+            `MATCH (n:${escapeTableName(sourceLabel)})-[r:${REL_TABLE_NAME}]->` +
+              `(m:${escapeTableName(targetLabel)}) ` +
+              `WHERE n.filePath IN ${listLiteral} AND r.type = ${formatCypherValue(type)} ` +
+              `RETURN n.id AS sourceId, m.id AS targetId, ` +
+              `r.confidence AS confidence, r.reason AS reason, r.step AS step`,
+          );
+          try {
+            const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+            for (const row of await result.getAll()) {
+              const rec = row as Record<string, unknown>;
+              if (typeof rec.sourceId !== 'string' || typeof rec.targetId !== 'string') continue;
+              out.push({
+                sourceId: rec.sourceId,
+                sourceLabel,
+                targetId: rec.targetId,
+                targetLabel,
+                type,
+                confidence: typeof rec.confidence === 'number' ? rec.confidence : 1.0,
+                reason: typeof rec.reason === 'string' ? rec.reason : '',
+                step:
+                  typeof rec.step === 'number'
+                    ? rec.step
+                    : typeof rec.step === 'bigint'
+                      ? Number(rec.step)
+                      : 0,
+              });
+            }
+          } finally {
+            await closeQueryResults(queryResult);
+          }
+        }
+      }
+    }
+    return out;
+  });
+};
+
+/**
+ * Re-create the edges captured by `snapshotDerivedRelsForFiles`, after the
+ * incremental subgraph load has put their file-side endpoints back.
+ *
+ * Endpoints are matched by label + id, mirroring `fallbackRelationshipInserts`:
+ * an unlabelled `MATCH (a), (b)` is a cartesian product over the whole graph
+ * and does not finish on a real index. An endpoint the load did not restore
+ * simply matches nothing, so the edge is dropped rather than mis-attached.
+ */
+export const restoreDerivedRels = async (rels: readonly DerivedRelSnapshot[]): Promise<void> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  if (rels.length === 0) return;
+  const escapeLabel = (label: string): string =>
+    BACKTICK_TABLES.has(label) ? `\`${label}\`` : label;
+  // No outer `withConnLock`: `queryAndDrain` takes the lock per statement, and
+  // wrapping the loop as well trips the re-entry guard in conn-lock.ts. Same
+  // shape as `fallbackRelationshipInserts`, the other per-edge CREATE loop.
+  for (const rel of rels) {
+    if (!NODE_TABLES.includes(rel.sourceLabel as NodeTableName)) continue;
+    if (!NODE_TABLES.includes(rel.targetLabel as NodeTableName)) continue;
+    await queryAndDrain(
+      c,
+      `MATCH (a:${escapeLabel(rel.sourceLabel)} {id: ${formatCypherValue(rel.sourceId)}}), ` +
+        `(b:${escapeLabel(rel.targetLabel)} {id: ${formatCypherValue(rel.targetId)}}) ` +
+        `CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(rel.type)}, ` +
+        `confidence: ${rel.confidence}, reason: ${formatCypherValue(rel.reason)}, ` +
+        `step: ${rel.step}}]->(b)`,
+    );
   }
 };
 
@@ -2615,11 +2904,8 @@ export const queryImportersBatch = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   const importers = new Set<string>();
-  for (let i = 0; i < targetFilePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
-    // `i` only ever advances in whole chunk strides, so this is exact.
-    const chunkIndex = i / DELETE_FILES_CHUNK_SIZE;
-    const chunk = targetFilePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
-    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+  for (const [chunkIndex, batch] of chunk(targetFilePaths, DELETE_FILES_CHUNK_SIZE).entries()) {
+    const listLiteral = `[${batch.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
     const cypher = `
       MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
       WHERE r.type = 'IMPORTS' AND b.filePath IN ${listLiteral}
@@ -2643,10 +2929,10 @@ export const queryImportersBatch = async (
         // `err` key — `error` serializes to `{}`.
         logger.warn(
           { err },
-          `Incremental importer BFS: dropped chunk ${chunkIndex} (${chunk.length} target path(s)) — ` +
+          `Incremental importer BFS: dropped chunk ${chunkIndex} (${batch.length} target path(s)) — ` +
             'importer expansion degrades for this run; affected importers may keep stale edges until the next full rebuild.',
         );
-        options.onChunkFailure?.(chunkIndex, chunk.length, err);
+        options.onChunkFailure?.(chunkIndex, batch.length, err);
       } finally {
         if (queryResult) await closeQueryResults(queryResult);
       }
@@ -2870,6 +3156,60 @@ export const deleteSpringAopEvidenceNodes = async (): Promise<{ nodesDeleted: nu
       throw new Error(
         '[spring-aop] failed to clear synthetic evidence before incremental re-write ' +
           `(${message}) — aborting to avoid stale advice metadata; the next run will full-rebuild`,
+      );
+    }
+  });
+};
+
+/**
+ * Drop EVERY `Destination` node before an incremental writeback, so the async
+ * messaging overlay is rebuilt whole from the fresh graph.
+ *
+ * Delete-all rather than delete-by-file, because the file-keyed rule cannot
+ * express this layer in either direction. A RESOLVED destination stores no
+ * `filePath` — that is what stops `deleteNodesForFiles` cutting a node shared
+ * by files outside the write set — which also means it is never deleted when it
+ * SHOULD be, so a destination whose last referrer stopped naming it survived as
+ * an edgeless orphan that still carried `address`, the cross-repository join
+ * key, accumulating on every run. The mirror defect was worse: without a
+ * matching graph-wide re-include, a newly added file publishing to a NEW topic
+ * wrote neither the destination nor the publisher's edge, silently and with a
+ * zero exit.
+ *
+ * The `springDestinations` phase runs on every persisting analyze and recomputes
+ * the full set from the whole file list, so delete-then-re-include is complete.
+ * `extractChangedSubgraph` treats `Destination` as graph-wide to supply the
+ * other half; the two must be changed together. DETACH DELETE also takes the
+ * `CONSUMES_FROM` / `PUBLISHES_TO` edges, which the re-include restores because
+ * every one of them has the destination as an endpoint.
+ */
+export const deleteAllDestinations = async (): Promise<{ nodesDeleted: number }> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  return withConnLock(async () => {
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    try {
+      countResult = await c.query('MATCH (n:Destination) RETURN count(n) AS cnt');
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await closeQueryResults(await c.query('MATCH (n:Destination) DETACH DELETE n'));
+      }
+      if (countResult) await closeQueryResults(countResult);
+      return { nodesDeleted: count };
+    } catch (err) {
+      if (countResult) await closeQueryResults(countResult);
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
+        return { nodesDeleted: 0 };
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        '[spring-destinations] failed to clear the messaging overlay before incremental ' +
+          `re-write (${message}) — aborting rather than leaving duplicate or orphaned ` +
+          'destinations; the next run will full-rebuild',
       );
     }
   });

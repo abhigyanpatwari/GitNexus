@@ -523,7 +523,7 @@ function handlePostToolUse(input) {
   // If HEAD matches last indexed commit, no reindex needed
   if (currentHead && currentHead === lastCommit) return;
 
-  const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings });
+  const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
   sendHookResponse(
     'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +

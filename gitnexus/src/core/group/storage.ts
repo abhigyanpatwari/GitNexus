@@ -2,20 +2,10 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { randomBytes } from 'node:crypto';
 import type { ContractRegistry } from './types.js';
-import { retryRename } from '../../storage/fs-atomic.js';
+import { writeFileAtomic } from '../../storage/fs-atomic.js';
 
-/**
- * Build an unpredictable suffix for atomic-write tmp files. Replaces the
- * previous `Date.now()` pattern which CodeQL flagged as
- * js/insecure-temporary-file: a guessable suffix in a writable directory
- * lets a co-located attacker pre-create or symlink the tmp path before the
- * write lands.
- */
-const tmpSuffix = (): string => randomBytes(8).toString('hex');
-
-const CONTRACTS_FILE = 'contracts.json';
+export const CONTRACTS_FILE = 'contracts.json';
 
 export function getDefaultGitnexusDir(): string {
   return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
@@ -40,33 +30,16 @@ export function getGroupDir(gitnexusDir: string, groupName: string): string {
   return path.join(gitnexusDir, 'groups', groupName);
 }
 
+/** The registry path, so callers that stat or watch the file do not respell its name. */
+export function getContractRegistryPath(groupDir: string): string {
+  return path.join(groupDir, CONTRACTS_FILE);
+}
+
 export async function writeContractRegistry(
   groupDir: string,
   registry: ContractRegistry,
 ): Promise<void> {
-  const targetPath = path.join(groupDir, CONTRACTS_FILE);
-  const tmpPath = `${targetPath}.tmp.${tmpSuffix()}`;
-
-  // O_EXCL via `'wx'` flag + explicit `0o600` mode — closes both halves
-  // of the CodeQL js/insecure-temporary-file finding: `'wx'` rejects a
-  // pre-planted symlink at the path, and `0o600` (user-only) prevents
-  // the file from being created group/world readable while it briefly
-  // contains contract data en route to the rename. The query's
-  // `isSecureMode` predicate inspects ONLY the mode argument, not the
-  // flags, so the explicit mode is what credits the fix.
-  const handle = await fsp.open(tmpPath, 'wx', 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(registry, null, 2), 'utf-8');
-  } finally {
-    await handle.close();
-  }
-  // retryRename absorbs the documented Windows EPERM/EBUSY/EACCES race that
-  // fires when AV scanners or another concurrent rename briefly hold the
-  // destination handle between rename calls. Same helper bridge-db.ts uses
-  // (lines 304, 583, 587, 595, 605, 677) for the bridge.lbug atomic swap —
-  // single source of truth for the Windows-rename pattern across the group
-  // package.
-  await retryRename(tmpPath, targetPath);
+  await writeFileAtomic(path.join(groupDir, CONTRACTS_FILE), JSON.stringify(registry, null, 2));
 }
 
 export async function readContractRegistry(groupDir: string): Promise<ContractRegistry | null> {
@@ -123,15 +96,11 @@ packages: {}
 
 detect:
   http: true
+  graphql: false
   grpc: true
   topics: true
-  shared_libs: true
-  embedding_fallback: true
 
 matching:
-  bm25_threshold: 0.7
-  embedding_threshold: 0.65
-  max_candidates_per_step: 3
   # exclude_links_paths: [/ping, /health, /healthcheck]
   # exclude_links_param_only_paths: false
 `;

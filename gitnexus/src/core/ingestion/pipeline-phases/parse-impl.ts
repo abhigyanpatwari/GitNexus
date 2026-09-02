@@ -2,7 +2,7 @@
  * Parse implementation — chunked parse + resolve loop.
  *
  * This is the core parsing engine of the ingestion pipeline. It reads
- * source files in byte-budget chunks (~20MB each), parses via the worker
+ * source files in stable hash-bucket packs (~2MB each by default), parses via the worker
  * pool (the sole parse path — there is no sequential fallback), and emits
  * route CALLS edges. Import,
  * call, and inheritance resolution are owned by the scope-resolution
@@ -27,14 +27,16 @@ import {
   loadParseCacheChunk,
   persistParseCacheChunk,
   PARSE_CACHE_VERSION,
+  packParseCacheChunks,
 } from '../../../storage/parse-cache.js';
 import {
   clearParsedFileStore,
   persistParsedFileChunk,
+  loadParsedFilesForPaths,
   getDurableParsedFileDir,
   loadDurableParsedFileIndex,
   prepareDurableParsedFileChunk,
-  restoreDurableParsedFileShard,
+  durableChunkHasShards,
 } from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
@@ -49,6 +51,7 @@ import { createSemanticModel, type MutableSemanticModel } from '../model/index.j
 import {
   type PipelineProgress,
   getLanguageFromFilename,
+  type ParsedImport,
   SupportedLanguages,
 } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
@@ -58,7 +61,9 @@ import {
   createParserForLanguage,
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
-import { getProvider, providers } from '../languages/index.js';
+import { getProvider, getProviderForFile, providers } from '../languages/index.js';
+import { SCOPE_RESOLVERS } from '../scope-resolution/pipeline/registry.js';
+import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import type Parser from 'tree-sitter';
 import {
   createWorkerPool,
@@ -84,10 +89,9 @@ import type {
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
-import {
-  resolveOperands,
-  type ModuleConstants,
-} from '../route-extractors/python-const-resolver.js';
+import { resolveOperands } from '../route-extractors/python-const-resolver.js';
+import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
+import { prepareRouteConstantsByProvider } from '../language-provider.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -188,39 +192,19 @@ export function heapPressureRemedy(heapLimitBytes: number): string {
   );
 }
 
-/** Max bytes of source content to load per parse chunk.
+/** Max bytes of source content to load per parse cache pack.
  *
- * Memory bound for the worker pool dispatch + a granularity knob for
- * the parse cache. A single file change invalidates only its enclosing
- * chunk, so smaller budgets → finer-grained invalidation.
- *
- * Override via GITNEXUS_CHUNK_BYTE_BUDGET (bytes) — the default of 2MB
- * gives a useful invalidation floor (~1/N chunks on a multi-MB repo)
- * while keeping worker dispatch overhead under 5% on cold runs.
- */
-/**
- * Built-in chunk byte budget when neither `PipelineOptions.chunkByteBudget`
- * nor `GITNEXUS_CHUNK_BYTE_BUDGET` is set. Tuned to give a useful
- * cache-invalidation floor (~1/N chunks on a multi-MB repo) while keeping
- * worker dispatch overhead under 5% on cold runs. Resolution happens at
- * call time inside `runChunkedParseAndResolve` (U14 from PR #1693 review)
- * — previously this was a module-load IIFE, which froze the env value at
- * import time and meant per-call option threading silently no-op'd.
+ * Granularity knob for the parse cache: a single file change invalidates only
+ * its enclosing pack. Override via GITNEXUS_CHUNK_BYTE_BUDGET. Resolution
+ * happens at call time (U14 from PR #1693) — not at module load.
  */
 const DEFAULT_CHUNK_BYTE_BUDGET = 2 * 1024 * 1024;
 
 /**
- * Per-worker share of a chunk's byte budget when auto-scaling (#worker-idle).
- *
- * A chunk is a single `WorkerPool.dispatch` unit; the pool fans a chunk's files
- * into sub-batch jobs and assigns them to idle workers (`wakeIdleSlots`). When
- * the chunk budget (2 MB) was far below the 8 MB sub-batch cap, every chunk
- * produced exactly ONE job → ONE busy worker while the other N-1 sat idle. To
- * keep all workers fed, the auto chunk budget now scales as
- * `poolSize × CHUNK_BYTES_PER_WORKER`, so each dispatch carries enough work to
- * fan across the whole pool. Sequential / explicit-budget runs are unaffected.
+ * Byte unit for auto pool sizing (one worker per this much source). Same
+ * magnitude as the default cache pack, but not a membership input (#3088).
  */
-const CHUNK_BYTES_PER_WORKER = 2 * 1024 * 1024;
+const CHUNK_BYTES_PER_WORKER = DEFAULT_CHUNK_BYTE_BUDGET;
 
 /**
  * Target jobs-per-worker per dispatch. More jobs than workers gives the pool's
@@ -232,14 +216,12 @@ const TARGET_JOBS_PER_WORKER = 3;
 /** Floor for a derived sub-batch so jobs don't shrink to per-file IPC churn. */
 const MIN_SUB_BATCH_BYTES = 256 * 1024;
 
-function resolveChunkByteBudget(options?: PipelineOptions, effectivePoolSize = 1): number {
+function resolveChunkByteBudget(options?: PipelineOptions): number {
   const opt = options?.chunkByteBudget;
   if (typeof opt === 'number' && Number.isFinite(opt) && opt > 0) return opt;
   const env = Number(process.env.GITNEXUS_CHUNK_BYTE_BUDGET);
   if (Number.isFinite(env) && env > 0) return env;
-  // Auto: size each chunk so a dispatch can fan across the whole pool. A
-  // single-worker (tiny-repo) run keeps the original 2 MB invalidation floor.
-  return Math.max(DEFAULT_CHUNK_BYTE_BUDGET, effectivePoolSize * CHUNK_BYTES_PER_WORKER);
+  return DEFAULT_CHUNK_BYTE_BUDGET;
 }
 
 // ── Main parse + resolve function ──────────────────────────────────────────
@@ -473,11 +455,19 @@ export async function runChunkedParseAndResolve(
    *  files. There is no sequential parser — the pool is the sole parse path
    *  whenever a chunk misses the cache. */
   usedWorkerPool: boolean;
+  /** Files dispatched to parser workers after parse-cache lookup. */
+  reparsedFileCount: number;
   /** Worker-produced ParsedFile artifacts aggregated across chunks.
    *  Threaded into scope-resolution as a re-extract cache so the warm-
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  /** Repo-wide harvested constants, already prepared per provider. See
+   *  `ParseOutput.moduleConstants` for why this leaves the parse phase. */
+  moduleConstants: ReadonlyMap<string, ModuleConstants>;
+  scopeExtractionFailures: string[];
+  /** Files excluded because their non-standalone language parser was unavailable. */
+  unavailableScopeLanguageFiles: number;
 }> {
   const model = createSemanticModel();
   const symbolTable = model.symbols;
@@ -510,15 +500,10 @@ export async function runChunkedParseAndResolve(
       );
     }
   }
-
-  // Sort parseableScanned alphabetically for stable chunk membership
-  // across runs (Finding 4). Without this, filesystem-scan order can
-  // shift between runs (notably on macOS APFS where directory entry
-  // order can change after modifications) — different files in the
-  // same chunk → different chunk hash → cache miss even when no file
-  // content changed. The cache also becomes platform-specific: a
-  // Linux-built cache misses on macOS for the same repo.
-  parseableScanned.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const unavailableScopeLanguageFiles = [...skippedByLang.values()].reduce(
+    (total, count) => total + count,
+    0,
+  );
 
   const totalParseable = parseableScanned.length;
   const totalBytes = parseableScanned.reduce((sum, f) => sum + f.size, 0);
@@ -566,25 +551,25 @@ export async function runChunkedParseAndResolve(
   // runs. Resolving in the function body restores per-call configurability
   // and matches the pattern used by resolveAutoPoolSize and the U1
   // parseChunkConcurrency resolver.
-  // Effective worker count, computed up-front so the chunk budget can scale to
-  // keep the whole pool busy (#worker-idle). The pool is ALWAYS used (sequential
-  // parsing was removed; the disabled channels threw above). Size it to the
-  // work: an explicit `--workers <N>` pins the size; otherwise the cores-based
-  // auto size is capped by the repo's worth of work (~one worker per
-  // CHUNK_BYTES_PER_WORKER of source) so a tiny repo spawns ~1 worker instead of
-  // a full pool, replacing the job the deleted small-repo threshold used to do.
-  // KTD-3 of the remove-sequential plan; the cap formula is intentionally coarse
-  // (tuning deferred).
+  // Effective worker count: explicit `--workers <N>` pins it; otherwise
+  // cores-based auto size is capped by source bytes / CHUNK_BYTES_PER_WORKER
+  // so a tiny repo does not spawn a full idle pool. Cache pack membership
+  // is independent of this number (#3088).
   const explicitPoolSize = options?.workerPoolSize;
   const workProportionalCap = Math.max(1, Math.ceil(totalBytes / CHUNK_BYTES_PER_WORKER));
   const effectivePoolSize =
     explicitPoolSize && explicitPoolSize > 0
       ? explicitPoolSize
       : Math.min(resolveAutoPoolSize(), workProportionalCap);
-  const chunkByteBudget = resolveChunkByteBudget(options, effectivePoolSize);
-  // Sub-batch size so each chunk fans into ~`TARGET_JOBS_PER_WORKER` jobs per
-  // worker, giving the pool's idle-slot assignment room to load-balance. An
-  // explicit `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` operator override wins.
+  // Cache packs: stable (language, hash(path) mod 128) buckets, then the
+  // per-call byte budget inside each bucket (#3088). Pool size is used only
+  // for worker count and sub-batch fan-out, not membership.
+  const chunkByteBudget = resolveChunkByteBudget(options);
+  // Sub-batch size so a 2 MiB pack fans into ~TARGET_JOBS_PER_WORKER jobs
+  // per worker, floored at MIN_SUB_BATCH_BYTES (256 KiB) so an 8-worker
+  // pool still gets ~8 jobs from one pack instead of one idle-heavy job
+  // (#worker-idle). Do not derive this from pool×2 MiB while dispatching a
+  // 2 MiB pack. An explicit GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES wins.
   const subBatchEnv = Number(process.env.GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES);
   const dispatchSubBatchMaxBytes =
     Number.isFinite(subBatchEnv) && subBatchEnv > 0
@@ -609,19 +594,14 @@ export async function runChunkedParseAndResolve(
     );
   }
 
-  const chunks: string[][] = [];
-  let currentChunk: string[] = [];
-  let currentBytes = 0;
-  for (const file of parseableScanned) {
-    if (currentChunk.length > 0 && currentBytes + file.size > chunkByteBudget) {
-      chunks.push(currentChunk);
-      currentChunk = [];
-      currentBytes = 0;
-    }
-    currentChunk.push(file.path);
-    currentBytes += file.size;
-  }
-  if (currentChunk.length > 0) chunks.push(currentChunk);
+  const chunks: string[][] = packParseCacheChunks(
+    parseableScanned.map((file) => ({
+      path: file.path,
+      size: file.size,
+      language: getLanguageFromFilename(file.path) ?? 'unknown',
+    })),
+    chunkByteBudget,
+  );
 
   const numChunks = chunks.length;
 
@@ -739,6 +719,7 @@ export async function runChunkedParseAndResolve(
   // the second-half of the parse-cache speedup since scope-resolution's
   // re-parse otherwise dominates the warm-cache wall-clock time.
   const allParsedFiles: import('gitnexus-shared').ParsedFile[] = [];
+  const scopeExtractionFailures = new Set<string>();
 
   // Incremental parse cache (Option B): chunk-level content-addressed.
   // When the chunk's (filePath, content-hash) signature matches a prior
@@ -760,17 +741,18 @@ export async function runChunkedParseAndResolve(
   // a sibling of the run-scoped store, NOT cleared per run. Workers write a
   // shard per chunk hash; on a warm parse-cache hit we restore the chunk's
   // shards into the run-scoped store so scope-resolution streams them without
-  // re-parsing. `durableHitKeys` is the prior run's index, version-gated by
-  // PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk re-dispatches, which
-  // repopulates the durable store — never the main-thread extract fallback).
+  // re-parsing. `durableHitEntries` is the prior run's path-coverage index,
+  // version-gated by PARSE_CACHE_VERSION (a mismatch ⇒ empty ⇒ every chunk
+  // re-dispatches, which repopulates the durable store).
   const durableParsedFileDir =
     parsedFileStorePath !== undefined ? getDurableParsedFileDir(parsedFileStorePath) : undefined;
-  const durableHitKeys =
+  const durableHitEntries =
     durableParsedFileDir !== undefined
       ? await loadDurableParsedFileIndex(durableParsedFileDir, PARSE_CACHE_VERSION)
-      : new Set<string>();
+      : new Map<string, ReadonlySet<string>>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
+  let reparsedFileCount = 0;
 
   try {
     // U1 — bounded chunk concurrency (B1 from PR #1693 review): pre-fetch
@@ -840,13 +822,19 @@ export async function runChunkedParseAndResolve(
       chunkStartMs: number | null,
     ): Promise<void> => {
       if (chunkWorkerData) {
+        for (const filePath of chunkWorkerData.scopeExtractionFailures) {
+          scopeExtractionFailures.add(filePath);
+        }
         if (chunkWorkerData.parsedFiles?.length) {
           if (parsedFileStorePath) {
-            await persistParsedFileChunk(
+            const wrote = await persistParsedFileChunk(
               parsedFileStorePath,
               `chunk-${chunkIdx}`,
               chunkWorkerData.parsedFiles,
             );
+            if (!wrote) {
+              for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
+            }
           } else {
             for (const item of chunkWorkerData.parsedFiles) allParsedFiles.push(item);
           }
@@ -1036,8 +1024,16 @@ export async function runChunkedParseAndResolve(
       // store was introduced, or a pruned/version-stale shard — fall through to
       // a worker re-dispatch to repopulate them. NEVER let scope-resolution
       // re-extract on the main thread (the #1983 OOM the durable store closes).
+      const durableExpectedPaths =
+        chunkHash === null ? undefined : durableHitEntries.get(chunkHash);
       const durableHit =
-        chunkHash !== null && durableParsedFileDir !== undefined && durableHitKeys.has(chunkHash);
+        cachedRaw !== undefined &&
+        cachedRaw.length > 0 &&
+        chunkHash !== null &&
+        durableParsedFileDir !== undefined &&
+        parsedFileStorePath !== undefined &&
+        durableExpectedPaths !== undefined &&
+        (await durableChunkHasShards(parsedFileStorePath, chunkHash, durableExpectedPaths));
 
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
@@ -1070,27 +1066,14 @@ export async function runChunkedParseAndResolve(
             nodesCreated: graph.nodeCount,
           },
         });
-        // Restore the chunk's durable ParsedFile shards into the run-scoped
-        // store so scope-resolution finds full coverage with ZERO main-thread
-        // re-parse. A verbatim byte copy — byte-identical to a cold run.
-        if (durableHit && durableParsedFileDir && parsedFileStorePath && chunkHash) {
-          const restored = await restoreDurableParsedFileShard(
-            durableParsedFileDir,
-            parsedFileStorePath,
-            chunkHash,
-          );
-          if (restored === 0) {
-            logger.warn(
-              `parsedfile-cache: durable shards missing for cached chunk ` +
-                `${chunkHash.slice(0, 8)} — scope-resolution will re-extract these files`,
-            );
-          }
-        }
+        // The durable gate already snapshotted warm `.v8` shards into the
+        // run-scoped store for scope resolution.
         await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
       } else {
         // Cache miss: dispatch to workers, capture the raw results, store
         // them under the chunk hash for the next run.
         chunkCacheMisses++;
+        reparsedFileCount += chunkFiles.length;
         if (durableParsedFileDir !== undefined && chunkHash !== null) {
           try {
             await prepareDurableParsedFileChunk(durableParsedFileDir, chunkHash);
@@ -1287,11 +1270,27 @@ export async function runChunkedParseAndResolve(
   // carries `routePathExpr`/`routePathOperands` and an empty `routePath`; we fold
   // the operands against the repo-wide, file-path-keyed constant map. On failure
   // we DROP the route (KTD5 skip floor) rather than emit a phantom `POST /`.
+  //
+  // Built (and prepared) UNCONDITIONALLY when anything was harvested, because
+  // the map is also handed to downstream phases on `ParseOutput.moduleConstants`
+  // — `springDestinations` folds broker-address constants against exactly the
+  // same table. Preparation runs exactly once, here, on one map, before either
+  // consumer folds. Deferring it into each consumer instead would need
+  // `prepareRouteConstants` to be safe to call twice — it materializes deferred
+  // wildcard bindings IN PLACE — or would leave whichever consumer ran first
+  // folding against unprepared constants. Neither is worth the coupling; the
+  // cost here is one pass over the harvested constants of a repo that has some.
+  const repoConstants = new Map<string, ModuleConstants>();
+  for (const { filePath, constants } of allModuleConstants) {
+    repoConstants.set(filePath, constants);
+  }
+  if (repoConstants.size > 0) {
+    // Let each language prepare only its own constants slice before folding.
+    // This is where deferred wildcard bindings can be materialized once per
+    // provider without naming a language in the shared parse phase.
+    prepareRouteConstantsByProvider(repoConstants, getProviderForFile);
+  }
   if (allDecoratorRoutes.some((dr) => dr.routePathExpr !== undefined)) {
-    const repoConstants = new Map<string, ModuleConstants>();
-    for (const { filePath, constants } of allModuleConstants) {
-      repoConstants.set(filePath, constants);
-    }
     const resolvedRoutes: ExtractedDecoratorRoute[] = [];
     let skipped = 0;
     for (const dr of allDecoratorRoutes) {
@@ -1299,8 +1298,15 @@ export async function runChunkedParseAndResolve(
         resolvedRoutes.push(dr);
         continue;
       }
+      // Provider-driven fold (#2980): languages with qualified-ref semantics
+      // (Java `ApiPaths.X` / `com.example.ApiPaths.X`) fold through their
+      // provider hook; everything else uses the shared language-agnostic
+      // operand fold. No language names in the shared layer.
+      const fold = getProviderForFile(dr.filePath)?.foldRoutePathOperands;
       const value = dr.routePathOperands
-        ? resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
+        ? fold
+          ? fold(dr.filePath, dr.routePathOperands, repoConstants)
+          : resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
         : null;
       if (value === null) {
         skipped++;
@@ -1521,12 +1527,69 @@ export async function runChunkedParseAndResolve(
     'parse-impl-return',
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
+  const routeFilePaths = new Set(allPaths);
+  const dataRouteFilePaths = new Set(
+    allDecoratorRoutes
+      .filter((route) => route.source === DATA_ROUTE_TABLE_SOURCE)
+      .map((route) => route.filePath),
+  );
+  const routeResolutionConfigs = new Map<SupportedLanguages, unknown>();
+  for (const filePath of dataRouteFilePaths) {
+    const language = getLanguageFromFilename(filePath);
+    if (language === null || routeResolutionConfigs.has(language)) continue;
+    const resolver = SCOPE_RESOLVERS.get(language);
+    routeResolutionConfigs.set(
+      language,
+      resolver?.loadResolutionConfig === undefined
+        ? undefined
+        : await resolver.loadResolutionConfig(repoPath),
+    );
+  }
+  let routeResolutionFiles = allParsedFiles;
+  const resolveRouteImportTarget = (
+    parsedImport: ParsedImport,
+    fromFile: string,
+  ): string | null => {
+    const language = getLanguageFromFilename(fromFile);
+    if (language === null) return null;
+    const target = SCOPE_RESOLVERS.get(language)?.resolveImportTarget(
+      parsedImport.targetRaw ?? '',
+      fromFile,
+      routeFilePaths,
+      routeResolutionConfigs.get(language),
+      { parsedFiles: routeResolutionFiles, parsedImport },
+    );
+    if (typeof target === 'string') return target;
+    return target?.length === 1 ? target[0] : null;
+  };
+  if (parsedFileStorePath !== undefined && dataRouteFilePaths.size > 0) {
+    const byPath = await loadParsedFilesForPaths(parsedFileStorePath, dataRouteFilePaths);
+    for (const parsed of allParsedFiles) {
+      if (dataRouteFilePaths.has(parsed.filePath)) byPath.set(parsed.filePath, parsed);
+    }
+    routeResolutionFiles = [...byPath.values()];
+    const directTargets = new Set<string>();
+    for (const parsed of routeResolutionFiles) {
+      for (const parsedImport of parsed.parsedImports) {
+        const target = resolveRouteImportTarget(parsedImport, parsed.filePath);
+        if (target !== null) directTargets.add(target);
+      }
+    }
+    const importedFiles = await loadParsedFilesForPaths(parsedFileStorePath, directTargets);
+    for (const parsed of importedFiles.values()) byPath.set(parsed.filePath, parsed);
+    routeResolutionFiles = [...byPath.values()];
+  }
   // Part 2 (#2138): resolve each route's handler to a real symbol UID now that
   // the model is fully populated and decorator-route prefixes are finalized.
   const routeHandlerSymbols = resolveRouteHandlerSymbols(
     model,
     allExtractedRoutes,
     allDecoratorRoutes,
+    {
+      files: routeResolutionFiles,
+      resolveImportTarget: resolveRouteImportTarget,
+      isExportedSymbol: (nodeId: string) => graph.getNode(nodeId)?.properties.isExported === true,
+    },
   );
   return {
     exportedTypeMap,
@@ -1543,10 +1606,21 @@ export async function runChunkedParseAndResolve(
     // no pool was needed: a warm all-cache-hit run replays cached worker output
     // without spawning workers, or there were no parseable files.
     usedWorkerPool: workerPool !== undefined,
+    // Exact number of files sent through workers on parse-cache misses. A
+    // changed file can invalidate its whole content-addressed chunk, so this
+    // is intentionally measured at dispatch time rather than inferred from
+    // the git/hash diff.
+    reparsedFileCount,
     // Per-file ParsedFile artifacts produced by workers' calls to
     // `extractParsedFile`. Consumed by scope-resolution as a re-extraction
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    // Repo-wide, file-path-keyed constants, already through each provider's
+    // `prepareRouteConstants` hook. Empty when no provider harvests constants
+    // for the languages in this repo.
+    moduleConstants: repoConstants,
+    scopeExtractionFailures: [...scopeExtractionFailures].sort(),
+    unavailableScopeLanguageFiles,
   };
 }

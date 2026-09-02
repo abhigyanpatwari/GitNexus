@@ -36,6 +36,13 @@ const SEED = [
   // single-symbol one.
   `CREATE (t1:Function {id: 'Function:src/a.ts:orphanTwin', name: 'orphanTwin', filePath: 'src/a.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
   `CREATE (t2:Function {id: 'Function:src/b.ts:orphanTwin', name: 'orphanTwin', filePath: 'src/b.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+  // MIXED ambiguity (W2-4): two symbols sharing a name where ONE has a caller
+  // (resolves to LOW) and the other has none (UNKNOWN). The all-UNKNOWN pair
+  // above cannot reach this case, which is exactly why it went unnoticed.
+  `CREATE (m1:Function {id: 'Function:src/m1.ts:mixedTwin', name: 'mixedTwin', filePath: 'src/m1.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+  `CREATE (m2:Function {id: 'Function:src/m2.ts:mixedTwin', name: 'mixedTwin', filePath: 'src/m2.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+  `CREATE (mc:Function {id: 'Function:src/mcaller.ts:mixedCaller', name: 'mixedCaller', filePath: 'src/mcaller.ts', startLine: 1, endLine: 8, isExported: true, content: '', description: ''})`,
+  `MATCH (a:Function {id:'Function:src/mcaller.ts:mixedCaller'}), (b:Function {id:'Function:src/m1.ts:mixedTwin'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.9, reason:'direct', step:0}]->(b)`,
 ];
 
 type BackendHandle = IndexedDBHandle & { _backend?: LocalBackend };
@@ -64,6 +71,8 @@ withTestLbugDB(
       expect(result).not.toHaveProperty('error');
       expect(result.impactedCount).toBe(0);
       expect(result.risk).toBe('UNKNOWN');
+      expect(result.riskScale.comparableAcrossKinds).toBe(true);
+      expect(result.riskNote).toBeDefined();
     });
 
     // The ambiguous fan-out narrows candidates into a fresh object, and that
@@ -86,6 +95,11 @@ withTestLbugDB(
         expect(c.risk).toBe('UNKNOWN');
         expect(typeof c.riskNote).toBe('string');
         expect(c.riskNote).toMatch(/not evidence/i);
+        expect(
+          (c as { riskScale?: { unusedAxes?: { reason: string }[] } }).riskScale?.unusedAxes,
+        ).toEqual(
+          expect.arrayContaining([expect.objectContaining({ reason: 'enrichment-skipped' })]),
+        );
       }
     });
 
@@ -130,6 +144,49 @@ withTestLbugDB(
       expect(result.impactedCount).toBe(0);
       expect(result.risk).toBe('LOW');
       expect(result.riskNote).toBeUndefined();
+    });
+
+    // ── W2-4: a MIXED candidate set must not report the known floor ──
+    //
+    // The all-UNKNOWN branch above is reasoned about carefully and is right.
+    // The mixed case fell straight through it: `RISK_ORDER` has no `UNKNOWN`
+    // entry, so `indexOf` returns -1 and an UNKNOWN candidate can never win the
+    // reduce. One caller-less candidate beside one single-caller candidate
+    // therefore reported `maxRisk: 'LOW'` — a confident floor over a set that
+    // contains an interpretation nobody measured.
+    describe('a mixed UNKNOWN/LOW candidate set (W2-4)', () => {
+      it('reports UNKNOWN, not the known floor', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'mixedTwin',
+          direction: 'upstream',
+        });
+        // Asserted first: if this stopped being ambiguous, the rest is vacuous.
+        expect(result.status).toBe('ambiguous');
+        expect(result.maxRisk).toBe('UNKNOWN');
+      });
+
+      it('still reports what DID resolve, so narrowing costs no information', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'mixedTwin',
+          direction: 'upstream',
+        });
+        // The measured part travels alongside rather than being discarded: a
+        // reader gets "at least LOW among what resolved, and one interpretation
+        // could not be walked", which is strictly more than either alone.
+        expect(result.knownMaxRisk).toBe('LOW');
+      });
+
+      it('omits knownMaxRisk when nothing resolved', async () => {
+        // The all-UNKNOWN pair: there is no measured part, so the field must be
+        // absent rather than echoing UNKNOWN twice.
+        const result = await backend.callTool('impact', {
+          target: 'orphanTwin',
+          direction: 'upstream',
+        });
+        expect(result.status).toBe('ambiguous');
+        expect(result.maxRisk).toBe('UNKNOWN');
+        expect(result.knownMaxRisk).toBeUndefined();
+      });
     });
   },
   {

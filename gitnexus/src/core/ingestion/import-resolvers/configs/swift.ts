@@ -39,6 +39,19 @@ interface SwiftTargetIndex {
  * stable reference and the index is built once — not once per import. A
  * fresh run produces a fresh array → a fresh index, so cross-run staleness
  * is impossible.
+ *
+ * DELIBERATELY NOT ON `import-resolvers/per-file-set.ts` (#2909 sweep): this is
+ * a TWO-input memo keyed on ONE of them. The index is a function of both
+ * `ctx` (`allFileList` + the index-aligned `normalizedFileList`) and `targets`,
+ * but the key is only `ctx.allFileList`, and `perFileSet`'s `build: (key) => T`
+ * hands the builder nothing but the key. It is sound here only because of an
+ * invariant OUTSIDE the memo — `targets` is `ctx.configs.swiftPackageConfig
+ * .targets`, so it shares `ctx`'s lifetime and cannot vary while
+ * `ctx.allFileList` is fixed — and `perFileSet` has no way to express "and this
+ * other input is pinned by the same lifetime". Re-keying on `ctx` to make
+ * `targets` derivable from the key would change what the cache is keyed on and
+ * force an unreachable null-config arm into the builder, so it is a behaviour
+ * change rather than a consolidation. Leave it hand-rolled.
  */
 const SWIFT_TARGET_INDEX_CACHE = new WeakMap<object, SwiftTargetIndex>();
 

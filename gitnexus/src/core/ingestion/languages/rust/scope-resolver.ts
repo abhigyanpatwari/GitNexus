@@ -16,6 +16,7 @@ import {
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 
@@ -54,6 +55,7 @@ function emitRustTraitImplEdges(
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
   scopes: ScopeResolutionIndexes | undefined,
+  recordTypeArguments?: HeritageTypeArgumentSink,
 ): void {
   if (scopes === undefined) return;
 
@@ -82,6 +84,14 @@ function emitRustTraitImplEdges(
       const structGraphId = resolveDefGraphId(structDef.filePath, structDef, nodeLookup);
       const traitGraphId = resolveDefGraphId(traitDef.filePath, traitDef, nodeLookup);
       if (structGraphId === undefined || traitGraphId === undefined) continue;
+
+      // The instantiation the impl was written with — `impl Validator<String>
+      // for V` (#2912). Recorded against THIS edge's ids, not the pre-pass's:
+      // the pre-pass sources its edge from the enclosing def, and interface
+      // dispatch crosses the corrected one emitted here.
+      if (site.typeArguments !== undefined) {
+        recordTypeArguments?.(structGraphId, traitGraphId, site.typeArguments);
+      }
 
       const edgeKey = `${structGraphId}->${traitGraphId}`;
       if (emitted.has(edgeKey)) continue;
@@ -159,8 +169,8 @@ export const rustScopeResolver: ScopeResolver = {
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildRustMro(graph, parsedFiles, nodeLookup),
 
-  emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes) =>
-    emitRustTraitImplEdges(graph, parsedFiles, nodeLookup, scopes),
+  emitHeritageEdges: (graph, parsedFiles, nodeLookup, scopes, recordTypeArguments) =>
+    emitRustTraitImplEdges(graph, parsedFiles, nodeLookup, scopes, recordTypeArguments),
 
   populateOwners: (parsed: ParsedFile) => populateRustOwners(parsed),
 

@@ -393,6 +393,80 @@ describe('streamAllCSVsToDisk', () => {
     });
   });
 
+  describe('binary descriptions (#2889)', () => {
+    // What an embedded binary payload actually looks like by the time it
+    // reaches the emitter: every read decodes `utf-8`, so the invalid bytes
+    // are already gone, replaced with U+FFFD. `MethCw` is the readable tail of
+    // a Java constant-pool run — the marker that proves the payload, not just
+    // the corruption around it, stayed out of the indexed column.
+    const DECODED_BINARY_DESCRIPTION = `用户服务 ${'�'.repeat(24)}MethCw`;
+    const CLEAN_DESCRIPTION = 'approves an inventory transfer';
+
+    // `Method` has its own emission branch; `Function` falls to the `default:`
+    // one. Both call the same helper, so one graph carrying both proves the gate
+    // is in the helper rather than in one branch's copy of the call.
+    const BRANCHES = ['Function', 'Method'] as const;
+
+    it('drops a binary description on every emission branch, keeping the row', async () => {
+      await fs.writeFile(
+        path.join(repoDir, 'src', 'payload.ts'),
+        'export function fromPayload() {\n  return 1;\n}\nexport class Svc {\n  run() {\n    return 1;\n  }\n}\n',
+      );
+      const graph = buildTestGraph([
+        {
+          id: 'file:src/payload.ts',
+          label: 'File',
+          name: 'payload.ts',
+          filePath: 'src/payload.ts',
+        },
+        {
+          id: 'func:fromPayload',
+          label: 'Function',
+          name: 'fromPayload',
+          filePath: 'src/payload.ts',
+          extra: { description: DECODED_BINARY_DESCRIPTION, startLine: 0, endLine: 2 },
+        },
+        {
+          id: 'func:clean',
+          label: 'Function',
+          name: 'cleanFn',
+          filePath: 'src/payload.ts',
+          extra: { description: CLEAN_DESCRIPTION, startLine: 0, endLine: 2 },
+        },
+        {
+          id: 'method:Svc.run',
+          label: 'Method',
+          name: 'run',
+          filePath: 'src/payload.ts',
+          extra: { description: DECODED_BINARY_DESCRIPTION, startLine: 4, endLine: 6 },
+        },
+        {
+          id: 'method:Svc.clean',
+          label: 'Method',
+          name: 'cleanRun',
+          filePath: 'src/payload.ts',
+          extra: { description: CLEAN_DESCRIPTION, startLine: 4, endLine: 6 },
+        },
+      ]);
+
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+
+      for (const label of BRANCHES) {
+        const csv = await fs.readFile(result.nodeFiles.get(label)!.csvPath, 'utf-8');
+        expect(csv, label).not.toContain('MethCw');
+        expect(csv, label).not.toContain('�');
+        // A clean description on the same branch is untouched, so the gate
+        // cannot pass by emptying the column for everyone.
+        expect(csv, label).toContain(CLEAN_DESCRIPTION);
+      }
+      // The symbols themselves still ship — only their descriptions were dropped.
+      const functionCsv = await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf-8');
+      const methodCsv = await fs.readFile(result.nodeFiles.get('Method')!.csvPath, 'utf-8');
+      expect(functionCsv).toContain('fromPayload');
+      expect(methodCsv).toContain('"run"');
+    });
+  });
+
   it('handles community nodes with keywords', async () => {
     const graph = buildTestGraph([
       {

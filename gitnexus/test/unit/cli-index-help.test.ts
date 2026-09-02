@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
@@ -16,7 +17,11 @@ function runHelp(command: string, env: NodeJS.ProcessEnv = {}) {
 }
 
 function runHelpArgs(args: string[], env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args, '--help'], {
+  return runCliArgs([...args, '--help'], env);
+}
+
+function runCliArgs(args: string[], env: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
     env: { ...process.env, ...env },
@@ -242,6 +247,110 @@ describe('CLI help surface', () => {
     }
   });
 
+  it('auto-sync help exposes lifecycle actions and state files', () => {
+    const result = runHelp('auto-sync');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('gitnexus auto-sync [options] [action]');
+    expect(result.stdout).toContain('Actions: init, start (default), restart, stop, status, reset');
+    expect(result.stdout).toContain('GITNEXUS_HOME/watch_config.yml');
+    expect(result.stdout).toContain('GITNEXUS_HOME/watch/watch.pid');
+    expect(result.stdout).toContain('GITNEXUS_HOME/watch/project_commit_info.txt');
+  });
+
+  it('watch is reserved and does not start auto-sync or local watch', () => {
+    const help = runHelp('watch');
+    expect(help.status).toBe(0);
+    expect(help.stdout).toContain('gitnexus watch [options] [action]');
+    expect(help.stdout).toContain('gitnexus analyze --watch');
+    expect(help.stdout).toContain('gitnexus auto-sync start');
+    expect(help.stdout).not.toContain('GITNEXUS_HOME/watch_config.yml');
+
+    const started = runCliArgs(['watch'], {});
+    expect(started.status).toBe(1);
+    expect(started.stderr).toContain('gitnexus watch');
+    expect(started.stderr).toContain('gitnexus analyze --watch');
+    expect(started.stderr).toContain('gitnexus auto-sync start');
+
+    const startAction = runCliArgs(['watch', 'start'], {});
+    expect(startAction.status).toBe(1);
+    expect(startAction.stderr).toContain('gitnexus auto-sync start');
+  });
+
+  it('auto-sync init creates the default watch_config.yml and does not overwrite it', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-init-'));
+    try {
+      const first = runCliArgs(['auto-sync', 'init'], { GITNEXUS_HOME: home });
+      const configPath = path.join(home, 'watch_config.yml');
+
+      expect(first.status).toBe(0);
+      expect(first.stdout).toContain(`Created ${configPath}`);
+      const config = fs.readFileSync(configPath, 'utf8');
+      expect(config).toContain('sync_interval_minutes: 10');
+      expect(config).toContain('analyze_failure_threshold: 3');
+      expect(config).toContain('analyze_timeout: 5m');
+      expect(config).toContain('overwrite_local_changes: false');
+      expect(config).toContain(`local_path: ${path.join(home, 'repos')}`);
+      expect(config).not.toContain('/abs/path/to/repos');
+      expect(config).toContain('git@github.com:owner/repo.git');
+      expect(config).not.toContain('group_name:');
+
+      const second = runCliArgs(['auto-sync', 'init'], { GITNEXUS_HOME: home });
+
+      expect(second.status).toBe(1);
+      expect(second.stderr).toContain(`Config already exists: ${configPath}`);
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(config);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-sync reset removes only derived auto-sync state files', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-reset-'));
+    const watchDir = path.join(home, 'watch');
+    const cloneMarker = path.join(home, 'repos', 'repo', 'keep.txt');
+    try {
+      fs.mkdirSync(path.dirname(cloneMarker), { recursive: true });
+      fs.writeFileSync(cloneMarker, 'keep');
+      fs.mkdirSync(watchDir, { recursive: true });
+      fs.writeFileSync(path.join(watchDir, 'auto-sync-state.json'), '{}');
+      fs.writeFileSync(path.join(watchDir, 'project_commit_info.txt'), 'derived');
+
+      const result = runCliArgs(['auto-sync', 'reset'], { GITNEXUS_HOME: home });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('Reset analysis state');
+      expect(fs.existsSync(path.join(watchDir, 'auto-sync-state.json'))).toBe(false);
+      expect(fs.existsSync(path.join(watchDir, 'project_commit_info.txt'))).toBe(false);
+      expect(fs.readFileSync(cloneMarker, 'utf8')).toBe('keep');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-sync stop exits non-zero when no watch was stopped', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-stop-'));
+    try {
+      const result = runCliArgs(['auto-sync', 'stop'], { GITNEXUS_HOME: home });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Watch is not running');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('auto-sync restart starts when the watch is not running', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-watch-restart-'));
+    try {
+      const result = runCliArgs(['auto-sync', 'restart'], { GITNEXUS_HOME: home });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Watch is not running');
+      expect(result.stderr).toContain('Missing config file');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('wiki help shows provider, review, and verbose flags', () => {
     const result = runHelp('wiki');
 
@@ -249,6 +358,7 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--provider <provider>');
     expect(result.stdout).toContain('claude');
     expect(result.stdout).toContain('codex');
+    expect(result.stdout).toContain('grok');
     expect(result.stdout).toContain('--review');
     expect(result.stdout).toContain('-v, --verbose');
     expect(result.stdout).toContain('--model <model>');

@@ -49,14 +49,22 @@ import {
 } from '../jvm/package-facts.js';
 import { getCompanionScopesForFile, markCompanionScope } from './companion-scopes.js';
 import { getKotlinPackageFact, setKotlinPackageFact } from './package-facts.js';
+import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
+import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
 import type { KotlinSpringAopFact } from './spring-aop.js';
 import type { KotlinSpringConditionalFact } from './spring-conditionals.js';
 import type { KotlinSpringDiClassFact } from './spring-di.js';
+import type { KotlinSpringNonHttpHandlerFact } from './spring-non-http-handlers.js';
+import type { KotlinSpringConfigConsumerFact } from './spring-config-bindings.js';
 
 const classAnnotations = createClassAnnotationFactStore();
 const springAopFacts = new Map<string, readonly KotlinSpringAopFact[]>();
 const springConditionalFacts = new Map<string, readonly KotlinSpringConditionalFact[]>();
 const springDiFacts = new Map<string, readonly KotlinSpringDiClassFact[]>();
+const springDynamicLookupFacts = new Map<string, readonly SpringDynamicLookupFact[]>();
+const springNonHttpHandlerFacts = new Map<string, readonly KotlinSpringNonHttpHandlerFact[]>();
+const springConfigConsumerFacts = new Map<string, readonly KotlinSpringConfigConsumerFact[]>();
+const springMessageProducerFacts = new Map<string, readonly SpringMessageProducerFact[]>();
 
 /**
  * Plain JSON-serializable snapshot of the per-file Kotlin capture-time
@@ -78,6 +86,14 @@ export interface KotlinCaptureSideChannel {
   readonly springConditionalFacts?: readonly KotlinSpringConditionalFact[];
   /** Constructor, property, and method injection syntax captured per class. */
   readonly springDiFacts?: readonly KotlinSpringDiClassFact[];
+  /** Programmatic Spring bean lookups captured per callable. */
+  readonly springDynamicLookupFacts?: readonly SpringDynamicLookupFact[];
+  /** Scheduled, event, messaging, and managed-job handler syntax captured per callable. */
+  readonly springNonHttpHandlerFacts?: readonly KotlinSpringNonHttpHandlerFact[];
+  /** `@Value` / `@ConfigurationProperties` syntax captured per owner. */
+  readonly springConfigConsumerFacts?: readonly KotlinSpringConfigConsumerFact[];
+  /** Messaging-template publish syntax captured per callable. */
+  readonly springMessageProducerFacts?: readonly SpringMessageProducerFact[];
 }
 
 export function clearKotlinClassAnnotationFacts(): void {
@@ -85,6 +101,10 @@ export function clearKotlinClassAnnotationFacts(): void {
   springAopFacts.clear();
   springConditionalFacts.clear();
   springDiFacts.clear();
+  springDynamicLookupFacts.clear();
+  springNonHttpHandlerFacts.clear();
+  springConfigConsumerFacts.clear();
+  springMessageProducerFacts.clear();
 }
 
 export function setKotlinSpringAopFacts(
@@ -136,6 +156,62 @@ export function getKotlinSpringDiFacts(filePath: string): readonly KotlinSpringD
   return springDiFacts.get(filePath) ?? [];
 }
 
+export function setKotlinSpringDynamicLookupFacts(
+  filePath: string,
+  facts: readonly SpringDynamicLookupFact[],
+): void {
+  if (facts.length === 0) springDynamicLookupFacts.delete(filePath);
+  else springDynamicLookupFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringDynamicLookupFacts(
+  filePath: string,
+): readonly SpringDynamicLookupFact[] {
+  return springDynamicLookupFacts.get(filePath) ?? [];
+}
+
+export function setKotlinSpringNonHttpHandlerFacts(
+  filePath: string,
+  facts: readonly KotlinSpringNonHttpHandlerFact[],
+): void {
+  if (facts.length === 0) springNonHttpHandlerFacts.delete(filePath);
+  else springNonHttpHandlerFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringNonHttpHandlerFacts(
+  filePath: string,
+): readonly KotlinSpringNonHttpHandlerFact[] {
+  return springNonHttpHandlerFacts.get(filePath) ?? [];
+}
+
+export function setKotlinSpringConfigConsumerFacts(
+  filePath: string,
+  facts: readonly KotlinSpringConfigConsumerFact[],
+): void {
+  if (facts.length === 0) springConfigConsumerFacts.delete(filePath);
+  else springConfigConsumerFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringConfigConsumerFacts(
+  filePath: string,
+): readonly KotlinSpringConfigConsumerFact[] {
+  return springConfigConsumerFacts.get(filePath) ?? [];
+}
+
+export function setKotlinSpringMessageProducerFacts(
+  filePath: string,
+  facts: readonly SpringMessageProducerFact[],
+): void {
+  if (facts.length === 0) springMessageProducerFacts.delete(filePath);
+  else springMessageProducerFacts.set(filePath, facts);
+}
+
+export function getKotlinSpringMessageProducerFacts(
+  filePath: string,
+): readonly SpringMessageProducerFact[] {
+  return springMessageProducerFacts.get(filePath) ?? [];
+}
+
 /**
  * `LanguageProvider.collectCaptureSideChannel` implementation for Kotlin.
  * Returns `undefined` when this file recorded no side-channel state at all, so
@@ -149,6 +225,10 @@ export function collectKotlinCaptureSideChannel(
   const aopFacts = springAopFacts.get(filePath) ?? [];
   const conditionFacts = springConditionalFacts.get(filePath) ?? [];
   const diFacts = springDiFacts.get(filePath) ?? [];
+  const dynamicLookupFacts = springDynamicLookupFacts.get(filePath) ?? [];
+  const nonHttpHandlerFacts = springNonHttpHandlerFacts.get(filePath) ?? [];
+  const configConsumerFacts = springConfigConsumerFacts.get(filePath) ?? [];
+  const messageProducerFacts = springMessageProducerFacts.get(filePath) ?? [];
   const packageFact = getKotlinPackageFact(filePath);
   if (
     companionScopes.length === 0 &&
@@ -156,6 +236,10 @@ export function collectKotlinCaptureSideChannel(
     aopFacts.length === 0 &&
     conditionFacts.length === 0 &&
     diFacts.length === 0 &&
+    dynamicLookupFacts.length === 0 &&
+    nonHttpHandlerFacts.length === 0 &&
+    configConsumerFacts.length === 0 &&
+    messageProducerFacts.length === 0 &&
     packageFact === undefined
   ) {
     return undefined;
@@ -168,6 +252,12 @@ export function collectKotlinCaptureSideChannel(
     ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
     ...(conditionFacts.length > 0 ? { springConditionalFacts: conditionFacts } : {}),
     ...(diFacts.length > 0 ? { springDiFacts: diFacts } : {}),
+    ...(dynamicLookupFacts.length > 0 ? { springDynamicLookupFacts: dynamicLookupFacts } : {}),
+    ...(nonHttpHandlerFacts.length > 0 ? { springNonHttpHandlerFacts: nonHttpHandlerFacts } : {}),
+    ...(configConsumerFacts.length > 0 ? { springConfigConsumerFacts: configConsumerFacts } : {}),
+    ...(messageProducerFacts.length > 0
+      ? { springMessageProducerFacts: messageProducerFacts }
+      : {}),
   };
 }
 
@@ -193,6 +283,10 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
     setKotlinSpringAopFacts(parsed.filePath, []);
     setKotlinSpringConditionalFacts(parsed.filePath, []);
     setKotlinSpringDiFacts(parsed.filePath, []);
+    setKotlinSpringDynamicLookupFacts(parsed.filePath, []);
+    setKotlinSpringNonHttpHandlerFacts(parsed.filePath, []);
+    setKotlinSpringConfigConsumerFacts(parsed.filePath, []);
+    setKotlinSpringMessageProducerFacts(parsed.filePath, []);
     setKotlinPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
@@ -211,6 +305,22 @@ export function applyKotlinCaptureSideChannel(parsed: ParsedFile): void {
   setKotlinSpringDiFacts(
     parsed.filePath,
     Array.isArray(data.springDiFacts) ? data.springDiFacts : [],
+  );
+  setKotlinSpringDynamicLookupFacts(
+    parsed.filePath,
+    Array.isArray(data.springDynamicLookupFacts) ? data.springDynamicLookupFacts : [],
+  );
+  setKotlinSpringNonHttpHandlerFacts(
+    parsed.filePath,
+    Array.isArray(data.springNonHttpHandlerFacts) ? data.springNonHttpHandlerFacts : [],
+  );
+  setKotlinSpringConfigConsumerFacts(
+    parsed.filePath,
+    Array.isArray(data.springConfigConsumerFacts) ? data.springConfigConsumerFacts : [],
+  );
+  setKotlinSpringMessageProducerFacts(
+    parsed.filePath,
+    Array.isArray(data.springMessageProducerFacts) ? data.springMessageProducerFacts : [],
   );
   setKotlinPackageFact(
     parsed.filePath,

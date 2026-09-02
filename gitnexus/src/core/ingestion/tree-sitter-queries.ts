@@ -562,11 +562,18 @@ export const TYPESCRIPT_QUERIES = `
 
 ; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
 ; fetch() — global function
+; The URL alternation is OPTIONAL (#2897). Requiring a literal made the rule
+; blind to fetch(url) with a variable argument -- measured on this repo, 44 of
+; 47 fetch calls pass one, so 94% of outward calls produced no site at all. The
+; R3-6 sink set needs only WHERE the program reaches outward, not the URL; route
+; linking still needs the URL and already skips an entry without one
+; (normalizeFetchURL returns nothing and processNextjsFetchRoutes continues), so
+; widening here adds sink sites without inventing a single FETCHES edge.
 (call_expression
   function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
   arguments: (arguments
     [(string (string_fragment) @route.url)
-     (template_string) @route.template_url])) @route.fetch
+     (template_string) @route.template_url]?)) @route.fetch
 
 ; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
 (call_expression
@@ -1058,11 +1065,18 @@ export const JAVASCRIPT_QUERIES = `
   right: (_)) @assignment
 
 ; HTTP consumers: fetch('/path'), axios.get('/path'), $.get('/path'), etc.
+; The URL alternation is OPTIONAL (#2897). Requiring a literal made the rule
+; blind to fetch(url) with a variable argument -- measured on this repo, 44 of
+; 47 fetch calls pass one, so 94% of outward calls produced no site at all. The
+; R3-6 sink set needs only WHERE the program reaches outward, not the URL; route
+; linking still needs the URL and already skips an entry without one
+; (normalizeFetchURL returns nothing and processNextjsFetchRoutes continues), so
+; widening here adds sink sites without inventing a single FETCHES edge.
 (call_expression
   function: (identifier) @_fetch_fn (#eq? @_fetch_fn "fetch")
   arguments: (arguments
     [(string (string_fragment) @route.url)
-     (template_string) @route.template_url])) @route.fetch
+     (template_string) @route.template_url]?)) @route.fetch
 
 ; Custom fetch wrappers: apiFetch('/path'), fetchJSON('/api/data'), httpGet('/users'), etc.
 (call_expression
@@ -1190,6 +1204,17 @@ export const JAVA_QUERIES = `
 (enum_declaration name: (identifier) @name) @definition.enum
 (record_declaration name: (identifier) @name) @definition.record
 (annotation_type_declaration name: (identifier) @name) @definition.annotation
+
+; Canonical record-component accessors are implicit public zero-argument methods.
+(record_declaration
+  parameters: (formal_parameters
+    (formal_parameter
+      name: (identifier) @name) @definition.method))
+(record_declaration
+  parameters: (formal_parameters
+    (spread_parameter
+      (variable_declarator
+        name: (identifier) @name)) @definition.method))
 
 ; Anonymous class bodies: new Runnable() { ... } — no @name capture; the
 ; class extractor synthesizes the javac-style Worker$N name (#2550)

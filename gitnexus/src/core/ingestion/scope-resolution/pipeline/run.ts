@@ -90,11 +90,15 @@ import {
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import {
   callableFlowSiteKey,
-  collectDeferredIndirectSites,
+  collectDeferredIndirectCollection,
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
-import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
+import {
+  heritageTypeArgumentsKey,
+  type HeritageTypeArgumentSink,
+} from '../utils/generic-instantiation.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ResolutionOutcome, ResolutionOutcomeRecorder } from '../resolution-outcome.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
@@ -149,11 +153,22 @@ function emitInheritanceEdgeDirect(
  * reference-edge bridge from re-emitting the same sites later.
  *
  * @returns Site keys to seed the downstream handled-site skip set.
+ *
+ * The generic INSTANTIATION each heritage edge was written with (#2912) goes to
+ * `recordTypeArguments` rather than out through the return, because the caller
+ * shares that sink with the language heritage hook — see
+ * `HeritageTypeArguments` in `utils/generic-instantiation.ts`. This pass is
+ * where the pairing exists at all: the site carries the arguments and this is
+ * the only code that resolves the site to a (subtype, supertype) pair, so
+ * recording it here costs one map write per generic heritage edge, while
+ * recovering it downstream would mean redoing the resolution against a graph
+ * edge that no longer carries the spelling.
  */
 function preEmitInheritanceEdges(
   graph: KnowledgeGraph,
   scopes: ReturnType<typeof finalizeScopeModel>,
   nodeLookup: ReturnType<typeof buildGraphNodeLookup>,
+  recordTypeArguments: HeritageTypeArgumentSink,
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -207,6 +222,12 @@ function preEmitInheritanceEdges(
     const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
       targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
     emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
+    // The instantiation this heritage clause wrote (`: IValidator<string>`),
+    // keyed by the same graph-id pair the edge itself carries. Only generic
+    // bases produce an entry; the sink owns the first-writer-wins rule.
+    if (site.typeArguments !== undefined) {
+      recordTypeArguments(callerGraphId, targetGraphId, site.typeArguments);
+    }
   }
 
   return handledSites;
@@ -231,8 +252,8 @@ function emitDetectedInterfaceImplementations(
   provider: ScopeResolver,
   indexes: ReturnType<typeof finalizeScopeModel>,
   model: SemanticModel,
-): number {
-  if (provider.detectInterfaceImplementations === undefined) return 0;
+): readonly UndecidedSatisfaction[] {
+  if (provider.detectInterfaceImplementations === undefined) return [];
 
   const graphIdByDefId = new Map<string, string>();
   for (const parsed of parsedFiles) {
@@ -248,9 +269,8 @@ function emitDetectedInterfaceImplementations(
     existing.add(`${rel.sourceId}->${rel.targetId}`);
   }
 
-  let emitted = 0;
   const detected = provider.detectInterfaceImplementations(parsedFiles, indexes, model);
-  for (const [interfaceDefId, implementorDefIds] of detected) {
+  for (const [interfaceDefId, implementorDefIds] of detected.implementations) {
     const targetId = graphIdByDefId.get(interfaceDefId);
     if (targetId === undefined) continue;
     for (const implementor of implementorDefIds) {
@@ -277,11 +297,13 @@ function emitDetectedInterfaceImplementations(
             ? `${provider.language}-structural-implements-pointer`
             : `${provider.language}-structural-implements`,
       });
-      emitted++;
     }
   }
 
-  return emitted;
+  // The interfaces this provider could not decide. They mint no edges — they
+  // exist so a query can report a lower bound instead of a confident zero
+  // (#2873); see `undecided-satisfaction.ts`.
+  return detected.undecided;
 }
 
 export type ScopeResolutionSubPhase =
@@ -442,6 +464,8 @@ interface RunScopeResolutionInput {
 interface RunScopeResolutionStats {
   readonly filesProcessed: number;
   readonly filesSkipped: number;
+  /** Files still missing a ParsedFile after the main-thread fallback. */
+  readonly scopeExtractionFailedPaths: readonly string[];
   readonly importsEmitted: number;
   readonly resolve: ResolveStats;
   readonly referenceEdgesEmitted: number;
@@ -491,6 +515,14 @@ interface RunScopeResolutionStats {
   }[];
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
   /**
+   * Interfaces whose structural-satisfaction check could not be completed for
+   * at least one candidate type (#2873). NOT the same as "no implementors" —
+   * these are questions the analyzer could not answer, and they are reported so
+   * `impact` can hedge a zero instead of asserting one. Empty for every
+   * language whose resolver has no `detectInterfaceImplementations` hook.
+   */
+  readonly undecidedSatisfaction: readonly UndecidedSatisfaction[];
+  /**
    * Per-function taint summaries harvested in the pdg window (#2084 M4 U1).
    * Empty unless `input.pdg === true` and the language has a registered taint
    * model. Keyed by resolved `Function`/`Method` node id; the cross-function
@@ -516,6 +548,7 @@ export function runScopeResolution(
   const callableFlowOnly = provider.scopeResolutionEdgeMode === 'callable-flow-only';
   const onWarn = input.onWarn ?? (() => {});
   const resolutionOutcomes: ResolutionOutcome[] = [];
+  const undecidedSatisfaction: UndecidedSatisfaction[] = [];
   const recordResolutionOutcome: ResolutionOutcomeRecorder = (outcome) => {
     resolutionOutcomes.push(outcome);
     input.recordResolutionOutcome?.(outcome);
@@ -533,6 +566,7 @@ export function runScopeResolution(
 
   // ── Phase 1: extract each file → ParsedFile ────────────────────────────
   const parsedFiles: ParsedFile[] = [];
+  const scopeExtractionFailedPaths: string[] = [];
   let filesSkipped = 0;
   const treeCache = input.treeCache;
   const preExtracted = input.preExtractedParsedFiles;
@@ -556,15 +590,20 @@ export function runScopeResolution(
     }
     if (parsed === undefined) {
       const cachedTree = treeCache?.get(file.path);
+      let extractionWarned = false;
       parsed = extractParsedFile(
         provider.languageProvider,
         file.content,
         file.path,
-        onWarn,
+        (warning) => {
+          extractionWarned = true;
+          onWarn(warning);
+        },
         cachedTree,
       );
       if (parsed === undefined) {
         filesSkipped++;
+        if (extractionWarned) scopeExtractionFailedPaths.push(file.path);
         continue;
       }
     }
@@ -612,6 +651,7 @@ export function runScopeResolution(
     return {
       filesProcessed: parsedFiles.length,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -625,6 +665,7 @@ export function runScopeResolution(
       uniqueNamePropertyCrossLanguage: 0,
       uniqueNamePropertyCrossLanguageNames: [],
       resolutionOutcomes,
+      undecidedSatisfaction,
       functionSummaries: [],
       callSummaries: [],
     };
@@ -648,6 +689,7 @@ export function runScopeResolution(
     return {
       filesProcessed: 0,
       filesSkipped,
+      scopeExtractionFailedPaths,
       importsEmitted: 0,
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
@@ -661,6 +703,7 @@ export function runScopeResolution(
       uniqueNamePropertyCrossLanguage: 0,
       uniqueNamePropertyCrossLanguageNames: [],
       resolutionOutcomes,
+      undecidedSatisfaction,
       functionSummaries: [],
       callSummaries: [],
     };
@@ -692,16 +735,38 @@ export function runScopeResolution(
     },
   });
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
+  // One store and ONE writer rule for heritage instantiations (#2912), shared by
+  // the pre-pass below and by the language hook further down — a heritage shape
+  // the pre-pass cannot express (Rust `impl T for S`, Dart `implements`) records
+  // through the same sink. FIRST writer wins: a repeated (sub, super) pair is a
+  // partial declaration or a re-listed base, and letting a later entry overwrite
+  // the first would make dispatch depend on file order.
+  const heritageTypeArguments = new Map<string, readonly string[]>();
+  const recordHeritageTypeArguments: HeritageTypeArgumentSink = (
+    subtypeGraphId,
+    supertypeGraphId,
+    typeArguments,
+  ) => {
+    if (typeArguments.length === 0) return;
+    const key = heritageTypeArgumentsKey(subtypeGraphId, supertypeGraphId);
+    if (!heritageTypeArguments.has(key)) heritageTypeArguments.set(key, typeArguments);
+  };
   const preEmittedInheritanceSites = callableFlowOnly
     ? new Set<string>()
-    : preEmitInheritanceEdges(graph, finalized, nodeLookup);
+    : preEmitInheritanceEdges(graph, finalized, nodeLookup, recordHeritageTypeArguments);
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
   // heritage clauses. Must run BEFORE `buildMro` so MRO construction sees
   // the freshly-emitted IMPLEMENTS edges.
   if (!callableFlowOnly) {
-    provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup, finalized);
+    provider.emitHeritageEdges?.(
+      graph,
+      parsedFiles,
+      nodeLookup,
+      finalized,
+      recordHeritageTypeArguments,
+    );
   }
   // Implicit IMPORTS-edge hook — for languages whose files have compiler-
   // implicit cross-file visibility (no syntactic import statement). The
@@ -721,13 +786,15 @@ export function runScopeResolution(
       ? buildGraphNodeLookup(graph)
       : nodeLookup;
   if (!callableFlowOnly) {
-    emitDetectedInterfaceImplementations(
-      graph,
-      parsedFiles,
-      postHeritageNodeLookup,
-      provider,
-      finalized,
-      readonlyModel,
+    undecidedSatisfaction.push(
+      ...emitDetectedInterfaceImplementations(
+        graph,
+        parsedFiles,
+        postHeritageNodeLookup,
+        provider,
+        finalized,
+        readonlyModel,
+      ),
     );
   }
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, postHeritageNodeLookup);
@@ -921,7 +988,8 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
-  const deferredIndirectSites = collectDeferredIndirectSites(emitParsedFiles, indexes);
+  const deferredIndirectCollection = collectDeferredIndirectCollection(emitParsedFiles, indexes);
+  const deferredIndirectSites = deferredIndirectCollection.sites;
   const callableArgumentSites = new Set<string>();
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
     for (const parsed of emitParsedFiles) {
@@ -966,6 +1034,10 @@ export function runScopeResolution(
           // receiver (`console.log`, `fetch(...)`). Same hook, same spelling as
           // the `emitFreeCallFallback` wiring below.
           isBuiltInName: provider.languageProvider.isBuiltInName,
+          // What each heritage clause instantiated its base with, so the
+          // interface-dispatch fan-out can refuse an incompatible instantiation
+          // (#2912). Empty under `callableFlowOnly`, which emits no dispatch.
+          heritageTypeArguments,
         },
       );
   const receiverExtras = receiverBound.emitted;
@@ -1166,6 +1238,8 @@ export function runScopeResolution(
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
           isCallableValueTarget: provider.isCallableValueTarget,
           hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          deferredIndirectSites,
+          callSignaturesBySite: deferredIndirectCollection.callSignaturesBySite,
           onWarn: (warning) =>
             logger.warn(
               warning,
@@ -1583,6 +1657,7 @@ export function runScopeResolution(
   return {
     filesProcessed: parsedFiles.length,
     filesSkipped,
+    scopeExtractionFailedPaths,
     importsEmitted,
     resolve: resolveStats,
     referenceEdgesEmitted:
@@ -1603,6 +1678,7 @@ export function runScopeResolution(
     uniqueNamePropertyCrossLanguage: uniqueNameProperties.crossLanguageOnly,
     uniqueNamePropertyCrossLanguageNames: uniqueNameProperties.crossLanguageOnlyNames,
     resolutionOutcomes,
+    undecidedSatisfaction,
     functionSummaries: harvestedSummaries,
     callSummaries: harvestedCallSummaries,
   };

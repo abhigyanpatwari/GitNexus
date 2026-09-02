@@ -143,6 +143,7 @@ describe('resolveLLMConfig', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -211,7 +212,7 @@ describe('resolveLLMConfig', () => {
     vi.doMock('../../src/storage/repo-manager.js', () => ({
       loadCLIConfig: vi.fn().mockResolvedValue({
         provider: 'openai',
-        model: 'minimax/minimax-m2.5',
+        model: 'legacy-http-model',
       }),
     }));
 
@@ -222,11 +223,47 @@ describe('resolveLLMConfig', () => {
     expect(config.model).toBe('');
   });
 
+  it('uses grokModel when provider is grok', async () => {
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'grok',
+        grokModel: 'grok-build',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'grok' });
+
+    expect(config.provider).toBe('grok');
+    expect(config.model).toBe('grok-build');
+  });
+
+  it('does not inherit HTTP model defaults for grok local provider', async () => {
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'openai',
+        model: 'legacy-http-model',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig({ provider: 'grok' });
+
+    expect(config.provider).toBe('grok');
+    expect(config.model).toBe('');
+  });
+
   it('does not inherit HTTP model defaults for local CLI providers', async () => {
     vi.doMock('../../src/storage/repo-manager.js', () => ({
       loadCLIConfig: vi.fn().mockResolvedValue({
         provider: 'openai',
-        model: 'minimax/minimax-m2.5',
+        model: 'legacy-http-model',
       }),
     }));
 
@@ -237,7 +274,22 @@ describe('resolveLLMConfig', () => {
     expect(config.model).toBe('');
   });
 
-  it('uses default OpenRouter model for openai provider', async () => {
+  it('uses MiniMax global defaults when no provider is configured', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({}),
+    }));
+
+    const { MINIMAX_MODEL_IDS, MINIMAX_OPENAI_BASE_URLS, resolveLLMConfig } =
+      await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig();
+
+    expect(config.provider).toBe('minimax');
+    expect(config.model).toBe(MINIMAX_MODEL_IDS[0]);
+    expect(config.baseUrl).toBe(MINIMAX_OPENAI_BASE_URLS.global_en);
+  });
+
+  it('uses the MiniMax-specific API key environment variable', async () => {
+    vi.stubEnv('MINIMAX_API_KEY', 'minimax-env-key');
     vi.doMock('../../src/storage/repo-manager.js', () => ({
       loadCLIConfig: vi.fn().mockResolvedValue({}),
     }));
@@ -245,9 +297,43 @@ describe('resolveLLMConfig', () => {
     const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
     const config = await resolveLLMConfig();
 
+    expect(config.apiKey).toBe('minimax-env-key');
+  });
+
+  it('preserves the configured China endpoint', async () => {
+    const { MINIMAX_MODEL_IDS, MINIMAX_OPENAI_BASE_URLS } =
+      await import('../../src/core/wiki/llm-client.js');
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        provider: 'minimax',
+        model: MINIMAX_MODEL_IDS[0],
+        baseUrl: MINIMAX_OPENAI_BASE_URLS.cn_zh,
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig();
+
+    expect(config.provider).toBe('minimax');
+    expect(config.model).toBe(MINIMAX_MODEL_IDS[0]);
+    expect(config.baseUrl).toBe(MINIMAX_OPENAI_BASE_URLS.cn_zh);
+  });
+
+  it('preserves providerless HTTP configs created by earlier versions', async () => {
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      loadCLIConfig: vi.fn().mockResolvedValue({
+        apiKey: 'legacy-http-key',
+        model: 'legacy-http-model',
+        baseUrl: 'https://legacy.example/v1',
+      }),
+    }));
+
+    const { resolveLLMConfig } = await import('../../src/core/wiki/llm-client.js');
+    const config = await resolveLLMConfig();
+
     expect(config.provider).toBe('openai');
-    expect(config.model).toBe('minimax/minimax-m2.5');
-    expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(config.model).toBe('legacy-http-model');
+    expect(config.baseUrl).toBe('https://legacy.example/v1');
   });
 
   it('CLI overrides take priority over saved config', async () => {
@@ -267,6 +353,169 @@ describe('resolveLLMConfig', () => {
 
     expect(config.provider).toBe('cursor');
     expect(config.model).toBe('override-model');
+  });
+});
+
+describe('wikiCommand provider switch persistence', () => {
+  const originalExitCode = process.exitCode;
+
+  beforeEach(() => {
+    vi.resetModules();
+    process.exitCode = undefined;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('../../src/storage/git.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/wiki/llm-client.js');
+    vi.doUnmock('../../src/core/wiki/generator.js');
+    vi.doUnmock('cli-progress');
+    process.exitCode = originalExitCode;
+  });
+
+  async function saveProviderSwitch(
+    existing: Record<string, unknown>,
+    options: Record<string, unknown>,
+  ) {
+    const saveCLIConfig = vi.fn();
+
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    vi.doMock('../../src/storage/git.js', () => ({
+      getGitRoot: vi.fn(),
+      isGitRepo: vi.fn().mockReturnValue(true),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', () => ({
+      getStoragePaths: vi
+        .fn()
+        .mockReturnValue({ storagePath: '/tmp/wiki-storage', lbugPath: '/tmp/wiki-db' }),
+      loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
+      loadCLIConfig: vi.fn().mockResolvedValue(existing),
+      saveCLIConfig,
+    }));
+    vi.doMock('../../src/core/wiki/llm-client.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
+      return {
+        ...actual,
+        resolveLLMConfig: vi.fn().mockResolvedValue({
+          apiKey: options.apiKey ?? '',
+          baseUrl: options.baseUrl ?? '',
+          model: options.model ?? '',
+          maxTokens: 16_384,
+          temperature: 0,
+          provider: options.provider,
+          apiVersion: options.apiVersion,
+          isReasoningModel: options.reasoningModel,
+        }),
+      };
+    });
+    vi.doMock('../../src/core/wiki/generator.js', () => ({
+      WikiGenerator: vi.fn().mockImplementation(function () {
+        return {
+          run: vi.fn().mockResolvedValue({ mode: 'up-to-date', pagesGenerated: 0 }),
+        };
+      }),
+    }));
+    vi.doMock('cli-progress', () => ({
+      default: {
+        SingleBar: vi.fn(function () {
+          return {
+            start: vi.fn(),
+            update: vi.fn(),
+            stop: vi.fn(),
+          };
+        }),
+        Presets: { shades_grey: {} },
+      },
+    }));
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { wikiCommand } = await import('../../src/cli/wiki.js');
+    await wikiCommand('/tmp/repo', options as Parameters<typeof wikiCommand>[1]);
+
+    return saveCLIConfig;
+  }
+
+  it('preserves explicit OpenAI settings when switching away from MiniMax', async () => {
+    const saveCLIConfig = await saveProviderSwitch(
+      {
+        provider: 'minimax',
+        apiKey: 'old-minimax-key',
+        baseUrl: 'https://api.minimax.io/v1',
+        model: 'MiniMax-M3',
+        apiVersion: 'old-version',
+        isReasoningModel: false,
+      },
+      {
+        provider: 'openai',
+        apiKey: 'new-openai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        apiVersion: 'v1',
+        reasoningModel: true,
+      },
+    );
+
+    expect(saveCLIConfig).toHaveBeenCalledWith({
+      provider: 'openai',
+      apiKey: 'new-openai-key',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+      apiVersion: 'v1',
+      isReasoningModel: true,
+    });
+  });
+
+  it('preserves explicit MiniMax settings when switching from OpenAI', async () => {
+    const saveCLIConfig = await saveProviderSwitch(
+      {
+        provider: 'openai',
+        apiKey: 'old-openai-key',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        apiVersion: 'old-version',
+        isReasoningModel: true,
+      },
+      {
+        provider: 'minimax',
+        apiKey: 'new-minimax-key',
+        baseUrl: 'https://api.minimaxi.com/v1',
+        model: 'MiniMax-M2.7',
+        apiVersion: 'v2',
+        reasoningModel: false,
+      },
+    );
+
+    expect(saveCLIConfig).toHaveBeenCalledWith({
+      provider: 'minimax',
+      apiKey: 'new-minimax-key',
+      baseUrl: 'https://api.minimaxi.com/v1',
+      model: 'MiniMax-M2.7',
+      apiVersion: 'v2',
+      isReasoningModel: false,
+    });
+  });
+
+  it('saves grok model to grokModel instead of the HTTP model field', async () => {
+    const saveCLIConfig = await saveProviderSwitch(
+      {
+        provider: 'minimax',
+        apiKey: 'old-minimax-key',
+        baseUrl: 'https://api.minimax.io/v1',
+        model: 'MiniMax-M3',
+      },
+      {
+        provider: 'grok',
+        model: 'grok-build',
+      },
+    );
+
+    const saved = saveCLIConfig.mock.calls[0][0] as Record<string, unknown>;
+    expect(saved.provider).toBe('grok');
+    expect(saved.grokModel).toBe('grok-build');
+    expect(saved.model).toBeUndefined();
   });
 });
 
@@ -825,6 +1074,16 @@ describe('CLI config round-trip with cursor provider', () => {
     expect(loaded.apiKey).toBeUndefined();
   });
 
+  it('saves and loads grok provider config correctly', async () => {
+    const config = { provider: 'grok', grokModel: 'grok-build' };
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2));
+
+    const loaded = JSON.parse(await fs.readFile(configPath, 'utf-8'));
+    expect(loaded.provider).toBe('grok');
+    expect(loaded.grokModel).toBe('grok-build');
+    expect(loaded.apiKey).toBeUndefined();
+  });
+
   it('saves openai provider config with model and apiKey', async () => {
     const config = {
       provider: 'openai',
@@ -1053,6 +1312,55 @@ describe('WikiGenerator invokeLLM routing', () => {
     expect(cursorSpy).not.toHaveBeenCalled();
     expect(openaiSpy).not.toHaveBeenCalled();
     expect(result.content).toBe('opencode response');
+  });
+
+  it('routes to callGrokLLM when provider is grok', async () => {
+    vi.doMock('../../src/core/logger.js', () => ({
+      logger: { info: vi.fn(), warn: vi.fn() },
+    }));
+    const cursorClient = await import('../../src/core/wiki/cursor-client.js');
+    const localClient = await import('../../src/core/wiki/local-cli-client.js');
+    const grokClient = await import('../../src/core/wiki/grok-client.js');
+    const llmClient = await import('../../src/core/wiki/llm-client.js');
+
+    const cursorSpy = vi
+      .spyOn(cursorClient, 'callCursorLLM')
+      .mockResolvedValue({ content: 'cursor response' });
+    const claudeSpy = vi
+      .spyOn(localClient, 'callClaudeLLM')
+      .mockResolvedValue({ content: 'claude response' });
+    const grokSpy = vi
+      .spyOn(grokClient, 'callGrokLLM')
+      .mockResolvedValue({ content: 'grok response' });
+    const openaiSpy = vi
+      .spyOn(llmClient, 'callLLM')
+      .mockResolvedValue({ content: 'openai response' });
+
+    const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
+
+    const storagePath = path.join(tmpDir, 'storage');
+    const wikiDir = path.join(storagePath, 'wiki');
+    await fs.mkdir(wikiDir, { recursive: true });
+
+    const repoPath = path.join(tmpDir, 'repo');
+    await fs.mkdir(repoPath, { recursive: true });
+
+    const generator = new WikiGenerator(repoPath, storagePath, path.join(storagePath, 'lbug'), {
+      apiKey: '',
+      baseUrl: '',
+      model: 'grok-build',
+      maxTokens: 1000,
+      temperature: 0,
+      provider: 'grok',
+    });
+
+    const result = await (generator as any).invokeLLM('test prompt', 'system prompt');
+
+    expect(grokSpy).toHaveBeenCalledTimes(1);
+    expect(claudeSpy).not.toHaveBeenCalled();
+    expect(cursorSpy).not.toHaveBeenCalled();
+    expect(openaiSpy).not.toHaveBeenCalled();
+    expect(result.content).toBe('grok response');
   });
 
   it('routes to callLLM when provider is openai', async () => {

@@ -14,6 +14,16 @@ import {
   type PipelineResult,
 } from './helpers.js';
 
+/** The struct or interface that declares `methodId`, via its HAS_METHOD edge. */
+function owningTypeName(result: PipelineResult, methodId: string): string {
+  for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
+    if (rel.targetId !== methodId) continue;
+    const owner = result.graph.getNode(rel.sourceId);
+    return (owner?.properties.name ?? rel.sourceId) as string;
+  }
+  return '';
+}
+
 // ---------------------------------------------------------------------------
 // Heritage: package imports + cross-package calls (exercises PackageMap)
 // ---------------------------------------------------------------------------
@@ -345,15 +355,6 @@ describe('Go structural interface dispatch', () => {
     );
   }, 60000);
 
-  function owningTypeName(methodId: string): string {
-    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
-      if (rel.targetId !== methodId) continue;
-      const owner = result.graph.getNode(rel.sourceId);
-      return (owner?.properties.name ?? rel.sourceId) as string;
-    }
-    return '';
-  }
-
   it('emits signature-checked structural IMPLEMENTS edges only for valid implementors', () => {
     const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
       (edge.rel.reason ?? '').startsWith('go-structural-implements'),
@@ -378,7 +379,9 @@ describe('Go structural interface dispatch', () => {
     const methodEdges = getRelationships(result, 'METHOD_IMPLEMENTS').filter(
       (edge) => edge.target === 'Save',
     );
-    const sourceOwners = methodEdges.map((edge) => owningTypeName(edge.rel.sourceId)).sort();
+    const sourceOwners = methodEdges
+      .map((edge) => owningTypeName(result, edge.rel.sourceId))
+      .sort();
     expect(sourceOwners).toEqual(['MemoryRepository', 'SqlRepository']);
   });
 
@@ -386,7 +389,7 @@ describe('Go structural interface dispatch', () => {
     const saveCalls = getRelationships(result, 'CALLS').filter(
       (edge) => edge.source === 'precise' && edge.target === 'Save',
     );
-    const targetOwners = saveCalls.map((edge) => owningTypeName(edge.rel.targetId));
+    const targetOwners = saveCalls.map((edge) => owningTypeName(result, edge.rel.targetId));
     expect(targetOwners).toEqual(['SqlRepository']);
   });
 
@@ -396,7 +399,7 @@ describe('Go structural interface dispatch', () => {
     );
     const dispatchTargets = saveCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['MemoryRepository', 'SqlRepository']);
   });
@@ -453,7 +456,7 @@ describe('Go structural interface dispatch', () => {
     );
     const dispatchTargets = closeCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['File']);
   });
@@ -468,15 +471,6 @@ describe('Go cross-package structural interface dispatch', () => {
       () => {},
     );
   }, 60000);
-
-  function owningTypeName(methodId: string): string {
-    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
-      if (rel.targetId !== methodId) continue;
-      const owner = result.graph.getNode(rel.sourceId);
-      return (owner?.properties.name ?? rel.sourceId) as string;
-    }
-    return '';
-  }
 
   it('matches local interface types against package-qualified implementation signatures', () => {
     const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
@@ -501,7 +495,7 @@ describe('Go cross-package structural interface dispatch', () => {
     );
     const dispatchTargets = saveCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['GoodStore']);
   });
@@ -512,7 +506,7 @@ describe('Go cross-package structural interface dispatch', () => {
     );
     const dispatchTargets = closeCalls
       .filter((edge) => edge.rel.reason === 'interface-dispatch')
-      .map((edge) => owningTypeName(edge.rel.targetId))
+      .map((edge) => owningTypeName(result, edge.rel.targetId))
       .sort();
     expect(dispatchTargets).toEqual(['File']);
   });
@@ -2154,5 +2148,78 @@ describe('Go grouped type declaration scoping (#2837)', () => {
     const methods = getRelationships(result, 'HAS_METHOD').map((e) => `${e.source}.${e.target}`);
     expect(methods).toContain('MetricSink.Observe');
     expect(methods).not.toContain('AuditSink.Observe');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Out-of-repo package qualifiers in signatures (#2873)
+// ---------------------------------------------------------------------------
+
+describe('Go signatures naming out-of-repo packages', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-extern-qualified-signatures'),
+      () => {},
+    );
+  }, 60000);
+
+  // `context.Context` resolves to no file in the repo, which used to collapse the
+  // whole signature to `undefined` on BOTH sides — so identical signatures
+  // compared unequal and no Go interface with a `ctx` parameter was ever
+  // implemented.
+  it('emits structural IMPLEMENTS across packages for stdlib-qualified signatures', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
+    );
+    expect(edgeSet(implementsEdges)).toEqual(['Mem → Store']);
+  });
+
+  // Two different out-of-repo packages sharing a last path segment must stay
+  // distinct: the qualifier is keyed on the import PATH, not the local name.
+  it('does not match same-named out-of-repo packages from different import paths', () => {
+    // Exact-set, not `not.toContain`: an empty edge list would satisfy the
+    // negative on its own, and the positive above is what proves it non-empty.
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).toEqual(['Mem → Store']);
+  });
+
+  it('dispatches an interface-typed field call to the implementor', () => {
+    const dispatched = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'Remove' && edge.rel.reason === 'interface-dispatch')
+      .map((edge) => `${owningTypeName(result, edge.rel.targetId)}.${edge.target}`);
+    expect(dispatched).toEqual(['Mem.Delete']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Undecided satisfaction reaches the pipeline result (#2873)
+// ---------------------------------------------------------------------------
+
+describe('Go undecided interface satisfaction', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-undecided-satisfaction'), () => {});
+  }, 60000);
+
+  // The pair is unjudged, so it mints no edge — and saying so is the whole
+  // point: an empty implementor list here is a question, not an answer.
+  it('reports the interface it could not decide, and only that one', () => {
+    const undecided = result.undecidedSatisfaction.map((entry) => entry.interfaceName).sort();
+    expect(undecided).toEqual(['Drawer']);
+  });
+
+  it('names the candidate type, so a query on the implementation can be hedged', () => {
+    const drawer = result.undecidedSatisfaction.find((e) => e.interfaceName === 'Drawer');
+    expect(drawer?.candidateNames).toEqual(['Canvas']);
+  });
+
+  it('still emits the IMPLEMENTS edge it could decide', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter((edge) =>
+      (edge.rel.reason ?? '').startsWith('go-structural-implements'),
+    );
+    expect(edgeSet(implementsEdges)).toEqual(['Label → Named']);
   });
 });

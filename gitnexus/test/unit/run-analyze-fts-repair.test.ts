@@ -237,7 +237,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => [SIMULATED_MISSING_FTS_INDEX_NAME]),
     }));
 
@@ -292,7 +292,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
@@ -359,11 +359,57 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('--repair-fts applies analyze --name without a full re-index', async () => {
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => []),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-name-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-repair-name-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      const seeded: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: 'abc123',
+        indexedAt: new Date().toISOString(),
+        stats: { files: 1, nodes: 1, edges: 1 },
+      };
+      await saveMeta(storagePath, seeded);
+      const { registerRepo, readRegistry } = await import('../../src/storage/repo-manager.js');
+      await registerRepo(tmpRepo.dbPath, seeded, { name: 'old' });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { repairFts: true, registryName: 'new' },
+        { onProgress: () => {} },
+      );
+      expect(result.ftsRepairedOnly).toBe(true);
+      expect((await readRegistry())[0].name).toBe('new');
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('--repair-fts backfills a full capabilities object when the existing meta predates the field entirely (#2767)', async () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
@@ -410,7 +456,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => mockRepairSuccessLbugAdapter());
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
@@ -470,6 +516,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
           indexedAt: new Date().toISOString(),
           stats: { files: 999 },
         });
+        return [];
       }),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
@@ -575,7 +622,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     // before recreating it. If the extension is unavailable, the repair path must
     // bail before any drop runs — otherwise it would destroy the existing indexes
     // and then fail to recreate them, leaving the DB worse off.
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -643,7 +690,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('repair error carries the runtime-dependency remedy, not "retry the network install" (#2383 F6a)', async () => {
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -854,7 +901,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     // Offline-first degradation: when loadFTSExtension() returns false, the
     // analyze path must NOT call createSearchFTSIndexes / verifySearchFTSIndexes
     // and must NOT throw — it logs a warning and completes (#1161).
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     const verifySearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
@@ -927,7 +974,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
   });
 
   it('degrade log for a missing runtime dependency omits the contradictory reinstall guidance (#2383 F2)', async () => {
-    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const createSearchFTSIndexes = vi.fn(async () => []);
     const verifySearchFTSIndexes = vi.fn(async () => []);
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
@@ -1086,7 +1133,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     // The stub graph must CONTAIN the cached row's node: Phase 3.5's
@@ -1227,7 +1274,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails fast (this shippi
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
@@ -1508,13 +1555,15 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
         totalFileCount: 1,
+        scopeExtractionFailures: [],
+        unavailableScopeLanguageFiles: 0,
         graph: {
           forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
           getNode: (id: string) => (id === GATE_NODE_ID ? stubNode : undefined),
@@ -1867,7 +1916,7 @@ describe('runFullAnalysis embedding-checkpoint meta write (#2790)', () => {
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     // No File nodes → this run's computed fileHashes are EMPTY, so a save that
@@ -2114,13 +2163,15 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
+      createSearchFTSIndexes: vi.fn(async () => []),
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
         totalFileCount: 1,
+        scopeExtractionFailures: [],
+        unavailableScopeLanguageFiles: 0,
         graph: {
           forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
           getNode: (id: string) => (id === RESILIENCE_NODE_ID ? stubNode : undefined),

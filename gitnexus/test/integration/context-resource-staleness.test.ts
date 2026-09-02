@@ -8,6 +8,7 @@ import { writeFileSync } from 'fs';
 import path from 'path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTempDir } from '../helpers/test-db.js';
+import { initGitRepo } from '../helpers/temp-git-repo.js';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 
@@ -61,9 +62,7 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
     process.env.GITNEXUS_HOME = path.join(repoPath, '.gitnexus-home');
     storagePath = getStoragePaths(repoPath).storagePath;
 
-    runGit(repoPath, 'init');
-    runGit(repoPath, 'config', 'user.name', 'GitNexus Test');
-    runGit(repoPath, 'config', 'user.email', 'gitnexus@example.com');
+    initGitRepo(repoPath, { name: 'GitNexus Test', email: 'gitnexus@example.com' });
   });
 
   afterEach(async () => {

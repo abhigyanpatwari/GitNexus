@@ -43,3 +43,20 @@ export const SPRING_AOP_FEATURE: AnalysisFeatureDescriptor = {
   version: 1,
   appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
 };
+
+/** Durable completeness contract for scheduled, event, messaging, and job entry points (#2417). */
+export const SPRING_NON_HTTP_HANDLERS_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'spring.non-http-handlers',
+  version: 1,
+  appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
+};
+
+/**
+ * Route/handler binding extraction, including vendor `@Win*Mapping` aliases.
+ * Existing indexes keep a stale Route set until this version is stamped.
+ */
+export const SPRING_ROUTE_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
+  id: 'spring.route-bindings',
+  version: 2,
+  appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
+};

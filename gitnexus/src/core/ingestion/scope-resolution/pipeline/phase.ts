@@ -42,6 +42,7 @@ import {
   forceGc,
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
+import type { UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
 import type { CallSummary } from '../../taint/call-summary-model.js';
 import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
@@ -49,6 +50,7 @@ import { buildPropertyNameIndex } from '../passes/unique-name-properties.js';
 import { PdgEmitSink, type PdgEmitManifest } from '../../../lbug/pdg-emit-sink.js';
 import { resolveNativeSafeStorageDir } from '../../../lbug/lbug-config.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
+import { reconcileScopeExtractionFailures } from '../scope-extraction-failures.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -60,8 +62,18 @@ export interface ScopeResolutionOutput {
   readonly importsEmitted: number;
   /** Reference (CALLS / ACCESSES / INHERITS / USES) edges emitted. */
   readonly referenceEdgesEmitted: number;
+  /** Files still missing scope captures after the main-thread fallback. */
+  readonly scopeExtractionFailures: readonly string[];
   /** Additive stream of resolver diagnostics; does not affect graph edges. */
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
+  /**
+   * Interfaces whose structural-satisfaction check could not be completed
+   * (#2873). Emits no edges — it is what lets a query distinguish "nothing
+   * implements this" from "we could not tell what implements this".
+   *
+   * Absent when no language ran; `[]` when one ran and decided everything.
+   */
+  readonly undecidedSatisfaction?: readonly UndecidedSatisfaction[];
   /**
    * Property inference facts a CALLER needs in order to read an empty result
    * correctly (R3-1). Without these, "no ACCESSES for this field" is
@@ -116,7 +128,9 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   filesProcessed: 0,
   importsEmitted: 0,
   referenceEdgesEmitted: 0,
+  scopeExtractionFailures: [],
   resolutionOutcomes: [],
+  // Deliberately absent, not `[]`: nothing ran, so nothing was decided either.
   perLanguage: new Map(),
   functionSummaries: [],
   callSummaries: [],
@@ -164,6 +178,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
     const { model, parsedFiles: workerParsedFiles } = parseOutput;
+    const scopeExtractionFailures = new Set(parseOutput.scopeExtractionFailures);
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
     // rebuilding parallel indexes. See ARCHITECTURE.md § "Semantic-model
@@ -209,6 +224,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalRefs = 0;
     let anyRan = false;
     const resolutionOutcomes: ResolutionOutcome[] = [];
+    const undecidedSatisfaction: UndecidedSatisfaction[] = [];
     // M4 (#2084 U1): per-function taint summaries accumulated across every
     // language pass; the cross-function fixpoint phase reads this output.
     const functionSummaries: FunctionSummary[] = [];
@@ -527,6 +543,14 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           provider,
         );
 
+        // Worker warnings are provisional: scope-resolution retries missing
+        // ParsedFiles on the main thread. Persist only final omissions.
+        reconcileScopeExtractionFailures(
+          scopeExtractionFailures,
+          files.map((file) => file.path),
+          stats.scopeExtractionFailedPaths,
+        );
+
         // Release file contents and pre-extracted entries after each language
         // to reduce memory pressure. For large codebases (16K+ PHP files),
         // holding all source code simultaneously with scope trees causes OOM.
@@ -556,6 +580,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         processedScopeFiles += langFileCount;
         anyRan = true;
         functionSummaries.push(...stats.functionSummaries);
+        undecidedSatisfaction.push(...stats.undecidedSatisfaction);
         callSummaries.push(...stats.callSummaries);
         totalFiles += stats.filesProcessed;
         totalImports += stats.importsEmitted;
@@ -639,14 +664,22 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // Even when no language ran, surface a finalized manifest (its CSVs are on
     // disk) so loadGraphToLbug COPYs them rather than orphaning them — empty in
     // the no-files case, harmless.
-    if (!anyRan) return pdgEmitManifest ? { ...NOOP_OUTPUT, pdgEmitManifest } : NOOP_OUTPUT;
+    if (!anyRan) {
+      return {
+        ...NOOP_OUTPUT,
+        scopeExtractionFailures: [...scopeExtractionFailures].sort(),
+        ...(pdgEmitManifest ? { pdgEmitManifest } : {}),
+      };
+    }
 
     return {
       ran: true,
       filesProcessed: totalFiles,
       importsEmitted: totalImports,
       referenceEdgesEmitted: totalRefs,
+      scopeExtractionFailures: [...scopeExtractionFailures].sort(),
       resolutionOutcomes,
+      undecidedSatisfaction,
       perLanguage,
       functionSummaries,
       callSummaries,

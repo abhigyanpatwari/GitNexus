@@ -56,13 +56,15 @@ const scopeBridgePairs = (): readonly string[] => {
  * Pin of `NON_DEFINITION_LABELS` — the node tables schema.ts refuses as an
  * attachment anchor. `Route` / `Tool` are here despite sourcing `ENTRY_POINT_OF`
  * to a `Process`: that emitter names both labels as literals, so those two pairs
- * are hand-declared rather than generated.
+ * are hand-declared rather than generated. `Destination` is here for the same
+ * reason — it sources only `Destination→Property`, hand-declared alongside them.
  */
 const NON_DEFINITION_LABELS: readonly NodeTableName[] = [
   'Community',
   'Process',
   'Route',
   'Tool',
+  'Destination',
   'Folder',
   'BasicBlock',
 ];
@@ -82,6 +84,7 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
   'Process',
   'Route',
   'Tool',
+  'Destination',
   'File',
   'Record',
 ];

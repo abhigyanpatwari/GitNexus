@@ -76,8 +76,20 @@
       "apiKeyPlaceholder": "Enter your MiniMax API key",
       "helperText": "Get your API key from",
       "helperLinkLabel": "MiniMax Platform",
-      "modelPlaceholder": "e.g., MiniMax-M2.5, MiniMax-M2.5-highspeed",
-      "helperModel": "Available: MiniMax-M2.5 (default), MiniMax-M2.5-highspeed (faster)"
+      "modelPlaceholder": "e.g., MiniMax-M3 or MiniMax-M2.7",
+      "helperModel": "Available: MiniMax-M3 (default) and MiniMax-M2.7",
+      "endpoint": "Regional endpoint",
+      "endpoints": {
+        "global": "Global (api.minimax.io)",
+        "china": "China (api.minimaxi.com)"
+      },
+      "thinking": "Thinking mode",
+      "thinkingModes": {
+        "adaptive": "Adaptive",
+        "disabled": "Disabled",
+        "always_on": "Always on"
+      },
+      "capabilities": "{{contextWindow}} token context | Inputs: {{modalities}}"
     },
     "glm": {
       "apiKeyPlaceholder": "Enter your Z.AI API key"

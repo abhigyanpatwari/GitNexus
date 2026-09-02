@@ -15,6 +15,7 @@ import { execSync, execFileSync } from 'child_process';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendSrc = readFileSync(
@@ -144,12 +145,9 @@ describe('resolveWorktreeCwd — auto-detection helper', () => {
   it('returns worktreeDir when launchCwd is a linked worktree of the same repo', () => {
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-wt-'));
     try {
-      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      initGitRepo(repoDir);
       writeFileSync(path.join(repoDir, 'x.ts'), 'export const x = 1;\n');
-      execSync('git add x.ts', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+      commitAll(repoDir, 'initial');
 
       const worktreeDir = path.join(repoDir, 'wt-auto');
       execSync(`git worktree add -q -b auto "${worktreeDir}"`, {
@@ -201,12 +199,9 @@ describe('resolveWorktreeCwd — auto-detection helper', () => {
     // to run from the wrong directory and return 0 changes.
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-idx-wt-'));
     try {
-      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      initGitRepo(repoDir);
       writeFileSync(path.join(repoDir, 'x.ts'), 'export const x = 1;\n');
-      execSync('git add x.ts', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+      commitAll(repoDir, 'initial');
 
       const worktreeDir = path.join(repoDir, 'wt-indexed');
       execSync(`git worktree add -q -b indexed "${worktreeDir}"`, {
@@ -236,12 +231,9 @@ describe('resolveWorktreeCwd — auto-detection helper', () => {
     // so wt-A must be returned unchanged — not wt-B, not the main checkout.
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rwc-two-wt-'));
     try {
-      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      initGitRepo(repoDir);
       writeFileSync(path.join(repoDir, 'x.ts'), 'export const x = 1;\n');
-      execSync('git add x.ts', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+      commitAll(repoDir, 'initial');
 
       const worktreeA = path.join(repoDir, 'wt-a');
       const worktreeB = path.join(repoDir, 'wt-b');
@@ -293,12 +285,9 @@ describe('detect_changes worktree support — guard logic', () => {
     // both paths must yield the same canonical root for the guard to pass.
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-guard-'));
     try {
-      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      initGitRepo(repoDir);
       writeFileSync(path.join(repoDir, 'a.ts'), 'export const a = 1;\n');
-      execSync('git add a.ts', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+      commitAll(repoDir, 'initial');
 
       const worktreeDir = path.join(repoDir, 'wt-guard');
       execSync(`git worktree add -q -b guard "${worktreeDir}"`, {
@@ -352,12 +341,9 @@ describe('detect_changes worktree support — end-to-end with real worktree', ()
   it('git diff from canonical root misses unstaged changes in a linked worktree, but worktree cwd finds them', () => {
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-wt-detect-'));
     try {
-      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      initGitRepo(repoDir);
       writeFileSync(path.join(repoDir, 'main.ts'), 'export const x = 1;\n');
-      execSync('git add main.ts', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+      commitAll(repoDir, 'initial');
 
       const worktreeDir = path.join(repoDir, 'wt-feature');
       execSync(`git worktree add -q -b feature "${worktreeDir}"`, {
@@ -401,12 +387,9 @@ describe('detect_changes worktree support — end-to-end with real worktree', ()
   it('git diff --staged from worktree cwd sees staged changes in that worktree', () => {
     const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-wt-staged-'));
     try {
-      execSync('git init -q', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.email "test@example.com"', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git config user.name "Test"', { cwd: repoDir, stdio: 'ignore' });
+      initGitRepo(repoDir);
       writeFileSync(path.join(repoDir, 'foo.ts'), 'export const a = 1;\n');
-      execSync('git add foo.ts', { cwd: repoDir, stdio: 'ignore' });
-      execSync('git commit -q -m "initial"', { cwd: repoDir, stdio: 'ignore' });
+      commitAll(repoDir, 'initial');
 
       const worktreeDir = path.join(repoDir, 'wt-staged');
       execSync(`git worktree add -q -b staged-branch "${worktreeDir}"`, {

@@ -29,6 +29,9 @@ from .proposer_sandbox import (
 )
 
 HARNESS_ROOT = Path(__file__).resolve().parents[2]
+# The mounted runtime is built from this checkout, so the pin tracks the harness'
+# own package version. A hardcoded copy only drifts on release day (#3064).
+PINNED_GITNEXUS_VERSION = json.loads((HARNESS_ROOT / "gitnexus" / "package.json").read_text())["version"]
 
 CE_ARMS = frozenset({"ce_workflow", "ce_workflow_direct", "ce_review"})
 SANDBOX_CE_PLUGIN = "/opt/compound-engineering-plugin"

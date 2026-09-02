@@ -23,16 +23,30 @@ import {
   setKotlinSpringAopFacts,
   setKotlinSpringConditionalFacts,
   setKotlinSpringDiFacts,
+  setKotlinSpringDynamicLookupFacts,
+  setKotlinSpringMessageProducerFacts,
+  setKotlinSpringNonHttpHandlerFacts,
+  setKotlinSpringConfigConsumerFacts,
 } from './capture-side-channel.js';
 import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 import { captureKotlinSpringDiClassFact, type KotlinSpringDiClassFact } from './spring-di.js';
+import { captureKotlinSpringConfigConsumerFacts } from './spring-config-bindings.js';
+import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
+import { captureKotlinSpringDynamicLookupFact } from './spring-dynamic-lookup.js';
+import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
+import { captureKotlinSpringMessageProducerFact } from './spring-message-producers.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { captureKotlinSpringAopFacts, type KotlinSpringAopFact } from './spring-aop.js';
 import {
   captureKotlinSpringConditionalFacts,
   type KotlinSpringConditionalFact,
 } from './spring-conditionals.js';
+import {
+  captureKotlinSpringNonHttpHandlerFacts,
+  type KotlinSpringNonHttpHandlerFact,
+} from './spring-non-http-handlers.js';
 
 const FUNCTION_DECL_TAGS = ['@declaration.function'] as const;
 
@@ -99,7 +113,12 @@ export function emitKotlinScopeCaptures(
   const springAopTypeNodeIds = new Set<number>();
   const springConditionalFacts: KotlinSpringConditionalFact[] = [];
   const springDiFacts: KotlinSpringDiClassFact[] = [];
+  const springNonHttpHandlerFacts: KotlinSpringNonHttpHandlerFact[] = [];
+  const springNonHttpHandlerTypeNodeIds = new Set<number>();
   const springDiClassNodeIds = new Set<number>();
+  const springDynamicLookupFacts: SpringDynamicLookupFact[] = [];
+  const springMessageProducerFacts: SpringMessageProducerFact[] = [];
+  const springMemberCallNodeIds = new Set<number>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
@@ -123,6 +142,17 @@ export function emitKotlinScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    // One visit per member call node: the same invocation can back several
+    // query matches, and both Spring call-shape captures must see it once.
+    const memberCallNode = nodeIfType(groupedNodes['@reference.call.member'], 'call_expression');
+    if (memberCallNode !== null && !springMemberCallNodeIds.has(memberCallNode.id)) {
+      springMemberCallNodeIds.add(memberCallNode.id);
+      const lookupFact = captureKotlinSpringDynamicLookupFact(memberCallNode, filePath);
+      if (lookupFact !== null) springDynamicLookupFacts.push(lookupFact);
+      const producerFact = captureKotlinSpringMessageProducerFact(memberCallNode, filePath);
+      if (producerFact !== null) springMessageProducerFacts.push(producerFact);
+    }
+
     // tree-sitter-kotlin represents both classes and interfaces with
     // `class_declaration`; `object_declaration` is the separate object form.
     const springAopTypeNode = [
@@ -130,9 +160,17 @@ export function emitKotlinScopeCaptures(
       nodeIfType(groupedNodes['@scope.class'], 'object_declaration'),
       nodeIfType(groupedNodes['@scope.class'], 'companion_object'),
     ].find((node): node is SyntaxNode => node !== null);
-    if (springAopTypeNode !== undefined && !springAopTypeNodeIds.has(springAopTypeNode.id)) {
-      springAopTypeNodeIds.add(springAopTypeNode.id);
-      springAopFacts.push(...captureKotlinSpringAopFacts(springAopTypeNode, filePath));
+    if (springAopTypeNode !== undefined) {
+      if (!springAopTypeNodeIds.has(springAopTypeNode.id)) {
+        springAopTypeNodeIds.add(springAopTypeNode.id);
+        springAopFacts.push(...captureKotlinSpringAopFacts(springAopTypeNode, filePath));
+      }
+      if (!springNonHttpHandlerTypeNodeIds.has(springAopTypeNode.id)) {
+        springNonHttpHandlerTypeNodeIds.add(springAopTypeNode.id);
+        springNonHttpHandlerFacts.push(
+          ...captureKotlinSpringNonHttpHandlerFacts(springAopTypeNode, filePath),
+        );
+      }
     }
 
     const springDiClassNode = nodeIfType(groupedNodes['@scope.class'], 'class_declaration');
@@ -342,6 +380,14 @@ export function emitKotlinScopeCaptures(
   setKotlinSpringAopFacts(filePath, springAopFacts);
   setKotlinSpringConditionalFacts(filePath, springConditionalFacts);
   setKotlinSpringDiFacts(filePath, springDiFacts);
+  setKotlinSpringDynamicLookupFacts(filePath, springDynamicLookupFacts);
+  setKotlinSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
+  setKotlinSpringConfigConsumerFacts(
+    filePath,
+    captureKotlinSpringConfigConsumerFacts(tree.rootNode, filePath),
+  );
+  setKotlinSpringMessageProducerFacts(filePath, springMessageProducerFacts);
+  out.push(...synthesizeLombokAccessorCaptures(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
   return out;
 }

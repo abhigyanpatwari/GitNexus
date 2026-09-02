@@ -45,6 +45,22 @@ program
   .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
   .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
 
+program
+  .command('auto-sync [action]')
+  .description(
+    'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
+  )
+  .addHelpText('after', () => t('help.autoSync.details'))
+  .action(createLazyAction(() => import('./auto-sync.js'), 'autoSyncCommand'));
+
+program
+  .command('watch [action]')
+  .description(
+    'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
+  )
+  .addHelpText('after', () => t('help.watch.details'))
+  .action(createLazyAction(() => import('./watch.js'), 'watchAmbiguousCommand'));
+
 // Baseline of GITNEXUS_EMBEDDING_DIMS captured by the analyze preAction hook
 // before it overwrites the var, so the postAction hook can restore it. The
 // analyzeCommand env snapshot is taken AFTER this hook runs, so it cannot undo
@@ -57,6 +73,8 @@ let dimsEnvCaptured = false;
 program
   .command('analyze [path]')
   .description('Index a repository (full analysis)')
+  .option('--watch', 'Keep the index current with serialized incremental refreshes')
+  .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
   .option('-f, --force', 'Force full re-index even if up to date')
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
   .option(
@@ -74,7 +92,10 @@ program
     'Generate repo-specific skill files from detected communities ' +
       '(no-op when --index-only is also set).',
   )
-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
+  .option(
+    '--skip-agents-md',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
+  )
   .option(
     '--pdg',
     'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
@@ -137,6 +158,11 @@ program
     '--workers <n>',
     'Parse worker pool size (>=1). Default: cores-1 capped at 16, auto-sized to the repo.',
   )
+  .option(
+    '--spring-actuator <path>',
+    'Import local Spring Boot Actuator JSON snapshots (mappings, beans, conditions, ' +
+      'configprops, env). Explicit opt-in; disabled by default.',
+  )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')
   .option('--embedding-sub-batch-size <n>', 'Number of chunks per embedding model call')
@@ -162,6 +188,11 @@ program
   )
   .addHelpText('after', () => t('help.analyze.environment'))
   .hook('preAction', (thisCommand: Command) => {
+    const analyzeOpts = thisCommand.opts();
+    if (analyzeOpts['debounce'] !== undefined && analyzeOpts['watch'] !== true) {
+      process.stderr.write('\n  --debounce requires --watch\n\n');
+      process.exit(1);
+    }
     // ONLY GITNEXUS_EMBEDDING_DIMS must be set here: schema.ts reads it at
     // module-load time during the lazy import('./analyze.js') below (via the
     // static chain analyze.ts → run-analyze.ts → schema.ts), so deferring to
@@ -169,7 +200,7 @@ program
     // lazily at runtime (readConfig), so analyzeCommandImpl is their sole
     // setter — keeping them out of this hook means they fall under the impl's
     // env snapshot/restore and don't leak across in-process invocations.
-    const dimsOpt = thisCommand.opts()['embeddingDims'];
+    const dimsOpt = analyzeOpts['embeddingDims'];
     if (dimsOpt !== undefined) {
       // Validate + normalize BEFORE writing the env var: schema.ts throws on a
       // bad value at module-load, which — on the synchronous program.parse()
@@ -202,7 +233,7 @@ program
     createAnalyzerLbugLazyAction(
       () => import('../core/analyzer-identity.js'),
       () => import('./analyze.js'),
-      'analyzeCommandWithRunnerIdentity',
+      'analyzeOrWatchCommandWithRunnerIdentity',
       import.meta.url,
     ),
   );
@@ -238,7 +269,7 @@ program
   )
   .option(
     '--auth-token <token>',
-    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+    "Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var, which also enables MCP Bearer auth on gitnexus serve's /api/mcp route. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.",
   )
   .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
@@ -303,9 +334,9 @@ program
   .option('-f, --force', 'Force full regeneration even if up to date')
   .option(
     '--provider <provider>',
-    'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
+    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
   )
-  .option('--model <model>', 'LLM model or Azure deployment name (default: minimax/minimax-m2.5)')
+  .option('--model <model>', 'LLM model or deployment name (default: MiniMax-M3)')
   .option(
     '--base-url <url>',
     'LLM API base URL. Azure v1: https://{resource}.openai.azure.com/openai/v1',
@@ -315,11 +346,8 @@ program
     '--api-version <version>',
     'Azure api-version query param, e.g. 2024-10-21 (legacy Azure API only)',
   )
-  .option(
-    '--reasoning-model',
-    'Mark deployment as reasoning model (o1/o3/o4-mini) — strips temperature, uses max_completion_tokens',
-  )
-  .option('--no-reasoning-model', 'Disable reasoning model mode (overrides saved config)')
+  .option('--reasoning-model', 'Enable reasoning mode; MiniMax-M3 uses adaptive thinking')
+  .option('--no-reasoning-model', 'Disable reasoning mode; MiniMax-M3 disables thinking')
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
   .option('--timeout <seconds>', 'LLM request timeout in seconds (default: disabled)')
   .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')

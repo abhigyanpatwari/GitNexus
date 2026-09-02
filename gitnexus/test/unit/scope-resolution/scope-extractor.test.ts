@@ -261,6 +261,22 @@ describe('Pass 2: declarations + local bindings', () => {
     expect(result.localDefs[0]!.type).toBe('Function');
   });
 
+  it('preserves a synthetic declaration marker on the definition', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        declMatch('class', 'Worker$1', 5, 0, 10, 0, {
+          '@declaration.is-synthetic': cap('@declaration.is-synthetic', 5, 0, 10, 0, 'true'),
+        }),
+      ],
+      'a.ts',
+      mockProvider(),
+    );
+
+    expect(result.localDefs).toHaveLength(1);
+    expect(result.localDefs[0]!.isSynthetic).toBe(true);
+  });
+
   it('honors `provider.bindingScopeFor` to hoist a binding to an outer scope', () => {
     // Treat every declaration as hoisted to the module scope.
     const result = extract(
@@ -334,6 +350,155 @@ describe('Pass 3: raw imports', () => {
       mockProvider(),
     );
     expect(result.parsedImports).toEqual([]);
+  });
+});
+
+// ─── §Pass 3: `runsOnlyWhenCalled` ────────────────────────────────────────
+//
+// The one scope fact Pass 3 reads before flattening the imports into a
+// per-file list. It has to be decided here: `FinalizeFile.parsedImports` is
+// flat, and finalize publishes a file's edges under `file.moduleScope`, so no
+// later stage can tell where a statement sat (see
+// `ParsedImport.runsOnlyWhenCalled`). Posed captures rather than a language,
+// because the rule is language-agnostic and every scope kind has to be covered
+// — no single grammar produces them all.
+
+describe('Pass 3: runsOnlyWhenCalled', () => {
+  const named: ParsedImport = {
+    kind: 'named',
+    localName: 'User',
+    importedName: 'User',
+    targetRaw: './models',
+  };
+
+  /**
+   * Mark an import sitting at line 12 against a scope tree posed as nested
+   * `@scope.*` captures, and report whether it came out deferred.
+   */
+  const deferredUnder = (...kinds: readonly Lowercase<ScopeKind>[]): boolean => {
+    // Each scope nests inside the previous one and all of them contain line 12.
+    const scopes = kinds.map((kind, depth) => scopeMatch(kind, 1 + depth, 0, 100 - depth, 0));
+    const result = extract(
+      [...scopes, importMatch(12, 0, 12, 30)],
+      'a.ts',
+      mockProvider({ interpretImport: () => named }),
+    );
+    expect(result.parsedImports).toHaveLength(1);
+    return result.parsedImports[0]!.runsOnlyWhenCalled === true;
+  };
+
+  it('a module-level import is not marked', () => {
+    expect(deferredUnder('module')).toBe(false);
+  });
+
+  it('an import inside a Function IS marked', () => {
+    expect(deferredUnder('module', 'function')).toBe(true);
+  });
+
+  it('the walk climbs past every non-Function kind to reach the Function', () => {
+    // A `Block` inside a function does not run at initialization even though
+    // `Block` on its own does. Reading only the immediate scope kind fails
+    // every one of these.
+    expect(deferredUnder('module', 'function', 'block')).toBe(true);
+    expect(deferredUnder('module', 'function', 'block', 'block')).toBe(true);
+    expect(deferredUnder('module', 'function', 'class')).toBe(true);
+    expect(deferredUnder('module', 'function', 'expression')).toBe(true);
+    expect(deferredUnder('module', 'function', 'object')).toBe(true);
+    expect(deferredUnder('module', 'class', 'function', 'block')).toBe(true);
+  });
+
+  it('kinds that execute where they are defined are NOT marked', () => {
+    // `if (FLAG) { require('./x'); }` at module top level really does force an
+    // initialization order, and so do class, namespace, object-literal and
+    // comprehension bodies. Only a `Function` defers.
+    expect(deferredUnder('module', 'block')).toBe(false);
+    expect(deferredUnder('module', 'namespace')).toBe(false);
+    expect(deferredUnder('module', 'class')).toBe(false);
+    expect(deferredUnder('module', 'namespace', 'class')).toBe(false);
+    expect(deferredUnder('module', 'expression')).toBe(false);
+    expect(deferredUnder('module', 'object')).toBe(false);
+    expect(deferredUnder('module', 'class', 'block')).toBe(false);
+  });
+
+  it('a sibling function does not mark an import outside it', () => {
+    // Containment decides, not "the file has a function somewhere".
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        scopeMatch('function', 20, 0, 40, 0),
+        importMatch(3, 0, 3, 30),
+      ],
+      'a.ts',
+      mockProvider({ interpretImport: () => named }),
+    );
+    expect(result.parsedImports[0]!.runsOnlyWhenCalled).toBeUndefined();
+  });
+
+  it('the property is absent, not false, when the import initializes', () => {
+    // Absence is the fail-safe reading, and it keeps an un-deferred
+    // `ParsedImport` byte-identical to what it was before the field existed —
+    // which is what the fixture suites across fourteen languages assert.
+    const result = extract(
+      [scopeMatch('module', 1, 0, 100, 0), importMatch(3, 0, 3, 30)],
+      'a.ts',
+      mockProvider({ interpretImport: () => named }),
+    );
+    expect(result.parsedImports).toEqual([named]);
+  });
+
+  // ─── The provider capability that opts out of the position rule ──────────
+  //
+  // The walk answers "does this run only when the enclosing function is
+  // called?", which presupposes the import is a statement that RUNS. C/C++
+  // `#include` is not — the preprocessor splices the header in before the
+  // program starts, wherever the directive sits — and neither is a Rust `use`,
+  // a compile-time path alias. Both are legal inside a function body.
+  // Deferring one would make `check --cycles` drop a cycle that is entirely
+  // real, and suppressing a true cycle is the failure direction that matters.
+  //
+  // The opt-out is a capability on the provider, checked here, rather than a
+  // language test inside the walk: shared `core/ingestion/` pipeline code must
+  // not name languages (AGENTS.md). These cases pin the CONTRACT — that the
+  // flag is read at all, that its default is unchanged, and which of its two
+  // values is the opt-out — with no language in sight.
+  // `function-local-import-chain.test.ts` pins the C and Rust provider ends of
+  // it against real source.
+
+  it('a provider whose imports do not execute where written is never marked', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        scopeMatch('function', 2, 0, 99, 0),
+        importMatch(12, 0, 12, 30),
+      ],
+      'a.c',
+      mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: false }),
+    );
+    // Byte-identical to the un-deferred shape, not merely `!== true`.
+    expect(result.parsedImports).toEqual([named]);
+  });
+
+  it('the identical captures ARE marked for a provider that does not declare it', () => {
+    // The control that makes the case above mean something: same scopes, same
+    // import position, only the capability differs.
+    const captures = [
+      scopeMatch('module', 1, 0, 100, 0),
+      scopeMatch('function', 2, 0, 99, 0),
+      importMatch(12, 0, 12, 30),
+    ];
+    expect(
+      extract(captures, 'a.ts', mockProvider({ interpretImport: () => named })).parsedImports,
+    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
+    // Absent must mean `true`, not merely "not false" — the default is the
+    // safe direction (position defers), and only an explicit `false` withholds
+    // deferral. Spelling `true` therefore has to behave exactly like absent.
+    expect(
+      extract(
+        captures,
+        'a.ts',
+        mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: true }),
+      ).parsedImports,
+    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
   });
 });
 
