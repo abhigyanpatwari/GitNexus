@@ -21,6 +21,19 @@
  * That is a fact about the service that no amount of reading its source can
  * recover.
  *
+ * ── WHAT THIS MODULE IS AFRAID OF ─────────────────────────────────────────
+ *
+ * Everything it emits becomes half of a JOIN KEY. A destination minted here
+ * meets every other site in every other repository that names the same address
+ * on the same broker — that is the whole value, and it is the whole hazard. A
+ * missing destination is a visible gap; a wrong one is reported as a fact. So
+ * the refusals below are not defensive clutter: each one is a case where the
+ * document says something that LOOKS like an address and is not one, and where
+ * accepting it would connect two services that have said nothing about each
+ * other. The taxonomy is closed and countable for the same reason the source
+ * cascade's is — a feature judged on its unresolved fraction needs the fraction
+ * broken down by cause, or nobody can tell it what to go and fix.
+ *
  * ── VERSION 2.x IS REFUSED, NOT MAPPED ────────────────────────────────────
  *
  * AsyncAPI 2.x describes a channel from the READER's point of view: `publish`
@@ -42,6 +55,7 @@
 
 import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import { brokerForProtocol } from './protocol.js';
 
@@ -61,13 +75,35 @@ const DOCUMENT_SCHEMA = yaml.JSON_SCHEMA;
 
 /** Generous for a specification, small enough that a mistake is caught. */
 const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
-/** Bounded so one pathological document cannot dominate a run. */
+/** Bounded so one pathological document cannot dominate a run. Counted against
+ *  operations EXAMINED, not accepted: a document with a hundred thousand
+ *  refused operations costs the same walk as one with a hundred thousand good
+ *  ones, and a cap that only counts successes does not bound the work. */
 const MAX_OPERATIONS_PER_DOCUMENT = 5_000;
+/** Bounded across the whole run, not just per document. The per-document cap
+ *  alone still admits `MAX_DOCUMENTS × MAX_OPERATIONS_PER_DOCUMENT` — ten
+ *  million nodes and ten million edges accumulated before the phase emits its
+ *  first one. */
+const MAX_TOTAL_OPERATIONS = 50_000;
 /** Bounded so a mis-aimed path (a whole repository, `/`) cannot walk forever. */
 const MAX_DOCUMENTS = 2_000;
+/** Directory entries VISITED, not documents accepted. The document cap alone
+ *  bounds nothing on a tree that contains no documents. */
+const MAX_WALK_ENTRIES = 100_000;
 const MAX_DIRECTORY_DEPTH = 8;
 /** Only the first chunk is sniffed for the root key before a full parse. */
 const SNIFF_BYTES = 4096;
+/**
+ * An address and an operation id both end up inside graph identifiers, and
+ * `generateId` CONCATENATES rather than hashes (`lib/utils.ts`), so an
+ * identifier is exactly as long as the text it was built from. One document
+ * under every other cap — a multi-megabyte address plus five thousand
+ * operations naming it — therefore mints five thousand multi-megabyte edge ids,
+ * each flattened into a string key by the graph's `Map`. Bounding the two
+ * strings that reach an id is what keeps every other cap meaningful.
+ */
+const MAX_ADDRESS_LENGTH = 2_048;
+const MAX_OPERATION_ID_LENGTH = 512;
 
 const DOCUMENT_EXTENSIONS: ReadonlySet<string> = new Set(['.yaml', '.yml', '.json']);
 
@@ -90,54 +126,86 @@ export type AsyncApiRefusal =
   | 'unsupported-version'
   /** Malformed YAML/JSON, or a root that is not an object. */
   | 'unparsable'
-  /** The file could not be read (permissions, vanished mid-walk). */
+  /** The file could not be read, or is not a regular file (a FIFO, a device). */
   | 'unreadable'
   /** Larger than {@link MAX_DOCUMENT_BYTES}. */
   | 'oversized'
   /** The document held more operations than one run will read. */
   | 'operation-cap'
+  /** The run as a whole reached {@link MAX_TOTAL_OPERATIONS}. */
+  | 'total-operation-cap'
+  /** The walk hit a bound before it finished, so the document set is a floor
+   *  rather than the whole of what the configured path holds. A truncated read
+   *  that reported nothing would be indistinguishable from a complete one. */
+  | 'walk-truncated'
   /** `operations[].channel.$ref` is absent or not a local channel pointer. */
   | 'no-channel-reference'
   /** The `$ref` resolved to no channel in this document. */
   | 'channel-not-found'
   /** The channel names no `address`, so there is nothing to key on. */
   | 'no-address'
+  /**
+   * The address is a TEMPLATE, not an address: the channel declares
+   * `parameters`, or the address carries a `{…}` placeholder.
+   *
+   * This is the document-side twin of the source cascade's
+   * `overridable-config-default`, and it exists for the identical reason. Two
+   * services that both publish `{env}.orders` have named a pattern they share,
+   * not a queue they share — one deploys with `env=prod` and the other with
+   * `env=staging`, and keying on the template text merges them into a single
+   * node with a publisher on one side and a subscriber on the other. That is a
+   * false connection built entirely from conformant AsyncAPI: `parameters` and
+   * `{param}` are core 3.x vocabulary, not a vendor quirk.
+   *
+   * The detector is the specification's own statement rather than a guess: a
+   * channel that declares `parameters` is declaring that its address is
+   * parameterized. The `{` test catches the documents that template without
+   * declaring, which generators do.
+   */
+  | 'templated-address'
+  /** Longer than {@link MAX_ADDRESS_LENGTH}. */
+  | 'address-too-long'
+  /** Longer than {@link MAX_OPERATION_ID_LENGTH}. */
+  | 'operation-id-too-long'
   /** `action` is neither `send` nor `receive`. */
   | 'unrecognized-action'
-  /** Neither the operation's bindings nor its channel's servers name a
-   *  protocol. Silence about the broker is not a claim about it, but a
+  /** Neither the operation's bindings nor the servers its channel resolves to
+   *  name a protocol. Silence about the broker is not a claim about it, but a
    *  `Destination` cannot be keyed without one. */
   | 'protocol-unknown'
-  /** The operation's bindings and its channel's servers name DIFFERENT
-   *  brokers, or one of them names several. A destination keyed on the wrong
-   *  broker joins a stranger; keyed on the right one it joins its pair. With
-   *  the document contradicting itself there is no way to tell which, and a
-   *  coin flip here is a false connection half the time. */
+  /** Two readings of the broker disagree, or one of them names several. A
+   *  destination keyed on the wrong broker joins a stranger; keyed on the right
+   *  one it joins its pair. With the document contradicting itself there is no
+   *  way to tell which, and a coin flip here is a false connection half the
+   *  time. */
   | 'protocol-disagreement';
 
 export interface AsyncApiOperation {
   /** Absolute path of the document this operation came from. */
   readonly documentPath: string;
-  /** The `operations` map key, kept for provenance and for a later pass that
-   *  wants to resolve an operation to the symbol implementing it. */
+  /** The `operations` map key, kept for provenance and carried into the edge
+   *  `reason` so a reader can find the operation the edge came from. */
   readonly operationId: string;
   readonly action: 'send' | 'receive';
   readonly address: string;
   /** Normalized broker — the first half of the `Destination` key. */
   readonly broker: string;
-  /** The protocol exactly as the document spelled it, before normalization. */
-  readonly protocol: string;
-  /** Message names referenced by the operation, in document order. Carried for
-   *  provenance only: nothing keys on them. */
-  readonly messageNames: readonly string[];
 }
 
 export interface AsyncApiReadResult {
   readonly operations: readonly AsyncApiOperation[];
   /** Files considered — every candidate extension under the configured path. */
   readonly documentsScanned: number;
-  /** Files that parsed as an AsyncAPI 3.x document. */
+  /** Files that parsed as an AsyncAPI 3.x document and yielded an operation. */
   readonly documentsAccepted: number;
+  /** Entries the walk skipped because they were symbolic links. Not a refusal —
+   *  the skip is deliberate — but counted, because a cache written by other
+   *  tooling is very often a symlink farm, and an operator whose whole cache
+   *  was skipped would otherwise see a result identical to a wrong path. */
+  readonly symlinksSkipped: number;
+  /** True when a bound stopped the walk or the operation count, so every number
+   *  here is a floor rather than a total. */
+  readonly truncated: boolean;
   /** Every refusal, document-level and operation-level, by reason. */
   readonly refusals: Readonly<Partial<Record<AsyncApiRefusal, number>>>;
 }
@@ -158,7 +226,10 @@ function makeTally(sink: Partial<Record<AsyncApiRefusal, number>>): Tally {
  * Own-property read that cannot be answered by the prototype chain.
  *
  * A document is untrusted input and its keys are attacker-chosen in the general
- * case; `channels['constructor']` must miss rather than return a function.
+ * case. `channels['constructor']` misses because {@link asRecord} rejects a
+ * function — but `channels['__proto__']` would otherwise resolve to
+ * `Object.prototype`, which IS an object and would sail through as an empty
+ * channel. This guard, not the type test, is what stops that one.
  */
 function own(container: unknown, key: string): unknown {
   if (typeof container !== 'object' || container === null) return undefined;
@@ -202,7 +273,13 @@ function channelNameFromRef(ref: string): string | undefined {
   return decodePointerToken(token);
 }
 
-/** Distinct normalized brokers named by a bindings object's keys. */
+/**
+ * Distinct normalized brokers named by a bindings object's keys.
+ *
+ * `brokerForProtocol` drops anything not shaped like a protocol name, which is
+ * what keeps a Reference Object's `$ref` key out of the node key — see its
+ * header for why that one matters.
+ */
 function brokersFromBindings(bindings: unknown): Set<string> {
   const out = new Set<string>();
   const record = asRecord(bindings);
@@ -214,44 +291,41 @@ function brokersFromBindings(bindings: unknown): Set<string> {
   return out;
 }
 
-/** Distinct normalized brokers named by the servers a channel references. */
+/**
+ * Distinct normalized brokers for the servers a channel resolves to.
+ *
+ * A channel that names no `servers` is available on ALL of the document's
+ * servers — that is the specification's own default, not an inference. Reading
+ * an absent `servers` as silence instead cost every single-server document its
+ * destinations whenever its operations carried no bindings, which is an
+ * entirely ordinary shape for a hand-written document.
+ */
 function brokersFromChannelServers(
   channel: Record<string, unknown>,
   servers: Record<string, unknown> | undefined,
-): { brokers: Set<string>; rawProtocol: string | undefined } {
+): Set<string> {
   const out = new Set<string>();
-  let rawProtocol: string | undefined;
+  if (servers === undefined) return out;
   const refs = own(channel, 'servers');
-  if (!Array.isArray(refs) || servers === undefined) return { brokers: out, rawProtocol };
+
+  if (!Array.isArray(refs)) {
+    for (const name of Object.keys(servers)) {
+      const broker = brokerForProtocol(asString(own(own(servers, name), 'protocol')));
+      if (broker !== undefined) out.add(broker);
+    }
+    return out;
+  }
+
   for (const entry of refs) {
     const ref = asString(own(entry, '$ref'));
     if (ref === undefined) continue;
     const prefix = '#/servers/';
     if (!ref.startsWith(prefix)) continue;
     const name = decodePointerToken(ref.slice(prefix.length));
-    const protocol = asString(own(own(servers, name), 'protocol'));
-    const broker = brokerForProtocol(protocol);
-    if (broker === undefined) continue;
-    rawProtocol ??= protocol;
-    out.add(broker);
+    const broker = brokerForProtocol(asString(own(own(servers, name), 'protocol')));
+    if (broker !== undefined) out.add(broker);
   }
-  return { brokers: out, rawProtocol };
-}
-
-function messageNamesOf(operation: Record<string, unknown>): string[] {
-  const messages = own(operation, 'messages');
-  if (!Array.isArray(messages)) return [];
-  const names: string[] = [];
-  for (const entry of messages) {
-    const ref = asString(own(entry, '$ref'));
-    if (ref === undefined) continue;
-    const marker = '/messages/';
-    const at = ref.lastIndexOf(marker);
-    if (at < 0) continue;
-    const name = decodePointerToken(ref.slice(at + marker.length));
-    if (name !== '') names.push(name);
-  }
-  return names;
+  return out;
 }
 
 /**
@@ -277,6 +351,7 @@ function classifyVersion(raw: Record<string, unknown>): 'read' | AsyncApiRefusal
 export function normalizeAsyncApiDocument(
   parsed: unknown,
   documentPath: string,
+  budget: number = MAX_TOTAL_OPERATIONS,
 ): { operations: AsyncApiOperation[]; refusals: Partial<Record<AsyncApiRefusal, number>> } {
   const refusals: Partial<Record<AsyncApiRefusal, number>> = {};
   const tally = makeTally(refusals);
@@ -299,13 +374,27 @@ export function normalizeAsyncApiDocument(
   const operationsRaw = asRecord(own(raw, 'operations'));
   if (operationsRaw === undefined) return { operations, refusals };
 
+  let examined = 0;
   for (const operationId of Object.keys(operationsRaw)) {
-    if (operations.length >= MAX_OPERATIONS_PER_DOCUMENT) {
+    // Counted against operations EXAMINED. A cap on accepted operations bounds
+    // the output but not the work, and the work is what a pathological document
+    // spends.
+    examined += 1;
+    if (examined > MAX_OPERATIONS_PER_DOCUMENT) {
       tally.count('operation-cap');
+      break;
+    }
+    if (operations.length >= budget) {
+      tally.count('total-operation-cap');
       break;
     }
     const operation = asRecord(own(operationsRaw, operationId));
     if (operation === undefined) continue;
+
+    if (operationId.length > MAX_OPERATION_ID_LENGTH) {
+      tally.count('operation-id-too-long');
+      continue;
+    }
 
     const action = asString(own(operation, 'action'))?.trim().toLowerCase();
     if (action !== 'send' && action !== 'receive') {
@@ -329,24 +418,43 @@ export function normalizeAsyncApiDocument(
     // channel by anything unique; only `address` is defined as the thing the
     // broker is addressed by, and keying a node on a document-local map key
     // would join two services that merely organized their documents alike.
-    const address = asString(own(channel, 'address'))?.trim();
-    if (address === undefined || address === '') {
+    //
+    // NOT TRIMMED, deliberately. The source cascade keeps an address exactly as
+    // written — `" orders "` is its own node and does not join `"orders"` — on
+    // the grounds that a missing connection beats a false one. Two producers of
+    // one key must not hold opposite whitespace policies, and of the two
+    // available answers this is the one that errs away from joining.
+    const address = asString(own(channel, 'address'));
+    if (address === undefined || address.trim() === '') {
       tally.count('no-address');
       continue;
     }
+    if (address.length > MAX_ADDRESS_LENGTH) {
+      tally.count('address-too-long');
+      continue;
+    }
+    if (own(channel, 'parameters') !== undefined || address.includes('{')) {
+      tally.count('templated-address');
+      continue;
+    }
 
-    // Two independent readings of the same fact. Both are ordinary AsyncAPI —
-    // neither is a vendor extension — and requiring them to agree is what turns
-    // a broker guess into a broker reading.
+    // Two independent readings of the same fact, and they must agree WHEN BOTH
+    // ARE PRESENT. Neither is a vendor extension. A single unchallenged reading
+    // is accepted — it is the document's only statement about its broker, and
+    // refusing it would lose every document that names its protocol once.
     const fromBindings = brokersFromBindings(own(operation, 'bindings'));
-    const { brokers: fromServers, rawProtocol } = brokersFromChannelServers(channel, servers);
+    const fromServers = brokersFromChannelServers(channel, servers);
     if (fromBindings.size > 1 || fromServers.size > 1) {
       tally.count('protocol-disagreement');
       continue;
     }
     const bindingBroker = [...fromBindings][0];
     const serverBroker = [...fromServers][0];
-    if (bindingBroker !== undefined && serverBroker !== undefined && bindingBroker !== serverBroker) {
+    if (
+      bindingBroker !== undefined &&
+      serverBroker !== undefined &&
+      bindingBroker !== serverBroker
+    ) {
       tally.count('protocol-disagreement');
       continue;
     }
@@ -356,15 +464,7 @@ export function normalizeAsyncApiDocument(
       continue;
     }
 
-    operations.push({
-      documentPath,
-      operationId,
-      action,
-      address,
-      broker,
-      protocol: rawProtocol ?? [...fromBindings][0] ?? broker,
-      messageNames: messageNamesOf(operation),
-    });
+    operations.push({ documentPath, operationId, action, address, broker });
   }
 
   return { operations, refusals };
@@ -375,10 +475,24 @@ function looksLikeDocument(head: string): boolean {
   return /(^|[\s{,"'])["']?asyncapi["']?\s*:/m.test(head);
 }
 
-async function collectCandidateFiles(root: string): Promise<string[]> {
-  const found: string[] = [];
+interface WalkResult {
+  files: string[];
+  symlinksSkipped: number;
+  truncated: boolean;
+}
+
+async function collectCandidateFiles(root: string): Promise<WalkResult> {
+  const files: string[] = [];
+  let symlinksSkipped = 0;
+  let visited = 0;
+  let truncated = false;
+
   const walk = async (dir: string, depth: number): Promise<void> => {
-    if (depth > MAX_DIRECTORY_DEPTH || found.length >= MAX_DOCUMENTS) return;
+    if (truncated) return;
+    if (depth > MAX_DIRECTORY_DEPTH) {
+      truncated = true;
+      return;
+    }
     let entries: import('node:fs').Dirent[];
     try {
       entries = await fs.readdir(dir, { withFileTypes: true });
@@ -389,20 +503,76 @@ async function collectCandidateFiles(root: string): Promise<string[]> {
     // not of the order the filesystem happened to hand entries back.
     entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const entry of entries) {
-      if (found.length >= MAX_DOCUMENTS) return;
+      if (truncated) return;
+      visited += 1;
+      if (visited > MAX_WALK_ENTRIES || files.length >= MAX_DOCUMENTS) {
+        truncated = true;
+        return;
+      }
       const full = path.join(dir, entry.name);
       // `withFileTypes` reports a symlink as neither file nor directory, so
       // links are skipped without ever being followed — a configured directory
-      // must not become a route out of itself.
-      if (entry.isDirectory()) {
+      // must not become a route out of itself. Counted rather than dropped in
+      // silence: a symlinked cache would otherwise look exactly like a wrong
+      // path.
+      if (entry.isSymbolicLink()) {
+        symlinksSkipped += 1;
+      } else if (entry.isDirectory()) {
         await walk(full, depth + 1);
       } else if (entry.isFile() && DOCUMENT_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-        found.push(full);
+        files.push(full);
       }
     }
   };
+
   await walk(root, 0);
-  return found;
+  return { files, symlinksSkipped, truncated };
+}
+
+/**
+ * Read one candidate file under a hard byte ceiling.
+ *
+ * Modelled line for line on `frameworks/spring/actuator-runtime.ts`'s
+ * `readPayloadFile`, and for the reason its comment gives: the size gate and
+ * the read share ONE handle so both observe the same inode. Checking
+ * `fs.stat(path)` and then re-resolving that path in `fs.readFile` lets
+ * whatever writes the directory swap the file between the two calls, which
+ * makes the cap advisory (CodeQL js/file-system-race). The out-of-band cache
+ * this option exists to read is written by other tooling by definition, so the
+ * race is the normal condition here rather than an exotic one.
+ *
+ * The `isFile` test on the same handle is what the path-based version could not
+ * do at all. Without it the single-file configuration accepts anything `stat`
+ * follows: a character device reports size 0 and then streams until Node throws
+ * at two gigabytes, and a FIFO never returns at all.
+ *
+ * `O_NONBLOCK` is what makes that test reachable, and it was not obvious — it
+ * was found by writing the FIFO test and watching it TIME OUT rather than fail.
+ * Opening a FIFO for reading blocks in `open(2)` until some writer opens the
+ * other end, so a type check performed after the open never runs: the analyze
+ * hangs there, holding its repository lock, with no error to report. The flag
+ * makes the open return immediately for a FIFO and is a no-op for the regular
+ * files this actually wants, which is why it costs nothing to keep.
+ */
+async function readBoundedFile(file: string): Promise<string | 'oversized' | 'unreadable'> {
+  let handle: import('node:fs/promises').FileHandle | undefined;
+  try {
+    // `O_NONBLOCK` is absent on some platforms; falling back to a plain
+    // read-only open there keeps behaviour identical for regular files.
+    const nonBlocking = (fsConstants.O_NONBLOCK ?? 0) | fsConstants.O_RDONLY;
+    handle = await fs.open(file, nonBlocking);
+    const stat = await handle.stat();
+    if (!stat.isFile()) return 'unreadable';
+    if (stat.size > MAX_DOCUMENT_BYTES) return 'oversized';
+    const buffer = Buffer.alloc(MAX_DOCUMENT_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MAX_DOCUMENT_BYTES) return 'oversized';
+    return buffer.subarray(0, bytesRead).toString('utf-8');
+  } catch {
+    return 'unreadable';
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
 
 /**
@@ -427,29 +597,39 @@ export async function readAsyncApiDocuments(
   const operations: AsyncApiOperation[] = [];
   let documentsScanned = 0;
   let documentsAccepted = 0;
+  let symlinksSkipped = 0;
+  let truncated = false;
 
   const root = path.resolve(repoPath, configuredPath);
   let files: string[];
   try {
     const stat = await fs.stat(root);
-    files = stat.isDirectory() ? await collectCandidateFiles(root) : [root];
+    if (stat.isDirectory()) {
+      const walked = await collectCandidateFiles(root);
+      files = walked.files;
+      symlinksSkipped = walked.symlinksSkipped;
+      truncated = walked.truncated;
+      if (truncated) tally.count('walk-truncated');
+    } else {
+      files = [root];
+    }
   } catch {
     tally.count('unreadable');
-    return { operations, documentsScanned, documentsAccepted, refusals };
+    return {
+      operations,
+      documentsScanned,
+      documentsAccepted,
+      symlinksSkipped,
+      truncated,
+      refusals,
+    };
   }
 
   for (const file of files) {
     documentsScanned += 1;
-    let content: string;
-    try {
-      const stat = await fs.stat(file);
-      if (stat.size > MAX_DOCUMENT_BYTES) {
-        tally.count('oversized');
-        continue;
-      }
-      content = await fs.readFile(file, 'utf-8');
-    } catch {
-      tally.count('unreadable');
+    const content = await readBoundedFile(file);
+    if (content === 'oversized' || content === 'unreadable') {
+      tally.count(content);
       continue;
     }
 
@@ -469,13 +649,21 @@ export async function readAsyncApiDocuments(
       continue;
     }
 
-    const result = normalizeAsyncApiDocument(parsed, file);
+    const remaining = MAX_TOTAL_OPERATIONS - operations.length;
+    if (remaining <= 0) {
+      tally.count('total-operation-cap');
+      truncated = true;
+      break;
+    }
+
+    const result = normalizeAsyncApiDocument(parsed, file, remaining);
     for (const [reason, count] of Object.entries(result.refusals)) {
       refusals[reason as AsyncApiRefusal] = (refusals[reason as AsyncApiRefusal] ?? 0) + count;
+      if (reason === 'total-operation-cap') truncated = true;
     }
     if (result.operations.length > 0) documentsAccepted += 1;
     operations.push(...result.operations);
   }
 
-  return { operations, documentsScanned, documentsAccepted, refusals };
+  return { operations, documentsScanned, documentsAccepted, symlinksSkipped, truncated, refusals };
 }
