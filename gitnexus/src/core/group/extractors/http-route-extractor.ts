@@ -333,27 +333,27 @@ function stripLeadingTemplatePrefix(url: string): string | null {
   return rest.startsWith('/') ? rest : null;
 }
 
+/**
+ * Placeholder substituted for `${...}` before WHATWG `URL` parsing so the
+ * parser cannot percent-encode our own `{param}` markers. A genuine encoded
+ * segment like `%7Bfoo%7D` then survives as a literal, instead of being
+ * rewritten into braces and folded into `{param}`.
+ */
+const CONSUMER_PARAM_SENTINEL = '__gitnexus_http_param__';
+
 function normalizeConsumerPath(url: string): string | null {
   const stripped = stripLeadingTemplatePrefix(url.trim());
   if (stripped === null) return null;
-  const templated = stripped.replace(/\$\{[^}]+\}/g, '{param}').trim();
+  const templated = stripped.replace(/\$\{[^}]+\}/g, CONSUMER_PARAM_SENTINEL).trim();
   let pathOnly = templated;
   if (/^https?:\/\//i.test(templated)) {
     try {
-      // Restore the braces of our OWN `{param}` markers: the templating pass
-      // above already collapsed every `${...}` span, and the WHATWG URL
-      // parser percent-encodes braces in the pathname (`{param}` →
-      // `%7Bparam%7D`), which would hide them from normalizeHttpPath's
-      // `{...}` fold below — the contract then reads as a literal segment
-      // that can never match its `/{param}` provider. Only the brace
-      // encodings are restored (not a full decodeURIComponent) so genuine
-      // `%XX` sequences in the path survive untouched, and a malformed
-      // escape like `/api/100%off` cannot throw here.
-      pathOnly = new URL(templated).pathname.replace(/%7b/gi, '{').replace(/%7d/gi, '}');
+      pathOnly = new URL(templated).pathname;
     } catch {
       pathOnly = templated.replace(/^https?:\/\/[^/]+/i, '');
     }
   }
+  pathOnly = pathOnly.split(CONSUMER_PARAM_SENTINEL).join('{param}');
   const normalized = normalizeHttpPath(pathOnly || '/');
   const segments = normalized
     .split('/')
@@ -1047,8 +1047,8 @@ export class HttpRouteExtractor implements ContractExtractor {
         if (d.role !== 'consumer') continue;
         const pathNorm = normalizeConsumerPath(d.path);
         // A consumer url that cannot be reduced to a routable path (e.g. a
-        // leading template binding that is neither a clean prefix nor the
-        // unique `/`-bearing literal run) is dropped here rather than emitted
+        // leading template binding that is neither a clean prefix nor a
+        // remainder that starts with `/`) is dropped here rather than emitted
         // as a never-matching contract — same treatment the plugins give
         // static relative urls at scan time.
         if (pathNorm === null) continue;

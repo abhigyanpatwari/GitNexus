@@ -843,3 +843,46 @@ describe('resolveJsImport', () => {
     );
   });
 });
+
+describe('wrapped X.request({ url, method }) detections', () => {
+  it('keeps the raw template so mid-path interpolations survive to the normalizer', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(
+          'httpClient.request({ url: `${client}/api/${tenant}/orders`, method: "GET" });',
+        ),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.framework).toBe('request');
+    expect(detections[0]?.method).toBe('GET');
+    expect(detections[0]?.path).toBe('${client}/api/${tenant}/orders');
+  });
+
+  it('emits * when method is present but not a literal', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", method: verb });'),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.method).toBe('*');
+  });
+
+  it('defaults to GET only when method/type is absent', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(jsParser.parse('httpClient.request({ url: "/api/orders" });')),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.method).toBe('GET');
+  });
+
+  it('drops a static relative url at scan time', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: 'api/orders', method: 'GET' });"),
+      ),
+    );
+    expect(detections).toHaveLength(0);
+  });
+});

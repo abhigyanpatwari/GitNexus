@@ -226,91 +226,27 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
   return null;
 }
 
-/**
- * Reduce a wrapped-client `url` value to a routable path for contract
- * matching. Enterprise wrappers commonly interpolate a service-prefix
- * variable into the template literal — `` `${client}/api/v1/orders` `` —
- * where the leading `${...}` is a gateway/host binding, not part of the
- * route (consumer-path normalization alone would keep it as a leading
- * `{param}` segment and never match a provider). Split the template on
- * its interpolations and keep the longest literal segment that starts
- * with `/`; plain string urls pass through when they look like an
- * absolute path. Returns null for values that do not reduce to one
- * (fully-qualified hosts, bare variable names, relative fragments).
- */
-function extractWrappedRequestPath(rawUrl: string): string | null {
-  if (!rawUrl.includes('${')) {
-    return rawUrl.startsWith('/') ? rawUrl : null;
+/** True when the object literal has a pair whose key is one of `keyNames`. */
+function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]): boolean {
+  for (let i = 0; i < objectNode.namedChildCount; i++) {
+    const pair = objectNode.namedChild(i);
+    if (!pair || pair.type !== 'pair') continue;
+    const keyNode = pair.childForFieldName('key');
+    if (keyNode && keyNames.includes(keyNode.text)) return true;
   }
-  let best = '';
-  for (const segment of rawUrl.split(/\$\{[^}]*\}/)) {
-    if (segment.startsWith('/') && segment.length > 1 && segment.length > best.length) {
-      best = segment;
-    }
-  }
-  return best || null;
+  return false;
 }
 
 /**
- * For a standalone `decorator` node (child of class_body / program),
- * find the related `class_declaration` node that it decorates. In
- * tree-sitter-typescript the decorator is placed before the class
- * declaration as a sibling (when decorating a class) or inside the
- * class_body before a method_definition (when decorating a method);
- * we walk the parent chain until we find the enclosing class.
+ * Verb for wrapped `X.request({ url, method|type })`. Absent key → GET
+ * (same default as fetch-without-options / jQuery ajax). Present but not a
+ * string/template → `*` so matching can still link without pinning GET.
  */
-function findDecoratedClass(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  const parent = decoratorNode.parent;
-  if (!parent) return null;
-  // Case 1: decorator is a sibling of the class_declaration at program /
-  // export_statement level. Walk forward through siblings until we find
-  // the class_declaration this decorator belongs to.
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child && child.id === decoratorNode.id) {
-      for (let j = i + 1; j < parent.namedChildCount; j++) {
-        const next = parent.namedChild(j);
-        if (!next) continue;
-        if (next.type === 'decorator') continue; // adjacent decorators stack
-        if (next.type === 'class_declaration') return next;
-        if (next.type === 'export_statement') {
-          // `export class Foo { ... }` wraps the declaration.
-          for (let k = 0; k < next.namedChildCount; k++) {
-            const inner = next.namedChild(k);
-            if (inner?.type === 'class_declaration') return inner;
-          }
-        }
-        break;
-      }
-      break;
-    }
-  }
-  // Case 2: decorator is inside a class_body (decorating a method) —
-  // walk up to the enclosing class_declaration.
-  return findEnclosingClass(decoratorNode);
-}
-
-/**
- * For a method-level decorator node (child of class_body before a
- * method_definition), find the method_definition it decorates.
- */
-function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  const parent = decoratorNode.parent;
-  if (!parent || parent.type !== 'class_body') return null;
-  for (let i = 0; i < parent.namedChildCount; i++) {
-    const child = parent.namedChild(i);
-    if (child && child.id === decoratorNode.id) {
-      for (let j = i + 1; j < parent.namedChildCount; j++) {
-        const next = parent.namedChild(j);
-        if (!next) continue;
-        if (next.type === 'decorator') continue;
-        if (next.type === 'method_definition') return next;
-        return null;
-      }
-      return null;
-    }
-  }
-  return null;
+function readRequestMethod(objectNode: Parser.SyntaxNode): string {
+  const rawMethod = readStringProp(objectNode, ['method', 'type']);
+  if (rawMethod !== null) return rawMethod.toUpperCase();
+  if (hasObjectKey(objectNode, ['method', 'type'])) return '*';
+  return 'GET';
 }
 
 /**
@@ -557,18 +493,6 @@ function resolveConsumerPath(
   return legacyShape || looksLikeHttpPath(literal) ? literal : null;
 }
 
-/**
- * Find the nearest enclosing class_declaration for a node, or null.
- */
-function findEnclosingClass(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
-  let cur: Parser.SyntaxNode | null = node.parent;
-  while (cur) {
-    if (cur.type === 'class_declaration') return cur;
-    cur = cur.parent;
-  }
-  return null;
-}
-
 function scanBundle(
   bundle: NodePatternBundle,
   tree: Parser.Tree,
@@ -806,25 +730,24 @@ function scanBundle(
 
   // Consumer: wrapped client `X.request({ url, method })` — the shared
   // enterprise axios-instance shape (`httpClient.request` from
-  // win-request and friends). The url goes through
-  // extractWrappedRequestPath first so `` `${client}/api/v1/x` `` emits
-  // `/api/v1/x`, which consumer-path normalization then matches against
-  // a provider for the same route. Skips calls whose `url` does not
-  // reduce to an absolute path.
+  // win-request and friends). Emit the raw url (templates intact) so
+  // shared `normalizeConsumerPath` can strip a leading `${…}` gateway
+  // prefix and fold mid/tail interpolations to `{param}`. A plugin-side
+  // longest-slash-segment reducer would truncate those mid-templates
+  // before the shared normalizer ever saw them. Static relative urls
+  // (no `${`, no leading `/`) are skipped here — same scan-time
+  // rejection as other Node consumers.
   for (const match of runCompiledPatterns(bundle.requestObject, tree)) {
     const optionsNode = match.captures.options;
     if (!optionsNode) continue;
     const rawUrl = readStringProp(optionsNode, ['url']);
     if (rawUrl === null) continue;
-    const path = extractWrappedRequestPath(rawUrl);
-    if (path === null) continue;
-    const rawMethod = readStringProp(optionsNode, ['method', 'type']);
-    const method = (rawMethod ?? 'GET').toUpperCase();
+    if (!rawUrl.includes('${') && !rawUrl.startsWith('/')) continue;
     out.push({
       role: 'consumer',
       framework: 'request',
-      method,
-      path,
+      method: readRequestMethod(optionsNode),
+      path: rawUrl,
       name: null,
       line: optionsNode.startPosition.row + 1,
       confidence: 0.65,

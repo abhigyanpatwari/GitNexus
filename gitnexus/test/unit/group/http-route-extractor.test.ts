@@ -2775,6 +2775,57 @@ export function listDefaults() {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/defaults')).toBeDefined();
     });
 
+    it('extracts wrapped X.request({ url, method }) with shared prefix-strip and * verbs', async () => {
+      const dir = path.join(tmpDir, 'wrapped-request');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/client.ts'),
+        `
+export function listOrders(httpClient, serviceClient, tenant, verb) {
+  return httpClient.request({ url: \`\${serviceClient}/api/v1/orders\`, method: 'post' });
+}
+export function getTenantOrder(httpClient, client, tenant) {
+  return httpClient.request({ url: \`\${client}/api/\${tenant}/orders\`, method: 'GET' });
+}
+export function rootPing(httpClient, client) {
+  return httpClient.request({ url: \`\${client}/\`, method: 'GET' });
+}
+export function dynamicVerb(httpClient) {
+  return httpClient.request({ url: '/api/orders', method: verb });
+}
+export function missingMethod(httpClient) {
+  return httpClient.request({ url: '/api/defaults' });
+}
+export function dropHostTemplate(httpClient, scheme, host) {
+  return httpClient.request({ url: \`\${scheme}://\${host}/api/x\`, method: 'GET' });
+}
+export function absTemplateParam(httpClient, id) {
+  return httpClient.request({ url: \`https://host/api/\${id}\`, method: 'GET' });
+}
+export async function encodedBraceLiteral() {
+  return fetch('https://host/api/%7Bfoo%7D');
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/v1/orders')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/{param}/orders'),
+      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::*::/api/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/defaults')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/x')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/orders')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/{param}')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d'),
+      ).toBeDefined();
+    });
+
     it('does not emit consumers for unrelated object-literal calls (negative control)', async () => {
       const dir = path.join(tmpDir, 'jquery-axios-negative');
       fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });
