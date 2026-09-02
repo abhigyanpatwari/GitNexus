@@ -316,9 +316,6 @@ export function normalizeHttpPath(p: string): string {
 function stripLeadingTemplatePrefix(url: string): string | null {
   if (!url.startsWith('${')) return url;
   const rest = url.replace(/^(?:\$\{[^}]*\})+/, '');
-  // A remainder without a single leading `/` is a relative fragment, a
-  // scheme://… shape, or protocol-relative `//host/…` — not provably a
-  // routable path, so it is dropped rather than guessed at.
   return rest.startsWith('/') && !rest.startsWith('//') ? rest : null;
 }
 
@@ -341,16 +338,7 @@ function restoreConsumerParamSentinel(pathOnly: string): string {
     .replace(new RegExp(CONSUMER_PARAM_SENTINEL_ENC, 'gi'), '{param}');
 }
 
-/**
- * Consumer-side path canonicalizer used by every JS HTTP consumer
- * (fetch, axios member/object, jquery, wrapped `.request`):
- *   - strip a leading `${gateway}` / `${a}${b}` prefix (see
- *     `stripLeadingTemplatePrefix`) — this rewrites contract ids that used
- *     to keep `/{param}/…` for `` `${API_BASE}/users` ``;
- *   - remaining template literals (`${x}`) → `{param}`;
- *   - strip protocol + host if the URL is absolute `https?://`;
- *   - numeric segments → `{param}` (`/api/orders/42` → `/api/orders/{param}`).
- */
+/** Canonicalize a consumer URL after `stripLeadingTemplatePrefix`. */
 function normalizeConsumerPath(url: string): string | null {
   const stripped = stripLeadingTemplatePrefix(url.trim());
   if (stripped === null) return null;

@@ -13,6 +13,7 @@ import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js'
 import { MAX_FOLD_LENGTH } from '../../../ingestion/route-extractors/constant-resolver.js';
 import {
   DATA_ROUTE_TABLE_SOURCE,
+  propertyName,
   scanDataRouteTables,
 } from '../../../ingestion/route-extractors/data-route-table.js';
 import { extractNestRoutes } from '../../../ingestion/route-extractors/nest.js';
@@ -218,22 +219,12 @@ const TYPESCRIPT_BUNDLE = compileBundle(TypeScript.typescript, 'typescript-http'
 const TSX_BUNDLE = compileBundle(TypeScript.tsx, 'tsx-http');
 
 /**
- * Unquoted object-literal key. Quoted `"method"` / `'url'` keep the quotes
- * on `keyNode.text`; compare against the unquoted name so both spellings match.
- */
-function objectKeyName(keyNode: Parser.SyntaxNode): string | null {
-  if (keyNode.type === 'string' || keyNode.type === 'template_string') {
-    return unquoteLiteral(keyNode.text);
-  }
-  return keyNode.text;
-}
-
-/**
  * Walk `pair` children of an `object` literal and return the unquoted
  * string/template_string value for the first pair whose key matches one
  * of `keyNames`. Returns null when no matching pair is present or the
  * value is not a string literal. Used by the jQuery ajax / axios object
  * consumers to resolve `url` / `method` / `type` keys in any order.
+ * Keys use shared `propertyName` so quoted `"method"` matches `method`.
  */
 function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string[]): string | null {
   for (let i = 0; i < objectNode.namedChildCount; i++) {
@@ -242,7 +233,7 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
     const keyNode = pair.childForFieldName('key');
     const valueNode = pair.childForFieldName('value');
     if (!keyNode || !valueNode) continue;
-    const key = objectKeyName(keyNode);
+    const key = propertyName(keyNode);
     if (key === null || !keyNames.includes(key)) continue;
     if (valueNode.type !== 'string' && valueNode.type !== 'template_string') continue;
     const lit = unquoteLiteral(valueNode.text);
@@ -270,7 +261,7 @@ function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]
     if (child.type !== 'pair') continue;
     const keyNode = child.childForFieldName('key');
     if (!keyNode) continue;
-    const key = objectKeyName(keyNode);
+    const key = propertyName(keyNode);
     if (key !== null && keyNames.includes(key)) return true;
   }
   return false;
@@ -517,7 +508,7 @@ function looksLikeHttpPath(path: string): boolean {
   // unresolved term happened to contain a space.
   const shape = path.replace(/\$\{[^}]+\}/g, '{param}');
   if (/\s/.test(shape)) return false;
-  if (shape.startsWith('{param}')) return shape.startsWith('{param}/');
+  if (shape.startsWith('{param}') && !shape.startsWith('{param}/')) return false;
   // An all-digit string is a path only when it is written as one. A leading
   // slash is that evidence: `client.get('/123')` is a route whose segment the
   // consumer normalizer reads as `{param}`, while a bare `"5000"` folded out of
