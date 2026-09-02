@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createWatchIgnorePredicate } from '../../src/config/ignore-service.js';
-import { isRelevantWatchPath, resolveWatchOptions } from '../../src/cli/watch.js';
+import { isRelevantWatchPath, resolveWatchOptions } from '../../src/cli/analyze-watch.js';
 import * as git from '../../src/storage/git.js';
 
 vi.mock('../../src/storage/git.js', () => ({

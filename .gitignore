@@ -31,6 +31,8 @@ npm-debug.log*
 
 # Testing
 coverage/
+.tmp-test/
+gitnexus/.tmp-test/
 
 # Misc
 *.local
