@@ -71,9 +71,10 @@ export function formatDetectChangesResult(result: unknown): string {
     // `queryDegraded` is `partial: true` with the same counts and no message —
     // do not call that a confirmed mapping (#3131 honesty).
     if (!payload.partial && (summary.changed_files ?? 0) > 0) {
-      return [...notes, t('tool.detectChanges.noOverlappingSymbols', { files: summary.changed_files })].join(
-        '\n',
-      );
+      return [
+        ...notes,
+        t('tool.detectChanges.noOverlappingSymbols', { files: summary.changed_files }),
+      ].join('\n');
     }
     if (payload.partial) {
       return notes.join('\n');
