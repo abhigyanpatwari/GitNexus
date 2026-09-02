@@ -898,7 +898,7 @@ queue.request({ url: '/admin', method: 'DELETE' });
     expect(detections).toHaveLength(0);
   });
 
-  it('still admits $http and api wrapper names without axios proof', () => {
+  it('admits $http by spelling but not a bare api without axios proof', () => {
     const detections = consumers(
       JAVASCRIPT_HTTP_PLUGIN.scan(
         jsParser.parse(`
@@ -907,10 +907,86 @@ api.request({ url: '/api/users', method: 'POST' });
 `),
       ),
     );
-    expect(detections.map((d) => d.method + d.path).sort()).toEqual([
-      'GET/api/orders',
-      'POST/api/users',
+    expect(detections).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/api/orders', framework: 'request' }),
     ]);
+  });
+
+  it('reads quoted method/type keys and type: as the verb', () => {
+    const quoted = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", "method": "POST" });'),
+      ),
+    );
+    expect(quoted[0]?.method).toBe('POST');
+    const typed = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: '/api/items', type: 'PUT' });"),
+      ),
+    );
+    expect(typed[0]?.method).toBe('PUT');
+  });
+
+  it('emits * when method may arrive via object spread', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", ...config });'),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.method).toBe('*');
+  });
+
+  it('keeps static absolute wrapped-request urls for host stripping', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: 'https://host/api/x', method: 'GET' });"),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.path).toBe('https://host/api/x');
+  });
+
+  it('admits axios.create instances calling .request', () => {
+    const detections = consumers(
+      scanRepo(
+        {
+          'src/lib/client.ts': `
+            import axios from 'axios';
+            export const api = axios.create({ baseURL: '/' });
+          `,
+          'src/api/orders.ts': `
+            import { api } from '../lib/client';
+            export const create = () => api.request({ url: '/api/orders', method: 'POST' });
+          `,
+        },
+        'src/api/orders.ts',
+      ),
+    );
+    expect(detections).toContainEqual(
+      expect.objectContaining({ role: 'consumer', method: 'POST', path: '/api/orders' }),
+    );
+  });
+
+  it('admits member-verb calls with a gateway-prefixed template', () => {
+    const detections = consumers(
+      scanRepo(
+        {
+          'src/lib/client.ts': `
+            import axios from 'axios';
+            export default axios.create({ baseURL: '/' });
+          `,
+          'src/api/users.ts': `
+            import api from '../lib/client';
+            export const list = (gateway: string) => api.get(\`\${gateway}/api/v1/users\`);
+            export const bare = (id: string) => api.get(\`\${id}\`);
+            export const glue = (c: string) => api.get(\`\${c}api/x\`);
+          `,
+        },
+        'src/api/users.ts',
+      ),
+    );
+    expect(detections.map((d) => d.path)).toEqual(['${gateway}/api/v1/users']);
   });
 
   it('trims whitespace-prefixed absolute paths at scan time', () => {

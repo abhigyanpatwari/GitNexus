@@ -292,12 +292,6 @@ export function normalizeHttpPath(p: string): string {
 }
 
 /**
- * Consumer-side normalization is more aggressive:
- *   - template literals (`${x}`) → `{param}`
- *   - strip protocol + host if the URL is absolute
- *   - numeric segments → `{param}` (so `/api/orders/42` → `/api/orders/{param}`)
- */
-/**
  * Strip LEADING template interpolations from a consumer url as gateway/host
  * bindings — the enterprise wrapper shape `` `${serviceClient}/api/v1/x` ``
  * where `${serviceClient}` selects the gateway service, not a route segment.
@@ -306,17 +300,12 @@ export function normalizeHttpPath(p: string): string {
  * in any one language plugin:
  *   - `` `${c}/api/x` ``      → `/api/x`   (clean prefix; `${c}${d}/api/x` → `/api/x`)
  *   - `` `${c}/api/x/${id}` ``→ `/api/x/${id}` (mid/tail interpolations are left for the `{param}` pass)
- * Returns null when the stripped remainder does not start with `/` — the url
- * then does not reduce to a routable path and the consumer is dropped, the
- * SAME rejection the plugins give static relative urls at scan time:
- *   - `` `${c}api/x` `` — the remainder is a relative fragment; whether it
- *     reads as a path depends on unverifiable runtime state (the binding
- *     happening to end in `/`), so keeping it could match an unrelated
- *     provider — same reasoning as the static `api/x` rejection;
- *   - `` `${scheme}://${host}/api/x` `` and `` `${c}api${d}/x` `` — host
- *     fragments and path cannot be told apart (pre-strip the first produced a
- *     dead `/{param}://{param}/api/x` contract that never matched, so dropping
- *     loses nothing).
+ * Returns null when the stripped remainder is not a single-slash path:
+ *   - remainder without `/` — relative fragment (`${c}api/x`) or scheme/host
+ *     (`${scheme}://${host}/api/x`); whether it is a path depends on
+ *     unverifiable runtime state, so it is dropped rather than guessed at;
+ *   - remainder starting with `//` — protocol-relative (`${proto}//host/api/x`);
+ *     keeping it would later collapse to `/host/api/x`.
  *
  * The `?` in a query string cannot leak into the brace matching: `${...}`
  * spans are matched by braces here (before any `{param}` replacement), and
@@ -327,10 +316,10 @@ export function normalizeHttpPath(p: string): string {
 function stripLeadingTemplatePrefix(url: string): string | null {
   if (!url.startsWith('${')) return url;
   const rest = url.replace(/^(?:\$\{[^}]*\})+/, '');
-  // A remainder without the leading `/` is a relative fragment (host join
-  // slash living inside the binding, or a scheme://… shape) — not provably a
+  // A remainder without a single leading `/` is a relative fragment, a
+  // scheme://… shape, or protocol-relative `//host/…` — not provably a
   // routable path, so it is dropped rather than guessed at.
-  return rest.startsWith('/') ? rest : null;
+  return rest.startsWith('/') && !rest.startsWith('//') ? rest : null;
 }
 
 /**
@@ -352,6 +341,16 @@ function restoreConsumerParamSentinel(pathOnly: string): string {
     .replace(new RegExp(CONSUMER_PARAM_SENTINEL_ENC, 'gi'), '{param}');
 }
 
+/**
+ * Consumer-side path canonicalizer used by every JS HTTP consumer
+ * (fetch, axios member/object, jquery, wrapped `.request`):
+ *   - strip a leading `${gateway}` / `${a}${b}` prefix (see
+ *     `stripLeadingTemplatePrefix`) — this rewrites contract ids that used
+ *     to keep `/{param}/…` for `` `${API_BASE}/users` ``;
+ *   - remaining template literals (`${x}`) → `{param}`;
+ *   - strip protocol + host if the URL is absolute `https?://`;
+ *   - numeric segments → `{param}` (`/api/orders/42` → `/api/orders/{param}`).
+ */
 function normalizeConsumerPath(url: string): string | null {
   const stripped = stripLeadingTemplatePrefix(url.trim());
   if (stripped === null) return null;

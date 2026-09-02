@@ -2781,6 +2781,8 @@ export function listDefaults() {
       fs.writeFileSync(
         path.join(dir, 'src/client.ts'),
         `
+import axios from 'axios';
+
 export function listOrders(httpClient, serviceClient, tenant, verb) {
   return httpClient.request({ url: \`\${serviceClient}/api/v1/orders\`, method: 'post' });
 }
@@ -2801,6 +2803,24 @@ export function dropHostTemplate(httpClient, scheme, host) {
 }
 export function absTemplateParam(httpClient, id) {
   return httpClient.request({ url: \`https://host/api/\${id}\`, method: 'GET' });
+}
+export function quotedMethod(httpClient) {
+  return httpClient.request({ url: '/api/quoted', "method": 'PATCH' });
+}
+export function spreadMethod(httpClient, config) {
+  return httpClient.request({ url: '/api/spread', ...config });
+}
+export function staticAbsolute(httpClient) {
+  return httpClient.request({ url: 'https://host/api/static', method: 'GET' });
+}
+export function protocolRelative(httpClient, proto) {
+  return httpClient.request({ url: \`\${proto}//host/api/proto\`, method: 'GET' });
+}
+export async function fetchGateway(gateway) {
+  return fetch(\`\${gateway}/api/users\`);
+}
+export function axiosGateway(gateway) {
+  return axios.get(\`\${gateway}/api/users\`);
 }
 export async function encodedBraceLiteral() {
   return fetch('https://host/api/%7Bfoo%7D');
@@ -2824,7 +2844,19 @@ export async function literalSentinelSegment() {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/x')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/orders')).toBeUndefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/{param}')).toBeDefined();
+<<<<<<< HEAD
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d')).toBeDefined();
+=======
+      expect(consumers.find((c) => c.contractId === 'http::PATCH::/api/quoted')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::*::/api/spread')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/static')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/proto')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/host/api/proto')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d'),
+      ).toBeDefined();
+>>>>>>> 7d9e18265 (fix(http): honest wrapped-request methods and tighter admission (#3111))
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/__gitnexus_http_param__'),
       ).toBeDefined();

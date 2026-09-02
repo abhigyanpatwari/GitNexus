@@ -155,7 +155,9 @@ const AXIOS_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
 // ─── Consumer: wrapped client X.request({ url, method }) ────────────
 // Enterprise wrapper shape: an axios instance (or a named request helper)
 // re-exported under a local name — `httpClient.request({ url, method })`
-// from `@winex-plugin/win-request`, `$http.request(...)`, `api.request(...)`.
+// from `@winex-plugin/win-request`, `$http.request(...)`. Generic names
+// like `api` need axios.create/import proof (`isHttpClientRef`); spelling
+// alone is too common (graphql-request helpers, domain `api` objects).
 // The member property is `request` (not an HTTP verb), so this cannot
 // collide with the Express provider pattern (`router.get`) or the axios
 // member form (`axios.get`). Option keys are resolved programmatically,
@@ -179,7 +181,7 @@ const REQUEST_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
  * Spelling-only: the last identifier in `obj.text` (`this.$http` → `$http`).
  * Keep this set small — every extra name is a false-positive surface.
  */
-const WRAPPED_REQUEST_RECEIVERS = new Set(['httpClient', '$http', 'api']);
+const WRAPPED_REQUEST_RECEIVERS = new Set(['httpClient', '$http']);
 
 interface NodePatternBundle {
   express: CompiledPatterns<Record<string, never>>;
@@ -216,6 +218,17 @@ const TYPESCRIPT_BUNDLE = compileBundle(TypeScript.typescript, 'typescript-http'
 const TSX_BUNDLE = compileBundle(TypeScript.tsx, 'tsx-http');
 
 /**
+ * Unquoted object-literal key. Quoted `"method"` / `'url'` keep the quotes
+ * on `keyNode.text`; compare against the unquoted name so both spellings match.
+ */
+function objectKeyName(keyNode: Parser.SyntaxNode): string | null {
+  if (keyNode.type === 'string' || keyNode.type === 'template_string') {
+    return unquoteLiteral(keyNode.text);
+  }
+  return keyNode.text;
+}
+
+/**
  * Walk `pair` children of an `object` literal and return the unquoted
  * string/template_string value for the first pair whose key matches one
  * of `keyNames`. Returns null when no matching pair is present or the
@@ -229,7 +242,8 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
     const keyNode = pair.childForFieldName('key');
     const valueNode = pair.childForFieldName('value');
     if (!keyNode || !valueNode) continue;
-    if (!keyNames.includes(keyNode.text)) continue;
+    const key = objectKeyName(keyNode);
+    if (key === null || !keyNames.includes(key)) continue;
     if (valueNode.type !== 'string' && valueNode.type !== 'template_string') continue;
     const lit = unquoteLiteral(valueNode.text);
     if (lit !== null) return lit;
@@ -237,11 +251,15 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
   return null;
 }
 
-/** True when the object literal has a pair whose key is one of `keyNames`. */
+/**
+ * True when the object literal has a pair / shorthand whose key is one of
+ * `keyNames`, or a spread (`...config`) that may supply those keys at runtime.
+ */
 function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]): boolean {
   for (let i = 0; i < objectNode.namedChildCount; i++) {
     const child = objectNode.namedChild(i);
     if (!child) continue;
+    if (child.type === 'spread_element') return true;
     if (
       (child.type === 'shorthand_property_identifier' ||
         child.type === 'shorthand_property_identifier_pattern') &&
@@ -251,7 +269,9 @@ function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]
     }
     if (child.type !== 'pair') continue;
     const keyNode = child.childForFieldName('key');
-    if (keyNode && keyNames.includes(keyNode.text)) return true;
+    if (!keyNode) continue;
+    const key = objectKeyName(keyNode);
+    if (key !== null && keyNames.includes(key)) return true;
   }
   return false;
 }
@@ -259,7 +279,8 @@ function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]
 /**
  * Verb for wrapped `X.request({ url, method|type })`. Absent key → GET
  * (same default as fetch-without-options / jQuery ajax). Present but not a
- * string/template → `*` so matching can still link without pinning GET.
+ * string/template, or supplied only via object spread → `*` so matching
+ * can still link without pinning GET.
  */
 function readRequestMethod(objectNode: Parser.SyntaxNode): string {
   const rawMethod = readStringProp(objectNode, ['method', 'type']);
@@ -481,9 +502,10 @@ function resolveFactsFor(
  *
  * `/{param}` matches every one-segment provider route in the group, and
  * `matching.exclude_links_param_only_paths` defaults to `false`. A path whose
- * leading term is an unresolved placeholder is refused for the same reason —
- * nothing pins where it starts. (`resolveJsPathExpression` already refuses those
- * it folded itself; this also covers the literal fallback below.)
+ * leading term is an unresolved placeholder is refused unless the next
+ * character is `/` — that is the gateway-prefix shape
+ * `` `${serviceClient}/api/v1/x` `` that `stripLeadingTemplatePrefix` keeps.
+ * Bare `{param}` and `{param}api/x` stay rejected: nothing pins a route.
  */
 function looksLikeHttpPath(path: string): boolean {
   if (path === '') return false;
@@ -495,7 +517,7 @@ function looksLikeHttpPath(path: string): boolean {
   // unresolved term happened to contain a space.
   const shape = path.replace(/\$\{[^}]+\}/g, '{param}');
   if (/\s/.test(shape)) return false;
-  if (shape.startsWith('{param}')) return false;
+  if (shape.startsWith('{param}')) return shape.startsWith('{param}/');
   // An all-digit string is a path only when it is written as one. A leading
   // slash is that evidence: `client.get('/123')` is a route whose segment the
   // consumer normalizer reads as `{param}`, while a bare `"5000"` folded out of
@@ -763,8 +785,7 @@ function scanBundle(
     if (!optionsNode) continue;
     const path = readStringProp(optionsNode, ['url']);
     if (path === null) continue;
-    const rawMethod = readStringProp(optionsNode, ['method']);
-    const method = (rawMethod ?? 'GET').toUpperCase();
+    const method = readRequestMethod(optionsNode);
     out.push({
       role: 'consumer',
       framework: 'axios',
@@ -782,9 +803,11 @@ function scanBundle(
   // shared `normalizeConsumerPath` can strip a leading `${…}` gateway
   // prefix and fold mid/tail interpolations to `{param}`. A plugin-side
   // longest-slash-segment reducer would truncate those mid-templates
-  // before the shared normalizer ever saw them. Static relative urls
-  // (no `${`, no leading `/`) are skipped here — same scan-time
-  // rejection as other Node consumers.
+  // before the shared normalizer ever saw them. This scan drops only
+  // static relative urls (no `${`, no leading `/`, not `https?://`).
+  // That filter is request-wrapper-specific: fetch/axios member forms
+  // already admit absolute urls and leave host stripping to
+  // `normalizeConsumerPath`.
   for (const match of runCompiledPatterns(bundle.requestObject, tree)) {
     const optionsNode = match.captures.options;
     const objNode = match.captures.obj;
@@ -793,7 +816,7 @@ function scanBundle(
     const rawUrl = readStringProp(optionsNode, ['url']);
     if (rawUrl === null) continue;
     const url = rawUrl.trim();
-    if (!url.includes('${') && !url.startsWith('/')) continue;
+    if (!url.includes('${') && !url.startsWith('/') && !/^https?:\/\//i.test(url)) continue;
     out.push({
       role: 'consumer',
       framework: 'request',
