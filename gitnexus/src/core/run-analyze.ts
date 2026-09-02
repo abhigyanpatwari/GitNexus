@@ -470,6 +470,11 @@ export interface AnalyzeOptions {
    */
   springActuatorPath?: string;
   /**
+   * Explicit local AsyncAPI 3.x document input, forwarded to the destination
+   * phase. Undefined keeps source-only address resolution.
+   */
+  asyncApiSpecPath?: string;
+  /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
    * durability but skips the native `conn.close()`/`db.close()`, which can
@@ -1708,6 +1713,35 @@ async function runFullAnalysisInner(
   const springActuatorScanExclusions =
     retainedActuatorInputs.length === 0 ? undefined : retainedActuatorInputs;
 
+  // AsyncAPI documents are the same class of input as Actuator snapshots and
+  // need the same treatment, for a reason git cannot see: the documents live
+  // outside the tree as often as in it, and NOTHING about replacing one moves
+  // the commit or dirties the working tree. Without this, the second run of an
+  // out-of-band cache — the workflow the option exists for — takes the
+  // already-up-to-date fast path below, never opens a document, and serves the
+  // previous run's addresses while reporting success. Measured, not reasoned:
+  // editing a document and re-running printed "Already up to date" and left the
+  // old address in the graph.
+  //
+  // Forcing the rebuild also settles a second defect for free. A synthetic
+  // `File` node for an out-of-tree document (`asyncapi:<label>`) carries a path
+  // that is in no write set and is not covered by `isGraphWideNode`, so on an
+  // incremental writeback the node is dropped while its edges — anchored to a
+  // graph-wide `Destination` — are kept, and the edges then COPY against a row
+  // that was never written. A full rebuild has no incremental subgraph to get
+  // that wrong, so the pair cannot come apart.
+  const asyncApiSpecRequested = options.asyncApiSpecPath !== undefined;
+  const asyncApiSpecPreviouslyEnabled = existingMeta?.asyncApiSpec?.enabled === true;
+  if (asyncApiSpecRequested) {
+    if (!options.force) {
+      log('AsyncAPI document reading requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (asyncApiSpecPreviouslyEnabled) {
+    log('AsyncAPI document reading disabled; rebuilding to remove document-derived evidence.');
+    options = { ...options, force: true };
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -2015,6 +2049,7 @@ async function runFullAnalysisInner(
       fetchWrappers: options.fetchWrappers,
       skipDerivedGraphPhases,
       springActuatorPath: options.springActuatorPath,
+      asyncApiSpecPath: options.asyncApiSpecPath,
       springActuatorScanExclusions,
     },
   );
@@ -3797,6 +3832,11 @@ async function runFullAnalysisInner(
             },
           }
         : {}),
+      // Written only while enabled. Once the option is dropped, the disable
+      // transition above has already forced the cleanup rebuild, so carrying a
+      // `{ enabled: false }` stamp forward would only make every subsequent run
+      // re-decide a question that is already settled.
+      ...(asyncApiSpecRequested ? { asyncApiSpec: { enabled: true } } : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
