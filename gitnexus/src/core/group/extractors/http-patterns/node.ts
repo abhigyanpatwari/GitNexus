@@ -153,22 +153,33 @@ const AXIOS_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
 };
 
 // ─── Consumer: wrapped client X.request({ url, method }) ────────────
-// Enterprise wrapper shape: an axios instance (or anything request-like)
+// Enterprise wrapper shape: an axios instance (or a named request helper)
 // re-exported under a local name — `httpClient.request({ url, method })`
 // from `@winex-plugin/win-request`, `$http.request(...)`, `api.request(...)`.
 // The member property is `request` (not an HTTP verb), so this cannot
 // collide with the Express provider pattern (`router.get`) or the axios
 // member form (`axios.get`). Option keys are resolved programmatically,
 // same as the jQuery ajax / axios object forms.
+//
+// The query captures the receiver so scan can reject unrelated
+// `.request({ url })` APIs (`cy.request`, `queue.request`).
 const REQUEST_OBJECT_SPEC: PatternSpec<Record<string, never>> = {
   meta: {},
   query: `
     (call_expression
       function: (member_expression
+        object: (_) @obj
         property: (property_identifier) @fn (#eq? @fn "request"))
       arguments: (arguments (object) @options))
   `,
 };
+
+/**
+ * Receivers admitted as wrapped HTTP clients without axios.create proof.
+ * Spelling-only: the last identifier in `obj.text` (`this.$http` → `$http`).
+ * Keep this set small — every extra name is a false-positive surface.
+ */
+const WRAPPED_REQUEST_RECEIVERS = new Set(['httpClient', '$http', 'api']);
 
 interface NodePatternBundle {
   express: CompiledPatterns<Record<string, never>>;
@@ -247,6 +258,31 @@ function readRequestMethod(objectNode: Parser.SyntaxNode): string {
   if (rawMethod !== null) return rawMethod.toUpperCase();
   if (hasObjectKey(objectNode, ['method', 'type'])) return '*';
   return 'GET';
+}
+
+function wrappedRequestReceiverName(receiver: string): string {
+  const parts = receiver.split('.');
+  return parts[parts.length - 1] ?? receiver;
+}
+
+/** Axios module / axios.create instance, or a registered wrapper identifier. */
+function isAdmittedWrappedRequestReceiver(
+  receiver: string,
+  fileKey: string | undefined,
+  facts: JsRepoFacts | null,
+): boolean {
+  if (WRAPPED_REQUEST_RECEIVERS.has(wrappedRequestReceiverName(receiver))) return true;
+  try {
+    const isModule =
+      facts === null || fileKey === undefined
+        ? receiver === 'axios'
+        : isAxiosNamespace(fileKey, receiver, facts);
+    if (isModule) return true;
+    if (!facts || fileKey === undefined) return false;
+    return isHttpClientRef(fileKey, receiver, facts);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -739,7 +775,9 @@ function scanBundle(
   // rejection as other Node consumers.
   for (const match of runCompiledPatterns(bundle.requestObject, tree)) {
     const optionsNode = match.captures.options;
-    if (!optionsNode) continue;
+    const objNode = match.captures.obj;
+    if (!optionsNode || !objNode) continue;
+    if (!isAdmittedWrappedRequestReceiver(objNode.text, fileKey, facts)) continue;
     const rawUrl = readStringProp(optionsNode, ['url']);
     if (rawUrl === null) continue;
     if (!rawUrl.includes('${') && !rawUrl.startsWith('/')) continue;

@@ -885,4 +885,31 @@ describe('wrapped X.request({ url, method }) detections', () => {
     );
     expect(detections).toHaveLength(0);
   });
+
+  it('does not treat cy.request or queue.request as HTTP consumers', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(`
+cy.request({ url: '/api/v1/orders', method: 'GET' });
+queue.request({ url: '/admin', method: 'DELETE' });
+`),
+      ),
+    );
+    expect(detections).toHaveLength(0);
+  });
+
+  it('still admits $http and api wrapper names without axios proof', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(`
+$http.request({ url: '/api/orders', method: 'GET' });
+api.request({ url: '/api/users', method: 'POST' });
+`),
+      ),
+    );
+    expect(detections.map((d) => d.method + d.path).sort()).toEqual([
+      'GET/api/orders',
+      'POST/api/users',
+    ]);
+  });
 });

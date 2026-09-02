@@ -2826,6 +2826,27 @@ export async function encodedBraceLiteral() {
       ).toBeDefined();
     });
 
+    it('does not mint HTTP consumers for ungated .request({ url }) helpers', async () => {
+      const dir = path.join(tmpDir, 'wrapped-request-negative');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/misc.ts'),
+        `
+export function e2e(cy) {
+  return cy.request({ url: '/api/v1/orders', method: 'GET' });
+}
+export function enqueue(queue) {
+  return queue.request({ url: '/admin', method: 'DELETE' });
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/v1/orders')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::DELETE::/admin')).toBeUndefined();
+    });
+
     it('does not emit consumers for unrelated object-literal calls (negative control)', async () => {
       const dir = path.join(tmpDir, 'jquery-axios-negative');
       fs.mkdirSync(path.join(dir, 'public/js'), { recursive: true });
