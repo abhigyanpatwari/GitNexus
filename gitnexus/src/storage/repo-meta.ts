@@ -203,6 +203,11 @@ export interface RepoMeta {
    */
   analysisFeatures?: Record<string, number>;
   /**
+   * Canonical registered-prefix list used to resolve vendor Spring mapping
+   * annotations. A changed value invalidates persisted JVM Route evidence.
+   */
+  springVendorPrefixes?: string;
+  /**
    * The resolved GITNEXUS_FTS_CJK_SEGMENTATION mode ('none' | 'bigram') the
    * existing index's content/description columns were last written under
    * (#2331/#2339). On mismatch with the live process's resolved mode,
