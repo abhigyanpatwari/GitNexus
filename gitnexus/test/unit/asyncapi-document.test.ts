@@ -667,6 +667,182 @@ describe('normalizeAsyncApiDocument — reference resolution', () => {
   });
 });
 
+/**
+ * Every case below was raised in review against a tree whose ninety-five other
+ * tests passed. Each one is a way the reader could name a broker the document
+ * does not name — a subset mistaken for the whole, a reference dropped instead
+ * of refused, an evidence source never consulted, a pointer decoded in the
+ * wrong order — and each therefore forges the half of a join key that decides
+ * which services meet.
+ */
+describe('normalizeAsyncApiDocument — partial evidence must not read as unanimous', () => {
+  /** `count` servers, all Kafka but the last. */
+  function manyServers(count: number, lastProtocol: string): Record<string, unknown> {
+    const servers: Record<string, unknown> = {};
+    for (let i = 0; i < count - 1; i += 1) {
+      servers[`kafka${i}`] = { host: `example:${9000 + i}`, protocol: 'kafka' };
+    }
+    servers.tail = { host: 'example:61616', protocol: lastProtocol };
+    return servers;
+  }
+
+  it('refuses the inherited default when the server map was capped', () => {
+    // 1000 Kafka servers then one JMS. The slice the cap admits is unanimously
+    // Kafka, and the complete set is not — so agreement among what was read is
+    // not agreement, and the operation must not be attributed at all.
+    const d = doc({
+      servers: manyServers(1_001, 'jms'),
+      channels: { orders: { address: CHANNEL_ADDRESS } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['capped-server-default']).toBe(1);
+  });
+
+  it('resolves a root server written as a Reference Object', () => {
+    // The Servers Object patterned field is `Server Object | Reference Object`.
+    // Reading `protocol` off the raw value drops the reference, and an all
+    // reference document then has no protocol at all.
+    const d = doc({
+      servers: { prod: { $ref: '#/components/servers/prod' } },
+      components: { servers: { prod: { host: 'example:9092', protocol: 'kafka' } } },
+      channels: { orders: { address: CHANNEL_ADDRESS } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders' } } },
+    });
+    expect(normalizeAsyncApiDocument(d, '/spec.yaml').operations[0].broker).toBe('kafka');
+  });
+
+  it('sees the disagreement a dropped Reference Object used to hide', () => {
+    // The mixed case, and the reason the previous test matters. Dropping the
+    // reference leaves one Kafka server standing alone and unanimous, and the
+    // operation is attributed to Kafka with confidence — while the document
+    // plainly declares a JMS server too.
+    const d = doc({
+      servers: {
+        legacy: { $ref: '#/components/servers/legacy' },
+        stream: { host: 'example:9092', protocol: 'kafka' },
+      },
+      components: { servers: { legacy: { host: 'example:61616', protocol: 'jms' } } },
+      channels: { orders: { address: CHANNEL_ADDRESS } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['ambiguous-server-default']).toBe(1);
+  });
+
+  it('refuses attribution when a selected server reference does not resolve', () => {
+    const d = doc({
+      servers: { prod: { $ref: '#/components/servers/absent' } },
+      components: { servers: {} },
+      channels: { orders: { address: CHANNEL_ADDRESS } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['unresolved-server-reference']).toBe(1);
+  });
+
+  it('refuses a channel whose own server reference does not resolve', () => {
+    const d = doc({
+      servers: { known: { host: 'example:9092', protocol: 'kafka' } },
+      channels: {
+        orders: { address: CHANNEL_ADDRESS, servers: [{ $ref: '#/servers/typo' }] },
+      },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['unresolved-server-reference']).toBe(1);
+  });
+
+  it('treats an EMPTY channel `servers` as absent, inheriting every server', () => {
+    // "If `servers` is absent or empty, this channel MUST be available on all
+    // the servers defined in the Servers Object" — one sentence, both cases.
+    const d = doc({
+      servers: { only: { host: 'example:9092', protocol: 'kafka' } },
+      channels: { orders: { address: CHANNEL_ADDRESS, servers: [] } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders' } } },
+    });
+    expect(normalizeAsyncApiDocument(d, '/spec.yaml').operations[0].broker).toBe('kafka');
+  });
+
+  it('reads the broker from CHANNEL bindings when the operation states none', () => {
+    const d = doc({
+      channels: { orders: { address: CHANNEL_ADDRESS, bindings: { kafka: {} } } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders' } } },
+    });
+    expect(normalizeAsyncApiDocument(d, '/spec.yaml').operations[0].broker).toBe('kafka');
+  });
+
+  it('refuses when channel and operation bindings name different brokers', () => {
+    // Two statements about one operation, made one level apart. Preferring the
+    // nearer one silently picks a side in a contradiction the document itself
+    // has not resolved.
+    const d = doc({
+      channels: { orders: { address: CHANNEL_ADDRESS, bindings: { kafka: {} } } },
+      operations: {
+        op: { action: 'send', channel: { $ref: '#/channels/orders' }, bindings: { jms: {} } },
+      },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['protocol-disagreement']).toBe(1);
+  });
+
+  it('agrees with itself when both binding levels name the same broker', () => {
+    const d = doc({
+      channels: { orders: { address: CHANNEL_ADDRESS, bindings: { kafka: {} } } },
+      operations: {
+        op: { action: 'send', channel: { $ref: '#/channels/orders' }, bindings: { kafka: {} } },
+      },
+    });
+    expect(normalizeAsyncApiDocument(d, '/spec.yaml').operations[0].broker).toBe('kafka');
+  });
+});
+
+describe('normalizeAsyncApiDocument — JSON Pointer decoding order', () => {
+  it('refuses `%2F`, which decodes into a separator the raw text does not carry', () => {
+    // RFC 6901 fragment processing percent-decodes BEFORE splitting on `/`.
+    // Testing the raw token for a separator inverts that: `orders%2Fv1` carries
+    // no literal slash, so a raw test sees one segment, and the decode that
+    // follows produces two. The pointer addresses `channels.orders.v1`, which
+    // this reader does not follow — reading it as a channel named `orders/v1`
+    // invents a channel the document never declared.
+    const d = doc({
+      servers: { s: { host: 'example:9092', protocol: 'kafka' } },
+      channels: { 'orders/v1': { address: CHANNEL_ADDRESS } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders%2Fv1' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['no-channel-reference']).toBe(1);
+  });
+
+  it('refuses a malformed escape instead of resolving the undecoded text', () => {
+    const d = doc({
+      servers: { s: { host: 'example:9092', protocol: 'kafka' } },
+      channels: { 'orders%zz': { address: CHANNEL_ADDRESS } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders%zz' } } },
+    });
+    const { operations, refusals } = normalizeAsyncApiDocument(d, '/spec.yaml');
+    expect(operations).toHaveLength(0);
+    expect(refusals['no-channel-reference']).toBe(1);
+  });
+
+  it('still resolves `~1`, which is how a slash in a name is spelled', () => {
+    // The control. `~1` is the pointer's OWN escape and is applied after
+    // segmentation, so a channel genuinely named `orders/v1` stays reachable.
+    const d = doc({
+      servers: { s: { host: 'example:9092', protocol: 'kafka' } },
+      channels: { 'orders/v1': { address: CHANNEL_ADDRESS } },
+      operations: { op: { action: 'send', channel: { $ref: '#/channels/orders~1v1' } } },
+    });
+    expect(normalizeAsyncApiDocument(d, '/spec.yaml').operations[0].broker).toBe('kafka');
+  });
+});
+
 describe('readAsyncApiDocuments', () => {
   // Tracked and removed: an earlier version of this suite left 162 temporary
   // directories (and a named pipe) behind on one developer machine.
@@ -714,6 +890,28 @@ operations:
     expect(result.documentsScanned).toBe(2);
     expect(result.refusals['not-a-document']).toBe(1);
     expect(result.truncated).toBe(false);
+  });
+
+  it('finds the root key behind a preamble longer than any fixed window', async () => {
+    // A fixed sniff window decides the answer by where the key happens to sit
+    // rather than by whether the key is there, so every window is a false
+    // negative waiting for a file with a longer preamble. Four kilobytes was
+    // replaced by sixty-four for exactly this reason and inherited exactly this
+    // defect; the padding here clears the larger window as easily.
+    const preamble = `${'# a licence header line, repeated\n'.repeat(2_200)}`;
+    expect(preamble.length).toBeGreaterThan(64 * 1024);
+    const dir = await fixture({ 'asyncapi.yaml': preamble + VALID });
+    const result = await readAsyncApiDocuments(dir, '.');
+    expect(result.refusals['not-a-document']).toBeUndefined();
+    expect(result.operations).toHaveLength(1);
+    expect(result.operations[0].broker).toBe('kafka');
+  });
+
+  it('reads a document saved with a UTF-8 byte-order mark', async () => {
+    const dir = await fixture({ 'asyncapi.yaml': `\uFEFF${VALID.trimStart()}` });
+    const result = await readAsyncApiDocuments(dir, '.');
+    expect(result.operations).toHaveLength(1);
+    expect(result.operations[0].broker).toBe('kafka');
   });
 
   it('reads a JSON document, which is a first-class supported form', async () => {

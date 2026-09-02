@@ -97,16 +97,13 @@ const MAX_DIRECTORY_DEPTH = 8;
  *  can declare hundreds of thousands of them. */
 const MAX_SERVERS_PER_DOCUMENT = 1_000;
 /**
- * How much of a file is searched for the root key before committing to a parse.
+ * A leading byte-order mark, stripped before the file is sniffed or parsed.
  *
- * The gate exists to skip the YAML PARSE of unrelated files in a configured
- * directory, not to skip the read — the content is already in memory by the
- * time this runs — so the window costs only a linear scan and can afford to be
- * generous. Four kilobytes was not: a document behind a licence header longer
- * than that was refused as `not-a-document`, which is a false negative on a
- * perfectly good document, found by feeding the reader a padded file.
+ * An editor that saves UTF-8 with a BOM puts one code point in front of the
+ * root key, which is enough to make the sniff miss and refuse a perfectly good
+ * document as `not-a-document`.
  */
-const SNIFF_BYTES = 64 * 1024;
+const BOM = '\uFEFF';
 /**
  * An address and an operation id both end up inside graph identifiers, and
  * `generateId` CONCATENATES rather than hashes (`lib/utils.ts`), so an
@@ -215,6 +212,27 @@ export type AsyncApiRefusal =
    *  it is simply multi-protocol and this channel did not choose — which is why
    *  this is not `protocol-disagreement`. */
   | 'ambiguous-server-default'
+  /**
+   * The channel inherits the document's servers, but that map was CAPPED at
+   * {@link MAX_SERVERS_PER_DOCUMENT}, so the brokers read are a subset.
+   *
+   * Distinct from `ambiguous-server-default`, and the distinction is the whole
+   * point: unanimity across a subset is not unanimity. A document whose first
+   * thousand servers are Kafka and whose thousand-and-first is JMS reads as
+   * unanimously Kafka, and every operation inheriting it would be attributed to
+   * a broker the complete set does not agree on.
+   */
+  | 'capped-server-default'
+  /**
+   * A server this operation depends on is a Reference Object this reader could
+   * not resolve — a pointer outside `#/servers` and `#/components/servers`, a
+   * name that is absent, or a reference to another reference.
+   *
+   * Refused rather than skipped. Skipping one server of several silently
+   * narrows the evidence, and a narrowed set is what makes a mixed document
+   * look like it agrees with itself.
+   */
+  | 'unresolved-server-reference'
   /** The broker is HTTP or WebSocket, where the host rather than the address is
    *  the namespace. See `isNonDestinationBroker`. */
   | 'not-a-destination-protocol';
@@ -293,23 +311,56 @@ function asString(value: unknown): string | undefined {
  * the pointer's own escapes — `~1` before `~0`, or a literal `~1` produced by
  * decoding `~01` would be mistaken for a slash.
  */
-function decodePointerToken(token: string): string {
-  let decoded = token;
+function decodeFragment(ref: string): string | undefined {
   try {
-    decoded = decodeURIComponent(token);
+    return decodeURIComponent(ref);
   } catch {
-    // A stray `%` is not an encoding error worth losing the reference over.
+    // A malformed escape is REFUSED, not passed through raw. `%zz` means the
+    // pointer cannot be known, and resolving it to whatever the undecoded text
+    // happens to spell is how a reference nobody can read becomes an address
+    // somebody joins on.
+    return undefined;
   }
-  return decoded.split('~1').join('/').split('~0').join('~');
 }
 
-/** `#/channels/<token>` → the channel name, or `undefined` for anything else. */
+/** RFC 6901's own escapes, `~1` before `~0` — a literal `~1` produced by
+ *  decoding `~01` would otherwise be mistaken for a slash. */
+function unescapePointerToken(token: string): string {
+  return token.split('~1').join('/').split('~0').join('~');
+}
+
+/**
+ * `#/channels/<token>` → the channel name, or `undefined` for anything else.
+ *
+ * DECODE, THEN SEGMENT. The order is RFC 6901's, not a preference: the pointer
+ * travels inside a URI fragment, so percent-decoding comes off first and only
+ * then is the result split on `/`. Testing the RAW text for a separator is the
+ * wrong order and lets `#/channels/orders%2Fv1` through — it carries no literal
+ * slash, so a raw test sees a single segment, and the decode that follows turns
+ * it into two. That pointer addresses `channels.orders.v1`, which this reader
+ * does not follow; treating it as a channel named `orders/v1` invents a channel
+ * the document never declared and keys a destination on it.
+ *
+ * A channel whose name genuinely contains a slash is spelled `~1`, and that
+ * still resolves — the pointer escape is applied after segmentation, where it
+ * belongs.
+ */
 function channelNameFromRef(ref: string): string | undefined {
-  const prefix = '#/channels/';
-  if (!ref.startsWith(prefix)) return undefined;
-  const token = ref.slice(prefix.length);
+  return pointerName(ref, '#/channels/');
+}
+
+/**
+ * The single trailing name of `<prefix><token>`, decoded in RFC 6901's order.
+ *
+ * Returns `undefined` — never a guess — when the fragment does not decode, does
+ * not start with the prefix, is empty, or resolves to more than one segment.
+ */
+function pointerName(ref: string, prefix: string): string | undefined {
+  const decoded = decodeFragment(ref);
+  if (decoded === undefined || !decoded.startsWith(prefix)) return undefined;
+  const token = decoded.slice(prefix.length);
   if (token === '' || token.includes('/')) return undefined;
-  return decodePointerToken(token);
+  return unescapePointerToken(token);
 }
 
 /**
@@ -331,24 +382,90 @@ function brokersFromBindings(bindings: unknown): Set<string> {
   return out;
 }
 
-/** Brokers of the servers a channel names explicitly. */
+/**
+ * The broker one Servers Object entry names, following at most one local `$ref`.
+ *
+ * The Servers Object's patterned field is `Server Object | Reference Object`,
+ * so an entry may legitimately be `{ $ref: '#/components/servers/prod' }`.
+ * Reading `protocol` off the raw value drops every one of those, and a dropped
+ * server is not neutral here: in a mixed set it removes the disagreeing half
+ * and makes partial evidence look unanimous, which is exactly how a confident
+ * WRONG broker gets attributed.
+ *
+ * `unresolved` is reported rather than swallowed so the caller can refuse the
+ * attribution instead of answering from the servers it happened to understand.
+ * A reference to a reference counts as unresolved too: one hop covers every
+ * document shape seen in practice, and chasing a chain over untrusted input
+ * would need a cycle guard before it were safe at all.
+ */
+function serverBroker(
+  entry: unknown,
+  root: Record<string, unknown>,
+): { broker: string | undefined; unresolved: boolean } {
+  const ref = asString(own(entry, '$ref'));
+  if (ref === undefined) {
+    return { broker: brokerForProtocol(asString(own(entry, 'protocol'))), unresolved: false };
+  }
+  const target = resolveLocalServerRef(ref, root);
+  if (target === undefined || own(target, '$ref') !== undefined) {
+    return { broker: undefined, unresolved: true };
+  }
+  return { broker: brokerForProtocol(asString(own(target, 'protocol'))), unresolved: false };
+}
+
+/** `#/servers/<name>` or `#/components/servers/<name>` → that Server Object. */
+function resolveLocalServerRef(
+  ref: string,
+  root: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const direct = pointerName(ref, '#/servers/');
+  if (direct !== undefined) return asRecord(own(asRecord(own(root, 'servers')), direct));
+  const inComponents = pointerName(ref, '#/components/servers/');
+  if (inComponents === undefined) return undefined;
+  const components = asRecord(own(asRecord(own(root, 'components')), 'servers'));
+  return asRecord(own(components, inComponents));
+}
+
+/**
+ * Brokers of the servers a channel names explicitly.
+ *
+ * An EMPTY array is not an explicit choice. The specification defines the two
+ * cases identically — "If `servers` is absent or empty, this channel MUST be
+ * available on all the servers defined in the Servers Object" — so reporting
+ * `explicit: true` after a zero-iteration loop blocks the inherited fallback
+ * and drops a perfectly valid operation as `protocol-unknown`.
+ *
+ * A channel's `servers` MUST hold Reference Objects — the specification says so
+ * in as many words, and forbids Server Objects there by name — so an entry that
+ * is not a resolvable local reference is counted `unresolved` rather than read.
+ */
 function brokersFromChannelRefs(
   channel: Record<string, unknown>,
-  servers: Record<string, unknown> | undefined,
-): { brokers: Set<string>; explicit: boolean } {
+  root: Record<string, unknown>,
+): { brokers: Set<string>; explicit: boolean; unresolved: boolean } {
   const out = new Set<string>();
   const refs = own(channel, 'servers');
-  if (!Array.isArray(refs) || servers === undefined) return { brokers: out, explicit: false };
+  if (!Array.isArray(refs) || refs.length === 0) {
+    return { brokers: out, explicit: false, unresolved: false };
+  }
+  const servers = asRecord(own(root, 'servers'));
+  let unresolved = false;
   for (const entry of refs) {
     const ref = asString(own(entry, '$ref'));
-    if (ref === undefined) continue;
-    const prefix = '#/servers/';
-    if (!ref.startsWith(prefix)) continue;
-    const name = decodePointerToken(ref.slice(prefix.length));
-    const broker = brokerForProtocol(asString(own(own(servers, name), 'protocol')));
-    if (broker !== undefined) out.add(broker);
+    const name = ref === undefined ? undefined : pointerName(ref, '#/servers/');
+    const target = name === undefined ? undefined : own(servers, name);
+    if (target === undefined) {
+      unresolved = true;
+      continue;
+    }
+    const resolved = serverBroker(target, root);
+    if (resolved.unresolved) {
+      unresolved = true;
+      continue;
+    }
+    if (resolved.broker !== undefined) out.add(resolved.broker);
   }
-  return { brokers: out, explicit: true };
+  return { brokers: out, explicit: true, unresolved };
 }
 
 /**
@@ -359,19 +476,23 @@ function brokersFromChannelRefs(
  * quadratic in `servers × operations`, which an in-cap document can drive to
  * minutes.
  */
-function brokersOfAllServers(servers: Record<string, unknown> | undefined): {
+function brokersOfAllServers(root: Record<string, unknown>): {
   brokers: Set<string>;
   capped: boolean;
+  unresolved: boolean;
 } {
   const out = new Set<string>();
-  if (servers === undefined) return { brokers: out, capped: false };
+  const servers = asRecord(own(root, 'servers'));
+  if (servers === undefined) return { brokers: out, capped: false, unresolved: false };
   const names = Object.keys(servers);
   const capped = names.length > MAX_SERVERS_PER_DOCUMENT;
+  let unresolved = false;
   for (const name of names.slice(0, MAX_SERVERS_PER_DOCUMENT)) {
-    const broker = brokerForProtocol(asString(own(own(servers, name), 'protocol')));
-    if (broker !== undefined) out.add(broker);
+    const resolved = serverBroker(own(servers, name), root);
+    if (resolved.unresolved) unresolved = true;
+    else if (resolved.broker !== undefined) out.add(resolved.broker);
   }
-  return { brokers: out, capped };
+  return { brokers: out, capped, unresolved };
 }
 
 /**
@@ -429,12 +550,11 @@ export function normalizeAsyncApiDocument(
   }
 
   const channels = asRecord(own(raw, 'channels'));
-  const servers = asRecord(own(raw, 'servers'));
   const operationsRaw = asRecord(own(raw, 'operations'));
   if (operationsRaw === undefined) return { operations, refusals, examined, truncated };
 
   // Once per document, not once per operation.
-  const allServers = brokersOfAllServers(servers);
+  const allServers = brokersOfAllServers(raw);
   if (allServers.capped) {
     tally.count('server-cap');
     truncated = true;
@@ -521,14 +641,33 @@ export function normalizeAsyncApiDocument(
     // server lose every operation it states, filed under a reason that says the
     // document contradicts itself — when the contradiction was manufactured
     // here by asking a question the operation had already answered.
-    const fromBindings = brokersFromBindings(own(operation, 'bindings'));
-    if (fromBindings.size > 1) {
+    //
+    // The CHANNEL's bindings count as well. They are a statement about the same
+    // operation made one level up, and a conformant document may carry only
+    // those — `channels: { orders: { bindings: { kafka: {} } } }` with no
+    // operation binding and no usable server protocol was dropped as
+    // `protocol-unknown` while the document had said plainly which broker it
+    // meant. Where both levels speak and disagree, the document contradicts
+    // itself and neither answer may be used.
+    const operationBindings = brokersFromBindings(own(operation, 'bindings'));
+    const channelBindings = brokersFromBindings(own(channel, 'bindings'));
+    if (operationBindings.size > 1 || channelBindings.size > 1) {
       tally.count('protocol-disagreement');
       continue;
     }
-    const bindingBroker = [...fromBindings][0];
+    const operationBroker = [...operationBindings][0];
+    const channelBroker = [...channelBindings][0];
+    if (
+      operationBroker !== undefined &&
+      channelBroker !== undefined &&
+      operationBroker !== channelBroker
+    ) {
+      tally.count('protocol-disagreement');
+      continue;
+    }
+    const bindingBroker = operationBroker ?? channelBroker;
 
-    const explicitServers = brokersFromChannelRefs(channel, servers);
+    const explicitServers = brokersFromChannelRefs(channel, raw);
     let broker: string | undefined;
     if (bindingBroker !== undefined) {
       // Cross-check only against servers the channel named itself, and only
@@ -542,12 +681,26 @@ export function normalizeAsyncApiDocument(
       }
       broker = bindingBroker;
     } else if (explicitServers.explicit) {
+      if (explicitServers.unresolved) {
+        tally.count('unresolved-server-reference');
+        continue;
+      }
       if (explicitServers.brokers.size > 1) {
         tally.count('protocol-disagreement');
         continue;
       }
       broker = [...explicitServers.brokers][0];
     } else {
+      // Order matters: an INCOMPLETE set must be refused before it is asked
+      // whether it agrees, because a subset agrees with itself for free.
+      if (allServers.capped) {
+        tally.count('capped-server-default');
+        continue;
+      }
+      if (allServers.unresolved) {
+        tally.count('unresolved-server-reference');
+        continue;
+      }
       if (allServers.brokers.size > 1) {
         tally.count('ambiguous-server-default');
         continue;
@@ -570,9 +723,20 @@ export function normalizeAsyncApiDocument(
   return { operations, refusals, examined, truncated };
 }
 
-/** Cheap pre-parse gate: does this file even claim to be an AsyncAPI document? */
-function looksLikeDocument(head: string): boolean {
-  return /(^|[\s{,"'])["']?asyncapi["']?\s*:/m.test(head);
+/**
+ * Cheap pre-parse gate: does this file even claim to be an AsyncAPI document?
+ *
+ * Scans the WHOLE text, which is already bounded by {@link MAX_DOCUMENT_BYTES}
+ * and already in memory. A fixed window is the wrong shape of bound here: it
+ * decides the answer by where the key happens to sit rather than by whether the
+ * key is there, so any window is a false negative waiting for a file with a
+ * longer preamble. Sixty-four kilobytes replaced four for exactly that reason
+ * and inherited exactly that defect — a licence header, a `$schema` block and a
+ * long `info.description` clear it easily. The gate exists to skip the YAML
+ * PARSE, which is the expensive half; a linear scan of the same bytes is not.
+ */
+function looksLikeDocument(text: string): boolean {
+  return /(^|[\s{,"'])["']?asyncapi["']?\s*:/m.test(text);
 }
 
 interface WalkResult {
@@ -766,17 +930,22 @@ export async function readAsyncApiDocuments(
       continue;
     }
 
+    // A UTF-8 BOM sits in front of the root key and would otherwise make both
+    // the sniff and the parse read a document that begins with one code point
+    // of nothing.
+    const text = content.startsWith(BOM) ? content.slice(BOM.length) : content;
+
     // Sniff before parsing. A configured directory may hold hundreds of
     // unrelated YAML files, and parsing each one to discover it is not a
     // document is the difference between a bounded cost and a per-file one.
-    if (!looksLikeDocument(content.slice(0, SNIFF_BYTES))) {
+    if (!looksLikeDocument(text)) {
       tally.count('not-a-document');
       continue;
     }
 
     let parsed: unknown;
     try {
-      parsed = yaml.load(content, { schema: DOCUMENT_SCHEMA });
+      parsed = yaml.load(text, { schema: DOCUMENT_SCHEMA });
     } catch {
       tally.count('unparsable');
       continue;
