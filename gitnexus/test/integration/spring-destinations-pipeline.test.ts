@@ -33,6 +33,16 @@ describe('Spring destination resolution', () => {
   const withAddress = (address: string): GraphNode[] =>
     destinations.filter((node) => node.properties.address === address);
 
+  /**
+   * Nodes at one address on ONE broker — the exact identity.
+   *
+   * `withAddress` alone stopped being a unique lookup once the broker joined
+   * the key: `orders.v1` is a Kafka topic AND an unrelated Rabbit queue in this
+   * fixture, so an assertion that means "the Kafka topic" has to say so.
+   */
+  const withBrokerAddress = (broker: string, address: string): GraphNode[] =>
+    withAddress(address).filter((node) => node.properties.broker === broker);
+
   const edgesTo = (node: GraphNode): GraphRelationship[] =>
     messagingEdges.filter((edge) => edge.targetId === node.id);
 
@@ -42,21 +52,44 @@ describe('Spring destination resolution', () => {
       .sort();
 
   it('resolves a literal destination on both sides', () => {
-    const nodes = withAddress('orders.v1');
+    const nodes = withBrokerAddress('kafka', 'orders.v1');
     expect(nodes).toHaveLength(1);
     expect(nodes[0]?.properties.resolution).toBe('literal');
-    expect(nodes[0]?.properties.broker).toBe('kafka');
   });
 
   it('joins a publisher and a subscriber that name the same address', () => {
     // The reason the node is keyed by address: this connection is one hop.
-    const [orders] = withAddress('orders.v1');
+    const [orders] = withBrokerAddress('kafka', 'orders.v1');
     expect(orders).toBeDefined();
     const names = sourceNames(orders as GraphNode);
     expect(names).toContain('publishLiteral');
     expect(names).toContain('consumeLiteral');
     const types = new Set(edgesTo(orders as GraphNode).map((edge) => edge.type));
     expect([...types].sort()).toEqual(['CONSUMES_FROM', 'PUBLISHES_TO']);
+  });
+
+  it('KEEPS that pair joined when a stranger names the same word on another broker', () => {
+    // THE regression, end to end. `UnrelatedRabbitConsumer` listens on a Rabbit
+    // queue it happened to call `orders.v1` and has nothing to do with the
+    // Kafka pair above. While the address alone keyed the node, its mere
+    // existence withdrew the address from all three sites and the pair — the
+    // thing this feature exists to report — stopped being connected by a file
+    // neither half of it knows about.
+    const kafka = withBrokerAddress('kafka', 'orders.v1');
+    const rabbit = withBrokerAddress('rabbit', 'orders.v1');
+    expect(kafka).toHaveLength(1);
+    expect(rabbit).toHaveLength(1);
+    expect(kafka[0]?.id).not.toBe(rabbit[0]?.id);
+
+    // The pair still meets on ONE node, from two files.
+    const pairSources = sourceNames(kafka[0] as GraphNode);
+    expect(pairSources).toContain('publishLiteral');
+    expect(pairSources).toContain('consumeLiteral');
+
+    // The stranger is on its own node, alone, and is NOT on the pair's.
+    expect(sourceNames(rabbit[0] as GraphNode)).toEqual(['consume']);
+    expect(pairSources).not.toContain('consume');
+    expect(edgesTo(rabbit[0] as GraphNode).map((edge) => edge.type)).toEqual(['CONSUMES_FROM']);
   });
 
   it('resolves a constant reference and joins on it too', () => {
@@ -106,11 +139,15 @@ describe('Spring destination resolution', () => {
     expect(returns).toHaveLength(1);
     const consumers = sourceNames(returns[0] as GraphNode);
     expect(consumers).toContain('consumeMany');
-    expect(sourceNames(withAddress('orders.v1')[0] as GraphNode)).toContain('consumeMany');
+    expect(sourceNames(withBrokerAddress('kafka', 'orders.v1')[0] as GraphNode)).toContain(
+      'consumeMany',
+    );
   });
 
   it('reads the Kotlin bracket and arrayOf spellings', () => {
-    expect(sourceNames(withAddress('orders.v1')[0] as GraphNode)).toContain('consumeArray');
+    expect(sourceNames(withBrokerAddress('kafka', 'orders.v1')[0] as GraphNode)).toContain(
+      'consumeArray',
+    );
     expect(withAddress('kotlin.arrayof.v1')).toHaveLength(1);
   });
 
@@ -278,35 +315,45 @@ describe('Spring destination resolution', () => {
   it('does not connect a Rabbit queue and a JMS queue that share a name', () => {
     // `@RabbitListener(queues = "orders.queue")` and
     // `jmsTemplate.convertAndSend("orders.queue", payload)` name the same
-    // string over two different brokers. Keyed on the address they were one
-    // node, and the ordinary two-hop walk below reported a subscriber reading
-    // what this publisher writes — which it does not.
-    expect(withAddress('orders.queue')).toEqual([]);
-
-    const conflicted = destinations.filter((node) => node.properties.name === 'orders.queue');
-    expect(conflicted).toHaveLength(2);
-    expect(new Set(conflicted.map((node) => node.id)).size).toBe(2);
-    for (const node of conflicted) {
-      expect(node.properties.address).toBeUndefined();
-      expect(node.properties.brokerConflict).toBe('jms,rabbit');
-      expect(node.properties.resolution).toBe('broker-conflict');
+    // string over two different brokers. Keyed on the address alone they were
+    // one node, and the ordinary two-hop walk below reported a subscriber
+    // reading what this publisher writes — which it does not.
+    //
+    // They are two nodes now because the BROKER is in the key, not because the
+    // address was withdrawn from either of them: both resolve, both carry
+    // `address`, and each is free to meet its own counterpart elsewhere. That
+    // is the difference the assertions below are written to hold apart.
+    const named = destinations.filter((node) => node.properties.name === 'orders.queue');
+    expect(named).toHaveLength(2);
+    expect(new Set(named.map((node) => node.id)).size).toBe(2);
+    expect(withAddress('orders.queue')).toHaveLength(2);
+    for (const node of named) {
+      expect(node.properties.address).toBe('orders.queue');
+      expect(node.properties.resolution).toBe('literal');
+      // Connecting, so no location — the incremental-delete rule applies to
+      // these exactly as it does to any other joinable destination.
+      expect(node.properties.filePath).toBe('');
     }
+    expect(new Set(named.map((node) => node.properties.broker))).toEqual(
+      new Set(['jms', 'rabbit']),
+    );
 
-    // The walk itself, stated the way a report would ask it: nobody reaches
-    // `publishToConflictingBroker` through a destination it shares.
-    const consumers = conflicted.flatMap((node) =>
+    // The walk itself, stated the way a report would ask it: the Rabbit
+    // subscription and the JMS publish land on DIFFERENT nodes, so neither
+    // reaches the other.
+    const consumerTargets = named.flatMap((node) =>
       edgesTo(node)
         .filter((edge) => edge.type === 'CONSUMES_FROM')
         .map((edge) => edge.targetId),
     );
-    const publishers = conflicted.flatMap((node) =>
+    const publisherTargets = named.flatMap((node) =>
       edgesTo(node)
         .filter((edge) => edge.type === 'PUBLISHES_TO')
         .map((edge) => edge.targetId),
     );
-    expect(consumers).toHaveLength(1);
-    expect(publishers).toHaveLength(1);
-    expect(consumers[0]).not.toBe(publishers[0]);
+    expect(consumerTargets).toHaveLength(1);
+    expect(publisherTargets).toHaveLength(1);
+    expect(consumerTargets[0]).not.toBe(publisherTargets[0]);
   });
 
   it('keeps the placeholder text visible in name, and out of address', () => {

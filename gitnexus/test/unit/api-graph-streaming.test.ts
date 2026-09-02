@@ -378,7 +378,7 @@ describe('streamGraphNdjson', () => {
 /**
  * The Destination overlay across the API boundary.
  *
- * `getNodeQuery` has projected the six overlay columns since the phase landed,
+ * `getNodeQuery` has projected the five overlay columns since the phase landed,
  * but `mapGraphNodeRow` built `properties` from an explicit literal and copied
  * none of them, so every client of `/api/graph` saw a `Destination` stripped of
  * the only fields that make it one. Both entry points share that mapper, so
@@ -386,7 +386,9 @@ describe('streamGraphNdjson', () => {
  * complete and leave `buildGraph` exactly as broken.
  */
 const RESOLVED_DESTINATION_ROW = {
-  id: 'Destination:orders.v1',
+  // A resolved destination is keyed by `(broker, address)`, so `broker` is part
+  // of the id and not only of the payload.
+  id: 'Destination:kafka orders.v1',
   name: 'orders.v1',
   filePath: '',
   startLine: null,
@@ -396,7 +398,6 @@ const RESOLVED_DESTINATION_ROW = {
   resolution: 'literal',
   configKey: null,
   configDefault: null,
-  brokerConflict: null,
 };
 
 const UNRESOLVED_DESTINATION_ROW = {
@@ -410,7 +411,6 @@ const UNRESOLVED_DESTINATION_ROW = {
   resolution: 'unresolved-config-key',
   configKey: 'app.topic',
   configDefault: null,
-  brokerConflict: null,
 };
 
 describe('Destination overlay properties', () => {
@@ -503,7 +503,10 @@ describe('Destination overlay properties', () => {
     expect(chunk).not.toContain('"address"');
     const properties = JSON.parse(chunk as string).data.properties;
     expect('address' in properties).toBe(false);
-    expect('brokerConflict' in properties).toBe(false);
+    // `configDefault` is the same shape of hazard, one column over: it is NULL
+    // on this row, and a serialized null is a value every other destination
+    // without a default would share.
+    expect('configDefault' in properties).toBe(false);
   });
 
   it('does not put the overlay keys on nodes of other labels', async () => {

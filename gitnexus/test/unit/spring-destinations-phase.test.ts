@@ -5,6 +5,7 @@ import {
   setJavaSpringNonHttpHandlerFacts,
 } from '../../src/core/ingestion/languages/java/capture-side-channel.js';
 import { SPRING_CONFIG_DESCRIPTION } from '../../src/core/ingestion/frameworks/spring/config-bindings.js';
+import { destinationNodeKey } from '../../src/core/ingestion/destination-key.js';
 import { springDestinationsPhase } from '../../src/core/ingestion/pipeline-phases/spring-destinations.js';
 import type { SpringDestinationsOutput } from '../../src/core/ingestion/pipeline-phases/spring-destinations.js';
 import type {
@@ -367,18 +368,112 @@ describe('springDestinations phase', () => {
     expect(output.configKeyLinks).toBe(0);
   });
 
-  it('DISCONNECTS an address two brokers claim, and says why on both nodes', async () => {
-    // A Kafka topic and a Rabbit queue that share a name are two places. Keyed
-    // on the address they were one node, and an ordinary PUBLISHES_TO /
-    // CONSUMES_FROM traversal then reported a connection between a publisher
-    // and a subscriber that have nothing to do with each other. The
-    // `brokerConflict` property this used to write does not prevent that: a
-    // flag on the node does not un-join the edges that already landed on it.
+  it('JOINS a Kafka pair on an address a stranger spells the same way', async () => {
+    // THE regression. Three sites on one spelling of `orders`: a real Kafka
+    // pair — a publisher in one file, a listener in another, genuinely
+    // connected — plus an unrelated `@RabbitListener(queues = "orders")`
+    // somewhere else in the repository.
     //
-    // So both sides are keyed by SITE and neither carries `address` — the join
-    // is impossible rather than merely discouraged. The diagnosis survives on
-    // both nodes, which is the half a plain "drop the node" would have lost.
-    const filePath = 'src/Conflict.java';
+    // Withdrawing the address from every site that named it made the third
+    // party's word choice enough to disconnect the other two: all three were
+    // keyed by site, none carried `address`, and the pair the feature exists to
+    // report was split by a file that has nothing to do with either half of it.
+    // With the broker in the key the pair meets on `kafka orders` and the
+    // stranger gets `rabbit orders`, which costs the pair nothing.
+    const publisherFile = 'src/KafkaPublisher.java';
+    const listenerFile = 'src/KafkaListener.java';
+    const strangerFile = 'src/UnrelatedRabbit.java';
+
+    setJavaSpringNonHttpHandlerFacts(publisherFile, []);
+    setJavaSpringMessageProducerFacts(publisherFile, [
+      {
+        ownerScopeId: `${publisherFile}#publish` as never,
+        ownerRange: OWNER_RANGE,
+        template: 'kafka',
+        receiverName: 'kafkaTemplate',
+        methodName: 'send',
+        args: [{ text: '"orders"' }, { text: 'payload' }],
+      },
+    ]);
+    callableNode(graph, publisherFile, 'publish');
+
+    setJavaSpringNonHttpHandlerFacts(listenerFile, [
+      {
+        ownerScopeId: `${listenerFile}#consume` as never,
+        ownerFilePath: listenerFile,
+        ownerRange: OWNER_RANGE,
+        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"orders"' }] }],
+      },
+    ]);
+    setJavaSpringMessageProducerFacts(listenerFile, []);
+    callableNode(graph, listenerFile, 'consume');
+
+    setJavaSpringNonHttpHandlerFacts(strangerFile, [
+      {
+        ownerScopeId: `${strangerFile}#consume` as never,
+        ownerFilePath: strangerFile,
+        ownerRange: OWNER_RANGE,
+        annotations: [{ name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] }],
+      },
+    ]);
+    setJavaSpringMessageProducerFacts(strangerFile, []);
+    callableNode(graph, strangerFile, 'consume');
+
+    const output = await run(graph, [publisherFile, listenerFile, strangerFile]);
+    // Two nodes, both fully connectable, exactly as `GET /x` and `POST /x` are
+    // two Routes. Nothing is unresolved and nothing is withdrawn.
+    expect(output.resolvedDestinations).toBe(2);
+    expect(output.unresolvedDestinations).toBe(0);
+    expect(output.edges).toBe(3);
+
+    const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
+    expect(nodes).toHaveLength(2);
+    const byBroker = new Map(nodes.map((node) => [String(node.properties.broker), node]));
+    const kafka = byBroker.get('kafka');
+    const rabbit = byBroker.get('rabbit');
+    expect(kafka).toBeDefined();
+    expect(rabbit).toBeDefined();
+    // Both carry the join key. Withdrawing it is what used to break the pair.
+    expect(kafka?.properties.address).toBe('orders');
+    expect(rabbit?.properties.address).toBe('orders');
+    expect(kafka?.properties.resolution).toBe('literal');
+    expect(rabbit?.properties.resolution).toBe('literal');
+    // Same `address`, DIFFERENT identity — the broker is what separates them.
+    expect(kafka?.id).not.toBe(rabbit?.id);
+    // A connecting destination carries no file, so no incremental delete of
+    // the stranger's file can cut the pair's node either.
+    expect(kafka?.properties.filePath).toBe('');
+    expect(rabbit?.properties.filePath).toBe('');
+
+    // Identity alone would also hold if an edge had been dropped, so pin the
+    // walk itself: the publisher and the listener meet on ONE node, from two
+    // different files, and the stranger is not on it.
+    const edgesTo = (id: string) =>
+      [...graph.iterRelationships()].filter(
+        (edge) =>
+          edge.targetId === id && (edge.type === 'PUBLISHES_TO' || edge.type === 'CONSUMES_FROM'),
+      );
+    const pair = edgesTo(kafka?.id as string);
+    expect(pair.map((edge) => edge.type).sort()).toEqual(['CONSUMES_FROM', 'PUBLISHES_TO']);
+    expect(new Set(pair.map((edge) => edge.sourceId)).size).toBe(2);
+    expect(
+      pair.map((edge) => String(graph.getNode(edge.sourceId)?.properties.filePath)).sort(),
+    ).toEqual([listenerFile, publisherFile]);
+
+    // And the stranger keeps its own edge onto its own node — the subscription
+    // is a real fact, it just is not part of the pair.
+    const stray = edgesTo(rabbit?.id as string);
+    expect(stray.map((edge) => edge.type)).toEqual(['CONSUMES_FROM']);
+    expect(graph.getNode(stray[0]?.sourceId as string)?.properties.filePath).toBe(strangerFile);
+  });
+
+  it('gives one address named by two brokers two CONNECTABLE nodes', async () => {
+    // The same rule seen from the other side, and the case that used to
+    // disconnect both halves: a Kafka topic and a Rabbit queue that share a
+    // name are two places, so they are two nodes — but two ORDINARY nodes,
+    // each keeping its `address` and each free to meet its own counterpart.
+    // Nothing is refused, so `resolution` stays the resolver's own vocabulary.
+    const filePath = 'src/TwoBrokers.java';
     setJavaSpringNonHttpHandlerFacts(filePath, [
       {
         ownerScopeId: `${filePath}#consume` as never,
@@ -400,45 +495,36 @@ describe('springDestinations phase', () => {
     callableNode(graph, filePath, 'consume');
 
     const output = await run(graph, [filePath]);
-    // One ADDRESS in conflict, two nodes minted for it, and neither connects.
-    expect(output.brokerConflicts).toBe(1);
-    expect(output.resolvedDestinations).toBe(0);
-    expect(output.unresolvedDestinations).toBe(2);
+    expect(output.resolvedDestinations).toBe(2);
+    expect(output.unresolvedDestinations).toBe(0);
+    expect(output.edges).toBe(2);
 
     const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
     expect(nodes).toHaveLength(2);
     expect(new Set(nodes.map((node) => node.id)).size).toBe(2);
     for (const node of nodes) {
-      // The structural half: no `address`, so no join by address is possible.
-      expect(node.properties.address).toBeUndefined();
-      // The diagnostic half: both brokers, named, on both nodes.
-      expect(node.properties.brokerConflict).toBe('kafka,rabbit');
-      expect(node.properties.resolution).toBe('broker-conflict');
-      // The address itself is perfectly readable; only its broker is in doubt.
+      expect(node.properties.address).toBe('orders');
       expect(node.properties.name).toBe('orders');
-      // Keyed by site means owned by a file, like every other site-keyed node.
-      expect(node.properties.filePath).toBe(filePath);
+      expect(node.properties.resolution).toBe('literal');
     }
     expect(new Set(nodes.map((node) => node.properties.broker))).toEqual(
       new Set(['kafka', 'rabbit']),
     );
 
-    // Both edges are still emitted — each side really does publish to or
-    // consume from SOMETHING — but they now land on different nodes, so the
-    // two-hop walk that used to connect the two sides finds nothing.
-    expect(output.edges).toBe(2);
+    // Two edges, onto two different nodes: the publish and the subscription
+    // are real, and the two-hop walk between them still finds nothing, because
+    // they really are unrelated.
     const targets = [...graph.iterRelationships()]
       .filter((edge) => edge.type === 'PUBLISHES_TO' || edge.type === 'CONSUMES_FROM')
       .map((edge) => edge.targetId);
     expect(new Set(targets).size).toBe(2);
   });
 
-  it('does not disconnect when both sides name the SAME broker', async () => {
-    // The negative half of the rule above, and the case the whole feature
-    // exists to report: a publisher and a subscriber agreeing on one address
-    // over one broker. A conflict test that fired on a repeated broker rather
-    // than a DIFFERING one would split exactly these pairs and leave the
-    // feature emitting nothing but orphans.
+  it('does not split a pair that names the SAME broker', async () => {
+    // The case the whole feature exists to report: a publisher and a subscriber
+    // agreeing on one address over one broker. A key that folded in anything
+    // per-site — the file, the owner — would split exactly these pairs and
+    // leave the feature emitting nothing but orphans.
     const filePath = 'src/Agree.java';
     setJavaSpringNonHttpHandlerFacts(filePath, [
       {
@@ -461,20 +547,19 @@ describe('springDestinations phase', () => {
     callableNode(graph, filePath, 'consume');
 
     const output = await run(graph, [filePath]);
-    expect(output.brokerConflicts).toBe(0);
     expect(output.resolvedDestinations).toBe(1);
     expect(output.unresolvedDestinations).toBe(0);
     const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
     expect(nodes).toHaveLength(1);
     expect(nodes[0]?.properties.address).toBe('orders');
-    expect(nodes[0]?.properties.brokerConflict).toBeUndefined();
     expect(output.edges).toBe(2);
   });
 
-  it('leaves an unrelated address alone when another one conflicts', async () => {
-    // The conflict is decided per ADDRESS, in a pass of its own. A pass that
-    // tracked the disagreement at any coarser grain — per file, per broker —
-    // would take a working destination down with the broken one.
+  it('keys a second address independently of how many brokers named the first', async () => {
+    // Identity is now a function of ONE site — its broker and its address — so
+    // no other site can change it. This is the assertion that says so: a second
+    // address in the same file, on the same broker as one of the two claimants
+    // of the first, is untouched by any of it.
     const filePath = 'src/Mixed.java';
     setJavaSpringNonHttpHandlerFacts(filePath, [
       {
@@ -508,13 +593,39 @@ describe('springDestinations phase', () => {
     callableNode(graph, filePath, 'consume');
 
     const output = await run(graph, [filePath]);
-    expect(output.brokerConflicts).toBe(1);
+    // `kafka orders`, `rabbit orders`, `kafka shipments`.
+    expect(output.resolvedDestinations).toBe(3);
+    expect(output.unresolvedDestinations).toBe(0);
     const shipments = [...graph.iterNodes()].filter(
       (node) => node.label === 'Destination' && node.properties.address === 'shipments',
     );
+    // The Kafka listener and the Kafka publish of `shipments` share one node,
+    // which is what the second publish above is there to check.
     expect(shipments).toHaveLength(1);
-    expect(shipments[0]?.properties.brokerConflict).toBeUndefined();
-    expect(output.resolvedDestinations).toBe(1);
-    expect(output.unresolvedDestinations).toBe(2);
+    expect(shipments[0]?.properties.broker).toBe('kafka');
+  });
+});
+
+describe('destinationNodeKey', () => {
+  // Tested directly rather than through the phase. The address-only branch is
+  // UNREACHABLE from Spring — `SpringDestinationCandidate.broker` is required
+  // and every annotation rule and producer template supplies one — so driving
+  // it through a phase would mean staging a fact the capture layer cannot
+  // produce, and the test would read as though the branch were live.
+  it('puts a known broker in the key', () => {
+    expect(destinationNodeKey('kafka', 'orders')).toBe('kafka orders');
+  });
+
+  it('keeps two brokers on one address apart', () => {
+    expect(destinationNodeKey('kafka', 'orders')).not.toBe(destinationNodeKey('rabbit', 'orders'));
+  });
+
+  it('degrades to the address alone when no broker is known', () => {
+    // The shape the next language gets: an address captured without a broker to
+    // attest to still keys a node, because silence about the broker is not a
+    // claim about it. Empty string is treated as absent for the same reason —
+    // it is what a caller that has nothing to say tends to pass.
+    expect(destinationNodeKey(undefined, 'orders')).toBe('orders');
+    expect(destinationNodeKey('', 'orders')).toBe('orders');
   });
 });
