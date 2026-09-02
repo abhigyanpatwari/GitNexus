@@ -208,9 +208,8 @@ public class ParityController {
 
 describe('review regressions: class-level aliases', () => {
   it('P1: isClassLevelMappingAnnotation accepts @WinRequestMapping like @RequestMapping', async () => {
-    const { isClassLevelMappingAnnotation } = await import(
-      '../../src/core/ingestion/route-extractors/spring-shared.js'
-    );
+    const { isClassLevelMappingAnnotation } =
+      await import('../../src/core/ingestion/route-extractors/spring-shared.js');
     expect(isClassLevelMappingAnnotation('RequestMapping')).toBe(true);
     expect(isClassLevelMappingAnnotation('WinRequestMapping')).toBe(true);
     expect(isClassLevelMappingAnnotation('WinPostMapping')).toBe(false);
