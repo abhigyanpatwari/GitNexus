@@ -249,12 +249,14 @@ describe('PARSE_CACHE_VERSION', () => {
   // still unused by other open PRs' parse-cache.ts heads — the same
   // collision the paragraph above describes, caught this time by re-checking
   // at merge.
-  it('pins SCHEMA_BUMP to 90 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(90);
+  // Moved 90 -> 91 for #3130's Kotlin Spring decoratorRoutes and Kotlin
+  // ModuleConstants shadow metadata, both persisted worker output.
+  it('pins SCHEMA_BUMP to 91 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(91);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89,
+      82, 83, 84, 85, 86, 87, 88, 89, 90,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

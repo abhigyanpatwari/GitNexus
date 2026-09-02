@@ -716,7 +716,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // (89) and above every in-flight claim found by scanning open PRs'
 // parse-cache.ts at their exact head SHAs (highest other open claim was still
 // ≤88). RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 90;
+// 90 -> 91 (#3130): Kotlin providers now emit Spring decoratorRoutes plus
+// ModuleConstants shadow metadata. A warm v90 cache would replay unchanged
+// Kotlin files with neither route candidates nor the constant declarations
+// needed to fold them, leaving the new ingestion path silently inert.
+const SCHEMA_BUMP = 91;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
