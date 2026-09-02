@@ -19,6 +19,7 @@
  *
  *     resolved    id = generateId('Destination', address)   `address` present
  *     unresolved  id = generateId('Destination', <site>)    `address` ABSENT
+ *     conflicted  id = generateId('Destination', <site>)    `address` ABSENT
  *
  * Two unrelated services that each merely write `@KafkaListener(topics =
  * "${app.topic}")` have said nothing whatever about each other. Keyed on the
@@ -35,6 +36,19 @@
  * absent property cannot match another absent property, so the structural
  * guarantee survives being read back out of the database. The unresolved
  * spelling is kept in `name`, for a human reading the node.
+ *
+ * The THIRD row is the same rule applied to an address that resolved perfectly
+ * well and still cannot be trusted to identify anything: one address claimed by
+ * two DIFFERENT brokers. A Kafka topic and a Rabbit queue that happen to share
+ * a name are two places, and merging them reports a publisher and a subscriber
+ * as connected when nothing connects them. A `brokerConflict` PROPERTY was
+ * tried first and does not work, for the reason stated above about status
+ * properties: an ordinary `PUBLISHES_TO` / `CONSUMES_FROM` traversal reports the
+ * edge as a fact, and a flag on the node it lands on does not un-join it. So
+ * both sides are keyed by SITE and neither carries `address` — structurally
+ * unconnectable, exactly like an unresolved one. The diagnosis is not lost: the
+ * disagreeing brokers stay on both nodes in `brokerConflict`, and `resolution`
+ * names the cause.
  *
  * `name` must never be used to join two destinations, and nothing does — but
  * the stronger claim that nothing reads it at all would be false. `Destination`
@@ -74,9 +88,10 @@ import type { PipelineContext, PipelinePhase, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 
 export interface SpringDestinationsOutput {
-  /** Destination nodes whose address resolved, and which therefore connect. */
+  /** Destination nodes keyed by an address, and which therefore connect. */
   readonly resolvedDestinations: number;
-  /** Destination nodes keyed by source location because nothing resolved. */
+  /** Destination nodes keyed by source location, and therefore unable to
+   *  connect: nothing resolved, or the address was claimed by two brokers. */
   readonly unresolvedDestinations: number;
   /** CONSUMES_FROM + PUBLISHES_TO edges emitted. */
   readonly edges: number;
@@ -87,10 +102,9 @@ export interface SpringDestinationsOutput {
    */
   readonly refusalsByReason: Readonly<Record<string, number>>;
   /**
-   * Addresses seen with more than one broker. Recorded, never merged away and
-   * never dropped: the broker is a guess made from a receiver's NAME, and a
-   * wrongly guessed broker must not be allowed to break a real connection
-   * between a publisher and a subscriber that agree on the address.
+   * ADDRESSES seen with more than one broker — not nodes: each such address
+   * yields one site-keyed node per site that named it, so the node count is
+   * larger and is already carried by `unresolvedDestinations`.
    */
   readonly brokerConflicts: number;
   /** Destination -> Property provenance edges for `${key}` placeholders. */
@@ -188,12 +202,16 @@ interface DestinationSite {
 /**
  * Identity for a destination node.
  *
- * The resolved key is the address and NOTHING else — not the broker, not the
+ * The connecting key is the address and NOTHING else — not the broker, not the
  * file. That is what lets a publisher in one module and a subscriber in another
- * meet on one node, which is the entire point. The broker rides as a property
- * precisely so a mistaken broker guess cannot split a real pair.
+ * meet on one node, which is the entire point. The broker deliberately stays
+ * out of the key: it is inferred from a receiver's NAME, and folding a guess
+ * into the identity would split a real pair whenever the guess differed. When
+ * the guesses actually DO differ the answer is not a different key but no
+ * connecting key at all — `connects` is false and the site key below is used,
+ * because a node that might be two places must not be one node.
  *
- * The unresolved key is the SITE, and it has to identify the site EXACTLY. It
+ * The site key has to identify the site EXACTLY. It
  * carries the file path, so no second file can ever produce it — that is the
  * cross-repository guarantee, and nothing added below can weaken it. Everything
  * else in the key is there to keep two sites inside ONE file apart, which is
@@ -215,8 +233,8 @@ interface DestinationSite {
  * merging two publishes of the same unreadable address from one method is the
  * one collapse that asserts nothing false about anybody.
  */
-function destinationNodeId(site: DestinationSite): string {
-  if (site.resolution.kind === 'resolved') {
+function destinationNodeId(site: DestinationSite, connects: boolean): string {
+  if (connects && site.resolution.kind === 'resolved') {
     return generateId('Destination', site.resolution.address);
   }
   const { candidate, ownerRange } = site;
@@ -251,6 +269,24 @@ function destinationNodeId(site: DestinationSite): string {
 function destinationDisplayName(rawText: string): string {
   return parseSpringStringLiteral(rawText) ?? rawText.trim();
 }
+
+/**
+ * `resolution` value for a destination whose address was withdrawn because two
+ * brokers claimed it.
+ *
+ * Deliberately NOT a member of `SpringDestinationRefusal`. Every member of that
+ * set is a statement about ONE candidate, decided by the resolver from the text
+ * in front of it; this is a statement about a whole REPOSITORY — two sites, in
+ * files that need not know about each other — and only this phase, which sees
+ * all the sites at once, is in a position to make it. Sharing the enum would
+ * have put a reason in the resolver's vocabulary that the resolver can never
+ * return.
+ *
+ * It still lands in the same `resolution` column, so the one query a reader
+ * writes — group the address-less destinations by `resolution` — reports it
+ * alongside the refusals without knowing there are two kinds.
+ */
+const BROKER_CONFLICT_RESOLUTION = 'broker-conflict';
 
 function edgeReason(candidate: SpringDestinationCandidate): string {
   const argument = candidate.argName ?? `arg${candidate.argIndex}`;
@@ -358,10 +394,49 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
       };
     }
 
+    // ── One address, two brokers: decided BEFORE anything is emitted ───────
+    //
+    // A conflict only becomes visible when the SECOND broker turns up, and by
+    // then the single-node reading has already been committed: the node exists
+    // and is likely to carry an edge from the first side. Undoing that means
+    // re-keying a node and moving its relationships — more work, and the kind
+    // of work that is easy to get half-right. So the disagreement is decided in
+    // its own pass over the gathered sites first, and the emit below then mints
+    // each site's node once, already knowing which reading is correct.
+    //
+    // Only RESOLVED sites take part. An unresolved one is keyed by its location
+    // and cannot be reached twice, so it has no second broker to disagree with.
+    //
+    // What counts as disagreement is deliberately narrow — two DISTINCT
+    // brokers. The ordinary publisher/subscriber pair puts the SAME broker on
+    // one address from both sides and is the case this feature exists to
+    // report, so a set is what the `< 2` test reads. Nor can the broker be
+    // unknown here: every candidate is given one by the annotation table or the
+    // template it was captured from, so there is no absent value to mistake for
+    // a second opinion. If a future capture ever admits one it must NOT count —
+    // silence about the broker is not a claim about it, and disconnecting a
+    // real pair over a missing value is the exact failure this rule exists to
+    // prevent, arrived at from the other side.
+    const brokersByAddress = new Map<string, Set<SpringDestinationBroker>>();
+    for (const site of sites) {
+      if (site.resolution.kind !== 'resolved') continue;
+      const brokers = brokersByAddress.get(site.resolution.address);
+      if (brokers === undefined) {
+        brokersByAddress.set(site.resolution.address, new Set([site.candidate.broker]));
+      } else {
+        brokers.add(site.candidate.broker);
+      }
+    }
+    /** Conflicting address -> its brokers, sorted, for the node property. */
+    const conflictingBrokers = new Map<string, string>();
+    for (const [address, brokers] of brokersByAddress) {
+      if (brokers.size < 2) continue;
+      conflictingBrokers.set(address, [...brokers].sort().join(','));
+    }
+
     // ── Emit ──────────────────────────────────────────────────────────────
     const owners = callableOwnersByRange(ctx.graph);
     const configProperties = springConfigPropertiesByKey(ctx.graph);
-    const brokersByNode = new Map<string, Set<SpringDestinationBroker>>();
     const linkedConfigKeys = new Set<string>();
     let resolvedDestinations = 0;
     let unresolvedDestinations = 0;
@@ -370,24 +445,35 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
 
     for (const site of sites) {
       const { candidate, resolution } = site;
-      const nodeId = destinationNodeId(site);
+      const brokerConflict =
+        resolution.kind === 'resolved' ? conflictingBrokers.get(resolution.address) : undefined;
+      // The one predicate the rest of the loop is written against: may this
+      // site's node be keyed by its address, and therefore meet another site on
+      // it? False for an unresolved address AND for a conflicting one, and the
+      // node then gets its location-based key, no `address` property, and its
+      // own file — identical treatment, because the outcome is identical.
+      const connects = resolution.kind === 'resolved' && brokerConflict === undefined;
+      const nodeId = destinationNodeId(site, connects);
       const isNew = ctx.graph.getNode(nodeId) === undefined;
       if (isNew) {
-        if (resolution.kind === 'resolved') resolvedDestinations += 1;
+        if (connects) resolvedDestinations += 1;
         else unresolvedDestinations += 1;
         ctx.graph.addNode({
           id: nodeId,
           label: 'Destination',
           properties: {
-            // For a resolved destination this equals `address`. For an
+            // For a resolved address this equals `address` — including a
+            // CONFLICTING one, where the address is perfectly readable and only
+            // its broker is in doubt, so a human should still see it. For an
             // unresolved one it is the UNRESOLVED SPELLING, unquoted, kept so a
-            // human reading the node sees what the source actually said — and
-            // kept out of `address` so nothing joins on it.
+            // human reading the node sees what the source actually said. Either
+            // way it is kept out of `address` unless the node connects, so
+            // nothing joins on it.
             name:
               resolution.kind === 'resolved'
                 ? resolution.address
                 : destinationDisplayName(candidate.rawText),
-            // A RESOLVED destination carries NO location, and that is load
+            // A CONNECTING destination carries NO location, and that is load
             // bearing rather than cosmetic.
             //
             // It is shared by every site that names the address, so no single
@@ -415,15 +501,17 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
             // move together: the delete without the re-include drops the layer,
             // and the re-include without the delete duplicates every edge.
             //
-            // An UNRESOLVED destination is the opposite case — it belongs to
+            // A NON-CONNECTING destination is the opposite case — it belongs to
             // exactly one site, its id already says so, and it SHOULD be
-            // deleted and re-created with its file.
+            // deleted and re-created with its file. That holds for a conflicting
+            // address as much as for an unresolved one: once it is keyed by
+            // site it IS one site's node.
             // `''`, not absent: `NodeProperties.filePath` is required, and the
             // empty string is the established spelling for a node with no file
             // (`pipeline-phases/communities.ts` does the same). It is equally
             // unmatchable by the `IN` predicate and the CSV writes it as an
             // empty field, which COPY loads as NULL.
-            ...(resolution.kind === 'resolved'
+            ...(connects
               ? { filePath: '' }
               : {
                   filePath: site.filePath,
@@ -434,10 +522,20 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
                         endLine: site.ownerRange.endLine - 1,
                       }),
                 }),
-            // WRITTEN ONLY WHEN RESOLVED. See the module header: this is the
-            // cross-repository join key, and an absent property cannot match.
+            // `address` IS THE JOIN KEY and is written ONLY when the node
+            // connects. See the module header: an absent property cannot match
+            // another absent property, so the structural guarantee survives
+            // being read back out of the database.
+            //
+            // `resolution` always says how the node got here — the provenance
+            // of a real address, the named refusal that stopped one, or the
+            // broker disagreement that withdrew one. The disagreeing brokers
+            // ride along in `brokerConflict` so the finding is still queryable
+            // from the node that lost its address because of it.
             ...(resolution.kind === 'resolved'
-              ? { address: resolution.address, resolution: resolution.via }
+              ? brokerConflict === undefined
+                ? { address: resolution.address, resolution: resolution.via }
+                : { resolution: BROKER_CONFLICT_RESOLUTION, brokerConflict }
               : { resolution: resolution.reason }),
             ...(resolution.kind === 'unresolved' && resolution.configKey !== undefined
               ? { configKey: resolution.configKey }
@@ -454,16 +552,6 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
           },
         });
       }
-
-      // Broker agreement is tracked per NODE, so it can only ever be raised for
-      // a resolved destination — an unresolved one is keyed by site and cannot
-      // be reached twice.
-      let brokers = brokersByNode.get(nodeId);
-      if (brokers === undefined) {
-        brokers = new Set();
-        brokersByNode.set(nodeId, brokers);
-      }
-      brokers.add(candidate.broker);
 
       // Link a placeholder's KEY to the configuration entries that could supply
       // it — `${key}` and `${key:default}` alike, since a default changes
@@ -518,24 +606,7 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
       edges += 1;
     }
 
-    // ── One address, two brokers ──────────────────────────────────────────
-    let brokerConflicts = 0;
-    for (const [nodeId, brokers] of brokersByNode) {
-      if (brokers.size < 2) continue;
-      brokerConflicts += 1;
-      const node = ctx.graph.getNode(nodeId);
-      if (node === undefined) continue;
-      // Neither merged away nor dropped. The broker was inferred from a
-      // receiver's NAME (see `message-producers.ts`), so a disagreement is far
-      // more likely to be a bad guess than two real brokers sharing an address
-      // — and dropping the node on that suspicion would delete a connection the
-      // two sides genuinely agree on. The disagreement is recorded instead, in
-      // full, so a reader can see it and a query can filter on it: the property
-      // has a `brokerConflict` column in DESTINATION_SCHEMA and a field in the
-      // CSV writer, without which it was written here and then dropped at the
-      // database boundary with no warning.
-      node.properties.brokerConflict = [...brokers].sort().join(',');
-    }
+    const brokerConflicts = conflictingBrokers.size;
 
     if (isDev) {
       logger.info(

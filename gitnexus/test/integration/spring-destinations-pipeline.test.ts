@@ -115,7 +115,6 @@ describe('Spring destination resolution', () => {
   });
 
   it('resolves the other brokers', () => {
-    expect(withAddress('orders.queue')[0]?.properties.broker).toBe('rabbit');
     expect(withAddress('orders.jms')[0]?.properties.broker).toBe('jms');
     expect(withAddress('orders-out-0')[0]?.properties.broker).toBe('stream');
     // Rabbit publishes name a routing key; the exchange rides on the edge.
@@ -237,6 +236,40 @@ describe('Spring destination resolution', () => {
     const inventorySources = new Set(edgesTo(inventory as GraphNode).map((e) => e.sourceId));
     const billingSources = new Set(edgesTo(billing as GraphNode).map((e) => e.sourceId));
     expect([...inventorySources].filter((id) => billingSources.has(id))).toEqual([]);
+  });
+
+  it('does not connect a Rabbit queue and a JMS queue that share a name', () => {
+    // `@RabbitListener(queues = "orders.queue")` and
+    // `jmsTemplate.convertAndSend("orders.queue", payload)` name the same
+    // string over two different brokers. Keyed on the address they were one
+    // node, and the ordinary two-hop walk below reported a subscriber reading
+    // what this publisher writes — which it does not.
+    expect(withAddress('orders.queue')).toEqual([]);
+
+    const conflicted = destinations.filter((node) => node.properties.name === 'orders.queue');
+    expect(conflicted).toHaveLength(2);
+    expect(new Set(conflicted.map((node) => node.id)).size).toBe(2);
+    for (const node of conflicted) {
+      expect(node.properties.address).toBeUndefined();
+      expect(node.properties.brokerConflict).toBe('jms,rabbit');
+      expect(node.properties.resolution).toBe('broker-conflict');
+    }
+
+    // The walk itself, stated the way a report would ask it: nobody reaches
+    // `publishToConflictingBroker` through a destination it shares.
+    const consumers = conflicted.flatMap((node) =>
+      edgesTo(node)
+        .filter((edge) => edge.type === 'CONSUMES_FROM')
+        .map((edge) => edge.targetId),
+    );
+    const publishers = conflicted.flatMap((node) =>
+      edgesTo(node)
+        .filter((edge) => edge.type === 'PUBLISHES_TO')
+        .map((edge) => edge.targetId),
+    );
+    expect(consumers).toHaveLength(1);
+    expect(publishers).toHaveLength(1);
+    expect(consumers[0]).not.toBe(publishers[0]);
   });
 
   it('keeps the placeholder text visible in name, and out of address', () => {

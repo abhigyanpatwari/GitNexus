@@ -367,10 +367,17 @@ describe('springDestinations phase', () => {
     expect(output.configKeyLinks).toBe(0);
   });
 
-  it('records a broker disagreement instead of merging or dropping it', async () => {
-    // The broker is inferred from a receiver's NAME, so a disagreement is far
-    // more likely to be a bad guess than two brokers sharing an address —
-    // and dropping the node would delete a connection the two sides agree on.
+  it('DISCONNECTS an address two brokers claim, and says why on both nodes', async () => {
+    // A Kafka topic and a Rabbit queue that share a name are two places. Keyed
+    // on the address they were one node, and an ordinary PUBLISHES_TO /
+    // CONSUMES_FROM traversal then reported a connection between a publisher
+    // and a subscriber that have nothing to do with each other. The
+    // `brokerConflict` property this used to write does not prevent that: a
+    // flag on the node does not un-join the edges that already landed on it.
+    //
+    // So both sides are keyed by SITE and neither carries `address` — the join
+    // is impossible rather than merely discouraged. The diagnosis survives on
+    // both nodes, which is the half a plain "drop the node" would have lost.
     const filePath = 'src/Conflict.java';
     setJavaSpringNonHttpHandlerFacts(filePath, [
       {
@@ -393,12 +400,121 @@ describe('springDestinations phase', () => {
     callableNode(graph, filePath, 'consume');
 
     const output = await run(graph, [filePath]);
+    // One ADDRESS in conflict, two nodes minted for it, and neither connects.
     expect(output.brokerConflicts).toBe(1);
-    expect(output.resolvedDestinations).toBe(1);
-    // Both edges survive: the connection is what the two sides agree on.
+    expect(output.resolvedDestinations).toBe(0);
+    expect(output.unresolvedDestinations).toBe(2);
+
+    const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
+    expect(nodes).toHaveLength(2);
+    expect(new Set(nodes.map((node) => node.id)).size).toBe(2);
+    for (const node of nodes) {
+      // The structural half: no `address`, so no join by address is possible.
+      expect(node.properties.address).toBeUndefined();
+      // The diagnostic half: both brokers, named, on both nodes.
+      expect(node.properties.brokerConflict).toBe('kafka,rabbit');
+      expect(node.properties.resolution).toBe('broker-conflict');
+      // The address itself is perfectly readable; only its broker is in doubt.
+      expect(node.properties.name).toBe('orders');
+      // Keyed by site means owned by a file, like every other site-keyed node.
+      expect(node.properties.filePath).toBe(filePath);
+    }
+    expect(new Set(nodes.map((node) => node.properties.broker))).toEqual(
+      new Set(['kafka', 'rabbit']),
+    );
+
+    // Both edges are still emitted — each side really does publish to or
+    // consume from SOMETHING — but they now land on different nodes, so the
+    // two-hop walk that used to connect the two sides finds nothing.
     expect(output.edges).toBe(2);
-    const node = [...graph.iterNodes()].find((candidate) => candidate.label === 'Destination');
-    expect(node?.properties.brokerConflict).toBe('kafka,rabbit');
-    expect(node?.properties.address).toBe('orders');
+    const targets = [...graph.iterRelationships()]
+      .filter((edge) => edge.type === 'PUBLISHES_TO' || edge.type === 'CONSUMES_FROM')
+      .map((edge) => edge.targetId);
+    expect(new Set(targets).size).toBe(2);
+  });
+
+  it('does not disconnect when both sides name the SAME broker', async () => {
+    // The negative half of the rule above, and the case the whole feature
+    // exists to report: a publisher and a subscriber agreeing on one address
+    // over one broker. A conflict test that fired on a repeated broker rather
+    // than a DIFFERING one would split exactly these pairs and leave the
+    // feature emitting nothing but orphans.
+    const filePath = 'src/Agree.java';
+    setJavaSpringNonHttpHandlerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#consume` as never,
+        ownerFilePath: filePath,
+        ownerRange: OWNER_RANGE,
+        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"orders"' }] }],
+      },
+    ]);
+    setJavaSpringMessageProducerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#consume` as never,
+        ownerRange: OWNER_RANGE,
+        template: 'kafka',
+        receiverName: 'kafkaTemplate',
+        methodName: 'send',
+        args: [{ text: '"orders"' }, { text: 'payload' }],
+      },
+    ]);
+    callableNode(graph, filePath, 'consume');
+
+    const output = await run(graph, [filePath]);
+    expect(output.brokerConflicts).toBe(0);
+    expect(output.resolvedDestinations).toBe(1);
+    expect(output.unresolvedDestinations).toBe(0);
+    const nodes = [...graph.iterNodes()].filter((node) => node.label === 'Destination');
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0]?.properties.address).toBe('orders');
+    expect(nodes[0]?.properties.brokerConflict).toBeUndefined();
+    expect(output.edges).toBe(2);
+  });
+
+  it('leaves an unrelated address alone when another one conflicts', async () => {
+    // The conflict is decided per ADDRESS, in a pass of its own. A pass that
+    // tracked the disagreement at any coarser grain — per file, per broker —
+    // would take a working destination down with the broken one.
+    const filePath = 'src/Mixed.java';
+    setJavaSpringNonHttpHandlerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#consume` as never,
+        ownerFilePath: filePath,
+        ownerRange: OWNER_RANGE,
+        annotations: [
+          { name: 'RabbitListener', args: [{ name: 'queues', text: '"orders"' }] },
+          { name: 'KafkaListener', args: [{ name: 'topics', text: '"shipments"' }] },
+        ],
+      },
+    ]);
+    setJavaSpringMessageProducerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#consume` as never,
+        ownerRange: OWNER_RANGE,
+        template: 'kafka',
+        receiverName: 'kafkaTemplate',
+        methodName: 'send',
+        args: [{ text: '"orders"' }, { text: 'payload' }],
+      },
+      {
+        ownerScopeId: `${filePath}#consume` as never,
+        ownerRange: OWNER_RANGE,
+        template: 'kafka',
+        receiverName: 'kafkaTemplate',
+        methodName: 'send',
+        args: [{ text: '"shipments"' }, { text: 'payload' }],
+      },
+    ]);
+    callableNode(graph, filePath, 'consume');
+
+    const output = await run(graph, [filePath]);
+    expect(output.brokerConflicts).toBe(1);
+    const shipments = [...graph.iterNodes()].filter(
+      (node) => node.label === 'Destination' && node.properties.address === 'shipments',
+    );
+    expect(shipments).toHaveLength(1);
+    expect(shipments[0]?.properties.brokerConflict).toBeUndefined();
+    expect(output.resolvedDestinations).toBe(1);
+    expect(output.unresolvedDestinations).toBe(2);
   });
 });

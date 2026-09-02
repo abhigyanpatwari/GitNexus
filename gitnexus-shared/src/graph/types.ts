@@ -52,10 +52,10 @@ export type NodeLabel =
    *
    * Identity is the resolved ADDRESS, so a publisher and a consumer of the same
    * address land on one node and the connection is a single hop. A destination
-   * whose address could NOT be resolved is keyed by its source location
-   * instead and carries no `address` property at all — see
-   * `pipeline-phases/spring-destinations.ts` for why an unresolved address must
-   * never be allowed to key a node.
+   * that must NOT be allowed to connect is keyed by its source location instead
+   * and carries no `address` property at all — either because the address could
+   * not be resolved, or because two different brokers claimed it. See
+   * `pipeline-phases/spring-destinations.ts` for why neither may key a node.
    */
   | 'Destination'
   // Taint/PDG substrate (issue #2080). Intra-procedural control-flow node.
@@ -130,8 +130,9 @@ export type NodeProperties = {
   /** The `${key:default}` default text. Not an address: configuration can
    *  override it and the graph cannot see whether it did. */
   configDefault?: string;
-  /** One address claimed with two different brokers, as a sorted comma-joined
-   *  list. Diagnostics for a disagreement the syntax cannot settle. */
+  /** One address claimed by two different brokers, as a sorted comma-joined
+   *  list. Such a destination is keyed by its SITE and carries no `address`,
+   *  so this is the only surviving statement of why the join key is absent. */
   brokerConflict?: string;
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;

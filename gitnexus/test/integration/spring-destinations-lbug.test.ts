@@ -35,19 +35,23 @@ withTestLbugDB(
         const rows = await executeQuery(
           'MATCH (d:Destination) RETURN d.address AS address, d.broker AS broker, d.resolution AS resolution ORDER BY d.id',
         );
-        expect(rows.length).toBe(22);
+        expect(rows.length).toBe(23);
         const resolved = rows
           .filter((row) => row.address !== null && row.address !== undefined)
           .map((row) => row.address as string)
           .sort();
         // `audit.v1` is deliberately NOT here: it is a `${key:default}`, and a
         // default the configuration can override is not an identity.
+        //
+        // Neither is `orders.queue`: a Rabbit listener and a JMS publish claim
+        // that name over two different brokers, so both sides are keyed by
+        // site and neither carries the join key. It is two of the NULL rows
+        // below, not one resolved row here.
         expect(resolved).toEqual([
           'kotlin.arrayof.v1',
           'orders-out-0',
           'orders.created',
           'orders.jms',
-          'orders.queue',
           'orders.v1',
           'returns.v1',
           'shipments.v1',
@@ -58,7 +62,7 @@ withTestLbugDB(
         const [row] = await executeQuery(
           "MATCH (d:Destination) WHERE d.address IS NULL RETURN count(d) AS nulls, count(CASE WHEN d.resolution = 'unresolved-config-key' THEN 1 END) AS placeholders",
         );
-        expect(row?.nulls).toBe(14);
+        expect(row?.nulls).toBe(16);
         expect(row?.placeholders).toBe(5);
       });
 
@@ -67,6 +71,10 @@ withTestLbugDB(
           'MATCH (d:Destination) WHERE d.address IS NULL RETURN d.resolution AS reason, count(d) AS n ORDER BY reason',
         );
         expect(Object.fromEntries(rows.map((row) => [row.reason, Number(row.n)]))).toEqual({
+          // Not a resolver refusal — no candidate declined this address, the
+          // PHASE withdrew it because two brokers claimed it. It shares the
+          // column so that the one query a reader writes finds both kinds.
+          'broker-conflict': 2,
           'overridable-config-default': 4,
           'spel-expression': 2,
           'unescaped-interpolation': 3,
@@ -92,7 +100,7 @@ withTestLbugDB(
         );
         // A resolved destination has no location at all — the same fact
         // `filePath` records — so the two columns must agree.
-        expect(Number(row?.total)).toBe(8);
+        expect(Number(row?.total)).toBe(7);
         expect(Number(row?.withLine)).toBe(0);
       });
 
@@ -121,19 +129,38 @@ withTestLbugDB(
         // filter on it", but the property was in neither DESTINATION_SCHEMA nor
         // the CSV writer, so it was dropped silently and this very query raised
         // a binder error.
+        //
+        // The disagreement is now what COSTS the two sides their shared node,
+        // which makes surviving the round trip the only way a reader can find
+        // out why the address vanished. Two rows, one per site, both with the
+        // address withdrawn and both naming the same two brokers.
         const rows = await executeQuery(
-          'MATCH (d:Destination) WHERE d.brokerConflict IS NOT NULL RETURN d.address AS address, d.brokerConflict AS conflict',
+          'MATCH (d:Destination) WHERE d.brokerConflict IS NOT NULL RETURN d.address AS address, d.name AS name, d.brokerConflict AS conflict, d.broker AS broker ORDER BY d.broker',
         );
-        expect(rows).toEqual([{ address: 'orders.queue', conflict: 'jms,rabbit' }]);
+        expect(rows).toEqual([
+          { address: null, name: 'orders.queue', conflict: 'jms,rabbit', broker: 'jms' },
+          { address: null, name: 'orders.queue', conflict: 'jms,rabbit', broker: 'rabbit' },
+        ]);
       });
 
-      it('keeps both sides of a broker conflict connected', async () => {
-        // Dropping the node on the suspicion of a bad broker guess would delete
-        // a connection the two sides genuinely agree on.
+      it('leaves the two sides of a broker conflict UNJOINABLE after the round trip', async () => {
+        // The point of the split, stated in the query a cross-repository pass
+        // would actually run. A `brokerConflict` FLAG did not survive this
+        // walk: the edges still met on one node and the traversal reported a
+        // connection between a Rabbit listener and a JMS publish. Now nothing
+        // matches on the address at all.
+        const [byAddress] = await executeQuery(
+          "MATCH (m)-[r:CodeRelation]->(d:Destination) WHERE d.address = 'orders.queue' RETURN count(r) AS edges",
+        );
+        expect(Number(byAddress?.edges)).toBe(0);
+
+        // Both sides still have their own edge — the publish and the
+        // subscription are real facts — but onto two different nodes.
         const rows = await executeQuery(
-          "MATCH (m)-[r:CodeRelation]->(d:Destination) WHERE d.address = 'orders.queue' RETURN r.type AS type ORDER BY type",
+          'MATCH (m)-[r:CodeRelation]->(d:Destination) WHERE d.brokerConflict IS NOT NULL RETURN r.type AS type, d.id AS destination ORDER BY type',
         );
         expect(rows.map((row) => row.type)).toEqual(['CONSUMES_FROM', 'PUBLISHES_TO']);
+        expect(new Set(rows.map((row) => row.destination)).size).toBe(2);
       });
 
       it('links an unresolved placeholder to its configuration keys', async () => {

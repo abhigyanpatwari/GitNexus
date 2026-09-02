@@ -763,11 +763,12 @@ export const streamAllCSVsToDisk = async (
           // `startLine` -1 makes the two columns disagree about one fact and
           // renders as "line -1" in the UI.
           //
-          // `brokerConflict` is a REQUIREMENT, not decoration: one address seen
-          // with two brokers is a finding to surface, and while the phase wrote
-          // the property this column did not exist, so it was dropped at the
-          // database boundary without a warning and `d.brokerConflict` raised a
-          // binder error.
+          // `brokerConflict` is a REQUIREMENT, not decoration: one address
+          // claimed by two brokers costs that destination its `address`, so
+          // this field is the only surviving statement of why the join key is
+          // NULL. While the phase wrote the property this column did not exist,
+          // so it was dropped at the database boundary without a warning and
+          // `d.brokerConflict` raised a binder error.
           pending = destinationWriter.addRow(
             [
               escapeCSVField(node.id),
