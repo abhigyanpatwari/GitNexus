@@ -338,8 +338,19 @@ function stripLeadingTemplatePrefix(url: string): string | null {
  * parser cannot percent-encode our own `{param}` markers. A genuine encoded
  * segment like `%7Bfoo%7D` then survives as a literal, instead of being
  * rewritten into braces and folded into `{param}`.
+ *
+ * Private-use U+E000 cannot appear in a real URL path, so a literal
+ * `__gitnexus_http_param__` segment is not rewritten into `{param}`.
  */
-const CONSUMER_PARAM_SENTINEL = '__gitnexus_http_param__';
+const CONSUMER_PARAM_SENTINEL = '\uE000';
+const CONSUMER_PARAM_SENTINEL_ENC = '%ee%80%80';
+
+function restoreConsumerParamSentinel(pathOnly: string): string {
+  return pathOnly
+    .split(CONSUMER_PARAM_SENTINEL)
+    .join('{param}')
+    .replace(new RegExp(CONSUMER_PARAM_SENTINEL_ENC, 'gi'), '{param}');
+}
 
 function normalizeConsumerPath(url: string): string | null {
   const stripped = stripLeadingTemplatePrefix(url.trim());
@@ -353,7 +364,7 @@ function normalizeConsumerPath(url: string): string | null {
       pathOnly = templated.replace(/^https?:\/\/[^/]+/i, '');
     }
   }
-  pathOnly = pathOnly.split(CONSUMER_PARAM_SENTINEL).join('{param}');
+  pathOnly = restoreConsumerParamSentinel(pathOnly);
   const normalized = normalizeHttpPath(pathOnly || '/');
   const segments = normalized
     .split('/')

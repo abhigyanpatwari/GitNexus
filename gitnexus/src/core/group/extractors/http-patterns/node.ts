@@ -240,9 +240,17 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
 /** True when the object literal has a pair whose key is one of `keyNames`. */
 function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]): boolean {
   for (let i = 0; i < objectNode.namedChildCount; i++) {
-    const pair = objectNode.namedChild(i);
-    if (!pair || pair.type !== 'pair') continue;
-    const keyNode = pair.childForFieldName('key');
+    const child = objectNode.namedChild(i);
+    if (!child) continue;
+    if (
+      (child.type === 'shorthand_property_identifier' ||
+        child.type === 'shorthand_property_identifier_pattern') &&
+      keyNames.includes(child.text)
+    ) {
+      return true;
+    }
+    if (child.type !== 'pair') continue;
+    const keyNode = child.childForFieldName('key');
     if (keyNode && keyNames.includes(keyNode.text)) return true;
   }
   return false;
@@ -255,7 +263,11 @@ function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]
  */
 function readRequestMethod(objectNode: Parser.SyntaxNode): string {
   const rawMethod = readStringProp(objectNode, ['method', 'type']);
-  if (rawMethod !== null) return rawMethod.toUpperCase();
+  if (rawMethod !== null) {
+    // `` method: `${verb}` `` is a template_string, not a verb literal.
+    if (rawMethod.includes('${')) return '*';
+    return rawMethod.toUpperCase();
+  }
   if (hasObjectKey(objectNode, ['method', 'type'])) return '*';
   return 'GET';
 }
@@ -780,12 +792,13 @@ function scanBundle(
     if (!isAdmittedWrappedRequestReceiver(objNode.text, fileKey, facts)) continue;
     const rawUrl = readStringProp(optionsNode, ['url']);
     if (rawUrl === null) continue;
-    if (!rawUrl.includes('${') && !rawUrl.startsWith('/')) continue;
+    const url = rawUrl.trim();
+    if (!url.includes('${') && !url.startsWith('/')) continue;
     out.push({
       role: 'consumer',
       framework: 'request',
       method: readRequestMethod(optionsNode),
-      path: rawUrl,
+      path: url,
       name: null,
       line: optionsNode.startPosition.row + 1,
       confidence: 0.65,

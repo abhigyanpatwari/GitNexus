@@ -2805,6 +2805,9 @@ export function absTemplateParam(httpClient, id) {
 export async function encodedBraceLiteral() {
   return fetch('https://host/api/%7Bfoo%7D');
 }
+export async function literalSentinelSegment() {
+  return fetch('https://host/api/__gitnexus_http_param__');
+}
 `,
       );
 
@@ -2823,6 +2826,9 @@ export async function encodedBraceLiteral() {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/{param}')).toBeDefined();
       expect(
         consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d'),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/__gitnexus_http_param__'),
       ).toBeDefined();
     });
 

@@ -912,4 +912,29 @@ api.request({ url: '/api/users', method: 'POST' });
       'POST/api/users',
     ]);
   });
+
+  it('trims whitespace-prefixed absolute paths at scan time', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: ' /api/orders', method: 'GET' });"),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.path).toBe('/api/orders');
+  });
+
+  it('emits * for interpolated method templates and shorthand method keys', () => {
+    const interpolated = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", method: `${verb}` });'),
+      ),
+    );
+    expect(interpolated[0]?.method).toBe('*');
+    const shorthand = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: '/api/orders', method });"),
+      ),
+    );
+    expect(shorthand[0]?.method).toBe('*');
+  });
 });
