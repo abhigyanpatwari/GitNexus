@@ -33,7 +33,11 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createJavaCfgVisitor } from '../cfg/visitors/java.js';
 import { assertCloneable } from '../workers/clone-safety.js';
-import { collectJavaCaptureSideChannel } from './java/capture-side-channel.js';
+import {
+  collectJavaCaptureSideChannel,
+  getJavaSpringMessageProducerFacts,
+  getJavaSpringNonHttpHandlerFacts,
+} from './java/capture-side-channel.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import {
   javaRecordMethodExtractor,
@@ -248,4 +252,11 @@ export const javaProvider = defineLanguage({
     /\bimport\s+(?:static\s+[\w.]+(?:\.\*)?|[\w.]+)\s*;/.test(content),
   prepareRouteConstants: prepareJavaRouteConstants,
   foldRoutePathOperands: foldJavaOperands,
+  // Async messaging facts for the `springDestinations` phase. Both stores are
+  // repopulated on the main thread by `applyJavaCaptureSideChannel`, so this
+  // answers for cache hits and misses alike.
+  getSpringMessagingFacts: (filePath) => ({
+    handlers: getJavaSpringNonHttpHandlerFacts(filePath),
+    producers: getJavaSpringMessageProducerFacts(filePath),
+  }),
 });

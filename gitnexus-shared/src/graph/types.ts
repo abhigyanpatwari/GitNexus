@@ -45,6 +45,21 @@ export type NodeLabel =
   | 'Section'
   | 'Route'
   | 'Tool'
+  /**
+   * A message-broker destination — a Kafka topic, a Rabbit exchange/routing
+   * key, a JMS queue, a Spring Cloud Stream binding. The framework overlay for
+   * ASYNCHRONOUS entry/exit points, symmetric to `Route` for HTTP.
+   *
+   * Identity is `(broker, resolved ADDRESS)`, so a publisher and a consumer of
+   * the same address on the same broker land on one node and the connection is
+   * a single hop — while a Kafka topic and a Rabbit queue that share a name
+   * stay two nodes, the same way `GET /x` and `POST /x` are two Routes. A
+   * destination whose address could NOT be resolved is keyed by its source
+   * location instead and carries no `address` property at all. See
+   * `pipeline-phases/spring-destinations.ts` for why an unresolved spelling may
+   * not key a node, and `ingestion/destination-key.ts` for why the broker may.
+   */
+  | 'Destination'
   // Taint/PDG substrate (issue #2080). Intra-procedural control-flow node.
   // Emitted by no phase yet — M1 (#2081) populates these behind an opt-in.
   | 'BasicBlock';
@@ -101,6 +116,24 @@ export type NodeProperties = {
   runtimeSource?: string;
   /** Runtime result such as runtime-confirmed or handler-conflict. */
   runtimeStatus?: string;
+  // Destination (async messaging overlay). See the `Destination` label above.
+  /** The RESOLVED broker address. Together with `broker` it is the key a
+   *  cross-repository pass joins on. Present only when the address resolved:
+   *  absent is the load-bearing state, because an absent property cannot match
+   *  another absent property. */
+  address?: string;
+  /** Broker family the syntax attests to (`kafka`, `rabbit`, `jms`, …). Part
+   *  of the node's identity alongside `address`, not a label on it. */
+  broker?: string;
+  /** How the address was arrived at (`literal`, `constant`) when it resolved,
+   *  or the named reason it did not. */
+  resolution?: string;
+  /** Configuration key named by an unresolvable `${…}` placeholder. The key
+   *  only — configuration VALUES are deliberately absent from this graph. */
+  configKey?: string;
+  /** The `${key:default}` default text. Not an address: configuration can
+   *  override it and the graph cannot see whether it did. */
+  configDefault?: string;
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
   /** BasicBlock: space-joined leaf callee names invoked in the block — the
@@ -128,6 +161,19 @@ export type RelationshipType =
   | 'MEMBER_OF'
   | 'STEP_IN_PROCESS'
   | 'HANDLES_ROUTE'
+  /** Outbound async messaging. Source = the callable that performs the publish
+   *  (or its File); target = the `Destination` it publishes to. Emitted by
+   *  `pipeline-phases/spring-destinations.ts` from Spring messaging-template
+   *  calls (`kafkaTemplate.send(...)`, `rabbitTemplate.convertAndSend(...)`).
+   *  One edge per address: a publish that names two destinations yields two
+   *  edges, and `reason` records which argument each came from. */
+  | 'PUBLISHES_TO'
+  /** Inbound async messaging — the mirror of `PUBLISHES_TO`. Source = the
+   *  annotated handler callable (or its File); target = the `Destination` it
+   *  subscribes to. Emitted from `@KafkaListener` / `@RabbitListener` /
+   *  `@JmsListener` and their siblings. Together the two types make
+   *  "who else reads what this service writes" a two-hop traversal. */
+  | 'CONSUMES_FROM'
   | 'FETCHES'
   | 'HANDLES_TOOL'
   | 'ENTRY_POINT_OF'
