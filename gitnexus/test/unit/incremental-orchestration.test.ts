@@ -1898,7 +1898,10 @@ describe('runFullAnalysis — AsyncAPI document reading', () => {
       );
       expect(steady.alreadyUpToDate).toBe(true);
     } finally {
+      // The document directory is a sibling of the repository, so the repo's
+      // own cleanup does not reach it — both owners have to be called here.
       await rm(specDir, { recursive: true, force: true });
+      await repo.cleanup();
     }
   }, 180_000);
 });
