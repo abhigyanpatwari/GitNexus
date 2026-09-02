@@ -231,6 +231,10 @@ describe('resolveZigImportInternal', () => {
     expect(
       resolveZigImportInternal('src/main.zig', 'pkg', files, { pathDeps: config.pathDeps }),
     ).toBe('src/root.zig');
+    // A root module whose file is not indexed is authoritative all the same:
+    // null, never the same-named zon dep's file (a different declaration).
+    const stale = { ...config, rootModules: new Map([['pkg', 'lib/gone.zig']]) };
+    expect(resolveZigImportInternal('src/main.zig', 'pkg', files, stale)).toBeNull();
   });
 
   it('resolves a bare name through the importer’s OWN build module table, not the first-declared alias', () => {

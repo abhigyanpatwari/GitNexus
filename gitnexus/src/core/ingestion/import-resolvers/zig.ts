@@ -170,8 +170,13 @@ export function resolveZigImportInternal(
     // take precedence: that declaration is exactly what an in-repo
     // `@import("lightpanda")` means, whatever the zon says. `std` / `builtin`
     // / `root` were rejected above and can never be reached from here.
+    // Authoritative when it binds the name: a root that is not indexed (a
+    // generated or skipped file) is `null`, never a fall-through to a
+    // same-named zon dep — that would be a different declaration answering
+    // under the name (gitnexus-check on fe24b37f; same rule as the
+    // build-module tables above).
     const rootModule = buildZon.rootModules?.get(importPath);
-    if (rootModule !== undefined && allFiles.has(rootModule)) return rootModule;
+    if (rootModule !== undefined) return allFiles.has(rootModule) ? rootModule : null;
 
     // Then build.zig.zon `.path` deps.
     const depPath = buildZon.pathDeps.get(importPath);
