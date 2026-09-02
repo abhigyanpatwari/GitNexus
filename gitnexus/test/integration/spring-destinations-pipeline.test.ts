@@ -114,6 +114,18 @@ describe('Spring destination resolution', () => {
     expect(withAddress('kotlin.arrayof.v1')).toHaveLength(1);
   });
 
+  it('folds a KOTLIN constant, not only a Java one', () => {
+    // Two separate facts. Java's fold reaching this cascade says nothing about
+    // Kotlin's: `makeConstantResolver` asks the OWNING provider for
+    // `foldRoutePathOperands`, and the harvest behind it runs only for a
+    // provider that declares `extractModuleConstants`. Kotlin declares both, so
+    // `KotlinTopics.INVENTORY` resolves the same way `Topics.SHIPMENTS` does.
+    const inventory = withAddress('kotlin.constant.v1');
+    expect(inventory).toHaveLength(1);
+    expect(inventory[0]?.properties.resolution).toBe('constant');
+    expect(sourceNames(inventory[0] as GraphNode)).toContain('publishConstant');
+  });
+
   it('resolves the other brokers', () => {
     expect(withAddress('orders.jms')[0]?.properties.broker).toBe('jms');
     expect(withAddress('orders-out-0')[0]?.properties.broker).toBe('stream');

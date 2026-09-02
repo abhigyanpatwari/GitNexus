@@ -1113,9 +1113,16 @@ export function resolveSpringDestination(
     // cannot tell `"\${app.topic}"` from `"${app.topic}"` here the way the
     // literal branch can. Both are unresolved either way, so the cost is a
     // reason filed under `unescaped-interpolation` that might have belonged
-    // under `unresolved-config-key` — never a false address. (No JVM provider
-    // supplies a constant fold for an interpolating language today, so this
-    // branch is a guard for when one does, not a live path.)
+    // under `unresolved-config-key` — never a false address.
+    //
+    // A LIVE PATH, not a guard for the future. Kotlin both interpolates and
+    // supplies a constant fold — `languages/kotlin.ts` declares
+    // `extractModuleConstants` and `foldRoutePathOperands`, and
+    // `spring-destinations.ts` hands the fold to this cascade — so a Kotlin
+    // constant reaching this branch is an ordinary occurrence and the misfiled
+    // reason above is a cost actually paid. Fixing it means teaching the fold
+    // to report whether the value it returned was escaped at its declaration,
+    // which the shared `ModuleConstants` shape does not carry.
     if (resolvers.interpolatesStringLiterals === true && /\$[{A-Za-z_]/.test(folded)) {
       return specification() ?? { kind: 'unresolved', reason: 'unescaped-interpolation' };
     }

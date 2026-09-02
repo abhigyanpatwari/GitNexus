@@ -386,12 +386,37 @@ describe('the resolution cascade', () => {
   });
 
   it('refuses an interpolating constant rather than folding it to an address', () => {
+    // A LIVE path, not a guard for a hypothetical future provider: Kotlin both
+    // interpolates and supplies a constant fold (`languages/kotlin.ts` declares
+    // `extractModuleConstants` and `foldRoutePathOperands`), and the pipeline
+    // test `folds a KOTLIN constant, not only a Java one` shows the fold
+    // reaching this cascade end to end.
     expect(
       resolveSpringDestination(candidate('Topics.TEMPLATE'), {
         constant: () => 'orders-$env',
         interpolatesStringLiterals: true,
       }),
     ).toEqual({ kind: 'unresolved', reason: 'unescaped-interpolation' });
+  });
+
+  it('misfiles a folded placeholder as interpolation — the cost of the lost escape', () => {
+    // By the time a folded value reaches this branch its escapes are gone, so
+    // `"\${app.topic}"` (a Spring placeholder, in Kotlin) and `"${app.topic}"`
+    // (a runtime template) are the same string and the guard fires first. The
+    // reason is then `unescaped-interpolation` where `unresolved-config-key`
+    // would have been more precise.
+    //
+    // Pinned rather than left implicit because the trade is the point: BOTH
+    // readings are unresolved, so the error can only ever be a misfiled reason
+    // in the refusal breakdown, never a false address. The precise diagnosis
+    // needs the fold to report whether the declaration was escaped, which the
+    // shared constant shape does not carry.
+    const resolution = resolveSpringDestination(candidate('Topics.CONFIGURED'), {
+      constant: () => '${app.topic}',
+      interpolatesStringLiterals: true,
+    });
+    expect(resolution).toEqual({ kind: 'unresolved', reason: 'unescaped-interpolation' });
+    expect(resolution).not.toHaveProperty('address');
   });
 
   it('leaves step 4 unimplemented, and consults it only when supplied', () => {

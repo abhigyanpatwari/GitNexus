@@ -11,6 +11,12 @@ class KotlinOrderPublishers(
         kafkaTemplate.send("orders.v1", payload)
     }
 
+    /** A Kotlin `object` constant, folded by the Kotlin binding of the same
+     *  constant resolver the Java side uses. */
+    fun publishConstant(payload: String) {
+        kafkaTemplate.send(KotlinTopics.INVENTORY, payload)
+    }
+
     /** A Kotlin string TEMPLATE. The short form has no braces at all, so a
      *  `${'$'}{` test never saw it and it was read as the literal address
      *  `orders-${'$'}env`, shared with every other service that wrote the same

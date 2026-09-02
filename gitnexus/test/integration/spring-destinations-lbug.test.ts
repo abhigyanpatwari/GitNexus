@@ -35,7 +35,7 @@ withTestLbugDB(
         const rows = await executeQuery(
           'MATCH (d:Destination) RETURN d.address AS address, d.broker AS broker, d.resolution AS resolution ORDER BY d.id',
         );
-        expect(rows.length).toBe(23);
+        expect(rows.length).toBe(24);
         const resolved = rows
           .filter((row) => row.address !== null && row.address !== undefined)
           .map((row) => row.address as string)
@@ -49,6 +49,7 @@ withTestLbugDB(
         // below, not one resolved row here.
         expect(resolved).toEqual([
           'kotlin.arrayof.v1',
+          'kotlin.constant.v1',
           'orders-out-0',
           'orders.created',
           'orders.jms',
@@ -100,7 +101,7 @@ withTestLbugDB(
         );
         // A resolved destination has no location at all — the same fact
         // `filePath` records — so the two columns must agree.
-        expect(Number(row?.total)).toBe(7);
+        expect(Number(row?.total)).toBe(8);
         expect(Number(row?.withLine)).toBe(0);
       });
 
