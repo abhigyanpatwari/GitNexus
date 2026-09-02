@@ -550,7 +550,7 @@ export const streamAllCSVsToDisk = async (
     // Destination nodes for async messaging (Kafka topics, Rabbit exchanges, …)
     const destinationWriter = new BufferedCSVWriter(
       path.join(csvDir, 'destination.csv'),
-      'id,name,filePath,startLine,endLine,address,broker,resolution,configKey,configDefault,brokerConflict,description',
+      'id,name,filePath,startLine,endLine,address,broker,resolution,configKey,configDefault,description',
     );
 
     // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
@@ -763,12 +763,15 @@ export const streamAllCSVsToDisk = async (
           // `startLine` -1 makes the two columns disagree about one fact and
           // renders as "line -1" in the UI.
           //
-          // `brokerConflict` is a REQUIREMENT, not decoration: one address
-          // claimed by two brokers costs that destination its `address`, so
-          // this field is the only surviving statement of why the join key is
-          // NULL. While the phase wrote the property this column did not exist,
-          // so it was dropped at the database boundary without a warning and
-          // `d.brokerConflict` raised a binder error.
+          // `broker` is written for every destination, resolved or not. It is
+          // part of the resolved node's IDENTITY — the id is minted from
+          // `(broker, address)` — so a reader who joins on `address` alone and
+          // sees two rows needs this column to tell them apart, not merely to
+          // decorate them. Every column named in this row list must also be
+          // named in DESTINATION_SCHEMA and in the COPY statement in
+          // `lbug-adapter.ts`; a property the phase writes but those two omit is
+          // dropped at the database boundary without a warning, and the query
+          // that reads it back raises a binder error instead.
           pending = destinationWriter.addRow(
             [
               escapeCSVField(node.id),
@@ -781,7 +784,6 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(String(node.properties.resolution ?? '')),
               escapeCSVField(String(node.properties.configKey ?? '')),
               escapeCSVField(String(node.properties.configDefault ?? '')),
-              escapeCSVField(String(node.properties.brokerConflict ?? '')),
               escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );

@@ -436,7 +436,7 @@ export const getNodeQuery = (table: string, includeContent: boolean): string => 
     return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.description AS description`;
   }
   if (table === 'Destination') {
-    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.address AS address, n.broker AS broker, n.resolution AS resolution, n.configKey AS configKey, n.configDefault AS configDefault, n.brokerConflict AS brokerConflict`;
+    return `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.address AS address, n.broker AS broker, n.resolution AS resolution, n.configKey AS configKey, n.configDefault AS configDefault`;
   }
   return includeContent
     ? `MATCH (n:${tableLabel}) RETURN n.id AS id, n.name AS name, n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine, n.content AS content`
@@ -479,13 +479,12 @@ const mapGraphNodeRow = (table: string, row: any, includeContent: boolean): Grap
     // ABSENT property — which cannot match anything — into a PRESENT one that
     // every other unresolved destination shares. That is the false connection
     // the keying rule exists to prevent, reintroduced at the API boundary, so
-    // the null is normalized back to absent for all six columns alike.
+    // the null is normalized back to absent for all five columns alike.
     address: table === 'Destination' ? (row.address ?? undefined) : undefined,
     broker: table === 'Destination' ? (row.broker ?? undefined) : undefined,
     resolution: table === 'Destination' ? (row.resolution ?? undefined) : undefined,
     configKey: table === 'Destination' ? (row.configKey ?? undefined) : undefined,
     configDefault: table === 'Destination' ? (row.configDefault ?? undefined) : undefined,
-    brokerConflict: table === 'Destination' ? (row.brokerConflict ?? undefined) : undefined,
     heuristicLabel: row.heuristicLabel,
     cohesion: row.cohesion,
     symbolCount: row.symbolCount,

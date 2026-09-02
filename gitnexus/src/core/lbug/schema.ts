@@ -264,12 +264,11 @@ CREATE NODE TABLE Tool (
 // override it and this graph does not read configuration values, so the default
 // is provenance rather than identity.
 //
-// `brokerConflict` records one address claimed by two DIFFERENT brokers. Such a
-// destination is keyed by its site and its `address` is withdrawn — a Kafka
-// topic and a Rabbit queue that share a name are two places, and a flag alone
-// does not stop a `PUBLISHES_TO` / `CONSUMES_FROM` walk from reporting them as
-// one. This column is therefore the only remaining trace of WHY the address is
-// NULL there, which makes it a requirement rather than decoration.
+// `broker` is part of the node's IDENTITY, not a label on it — `id` is minted
+// from `(broker, address)` — so two rows can share an `address` and differ by
+// broker, exactly as two Route rows share a URL and differ by method. Join on
+// `address` alone only when the brokers are known to be irrelevant; the id, or
+// `(address, broker)`, is the exact key.
 export const DESTINATION_SCHEMA = `
 CREATE NODE TABLE Destination (
   id STRING,
@@ -282,7 +281,6 @@ CREATE NODE TABLE Destination (
   resolution STRING,
   configKey STRING,
   configDefault STRING,
-  brokerConflict STRING,
   description STRING,
   PRIMARY KEY (id)
 )`;

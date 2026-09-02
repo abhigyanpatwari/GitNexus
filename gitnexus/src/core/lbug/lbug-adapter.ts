@@ -1536,7 +1536,7 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Destination') {
-    return `COPY ${t}(id, name, filePath, startLine, endLine, address, broker, resolution, configKey, configDefault, brokerConflict, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    return `COPY ${t}(id, name, filePath, startLine, endLine, address, broker, resolution, configKey, configDefault, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'BasicBlock') {
     // Taint/PDG substrate (issue #2080) — no name column. `callees` is the

@@ -50,12 +50,14 @@ export type NodeLabel =
    * key, a JMS queue, a Spring Cloud Stream binding. The framework overlay for
    * ASYNCHRONOUS entry/exit points, symmetric to `Route` for HTTP.
    *
-   * Identity is the resolved ADDRESS, so a publisher and a consumer of the same
-   * address land on one node and the connection is a single hop. A destination
-   * that must NOT be allowed to connect is keyed by its source location instead
-   * and carries no `address` property at all — either because the address could
-   * not be resolved, or because two different brokers claimed it. See
-   * `pipeline-phases/spring-destinations.ts` for why neither may key a node.
+   * Identity is `(broker, resolved ADDRESS)`, so a publisher and a consumer of
+   * the same address on the same broker land on one node and the connection is
+   * a single hop — while a Kafka topic and a Rabbit queue that share a name
+   * stay two nodes, the same way `GET /x` and `POST /x` are two Routes. A
+   * destination whose address could NOT be resolved is keyed by its source
+   * location instead and carries no `address` property at all. See
+   * `pipeline-phases/spring-destinations.ts` for why an unresolved spelling may
+   * not key a node, and `ingestion/destination-key.ts` for why the broker may.
    */
   | 'Destination'
   // Taint/PDG substrate (issue #2080). Intra-procedural control-flow node.
@@ -115,11 +117,13 @@ export type NodeProperties = {
   /** Runtime result such as runtime-confirmed or handler-conflict. */
   runtimeStatus?: string;
   // Destination (async messaging overlay). See the `Destination` label above.
-  /** The RESOLVED broker address, and the key a cross-repository pass joins on.
-   *  Present only when the address resolved: absent is the load-bearing state,
-   *  because an absent property cannot match another absent property. */
+  /** The RESOLVED broker address. Together with `broker` it is the key a
+   *  cross-repository pass joins on. Present only when the address resolved:
+   *  absent is the load-bearing state, because an absent property cannot match
+   *  another absent property. */
   address?: string;
-  /** Broker family the syntax attests to (`kafka`, `rabbit`, `jms`, …). */
+  /** Broker family the syntax attests to (`kafka`, `rabbit`, `jms`, …). Part
+   *  of the node's identity alongside `address`, not a label on it. */
   broker?: string;
   /** How the address was arrived at (`literal`, `constant`) when it resolved,
    *  or the named reason it did not. */
@@ -130,10 +134,6 @@ export type NodeProperties = {
   /** The `${key:default}` default text. Not an address: configuration can
    *  override it and the graph cannot see whether it did. */
   configDefault?: string;
-  /** One address claimed by two different brokers, as a sorted comma-joined
-   *  list. Such a destination is keyed by its SITE and carries no `address`,
-   *  so this is the only surviving statement of why the join key is absent. */
-  brokerConflict?: string;
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
   /** BasicBlock: space-joined leaf callee names invoked in the block — the
