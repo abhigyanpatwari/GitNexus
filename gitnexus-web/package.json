@@ -41,7 +41,7 @@
     "langchain": "^1.5.4",
     "lru-cache": "^11.5.2",
     "lucide-react": "^1.31.0",
-    "mermaid": "^11.16.1",
+    "mermaid": "^11.17.2",
     "mnemonist": "^0.40.4",
     "pandemonium": "^2.4.0",
     "react": "^19.2.5",
