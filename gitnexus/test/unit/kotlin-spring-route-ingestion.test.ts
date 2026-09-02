@@ -37,14 +37,14 @@ describeKotlin('extractKotlinSpringRoutes', () => {
     vi.unstubAllEnvs();
   });
 
-function constantsOf(files: Record<string, string>): RepoConstants {
-  return new Map(
-    Object.entries(files).map(([filePath, source]) => [
-      filePath,
-      extractKotlinModuleConstants(parse(source)),
-    ]),
-  );
-}
+  function constantsOf(files: Record<string, string>): RepoConstants {
+    return new Map(
+      Object.entries(files).map(([filePath, source]) => [
+        filePath,
+        extractKotlinModuleConstants(parse(source)),
+      ]),
+    );
+  }
 
   it('extracts direct RestController functions with independent class prefixes and handlers', () => {
     const routes = extractKotlinSpringRoutes(
