@@ -60,8 +60,10 @@
  * @writes  Destination nodes; CONSUMES_FROM / PUBLISHES_TO / USES edges
  */
 
+import path from 'node:path';
 import type { GraphNode, Range } from 'gitnexus-shared';
 import { generateId } from '../../../lib/utils.js';
+import { readAsyncApiDocuments } from '../asyncapi/document.js';
 import { logger } from '../../logger.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { SPRING_CONFIG_DESCRIPTION } from '../frameworks/spring/config-bindings.js';
@@ -101,6 +103,32 @@ export interface SpringDestinationsOutput {
   readonly refusalsByReason: Readonly<Record<string, number>>;
   /** Destination -> Property provenance edges for `${key}` placeholders. */
   readonly configKeyLinks: number;
+  /**
+   * What reading AsyncAPI documents contributed, present only when
+   * `asyncApiSpecPath` was configured. Absent means "not asked for", which is
+   * deliberately distinguishable from a configured path that yielded nothing —
+   * a mistyped directory and a repository with no documents are different
+   * problems with different fixes, and one zero cannot say which happened.
+   */
+  readonly specDocuments?: SpecDocumentStats;
+}
+
+export interface SpecDocumentStats {
+  /** Files considered under the configured path. */
+  readonly scanned: number;
+  /** Files that parsed as an AsyncAPI 3.x document and yielded an operation. */
+  readonly accepted: number;
+  /** Operations normalized to a (broker, address, action) triple. */
+  readonly operations: number;
+  /** Destination nodes this reading minted that no source site had already. */
+  readonly destinations: number;
+  /** CONSUMES_FROM + PUBLISHES_TO edges from documents. */
+  readonly edges: number;
+  /** Document- and operation-level refusals, by reason. Kept apart from
+   *  `refusalsByReason` above: that number is the denominator of the SOURCE
+   *  unresolved fraction, and a mistyped specification directory must not be
+   *  able to make the source look worse than it is. */
+  readonly refusalsByReason: Readonly<Record<string, number>>;
 }
 
 /**
@@ -274,6 +302,142 @@ function edgeReason(candidate: SpringDestinationCandidate): string {
   return `spring-${candidate.source}:${element}${exchange}`;
 }
 
+/**
+ * Pseudo-path prefix for a document that is not a file of this repository.
+ *
+ * An edge needs a source node, and the emit below refuses to attach one to a
+ * `File` that does not exist — so a document supplied from outside the working
+ * tree needs an identity minted for it. The same answer
+ * `frameworks/spring/actuator-runtime.ts` gives for Actuator snapshots
+ * (`spring-actuator:<endpoint>`): a prefixed pseudo-path that cannot collide
+ * with a real repo-relative one, because no repo-relative path contains a colon
+ * in its first segment.
+ */
+const DOCUMENT_FILE_PREFIX = 'asyncapi:';
+
+/**
+ * The `File` node an AsyncAPI operation's edge hangs off.
+ *
+ * A document COMMITTED to the repository already has a real `File` node, and
+ * using it is strictly better: the edge lands on something the reader can open,
+ * and the ordinary per-file writeback keeps it honest. Only a document from
+ * outside the tree gets a synthetic node.
+ */
+function documentFileNodeId(
+  ctx: PipelineContext,
+  configuredRoot: string,
+  documentPath: string,
+): string {
+  const repoRelative = path.relative(ctx.repoPath, documentPath);
+  if (repoRelative !== '' && !repoRelative.startsWith('..') && !path.isAbsolute(repoRelative)) {
+    const realId = generateId('File', repoRelative.split(path.sep).join('/'));
+    if (ctx.graph.getNode(realId) !== undefined) return realId;
+  }
+  // Relative to the CONFIGURED root, not to the filesystem root: an absolute
+  // path would put a machine's directory layout into the graph, and two
+  // machines indexing the same documents would then disagree about their ids.
+  const relative = path.relative(configuredRoot, documentPath);
+  const label =
+    relative === '' || relative.startsWith('..')
+      ? path.basename(documentPath)
+      : relative.split(path.sep).join('/');
+  const filePath = `${DOCUMENT_FILE_PREFIX}${label}`;
+  const id = generateId('File', filePath);
+  if (ctx.graph.getNode(id) === undefined) {
+    ctx.graph.addNode({
+      id,
+      label: 'File',
+      properties: { name: path.basename(documentPath), filePath },
+    });
+  }
+  return id;
+}
+
+/**
+ * Mint destinations stated by AsyncAPI documents, with no claim about code.
+ *
+ * ── WHY THIS DOES NOT TRY TO FIND THE HANDLER ─────────────────────────────
+ *
+ * A document says an address is sent to or received from; it does not say by
+ * which method. Guessing that mapping is a real temptation and a bad trade: the
+ * addresses in one document partition by (broker, action) into buckets that
+ * usually hold more than one operation, so any assignment beyond a bucket of
+ * size one is a heuristic — and a wrong one silently attaches a real address to
+ * the wrong handler, which is a false connection dressed as a resolved one.
+ *
+ * So this claims only what the document actually states: that THIS SERVICE
+ * talks to that address on that broker in that direction. The edge therefore
+ * starts at the document, not at a callable. That is a weaker statement than a
+ * source-derived edge and it is worth having anyway, because it is available in
+ * cases where the source cannot supply one at all — a listener registered
+ * programmatically, a broker this codebase has no patterns for, or a language
+ * whose messaging idiom nobody has taught it yet.
+ *
+ * The node itself is the ordinary resolved `Destination`: same key, same
+ * `address` property, so a document and a source site that name one address on
+ * one broker land on ONE node and the two halves of a conversation meet. That
+ * is the whole point, and it is why this mints nothing of its own invention.
+ */
+async function emitSpecDestinations(
+  ctx: PipelineContext,
+  specPath: string,
+): Promise<SpecDocumentStats> {
+  const read = await readAsyncApiDocuments(ctx.repoPath, specPath);
+  const configuredRoot = path.resolve(ctx.repoPath, specPath);
+  let destinations = 0;
+  let edges = 0;
+
+  for (const operation of read.operations) {
+    const nodeId = generateId(
+      'Destination',
+      destinationNodeKey(operation.broker, operation.address),
+    );
+    // Runs AFTER the source pass, so a site that resolved this address already
+    // owns the node and keeps its own `resolution` provenance. First writer
+    // wins and the order is fixed, so the property is deterministic rather than
+    // a race — and `literal` is the more informative of the two answers anyway.
+    if (ctx.graph.getNode(nodeId) === undefined) {
+      ctx.graph.addNode({
+        id: nodeId,
+        label: 'Destination',
+        properties: {
+          name: operation.address,
+          // Empty for the same reason every connecting destination carries it
+          // empty: the node is shared, and stamping it with the document's path
+          // would make it collateral damage of that path's next writeback.
+          filePath: '',
+          address: operation.address,
+          resolution: 'specification',
+          broker: operation.broker,
+        },
+      });
+      destinations += 1;
+    }
+
+    const sourceId = documentFileNodeId(ctx, configuredRoot, operation.documentPath);
+    const type = operation.action === 'receive' ? 'CONSUMES_FROM' : 'PUBLISHES_TO';
+    const reason = `asyncapi:${operation.operationId}`;
+    ctx.graph.addRelationship({
+      id: generateId(type, `${sourceId}->${nodeId}:${reason}`),
+      sourceId,
+      targetId: nodeId,
+      type,
+      confidence: 1.0,
+      reason,
+    });
+    edges += 1;
+  }
+
+  return {
+    scanned: read.documentsScanned,
+    accepted: read.documentsAccepted,
+    operations: read.operations.length,
+    destinations,
+    edges,
+    refusalsByReason: read.refusals as Readonly<Record<string, number>>,
+  };
+}
+
 export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = {
   name: 'springDestinations',
   // `parse` supplies the file list and the harvested constants; `scopeResolution`
@@ -362,13 +526,28 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
         );
       }
     }
+    // Documents are read whether or not the source pass found anything, and
+    // that is the point of the closure rather than a straight call here: a
+    // repository whose messaging is invisible to the source patterns — a broker
+    // with no rules, a listener registered programmatically — is exactly the
+    // case a published document exists to cover, and an early return keyed on
+    // source sites would skip the documents precisely there.
+    //
+    // Always invoked AFTER the source emit, so a site that resolved an address
+    // owns its node first and keeps its own provenance.
+    const specPath = ctx.options?.asyncApiSpecPath;
+    const readSpecifications = async (): Promise<SpecDocumentStats | undefined> =>
+      specPath === undefined ? undefined : emitSpecDestinations(ctx, specPath);
+
     if (sites.length === 0) {
+      const specDocuments = await readSpecifications();
       return {
         resolvedDestinations: 0,
         unresolvedDestinations: 0,
         edges: 0,
         refusalsByReason,
         configKeyLinks: 0,
+        ...(specDocuments === undefined ? {} : { specDocuments }),
       };
     }
 
@@ -548,9 +727,15 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
       edges += 1;
     }
 
+    const specDocuments = await readSpecifications();
+
     if (isDev) {
+      const fromSpec =
+        specDocuments === undefined
+          ? ''
+          : `, +${specDocuments.destinations} from ${specDocuments.accepted} document(s)`;
       logger.info(
-        `📮 Spring destinations: ${resolvedDestinations} resolved, ${unresolvedDestinations} unresolved, ${edges} edges`,
+        `📮 Spring destinations: ${resolvedDestinations} resolved, ${unresolvedDestinations} unresolved, ${edges} edges${fromSpec}`,
       );
     }
 
@@ -560,6 +745,7 @@ export const springDestinationsPhase: PipelinePhase<SpringDestinationsOutput> = 
       edges,
       refusalsByReason,
       configKeyLinks,
+      ...(specDocuments === undefined ? {} : { specDocuments }),
     };
   },
 };

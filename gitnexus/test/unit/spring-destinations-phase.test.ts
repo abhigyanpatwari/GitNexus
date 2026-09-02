@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import {
   setJavaSpringMessageProducerFacts,
@@ -627,5 +630,192 @@ describe('destinationNodeKey', () => {
     // it is what a caller that has nothing to say tends to pass.
     expect(destinationNodeKey(undefined, 'orders')).toBe('orders');
     expect(destinationNodeKey('', 'orders')).toBe('orders');
+  });
+});
+
+/**
+ * AsyncAPI documents as a second source of destinations.
+ *
+ * DIRECTION IS THE ASSERTION THAT MATTERS. A swapped send/receive mapping
+ * emits both edge types, both nodes, and a fully connected graph — only with
+ * every arrow reversed. Any test that asserts a node or an edge EXISTS passes
+ * identically under the broken mapping, so each test below names the edge TYPE
+ * it expects for a given action.
+ */
+describe('springDestinations phase — AsyncAPI documents', () => {
+  let graph: KnowledgeGraph;
+
+  beforeEach(() => {
+    graph = createKnowledgeGraph();
+  });
+
+  const KAFKA_DOCUMENT = `
+asyncapi: 3.0.0
+info: { title: Order Service, version: 1.0.0 }
+servers:
+  broker: { host: "example:9092", protocol: kafka }
+channels:
+  outbound:
+    address: orders
+    servers: [{ $ref: "#/servers/broker" }]
+  inbound:
+    address: shipments
+    servers: [{ $ref: "#/servers/broker" }]
+operations:
+  publishOrder:
+    action: send
+    channel: { $ref: "#/channels/outbound" }
+  onShipment:
+    action: receive
+    channel: { $ref: "#/channels/inbound" }
+`;
+
+  async function specDir(body: string = KAFKA_DOCUMENT): Promise<string> {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-phase-spec-'));
+    await writeFile(path.join(dir, 'asyncapi.yaml'), body, 'utf-8');
+    return dir;
+  }
+
+  async function runWithSpec(
+    files: string[],
+    asyncApiSpecPath: string | undefined,
+  ): Promise<SpringDestinationsOutput> {
+    const deps = new Map<string, PhaseResult<unknown>>([
+      [
+        'parse',
+        {
+          phaseName: 'parse',
+          durationMs: 0,
+          output: { allPaths: files, moduleConstants: new Map() },
+        },
+      ],
+      ['scopeResolution', { phaseName: 'scopeResolution', durationMs: 0, output: {} }],
+      ['springConfig', { phaseName: 'springConfig', durationMs: 0, output: {} }],
+    ]);
+    const ctx = {
+      repoPath: '/repo',
+      graph,
+      onProgress: () => {},
+      pipelineStart: 0,
+      ...(asyncApiSpecPath === undefined ? {} : { options: { asyncApiSpecPath } }),
+    } as unknown as PipelineContext;
+    return springDestinationsPhase.execute(ctx, deps) as Promise<SpringDestinationsOutput>;
+  }
+
+  function edgesFrom(address: string): { type: string; sourceId: string }[] {
+    const target = generateId('Destination', destinationNodeKey('kafka', address));
+    return [...graph.iterRelationships()]
+      .filter((r) => r.targetId === target)
+      .map((r) => ({ type: r.type, sourceId: r.sourceId }));
+  }
+
+  it('maps `send` to PUBLISHES_TO and `receive` to CONSUMES_FROM', async () => {
+    const output = await runWithSpec([], await specDir());
+
+    expect(output.specDocuments?.operations).toBe(2);
+    expect(output.specDocuments?.destinations).toBe(2);
+    expect(output.specDocuments?.edges).toBe(2);
+
+    // Swapping the mapping would leave both of these arrays non-empty and both
+    // nodes present; only the TYPE distinguishes the two readings.
+    expect(edgesFrom('orders').map((e) => e.type)).toEqual(['PUBLISHES_TO']);
+    expect(edgesFrom('shipments').map((e) => e.type)).toEqual(['CONSUMES_FROM']);
+  });
+
+  it('reads documents even when the source pass found no messaging at all', async () => {
+    // The early return used to be keyed on source sites alone. A repository
+    // whose broker this codebase has no patterns for is exactly the case a
+    // published document covers, so skipping documents there would drop the
+    // feature where it is most needed.
+    const output = await runWithSpec([], await specDir());
+    expect(output.resolvedDestinations).toBe(0);
+    expect(output.specDocuments?.destinations).toBe(2);
+  });
+
+  it('lands a document and a source site on ONE node for one (broker, address)', async () => {
+    const filePath = 'src/Orders.java';
+    setJavaSpringNonHttpHandlerFacts(filePath, []);
+    setJavaSpringMessageProducerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#publish` as never,
+        ownerRange: OWNER_RANGE,
+        template: 'kafka',
+        receiverName: 'kafkaTemplate',
+        methodName: 'send',
+        args: [{ text: '"orders"' }, { text: 'payload' }],
+      },
+    ]);
+    callableNode(graph, filePath, 'publish');
+
+    const output = await runWithSpec([filePath], await specDir());
+
+    const nodeId = generateId('Destination', destinationNodeKey('kafka', 'orders'));
+    const nodes = [...graph.iterNodes()].filter((n) => n.id === nodeId);
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].properties.address).toBe('orders');
+    // The source pass ran first and owns the provenance; the document joined
+    // its node rather than minting a second one.
+    expect(nodes[0].properties.resolution).toBe('literal');
+    expect(output.resolvedDestinations).toBe(1);
+    expect(output.specDocuments?.destinations).toBe(1);
+    // Two edges into one node — the publisher's and the document's — which is
+    // the whole point: both halves of a conversation meet on one node.
+    expect(edgesFrom('orders')).toHaveLength(2);
+  });
+
+  it('never lets a document give an unresolved destination an address', async () => {
+    const filePath = 'src/Placeholder.java';
+    setJavaSpringNonHttpHandlerFacts(filePath, [
+      {
+        ownerScopeId: `${filePath}#consume` as never,
+        ownerFilePath: filePath,
+        ownerRange: OWNER_RANGE,
+        annotations: [{ name: 'KafkaListener', args: [{ name: 'topics', text: '"${app.topic}"' }] }],
+      },
+    ]);
+    setJavaSpringMessageProducerFacts(filePath, []);
+    callableNode(graph, filePath, 'consume');
+
+    const output = await runWithSpec([filePath], await specDir());
+
+    expect(output.unresolvedDestinations).toBe(1);
+    const unresolved = [...graph.iterNodes()].filter(
+      (n) => n.label === 'Destination' && n.properties.resolution === 'unresolved-config-key',
+    );
+    expect(unresolved).toHaveLength(1);
+    // The document names real addresses, and one of them may even be the value
+    // behind this placeholder — but nothing here knows that, so the node keeps
+    // its location key and stays unjoinable.
+    expect(unresolved[0].properties.address).toBeUndefined();
+  });
+
+  it('hangs the edge off a synthetic File when the document is outside the repo', async () => {
+    await runWithSpec([], await specDir());
+    const [edge] = edgesFrom('orders');
+    const source = [...graph.iterNodes()].find((n) => n.id === edge.sourceId);
+    expect(source?.label).toBe('File');
+    expect(String(source?.properties.filePath)).toBe('asyncapi:asyncapi.yaml');
+  });
+
+  it('omits the stats block entirely when no path was configured', async () => {
+    // Absent must stay distinguishable from "configured and found nothing":
+    // a mistyped directory and a repository with no documents need different
+    // answers from an operator, and one zero cannot say which happened.
+    const output = await runWithSpec([], undefined);
+    expect(output.specDocuments).toBeUndefined();
+    expect('specDocuments' in output).toBe(false);
+  });
+
+  it('reports a configured path that yielded nothing, rather than staying silent', async () => {
+    const empty = await mkdtemp(path.join(tmpdir(), 'gnx-phase-spec-empty-'));
+    const output = await runWithSpec([], empty);
+    expect(output.specDocuments).toEqual({
+      scanned: 0,
+      accepted: 0,
+      operations: 0,
+      destinations: 0,
+      edges: 0,
+      refusalsByReason: {},
+    });
   });
 });
