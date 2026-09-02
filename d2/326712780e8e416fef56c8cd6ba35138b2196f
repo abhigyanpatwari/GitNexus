@@ -1,0 +1,1747 @@
+gitnexus/src/core/ingestion/import-resolvers/go.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6-15,20-22,41-42,44-48,50,54-76
+gitnexus/test/unit/kotlin-module-resolution.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-157
+gitnexus/bench/import-target/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-2994
+gitnexus/test/integration/csharp-import-index-reuse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-216
+gitnexus/test/unit/scope-resolution/go/go-imports.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 129-153
+gitnexus/test/integration/resolvers/kotlin-jvm-accessors.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-121
+gitnexus/test/unit/method-extraction.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,22,103,409-526
+gitnexus/test/unit/repo-manager-registry-atomic-write.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-194
+gitnexus/src/core/ingestion/languages/php/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21-30,55,62-66,88,91-105,107-185,188-294,298-299,305-339,342,344-352,354-358,385,387,393-395,420,422,428-430,455
+gitnexus/src/core/ingestion/pipeline-phases/processes.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7-8,56-64,136-194,224-253,255,270
+gitnexus/src/storage/file-lock.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-189
+gitnexus/test/integration/wiki-graph-queries-engine.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-424
+gitnexus-cursor-integration/skills/gitnexus-debugging/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,9,16-33,37,49,57,62-68,74,76,82,84,90-93,100,102,113-116,120,127,129-131
+gitnexus/src/core/embeddings/http-client.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 14,570
+gitnexus/test/integration/cli-e2e.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1051-1247,1350,1428-1432
+  s_2fc6857ad45390::t_612d0b4bb9c42c 1433-1435
+gitnexus/test/unit/group/kotlin-const-route-fold.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1341
+gitnexus/src/core/ingestion/frameworks/spring/config-bindings.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6,45
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 300,341-375,590-599,607,1021-1039,1371
+gitnexus/src/core/lbug/schema.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 54,174-185,236-238,252-287,376-380,390,416,428-430,434-440,446,452-456,463-464,472-483,491,605,750-751
+gitnexus/test/fixtures/lang-resolution/kotlin-import-package-evidence/app/Main.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-13
+gitnexus/test/integration/impact-epistemic-lower-bound.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 19,21,28,46-60,70-74,125-230,240-258
+  s_2fc6857ad45390::t_974ee33a2d17a9 259
+gitnexus/test/integration/parse-impl-clone-skip.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 35,144-154,176-180,244-245,272-273
+gitnexus/test/unit/group/registry-suppressed-stages.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-227
+gitnexus/src/core/ingestion/resolve-references.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 62,77-82,137,186,209,219-221,223-261
+gitnexus/test/unit/group/config-parser.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 48,67-111,179-222,248-265
+  s_2fc6857ad45390::t_36a44943475200 266
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 37-54,83,101-105,111-112,114,129,207-214,709,727,966-1024,1027-1028,1031,1034-1041,1047-1055,1263-1268,1320,1337-1390,1778,1782-1785,1790-1793
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/packages/utils/src/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/test/fixtures/lang-resolution/typescript-type-parameters/src/shapes.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-37
+gitnexus/test/unit/setup-antigravity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24,67-71,271,287-397,533,535
+gitnexus/test/unit/shipped-skills-sync.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 173-227,246-302,312-419
+  s_2fc6857ad45390::t_8258a7c0c2e457 420
+gitnexus/test/unit/utils.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-2,42-169
+  s_2fc6857ad45390::t_f0f6a0d266f695 170
+gitnexus-claude-plugin/hooks/resolve-analyze-cmd.cjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 279-285
+gitnexus/src/server/grep-scan.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-139
+gitnexus-web/src/core/llm/settings-service.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 22,29-47,75,457
+gitnexus/src/core/ingestion/languages/kotlin/spring-message-producers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-132
+gitnexus-claude-plugin/skills/gitnexus-debugging/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/bench/java-lombok-synthesis/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-124
+gitnexus/src/core/wiki/generator.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 43,229-234
+  s_2fc6857ad45390::t_4b961372dbeb7c 235
+gitnexus/src/core/ingestion/route-extractors/spring-shared.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21,28,40-79,103-115,117,121,141-144,150,153-162,175-186
+  s_2fc6857ad45390::t_d6a5096d70ae69 187
+gitnexus/src/lib/utils.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 122-200
+gitnexus/src/core/ingestion/route-extractors/python-decorator-handler.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-19
+gitnexus/test/fixtures/data-route-table-app/routes.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-23
+gitnexus/src/core/ingestion/languages/typescript/interpret.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 11-12,20-22,27-31,40-48,62,73,87,98,109,123,142
+.github/workflows/scorecard.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 56
+CLAUDE.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 65,67,72-73,75
+gitnexus-web/test/unit/settings-service.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 13-18,26-30,49-72,154-173,219-232
+.claude-plugin/marketplace.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 14
+gitnexus/test/unit/spring-non-http-handlers.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-64
+gitnexus/test/fixtures/lang-resolution/go-extern-qualified-signatures/beta/beta.go
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-7
+gitnexus/test/fixtures/kotlin-spring-route-app/src/main/kotlin/com/example/web/PetsController.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-45
+gitnexus/test/unit/group/sync-windowed-resolution.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 157,159-166,220,223
+gitnexus/test/unit/resolve-invocation.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 41,118-125
+  s_2fc6857ad45390::t_32c91b1db82859 126-127
+gitnexus/bench/receiver-resolution/baseline.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 203,207
+gitnexus/test/integration/detect-changes-path-anchoring.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-120
+gitnexus/src/cli/generated-skill.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-17
+gitnexus/src/config/repo-control-file.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-117
+gitnexus/src/core/ingestion/languages/cobol/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 15,22-79,89-91
+gitnexus/src/core/ingestion/import-resolvers/configs/swift.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 42-54
+gitnexus/test/unit/python-decorator-handler-name.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-96
+gitnexus/src/core/ingestion/scope-resolution/utils/generic-instantiation.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-345
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1
+gitnexus/test/unit/storage/fs-atomic.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-195
+gitnexus/src/core/lbug/query-batch.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-110
+gitnexus-claude-plugin/skills/gitnexus-exploring/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-27,31,43,50,67,75,81-83,87-88,96,98-100
+gitnexus/src/core/auto-sync/config.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-367
+gitnexus/src/core/ingestion/scope-resolution/passes/callable-value-flow.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 85-93,112-119,121,134-150,165,189-190,519
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 93,96,98-101,156-165,171,225-230,255-256,273,303-306,467-468,517-524,551,569,593,598-601,606,654,668,692,706,738-753,756,763-769,789-797,991-992,1037-1040,1241-1242,1660,1681
+gitnexus/test/unit/query-text-unbounded-guard.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-198
+gitnexus/test/unit/query-batch.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-59
+gitnexus/src/storage/git.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6-7,12,16-26,32,46-123,273-294,306-309,337-339,736-740,744-745,756-769,785-789,796-898
+gitnexus/src/core/ingestion/pipeline-phases/scan.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 15-16,24-121,133-157,159-173
+gitnexus-web/src/hooks/useAppState.tsx
+  s_2fc6857ad45390::t_48c3135b1d1d0a 43,675-676
+gitnexus/src/core/ingestion/languages/typescript/tsconfig.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-338
+gitnexus/scripts/cross-platform-shard.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6,47-49,70-79
+gitnexus/test/unit/group/java-const-route-parity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-295
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/packages/inner/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1
+gitnexus/src/core/ingestion/utils/method-props.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 20-39,41-44,66-71
+gitnexus-claude-plugin/skills/gitnexus-impact-analysis/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/src/core/ingestion/languages/c-cpp.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 423-429,510-515
+gitnexus/src/core/ingestion/languages/kotlin/spring-actuator.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-229
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/packages/inner/src/shared/helper.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/src/core/group/extractors/graphql-extractor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-707
+gitnexus/test/integration/spring-non-http-handlers-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-413
+gitnexus/test/unit/analyze-worker-pool-size.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 92-109
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/shadow-arrow.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-27
+gitnexus/README.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 207,237,243,247,252,262,288-351,460,737-747,761-762,770-771,784-785,788,798-799
+gitnexus/src/core/analysis-feature-registry.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-26
+gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 25,39-64,259-290,310-311,314-337
+gitnexus/test/unit/engineering-skills-contract.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 112-117
+gitnexus/test/unit/impact-batching-grouping.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1,41-44,327-330,335-786
+gitnexus/test/unit/parse-diff-hunks.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 68-79,83-93
+gitnexus/test/unit/auto-sync.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-730
+gitnexus/test/integration/group/http-route-resolve-symbol.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 23,36,70,72,74
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/fake/EventListener.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/test/unit/kotlin-route-const-resolver.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1603
+gitnexus/test/unit/scope-resolution/cobol-import-target-parity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-338
+gitnexus/src/core/ingestion/model/field-registry.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5-7,52,58,70-75,79
+gitnexus/test/unit/group/resolve-bridge-neighbors.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 130-185
+gitnexus/src/server/grep-params.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-98
+gitnexus/test/integration/csv-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 396-469
+gitnexus/test/unit/incremental-fts-drop-ordering.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8-9,70,131-148
+gitnexus/src/storage/gitnexus-managed-paths.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-53
+gitnexus/src/core/ingestion/languages/java/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 37-38,59-62,99,101
+gitnexus/src/mcp/repository-policy.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 182-219,279-294,361-366
+  s_2fc6857ad45390::t_b7a2748e959d1d 367
+gitnexus/test/unit/detect-changes-eol.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7-19,23-27,38,40,43,63-101
+  s_2fc6857ad45390::t_c4d34233c2b1ef 102-106
+gitnexus/test/integration/watch-filesystem.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-230
+gitnexus/test/unit/group/sync-unreadable-repos.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1257
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/components/Button.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+eval/workflow_bench/runtime_mounts.py
+  s_2fc6857ad45390::t_48c3135b1d1d0a 32-34
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/handlers/ScheduledJobs.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-23
+gitnexus/test/unit/local-backend-embedding-dims-warn.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18,28,126,231
+gitnexus/test/unit/upload-filter-ignore-drift.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-90
+gitnexus/test/unit/scope-resolution/typescript/type-only-import-chain.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-221
+gitnexus/test/fixtures/spring-destination-app/src/main/kotlin/com/example/messaging/KotlinInventoryPublisher.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-17
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/kotlin/com/example/handlers/AliasedEvents.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-16
+gitnexus/test/unit/cli-index-help.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,20-24,250-353,361
+gitnexus/test/fixtures/lang-resolution/member-call-producer/src/producer.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-16
+render.yaml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 20-22
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/OrderConsumers.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-35
+gitnexus/src/core/ingestion/frameworks/spring/vendor-prefixes.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-27
+gitnexus/src/server/git-clone.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12,15-20,48-51,57,65-84,120-123,272-291,361-364,424-431,451,453,459-462,495,502-509,511-515,517,523-532,539-543,545-548,552,554-617,619-621,623-652,658-701,803-806,829-834,838-840,843,853,855-856,863,865-890,896-900,904,909,913-914
+gitnexus/src/storage/repo-manager.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21,23,32-42,49-56,274-277,279,566-568,582-588,598-609,611-665,667-716,722-757,759,762-766,909-912,1027,1472-1492,1498-1499,1566-1583,1603-1605,1610
+gitnexus/test/integration/context-resource-staleness.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 11,65
+gitnexus/test/unit/group/http-consumer-signals.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 49-50,58-60
+  s_2fc6857ad45390::t_936d8d2f38c99d 61
+gitnexus/test/unit/repo-manager.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 31,234-257,844-862,1022-1127,1558-1563
+  s_2fc6857ad45390::t_d82e02f064570e 1564
+.agents/plugins/marketplace.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/consumer.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-42
+gitnexus/src/core/ingestion/import-resolvers/pass-cache.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-79
+gitnexus/test/unit/spring-message-producers.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1310
+gitnexus/src/core/ingestion/workers/parse-worker.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,6,95,138,146-150,502-507,756-761,779,851-857,925-929,936-945,953-955,1008-1013,1015-1022,1032-1034,1054-1056,1122-1124,1479,1582-1586,1602,1607-1610,1614,1799,1806,1846-1859,2186,2345,2348,2355,2357-2358,2362,2448-2456,2458-2460,2462,2468-2472,2570-2572,2651-2653,2901-2923,2927,2931-2934,2937,2954,2999-3015,3038,3081-3103,3125-3137,3289,3294-3296
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/kotlin/com/example/handlers/ListenerContract.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-12
+gitnexus/src/core/ingestion/languages/java/spring-message-producers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-100
+gitnexus/test/unit/fetch-site-capture.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-101
+gitnexus/test/unit/graph-collapse-wiring.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12,17-40,59,61,78-81,85-89,96-100,105,116-376
+gitnexus/test/integration/impact-scope-omission-persistence.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-75
+gitnexus/src/core/ingestion/frameworks/spring/dynamic-lookups.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-177
+gitnexus/src/mcp/local/local-backend.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12,17,25,28-32,40-42,119,128-135,317-318,351,396-404,648-649,657-658,668-671,689-704,707-714,726-732,743,745,747,752-846,939-978,980-996,1072-1076,1097-1120,1308-1310,1312-1313,1504,1740-1741,1744-1775,1778,1781,1785-1794,1959,1992-1994,2026-2030,2035,2037-2041,2043-2067,2069,2496,2499,2561-2570,2576-2577,2589-2599,2604,2606-2638,2640-2644,2800-2803,3332-3343,3349-3356,3367-3387,3428-3431,3452-3454,3901-3916,4007,4017-4026,4697-4701,4704,5417-5421,5426-5429,5433,5437-5448,5453-5512,5515-5516,5520-5595,5598,5600-5601,5606-5633,5637-5639,5644-5645,5652-5660,5668-5680,5683,5685-5693,5696,5701,6235,6243,6338,6405,6411-6415,6495-6496,6519,6536-6539,6575-6578,6584-6601,6611-6615,6638-6642,6778,6795,6945,6959-7024,7032,7110,7112,7114,7124-7139,7176-7177,7221-7227,7240,7242-7244,7319-7375,7530-7533,7575-7596,7627-7630,7647-7652,7703-7704,7724-7728,7742,7803-7808,7817-7818,7823-7828,7844-7849,7855-7856,7861,7881-7885,7893-7911,7931,7939-7940,7944-7955,7959,8017,8175,8275-8282,8411-8413,8422,8430-8442,8459-8461,8485-8487,8498-8500,8596,8665,8867
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/ReportingConsumer.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-14
+gitnexus/test/unit/fts-indexes.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 36,45-47,50-55,69-78,107-131,144,151-183,194-233
+gitnexus/src/core/ingestion/languages/go/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2-8,19-21,33-40,48,64-66,69-87,90-93
+gitnexus/test/integration/optional-grammars/skip-optional-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 82
+gitnexus/test/unit/git-utils.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 192-200,202,258-331,931-1136
+  s_2fc6857ad45390::t_757e8edebb898c 1137
+gitnexus/test/unit/group/fs-utils.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-89
+gitnexus/test/unit/schema.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 78-79,311-312,320-321
+gitnexus/src/core/ingestion/pipeline-phases/routes.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 33,80-102,198-236,259-271,275,280,285,322-326,333,339-355,357-358,360-364,366,368-369,372,399-411
+gitnexus/src/core/ingestion/import-resolvers/configs/csharp.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 34-37
+gitnexus/test/unit/convex-metadata-persistence-contract.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-123
+gitnexus/test/unit/group/insecure-tempfile.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 30,41-47,50-51,64-65,68,74-83,105-110,112
+gitnexus/test/unit/line-base-conversion.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-47
+gitnexus/test/unit/scope-resolution/run-progress.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 10,44-49,114-153
+gitnexus/test/integration/data-route-table-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-291
+gitnexus/src/core/ingestion/languages/javascript/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4-8,10-12,14,16-22,25-27,29-32,34,41-43,45-48
+gitnexus/src/cli/i18n/zh-CN.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 40-48,81-88,147-156,203-204,228-229,238,247-248,253-254,300-302
+gitnexus/test/unit/calltool-dispatch.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 26,105,122-125,138-164,423,437,446,501,503,509-528,537,539,544-632,688-689,1347,1353-1407,2278-2280,2293-2297,2406-2408,2427,2487-2500,2513,3326,3342,3411-3755,5051,5105-5106
+gitnexus/test/unit/group/java-workspace-extractor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 34-51,83-356,369-370,413-735
+  s_2fc6857ad45390::t_5e3d443a356ba5 736
+gitnexus/test/unit/scope-resolution/typescript/typescript-imports.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 96,103,226,281-416,479-480,542-547,554-556,558-570,573-574,586-591,601-602
+gitnexus/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,63,69,74,126-127
+gitnexus/test/unit/spring-destinations-phase.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-631
+gitnexus/test/unit/wiki-graph-queries-list-binding.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-374
+gitnexus/src/core/ingestion/call-processor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21,32,41-52,297,312-402,409-411,436-458,460-462,464-478
+.claude/skills/gitnexus-work/references/evidence-provenance.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101-105,115-125,138-142,149-175
+  s_2fc6857ad45390::t_56459ea6c62eed 176
+gitnexus-web/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21-22,24,29,41,43,48-49,56,62,64,68,70-71,86
+gitnexus/src/core/ingestion/pipeline-phases/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24
+gitnexus/bench/kotlin-jvm-accessors/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-8
+gitnexus/test/unit/group/bridge-pairing-precedes-open.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-107
+gitnexus/test/unit/ignore-build-output.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-127
+gitnexus/src/core/ingestion/languages/java/capture-side-channel.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-18,30-32,40-42,51-53,113-154,164-166,174-176,189-193,216-218,239-250
+gitnexus/test/integration/kotlin-spring-route-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-206
+gitnexus/test/unit/index-freshness-graph-collapse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 27-31,35-39,43,46-78,87-90,96-98,104-110,116-120,122-123,133,137-141,147-150,157-159,164,173-200,211-214,220-223,228-234,241,247-275
+  s_2fc6857ad45390::t_fd4f742ef01107 276
+gitnexus/test/unit/security.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 47-52
+gitnexus/src/core/ingestion/languages/ruby/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 11,103-108
+gitnexus/test/unit/process-processor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6,828-1413
+gitnexus/src/core/ingestion/scope-resolution/graph-bridge/node-lookup.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 99-108,144,153-156
+gitnexus/src/types/pipeline.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5,18-29,36-45,55-60
+gitnexus/test/integration/group/group-sync-lock-concurrency.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-607
+gitnexus/test/unit/run-analyze-fts-repair.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 240,295,362-407,412,459,519,625,693,904,977,1136,1277,1558,1565-1566,1919,2166,2173-2174
+gitnexus/bench/v8-sidecar/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-91
+gitnexus/test/unit/ai-context-read-path-must.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-48
+gitnexus/src/core/group/sync.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 10-18,26,29,37,40-47,62-94,99,101-124,126-139,154-163,166,195-239,273,297-306,315-318,329-333,336-340,342,354,358-364,374,384-395,406,417,428,439,456-459,465-506,520-526,544-547,549-553,555-559,565-570,605-621,647-661,667-669,677-689,694-909,915,918-921,923
+gitnexus-web/test/unit/agent-abort.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 98-128
+GUARDRAILS.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 55-60,76-77
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/handlers/ServiceActivators.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-28
+gitnexus/test/integration/go-import-index-reuse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-132
+gitnexus/src/core/ingestion/route-extractors/kotlin-spring.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-316
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/use.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/test/unit/group/sync-registry-identity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-273
+gitnexus/test/unit/scope-resolution/function-local-import-chain.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-346
+gitnexus/src/core/auto-sync/analysis-worker-launch.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-210
+gitnexus/test/unit/group/python-workspace-extractor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 55-79
+gitnexus/test/fixtures/lang-resolution/java-import-package-evidence/app/Main.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-11
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/handlers/ApplicationEvents.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-16
+gitnexus/src/core/index-content-drift.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-170
+gitnexus/src/core/ingestion/scope-resolution/workspace-index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 43,46-50
+gitnexus/test/integration/object-literal-owner-resolution.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 39-49,160,250-577
+gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-390
+gitnexus/test/unit/impact-pdg-compose-dedup.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 39
+gitnexus/bench/import-target/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1022
+gitnexus/src/core/ingestion/languages/python/import-decomposer.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16,27-38,45-50,98-100,130,144,164-168
+  s_2fc6857ad45390::t_d0cdafc95c711d 169
+gitnexus/src/core/ingestion/languages/swift/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 28,43,65-66
+gitnexus/test/fixtures/csharp-captures-golden/expected-captures.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 44,52,56,64,68,96,128,132,156,168,192,196,224,324,396,428,448,468,584,624,636,692,708
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/ArchiveConsumer.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-9
+gitnexus/test/fixtures/multi-verb-route-app/api/widgetsController.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-26
+gitnexus/test/fixtures/spring-destination-app/src/main/kotlin/com/example/messaging/KotlinOrderConsumers.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-18
+gitnexus/test/unit/spring-config-bindings.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 277-490
+gitnexus/test/unit/watch-queue.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-348
+gitnexus/src/core/ingestion/scope-resolution/summary-maps.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-57
+gitnexus/src/core/ingestion/languages/csharp/query.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 96-100,102-103
+gitnexus/test/unit/group-service-not-found.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24-27
+gitnexus/vitest.config.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 67-68,76-79,102,109-117,146-147,155-156,179,188-189
+gitnexus-web/src/services/backend-client.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 67-72,878-886,891-892,897-898,904-908
+gitnexus-claude-plugin/skills/gitnexus-work/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 219-222
+gitnexus-claude-plugin/skills/gitnexus-plan/README.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 127-137
+gitnexus/test/integration/go-pipeline-benchmark.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 593,627-628,682,765
+gitnexus/test/unit/scope-extraction-failures.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-54
+gitnexus/src/core/ingestion/languages/kotlin/spring-di.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4-6,20,27-42,76-159,166-167,173,177-180,184,190-193,197
+  s_2fc6857ad45390::t_93729eafe6cf36 3
+gitnexus/src/core/ingestion/frameworks/spring/actuator-runtime.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-968
+gitnexus/bench/lib/identity-guard.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-62
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/shadow-const.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-24
+gitnexus/test/unit/watch-command.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-43
+gitnexus/hooks/antigravity/gitnexus-antigravity-hook.cjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 506
+gitnexus/src/core/ingestion/method-extractors/generic.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 259
+gitnexus/test/helpers/ignore-set-source.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-107
+gitnexus/test/unit/tool-direct-cli.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1,30-35,57-82,106-125,169-190,237,244-281
+gitnexus/test/unit/node-workspace-scope.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-188
+gitnexus/test/unit/processes-phase-sink-wiring.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-301
+gitnexus/src/core/ingestion/languages/typescript/query.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 178-179,186-187,190-191
+gitnexus/src/core/ingestion/languages/go/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 13
+gitnexus/src/core/ingestion/languages/java.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18-23,36-40,42-46,58,203-204,207,232-261
+gitnexus/test/fixtures/nest-route-app/src/health/health.controller.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-14
+gitnexus/test/unit/process-identity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-42
+gitnexus-web/test/unit/impact-tool.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-209
+gitnexus/src/core/ingestion/languages/csharp/resolution-config.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 15-18,24-25,31-34,38
+gitnexus/src/core/auto-sync/state.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-173
+gitnexus/src/core/ingestion/languages/kotlin/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-14,19-20,23-27,32-42,51
+gitnexus/src/core/ingestion/scope-resolution/unresolved-receivers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17,147-151,185,199
+gitnexus/src/core/group/cross-impact.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8,11,28,35-44,162-170,185-193,197-199,227-230,250-252,273-283,422-432,442-457,459-474,476-477,479-482,503,518-524,534,608-610,638-645,679,735-736,746-764,774-775,906,908-947,959-977,985
+gitnexus/src/core/ingestion/di-extractors/spring.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 62
+gitnexus/src/core/group/group-lock.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-200
+gitnexus/src/core/ingestion/languages/typescript/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24,26-30,40-43,59,61-64,69,71-74,100-101
+gitnexus/src/core/ingestion/method-types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 40-55
+gitnexus/src/server/analyze-worker-protocol.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-73
+gitnexus/src/core/ingestion/route-extractors/data-route-table.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-971
+gitnexus/test/fixtures/lang-resolution/go-undecided-satisfaction/go.mod
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/src/core/ingestion/languages/java/spring-dynamic-lookup.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-77
+gitnexus/src/core/ingestion/languages/kotlin.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 27-30,48-57,191-192,221-239
+gitnexus/test/integration/cfg/parse-cache-mixed.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8,15-17,20,71,79-81,108-110
+gitnexus/test/integration/antigravity-hook-e2e.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 34,90,92,187,241-243
+gitnexus/test/unit/cross-platform-shard.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6,52
+gitnexus-claude-plugin/skills/gitnexus-refactoring/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-37,41,55,57,67,79,94,103,117-124,140,145-148,154,157,160,162-164
+eslint-rules/require-safe-parse.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 22,29,77
+gitnexus/src/core/ingestion/utils/template-arguments.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 50-172,277-280
+gitnexus/src/core/ingestion/route-extractors/constant-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 36,69-92,202-206,209-213,230,232,245,247
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/main.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/src/cli/format-symbol.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-22
+gitnexus-claude-plugin/skills/gitnexus-plan/scripts/evidence-provenance.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 482,486,619-628,631-638,641-642,654,663-724,726-749,751-762,764-778,780-788,790-791,793,796,800,807-809,878-882,884-886,977-996,998-1006,1008-1018,1026-1074,1076,1078,1080-1100,1102-1107,1109,1112-1153,1155-1207,1209-1212,1214-1221,1223-1224,1226-1253,1255-1287,1289,1291-1295,1298-1303,1308-1369,1371,1384-1385,1388,1392,1396,1400,1406-1407,1414,1422,1427,1451-1457,1460,1471-1476,1484,1488,1491-1496,1500,1505,1523,1526-1528,1532-1533,1584-1585,1593,1599,1602,1637-1638,1642,1649,1672,1675,1685,1690,1705,1730,1734-1736,1743-1745,1758-1759,1770,1782-1783,1789-1790,1800,1812-1813,1817-1818,1820-1821,1825-1826,1830-1836,1891,1894,1912-1913,1915-1916,1928,1933,1946,1955,1973,1980-1981,1986,1997-1999,2002-2010,2012,2015,2136-2140,2155-2157,2166,2201-2202,2204,2207,2242-2243,2245
+gitnexus-web/src/core/llm/agent.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 23,36,38,281-293,297,300,302,413,432-434,564,573-580
+gitnexus-claude-plugin/skills/gitnexus-plan/references/evidence-provenance.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101-105,115-125,138-142,149-175
+  s_2fc6857ad45390::t_3e330663a7453b 176
+SECURITY.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 62-63,68-70
+  s_2fc6857ad45390::t_69a9bd79c2cedc 71
+RUNBOOK.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 49-59
+gitnexus/src/core/ingestion/filesystem-walker.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7,25-45,60-74,79-94,98,100,102,141-145,149-151,153,187,200-214
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/PricingSpelConsumer.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-14
+gitnexus/test/unit/auto-sync-runner.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1949
+gitnexus/test/unit/import-resolvers/suffix-index-lazy-dir-map.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-910
+gitnexus/src/core/ingestion/languages/rust/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 19,58,88-95,172-173
+gitnexus/test/unit/pipeline-runner.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 403-474
+gitnexus/test/unit/git-clone.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 19,24,30,36,49-73,127-132,136-139,142,144-150,153-159,200-208,400-413,416,440,442-444,447,449-451,456,458,461,466,475,485-486,490,504-505,520,524-561,569,634-1014,1127-1150,1329-1366
+gitnexus/bench/lib/route-constant-guard.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-77
+gitnexus/test/unit/java-runtime-symbol-strategy.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-118
+gitnexus/test/unit/resolve-route-handler-symbols.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7-9,21,68-80,136-531
+gitnexus/test/unit/spring-bean-extractor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 114-121,157-197
+  s_2fc6857ad45390::t_d1692d52b38224 198-200
+gitnexus/src/server/api.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 42,57-59,61,348-368,379-385,433,438-440,465-487,528-540,826-828,1408-1411,1422,1425-1426,1429-1438,1523,1536-1542,1601,1626-1631
+gitnexus/test/unit/group/bridge-db.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 13-14,21,23-24,161-229,525-743
+  s_2fc6857ad45390::t_85867455c70d5d 744
+gitnexus-web/src/locales/en/settings.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 79-92
+gitnexus/src/cli/wiki.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21-22,28,69,74-75,79,84,224-231,237-247,264,292-295,302,309,312,320-322,355-362,451,454,465-469,477-479,481-485,488-492,512-520
+gitnexus/src/core/group/extractors/http-patterns/python.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1140-1150
+gitnexus/test/integration/php-import-index-reuse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-144
+gitnexus/test/integration/spring-destinations-lbug.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-239
+gitnexus/test/unit/detect-changes-hunk-scale.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-607
+gitnexus/test/unit/scope-resolution/python/python-import-probe-count.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-259
+gitnexus/src/core/ingestion/language-config.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9,33-37,43-129,256-257,260,262,362-372,375-387,555-574
+  s_2fc6857ad45390::t_d3daff6a151006 575
+gitnexus/src/core/ingestion/languages/rust.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 191-207
+gitnexus/test/unit/result-merge.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 61-91
+gitnexus/src/core/ingestion/destination-key.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-62
+gitnexus/src/core/ingestion/import-resolvers/php.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 40-41,52-57,59-69,72-74,83-90,92-124,129-139
+  s_2fc6857ad45390::t_7a66fffb31c8ad 140
+gitnexus/test/fixtures/spring-destination-app/src/main/resources/application.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-4
+gitnexus/test/integration/server-analyze-token-validation.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 197-205
+.gitleaksignore
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3-4
+gitnexus/src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 13-117,125-176,183-187,190-191,200-207,209-214,218-229
+gitnexus/test/unit/watch-failure-policy.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-29
+gitnexus/src/core/group/types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-13,30,37,47,51-52,100-112,124,126-151,168-197,212-222,311-405,407-424
+gitnexus/test/unit/nest-decorator-routes.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-738
+gitnexus/src/core/ingestion/workers/callable-id.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 46-47,50-51,61,67-68,71,75-80,90,92-95,100-112,137-141,143
+gitnexus/test/fixtures/kotlin-spring-route-app/src/main/kotlin/com/example/web/DuplicateControllers.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-13
+gitnexus/test/unit/scope-resolution-phase-failures.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-94
+gitnexus/src/core/ingestion/entry-point-scoring.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16,168-173,176
+gitnexus/src/core/ingestion/languages/java/lombok-synthesizer.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-539
+gitnexus/test/unit/stream-graph-emit-config.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 140
+.claude/skills/gitnexus-refactoring/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-37,41,55,57,67,79,94,103,117-124,140,145-148,154,157,160,162-164
+gitnexus-claude-plugin/skills/gitnexus-cli/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/test/unit/lbug/graph-emit-sink.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 427-477
+gitnexus-claude-plugin/skills/gitnexus-exploring/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/test/unit/group/fixtures.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 39-72
+  s_2fc6857ad45390::t_0017105e764e53 38
+gitnexus/test/unit/scope-resolution/node-lookup-determinism.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,23,38,101-167,199-283
+  s_2fc6857ad45390::t_f664d239ad8b6a 284
+gitnexus/src/core/ingestion/frameworks/spring/analysis-features.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 46-62
+gitnexus/src/core/ingestion/scope-resolution/undecided-satisfaction.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-95
+gitnexus/src/core/index-freshness.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,10-11,30-55,66-74,90,99-103,107-113,119,121,123-130,136-143,155-161
+gitnexus/src/core/ingestion/languages/dart/query.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 45-53
+gitnexus/src/core/ingestion/utils/symbol-labels.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-17
+gitnexus/test/integration/resolvers/parameter-producer.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-145
+gitnexus/test/unit/incremental-orchestration.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 50-51,53,59-62,105-122,218-235,269-370,582-683,714-750,802-804,823-825,832-863,896-932,964-966,1115-1121
+gitnexus/test/unit/source-control-bytes.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-505
+gitnexus/src/storage/fs-atomic.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9-10,30-158
+gitnexus/src/cli/analyze-config.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 33-34,63-64,112-114,233-243,397-414
+  s_2fc6857ad45390::t_962bffcac01dca 415
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/baseurl.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/src/core/group/extractors/fs-utils.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24-114
+gitnexus/src/core/ingestion/languages/jvm/beanspec.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-49
+gitnexus/test/integration/python-import-index-reuse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4-5,14-37,41-45,53-54,56,58-60,65-66,68,70,72,76,78-82,84-93,97,100,104-107
+gitnexus/test/integration/resolvers/kotlin.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 33,36,313-376,2967-2992
+gitnexus/test/integration/object-literal-impact.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-185
+gitnexus/test/unit/data-route-table-routes.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-819
+gitnexus/src/core/group/extractors/manifest-extractor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-6,374,378
+gitnexus/test/fixtures/spring-destination-app/src/main/kotlin/com/example/messaging/KotlinTopics.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-15
+gitnexus/test/integration/analyze-atomic-swap.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 25-26,33,35-40,43-46,82-85,147-169,243-311
+  s_2fc6857ad45390::t_2f425a777c229e 312
+gitnexus/test/unit/file-lock.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-227
+gitnexus/src/core/ingestion/languages/csharp/razor-view-components.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-955
+gitnexus/test/fixtures/lang-resolution/kotlin-import-package-evidence/flat/UserSource.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-7
+gitnexus/test/unit/ingestion/di.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101,103,920-1050
+gitnexus/test/unit/scope-resolution/python/python-fixtures.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 218-219,221,228-235,242-244,256,263-269,277,279-306,311-324
+gitnexus/src/core/ingestion/languages/python/interpret.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24,30-36,69,73-76,84
+gitnexus/test/unit/skip-git-cli.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 42,46-50
+gitnexus/src/cli/watch-queue.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-184
+gitnexus/src/core/group/extractors/http-route-extractor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9,11,119,133-141,148,174-194,214-224,247,263-273,295-329,331-345,354,574-576,581,585-586,591-596,609,623-627,629-630,632-634,636,669,739,799-803,885-890,901,904-951,1047-1052
+gitnexus/test/unit/spring-vendor-annotation-alias.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-297
+gitnexus/src/core/incremental/derived-writeback.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-83
+README.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1,182,387,400-421,452,457-458,473-512,546,561,571-603,662,840
+.claude/skills/gitnexus-work/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 219-222
+gitnexus/src/server/mcp-http.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12-16,21-35
+  s_2fc6857ad45390::t_0345bd2c38c738 36
+gitnexus/test/fixtures/python-captures-golden/expected-captures.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4,8,12,16,44,48,60,64,88,96,104,112,124,128,132,144,168,180,196,204,220,224,232,236,240,248,252,260,264,268,276,280,284,288,296,312,316,324,328,344,368,376,380,384,392,404,412,480,484,496,504,512,516,520,540,544,552,568,584,596,608,620,636,640,648,652,656,684,696,708,712,720,728,732,756,776,780,788,800,812,816
+gitnexus/src/core/ingestion/scope-extractor-bridge.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 67-77
+gitnexus/skills/gitnexus-plan/README.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 127-137
+gitnexus/test/fixtures/data-route-table-app/handlers.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-13
+gitnexus/test/unit/api-graph-streaming.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6,16,150-152,160-162,203-205,246-327,377-522
+  s_2fc6857ad45390::t_00717ccf9e0e0e 523
+gitnexus/src/core/group/extractors/java-workspace-extractor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,24-38,47,50,55,64-69,71-77,79-191,195-280,287,289-290,293-294,297-303,305-323,327-343
+docker-server.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 115-122,352-358,360-362
+gitnexus/src/core/ingestion/model/registration-table.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 185-187
+gitnexus-web/test/unit/agent-prompt.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 46
+gitnexus/src/core/auto-sync/starter.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-643
+gitnexus/test/fixtures/lang-resolution/typescript-type-parameters/src/namespaced.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-19
+gitnexus/src/storage/index-lock.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 108-126,339-346
+gitnexus/test/unit/group/sync-exact-only.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-81
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/alias.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/src/core/group/storage.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6,8,33-37,42,99
+gitnexus/bench/finalize-reexport/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-246
+gitnexus/src/core/ingestion/route-extractors/java-const-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-791
+gitnexus/src/core/wiki/grok-client.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-359
+gitnexus/test/unit/incremental-derived-writeback.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-98
+gitnexus/test/unit/parsedfile-store.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-4,12-13,16-17,250-252,409,449,617-848
+gitnexus/test/unit/group/cross-impact-incomplete-bridge.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-449
+gitnexus/test/unit/preprocess-source-parity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7,59-72
+gitnexus/test/unit/run-analyze.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17-18,95-284
+  s_2fc6857ad45390::t_faf0fd0d401030 285
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/UnrelatedRabbitConsumer.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-22
+gitnexus/test/unit/tools.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-17,196-206,286-304,325-362,467-520
+  s_2fc6857ad45390::t_99f47cb9c0aa32 521
+gitnexus-claude-plugin/.codex-plugin/plugin.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4
+gitnexus/src/core/ingestion/tree-sitter-queries.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 565-571,576,1068-1074,1079,1208-1217
+  s_2fc6857ad45390::t_39bb4993dd1e1c 1218
+gitnexus/test/fixtures/nest-route-app/src/venues/venues.service.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-34
+gitnexus/test/integration/group/group-cli.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4-8,10,17,33,39,43-46,58-102,119-153,199-722
+gitnexus/test/unit/ingestion-utils.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 43-45
+gitnexus/test/unit/repo-manager-registry-strict-read.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-327
+gitnexus/test/integration/spring-actuator-runtime-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-771
+gitnexus/src/core/group/normalization.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 94-148,171,176-179,181
+gitnexus/src/cli/analyze-options.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-140
+gitnexus/src/core/ingestion/import-resolvers/workspace-file-index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-94
+gitnexus/test/unit/group/php-guzzle-request-ctor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-352
+gitnexus/test/unit/v8-sidecar.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-204
+gitnexus/test/unit/mcp-http-transport.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 37,641-746
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/kotlin/com/example/handlers/AliasedXxlJob.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-20
+gitnexus/src/config/ignore-service.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,6,37-39,44,62-74,81-88,115-116,134-141,326-329,369,382-395,405-406,448-451,456-458,465-497,586-589
+.claude/skills/gitnexus-plan/scripts/evidence-provenance.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 482,486,619-628,631-638,641-642,654,663-724,726-749,751-762,764-778,780-788,790-791,793,796,800,807-809,878-882,884-886,977-996,998-1006,1008-1018,1026-1074,1076,1078,1080-1100,1102-1107,1109,1112-1153,1155-1207,1209-1212,1214-1221,1223-1224,1226-1253,1255-1287,1289,1291-1295,1298-1303,1308-1369,1371,1384-1385,1388,1392,1396,1400,1406-1407,1414,1422,1427,1451-1457,1460,1471-1476,1484,1488,1491-1496,1500,1505,1523,1526-1528,1532-1533,1584-1585,1593,1599,1602,1637-1638,1642,1649,1672,1675,1685,1690,1705,1730,1734-1736,1743-1745,1758-1759,1770,1782-1783,1789-1790,1800,1812-1813,1817-1818,1820-1821,1825-1826,1830-1836,1891,1894,1912-1913,1915-1916,1928,1933,1946,1955,1973,1980-1981,1986,1997-1999,2002-2010,2012,2015,2136-2140,2155-2157,2166,2201-2202,2204,2207,2242-2243,2245
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/same-file-nested.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-30
+gitnexus/src/core/ingestion/route-extractors/js-const-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1213
+gitnexus/src/core/ingestion/frameworks/spring/argument-facts.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-140
+gitnexus/bench/kotlin-import-target/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,4-6,9-10,17,19-21,24,28-48,50-75,78-84,86-98,101-138,141-151,153,156,158,160-168,174-186,188,191-192,194-204,207-209,211-212,214-217,220-221,224-225,228,231,234
+gitnexus/test/integration/impact-zero-caller-risk.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 39-45,74-75,98-102,148-189
+  s_2fc6857ad45390::t_bf5a8836f049d7 190
+gitnexus/test/integration/resolvers/generic-interface-dispatch.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-492
+gitnexus/src/core/group/extractors/http-patterns/kotlin.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17-18,20,23-35,60-77,167-340,453-459,497,510,525,538,564,577,592,605,616-762,1232-1252,1259,1261-1267,1272-1277,1279-1280,1286-1290,1293-1300,1302-1304,1345-1389,1391-1430,1437,1439-1444,1449-1450,1463,1468,1479-1487,1493-1497,1500-1558,1563-1580,1583,1597-1600,1770-1778,1784
+gitnexus/src/cli/auto-sync.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-125
+gitnexus/src/core/ingestion/scope-resolution/passes/return-shape-members.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 39,44-48,89-318,347-349,362-369,375,415-450
+gitnexus/src/core/ingestion/languages/javascript/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 45-46,57-64
+  s_2fc6857ad45390::t_7829b461ff6d41 65
+gitnexus/src/core/ingestion/languages/csharp/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 25-34,44-53,68,72,101-108,113,138-142,144-159,169-170,177-182
+gitnexus/test/fixtures/kotlin-spring-route-app/src/main/kotlin/com/example/api/ApiPaths.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-9
+gitnexus/test/integration/parse-impl-env-reads.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 31,127,129-132,150-176
+gitnexus/src/server/analyze-launch.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 49,198-203,208-269,338
+gitnexus/test/fixtures/spring-destination-app/src/main/resources/application-prod.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/test/fixtures/lang-resolution/go-undecided-satisfaction/repo.go
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-23
+gitnexus/src/core/ingestion/languages/kotlin/lombok-synthesizer.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-512
+gitnexus/test/integration/resolvers/java-lombok.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-258
+gitnexus/src/core/ingestion/languages/cpp/file-local-linkage.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,287-289,291-293,298-300
+gitnexus/src/core/group/PIPELINE.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 19,24,64,69-70,74-84,135,163,177
+.github/workflows/workflow-lint.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 79
+gitnexus/test/integration/csharp-razor-view-components-benchmark.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-179
+gitnexus/test/integration/resolvers/java.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8,556-598,672,682-689,1292-1316,1344-1595
+gitnexus/src/storage/file-hash.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24,47-57,59,63,66-69,71-72
+gitnexus/test/unit/ai-context.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 11,123,229-251,299,335-342,358,394,405-407,501-505,546-737,1192,1257,1590-1719
+gitnexus/src/core/ingestion/language-provider.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 39,42-46,49-58,64-122,141-159,226-232,317-330,355-358,426-447,465-608,730-817,902,1009-1035
+  s_2fc6857ad45390::t_a18218c6b836be 1036
+gitnexus/src/core/group/matching.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 40-46
+gitnexus/test/integration/resolvers/go.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17-26,382-384,392,402,459,498,509,2153-2225
+gitnexus/src/core/lbug/lbug-adapter.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9-10,33,75,513-518,1520,1525-1527,1540-1542,1546-1548,1601-1610,1701-1710,1742-1743,1752-1754,1804-1805,1832-1833,1852,1874-1897,1900-1907,1942-1971,2534-2536,2539-2546,2568-2572,2579-2583,2590-2591,2627-2628,2638-2820,2907-2908,2932,2935,3164-3216
+  s_2fc6857ad45390::t_55733a6c960e46 3217
+gitnexus/test/integration/hooks-e2e.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 19,50,54,142,174-176,234-236
+gitnexus/scripts/cross-platform-tests.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 39-48,93,117-119,147,216-227,240,279,282-303
+.gitattributes
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18-29
+gitnexus/test/unit/analyze-no-stats-bridge.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 184
+gitnexus/test/unit/kotlin-spring-route-ingestion.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-767
+gitnexus/test/unit/analyze-config.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3,9,19-22,44-114,265-283
+  s_2fc6857ad45390::t_32e6df38a297b9 284
+gitnexus/test/unit/scope-resolution/external-import-conformance.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-490
+gitnexus-claude-plugin/skills/gitnexus-plan/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/src/core/ingestion/languages/typescript/convex-endpoint-metadata.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-113
+Dockerfile.cli
+  s_2fc6857ad45390::t_48c3135b1d1d0a 54-56
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/outside.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/test/unit/dispatch-guard-routes.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 241-428,627-935
+gitnexus-shared/src/scope-resolution/types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 122-125,127-211,219-252,269-276,279-280,300-305,327-339,351-357,362-370,387-389,411-414,430-433,529-559
+gitnexus/src/core/ingestion/languages/java/module-resolution.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-167
+gitnexus-web/src/core/llm/types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 23-87,162-164,270-272
+gitnexus/src/core/wiki/llm-client.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7,20-54,82-92,102-106,116-118,123-124,128-131,139-142,147-150,153,155-160,317,325,341-349,360-365
+  s_2fc6857ad45390::t_68808683fc8ef3 366
+gitnexus/test/integration/spring-destinations-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-422
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 71,90-100,137,312-319,348-372,375,377-387,411-416,479-506,528-538,547-555,559-566,569-611,613-614,618-687,691-699,709-712,714-715,943,952,954,1057-1060,1068,1539-1542,1549-1550,1558-1559,1660,1668,1942-1947,1955,2227-2228,2236
+gitnexus/test/unit/model/type-registry.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 147-165
+gitnexus/src/core/ingestion/languages/typescript/captures.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9
+gitnexus/src/core/ingestion/scope-resolution/workspace-index-types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-39
+gitnexus/src/core/ingestion/languages/java/interpret.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 60-61,64
+gitnexus/test/unit/scope-resolution/heritage-type-arguments.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-177
+gitnexus/test/unit/scope-resolution/java/java-captures.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 32-50,104-228,244-247
+  s_2fc6857ad45390::t_fa13fc78283c96 248
+gitnexus/src/mcp/server.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 188-190,192-193,205-206
+gitnexus/test/integration/spring-destinations-incremental.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-202
+gitnexus/test/unit/detect-changes-format.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-92
+gitnexus/src/core/ingestion/import-resolvers/python-file-index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-371
+gitnexus/test/unit/scope-resolution/scope-extractor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 264-279,356-502
+  s_2fc6857ad45390::t_3f33e385bbad60 503-504
+gitnexus-claude-plugin/skills/gitnexus-work/scripts/evidence-provenance.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 482,486,619-628,631-638,641-642,654,663-724,726-749,751-762,764-778,780-788,790-791,793,796,800,807-809,878-882,884-886,977-996,998-1006,1008-1018,1026-1074,1076,1078,1080-1100,1102-1107,1109,1112-1153,1155-1207,1209-1212,1214-1221,1223-1224,1226-1253,1255-1287,1289,1291-1295,1298-1303,1308-1369,1371,1384-1385,1388,1392,1396,1400,1406-1407,1414,1422,1427,1451-1457,1460,1471-1476,1484,1488,1491-1496,1500,1505,1523,1526-1528,1532-1533,1584-1585,1593,1599,1602,1637-1638,1642,1649,1672,1675,1685,1690,1705,1730,1734-1736,1743-1745,1758-1759,1770,1782-1783,1789-1790,1800,1812-1813,1817-1818,1820-1821,1825-1826,1830-1836,1891,1894,1912-1913,1915-1916,1928,1933,1946,1955,1973,1980-1981,1986,1997-1999,2002-2010,2012,2015,2136-2140,2155-2157,2166,2201-2202,2204,2207,2242-2243,2245
+gitnexus/test/unit/spring-destinations.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1054
+gitnexus/src/core/ingestion/scope-resolution/scope-extraction-failures.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-49
+gitnexus/src/core/ingestion/languages/typescript/import-decomposer.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 32-59,103-162,207-213,232,249,260-266,271-273,284-290,296-297,311,320,328,349-353,360-366,399,419-420,425-426,432,441,449,554-559
+gitnexus/test/unit/spring-annotation-arguments.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 35-50
+.github/workflows/trivy.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 53,79
+gitnexus/src/core/ingestion/frameworks/spring/annotation-arguments.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 127-133
+gitnexus/test/integration/impact-file-risk-scale.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-143
+gitnexus/test/unit/scope-resolution/finalize-algorithm.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101-127,433-631,693-704,859-925
+  s_2fc6857ad45390::t_84e6b93c63b775 926-927
+gitnexus/test/unit/tsconfig-index.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-237
+gitnexus/test/unit/group/registry-unreadable-repos.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-519
+gitnexus/test/integration/resolvers/generic-field-receiver-matrix.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1335-1341
+docker-server.test.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 274-279,385-389,983-985,993-1057
+  s_2fc6857ad45390::t_fcb1e67c828147 1058
+gitnexus-shared/src/scope-resolution/reference-site.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 85-106
+gitnexus/src/cli/help-i18n.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-17,77-78
+gitnexus-claude-plugin/skills/gitnexus-lfg/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/test/unit/scope-resolution/undecided-satisfaction.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-71
+gitnexus/src/cli/setup.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1093-1114,1116,1132,1152-1166,1168
+gitnexus/src/core/ingestion/languages/typescript/file-candidates.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-70
+gitnexus/src/storage/branch-index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5-14,19,74-77
+gitnexus/src/core/ingestion/scope-resolution/scope/walkers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 26,34,44,506-543,552-555,592-594,630
+gitnexus/test/fixtures/lang-resolution/kotlin-import-package-evidence/support/Tools.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus-claude-plugin/hooks/gitnexus-hook.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 546
+gitnexus/test/unit/import-resolvers/csharp-csproj-parity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-757
+gitnexus/test/fixtures/spring-config-app/src/main/kotlin/com/example/ConfigConsumers.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-25
+.github/workflows/codeql.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 51,74-79,82
+gitnexus/test/fixtures/kotlin-spring-route-app/src/main/kotlin/com/example/shadow/ShadowController.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-9
+gitnexus-claude-plugin/skills/gitnexus-debugging/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-33,37,49,57,68,76,84,90-92,102,113-116,120,127,129-131
+gitnexus/test/unit/auto-sync-analysis-worker.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-232
+gitnexus/src/core/ingestion/languages/java/record-components.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-233
+gitnexus/test/integration/group/group-impact.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 52
+gitnexus/src/core/ingestion/languages/typescript/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4-9,11-13,16-17,21-23,27-32,53-56,58-59,62-67
+gitnexus/test/unit/convex-dispatch-metadata.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-53
+gitnexus/src/mcp/local/pdg-impact.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 23-27,121-122,124,747,820,824,843-844,852-855,1583-1588,1604-1608,1632-1635,1650-1655,2364-2365,2369,2546-2550,2552-2553
+gitnexus/src/core/group/config-parser.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2-7,12,34,63-72,84,102,108-120
+gitnexus/test/unit/scope-resolution/generic-instantiation.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-367
+gitnexus/test/unit/ignore-service.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 207-208,229-234,247-253,264,272-273,327-384
+  s_2fc6857ad45390::t_d8db4a7fdf4e0d 385
+gitnexus/test/unit/test-file-path.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-106
+gitnexus/test/helpers/counting-file-set.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-493
+gitnexus/src/cli/eval-server.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 48,213,305-318,584,586,588,590-595,597-598,618
+gitnexus/test/unit/group/sync-partial-extraction.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-589
+gitnexus/test/unit/hooks.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 33,176-177,184,186,214-216,218,416-420,423-441,3113,3135,3156,3185,3221,3258
+.claude/skills/gitnexus-plan/README.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 127-137
+gitnexus/skills/gitnexus-cli.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24-25,30,34-37,65,69-71,75-77,96
+gitnexus/test/unit/scope-resolution/imports-to-edges-type-only.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-265
+gitnexus/src/core/group/bridge-db.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,6-13,15,22,24,659-712,714-717,721-794,796-797,800-997,999,1012-1034,1069-1095,1355-1376,1380-1381,1383-1390,1406-1431
+  s_2fc6857ad45390::t_b168e8b182fb2f 1432
+gitnexus/skills/gitnexus-plan/references/evidence-provenance.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101-105,115-125,138-142,149-175
+  s_2fc6857ad45390::t_3465c693c08ec9 176
+gitnexus/src/cli/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 48-63,76-77,95-98,161-165,191-195,203,236,272,337,339,349-350
+gitnexus/test/unit/import-resolvers/python-importer-prefixes.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-426
+gitnexus/skills/gitnexus-refactoring.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-37,41,55,57,67,79,94,103,117-124,140,145-148,154,157,160,162-164
+.github/workflows/build-tree-sitter-prebuilds.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 570
+gitnexus/src/core/incremental/spring-config-drift.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-57
+gitnexus/src/core/ingestion/languages/kotlin/capture-side-channel.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 52-53,57-58,64-67,89-96,104-107,159-214,228-231,239-242,255-260,286-289,309-324
+gitnexus/test/integration/cobol-import-index-reuse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-133
+gitnexus/test/unit/group/manifest-label-drift.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12-15,39-50
+  s_2fc6857ad45390::t_d7aea5c5a37f0e 51-52
+gitnexus/test/unit/route-handler-definition-edge.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-192
+gitnexus/src/core/ingestion/languages/kotlin/captures.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 26-29,33,35-39,46-49,116-117,119-121,145-155,163-173,383-390
+gitnexus/test/unit/group/sync.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 26,30,33,76-177,327,330,780,783,849,852,916-995,1085,1088,1175,1178,1258,1261,1301,1304
+gitnexus/skills/gitnexus-exploring.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-27,31,43,50,67,75,81-83,87-88,96,98-100
+gitnexus/src/mcp/local/convex-metadata.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-72
+gitnexus/src/core/ingestion/languages/kotlin/spring-non-http-handlers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-126
+gitnexus/src/cli/group.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4-5,125-132,137-138,144-161,170-189,193-204,213-217,222-224,231-254,259-343,443-464,549-557,571-575,579-585,597-629
+gitnexus/src/core/ingestion/pipeline-phases/runner.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 19-21,23,26,28-43,48,59-61,160-162,168,170-173,176-183,203
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/LedgerSpelConsumer.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-9
+gitnexus/test/unit/csv-escaping.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 173-191
+gitnexus/src/core/ingestion/languages/dart/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 41-42,82,116,120-128,226-227
+gitnexus/test/unit/group/js-http-consumer-resolution.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1040
+gitnexus/test/fixtures/lang-resolution/java-import-package-evidence/util/List.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus-shared/src/lbug/schema-constants.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 43-44,69-70
+gitnexus/src/core/auto-sync/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-57
+gitnexus/test/integration/group/graphql-resolve-symbol.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-145
+gitnexus/src/core/ingestion/pipeline-phases/spring-auto-configuration.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24-28,82,314-327,332
+gitnexus/test/unit/node-workspace-packages.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-341
+gitnexus/src/core/ingestion/languages/typescript/module-resolution.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-199
+gitnexus/test/integration/impact-pdg-callsummary-degradation.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 20,78,85
+gitnexus/test/unit/index-content-drift.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-404
+gitnexus-claude-plugin/skills/gitnexus-work/references/evidence-provenance.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101-105,115-125,138-142,149-175
+  s_2fc6857ad45390::t_8a354153e5ad7c 176
+.claude/skills/gitnexus-cli/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24-25,30,34-37,65,69-71,75-77,96
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/handlers/CustomAnnotationHandler.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-22
+gitnexus/test/integration/spring-dynamic-lookup.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-220
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/examples/excluded/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1
+gitnexus/test/unit/import-cycles.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2-55,58-61,64-83,85,88-95,98-363,365-397,406-422
+gitnexus/test/unit/spring-actuator-runtime.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-147
+gitnexus-cursor-integration/hooks/gitnexus-hook.cjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 88-165,167,170-173,177,179,185,190-191,193-228,230-232,236-240,244-285,289-318,321-322,480-482
+gitnexus/test/unit/group/http-route-graph-method.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 251-335
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/packages/utils/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1
+gitnexus/src/core/ingestion/route-extractors/nest.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-548
+gitnexus/bench/kotlin-jvm-accessors/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-121
+gitnexus/test/unit/group/nest-route-parity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-289
+gitnexus/test/integration/dart-import-index-reuse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-108
+gitnexus/test/unit/detect-changes-worktree.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18,148,150,202,204,234,236,288,290,344,346,390,392
+gitnexus/src/core/ingestion/cluster-enricher.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 10,164-170
+gitnexus/src/core/ingestion/languages/cpp/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 51,65-75,77-78,81-83,125
+gitnexus/test/fixtures/data-route-table-app/decoy.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/test/unit/spring-dynamic-lookup.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-179
+gitnexus/src/cli/status.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21,24-83,149,152-178,197,224-234
+gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5,30,35,39,54,64-66,92-94,195,197-199,204-205,207,219,224,458-459,465-470,503-506,554-557,564-572,597-604,722,744-746,749,752,755,825-827,830,835-837,1027-1028,1030-1036,1069-1070,1076,1273-1292,1301-1305,1307-1309,1530-1581,1588-1592,1609-1613,1619-1624
+gitnexus/test/integration/resolvers/typescript-type-parameters.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-147
+gitnexus/test/unit/group/group-tools.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21-39
+gitnexus/test/unit/group/http-route-extractor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 222,233-262,625-667,2767-2772,2782-2886
+gitnexus-web/src/core/llm/tools.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-21,51,382-388,391,397,405,409-411,416-418,1232,1288-1290,1318-1334,1353-1357,1365-1383,1391-1398,1401-1405,1407-1423,1425-1426,1532-1534
+gitnexus-web/test/unit/agent-history.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 13,54-71,228-269
+gitnexus/src/core/ingestion/languages/kotlin/module-resolution.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-136
+gitnexus-shared/src/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 28-38
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/guess.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/test/fixtures/lang-resolution/go-extern-qualified-signatures/memory/memory.go
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-24
+gitnexus/src/core/ingestion/utils/test-file-path.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-87
+gitnexus/test/unit/analysis-features.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8,12-15,17-24,26,31-33,35,40-41,44,50,53
+gitnexus/test/integration/csharp-razor-view-components.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-127
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/producer.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-9
+gitnexus/src/server/analyze-worker-core.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-20
+gitnexus/src/core/group/completeness.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-169
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/BillingConsumer.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-13
+gitnexus/test/integration/parse-impl-quarantine-cache-skip.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 76-80,187-221,258,326-328,331-333,339,399-401
+gitnexus-shared/src/scope-resolution/symbol-definition.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 110-113
+gitnexus/test/unit/analyze-launch-collapse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-237
+gitnexus/src/core/ingestion/languages/kotlin/spring-dynamic-lookup.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-90
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/nested-block.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-19
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/handlers/OrderPublishers.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-54
+gitnexus/test/integration/multi-verb-route-identity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 15-16,86-134
+  s_2fc6857ad45390::t_5a5348a81733b2 135
+gitnexus/hooks/claude/gitnexus-hook.cjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 526
+gitnexus/src/core/ingestion/languages/go/interface-impls.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2-5,36-52,60-65,105,486,488,506,513-524,526,533-534,536,543-556,559,1063-1064,1067,1074,1077-1087,1090,1093,1097-1110,1133,1136-1150,1152-1153,1160-1162,1165-1185,1188,1193-1208,1211-1212,1215-1224,1231-1241,1269-1273,1277-1292,1300-1331
+  s_2fc6857ad45390::t_6f3278cd91a269 1332
+gitnexus/src/core/lbug/pdg-emit-sink.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 73
+gitnexus/bench/kotlin-star-route-constants/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-10
+gitnexus-web/src/locales/zh-CN/settings.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 79-92
+gitnexus/test/unit/group/graphql-extractor.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-502
+gitnexus/test/integration/route-runtime-evidence-roundtrip.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-63
+gitnexus/src/core/group/cross-trace.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 28-35,38,45-50,93-115,138-145,154,224-272,959-975,986-989,1123-1129,1142,1213-1218,1227-1228,1346-1348,1364-1365,1381,1392
+gitnexus/src/core/ingestion/di-extractors/types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-64
+gitnexus/src/cli/watch.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-7
+gitnexus/src/core/ingestion/model/type-registry.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 73,91,124-129,133
+gitnexus/src/core/ingestion/pipeline-phases/parse.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 34,75-76,86-105
+gitnexus/src/core/ingestion/model/method-registry.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5-7,95,105-107,113,182,186-191,195
+gitnexus/src/storage/repo-meta.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-616
+gitnexus/test/fixtures/group-sync-lock-child.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-62
+gitnexus/test/unit/schema-pair-coverage.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 59-60,67,87
+gitnexus/src/core/group/extractors/http-patterns/java.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 14,32-41,179-206,471-472,476-479,513-518,534-543,571,588-591,614,625-643,648-651,666,681,683-687,698,704,754,800,803-813,885-950,952-954,962,975-1003,1005-1020
+.claude/skills/gitnexus-impact-analysis/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17-44,48,52,61,67-68,96-104,112,136-148,152-155,163,165-167
+gitnexus/src/core/ingestion/import-resolvers/standard.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 32-33
+gitnexus/src/core/ingestion/import-resolvers/ruby.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 19-20
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/kotlin/com/example/handlers/UseSiteTarget.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-12
+gitnexus/test/fixtures/lang-resolution/go-extern-qualified-signatures/store/store.go
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-17
+gitnexus/test/unit/java-route-const-resolver.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-969
+gitnexus/test/integration/spring-dynamic-lookup-benchmark.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-275
+gitnexus/src/core/ingestion/languages/typescript.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 128-136,424,471,476,512,546
+gitnexus/src/core/ingestion/process-processor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 61-106,115-116,120-130,167-170,172,181,184-185,197-204,263-290,292-303,326-329,393-412,421,466-472,487-494,539-546,560-570,597-602,639-642,656-658,688-691,693,772-822,831,838-842,866-882,912-915
+gitnexus/src/core/ingestion/languages/python/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 14-19,90-118,158-187,194,204-224,260-283,285-293,295-297,327,334,385,389-402
+gitnexus/src/core/ingestion/languages/rust/captures.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,256-262,267-271
+gitnexus/src/core/ingestion/pipeline-phases/di.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 105-108,167,170-172,178-180,185-187,200-201,204,208,211-238,342-350
+gitnexus/src/core/ingestion/route-extractors/dispatch-guard.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 345,358-363,365,378-379,388-389,395,398-424,426-431,433-434,436-544,556-584,587,590-647,650-665,670,672-677,689,745-746,748-750,753-754,756-761,766-767,796,798-799,808-825,845-847,855-856,864-1052,1055-1056,1058-1060,1062-1072,1074-1075,1078-1101,1108-1217
+  s_2fc6857ad45390::t_1095e245c2c51b 1218
+ARCHITECTURE.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101,111,177,188-196,289-294,406
+gitnexus/src/core/ingestion/languages/java/analysis-features.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8,11-15,17-39
+gitnexus/src/core/ingestion/import-resolvers/jvm.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 34-35,93-94
+gitnexus/src/cli/ai-context.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12,14,46-47,142-143,159,166-169,207-217,221,223,227,232-239,249,293-308,313-319,331-334,395-399,411-415,444-503,509-515,519-521,552,557-558,570-583,593-599,645,678-684,686-694,697-708
+gitnexus/src/core/ingestion/import-resolvers/csharp.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8-9,15-261,269-276,281,285,322-356,358-361,363,368-391
+gitnexus/src/core/ingestion/route-extractors/kotlin-const-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1616
+gitnexus/src/core/ingestion/languages/cobol.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 45-57
+gitnexus/src/mcp/tools.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 85-89,102-105,194,214,275,296-297,300-301,303,340,362-364,386,396-413,425,462,477,483-485,489,493-494,497-499,501,517,601,697,749,762,773,791-794,806,817,831,843-846,867-869,871-877,883,885-886,961
+gitnexus/src/core/search/fts-indexes.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 161-166,228-231,252,270-322,325,327,329,342-350,353,356-371,505-510,512-534
+gitnexus/test/fixtures/rust-captures-golden/expected-captures.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 664
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/fake/XxlJob.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/skills/gitnexus-work/scripts/evidence-provenance.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 482,486,619-628,631-638,641-642,654,663-724,726-749,751-762,764-778,780-788,790-791,793,796,800,807-809,878-882,884-886,977-996,998-1006,1008-1018,1026-1074,1076,1078,1080-1100,1102-1107,1109,1112-1153,1155-1207,1209-1212,1214-1221,1223-1224,1226-1253,1255-1287,1289,1291-1295,1298-1303,1308-1369,1371,1384-1385,1388,1392,1396,1400,1406-1407,1414,1422,1427,1451-1457,1460,1471-1476,1484,1488,1491-1496,1500,1505,1523,1526-1528,1532-1533,1584-1585,1593,1599,1602,1637-1638,1642,1649,1672,1675,1685,1690,1705,1730,1734-1736,1743-1745,1758-1759,1770,1782-1783,1789-1790,1800,1812-1813,1817-1818,1820-1821,1825-1826,1830-1836,1891,1894,1912-1913,1915-1916,1928,1933,1946,1955,1973,1980-1981,1986,1997-1999,2002-2010,2012,2015,2136-2140,2155-2157,2166,2201-2202,2204,2207,2242-2243,2245
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/other.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-13
+gitnexus/test/integration/filesystem-walker.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 190-308,516,526-529,556,564
+gitnexus/test/unit/cli-impact-pdg-format.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 41,139,501,504,536,543
+gitnexus/src/core/ingestion/languages/java/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,4-6,8-39,42-49,54-64,67-80,84-101,110
+gitnexus/test/unit/group/data-route-table.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-259
+gitnexus/src/core/ingestion/languages/java/captures.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 42-44,50-53,60-65,154,156-158,178-188,204-206,425-427,434-435,463,525-529,676-678,681-692,697-698,710-717,775-776,778-780,786-790
+gitnexus/src/core/group/extractors/python-workspace-extractor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5-9,168,170,172
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-4
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/fake/Bean.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/test/unit/kotlin-lombok-synthesizer.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-420
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/packages/inner/src/nest/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/test/fixtures/lang-resolution/typescript-type-parameters/src/values.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-12
+gitnexus/test/unit/group/manifest-synthetic-impact.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 52-60
+gitnexus/test/unit/mcp-repository-policy.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 49-53,146-163,225
+gitnexus/test/integration/lbug-core-adapter.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 109-169
+gitnexus/src/core/ingestion/route-extractors/spring.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 30,34,58-64,102-137,170-174,192-193,196-199,201-204,227-231,246-251,275,279-288,296-314,331-337,444-445,449-451,464-465
+gitnexus/src/mcp/local/path-predicate.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-21
+gitnexus/test/unit/group/cross-impact-fanout-cap.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 117-125,178-201
+  s_2fc6857ad45390::t_124da2a3ea898e 202-203
+gitnexus/bench/kotlin-star-route-constants/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-156
+gitnexus/test/unit/language-provider-route-constants.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-39
+gitnexus/test/unit/lombok-synthesizer.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-726
+gitnexus-claude-plugin/skills/gitnexus-impact-analysis/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17-44,48,52,61,67-68,96-104,112,136-148,152-155,163,165-167
+gitnexus/src/core/ingestion/languages/c/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 11,23-34,36-37,40-42,93
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/support/Topics.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-15
+gitnexus/test/fixtures/lang-resolution/member-call-producer/src/consumer.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-25
+AGENTS.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 114,116,121-122,124
+gitnexus/test/integration/resolvers/typescript-workspace-packages.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-107
+.github/workflows/ci-e2e.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 20
+gitnexus/src/core/ingestion/import-resolvers/per-file-set.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-83
+gitnexus/src/core/ingestion/parsing-processor.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 59-60,131,184-186,204
+gitnexus/test/unit/scope-resolution/php/php-import-target.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2-4,7-14,44-351,353-354,372-373,399-400,418-419,437-438,456
+gitnexus/test/unit/watch-paths.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-182
+gitnexus-cursor-integration/skills/gitnexus-impact-analysis/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,9,17-44,48,52,61,67-68,73-77,81-85,96-104,108,112,127,136-148,152-155,163,165-167
+gitnexus/src/core/group/service.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9-18,54-64,245-272,276-277,340-350,358-375,380-440,472-478,493-516,522-538,566-609,796-822,828-834,836-844,850-869,879,887,890-905,912-929
+gitnexus/test/fixtures/lang-resolution/typescript-type-parameters/src/aliased.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-9
+gitnexus/test/fixtures/spring-destination-app/src/main/kotlin/com/example/messaging/KotlinOrderPublishers.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-39
+gitnexus/src/core/lbug/csv-generator.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 125-135,151-176,178-181,183-186,188,191-198,202-203,206,215-216,219-220,226-232,234-235,239-242,276-288,290,299-300,303,318,506,541,550-555,565,595,730-732,747-790,811-812,837-839,870-876,901
+gitnexus/src/core/group/extractors/http-patterns/types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 59-66
+gitnexus/src/core/ingestion/import-resolvers/python.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9-14,60-77,93-98
+gitnexus/src/core/ingestion/languages/kotlin/spring-config-bindings.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-467
+gitnexus/bench/scope-capture/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4,9,11-13,16-17,21,25,33-34,40-41,49,51,53,67-68,75,77-78,82-83,85,87-88,100-102,110,112-113,122-123,127,129,138,140-142,145,153-159,162,164-165,167-169,172,174,178-179,182-186,189-194,206-209,212,214-215,220,224-231
+gitnexus/src/core/group/extractors/http-patterns/node.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12-29,33-34,49-50,89-103,108,110,156-186,191,195,209,213,227,236-237,246-250,252-285,287,289-291,294-315,329-337,342-344,353-354,356-358,360-426,428,430-561,564-569,571-581,587-603,607-613,687-689,692-737,786,798-848,855-856,862-863,869-870
+gitnexus/src/core/wiki/graph-queries.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 8-24,69-163,185-187,192,197,204,206,208-209,211,221,229,236,246,255-272,276,279-280,282,285,297-300,308,310,314-326,336-338,342,348,351,358,369
+gitnexus/test/fixtures/lang-resolution/go-extern-qualified-signatures/go.mod
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/src/core/ingestion/frameworks/spring/destinations.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1216
+gitnexus/src/core/ingestion/languages/dart/captures.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1072-1074,1078-1080,1153-1164,1168-1174
+  s_2fc6857ad45390::t_b8487b1d113c29 1175
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/kotlin/com/example/handlers/OrderPublishers.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-41
+gitnexus/test/integration/nest-route-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-216
+gitnexus/test/unit/cursor-hook.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 22,27,59-64,88,93,95,559-629
+gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 790
+.claude/skills/gitnexus-exploring/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-27,31,43,50,67,75,81-83,87-88,96,98-100
+gitnexus/src/core/ingestion/import-resolvers/node-workspace-packages.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-528
+gitnexus/src/core/ingestion/import-resolvers/types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7
+gitnexus/test/helpers/temp-git-repo.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-68
+gitnexus/test/unit/evidence-provenance-helper.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 207-211,213,672-711,1436-1440,1469,1473,1478,1487-1488,1490-1507,1509-1515,1517-1520,1522-1524,1528-1724,1726-1817,1820
+gitnexus/test/integration/data-route-table-benchmark.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-68
+gitnexus/test/unit/group/cross-trace-incomplete-bridge.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-305
+gitnexus/bench/scope-capture/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 270-271,277-278
+gitnexus/test/fixtures/go-captures-golden/expected-captures.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 106-125,470-473
+gitnexus/test/unit/eval-formatters.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18,412-440,448-463,556-589,602-673
+  s_2fc6857ad45390::t_fef6d93d7ec652 674
+gitnexus/src/cli/i18n/en.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 36-46,79-88,148-157,216,243-244,253,262-263,269-270,321-323
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/tsconfig.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-8
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/kotlin/com/example/handlers/SingletonHandlers.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-48
+gitnexus/src/core/ingestion/frameworks/spring/message-producers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-140
+gitnexus/test/fixtures/lang-resolution/go-extern-qualified-signatures/alpha/alpha.go
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-9
+gitnexus/src/cli/tool.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 45-49,51-56,68-95,365-367,389-391,398,404-415,417-426
+gitnexus/bench/kotlin-import-target/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2-5,7-8
+gitnexus/src/core/auto-sync/path-security.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-286
+gitnexus/src/core/ingestion/languages/jvm/accessor-synthesis.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-316
+gitnexus/test/integration/impact-undecided-satisfaction.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-134
+gitnexus/test/unit/kotlin-runtime-symbol-strategy.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-201
+gitnexus/test/unit/local-backend-lazy-vector.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-119
+gitnexus/test/unit/scope-resolution/php-import-target-parity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-1244
+.gitignore
+  s_2fc6857ad45390::t_48c3135b1d1d0a 34-35
+gitnexus/src/cli/detect-changes-format.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,9,30-31,42-57,59-82,86,106
+gitnexus-claude-plugin/.claude-plugin/plugin.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4
+gitnexus/test/unit/definition-properties.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-69
+gitnexus-claude-plugin/skills/gitnexus-cli/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 22-26,30,32-36,54-57,65,67-74,76-79,96
+gitnexus/src/core/ingestion/languages/python.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 47-48,147,164-176
+gitnexus/test/unit/scope-resolution/import-target-index-parity.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-914
+gitnexus/test/unit/scope-resolution/callable-value-flow-worklist.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 20-23,206-228
+  s_2fc6857ad45390::t_dfef6dca1d1f3b 229-230
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/handlers/XxlJobs.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-23
+gitnexus/src/core/ingestion/scope-resolution/pipeline/phase.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 45,53,65-66,69-76,131,133,181,227,546-553,583,667-673,680,682
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/examples/excluded/src/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/test/integration/ruby-import-index-reuse.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-101
+gitnexus/test/unit/analyze-heap-respawn.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 223-231
+gitnexus/test/unit/model/method-registry.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 375-383
+gitnexus/test/unit/python-const-resolver.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 26-27,382-423
+  s_2fc6857ad45390::t_27dd0007f9c467 424
+gitnexus/test/fixtures/nest-route-app/src/venues/venues.controller.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-35
+gitnexus/test/unit/convex-metadata.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-126
+gitnexus/test/unit/ai-context-unknown-risk-policy.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-55
+gitnexus/src/core/ingestion/workers/result-merge.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 61-63,68
+gitnexus/skills/gitnexus-work/references/evidence-provenance.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101-105,115-125,138-142,149-175
+  s_2fc6857ad45390::t_48927ac3de24cf 176
+gitnexus/src/core/wiki/local-cli-client.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 32,38-39,392-414,418,446
+gitnexus/test/unit/analyzer-identity-in-process-guards.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-263
+gitnexus/test/unit/group/cross-impact.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 92-115,398-519,564-661
+gitnexus/src/server/analyze-worker.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9,15,20-27,66-73,75,77-83,92,96,98-106,126-128,152-157
+gitnexus/src/storage/v8-sidecar.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-363
+gitnexus/test/unit/spring-config-drift.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-101
+gitnexus/src/core/ingestion/languages/vue/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 4-8,11-13,16-17,20,29,31-34
+gitnexus-shared/src/impact-risk.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-151
+gitnexus/bench/spring-config-bindings/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-164
+gitnexus/bench/emit-persistence/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,5-6,8-9
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/OrderPublishers.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-102
+gitnexus/test/unit/scope-resolution/go/go-hooks.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6,176,179-189,198-199,207-208,291,294,384,415,446,477,518,565,910-911,984,1039,1064-1451,1479,1508,1534
+gitnexus/src/core/ingestion/languages/rust/qualified-call.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 36,57-59,485-493
+.claude/skills/gitnexus-debugging/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-33,37,49,57,68,76,84,90-92,102,113-116,120,127,129-131
+gitnexus/src/core/ingestion/import-resolvers/utils.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 82-88,90-95,97-122,125-201,203-251,253-254,257-350,353,356,359-361,364-377,379,389-390
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/pnpm-workspace.yaml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/src/core/wiki/prompts.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 174-192,201
+  s_2fc6857ad45390::t_87c146f99d1462 173
+gitnexus/test/fixtures/kotlin-spring-route-app/src/main/kotlin/com/example/shadow/ApiPaths.kt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+gitnexus/test/unit/list-status-branch.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 69,141,292
+gitnexus-claude-plugin/skills/gitnexus-guide/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/test/integration/convex-impact-epistemic-e2e.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-224
+gitnexus-cursor-integration/skills/gitnexus-exploring/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,9,16-27,31,43,50,55-60,65,67,73,75,81-83,87-88,96,98-100
+gitnexus/src/cli/analyze-watch.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-504
+gitnexus/bench/python-scope/baseline-fingerprint.txt
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1
+gitnexus/test/fixtures/lang-resolution/go-extern-qualified-signatures/app/app.go
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-15
+gitnexus/bench/java-wildcard-route-constants/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-8
+gitnexus/src/core/group/extractors/http-patterns/php.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18,22-25,31-47,90-108,114,129,169-345,353-358,360-362,443-495,497
+  s_2fc6857ad45390::t_315ec84bfd825d 496,498
+gitnexus/test/unit/repo-manager-reconcile.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 261
+gitnexus-shared/package.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 27
+gitnexus/test/unit/impact-risk.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-237
+.github/workflows/ci-tests.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 484-497,499-506,514,526-561,563,571-677,682,708,721,732,742,752-756,763,765,768
+gitnexus/test/fixtures/nest-route-app/src/legacy/legacy.controller.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-16
+gitnexus/test/unit/incremental-parse-cache.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,7,10-11,20,183-262,271-319,462-465,520,553-555,585,636-637,692,699,720-737,804-942
+gitnexus-shared/src/scope-resolution/finalize-algorithm.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 376-377,397-403,414-415,433-499,595-597,599,631-643,657,660-667,671-676,679-684,698-700,702,708,713,729,743,753-841,861,868-871,876,883,895,914,920,923,932-960,1021-1049,1051-1059,1061-1062,1065-1066,1140-1168
+gitnexus-web/test/unit/backend-client-grep.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-75
+gitnexus/test/integration/fastapi-composed-route-constants.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 30-31,33-36,173-174,177,181-182,184-196,198-200,202-203,205,211-233
+gitnexus/test/integration/ast-helpers-object-literal-binding.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 10,129-136
+  s_2fc6857ad45390::t_2fc84796cb08db 137-139
+gitnexus-claude-plugin/skills/gitnexus-review/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus-shared/src/graph/types.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 48-62,113-136,164-176
+gitnexus/src/core/ingestion/languages/kotlin/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 29-31,89-94,152-154
+gitnexus-cursor-integration/skills/gitnexus-refactoring/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3,9,16-37,41,53,55,57,65,67,77,79,92,94,101,103,109,117-124,126,134-140,145-148,154,157,160,162-164
+gitnexus/test/integration/lbug-pool.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 344,379,383-384
+gitnexus/test/unit/wiki-llm-client.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 6-7,62,99-132,279-384
+  s_2fc6857ad45390::t_b7197131ca223f 385
+gitnexus-web/src/lib/upload-filter.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 34-49
+gitnexus/src/core/ingestion/languages/java/spring-di.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 15-18,20,26-80,98-101,109-110,115
+gitnexus-claude-plugin/skills/gitnexus-work/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/test/unit/incremental-subgraph-extract.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 77-89,109-198
+  s_2fc6857ad45390::t_e73e59f060c57f 199
+gitnexus/src/storage/parse-cache.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9-14,32,34,394-421,423-723,749-800,959,990-995,1038-1048,1151,1154-1155,1160
+gitnexus/test/helpers/detect-changes-diff-args.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-22
+gitnexus/test/unit/scope-resolution/imports-to-edges-deferred.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-325
+gitnexus/src/core/auto-sync/runner.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-561
+gitnexus/test/unit/server.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 37-39,111,117,140-170
+  s_2fc6857ad45390::t_4925e11b4aa3a3 171-176
+gitnexus-claude-plugin/skills/gitnexus-refactoring/mcp.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 5
+gitnexus/src/core/ingestion/import-resolvers/package-dir-index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-255
+.claude/skills/gitnexus-work/scripts/evidence-provenance.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 482,486,619-628,631-638,641-642,654,663-724,726-749,751-762,764-778,780-788,790-791,793,796,800,807-809,878-882,884-886,977-996,998-1006,1008-1018,1026-1074,1076,1078,1080-1100,1102-1107,1109,1112-1153,1155-1207,1209-1212,1214-1221,1223-1224,1226-1253,1255-1287,1289,1291-1295,1298-1303,1308-1369,1371,1384-1385,1388,1392,1396,1400,1406-1407,1414,1422,1427,1451-1457,1460,1471-1476,1484,1488,1491-1496,1500,1505,1523,1526-1528,1532-1533,1584-1585,1593,1599,1602,1637-1638,1642,1649,1672,1675,1685,1690,1705,1730,1734-1736,1743-1745,1758-1759,1770,1782-1783,1789-1790,1800,1812-1813,1817-1818,1820-1821,1825-1826,1830-1836,1891,1894,1912-1913,1915-1916,1928,1933,1946,1955,1973,1980-1981,1986,1997-1999,2002-2010,2012,2015,2136-2140,2155-2157,2166,2201-2202,2204,2207,2242-2243,2245
+gitnexus/src/server/grep-worker.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-16
+gitnexus-web/src/components/SettingsPanel.tsx
+  s_2fc6857ad45390::t_48c3135b1d1d0a 24-30,350-363,887,898,903-909,913-970
+gitnexus/hooks/claude/resolve-analyze-cmd.cjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 279-285
+gitnexus/src/core/incremental/subgraph-extract.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9-12,61-81,85,148,153-154,157-159
+gitnexus-web/test/unit/grep-tool.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-36
+gitnexus/src/core/ingestion/pipeline-phases/spring-destinations.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-565
+gitnexus/test/unit/spring-argument-fact-capture.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-742
+gitnexus/test/integration/ignore-and-skip-e2e.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 43-72,103-111,172-194
+  s_2fc6857ad45390::t_b37da6fb245176 195
+gitnexus-web/src/lib/constants.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 40,83
+gitnexus/test/unit/status-content-drift.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-279
+gitnexus/src/core/ingestion/languages/csharp/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 25,106-123,126-196
+  s_2fc6857ad45390::t_3dae6ee5c075fc 197
+gitnexus/src/core/ingestion/method-extractors/configs/csharp.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 319
+gitnexus/bench/java-wildcard-route-constants/measure.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-158
+gitnexus/test/unit/wiki-flags.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 146,215,226-261,266,277-292,300-333,335-336,359-521,1077-1086,1317-1364
+  s_2fc6857ad45390::t_d658fe3554b2a4 1365
+gitnexus/test/unit/java-route-const-pipeline-e2e.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-270
+gitnexus/test/fixtures/lang-resolution/typescript-pnpm-workspace-imports/apps/web/src/utils/format.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-3
+gitnexus/src/core/auto-sync/repo.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-7
+gitnexus/test/integration/resolvers/csharp.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2356-2431
+gitnexus/src/core/ingestion/utils/line-base.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 21-35
+gitnexus/bench/spring-config-bindings/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-8
+gitnexus/src/core/lbug/graph-emit-sink.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 107,128,133-134,154,173-188,470,482-484,512
+gitnexus/src/core/ingestion/languages/java/query.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 92-96,98
+gitnexus/skills/gitnexus-impact-analysis.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17-44,48,52,61,67-68,96-104,112,136-148,152-155,163,165-167
+gitnexus/test/unit/group/matching.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 186-203
+gitnexus/test/unit/resources.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 399-402,545,566-584
+  s_2fc6857ad45390::t_f11bd230c13cce 585-586
+gitnexus/src/core/ingestion/utils/ast-helpers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 465-483,1150-1177,1333-1338
+  s_2fc6857ad45390::t_d1485418d61193 1339
+gitnexus/test/unit/scope-resolution/import-target-index-reuse.contract.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-734
+gitnexus/src/cli/analyze.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 53,366,399,405-420,563-572,614-620,671-672,695-702,773-785,1377,1442-1444,1536
+gitnexus/src/core/ingestion/languages/c/static-linkage.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,63-64,68-70,77-79
+gitnexus/src/core/ingestion/scope-resolution/passes/compound-receiver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 27-31,82-88,90-97,370,376-377,379,383-428,444-449,479-484,649-658,662-710,815-820,913,1035,1111,1241
+gitnexus/src/utils/process-identity.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-40
+gitnexus/src/mcp/resources.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 100-119,316-319,370,401-404,415-420
+gitnexus/test/unit/group/service-group-sync-payload.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-449
+gitnexus/src/core/analyzer-identity.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18,42,2340-2356,2358-2363,2495
+gitnexus/src/core/ingestion/languages/java/spring-non-http-handlers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-50
+gitnexus/test/unit/group/types.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 9,24,28-29,31,53,93,97-98,100,136-150
+  s_2fc6857ad45390::t_d12babd2dece42 151
+gitnexus/test/fixtures/spring-destination-app/src/main/java/com/example/messaging/InventoryConsumer.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-13
+gitnexus/test/unit/local-cli-subprocess.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17,27,40-44,47,631-1241
+gitnexus/src/core/graph/import-cycles.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-87,93-563,565,589-592,595-600,602-603,605-620,622-628,630-632,635-651,653-657
+gitnexus/test/fixtures/spring-non-http-handler-app/src/main/java/com/example/handlers/MessageConsumers.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-24
+gitnexus/skills/gitnexus-plan/scripts/evidence-provenance.mjs
+  s_2fc6857ad45390::t_48c3135b1d1d0a 482,486,619-628,631-638,641-642,654,663-724,726-749,751-762,764-778,780-788,790-791,793,796,800,807-809,878-882,884-886,977-996,998-1006,1008-1018,1026-1074,1076,1078,1080-1100,1102-1107,1109,1112-1153,1155-1207,1209-1212,1214-1221,1223-1224,1226-1253,1255-1287,1289,1291-1295,1298-1303,1308-1369,1371,1384-1385,1388,1392,1396,1400,1406-1407,1414,1422,1427,1451-1457,1460,1471-1476,1484,1488,1491-1496,1500,1505,1523,1526-1528,1532-1533,1584-1585,1593,1599,1602,1637-1638,1642,1649,1672,1675,1685,1690,1705,1730,1734-1736,1743-1745,1758-1759,1770,1782-1783,1789-1790,1800,1812-1813,1817-1818,1820-1821,1825-1826,1830-1836,1891,1894,1912-1913,1915-1916,1928,1933,1946,1955,1973,1980-1981,1986,1997-1999,2002-2010,2012,2015,2136-2140,2155-2157,2166,2201-2202,2204,2207,2242-2243,2245
+gitnexus/src/core/ingestion/languages/kotlin/query.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 124-128,130
+gitnexus/src/core/ingestion/languages/dart/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16,19-66,85,105,107-108
+gitnexus/src/core/lbug/pool-adapter.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 22,138-141,375,915-1051,1137-1138,1152-1159,1164-1180,1183
+gitnexus/test/unit/grep-params.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-160
+gitnexus/test/unit/method-props.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 33
+.github/workflows/docker.yml
+  s_2fc6857ad45390::t_48c3135b1d1d0a 144,259,267
+gitnexus/test/unit/model/field-registry.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 75-80
+gitnexus/test/fixtures/lang-resolution/parameter-producer/src/same-file-method.js
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-22
+gitnexus/test/integration/resolvers/member-call-producer.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-78
+.claude/skills/gitnexus-plan/references/evidence-provenance.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 101-105,115-125,138-142,149-175
+  s_2fc6857ad45390::t_6dcf2e0ddca9fb 176
+gitnexus/test/integration/spring-config-pipeline.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 71-83,105-123,138-149
+gitnexus/src/core/ingestion/languages/kotlin/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 11-15
+gitnexus/skills/gitnexus-debugging.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 16-33,37,49,57,68,76,84,90-92,102,113-116,120,127,129-131
+gitnexus/src/core/ingestion/frameworks/spring/non-http-handlers.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-248
+gitnexus/CHANGELOG.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 7-97
+gitnexus/test/unit/group/bridge-meta-swap-window.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-506
+gitnexus/skills/gitnexus-work/SKILL.md
+  s_2fc6857ad45390::t_48c3135b1d1d0a 219-222
+gitnexus/bench/java-lombok-synthesis/baselines.json
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-8
+gitnexus/test/unit/call-summary-schema-version.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 131
+gitnexus/src/cli/skill-gen.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 17
+gitnexus/src/storage/parsedfile-store.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 27-31,44-48,51,63-70,174-183,185-186,188-191,195-196,202-203,205-209,219-220,226-227,233-245,254,260-268,270-272,275-317,531-535,539,574-576,583-584,590-591,595-598,600,603-609,611,613,615-636,638-640,646,649-664,666,675-677,690,696,698-711,719
+gitnexus/src/core/ingestion/pipeline.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 38,50,63-76,291-292,321-325,335-340,380-387,392,400-406,411,413,442,456,458-460,464-498
+gitnexus/test/unit/import-resolvers/go-package-resolve.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-164
+gitnexus/src/core/ingestion/languages/java/spring-actuator.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-72
+gitnexus/test/unit/parse-impl-warm-cache-parsedfile-coverage.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 15-17,20,25-27,40-42,51-58,71,74,107,115-117,121-124,139,141-144,146,157,160,175,183-184,191-192,199-220,226,242,252-253,255-259,262-267,269-272,301-302,338,340,372,380,386-418,432,434-440,461-477,500-526,553
+gitnexus/test/unit/scope-resolution/csharp/razor-view-components.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-202
+gitnexus-web/src/lib/upload-filter.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 25-35
+gitnexus/test/unit/ingestion/pipeline-phase-registry.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 80,113-136
+gitnexus/src/core/ingestion/languages/c/import-target.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 2,32-40,42,45
+gitnexus/src/core/ingestion/di-extractors/index.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 18,21-28
+gitnexus/test/unit/java-module-resolution.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-177
+gitnexus/test/unit/scope-resolution/python/python-importer-ancestors.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-291
+gitnexus/test/unit/lbug-pool-fts-load.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 3-13,19-27,40,46-47,50-51,54-55,88-99,107-110,117,120-146,149-151,155-251
+gitnexus/src/core/run-analyze.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 12-13,16,25-26,39-41,51,67,72,74,142-145,148-154,172,175-176,191-194,199,467-471,481-503,555-562,589-695,1246,1256-1263,1265,1314-1320,1525-1549,1580-1593,1662-1710,1763-1792,1955-1973,2016-2018,2078-2099,2129-2132,2134-2137,2155-2158,2191-2192,2194-2199,2235-2241,2264-2269,2294,2310,2421-2427,2457-2487,2636-2643,2828,2854-2901,2916-2918,2926-2931,2950-2961,2991-2993,3006-3008,3068,3181,3209-3210,3262-3290,3296-3322,3324-3343,3353-3354,3356-3386,3789-3799,3815-3818,3834-3838,3890-3906,3908,3919-3928,4068-4070,4072-4073,4082,4129,4164-4169,4208-4212
+gitnexus/test/unit/grep-scan.test.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-101
+gitnexus/src/core/ingestion/languages/vue/scope-resolver.ts
+  s_2fc6857ad45390::t_48c3135b1d1d0a 62-63,91-92
+gitnexus/test/fixtures/lang-resolution/java-import-package-evidence/User.java
+  s_2fc6857ad45390::t_48c3135b1d1d0a 1-5
+docs/plans/2026-08-28-gitnexus-plan-impact-file-risk.md
+  s_2fc6857ad45390::t_d428a308c1e28d 1-312
+gitnexus-shared/package-lock.json
+  s_2fc6857ad45390::t_12a7d34c7d9d5a 11-351,355-357,361,364-386
+gitnexus-web/package-lock.json
+  s_2fc6857ad45390::t_ff69ff6f5121a5 11-12,14,19,31,33,38-39,46,52,54,58,60-61,77,101-103,249-251,1119-1121,1124,1131,1135-1137,1168-1170,1174,2046-2048,2060,2063-2065,2104-2106,2547-2549,2596-2598,2614-2616,2648-2650,2658-2659,2661,2696-2698,2719-2721,3055-3057,3061,5161-5163,5246-5248,5251-5252,5260,5598-5600,6767-6769,7276-7278,7285-7287,7293,7297-7299,7302,7822-7824,8060-8062,8173-8175
+gitnexus/package-lock.json
+  s_2fc6857ad45390::t_875718a5be5cd3 3,9,17,23,28,85,225-227,730-732,742,748,752-754,764,770-789,793-795,809-811,825-827,841-843,857-859,873-875,889-891,905-907,921-923,937-939,953-955,965,971,975-977,987,993,997-999,1009,1015,1019-1021,1031,1037,1041-1043,1053,1059,1063-1065,1075,1081,1085-1087,1097,1103,1107-1109,1119,1125,1129-1147,1151,1154,1157,1164-1166,1176,1183-1185,1195,1202-1204,1214,1272-1274,1283-1287,1291-1293,1304-1306,1317-1319,1330-1332,1343-1345,1401-1411,1414-1416,1496-1498,1513-1515,1530-1532,1547-1549,1564-1566,1581-1583,1598-1600,1615-1617,1632-1634,1649-1651,1666-1668,1683-1685,1700-1702,1717-1719,1891-1893,1946-1948,1953,1967-1968,1977-1979,1985-1986,1995-1997,2001,2022-2024,2035-2037,2041,2049-2051,2055-2056,2065-2067,2075-2077,2081,2103-2105,2109,2169-2180,2410-2424,3049-3087,3374-3382,3548-3559,3634-3636,3707-3709,3723-3733,3737-3739,3758-3760,3779-3781,3800-3802,3821-3823,3842-3844,3863-3865,3884-3886,3905-3907,3926-3928,3947-3949,4209-4211,4237-4239,4341-4343,4347-4349,4359,4361,4413-4427,4570-4572,4590,4615-4617,4721-4733,4762-4764,4768,4778-4791,4852-4854,4931-4933,4937,4939,4942,4948-4977,5174-5188,5504-5506,5621-5623,5643-5645,5649,5651-5652,5669,5721-5723,5727-5733,5761-5766,5874-5888
+gitnexus/test/fixtures/lang-resolution/kotlin-import-package-evidence/vendor/Assert.kt
+  s_2fc6857ad45390::t_2552ebe069a685 1-3
+package-lock.json
+  s_2fc6857ad45390::t_7d60218fcdacf3 333-335,414-416,946-948,955,1389-1391,1871-1873
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d2326712780e8e416fef56c8cd6ba35138b2196f",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
