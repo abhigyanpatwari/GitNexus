@@ -96,7 +96,11 @@ export const zigProvider = defineLanguage({
         captureMap['definition.struct'] ??
         captureMap['definition.enum'] ??
         captureMap['definition.union'];
-      return decl !== undefined && isZigRedundantContainerCapture(decl, captureMap['name']);
+      if (decl === undefined) return false;
+      // The file-struct rules over-match (a `@This` first parameter, a
+      // top-level `@This()` alias — see ZIG_QUERIES); the one predicate decides.
+      if (decl.type === 'source_file') return !isZigFileStruct(decl);
+      return isZigRedundantContainerCapture(decl, captureMap['name']);
     }
     return false;
   },

@@ -2481,6 +2481,21 @@ export const ZIG_QUERIES = `
 ; never match and keep their Function ids.
 ((source_file (container_field name: (identifier) @_field)) @definition.struct
   (#not-eq? @_field ""))
+; A FIELDLESS file-struct — \`Empty.zig\`: no field, but a top-level fn whose
+; first parameter is typed as the file's own type (\`self: *@This()\`, or
+; \`self: *Self\` beside \`const Self = @This();\`). Zero-sized types are still
+; constructed (\`Empty{}\`) and dispatched on, and keyed on fields alone the
+; file lost its Struct node and every \`e.ping()\` edge (PR #1432 review,
+; 8.12). The two rules over-match on purpose — any \`@This\` in a first
+; parameter, any top-level \`@This()\` alias — and the provider's
+; \`shouldSkipDefinitionCapture\` keeps only what \`isZigFileStruct\` (the
+; single predicate the owner walk and the scope side use) admits.
+((source_file (function_declaration (parameters . (parameter type: (_) @_recv))))
+  @definition.struct
+  (#match? @_recv "@This"))
+((source_file (variable_declaration (identifier) (builtin_function (builtin_identifier) @_this)))
+  @definition.struct
+  (#eq? @_this "@This"))
 
 ; Opaque: const Handle = opaque { ... } — the FFI handle type. It is a
 ; container (it may declare methods, never fields), so it is labelled Struct:

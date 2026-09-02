@@ -1,0 +1,8 @@
+.{
+    .name = .buildmodules,
+    .version = "0.1.0",
+    .dependencies = .{
+        .corelib = .{ .path = "libs/corelib" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

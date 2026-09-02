@@ -38,6 +38,12 @@ export const zigScopeResolver: ScopeResolver = {
   // `src/terminal/` from outside it 46 → 253; into tigerbeetle's `stdx` hub
   // from outside it 837 → 1500 (136 `stdx.Type.fn(` sites, 289 annotations).
   namespaceExportsIncludeImportedNames: true,
+  // A qualified receiver is a chain of `const` handles — hub modules
+  // republishing modules (`hub.sub.Thing{}`), types nested in types
+  // (`mod.Outer.Inner{}`), enum variants through the module
+  // (`opmod.Op.lookup.event_max()`) — walked hop by hop from the verified
+  // import; a one-hop split at the last dot resolved none of them.
+  resolveNamespaceChains: true,
 
   loadResolutionConfig: (repoPath: string) => loadZigBuildConfig(repoPath),
 

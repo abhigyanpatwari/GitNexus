@@ -117,6 +117,53 @@ import type { DecodedReceiverChain } from '../../utils/receiver-chain-codec.js';
 /** Subset of `ScopeResolver` consumed by this pass. Accepting the
  *  subset rather than the full provider keeps tests and partial
  *  refactors lighter — callers only need to populate what we read. */
+/** Split `text` at the dots that sit at nesting depth 0 and outside string
+ *  literals — `@import("a.zig").Outer.Inner` → three segments, not four;
+ *  `List(u8).Node` → two. The chain walk's segmenter. */
+function splitTopLevelDots(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let inString = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '(' || ch === '[' || ch === '<') depth++;
+    else if (ch === ')' || ch === ']' || ch === '>') depth--;
+    else if (ch === '.' && depth === 0) {
+      out.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(text.slice(start));
+  return out.filter((s) => s.length > 0);
+}
+
+/** Index of the last depth-0, outside-string dot of `text`, or -1. */
+function lastTopLevelDot(text: string): number {
+  let depth = 0;
+  let inString = false;
+  let last = -1;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inString) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '(' || ch === '[' || ch === '<') depth++;
+    else if (ch === ')' || ch === ']' || ch === '>') depth--;
+    else if (ch === '.' && depth === 0) last = i;
+  }
+  return last;
+}
+
 type ReceiverBoundProviderSubset = Pick<
   ScopeResolver,
   | 'isSuperReceiver'
@@ -139,6 +186,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'normalizeTypeArgument'
   | 'markConstructionSites'
   | 'namespaceExportsIncludeImportedNames'
+  | 'resolveNamespaceChains'
 >;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
@@ -340,30 +388,133 @@ export function emitReceiverBoundCalls(
     provider.namespaceExportsIncludeImportedNames === true
       ? findExportedDefIncludingImportedNames(targetFile, name, index, scopes)
       : findExportedDef(targetFile, name, index);
-  // `ns.Type` as a receiver, where `ns` is a verified namespace of the current
-  // file and `Type` a class-like member of it. Unique across the namespace's
-  // target files or nothing — two same-named classes behind one handle would
-  // mint a confident wrong edge.
-  const resolveNamespaceQualifiedClass = (
-    receiverName: string,
-    inScope: ScopeId,
-    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+  // A class-like member `name` unique across `files`, or nothing — two
+  // same-named classes behind one handle would mint a confident wrong edge.
+  const uniqueClassAcross = (
+    files: readonly string[],
+    name: string,
   ): SymbolDefinition | undefined => {
-    const dot = receiverName.lastIndexOf('.');
-    if (dot <= 0 || dot === receiverName.length - 1) return undefined;
-    const head = receiverName.slice(0, dot);
-    const tail = receiverName.slice(dot + 1);
-    if (tail.includes('(') || tail.includes('[')) return undefined;
-    const files = namespaceTargets.get(head);
-    if (files === undefined || isNamespaceNameShadowed(head, inScope, scopes)) return undefined;
     let picked: SymbolDefinition | undefined;
     for (const file of files) {
-      const def = lookupNamespaceMember(file, tail);
+      const def = lookupNamespaceMember(file, name);
       if (def === undefined || !isClassLike(def.type)) continue;
       if (picked !== undefined && picked.nodeId !== def.nodeId) return undefined;
       picked = def;
     }
     return picked;
+  };
+  // A class-like def NESTED in `owner` (`A.Item` inside `A`): its qualified
+  // name is the owner's plus the segment — the identity the structure phase
+  // and `populateClassOwnedMembers` agree on — so the qualified-name index
+  // answers directly; same file as the owner, unique or nothing. Only the
+  // chain walk reads this: `findOwnedMember` knows methods and fields, and a
+  // nested type is neither.
+  const findNestedClass = (owner: SymbolDefinition, name: string): SymbolDefinition | undefined => {
+    if (owner.qualifiedName === undefined || owner.qualifiedName.length === 0) return undefined;
+    let picked: SymbolDefinition | undefined;
+    for (const id of scopes.qualifiedNames.get(`${owner.qualifiedName}.${name}`)) {
+      const def = scopes.defs.get(id);
+      if (def === undefined || !isClassLike(def.type) || def.filePath !== owner.filePath) continue;
+      if (picked !== undefined && picked.nodeId !== def.nodeId) return undefined;
+      picked = def;
+    }
+    return picked;
+  };
+  // Namespace CHAIN walk (`ScopeResolver.resolveNamespaceChains`): resolve
+  // every segment of a qualified prefix from its verified namespace root —
+  // or, failing a namespace, from a class binding in scope (`Outer.Inner`).
+  // The cursor is either "these module files" or "this class"; a hop from a
+  // module is a class-like member of it (→ class) or a namespace-import edge
+  // its module scope binds under the segment — a republished module,
+  // `pub const sub = @import("sub.zig");` (→ files); a hop from a class is a
+  // nested class-like. Anything ambiguous resolves nothing.
+  const walkChains = provider.resolveNamespaceChains === true;
+  const namespaceImportTargetsOf = (file: string, name: string): readonly string[] => {
+    const moduleScope = index.moduleScopeByFile.get(file);
+    if (moduleScope === undefined) return [];
+    const out: string[] = [];
+    for (const edge of scopes.imports.get(moduleScope.id) ?? []) {
+      if (edge.kind !== 'namespace' || edge.localName !== name || edge.targetFile === null)
+        continue;
+      if (!out.includes(edge.targetFile)) out.push(edge.targetFile);
+    }
+    return out;
+  };
+  type ChainCursor =
+    | { readonly files: readonly string[] }
+    | { readonly classDef: SymbolDefinition };
+  const resolveNamespaceChain = (
+    prefix: string,
+    inScope: ScopeId,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+  ): ChainCursor | undefined => {
+    const segments = splitTopLevelDots(prefix);
+    if (segments.length === 0) return undefined;
+    let cursor: ChainCursor | undefined;
+    let rest: readonly string[] = [];
+    // The LONGEST namespace key wins: a provider may bind dotted handles
+    // (`namespaceReceiverPaths`) and an inline `@import("x.zig")` handle
+    // carries a dot of its own inside the quotes.
+    for (let k = segments.length; k >= 1; k--) {
+      const key = segments.slice(0, k).join('.');
+      const files = namespaceTargets.get(key);
+      if (files === undefined) continue;
+      if (isNamespaceNameShadowed(key, inScope, scopes)) return undefined;
+      cursor = { files };
+      rest = segments.slice(k);
+      break;
+    }
+    if (cursor === undefined) {
+      const head = findClassBindingInScope(inScope, segments[0]!, scopes);
+      if (head === undefined || !isClassLike(head.type)) return undefined;
+      cursor = { classDef: head };
+      rest = segments.slice(1);
+    }
+    for (const segment of rest) {
+      if (segment.includes('(') || segment.includes('[')) return undefined;
+      if ('files' in cursor) {
+        const asClass = uniqueClassAcross(cursor.files, segment);
+        const asModule: string[] = [];
+        for (const file of cursor.files) {
+          for (const target of namespaceImportTargetsOf(file, segment)) {
+            if (!asModule.includes(target)) asModule.push(target);
+          }
+        }
+        if (asClass !== undefined && asModule.length > 0) return undefined; // both — refuse
+        if (asClass !== undefined) cursor = { classDef: asClass };
+        else if (asModule.length > 0) cursor = { files: asModule };
+        else return undefined;
+      } else {
+        const nested = findNestedClass(cursor.classDef, segment);
+        if (nested === undefined) return undefined;
+        cursor = { classDef: nested };
+      }
+    }
+    return cursor;
+  };
+  // `ns.Type` as a receiver, where `ns` is a verified namespace of the current
+  // file and `Type` a class-like member of it — or, with the chain walk, any
+  // `a.b.c.Type` whose prefix resolves. Unique or nothing.
+  const resolveNamespaceQualifiedClass = (
+    receiverName: string,
+    inScope: ScopeId,
+    namespaceTargets: ReadonlyMap<string, readonly string[]>,
+  ): SymbolDefinition | undefined => {
+    const dot = walkChains ? lastTopLevelDot(receiverName) : receiverName.lastIndexOf('.');
+    if (dot <= 0 || dot === receiverName.length - 1) return undefined;
+    const head = receiverName.slice(0, dot);
+    const tail = receiverName.slice(dot + 1);
+    if (tail.includes('(') || tail.includes('[')) return undefined;
+    if (walkChains) {
+      const cursor = resolveNamespaceChain(head, inScope, namespaceTargets);
+      if (cursor === undefined) return undefined;
+      return 'classDef' in cursor
+        ? findNestedClass(cursor.classDef, tail)
+        : uniqueClassAcross(cursor.files, tail);
+    }
+    const files = namespaceTargets.get(head);
+    if (files === undefined || isNamespaceNameShadowed(head, inScope, scopes)) return undefined;
+    return uniqueClassAcross(files, tail);
   };
   const compoundOpts = {
     fieldFallback,
@@ -815,7 +966,16 @@ export function emitReceiverBoundCalls(
       receiverPaths: provider.namespaceReceiverPaths,
       moduleFileExists: (filePath) => index.moduleScopeByFile.has(filePath),
     });
-    const fileCompoundOpts = { ...compoundOpts, namespaceTargets };
+    const fileCompoundOpts = {
+      ...compoundOpts,
+      namespaceTargets,
+      ...(walkChains
+        ? {
+            resolveQualifiedClass: (qualifiedName: string, inScope: ScopeId) =>
+              resolveNamespaceQualifiedClass(qualifiedName, inScope, namespaceTargets),
+          }
+        : {}),
+    };
     // Per-file resolved-callee-id capture context (#2227 U2). Built once per
     // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
     // capture is a no-op and emission stays byte-identical (R4).
@@ -1302,11 +1462,18 @@ export function emitReceiverBoundCalls(
       // that is usually empty. Mirrors the order the compound-receiver
       // construction path already uses.
       const namespaceCandidates = namespaceTargets.get(receiverName);
-      const targetFiles =
+      let targetFiles: readonly string[] | undefined =
         namespaceCandidates !== undefined &&
         !isNamespaceNameShadowed(receiverName, site.inScope, scopes)
           ? namespaceCandidates
           : undefined;
+      // Chain walk: `hub.sub.helper()` / `hub.sub.Thing{}` — the receiver is
+      // no handle of this file, but its segments reach a module (see
+      // `resolveNamespaceChain`). A prefix that ends in a CLASS is Case 2's.
+      if (targetFiles === undefined && walkChains && lastTopLevelDot(receiverName) > 0) {
+        const cursor = resolveNamespaceChain(receiverName, site.inScope, namespaceTargets);
+        if (cursor !== undefined && 'files' in cursor) targetFiles = cursor.files;
+      }
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
         let found = false;
         for (const targetFile of targetFiles) {
@@ -1467,6 +1634,45 @@ export function emitReceiverBoundCalls(
           handledSites.add(siteKey);
           continue;
         }
+        // `A.Item{}` / `mod.Outer.Inner{}` — a construction whose member is a
+        // type NESTED in the class the receiver names. Neither a method nor a
+        // field, so the owner walk above cannot see it; the chain walk's
+        // nested-class lookup can (`resolveNamespaceChains`).
+        if (memberDef === undefined && walkChains && site.callForm === 'constructor') {
+          const nested = findNestedClass(classDef, memberName);
+          if (nested !== undefined) {
+            if (
+              suppressDeletedCallTarget(
+                options.recordResolutionOutcome,
+                parsed.filePath,
+                site,
+                nested,
+              )
+            ) {
+              handledSites.add(siteKey);
+              continue;
+            }
+            const ok = tryEmitEdge(
+              graph,
+              scopes,
+              nodeLookup,
+              site,
+              nested,
+              constructionSiteReason(
+                nested.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                site,
+                provider.markConstructionSites,
+              ),
+              seen,
+              0.85,
+              collapse,
+              calleeCapture,
+            );
+            if (ok) emitted++;
+            handledSites.add(siteKey);
+            continue;
+          }
+        }
         if (memberDef !== undefined) {
           if (
             suppressDeletedCallTarget(
@@ -1509,11 +1715,23 @@ export function emitReceiverBoundCalls(
       if (typeRef !== undefined && typeRef.rawName.includes('.')) {
         const [nsName, ...classNameParts] = typeRef.rawName.split('.');
         const className = classNameParts.join('.');
-        const targetFiles3 = namespaceTargets.get(nsName);
+        // With the chain walk the dotted type is resolved as a whole
+        // (`x: mod.Outer.Inner`, `t: hub.sub.Thing`); the candidate list then
+        // has one entry or none. Without it: the historical one-hop split.
+        const chainDef3 = walkChains
+          ? resolveNamespaceQualifiedClass(typeRef.rawName, site.inScope, namespaceTargets)
+          : undefined;
+        const targetFiles3 = walkChains
+          ? chainDef3 === undefined
+            ? undefined
+            : [chainDef3.filePath]
+          : namespaceTargets.get(nsName);
         if (targetFiles3 !== undefined && className.length > 0) {
           let found3 = false;
           for (const targetFile3 of targetFiles3) {
-            const classDef3 = lookupNamespaceMember(targetFile3, className);
+            const classDef3 = walkChains
+              ? chainDef3
+              : lookupNamespaceMember(targetFile3, className);
             if (classDef3 !== undefined) {
               const picked =
                 site.kind === 'call'

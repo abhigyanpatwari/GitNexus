@@ -212,6 +212,34 @@ export interface ZigBuildZonConfig {
    * and no zon still resolves them. See `parseZigRootModules`.
    */
   rootModules?: Map<string, string>;
+  /**
+   * Every build module the root `build.zig` declares, each with ITS OWN
+   * import table — `addModule` / `createModule` roots and the root modules of
+   * `addExecutable` / `addLibrary` / `addTest` artifacts, with the aliases
+   * their `addImport("<alias>", …)` calls and `.imports = &.{ … }` fields
+   * bind. `rootModules` flattens all of those into one first-wins map, which
+   * is wrong as soon as two modules bind one alias to different roots (an
+   * `app` and a `tool` executable that each `addImport("config", …)` their
+   * own `config.zig`): the second module's files resolved to the first
+   * module's target. The resolver walks a source file to its containing
+   * module(s) and consults their tables first — see
+   * `resolveZigImportInternal` / `parseZigBuildModules`.
+   */
+  buildModules?: readonly ZigBuildModule[];
+}
+
+/** One build module of the root `build.zig` — see `ZigBuildZonConfig.buildModules`. */
+export interface ZigBuildModule {
+  /** The `addModule("<name>", …)` name; absent for `createModule` bindings
+   *  and artifact root modules, which are reachable only through aliases. */
+  readonly name?: string;
+  /** Repo-relative root source file (`b.path("src/x.zig")`). */
+  readonly root: string;
+  /** Alias → repo-relative root source file, as this module's own
+   *  `addImport` calls and `.imports` field declare it. Includes aliases to
+   *  a path dep's module (`addImport("api", dep.module("core"))`) when the
+   *  dep's build.zig declares that module. */
+  readonly imports: ReadonlyMap<string, string>;
 }
 
 // ============================================================================
@@ -631,8 +659,9 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   // of the zon: `@import("<own module>")` is how single-package repos refer
   // to their root file from every other file.
   let rootModules: Map<string, string> | undefined;
+  let rootBuildZig: string | null = null;
   try {
-    const rootBuildZig = await fs.readFile(path.join(repoRoot, 'build.zig'), 'utf-8');
+    rootBuildZig = await fs.readFile(path.join(repoRoot, 'build.zig'), 'utf-8');
     const parsed = parseZigRootModules(rootBuildZig);
     if (parsed.size > 0) rootModules = parsed;
   } catch {
@@ -640,7 +669,15 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   }
 
   if (config === null) {
-    return rootModules ? { pathDeps: new Map(), rootModules } : null;
+    if (rootBuildZig === null) return null;
+    // No zon: no path deps, so `dep.module(…)` operands resolve to nothing.
+    const buildModules = parseZigBuildModules(rootBuildZig);
+    if (!rootModules && buildModules.length === 0) return null;
+    return {
+      pathDeps: new Map(),
+      ...(rootModules ? { rootModules } : {}),
+      ...(buildModules.length > 0 ? { buildModules } : {}),
+    };
   }
 
   // A path dep's importable root is whatever ITS build.zig declares, not a
@@ -648,6 +685,9 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
   // repo-relative. Best effort — an unreadable build.zig just leaves the
   // conventional-layout fallback in place.
   const moduleRoots = new Map<string, readonly string[]>();
+  // Per path dep: the modules its build.zig NAMES (`addModule("core", …)`),
+  // repo-relative — what a root-build.zig `dep.module("core")` operand means.
+  const depModules = new Map<string, ReadonlyMap<string, string>>();
   for (const [depName, depPath] of config.pathDeps) {
     const rel = normalizeZigDepPath(depPath);
     if (rel === null) continue;
@@ -657,15 +697,21 @@ export async function loadZigBuildConfig(repoRoot: string): Promise<ZigBuildZonC
     } catch {
       continue;
     }
-    const roots = parseZigBuildModuleRoots(buildZig, depName).map((r) =>
-      rel === '' ? r : `${rel}/${r}`,
-    );
+    const prefixed = (r: string): string => (rel === '' ? r : `${rel}/${r}`);
+    const roots = parseZigBuildModuleRoots(buildZig, depName).map(prefixed);
     if (roots.length > 0) moduleRoots.set(depName, roots);
+    const named = new Map<string, string>();
+    for (const mod of parseZigBuildModules(buildZig)) {
+      if (mod.name !== undefined && !named.has(mod.name)) named.set(mod.name, prefixed(mod.root));
+    }
+    if (named.size > 0) depModules.set(depName, named);
   }
+  const buildModules = rootBuildZig === null ? [] : parseZigBuildModules(rootBuildZig, depModules);
   return {
     ...config,
     ...(moduleRoots.size > 0 ? { moduleRoots } : {}),
     ...(rootModules ? { rootModules } : {}),
+    ...(buildModules.length > 0 ? { buildModules } : {}),
   };
 }
 
@@ -803,6 +849,205 @@ export function parseZigRootModules(buildZig: string): Map<string, string> {
     }
   }
   return modules;
+}
+
+/**
+ * Every build module the ROOT `build.zig` declares, each with its OWN import
+ * table (`ZigBuildModule`). Static scan (no execution) of:
+ *
+ *   - `b.addModule("<name>", .{ .root_source_file = b.path("<p>.zig"), … })`
+ *     and `const m = b.createModule(.{ .root_source_file = … })` — a module,
+ *     bound to the identifier a preceding `const m =` names;
+ *   - `b.addExecutable` / `addLibrary` / `addStaticLibrary` /
+ *     `addSharedLibrary` / `addTest` / `addObject(.{ .root_source_file =
+ *     b.path("<p>.zig"), … })` — an artifact whose ROOT MODULE is a module of
+ *     its own (reached as `exe.root_module.addImport(…)`), or `.root_module =
+ *     m` / `.root_module = b.createModule(…)` naming one declared inline;
+ *   - `<m>.addImport("<alias>", <operand>)`, `<exe>.root_module.addImport(…)`
+ *     and the `.imports = &.{ .{ .name = "<alias>", .module = <operand> } }`
+ *     field of a module's own arguments — an entry in THAT module's table.
+ *     The operand is a module binding (`m`) or a path dep's named module,
+ *     `dep.module("<name>")` with `const dep = b.dependency("<zon name>", …)`,
+ *     looked up in `depModules` (zon dep name → module name → repo-relative
+ *     root, from the dep's own build.zig).
+ *
+ * Why per module rather than one map (`parseZigRootModules`): an alias is
+ * scoped to the module that declares it. Two executables that each
+ * `addImport("config", …)` their own `config.zig` are the ordinary
+ * multi-target layout, and a single first-wins map sent the second module's
+ * `@import("config")` to the first module's file — a confident wrong
+ * `IMPORTS` edge and every `config.*` call behind it. Deliberately NOT
+ * resolved, as in `parseZigRootModules`: generated roots
+ * (`addOptions().createModule()`, `translate_c.createModule()`, computed
+ * LazyPaths), `.url` deps, and operands that are not a bare identifier or a
+ * `dep.module("…")` on a `b.dependency` binding. Comments stripped, string
+ * literals masked; the first binding of an identifier wins.
+ */
+export function parseZigBuildModules(
+  buildZig: string,
+  depModules?: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): ZigBuildModule[] {
+  const text = stripZonComments(buildZig);
+  const mask = zonStringMask(text);
+  const rootRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/;
+  const bindingRe = /(?:const|var)\s+([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*$/;
+  const staticRoot = (args: string): string | null => {
+    const rootMatch = rootRe.exec(args);
+    const root = rootMatch ? normalizeZigDepPath(rootMatch[1]!) : null;
+    return root === null || root === '' || !root.endsWith('.zig') ? null : root;
+  };
+
+  // Pass 1 — modules and the identifiers bound to them. `at` is the offset
+  // of the call's name token, so an inline `.root_module = b.createModule(…)`
+  // can be matched back to the module it minted.
+  interface Draft {
+    readonly name?: string;
+    readonly root: string;
+    readonly at: number;
+    readonly argsStart: number;
+    readonly argsEnd: number;
+    readonly imports: Map<string, string>;
+  }
+  const drafts: Draft[] = [];
+  const bindings = new Map<string, number>(); // identifier → drafts index
+  const bind = (prefixEnd: number, idx: number): void => {
+    const binding = bindingRe.exec(text.slice(0, prefixEnd));
+    if (binding && !bindings.has(binding[1]!)) bindings.set(binding[1]!, idx);
+  };
+  // Artifact bindings whose `.root_module = <ident>` names a module declared
+  // by another call; resolved once every binding is known.
+  const pendingArtifactAliases: { readonly ident: string; readonly module: string }[] = [];
+  const callRe =
+    /\b(addModule|createModule|addExecutable|addLibrary|addStaticLibrary|addSharedLibrary|addTest|addObject)\s*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = callRe.exec(text)) !== null) {
+    if (mask[m.index] !== 0) continue;
+    const argsStart = m.index + m[0].length;
+    const argsEnd = findZigParenEnd(text, argsStart);
+    if (argsEnd < 0) break;
+    const args = text.slice(argsStart, argsEnd);
+    const kind = m[1]!;
+    if (kind === 'addModule' || kind === 'createModule') {
+      const root = staticRoot(args);
+      if (root === null) continue;
+      const nameMatch = kind === 'addModule' ? /^\s*"([^"\n]+)"\s*,/.exec(args) : null;
+      drafts.push({
+        ...(nameMatch ? { name: nameMatch[1]! } : {}),
+        root,
+        at: m.index,
+        argsStart,
+        argsEnd,
+        imports: new Map(),
+      });
+      bind(m.index, drafts.length - 1);
+      continue;
+    }
+    // An artifact. Its root module is either declared inline by
+    // `.root_source_file`, or handed over through `.root_module = …`.
+    const rootModule = /\.root_module\s*=\s*((?:[A-Za-z_]\w*\.)*)([A-Za-z_]\w*)\s*(\()?/.exec(args);
+    if (rootModule) {
+      if (rootModule[3] === '(' && rootModule[2] === 'createModule') {
+        // Inline `.root_module = b.createModule(.{ … })`: the module is minted
+        // by the createModule call inside these args (a later iteration of
+        // this loop); remember the artifact's binding for it.
+        const nameOffset = rootModule.index + rootModule[0].lastIndexOf('createModule');
+        const binding = bindingRe.exec(text.slice(0, m.index));
+        if (binding) {
+          pendingArtifactAliases.push({
+            ident: binding[1]!,
+            module: `@${argsStart + nameOffset}`,
+          });
+        }
+      } else if (rootModule[1] === '' && rootModule[3] === undefined) {
+        const binding = bindingRe.exec(text.slice(0, m.index));
+        if (binding) pendingArtifactAliases.push({ ident: binding[1]!, module: rootModule[2]! });
+      }
+      continue;
+    }
+    const root = staticRoot(args);
+    if (root === null) continue;
+    drafts.push({ root, at: m.index, argsStart, argsEnd, imports: new Map() });
+    bind(m.index, drafts.length - 1);
+  }
+  for (const alias of pendingArtifactAliases) {
+    if (bindings.has(alias.ident)) continue;
+    const idx = alias.module.startsWith('@')
+      ? drafts.findIndex((d) => d.at === Number(alias.module.slice(1)))
+      : (bindings.get(alias.module) ?? -1);
+    if (idx >= 0) bindings.set(alias.ident, idx);
+  }
+  if (drafts.length === 0) return [];
+
+  // `const dep = b.dependency("<zon name>", …)` bindings, for `dep.module("…")`.
+  const dependencyBindings = new Map<string, string>();
+  const depRe =
+    /(?:const|var)\s+([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*dependency\(\s*"([^"\n]+)"/g;
+  while ((m = depRe.exec(text)) !== null) {
+    if (mask[m.index] !== 0) continue;
+    if (!dependencyBindings.has(m[1]!)) dependencyBindings.set(m[1]!, m[2]!);
+  }
+  // An import operand → the repo-relative root it names, or null.
+  const operandRoot = (operand: string): string | null => {
+    const bare = /^([A-Za-z_]\w*)$/.exec(operand);
+    if (bare) {
+      const idx = bindings.get(bare[1]!);
+      return idx === undefined ? null : drafts[idx]!.root;
+    }
+    const viaDep = /^([A-Za-z_]\w*)\.module\(\s*"([^"\n]+)"\s*\)$/.exec(operand);
+    if (viaDep) {
+      const zonName = dependencyBindings.get(viaDep[1]!);
+      return zonName === undefined ? null : (depModules?.get(zonName)?.get(viaDep[2]!) ?? null);
+    }
+    return null;
+  };
+  const addImport = (idx: number, alias: string, operand: string): void => {
+    const root = operandRoot(operand.trim());
+    const table = drafts[idx]!.imports;
+    if (root !== null && !table.has(alias)) table.set(alias, root);
+  };
+
+  // Pass 2a — `<m>.addImport("<alias>", <operand>)` / `<exe>.root_module.addImport(…)`.
+  const addImportRe = /\b([A-Za-z_]\w*)(?:\.root_module)?\.addImport\s*\(/g;
+  while ((m = addImportRe.exec(text)) !== null) {
+    if (mask[m.index] !== 0) continue;
+    const idx = bindings.get(m[1]!);
+    if (idx === undefined) continue;
+    const argsStart = m.index + m[0].length;
+    const argsEnd = findZigParenEnd(text, argsStart);
+    if (argsEnd < 0) break;
+    const args = text.slice(argsStart, argsEnd);
+    const aliasMatch = /^\s*"([^"\n]+)"\s*,/.exec(args);
+    if (!aliasMatch) continue;
+    addImport(idx, aliasMatch[1]!, args.slice(aliasMatch[0].length));
+  }
+  // Pass 2b — `.imports = &.{ .{ .name = "<alias>", .module = <operand> }, … }`
+  // inside a module's own argument list. The operand runs to the next `,` or
+  // `}` at paren depth 0 (`dep.module("core")` carries parentheses).
+  const entryRe = /\.name\s*=\s*"([^"\n]+)"\s*,\s*\.module\s*=\s*/g;
+  drafts.forEach((draft, idx) => {
+    const args = text.slice(draft.argsStart, draft.argsEnd);
+    let e: RegExpExecArray | null;
+    while ((e = entryRe.exec(args)) !== null) {
+      if (mask[draft.argsStart + e.index] !== 0) continue;
+      let depth = 0;
+      let end = e.index + e[0].length;
+      for (; end < args.length; end++) {
+        const ch = args[end];
+        if (ch === '(') depth++;
+        else if (ch === ')') {
+          if (depth === 0) break;
+          depth--;
+        } else if (depth === 0 && (ch === ',' || ch === '}')) break;
+      }
+      addImport(idx, e[1]!, args.slice(e.index + e[0].length, end));
+    }
+  });
+
+  return drafts.map(({ name, root, imports }) => ({
+    ...(name !== undefined ? { name } : {}),
+    root,
+    imports,
+  }));
 }
 
 /**

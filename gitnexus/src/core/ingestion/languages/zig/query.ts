@@ -136,10 +136,13 @@ const ZIG_SCOPE_QUERY = `
 
 ;; Imports — const X = @import("...").X : a NAMED import of one member. The
 ;; local name is whatever the user chose (\`const Alloc = @import("std").mem;\`
-;; is a rename), the imported name is the member. Deeper chains
-;; (\`@import("std").mem.Allocator\`) bind the innermost member — the file
-;; edge is what matters; a member-of-a-member resolves through the namespace
-;; later or not at all.
+;; is a rename), the imported name is the member. A deeper chain
+;; (\`@import("std").mem.Allocator\`, \`@import("lib.zig").B.work\`) is matched
+;; by the second rule below but is NOT bound as a named import of the
+;; innermost member: that discarded the written owner (\`B\`) and let a
+;; same-named \`A.work\` answer first. \`emitZigScopeCaptures\` binds the module
+;; under the builtin's text instead and rewrites the alias's use sites to the
+;; full path (\`collectZigDeepAliases\`, PR #1432 review 8.4).
 (variable_declaration
   "const" . (identifier) @import.name
   (field_expression
@@ -179,8 +182,9 @@ const ZIG_SCOPE_QUERY = `
 ;; alias and \`emitZigScopeCaptures\` promotes the ones whose object is a
 ;; known @import to a named import (same fact as \`const Counter =
 ;; @import("counter.zig").Counter;\`); the rest stay ordinary variables.
-;; Deeper chains (\`std.mem.Allocator\`) bind the innermost member off the
-;; leftmost namespace.
+;; Only the ONE-level shape is promoted; a deeper chain (\`lib.B.work\`,
+;; \`std.mem.Allocator\`) is a deep alias — a Const whose use sites are
+;; rewritten to the written owner path (see the import rule above, 8.4).
 (variable_declaration
   "const" . (identifier) @alias.name
   (field_expression
@@ -371,6 +375,24 @@ const ZIG_SCOPE_QUERY = `
   (field_expression
     object: (_) @reference.receiver
     member: (identifier) @reference.name)) @reference.call.constructor
+
+;; References — generic instantiation literals: List(u8){ ... } /
+;; lists.List(u8){ ... }. The type head is a call_expression — the
+;; instantiation of the type constructor — which neither constructor rule
+;; above matches, so the OUTER aggregate event had no site: only the inner
+;; \`List(u8)\` call (a free / member call reference on the call node) reached
+;; the graph (PR #1432 review, 8.11). Two sites on two anchors: the call
+;; (an invocation of \`List\`) and this initializer (a construction of the
+;; container \`List\` returns, marked \`(constructor)\`). The receiver form goes
+;; through the same namespace path as \`mod.T{}\`.
+(struct_initializer
+  (call_expression
+    function: (identifier) @reference.name)) @reference.call.constructor
+(struct_initializer
+  (call_expression
+    function: (field_expression
+      object: (_) @reference.receiver
+      member: (identifier) @reference.name))) @reference.call.constructor
 `;
 
 let _parser: Parser | null = null;

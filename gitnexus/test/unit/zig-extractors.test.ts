@@ -833,11 +833,15 @@ test {
         targetRaw: 'counter.zig',
       },
       { kind: 'named', localName: 'Same', importedName: 'Same', targetRaw: 'counter.zig' },
+      // A DEEP chain (`@import("std").mem.Allocator`) is not a named import
+      // of the innermost member: that lost the owner `mem` (review 8.4). The
+      // module is bound under the builtin's own text — the namespace handle
+      // the rewritten use sites of `Deep` (`@import("std").mem` . `Allocator`)
+      // resolve through — and `Deep` itself stays a deep alias.
       {
-        kind: 'alias',
-        localName: 'Deep',
-        importedName: 'Allocator',
-        alias: 'Deep',
+        kind: 'namespace',
+        localName: '@import("std")',
+        importedName: 'std',
         targetRaw: 'std',
       },
       { kind: 'wildcard', targetRaw: 'mixin.zig' },
@@ -1200,6 +1204,29 @@ pub fn helper() u32 { return 1; }
       expect(isZigFileStruct(parse('').rootNode)).toBe(false);
     });
 
+    it("detects a FIELDLESS file-struct by a top-level fn whose receiver is the file's own type (review 8.12)", () => {
+      // `Empty.zig`: no field, but `ping` takes the file type. Constructed
+      // (`Empty{}`) and dispatched on by importers, it lost its Struct when
+      // fields were the only signal.
+      expect(
+        isZigFileStruct(
+          parse('const Self = @This();\npub fn ping(self: *Self) void { _ = self; }\n').rootNode,
+        ),
+      ).toBe(true);
+      expect(
+        isZigFileStruct(parse('pub fn ping(self: *@This()) void { _ = self; }\n').rootNode),
+      ).toBe(true);
+      // Only the receiver's TYPE decides — the parameter name `self` on some
+      // other type is a free function in a utility file…
+      expect(
+        isZigFileStruct(
+          parse('const Foo = struct {};\npub fn f(self: Foo) void { _ = self; }\n').rootNode,
+        ),
+      ).toBe(false);
+      // …and a `@This()` alias with no receiver use is still a namespace.
+      expect(isZigFileStruct(parse(NAMESPACE).rootNode)).toBe(false);
+    });
+
     it('names the type after the FILE STEM, on every platform spelling', () => {
       expect(zigFileStructName('src/browser/Page.zig')).toBe('Page');
       expect(zigFileStructName('src\\browser\\Sighandler.zig')).toBe('Sighandler');
@@ -1303,7 +1330,9 @@ fn f() void {
         ['hidden', false], // no `pub`
         ['ns', false],
         ['Bar', true], // pub alias of a namespace member
-        ['Local', false], // fn-local: binds locally, publishes nothing
+        // fn-local: binds locally under its per-callable key (`Local$f`, see
+        // `zigFunctionLocalImportKey` — review 8.9), publishes nothing
+        ['Local$f', false],
       ]);
     });
 
@@ -1851,5 +1880,211 @@ pub fn string() void {
       (m) => m['@type-binding.parameter'] !== undefined && m['@type-binding.name']?.text === 'self',
     );
     expect(selfParam?.['@type-binding.type']?.text).toBe('*const R');
+  });
+});
+
+describeZig('Zig review findings 8.4 / 8.5 / 8.6 / 8.9 — capture-side contracts', () => {
+  it('8.5 — a container nested in a container is identified `Owner.Name` and bound as `Name`', () => {
+    const src = `
+pub const A = struct {
+    pub const Item = struct {
+        pub fn run(self: Item) void { _ = self; }
+    };
+};
+pub const B = struct {
+    pub const Item = struct {
+        pub fn run(self: Item) void { _ = self; }
+    };
+};
+`;
+    const root = parse(src).rootNode;
+    const containers: SyntaxNode[] = [];
+    const visit = (n: SyntaxNode): void => {
+      if (n.type === 'struct_declaration') containers.push(n);
+      for (let i = 0; i < n.namedChildCount; i++) visit(n.namedChild(i)!);
+    };
+    visit(root);
+    expect(containers.map((c) => zigContainerName(c, 'src/nested.zig'))).toEqual([
+      'A',
+      'A.Item',
+      'B',
+      'B.Item',
+    ]);
+    // The lexical binding is unchanged: `Item{}` inside `A` still spells `Item`.
+    expect(containers.map((c) => zigContainerBindingName(c))).toEqual(['A', 'Item', 'B', 'Item']);
+    // Nested containers are minted by the bare-container rule (identity from
+    // `zigContainerName`), not by the wrapper rule whose `@name` is `Item`.
+    expect(containers.map((c) => zigContainerAnchor(c))).toEqual([
+      'wrapper',
+      'container',
+      'wrapper',
+      'container',
+    ]);
+    const decls = emitZigScopeCaptures(src, 'src/nested.zig').filter(
+      (m) => m['@declaration.struct'] !== undefined,
+    );
+    expect(
+      decls.map((m) => [m['@declaration.name']?.text, m['@declaration.binding-name']?.text]),
+    ).toEqual([
+      ['A', undefined],
+      ['A.Item', 'Item'],
+      ['B', undefined],
+      ['B.Item', 'Item'],
+    ]);
+  });
+
+  it('8.9 — a fn-local `@import` binding and its uses are keyed per callable', () => {
+    const src = `
+const std = @import("std");
+fn f_sib_a() void {
+    const m = @import("qa.zig");
+    var t = m.Thing{};
+    t.go();
+    m.hello();
+}
+fn f_sib_b() void {
+    const m = @import("qb.zig");
+    m.hello();
+}
+`;
+    const matches = emitZigScopeCaptures(src, 'src/main.zig');
+    const importNames = matches
+      .filter((m) => m['@import.statement'] !== undefined && m['@import.imported'] === undefined)
+      .map((m) => m['@import.name']!.text);
+    // The module-level handle is untouched; each fn-local `m` gets its own key.
+    expect(importNames).toEqual(['std', 'm$f_sib_a', 'm$f_sib_b']);
+    const receivers = matches
+      .filter((m) => m['@reference.receiver'] !== undefined)
+      .map((m) => `${m['@reference.receiver']!.text}.${m['@reference.name']!.text}`);
+    expect(receivers).toEqual(['m$f_sib_a.Thing', 't.go', 'm$f_sib_a.hello', 'm$f_sib_b.hello']);
+    // The constructor type binding follows the same key.
+    const tBinding = matches.find(
+      (m) => m['@type-binding.constructor'] !== undefined && m['@type-binding.name']?.text === 't',
+    );
+    expect(tBinding?.['@type-binding.type']?.text).toBe('m$f_sib_a.Thing');
+    // The string literal inside `@import("m.zig")` is never touched.
+    const inString = emitZigScopeCaptures(
+      'fn g() void {\n    const m = @import("m.zig");\n    m.run();\n}\n',
+      'src/x.zig',
+    );
+    expect(inString.find((m) => m['@import.source'] !== undefined)?.['@import.source']?.text).toBe(
+      '"m.zig"',
+    );
+  });
+
+  it('8.4 — a deep member alias rewrites its use sites to the written owner path', () => {
+    const src = `
+const lib = @import("lib.zig");
+const chosen = @import("lib.zig").B.work;
+const chosen2 = lib.B.work;
+const Inner = lib.Outer.Inner;
+fn f() void {
+    chosen();
+    chosen2();
+    var i = Inner{};
+    _ = i;
+}
+`;
+    const matches = emitZigScopeCaptures(src, 'src/main.zig');
+    // The inline import is bound as a namespace under its own text — the
+    // handle the rewritten sites resolve through — never as a named import
+    // of the tail `work`.
+    const imports = matches
+      .filter((m) => m['@import.source'] !== undefined)
+      .map((m) => interpretZigImport(m));
+    expect(imports).toEqual([
+      { kind: 'namespace', localName: 'lib', importedName: 'lib', targetRaw: 'lib.zig' },
+      { kind: 'named', localName: 'lib', importedName: 'lib', targetRaw: 'lib.zig' },
+      {
+        kind: 'namespace',
+        localName: '@import("lib.zig")',
+        importedName: 'lib',
+        targetRaw: 'lib.zig',
+      },
+    ]);
+    const sites = matches
+      .filter((m) => m['@reference.receiver'] !== undefined)
+      .map(
+        (m) =>
+          `${m['@reference.call.member'] !== undefined ? 'call' : 'ctor'} ${m['@reference.receiver']!.text} . ${m['@reference.name']!.text}`,
+      );
+    expect(sites).toEqual([
+      'call @import("lib.zig").B . work',
+      'call lib.B . work',
+      'ctor lib.Outer . Inner',
+    ]);
+    // No free-call site named `chosen` survives to be resolved by simple name.
+    expect(
+      matches.some(
+        (m) => m['@reference.call.free'] !== undefined && m['@reference.name']?.text === 'chosen',
+      ),
+    ).toBe(false);
+    // The two-level alias `lib.B.work` is NOT promoted to a named import; it
+    // stays a Const with a type alias binding carrying the path.
+    expect(
+      matches.some(
+        (m) =>
+          m['@declaration.variable'] !== undefined && m['@declaration.name']?.text === 'chosen2',
+      ),
+    ).toBe(true);
+  });
+
+  it('8.6 — result-location `.init(…)` / `.{…}` sites carry the expected type as their receiver', () => {
+    const src = `
+const stdx = @import("stdx.zig");
+const Counter = @import("counter.zig").Counter;
+const a: Counter = .init(1);
+const b: Counter = .{ .n = 2 };
+var t: stdx.Thing = .{};
+const n: u32 = 5;
+fn mk() !Counter {
+    return .init(2);
+}
+fn arg() void {
+    use(.init(3));
+}
+const S = struct {
+    const Self = @This();
+    n: Counter = .init(0),
+    pub fn make() Self {
+        return .{};
+    }
+};
+`;
+    const sites = emitZigScopeCaptures(src, 'src/main.zig')
+      .filter(
+        (m) =>
+          (m['@reference.call.member'] !== undefined ||
+            m['@reference.call.constructor'] !== undefined) &&
+          m['@reference.receiver'] !== undefined,
+      )
+      .map(
+        (m) =>
+          `${m['@reference.call.member'] !== undefined ? 'call' : 'ctor'} ${m['@reference.receiver']!.text} . ${m['@reference.name']!.text} @${m['@reference.call.member']?.range.startLine ?? m['@reference.call.constructor']?.range.startLine}`,
+      );
+    expect(sites).toEqual(
+      expect.arrayContaining([
+        'call Counter . init @4', // const a: Counter = .init(1)
+        'call Counter . init @9', // return .init(2) in `fn mk() !Counter`
+        'call Counter . init @16', // field default `n: Counter = .init(0)`
+        'ctor stdx . Thing @6', // var t: stdx.Thing = .{}
+      ]),
+    );
+    // `.{}` under a bare annotation is a free construction of that type…
+    const bare = emitZigScopeCaptures(src, 'src/main.zig').filter(
+      (m) =>
+        m['@reference.call.constructor'] !== undefined && m['@reference.receiver'] === undefined,
+    );
+    expect(
+      bare.map(
+        (m) =>
+          `${m['@reference.name']!.text} @${m['@reference.call.constructor']!.range.startLine}`,
+      ),
+    ).toEqual(
+      expect.arrayContaining(['Counter @5', 'S @18']), // `return .{}` in `fn make() Self` → the container
+    );
+    // …while a primitive annotation and an argument position emit nothing.
+    expect(sites.some((s) => s.includes('u32'))).toBe(false);
+    expect(sites.some((s) => s.endsWith('@12'))).toBe(false);
   });
 });

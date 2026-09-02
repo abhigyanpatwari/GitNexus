@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveZigImportInternal } from '../../src/core/ingestion/import-resolvers/zig.js';
 import {
   loadZigBuildConfig,
+  parseZigBuildModules,
   parseZigRootModules,
   parseZigBuildModuleRoots,
   parseZigBuildZon,
@@ -225,6 +226,98 @@ describe('resolveZigImportInternal', () => {
     expect(
       resolveZigImportInternal('src/main.zig', 'pkg', files, { pathDeps: config.pathDeps }),
     ).toBe('src/root.zig');
+  });
+
+  it('resolves a bare name through the importer’s OWN build module table, not the first-declared alias', () => {
+    // Two executables each `addImport("config", …)` their own config.zig. The
+    // flat `rootModules` map keeps the first, so every tool/ file imported
+    // app's config. The per-module table is consulted first, by membership.
+    const files = new Set<string>([
+      'src/app/main.zig',
+      'src/app/config.zig',
+      'src/app/util.zig',
+      'src/tool/main.zig',
+      'src/tool/config.zig',
+    ]);
+    const config = {
+      pathDeps: new Map<string, string>(),
+      rootModules: new Map([['config', 'src/app/config.zig']]),
+      buildModules: [
+        { root: 'src/app/main.zig', imports: new Map([['config', 'src/app/config.zig']]) },
+        { root: 'src/tool/main.zig', imports: new Map([['config', 'src/tool/config.zig']]) },
+      ],
+    };
+    expect(resolveZigImportInternal('src/tool/main.zig', 'config', files, config)).toBe(
+      'src/tool/config.zig',
+    );
+    expect(resolveZigImportInternal('src/app/main.zig', 'config', files, config)).toBe(
+      'src/app/config.zig',
+    );
+    // A non-root file is attributed to the module whose root shares its
+    // directory (deepest prefix).
+    expect(resolveZigImportInternal('src/app/util.zig', 'config', files, config)).toBe(
+      'src/app/config.zig',
+    );
+    // A file outside every module directory falls back to the flat map.
+    expect(resolveZigImportInternal('examples/demo.zig', 'config', files, config)).toBe(
+      'src/app/config.zig',
+    );
+  });
+
+  it('fails closed when same-directory modules disagree on an alias, instead of taking the first', () => {
+    // `src/main.zig` (exe) and `src/root.zig` (lib) share a directory — the
+    // `zig init` layout. A third file there cannot be attributed; resolving
+    // through either would be a confident wrong edge, and the flat fallback
+    // would only restore the first-wins answer, so the chain stops at null.
+    const files = new Set<string>([
+      'src/main.zig',
+      'src/root.zig',
+      'src/util.zig',
+      'src/cfg_exe.zig',
+      'src/cfg_lib.zig',
+    ]);
+    const config = {
+      pathDeps: new Map<string, string>(),
+      rootModules: new Map([['cfg', 'src/cfg_exe.zig']]),
+      buildModules: [
+        { root: 'src/main.zig', imports: new Map([['cfg', 'src/cfg_exe.zig']]) },
+        { root: 'src/root.zig', imports: new Map([['cfg', 'src/cfg_lib.zig']]) },
+      ],
+    };
+    expect(resolveZigImportInternal('src/util.zig', 'cfg', files, config)).toBeNull();
+    // The roots themselves are unambiguous: each is its own module.
+    expect(resolveZigImportInternal('src/main.zig', 'cfg', files, config)).toBe('src/cfg_exe.zig');
+    expect(resolveZigImportInternal('src/root.zig', 'cfg', files, config)).toBe('src/cfg_lib.zig');
+    // Agreement is not a conflict: two modules binding one alias to one root
+    // resolve it for their shared directory.
+    const agreeing = {
+      ...config,
+      buildModules: [
+        { root: 'src/main.zig', imports: new Map([['cfg', 'src/cfg_lib.zig']]) },
+        { root: 'src/root.zig', imports: new Map([['cfg', 'src/cfg_lib.zig']]) },
+      ],
+    };
+    expect(resolveZigImportInternal('src/util.zig', 'cfg', files, agreeing)).toBe(
+      'src/cfg_lib.zig',
+    );
+  });
+
+  it('falls through to the flat root-module map when the containing module does not bind the name', () => {
+    // A module table answers only for the aliases it declares; the package's
+    // own `addModule` name stays importable from everywhere, as before.
+    const files = new Set<string>(['src/main.zig', 'src/lib.zig', 'src/cfg.zig']);
+    const config = {
+      pathDeps: new Map<string, string>(),
+      rootModules: new Map([['mylib', 'src/lib.zig']]),
+      buildModules: [{ root: 'src/main.zig', imports: new Map([['cfg', 'src/cfg.zig']]) }],
+    };
+    expect(resolveZigImportInternal('src/main.zig', 'mylib', files, config)).toBe('src/lib.zig');
+    // A table entry whose root is not indexed is not an answer either.
+    const stale = {
+      ...config,
+      buildModules: [{ root: 'src/main.zig', imports: new Map([['cfg', 'src/gone.zig']]) }],
+    };
+    expect(resolveZigImportInternal('src/main.zig', 'cfg', files, stale)).toBeNull();
   });
 
   it('returns null for an unknown bare name not in build.zig.zon', () => {
@@ -526,6 +619,114 @@ _ = b.addModule("abs", .{ .root_source_file = .{ .cwd_relative = "/abs/x.zig" } 
 
   it('returns an empty map for a build.zig that names no module', () => {
     expect(parseZigRootModules('pub fn build(b: *std.Build) void { _ = b; }').size).toBe(0);
+  });
+});
+
+describe('parseZigBuildModules', () => {
+  it('keeps each module’s addImport aliases in ITS OWN table (two modules, one alias, two roots)', () => {
+    // The review trigger: `app` and `tool` each bind "config". One flat map
+    // kept app's; the per-module tables keep both, each on its module.
+    const buildZig = `
+pub fn build(b: *std.Build) void {
+    const app_config = b.createModule(.{ .root_source_file = b.path("src/app/config.zig") });
+    const tool_config = b.createModule(.{ .root_source_file = b.path("src/tool/config.zig") });
+    const app = b.addExecutable(.{ .name = "app", .root_source_file = b.path("src/app/main.zig") });
+    app.root_module.addImport("config", app_config);
+    const tool_mod = b.createModule(.{
+        .root_source_file = b.path("src/tool/main.zig"),
+        .imports = &.{ .{ .name = "config", .module = tool_config } },
+    });
+    const tool = b.addExecutable(.{ .name = "tool", .root_module = tool_mod });
+    tool.root_module.addImport("extra", app_config);
+}
+`;
+    expect(parseZigBuildModules(buildZig)).toEqual([
+      { root: 'src/app/config.zig', imports: new Map() },
+      { root: 'src/tool/config.zig', imports: new Map() },
+      { root: 'src/app/main.zig', imports: new Map([['config', 'src/app/config.zig']]) },
+      {
+        root: 'src/tool/main.zig',
+        imports: new Map([
+          ['config', 'src/tool/config.zig'],
+          // `tool.root_module` IS `tool_mod`: the artifact alias lands on it.
+          ['extra', 'src/app/config.zig'],
+        ]),
+      },
+    ]);
+  });
+
+  it('names addModule modules, binds an inline `.root_module = b.createModule(…)` to its artifact, and keeps the first alias', () => {
+    const buildZig = `
+pub fn build(b: *std.Build) void {
+    const lib = b.addModule("mylib", .{ .root_source_file = b.path("./src/lib.zig") });
+    lib.addImport("mylib", lib);
+    const exe = b.addExecutable(.{
+        .name = "app",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/main.zig") }),
+    });
+    exe.root_module.addImport("mylib", lib);
+    exe.root_module.addImport("mylib", exe.root_module); // second binding of a name: ignored
+    exe.root_module.addImport("gen", opts.createModule()); // generated: no file
+    unbound.addImport("x", lib); // receiver bound to nothing: ignored
+}
+`;
+    expect(parseZigBuildModules(buildZig)).toEqual([
+      { name: 'mylib', root: 'src/lib.zig', imports: new Map([['mylib', 'src/lib.zig']]) },
+      { root: 'src/main.zig', imports: new Map([['mylib', 'src/lib.zig']]) },
+    ]);
+  });
+
+  it('resolves `addImport("api", dep.module("core"))` through the dep’s declared modules, and nothing without them', () => {
+    const buildZig = `
+pub fn build(b: *std.Build) void {
+    const corelib = b.dependency("corelib", .{ .target = target });
+    const exe = b.addExecutable(.{ .name = "app", .root_source_file = b.path("src/main.zig") });
+    exe.root_module.addImport("api", corelib.module("core"));
+    exe.root_module.addImport("other", corelib.module("missing"));
+    exe.root_module.addImport("v8", v8.module("v8")); // not a b.dependency binding
+}
+`;
+    const depModules = new Map([['corelib', new Map([['core', 'libs/corelib/src/core.zig']])]]);
+    expect(parseZigBuildModules(buildZig, depModules)).toEqual([
+      { root: 'src/main.zig', imports: new Map([['api', 'libs/corelib/src/core.zig']]) },
+    ]);
+    // The zon dep (or its build.zig) unknown: the alias is left unresolved
+    // rather than guessed.
+    expect(parseZigBuildModules(buildZig)).toEqual([{ root: 'src/main.zig', imports: new Map() }]);
+  });
+
+  it('ignores calls, aliases and roots spelled in comments or strings', () => {
+    const buildZig = `
+pub fn build(b: *std.Build) void {
+    const m = b.createModule(.{ .root_source_file = b.path("src/m.zig") });
+    // const decoy = b.createModule(.{ .root_source_file = b.path("src/decoy.zig") });
+    // m.addImport("commented", m);
+    const s = "m.addImport(\\"quoted\\", m)";
+    _ = s;
+}
+`;
+    expect(parseZigBuildModules(buildZig)).toEqual([{ root: 'src/m.zig', imports: new Map() }]);
+    expect(parseZigBuildModules('pub fn build(b: *std.Build) void { _ = b; }')).toEqual([]);
+  });
+});
+
+describe('loadZigBuildConfig (zig-buildmodules fixture)', () => {
+  it('carries per-module tables, with dep.module(…) aliases resolved through the dep’s build.zig', async () => {
+    const config = await loadZigBuildConfig(path.join(FIXTURES, 'zig-buildmodules'));
+    expect(config).not.toBeNull();
+    const byRoot = new Map(config!.buildModules!.map((m) => [m.root, m.imports]));
+    expect(byRoot.get('src/app/main.zig')).toEqual(
+      new Map([
+        ['config', 'src/app/config.zig'],
+        ['api', 'libs/corelib/src/core.zig'],
+      ]),
+    );
+    expect(byRoot.get('src/tool/main.zig')).toEqual(new Map([['config', 'src/tool/config.zig']]));
+    expect(byRoot.get('src/shared/a.zig')).toEqual(new Map([['clash', 'src/shared/clash_a.zig']]));
+    expect(byRoot.get('src/shared/b.zig')).toEqual(new Map([['clash', 'src/shared/clash_b.zig']]));
+    // The flat map is still there as the repo-wide fallback — and shows the
+    // first-wins collapse the per-module tables exist to avoid.
+    expect(config!.rootModules?.get('config')).toBe('src/app/config.zig');
   });
 });
 

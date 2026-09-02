@@ -923,6 +923,24 @@ export interface ScopeResolver {
   readonly namespaceExportsIncludeImportedNames?: boolean;
 
   /**
+   * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
+   * verified namespace root instead of being split once at the last dot:
+   * `hub.sub.Thing{}` (a namespace republished by a hub — `pub const sub =
+   * @import("sub.zig");`), `mod.Outer.Inner{}` (a type nested in a type),
+   * `opmod.Op.lookup` (an enum variant reached through the module), and the
+   * typed forms `x: mod.Outer.Inner`. Each hop is either a class-like member
+   * of the current module(s) / the current class, or a namespace import
+   * edge the current module's scope binds under that name; a hop that is
+   * ambiguous — two files behind one handle disagree, or a name is both a
+   * type and a republished module — resolves nothing rather than picking a
+   * first match. Off, the receiver-bound paths (Case 1, Case 2's
+   * namespace-qualified class, Case 3) keep their one-hop lookups exactly
+   * as they are, so no existing edge moves; Zig opts in (PR #1432 review,
+   * 8.10), whose module system is nothing but nested `const` handles.
+   */
+  readonly resolveNamespaceChains?: boolean;
+
+  /**
    * How this language spells a construction expression, so the compound
    * receiver resolver can type an INLINE constructor receiver — the
    * `Service(db).do_work()` shape, where the receiver is the constructed

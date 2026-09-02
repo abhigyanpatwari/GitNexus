@@ -14,18 +14,80 @@
  *   const bar = @import("bar");                  → package dep declared in build.zig.zon
  *
  * Bare-name resolution is handled when a parsed ZigBuildZonConfig is
- * supplied (see `loadZigBuildConfig`). The root build.zig's own named modules
- * come first (`rootModules`, name → root file — a repo with no build.zig.zon
- * still resolves them). `.url`-based deps unpack into a build cache outside
+ * supplied (see `loadZigBuildConfig`). The import table of the build module
+ * the importer belongs to comes first (`buildModules` — per-module
+ * `addImport` aliases, see `zigModulesContaining`), then the root
+ * build.zig's named modules flattened repo-wide (`rootModules`, name → root
+ * file — a repo with no build.zig.zon still resolves them). `.url`-based deps unpack into a build cache outside
  * the repo and so are returned as null; `.path`-based deps are resolved
  * through the root the dep's own build.zig declares, then the conventional
  * `<dep_root>/src/root.zig`, `<dep_root>/src/<name>.zig`,
  * `<dep_root>/src/main.zig` layouts.
  */
 
-import { normalizeZigDepPath, type ZigBuildZonConfig } from '../language-config.js';
+import {
+  normalizeZigDepPath,
+  type ZigBuildModule,
+  type ZigBuildZonConfig,
+} from '../language-config.js';
 
 const ZIG_STDLIB_NAMES = new Set(['std', 'builtin', 'root']);
+
+/**
+ * The build module(s) a source file belongs to: the module whose ROOT the
+ * file is, else the module(s) whose root's directory is the deepest prefix
+ * of the file's path. Membership is not declared anywhere static — a module
+ * is its root plus whatever that root reaches through relative imports —
+ * so the directory is the proxy, and several modules may share one
+ * (`src/main.zig` executable beside `src/root.zig` library is the `zig init`
+ * layout). A root file is unambiguous by construction: it is its own module.
+ */
+function zigModulesContaining(
+  currentFile: string,
+  modules: readonly ZigBuildModule[],
+): ZigBuildModule[] {
+  const own = modules.filter((m) => m.root === currentFile);
+  if (own.length > 0) return own;
+  let best = -1;
+  let out: ZigBuildModule[] = [];
+  for (const mod of modules) {
+    const slash = mod.root.lastIndexOf('/');
+    const dir = slash === -1 ? '' : mod.root.slice(0, slash);
+    if (dir !== '' && !currentFile.startsWith(`${dir}/`)) continue;
+    if (dir.length > best) {
+      best = dir.length;
+      out = [mod];
+    } else if (dir.length === best) {
+      out.push(mod);
+    }
+  }
+  return out;
+}
+
+/**
+ * A bare `@import("<name>")` through the containing module(s)' own import
+ * tables. `undefined` when no containing module binds the name (the caller
+ * falls back to the repo-wide tables); `null` when the containing modules
+ * DISAGREE — two same-directory modules that bind one alias to different
+ * roots. That is fail-closed on purpose: picking either would mint a
+ * confident wrong `IMPORTS` edge for half the files, which is the
+ * first-wins defect this table exists to remove.
+ */
+function resolveThroughBuildModules(
+  currentFile: string,
+  importPath: string,
+  allFiles: ReadonlySet<string>,
+  modules: readonly ZigBuildModule[],
+): string | null | undefined {
+  const targets = new Set<string>();
+  for (const mod of zigModulesContaining(currentFile, modules)) {
+    const target = mod.imports.get(importPath);
+    if (target !== undefined && allFiles.has(target)) targets.add(target);
+  }
+  if (targets.size === 0) return undefined;
+  if (targets.size > 1) return null;
+  return targets.values().next().value ?? null;
+}
 
 /** Resolve a Zig @import argument to a file path in the repository.
  *  Returns null when the import is a stdlib / builtin / root reference,
@@ -78,6 +140,22 @@ export function resolveZigImportInternal(
 
   // Bare name without extension or slashes (e.g. @import("bar")).
   if (buildZon) {
+    // First the import table of the build module the importer belongs to:
+    // an alias is scoped to the module whose `addImport` declared it, so
+    // this is the only table that can tell `app`'s `@import("config")` from
+    // `tool`'s. A disagreement between same-directory modules is `null`
+    // here and stops the chain — the repo-wide fallbacks below would only
+    // reintroduce the first-wins answer.
+    if (buildZon.buildModules !== undefined && buildZon.buildModules.length > 0) {
+      const scoped = resolveThroughBuildModules(
+        currentFile,
+        importPath,
+        allFiles,
+        buildZon.buildModules,
+      );
+      if (scoped !== undefined) return scoped;
+    }
+
     // The repo's own modules, as its root build.zig names them
     // (`b.addModule("lightpanda", .{ .root_source_file = b.path("src/lightpanda.zig") })`),
     // take precedence: that declaration is exactly what an in-repo

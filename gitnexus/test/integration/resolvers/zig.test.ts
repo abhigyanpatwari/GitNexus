@@ -930,6 +930,17 @@ describe.skipIf(!zigAvailable)(
     it('dispatches a method on an enum-typed parameter (`op: Op`)', () => {
       expect(calls).toContain('c8_enum_param_receiver → event_max');
     });
+
+    it('dispatches on a variant reached THROUGH THE MODULE (`opmod.Op.lookup.event_max()`)', () => {
+      // The receiver `opmod.Op.lookup` is three hops: the module handle, the
+      // enum inside it, the variant (a value of the enum). Split once at the
+      // last dot, `opmod.Op` was looked up as a namespace key that does not
+      // exist and the site resolved to nothing — the fixture line was
+      // committed but never asserted (PR #1432 review, 8.10). The chain walk
+      // seeds the compound resolver at the class `Op` and reads `lookup` as
+      // its variant.
+      expect(calls).toContain('c9_enum_qualified_variant_receiver → event_max');
+    });
   },
 );
 
@@ -996,6 +1007,202 @@ describe.skipIf(!zigAvailable)(
           'use_named_receiver → by_value',
           'use_this_receiver → release',
         ]),
+      );
+    });
+  },
+);
+
+describe.skipIf(!zigAvailable)(
+  'Zig qualified chains, deep aliases and result-location sites (PR #1432 review, 8.3–8.12)',
+  () => {
+    // One fixture per finding of the adversarial review, each with the decoy
+    // that made the old answer WRONG rather than merely missing: two nested
+    // `Item`s, `A.work` declared before `B.work`, two sibling fns binding `m`
+    // to different files, a hub republishing a module, a fieldless file type.
+    let result: PipelineResult;
+    /** `caller → targetId reason`, callers in main.zig only. */
+    let calls: string[];
+    let nodeIds: Set<string>;
+
+    beforeAll(async () => {
+      result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-chains'), () => {});
+      calls = getRelationships(result, 'CALLS')
+        .filter((e) => e.sourceFilePath.endsWith('main.zig'))
+        .map((e) => `${e.source} → ${e.rel.targetId} ${e.rel.reason ?? ''}`);
+      nodeIds = new Set<string>();
+      result.graph.forEachNode((n) => nodeIds.add(n.id));
+    }, 60000);
+
+    it('8.5 — keys a container nested in a container by its owner (`A.Item` ≠ `B.Item`)', () => {
+      // `nested.zig` declares `A.Item` and `B.Item`, each with `run`. By
+      // binding name alone both types and both methods collapsed onto ONE
+      // `Struct:…:Item` / `Item.run` — ownership and call targets were
+      // irrecoverably false. The identity is owner-qualified, like Java's
+      // `Outer.Inner`; the scope side still binds the lexical `Item`.
+      expect(nodeIds.has('Struct:src/nested.zig:A.Item')).toBe(true);
+      expect(nodeIds.has('Struct:src/nested.zig:B.Item')).toBe(true);
+      expect(nodeIds.has('Struct:src/nested.zig:Outer.Inner')).toBe(true);
+      expect(nodeIds.has('Struct:src/nested.zig:Item')).toBe(false);
+      expect(nodeIds.has('Method:src/nested.zig:A.Item.run#0')).toBe(true);
+      expect(nodeIds.has('Method:src/nested.zig:B.Item.run#0')).toBe(true);
+      expect(nodeIds.has('Method:src/nested.zig:Item.run#0')).toBe(false);
+      const owners = getRelationships(result, 'HAS_METHOD')
+        .filter((e) => e.targetFilePath.endsWith('nested.zig'))
+        .map((e) => `${e.source} → ${e.target}`)
+        .sort();
+      expect(owners).toEqual(['A.Item → run', 'B.Item → run', 'Outer.Inner → inner_m']);
+      // …and each construction / call lands on ITS type.
+      expect(calls).toContain(
+        'f_nested → Struct:src/nested.zig:A.Item import-resolved (constructor)',
+      );
+      expect(calls).toContain(
+        'f_nested → Struct:src/nested.zig:B.Item import-resolved (constructor)',
+      );
+      expect(calls).toContain('f_nested → Method:src/nested.zig:A.Item.run#0 import-resolved');
+      expect(calls).toContain('f_nested → Method:src/nested.zig:B.Item.run#0 import-resolved');
+    });
+
+    it('8.3 — a MODULE-level value receiver passes itself as `self`, so the callback joins `cb`, not `self`', () => {
+      // `global_runner.run(target_global)` against `run(self, cb)`: only a
+      // fn-local head got the implicit receiver prepended, so `target_global`
+      // sat at actual 0, joined `self@0`, and the `run → target_global` edge
+      // was missing while the fn-local spelling `r.run(target_local)` had its
+      // edge. Same for the annotated `var global_runner2: Runner = undefined`.
+      const flow = getRelationships(result, 'CALLS')
+        .filter((e) => e.rel.reason === 'callable-value-flow')
+        .map((e) => `${e.source} → ${e.target}`);
+      expect(flow).toEqual(
+        expect.arrayContaining([
+          'run → target_local',
+          'run → target_global',
+          'run → target_global2',
+        ]),
+      );
+    });
+
+    it('8.4 — a deep alias keeps its written owner (`@import("lib.zig").B.work` is `B.work`, not the first `work`)', () => {
+      // `lib.zig` declares `A.work` BEFORE `B.work`. The alias used to become a
+      // named import of the tail `work`, and the first `work` in the module —
+      // `A.work` — answered with exact confidence. Both the inline-import
+      // spelling (`chosen`) and the handle spelling (`chosen2 = lib.B.work`)
+      // must land on `B.work`; nothing may land on `A.work`.
+      const deep = calls.filter((c) => c.startsWith('f_deep_alias → '));
+      expect(deep).toContain('f_deep_alias → Method:src/lib.zig:B.work#0 import-resolved');
+      expect(deep.some((c) => c.includes('A.work'))).toBe(false);
+    });
+
+    it('8.6 — result-location `.init(…)` and `.{…}` emit the call and the construction the annotation implies', () => {
+      // `const a: Counter = .init(1);` typed `a` but the `init` CALL was absent
+      // from the graph; `const b: Counter = .{ .n = 2 };` had no construction
+      // event. `return .init(3)` in a fn returning `Counter` likewise.
+      expect(calls).toContain(
+        'f_result_location → Method:src/counter.zig:Counter.init#1 import-resolved',
+      );
+      expect(calls).toContain(
+        'f_result_location → Struct:src/counter.zig:Counter import-resolved (constructor)',
+      );
+      expect(calls).toContain(
+        'f_return_decl_literal → Method:src/counter.zig:Counter.init#1 import-resolved',
+      );
+      // The variables themselves stay typed by the annotation.
+      expect(calls).toContain(
+        'f_result_location → Method:src/counter.zig:Counter.get#0 import-resolved',
+      );
+    });
+
+    it('8.9 — sibling fns binding the same local `m` to different files each resolve through their own import', () => {
+      // `f_sib_a` binds `const m = @import("qa.zig")`, `f_sib_b` binds
+      // `@import("qb.zig")`. Finalization flattens both onto the module scope:
+      // `m → [qa.zig, qb.zig]`, and Case 1 took the first target for BOTH —
+      // `f_sib_b → qa.zig`'s `Thing` and `hello` (wrong edges, not missing).
+      const a = calls.filter((c) => c.startsWith('f_sib_a → '));
+      const b = calls.filter((c) => c.startsWith('f_sib_b → '));
+      expect(a).toEqual(
+        expect.arrayContaining([
+          'f_sib_a → Struct:src/qa.zig:Thing import-resolved (constructor)',
+          'f_sib_a → Function:src/qa.zig:hello import-resolved',
+          'f_sib_a → Method:src/qa.zig:Thing.qa_only#0 import-resolved',
+        ]),
+      );
+      expect(b).toEqual(
+        expect.arrayContaining([
+          'f_sib_b → Struct:src/qb.zig:Thing import-resolved (constructor)',
+          'f_sib_b → Function:src/qb.zig:hello import-resolved',
+          'f_sib_b → Method:src/qb.zig:Thing.qb_only#0 import-resolved',
+        ]),
+      );
+      expect(b.some((c) => c.includes('src/qa.zig'))).toBe(false);
+      expect(a.some((c) => c.includes('src/qb.zig'))).toBe(false);
+    });
+
+    it('8.10 — qualified chains are walked segment by segment: hub-republished module, nested type', () => {
+      // `hub.sub.Thing{}` (`hub.zig`: `pub const sub = @import("sub.zig");`),
+      // `nested.Outer.Inner{}` and `hub.sub.Thing.make()` all arrive with a
+      // receiver whose prefix is not a namespace KEY of main.zig; the one-hop
+      // split at the last dot asked for `hub.sub` / `nested.Outer` as exact
+      // keys and resolved nothing.
+      const hop = calls.filter((c) => c.startsWith('f_multihop → '));
+      expect(hop).toEqual(
+        expect.arrayContaining([
+          'f_multihop → Struct:src/sub.zig:Thing import-resolved (constructor)',
+          'f_multihop → Method:src/sub.zig:Thing.sub_m#0 import-resolved',
+          'f_multihop → Method:src/sub.zig:Thing.make#0 import-resolved',
+          'f_multihop → Struct:src/nested.zig:Outer.Inner import-resolved (constructor)',
+          'f_multihop → Method:src/nested.zig:Outer.Inner.inner_m#0 import-resolved',
+          'f_multihop → Method:src/op.zig:Op.event_max#0 import-resolved',
+        ]),
+      );
+    });
+
+    it('8.11 — inline-import and generic-instantiation literals are construction events', () => {
+      // `@import("qa.zig").Thing{}`: the module is the receiver of a
+      // construction exactly as of a member call, but only the call shape was
+      // bound as a namespace. `List(u8){}` / `lists.List(u8){}`: the type
+      // head is a call_expression, which neither constructor rule matched, so
+      // only the inner `List(u8)` invocation reached the graph and the outer
+      // aggregate event had no site.
+      const gen = calls.filter((c) => c.startsWith('f_inline_generic → '));
+      expect(gen).toEqual(
+        expect.arrayContaining([
+          'f_inline_generic → Struct:src/qa.zig:Thing import-resolved (constructor)',
+          'f_inline_generic → Method:src/qa.zig:Thing.qa_only#0 import-resolved',
+          'f_inline_generic → Struct:src/lists.zig:List import-resolved (constructor)',
+          'f_inline_generic → Method:src/lists.zig:List.push#0 import-resolved',
+        ]),
+      );
+    });
+
+    it('8.12 — a FIELDLESS file type (`Empty.zig`: `const Self = @This(); fn ping(self: *Self)`) keeps its Struct', () => {
+      // Keyed on top-level fields alone, `Empty.zig` was a namespace: no
+      // `Struct`, `ping` a free `Function`, and `Empty{}` / `e.ping()` from an
+      // importer resolved nothing. The receiver typed as the file's own type
+      // is the second signal.
+      expect(nodeIds.has('Struct:src/Empty.zig:Empty')).toBe(true);
+      expect(nodeIds.has('Method:src/Empty.zig:Empty.ping#0')).toBe(true);
+      expect(nodeIds.has('Function:src/Empty.zig:ping')).toBe(false);
+      expect(nodeIds.has('Const:src/Empty.zig:Self')).toBe(false);
+      expect(calls).toContain(
+        'f_fieldless → Struct:src/Empty.zig:Empty import-resolved (constructor)',
+      );
+      expect(calls).toContain('f_fieldless → Method:src/Empty.zig:Empty.ping#0 import-resolved');
+      // A namespace-only file (no field, no self-typed receiver) is still not a type.
+      expect(nodeIds.has('Struct:src/qa.zig:qa')).toBe(false);
+      expect(nodeIds.has('Struct:src/sub.zig:sub')).toBe(false);
+      expect(nodeIds.has('Function:src/qa.zig:hello')).toBe(true);
+    });
+
+    it('keeps a type nested in a FILE-struct reachable through the file handle (`Host.Inner{}`)', () => {
+      // A file-level container is already namespaced by its file, so its
+      // identity stays the binding name; the chain `Host.Inner` walks the
+      // file-struct's class to the nested type.
+      expect(calls).toContain(
+        'f_filestruct_nested → Struct:src/Host.zig:Inner import-resolved (constructor)',
+      );
+      expect(calls).toContain(
+        'f_filestruct_nested → Method:src/Host.zig:Inner.m#0 import-resolved',
+      );
+      expect(calls).toContain(
+        'f_filestruct_nested → Method:src/Host.zig:Host.touch#0 import-resolved',
       );
     });
   },
