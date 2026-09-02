@@ -869,6 +869,25 @@ describe('wrapped X.request({ url, method }) detections', () => {
     expect(detections[0]?.method).toBe('*');
   });
 
+  it('uses the last duplicate method key, matching JS evaluation', () => {
+    const dynamicLast = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(
+          "httpClient.request({ url: '/api/orders', method: 'GET', method: verb });",
+        ),
+      ),
+    );
+    expect(dynamicLast[0]?.method).toBe('*');
+    const literalLast = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(
+          "httpClient.request({ url: '/api/orders', method: verb, method: 'POST' });",
+        ),
+      ),
+    );
+    expect(literalLast[0]?.method).toBe('POST');
+  });
+
   it('defaults to GET only when method/type is absent', () => {
     const detections = consumers(
       JAVASCRIPT_HTTP_PLUGIN.scan(jsParser.parse('httpClient.request({ url: "/api/orders" });')),

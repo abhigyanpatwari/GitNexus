@@ -243,47 +243,51 @@ function readStringProp(objectNode: Parser.SyntaxNode, keyNames: readonly string
 }
 
 /**
- * True when the object literal has a pair / shorthand whose key is one of
- * `keyNames`, or a spread (`...config`) that may supply those keys at runtime.
- */
-function hasObjectKey(objectNode: Parser.SyntaxNode, keyNames: readonly string[]): boolean {
-  for (let i = 0; i < objectNode.namedChildCount; i++) {
-    const child = objectNode.namedChild(i);
-    if (!child) continue;
-    if (child.type === 'spread_element') return true;
-    if (
-      (child.type === 'shorthand_property_identifier' ||
-        child.type === 'shorthand_property_identifier_pattern') &&
-      keyNames.includes(child.text)
-    ) {
-      return true;
-    }
-    if (child.type !== 'pair') continue;
-    const keyNode = child.childForFieldName('key');
-    if (!keyNode) continue;
-    const key = propertyName(keyNode);
-    if (key !== null && keyNames.includes(key)) return true;
-  }
-  return false;
-}
-
-/**
  * Verb for wrapped `X.request({ url, method|type })`. Absent key → GET
  * (same default as fetch-without-options / jQuery ajax). Present but not a
- * string/template, or supplied only via object spread → `*` so matching
- * can still link without pinning GET.
+ * string/template, supplied only via object spread, or later overwritten by
+ * a duplicate key / spread → `*` so matching can still link without pinning GET.
+ * Later properties win, matching JavaScript object-literal evaluation.
  */
 function readRequestMethod(
   objectNode: Parser.SyntaxNode,
   keyNames: readonly string[] = ['method', 'type'],
 ): string {
-  const rawMethod = readStringProp(objectNode, keyNames);
-  if (rawMethod !== null) {
-    // `` method: `${verb}` `` is a template_string, not a verb literal.
-    if (rawMethod.includes('${')) return '*';
-    return rawMethod.toUpperCase();
+  type Verb = { kind: 'absent' } | { kind: 'literal'; value: string } | { kind: 'unknown' };
+  let last: Verb = { kind: 'absent' };
+  for (let i = 0; i < objectNode.namedChildCount; i++) {
+    const child = objectNode.namedChild(i);
+    if (!child) continue;
+    if (child.type === 'spread_element') {
+      last = { kind: 'unknown' };
+      continue;
+    }
+    if (
+      child.type === 'shorthand_property_identifier' ||
+      child.type === 'shorthand_property_identifier_pattern'
+    ) {
+      if (keyNames.includes(child.text)) last = { kind: 'unknown' };
+      continue;
+    }
+    if (child.type !== 'pair') continue;
+    const keyNode = child.childForFieldName('key');
+    const valueNode = child.childForFieldName('value');
+    if (!keyNode) continue;
+    const key = propertyName(keyNode);
+    if (key === null || !keyNames.includes(key)) continue;
+    if (!valueNode || (valueNode.type !== 'string' && valueNode.type !== 'template_string')) {
+      last = { kind: 'unknown' };
+      continue;
+    }
+    const lit = unquoteLiteral(valueNode.text);
+    if (lit === null || lit.includes('${')) {
+      last = { kind: 'unknown' };
+      continue;
+    }
+    last = { kind: 'literal', value: lit };
   }
-  if (hasObjectKey(objectNode, keyNames)) return '*';
+  if (last.kind === 'literal') return last.value.toUpperCase();
+  if (last.kind === 'unknown') return '*';
   return 'GET';
 }
 
