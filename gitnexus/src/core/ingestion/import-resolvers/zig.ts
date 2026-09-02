@@ -113,7 +113,11 @@ export function resolveZigImportInternal(
   // `@import("/abs.zig")` as an import outside the module path). Splitting
   // would drop the empty leading component and read `/foo.zig` as an
   // importer-relative `foo.zig`, fabricating an in-repo edge.
-  if (trimmed.startsWith('/')) return null;
+  // A drive-qualified spelling (`C:/foo.zig`, normalized from `C:\foo.zig`)
+  // is absolute too: it carries a `/`, so without this guard it would take
+  // the importer-relative branch and probe `src/C:/foo.zig`. Same test as
+  // `normalizeZigDepPath`.
+  if (trimmed.startsWith('/') || /^[A-Za-z]:\//.test(trimmed)) return null;
 
   // Path-bearing import: resolve relative to the current file's directory.
   // Zig allows both "./foo.zig" and "foo.zig" — both are filesystem-relative.

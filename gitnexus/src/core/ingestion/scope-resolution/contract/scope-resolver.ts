@@ -897,8 +897,11 @@ export interface ScopeResolver {
    * The marker rides in `reason` because relationships carry no arbitrary
    * properties (adding one moves SCHEMA_FINGERPRINT — the IMPLEMENTS
    * `-pointer` precedent in `pipeline/run.ts`). Applies to the free-call
-   * fallback and the reference bridge; receiver-qualified construction sites
-   * are not tagged `constructor` by any provider today.
+   * fallback, the reference bridge and the receiver-bound paths — a
+   * namespace-qualified literal (`mod.T{…}`, Case 1), a type nested in the
+   * receiver's class (`A.Item{}`, Case 2) and a dotted type binding (Case 3)
+   * all go through `constructionSiteReason` — so an opted-in provider sees
+   * one vocabulary whichever path resolved the site.
    */
   readonly markConstructionSites?: boolean;
 

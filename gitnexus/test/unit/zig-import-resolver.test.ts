@@ -64,6 +64,11 @@ describe('resolveZigImportInternal', () => {
     expect(resolveZigImportInternal('src/main.zig', '/src/foo.zig', files)).toBeNull();
     // Backslash-spelled absolute paths normalize to the same rejection.
     expect(resolveZigImportInternal('src/main.zig', '\\foo.zig', files)).toBeNull();
+    // A drive-qualified spelling carries a `/` after normalization and used to
+    // take the importer-relative branch (probing `src/C:/foo.zig`).
+    const drive = new Set<string>([...files, 'src/C:/foo.zig']);
+    expect(resolveZigImportInternal('src/main.zig', 'C:\\foo.zig', drive)).toBeNull();
+    expect(resolveZigImportInternal('src/main.zig', 'C:/foo.zig', drive)).toBeNull();
     // The relative spelling next to it still resolves.
     expect(resolveZigImportInternal('src/main.zig', 'foo.zig', files)).toBe('src/foo.zig');
   });

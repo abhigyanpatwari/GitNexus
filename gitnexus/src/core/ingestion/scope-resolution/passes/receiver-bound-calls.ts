@@ -1771,7 +1771,15 @@ export function emitReceiverBoundCalls(
                   nodeLookup,
                   site,
                   memberDef,
-                  memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                  // Same marker rule as Case 1 / Case 2: a constructor-form site
+                  // reached through a dotted type binding keeps its
+                  // ` (constructor)` suffix when the provider opted in; for
+                  // every other provider the string is unchanged.
+                  constructionSiteReason(
+                    memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
+                    site,
+                    provider.markConstructionSites,
+                  ),
                   seen,
                   // Explicit defaults so the trailing capture ctx (#2227 U2) can
                   // be threaded without changing dedup/confidence behavior.

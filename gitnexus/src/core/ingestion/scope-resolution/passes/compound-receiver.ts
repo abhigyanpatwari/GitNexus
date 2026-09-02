@@ -1204,10 +1204,12 @@ export function resolveCompoundReceiverClass(
   // itself, so a variant / static member hop is read off the class scope),
   // and the remaining segments are walked as members. Longest first: the
   // prefix is a class, not a value, and `a.B.C` must seed at `C`, not stop
-  // at `B` and read `C` as a member of it.
+  // at `B` and read `C` as a member of it. The whole receiver may be the
+  // class (`opmod.Op` — no member segment left), exactly as a bare class
+  // name head resolves to the class constant above.
   let firstHop = 1;
   if (currentClass === undefined && headType === undefined && options.resolveQualifiedClass) {
-    for (let k = parts.length - 1; k >= 2; k--) {
+    for (let k = parts.length; k >= 2; k--) {
       const prefix = parts.slice(0, k).join('.');
       if (prefix.includes('(')) continue;
       const seeded = options.resolveQualifiedClass(prefix, inScope);
