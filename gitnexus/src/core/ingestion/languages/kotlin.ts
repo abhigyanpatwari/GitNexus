@@ -24,6 +24,10 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { kotlinCallConfig } from '../call-extractors/configs/jvm.js';
 import { createKotlinCfgVisitor } from '../cfg/visitors/kotlin.js';
+import {
+  getKotlinSpringMessageProducerFacts,
+  getKotlinSpringNonHttpHandlerFacts,
+} from './kotlin/capture-side-channel.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { kotlinConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -220,4 +224,17 @@ export const kotlinProvider = defineLanguage({
   extractDecoratorRoutes: extractKotlinSpringRoutes,
   extractModuleConstants: extractKotlinModuleConstants,
   foldRoutePathOperands: foldKotlinOperands,
+
+  // Async messaging facts for the `springDestinations` phase. Both stores are
+  // repopulated on the main thread by `applyKotlinCaptureSideChannel`, so this
+  // answers for cache hits and misses alike.
+  getSpringMessagingFacts: (filePath) => ({
+    handlers: getKotlinSpringNonHttpHandlerFacts(filePath),
+    producers: getKotlinSpringMessageProducerFacts(filePath),
+  }),
+  // Kotlin string literals interpolate: `"orders-$env"` and `"orders-${env}"`
+  // are string templates, and a Spring property placeholder has to escape the
+  // dollar (`"\${app.topic}"`). Destination resolution needs this to keep a
+  // runtime template out of the address namespace.
+  interpolatesStringLiterals: true,
 });

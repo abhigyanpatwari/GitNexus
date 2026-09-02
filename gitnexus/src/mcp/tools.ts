@@ -211,7 +211,7 @@ WHEN TO USE: Complex structural queries that search/explore can't answer. READ g
 AFTER THIS: Use context() on result symbols for deeper context.
 
 SCHEMA:
-- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool
+- Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool, Destination
 - Multi-language nodes (use backticks): \`Struct\`, \`Enum\`, \`Trait\`, \`Impl\`, etc.
 - All edges via single CodeRelation table with 'type' property
 - Edge types: ${REL_TYPES.join(', ')} — CFG, REACHING_DEF, TAINTED, SANITIZES, TAINT_PATH, CDG, POST_DOMINATE are populated ONLY on indexes built with \`gitnexus analyze --pdg\` (zero rows on a default index); OVERRIDES is a legacy alias — rows are written as METHOD_OVERRIDES

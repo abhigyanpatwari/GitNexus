@@ -182,6 +182,9 @@ const LABEL_BEHAVIOR = {
   Section: 'inert',
   Route: 'inert',
   Tool: 'inert',
+  // A broker address, not a symbol: nothing in any language resolves a name to
+  // it, so it stays out of the dispatch and callable indexes like `Route`.
+  Destination: 'inert',
   // Taint/PDG substrate (issue #2080) — a control-flow node, never a
   // symbol-resolution target. Inert: file index only, no owner scope.
   BasicBlock: 'inert',

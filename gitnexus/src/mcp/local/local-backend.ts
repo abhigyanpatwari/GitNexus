@@ -348,6 +348,7 @@ export const VALID_NODE_LABELS = new Set([
   'Module',
   'Route',
   'Tool',
+  'Destination',
 ]);
 
 /** Valid relation types for impact analysis filtering */
@@ -392,6 +393,15 @@ export const VALID_RELATION_TYPES = new Set([
   // impact defaults do not silently widen; target enrichment still surfaces
   // advised/proxied state on ordinary impact calls.
   'ADVISED_BY',
+  // Async messaging edges. Valid for an explicit `relationTypes` filter —
+  // "who else publishes to the topic this handler reads?" — but deliberately
+  // NOT in the default impact relTypes, on the HANDLES_ROUTE precedent: a
+  // shared broker destination is a high-degree hub, and admitting it by
+  // default would pull every unrelated producer of a busy topic into an
+  // ordinary blast radius. No IMPACT_RELATION_CONFIDENCE entry either, so the
+  // 0.5 unknown-type floor applies (WRAPS/FETCHES/INJECTS precedent).
+  'PUBLISHES_TO',
+  'CONSUMES_FROM',
 ]);
 
 /**

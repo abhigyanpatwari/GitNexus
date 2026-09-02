@@ -48,6 +48,7 @@ import {
   deleteAllCallSummaries,
   deleteAllInjects,
   deleteAllAdvisedBy,
+  deleteAllDestinations,
   deleteSpringAopEvidenceNodes,
   deleteSpringAutoConfigurationDeclarations,
   deleteSpringAutoConfigurationSyntheticClasses,
@@ -2952,6 +2953,18 @@ async function runFullAnalysisInner(
         // Rebuild the complete ADVISED_BY set on every incremental writeback.
         await deleteAllAdvisedBy();
         await deleteSpringAopEvidenceNodes();
+        // 2b-bis. Drop the whole async messaging overlay. A RESOLVED
+        //     Destination deliberately stores no filePath (so the per-file
+        //     DETACH DELETE cannot cut a node shared across files), which also
+        //     means the per-file delete can never REMOVE one that is now
+        //     orphaned, and the endpoint-writability extract can never ADD one
+        //     introduced by a new file. Delete-all here plus the graph-wide
+        //     re-include in extractChangedSubgraph rebuilds the layer whole;
+        //     the springDestinations phase recomputes it from the full file
+        //     list on every persisting analyze, so nothing is lost. Both halves
+        //     must move together — deleting without the re-include drops the
+        //     layer, re-including without the delete duplicates its edges.
+        await deleteAllDestinations();
         // 2c. Drop Spring-owned DECLARES edges (#2415). The
         //     auto-configuration phase scans every metadata file and recomputes
         //     the full set each run; exact reason filtering leaves declarations
