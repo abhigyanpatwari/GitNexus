@@ -963,6 +963,30 @@ describe.skipIf(!zigAvailable)(
       expect(methods.has('Method:src/counter.zig:Pool.release#2')).toBe(false);
     });
 
+    it('labels a file-struct receiver typed by the file stem (`ledger: *Ledger` in `Ledger.zig`)', () => {
+      // `Ledger.zig` declares no `Self` alias: the stem is the only spelling of
+      // its type, and only the file path can supply it. The structure phase
+      // used to build these methods without the path, so `add` came out static
+      // as `Ledger.add#2` while the scope side (which has the path) resolved
+      // `ledger.add(3)` to `Ledger.add#1` — an id that did not exist.
+      const methods = new Map<string, boolean>();
+      result.graph.forEachNode((n) => {
+        if (n.label === 'Method') methods.set(n.id, n.properties.isStatic === true);
+      });
+      expect(methods.get('Method:src/Ledger.zig:Ledger.add#1')).toBe(false);
+      expect(methods.get('Method:src/Ledger.zig:Ledger.sum#0')).toBe(false);
+      expect(methods.get('Method:src/Ledger.zig:Ledger.empty#0')).toBe(true);
+      expect(methods.has('Method:src/Ledger.zig:Ledger.add#2')).toBe(false);
+      const calls = edgeSet(getRelationships(result, 'CALLS'));
+      expect(calls).toEqual(
+        expect.arrayContaining([
+          'use_file_struct_receiver → empty',
+          'use_file_struct_receiver → add',
+          'use_file_struct_receiver → sum',
+        ]),
+      );
+    });
+
     it('dispatches calls onto those methods exactly as onto `self` methods', () => {
       const calls = edgeSet(getRelationships(result, 'CALLS'));
       expect(calls).toEqual(

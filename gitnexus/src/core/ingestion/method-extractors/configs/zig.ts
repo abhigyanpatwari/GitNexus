@@ -52,13 +52,17 @@ const extractZigReturnType = (node: SyntaxNode): string | undefined => {
 /**
  * Regular parameters only. The receiver parameter (`zigReceiverParameter`) is
  * reported through `extractReceiverType`, not the parameter list (same split
- * as Rust's `self_parameter` skip in `configs/rust.ts`).
+ * as Rust's `self_parameter` skip in `configs/rust.ts`). `filePath` is what
+ * names a file-struct (`fn add(ledger: *Ledger)` in `Ledger.zig`): without it
+ * the receiver rule cannot see the file stem and such a fn reads as static
+ * with the receiver in its arity — an id the scope side, which always has
+ * the path, never produces, so its CALLS edges went nowhere.
  */
-const extractZigParameters = (node: SyntaxNode): ParameterInfo[] => {
+const extractZigParameters = (node: SyntaxNode, filePath?: string): ParameterInfo[] => {
   const paramList = zigParameterList(node);
   if (!paramList) return [];
   const params: ParameterInfo[] = [];
-  const receiver = zigReceiverParameter(node);
+  const receiver = zigReceiverParameter(node, filePath);
   for (let i = 0; i < paramList.namedChildCount; i++) {
     const param = paramList.namedChild(i);
     if (!param || param.type !== 'parameter') continue;
@@ -76,8 +80,8 @@ const extractZigParameters = (node: SyntaxNode): ParameterInfo[] => {
   return params;
 };
 
-const extractZigReceiverType = (node: SyntaxNode): string | undefined =>
-  zigReceiverParameter(node)?.childForFieldName('type')?.text?.trim();
+const extractZigReceiverType = (node: SyntaxNode, filePath?: string): string | undefined =>
+  zigReceiverParameter(node, filePath)?.childForFieldName('type')?.text?.trim();
 
 /**
  * Names a `test_declaration` during the enclosing-function walk (parse-worker
@@ -119,11 +123,12 @@ export const zigMethodConfig: MethodExtractionConfig = {
   extractVisibility: (node) => (hasZigPubKeyword(node) ? 'public' : 'private'),
   extractReceiverType: extractZigReceiverType,
 
-  isStatic(node) {
+  isStatic(node, filePath) {
     // A Zig "method" is static when it has no receiver parameter — `self` OR
     // a first parameter typed as the enclosing container (`replica:
-    // *Replica`, `pool: *@This()`); see `zigReceiverParameter`.
-    return zigReceiverParameter(node) === null;
+    // *Replica`, `pool: *@This()`, `ledger: *Ledger` in `Ledger.zig`); see
+    // `zigReceiverParameter`.
+    return zigReceiverParameter(node, filePath) === null;
   },
 
   isAbstract() {

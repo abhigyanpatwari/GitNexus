@@ -312,8 +312,8 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   //
   // Covers every language that spells an alias this way — TypeScript, Kotlin,
   // Dart and Rust all emit `@declaration.type_alias`. The remaining
-  // `CLASS_KINDS` entries (Typedef, Delegate, Annotation, Template) plausibly
-  // have the same gap, but nothing exercises them today
+  // `CLASS_KINDS` entries (Typedef, Delegate, Annotation, Template, Namespace)
+  // plausibly have the same gap, but nothing exercises them today
   // and adding labels no test covers is how this list drifts out of sync with
   // what it claims.
   'TypeAlias',

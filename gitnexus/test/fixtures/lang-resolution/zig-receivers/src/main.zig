@@ -1,6 +1,7 @@
 const stdx = @import("stdx/stdx.zig");
 const counter = @import("counter.zig");
 const Counter = counter.Counter;
+const Ledger = @import("Ledger.zig");
 
 fn use_named_receiver() void {
     var c = Counter{};
@@ -25,6 +26,12 @@ fn use_hub_static_call() u64 {
     return prng.next();
 }
 
+fn use_file_struct_receiver() u64 {
+    var ledger = Ledger.empty();
+    ledger.add(3);
+    return ledger.sum();
+}
+
 fn use_hub_generic_annotation() usize {
     var headers: stdx.BoundedArrayType(u8, 4) = .{};
     return headers.count();
@@ -36,4 +43,5 @@ pub fn main() void {
     _ = use_enum_variant_receiver();
     _ = use_hub_static_call();
     _ = use_hub_generic_annotation();
+    _ = use_file_struct_receiver();
 }

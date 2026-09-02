@@ -247,13 +247,15 @@ function buildMethod(
 
   // Static-owner detection is config-driven: each language declares which
   // container node types imply static (e.g. Ruby singleton_class, Kotlin companion_object).
-  const isStatic = (config.staticOwnerTypes?.has(ownerNode.type) ?? false) || config.isStatic(node);
+  const isStatic =
+    (config.staticOwnerTypes?.has(ownerNode.type) ?? false) ||
+    config.isStatic(node, context.filePath);
 
   return {
     name,
-    receiverType: config.extractReceiverType?.(node) ?? null,
+    receiverType: config.extractReceiverType?.(node, context.filePath) ?? null,
     returnType: config.extractReturnType(node) ?? null,
-    parameters: config.extractParameters(node),
+    parameters: config.extractParameters(node, context.filePath),
     visibility: config.extractVisibility(node),
     isStatic,
     isAbstract,

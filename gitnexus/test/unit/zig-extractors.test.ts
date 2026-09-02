@@ -249,6 +249,43 @@ pub fn Pool(comptime Node: type) type {
     expect(poolByName.get('acquire')!.receiverType).toBe('*Pool(Node)');
     expect(poolByName.get('acquire')!.isStatic).toBe(false);
   });
+
+  it('reads a file-struct receiver typed by the file stem — the rule needs the file path', () => {
+    // `Ledger.zig` with top-level fields IS the type `Ledger`; without a
+    // `const Self = @This();` alias the stem is the only spelling. The method
+    // builder must hand the config its `filePath`: without it `zigReceiverParameter`
+    // cannot name the file-struct, so `add` read as static with `ledger` in
+    // its arity (`Ledger.add#2`) — an id the scope side never produces, so
+    // every call to it was dropped.
+    const root = parse(`
+total: u64 = 0,
+pub fn add(ledger: *Ledger, n: u64) void { ledger.total += n; }
+pub fn sum(ledger: Ledger) u64 { return ledger.total; }
+pub fn empty() Ledger { return .{}; }
+`).rootNode;
+    const file = extractor.extract(root, {
+      filePath: 'src/Ledger.zig',
+      language: SupportedLanguages.Zig,
+    })!;
+    const byName = new Map(file.methods.map((m) => [m.name, m]));
+    expect(byName.get('add')!.receiverType).toBe('*Ledger');
+    expect(byName.get('add')!.isStatic).toBe(false);
+    expect(byName.get('add')!.parameters.map((p) => p.name)).toEqual(['n']);
+    expect(byName.get('sum')!.receiverType).toBe('Ledger');
+    expect(byName.get('sum')!.isStatic).toBe(false);
+    expect(byName.get('empty')!.isStatic).toBe(true);
+    // Under another file name the same source is a namespace: `Ledger` is
+    // then some other type, and `add` is a plain static fn of two parameters.
+    const other = extractor.extract(root, {
+      filePath: 'src/Book.zig',
+      language: SupportedLanguages.Zig,
+    })!;
+    expect(other.methods.find((m) => m.name === 'add')!.isStatic).toBe(true);
+    expect(other.methods.find((m) => m.name === 'add')!.parameters.map((p) => p.name)).toEqual([
+      'ledger',
+      'n',
+    ]);
+  });
 });
 
 describeZig('Zig VariableExtractor — container and import bindings are not variables', () => {
