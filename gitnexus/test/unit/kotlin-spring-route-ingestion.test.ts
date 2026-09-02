@@ -4,7 +4,7 @@
  * The Kotlin grammar is optional. Importing the extractor itself must not load
  * that grammar; only this guarded test setup does.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import { extractKotlinSpringRoutes } from '../../src/core/ingestion/route-extractors/kotlin-spring.js';
@@ -29,6 +29,14 @@ if (Kotlin) parser.setLanguage(Kotlin as Parser.Language);
 const parse = (source: string): Parser.Tree => parser.parse(source);
 const describeKotlin = Kotlin ? describe : describe.skip;
 
+describeKotlin('extractKotlinSpringRoutes', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
 function constantsOf(files: Record<string, string>): RepoConstants {
   return new Map(
     Object.entries(files).map(([filePath, source]) => [
@@ -38,7 +46,6 @@ function constantsOf(files: Record<string, string>): RepoConstants {
   );
 }
 
-describeKotlin('extractKotlinSpringRoutes', () => {
   it('extracts direct RestController functions with independent class prefixes and handlers', () => {
     const routes = extractKotlinSpringRoutes(
       parse(`

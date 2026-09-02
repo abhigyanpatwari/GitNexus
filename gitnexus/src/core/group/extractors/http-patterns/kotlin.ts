@@ -450,11 +450,6 @@ function inferKotlinOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
   return name === null ? 'GET' : name.toUpperCase();
 }
 
-/**
- * Build the plugin only if the Kotlin grammar is available. Compiling
- * the queries against a null grammar would throw at module load time
- * and abort the whole http-route-extractor module.
- */
 function enclosingAnnotationText(node: Parser.SyntaxNode): string {
   for (let current: Parser.SyntaxNode | null = node; current; current = current.parent) {
     if (current.type === 'annotation') return current.text;
@@ -462,6 +457,11 @@ function enclosingAnnotationText(node: Parser.SyntaxNode): string {
   return node.text;
 }
 
+/**
+ * Build the plugin only if the Kotlin grammar is available. Compiling
+ * the queries against a null grammar would throw at module load time
+ * and abort the whole http-route-extractor module.
+ */
 function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   // ─── Provider: Spring class-level @RequestMapping prefix ──────────────
   // Two patterns mirror the Java plugin's positional vs named split:

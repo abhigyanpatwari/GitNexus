@@ -442,11 +442,13 @@ function annotationHasRouteMember(ann: Parser.SyntaxNode): boolean {
 /** Static class/interface-level RequestMapping method constraint, or wildcard by default. */
 function typeRequestMethods(typeNode: Parser.SyntaxNode): readonly string[] {
   const mappings = declarationAnnotations(typeNode).filter((ann) =>
-    isClassLevelMappingAnnotation(annotationName(ann)),
+    isClassLevelMappingAnnotation(annotationName(ann) ?? ''),
   );
   if (mappings.length === 0) return ['*'];
   if (mappings.length !== 1) return [];
-  return springAnnotationHttpMethods(annotationName(mappings[0]), mappings[0].text);
+  const mappingName = annotationName(mappings[0]);
+  if (!mappingName) return [];
+  return springAnnotationHttpMethods(mappingName, mappings[0].text);
 }
 
 function annotationRoutePathsOrDefault(ann: Parser.SyntaxNode): string[] {
@@ -459,7 +461,7 @@ function annotationRoutePathsOrDefault(ann: Parser.SyntaxNode): string[] {
 function typeClassPrefixes(typeNode: Parser.SyntaxNode): string[] {
   const prefixes: string[] = [];
   for (const ann of declarationAnnotations(typeNode)) {
-    if (isClassLevelMappingAnnotation(annotationName(ann)))
+    if (isClassLevelMappingAnnotation(annotationName(ann) ?? ''))
       prefixes.push(...annotationRoutePaths(ann));
   }
   return prefixes;

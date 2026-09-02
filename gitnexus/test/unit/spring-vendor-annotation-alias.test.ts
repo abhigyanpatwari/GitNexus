@@ -12,7 +12,7 @@
  * 3. End-to-end `extractSpringRoutes` with a fixture using vendor annotations
  * 4. Parity: both ingestion and group extractors surface the same routes
  */
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import {
@@ -29,6 +29,13 @@ function parse(code: string): Parser.Tree {
   parser.setLanguage(Java);
   return parser.parse(code);
 }
+
+beforeEach(() => {
+  vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('resolveSpringAnnotationAlias', () => {
   it('returns undefined for exact built-in shortcut annotations', () => {
@@ -79,10 +86,6 @@ describe('resolveSpringAnnotationAlias', () => {
 });
 
 describe('Spring vendor prefix freshness', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it('canonicalizes equivalent lists regardless of order and duplicates', () => {
     vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', ' Win,Acme,Win ');
     const first = springVendorPrefixesKey();
