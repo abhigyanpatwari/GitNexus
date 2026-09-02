@@ -193,7 +193,10 @@ export function extractSpringRoutes(
     if (!annNode || !node || (!valueNode && !valueExprNode)) continue;
 
     const capturedAnnotationName = annNode.text.split('.').pop() ?? annNode.text;
-    if (node.type === 'class_declaration' && isClassLevelMappingAnnotation(capturedAnnotationName)) {
+    if (
+      node.type === 'class_declaration' &&
+      isClassLevelMappingAnnotation(capturedAnnotationName)
+    ) {
       if (!isRouteMemberKey(keyNode)) continue;
       if (!valueNode) {
         classesWithUnfoldablePrefix.add(node.id);
@@ -456,7 +459,8 @@ function annotationRoutePathsOrDefault(ann: Parser.SyntaxNode): string[] {
 function typeClassPrefixes(typeNode: Parser.SyntaxNode): string[] {
   const prefixes: string[] = [];
   for (const ann of declarationAnnotations(typeNode)) {
-    if (isClassLevelMappingAnnotation(annotationName(ann))) prefixes.push(...annotationRoutePaths(ann));
+    if (isClassLevelMappingAnnotation(annotationName(ann)))
+      prefixes.push(...annotationRoutePaths(ann));
   }
   return prefixes;
 }

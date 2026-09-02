@@ -650,9 +650,7 @@ class VendorController {
       (detection) => detection.role === 'provider',
     );
     expect(group).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ method: 'GET', path: '/vendor/users' }),
-      ]),
+      expect.arrayContaining([expect.objectContaining({ method: 'GET', path: '/vendor/users' })]),
     );
   });
 
