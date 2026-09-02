@@ -57,6 +57,6 @@ export const SPRING_NON_HTTP_HANDLERS_FEATURE: AnalysisFeatureDescriptor = {
  */
 export const SPRING_ROUTE_BINDINGS_FEATURE: AnalysisFeatureDescriptor = {
   id: 'spring.route-bindings',
-  version: 1,
+  version: 2,
   appliesTo: (filePaths) => filePaths.some(isJvmSourceFile),
 };

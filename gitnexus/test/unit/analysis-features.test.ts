@@ -5,37 +5,14 @@ import {
   resolveAnalysisFeatureVersions,
   type AnalysisFeatureDescriptor,
 } from '../../src/core/analysis-features.js';
-import {
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-  SPRING_ROUTE_BINDINGS_FEATURE,
-} from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
-import {
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-} from '../../src/core/ingestion/languages/java/analysis-features.js';
-
-const FEATURES = [
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-  SPRING_ROUTE_BINDINGS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-] as const;
+import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
 
 describe('analysis feature versions', () => {
   it('separates the global Class schema capability from JVM-only Bean evidence', () => {
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['src/app.ts'])).toEqual({
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/app.ts'])).toEqual({
       'graph.class-framework-annotations': 1,
     });
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.java'])).toEqual({
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/App.java'])).toEqual({
       'graph.class-framework-annotations': 1,
       'java.heritage-captures': 1,
       'java.record-component-accessors': 1,
@@ -44,27 +21,27 @@ describe('analysis feature versions', () => {
       'spring.conditionals-auto-configuration': 1,
       'spring.config-bindings': 2,
       'spring.non-http-handlers': 1,
-      'spring.route-bindings': 1,
+      'spring.route-bindings': 2,
     });
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['src/App.kt'])).toEqual({
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/App.kt'])).toEqual({
       'graph.class-framework-annotations': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
       'spring.config-bindings': 2,
       'spring.non-http-handlers': 1,
-      'spring.route-bindings': 1,
+      'spring.route-bindings': 2,
     });
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['BUILD.GRADLE.KTS'])).toEqual({
       'graph.class-framework-annotations': 1,
       'spring.aop-advice': 1,
       'spring.bean-inventory': 2,
       'spring.conditionals-auto-configuration': 1,
       'spring.non-http-handlers': 1,
-      'spring.route-bindings': 1,
+      'spring.route-bindings': 2,
     });
     expect(
-      resolveAnalysisFeatureVersions(FEATURES, [
+      resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [
         'src/main/resources/application-local.yml',
         'README.md',
       ]),
@@ -73,7 +50,7 @@ describe('analysis feature versions', () => {
       'spring.config-bindings': 2,
     });
     expect(
-      resolveAnalysisFeatureVersions(FEATURES, [
+      resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [
         'src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports',
       ]),
     ).toEqual({

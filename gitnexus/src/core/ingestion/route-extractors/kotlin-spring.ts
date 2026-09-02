@@ -141,19 +141,6 @@ function functionName(node: Parser.SyntaxNode): string | null {
   return identifier ? unquoteKotlinIdentifier(identifier.text) : null;
 }
 
-/**
- * `springAnnotationHttpMethods` parses Java `{A, B}` collections.
- * Translate only Kotlin `method = [A, B]` before delegating.
- */
-function kotlinSpringHttpMethods(name: string, annotation: Parser.SyntaxNode): readonly string[] {
-  if (name !== 'RequestMapping') return springAnnotationHttpMethods(name, annotation.text);
-  const normalized = annotation.text.replace(
-    /(\bmethod\s*=\s*)\[([^\]]*)\]/gs,
-    (_match, assignment: string, values: string) => `${assignment}{${values}}`,
-  );
-  return springAnnotationHttpMethods(name, normalized);
-}
-
 function typeName(node: Parser.SyntaxNode): string | null {
   const identifier = node.children.find((child) => child.type === 'type_identifier');
   return identifier ? unquoteKotlinIdentifier(identifier.text) : null;
@@ -242,7 +229,9 @@ function classMapping(annotations: readonly Parser.SyntaxNode[]): ClassMapping |
     }
   }
 
-  const methods = kotlinSpringHttpMethods(annotationName(mapping) ?? 'RequestMapping', mapping);
+  const mappingName = annotationName(mapping);
+  if (!mappingName) return null;
+  const methods = springAnnotationHttpMethods(mappingName, mapping.text);
   return methods.length === 0 ? null : { prefix, methods };
 }
 
@@ -275,7 +264,7 @@ export function extractKotlinSpringRoutes(
         const decoratorName = annotationName(annotation);
         if (!decoratorName) continue;
 
-        const methodMethods = kotlinSpringHttpMethods(decoratorName, annotation);
+        const methodMethods = springAnnotationHttpMethods(decoratorName, annotation.text);
         const methods = intersectSpringHttpMethods(ownerMapping.methods, methodMethods);
         if (methods.length === 0) continue;
 

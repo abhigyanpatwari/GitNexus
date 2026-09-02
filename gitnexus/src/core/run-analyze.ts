@@ -190,23 +190,13 @@ import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/b
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import { SPRING_CONFIG_UNRESOLVED_PREFIX } from './ingestion/frameworks/spring/config-bindings.js';
 import { classifySpringConfigFile } from './ingestion/pipeline-phases/spring-config.js';
+import { SPRING_ROUTE_BINDINGS_FEATURE } from './ingestion/frameworks/spring/analysis-features.js';
+import { springVendorPrefixesKey } from './ingestion/frameworks/spring/vendor-prefixes.js';
 import {
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-  SPRING_ROUTE_BINDINGS_FEATURE,
-} from './ingestion/frameworks/spring/analysis-features.js';
-import {
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-} from './ingestion/languages/java/analysis-features.js';
-import {
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   findAnalysisFeatureMismatches,
   resolveAnalysisFeatureVersions,
 } from './analysis-features.js';
+import { ANALYSIS_FEATURES } from './analysis-feature-registry.js';
 import {
   analyzerRunnerIdentitiesEqual,
   finalizeAnalyzerRunnerIdentity,
@@ -247,18 +237,6 @@ import type { EmbeddingCheckpoint } from './embedding-checkpoint.js';
  */
 const stripControlCharacters = (msg: string): string =>
   msg.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
-
-const ANALYSIS_FEATURES = [
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-  SPRING_ROUTE_BINDINGS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-] as const;
 
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
@@ -1597,6 +1575,20 @@ async function runFullAnalysisInner(
     );
     options = { ...options, force: true };
     analysisFeatureMismatchLogged = true;
+  }
+
+  const currentSpringVendorPrefixes = springVendorPrefixesKey();
+  const persistedRouteBindings = existingMeta?.analysisFeatures?.[SPRING_ROUTE_BINDINGS_FEATURE.id];
+  if (
+    existingMeta &&
+    persistedRouteBindings === SPRING_ROUTE_BINDINGS_FEATURE.version &&
+    existingMeta.springVendorPrefixes !== currentSpringVendorPrefixes
+  ) {
+    log(
+      'Spring vendor mapping prefixes changed; forcing a full rebuild so persisted Route ' +
+        'evidence matches the configured aliases.',
+    );
+    options = { ...options, force: true };
   }
 
   // Analyzer provenance is part of freshness, not merely diagnostics. A
@@ -3913,6 +3905,7 @@ async function runFullAnalysisInner(
           ? existingMeta?.undecidedInterfaceSatisfaction
           : summarizeUndecidedSatisfaction(pipelineResult.undecidedSatisfaction),
       analysisFeatures: currentAnalysisFeatures,
+      springVendorPrefixes: currentSpringVendorPrefixes,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.

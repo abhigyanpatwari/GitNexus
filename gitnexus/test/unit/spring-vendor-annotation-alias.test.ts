@@ -12,7 +12,7 @@
  * 3. End-to-end `extractSpringRoutes` with a fixture using vendor annotations
  * 4. Parity: both ingestion and group extractors surface the same routes
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import {
@@ -22,6 +22,7 @@ import {
 import { extractSpringRoutes } from '../../src/core/ingestion/route-extractors/spring.js';
 import { JAVA_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/java.js';
 import { normalizeExtractedRoutePath } from '../../src/core/ingestion/route-extractors/route-path.js';
+import { springVendorPrefixesKey } from '../../src/core/ingestion/frameworks/spring/vendor-prefixes.js';
 
 function parse(code: string): Parser.Tree {
   const parser = new Parser();
@@ -77,6 +78,23 @@ describe('resolveSpringAnnotationAlias', () => {
   });
 });
 
+describe('Spring vendor prefix freshness', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('canonicalizes equivalent lists regardless of order and duplicates', () => {
+    vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', ' Win,Acme,Win ');
+    const first = springVendorPrefixesKey();
+    vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Acme,Win');
+    const second = springVendorPrefixesKey();
+
+    expect(first).toBe('["Acme","Win"]');
+    expect(second).toBe(first);
+    expect(first).not.toBe('["Win"]');
+  });
+});
+
 describe('springAnnotationHttpMethods with vendor aliases', () => {
   it('resolves WinPostMapping to POST', () => {
     expect(springAnnotationHttpMethods('WinPostMapping', '@WinPostMapping("/api")')).toEqual([
@@ -103,6 +121,17 @@ describe('springAnnotationHttpMethods with vendor aliases', () => {
   it('resolves WinRequestMapping with method attribute', () => {
     const text = '@WinRequestMapping(value = "/api", method = RequestMethod.POST)';
     expect(springAnnotationHttpMethods('WinRequestMapping', text)).toEqual(['POST']);
+  });
+
+  it('accepts Kotlin collection syntax for RequestMapping method arrays', () => {
+    const text =
+      '@WinRequestMapping(value = "/api", method = [RequestMethod.GET, RequestMethod.HEAD])';
+    expect(springAnnotationHttpMethods('WinRequestMapping', text)).toEqual(['GET', 'HEAD']);
+  });
+
+  it('fail-closes mismatched RequestMapping method collection delimiters', () => {
+    const text = '@WinRequestMapping(method = {RequestMethod.GET])';
+    expect(springAnnotationHttpMethods('WinRequestMapping', text)).toEqual([]);
   });
 
   it('returns empty for unrelated annotations', () => {
@@ -232,6 +261,11 @@ public class VendorController {
     expect(routes[0].prefix).toBe('/vendor');
     expect(routes[0].routePath).toBe('/users');
     expect(routes[0].httpMethod).toBe('GET');
+    expect(
+      JAVA_HTTP_PLUGIN.scan(tree)
+        .filter((detection) => detection.role === 'provider')
+        .map((detection) => `${detection.method} ${detection.path}`),
+    ).toEqual(['GET /vendor/users']);
   });
 
   it('P2: unregistered suffix no longer emits a phantom route (end-to-end)', () => {
@@ -243,21 +277,18 @@ public class AuditController {
 `);
     const routes = extractSpringRoutes(tree, 'AuditController.java');
     expect(routes).toHaveLength(0);
+    expect(
+      JAVA_HTTP_PLUGIN.scan(tree).filter((detection) => detection.role === 'provider'),
+    ).toEqual([]);
   });
 
-  it('P2: extra vendor prefixes can be registered via env', async () => {
-    const previous = process.env.GITNEXUS_SPRING_VENDOR_PREFIXES;
-    process.env.GITNEXUS_SPRING_VENDOR_PREFIXES = 'Win,Acme';
-    // Re-import a fresh copy of the module graph so the env is picked up.
-    vi.resetModules();
+  it('P2: extra vendor prefixes can be registered via env', () => {
+    vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win,Acme');
     try {
-      const fresh = await import('../../src/core/ingestion/route-extractors/spring-shared.js');
-      expect(fresh.resolveSpringAnnotationAlias('AcmePostMapping')).toBe('PostMapping');
-      expect(fresh.resolveSpringAnnotationAlias('OtherPostMapping')).toBeUndefined();
+      expect(resolveSpringAnnotationAlias('AcmePostMapping')).toBe('PostMapping');
+      expect(resolveSpringAnnotationAlias('OtherPostMapping')).toBeUndefined();
     } finally {
-      if (previous === undefined) delete process.env.GITNEXUS_SPRING_VENDOR_PREFIXES;
-      else process.env.GITNEXUS_SPRING_VENDOR_PREFIXES = previous;
-      vi.resetModules();
+      vi.unstubAllEnvs();
     }
   });
 });

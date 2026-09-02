@@ -13,11 +13,11 @@ import type {
   HttpScanInput,
 } from './types.js';
 import {
-  METHOD_ANNOTATION_TO_HTTP,
   findEnclosingClass,
+  intersectSpringHttpMethods,
   isClassLevelMappingAnnotation,
   joinPath,
-  resolveSpringAnnotationAlias,
+  springAnnotationHttpMethods,
   type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
 import {
@@ -455,11 +455,11 @@ function inferKotlinOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
  * the queries against a null grammar would throw at module load time
  * and abort the whole http-route-extractor module.
  */
-function kotlinShortcutHttpMethod(ann: string): string | undefined {
-  const exact = METHOD_ANNOTATION_TO_HTTP[ann];
-  if (exact) return exact;
-  const base = resolveSpringAnnotationAlias(ann);
-  return base ? METHOD_ANNOTATION_TO_HTTP[base] : undefined;
+function enclosingAnnotationText(node: Parser.SyntaxNode): string {
+  for (let current: Parser.SyntaxNode | null = node; current; current = current.parent) {
+    if (current.type === 'annotation') return current.text;
+  }
+  return node.text;
 }
 
 function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
@@ -561,7 +561,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Request|Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument . [(string_literal) @path (collection_literal (string_literal) @path)])))))
             (simple_identifier) @method_name) @method
@@ -574,7 +574,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Request|Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(path|value)$")
@@ -589,7 +589,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Request|Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument . ${arrayOfArg('@path')})))))
             (simple_identifier) @method_name) @method
@@ -602,7 +602,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Request|Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(path|value)$")
@@ -657,7 +657,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (modifiers
               (annotation
                 (constructor_invocation
-                  (user_type (type_identifier) @ann (#match? @ann "(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (user_type (type_identifier) @ann (#match? @ann "(Request|Get|Post|Put|Delete|Patch)Mapping$"))
                   (value_arguments (value_argument) @arg))))
             (simple_identifier) @method_name) @method
         `,
@@ -1229,6 +1229,27 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   const kotlinFunctionName = (fn: Parser.SyntaxNode): string | null =>
     fn.namedChildren.find((c) => c.type === 'simple_identifier')?.text ?? null;
 
+  const kotlinTypeRequestMethods = (typeNode: Parser.SyntaxNode): readonly string[] => {
+    const modifiers = typeNode.namedChildren.find((child) => child.type === 'modifiers');
+    const mappings = (modifiers?.namedChildren ?? []).filter((annotation) => {
+      if (annotation.type !== 'annotation') return false;
+      return isClassLevelMappingAnnotation(kotlinAnnotationName(annotation) ?? '');
+    });
+    if (mappings.length === 0) return ['*'];
+    if (mappings.length !== 1) return [];
+    const mapping = mappings[0];
+    const mappingName = kotlinAnnotationName(mapping);
+    if (!mappingName) return [];
+    return springAnnotationHttpMethods(mappingName, mapping.text);
+  };
+
+  const kotlinClassHttpMethodsById = (tree: Parser.Tree) =>
+    new Map(
+      tree.rootNode
+        .descendantsOfType('class_declaration')
+        .map((typeNode) => [typeNode.id, kotlinTypeRequestMethods(typeNode)] as const),
+    );
+
   const collectKotlinSpringTypes = (filePath: string, tree: Parser.Tree): SharedSpringType[] => {
     // Class-level @RequestMapping prefixes (reuse the provider class-prefix query).
     const prefixByClassId = new Map<number, string[]>();
@@ -1255,22 +1276,32 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     // noise into the shared type view, so it is left out — the same skip floor
     // `java.ts`'s `collectSpringTypes` keeps.
     const routesByMethodId = new Map<number, Array<{ method: string; path: string }>>();
+    const classHttpMethodsById = kotlinClassHttpMethodsById(tree);
     const unfoldablePrefixClassIds = collectUnfoldablePrefixClassIds(tree, prefixByClassId);
     for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
       const annNode = match.captures.ann;
       const pathNode = match.captures.path;
       const methodNode = match.captures.method;
       if (!annNode || !pathNode || !methodNode) continue;
-      const httpMethod = kotlinShortcutHttpMethod(annNode.text);
-      if (!httpMethod) continue;
+      const httpMethods = springAnnotationHttpMethods(
+        annNode.text,
+        enclosingAnnotationText(annNode),
+      );
+      if (httpMethods.length === 0) continue;
       const rawPath = unquoteLiteral(pathNode.text);
       if (rawPath === null) continue;
       // A constant class prefix leaves no single prefix string for the
       // inheritance view to carry, so this route would be published unprefixed.
       const owner = findEnclosingClass(methodNode);
       if (owner && unfoldablePrefixClassIds.has(owner.id)) continue;
+      const constrainedMethods = intersectSpringHttpMethods(
+        owner ? (classHttpMethodsById.get(owner.id) ?? ['*']) : ['*'],
+        httpMethods,
+      );
       const arr = routesByMethodId.get(methodNode.id) ?? [];
-      arr.push({ method: httpMethod, path: rawPath });
+      for (const httpMethod of constrainedMethods) {
+        arr.push({ method: httpMethod, path: rawPath });
+      }
       routesByMethodId.set(methodNode.id, arr);
     }
 
@@ -1453,29 +1484,38 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         nameNode: Parser.SyntaxNode | undefined;
         methodNode: Parser.SyntaxNode;
       }> = [];
+      const classHttpMethodsById = kotlinClassHttpMethodsById(tree);
       for (const match of runCompiledPatterns(SPRING_METHOD_ROUTE_PATTERNS, tree)) {
         const annNode = match.captures.ann;
         const pathNode = match.captures.path;
         const methodNode = match.captures.method;
         if (!annNode || !pathNode || !methodNode) continue;
-        const httpMethod = kotlinShortcutHttpMethod(annNode.text);
-        if (!httpMethod) continue;
+        const httpMethods = springAnnotationHttpMethods(
+          annNode.text,
+          enclosingAnnotationText(annNode),
+        );
+        if (httpMethods.length === 0) continue;
         const rawPath = unquoteLiteral(pathNode.text);
         if (rawPath === null) continue;
-        methodRoutes.push({
-          httpMethod,
-          rawPath,
-          nameNode: match.captures.method_name,
-          methodNode,
-        });
+        for (const httpMethod of httpMethods) {
+          methodRoutes.push({
+            httpMethod,
+            rawPath,
+            nameNode: match.captures.method_name,
+            methodNode,
+          });
+        }
       }
       for (const match of runCompiledPatterns(SPRING_CONST_METHOD_ROUTE_PATTERNS, tree)) {
         const annNode = match.captures.ann;
         const argNode = match.captures.arg;
         const methodNode = match.captures.method;
         if (!annNode || !argNode || !methodNode) continue;
-        const httpMethod = kotlinShortcutHttpMethod(annNode.text);
-        if (!httpMethod) continue;
+        const httpMethods = springAnnotationHttpMethods(
+          annNode.text,
+          enclosingAnnotationText(annNode),
+        );
+        if (httpMethods.length === 0) continue;
         const expr = kotlinRouteArgumentExpression(argNode);
         if (!expr || !FOLDABLE_PATH_EXPRESSIONS.has(expr.type)) continue;
         // No repo context (context-less fallback scanning) means no constant map
@@ -1496,15 +1536,26 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           index,
         );
         if (rawPath === null) continue;
-        methodRoutes.push({
-          httpMethod,
-          rawPath,
-          nameNode: match.captures.method_name,
-          methodNode,
-        });
+        for (const httpMethod of httpMethods) {
+          methodRoutes.push({
+            httpMethod,
+            rawPath,
+            nameNode: match.captures.method_name,
+            methodNode,
+          });
+        }
       }
 
-      for (const { httpMethod, rawPath, nameNode, methodNode } of methodRoutes) {
+      const constrainedMethodRoutes = methodRoutes.flatMap((route) => {
+        const owner = findEnclosingClass(route.methodNode);
+        const classMethods = owner ? (classHttpMethodsById.get(owner.id) ?? ['*']) : ['*'];
+        return intersectSpringHttpMethods(classMethods, [route.httpMethod]).map((httpMethod) => ({
+          ...route,
+          httpMethod,
+        }));
+      });
+
+      for (const { httpMethod, rawPath, nameNode, methodNode } of constrainedMethodRoutes) {
         const enclosingClass = findEnclosingClass(methodNode);
         // A @(Get|...)Mapping inside a @FeignClient interface is an OpenFeign
         // consumer (a remote call), not a route this service serves.

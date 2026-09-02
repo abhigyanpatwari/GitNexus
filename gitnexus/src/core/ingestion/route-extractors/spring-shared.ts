@@ -18,6 +18,7 @@
 
 import type Parser from 'tree-sitter';
 import { parseSpringAnnotationArguments } from '../frameworks/spring/annotation-arguments.js';
+import { springVendorPrefixes } from '../frameworks/spring/vendor-prefixes.js';
 
 /**
  * Spring shortcut method-annotation → HTTP verb.
@@ -46,49 +47,26 @@ const SPRING_MAPPING_NAMES: readonly string[] = [
 ].sort((a, b) => b.length - a.length);
 
 /**
- * Resolve a custom (vendor-derived) Spring mapping annotation to the built-in
- * annotation it wraps, by naming suffix.
- *
- * Frameworks commonly wrap Spring's built-in annotations with company-specific
- * variants — e.g. Winning Health's `@WinPostMapping` is meta-annotated with
- * `@PostMapping`. The definition lives in a binary JAR (not in source), so the
- * meta-annotation cannot be read statically. Instead we resolve by suffix:
- * `WinPostMapping` → `PostMapping`, `WinRequestMapping` → `RequestMapping`.
- *
- * This matches the universal Java convention of naming a derived annotation
- * with the base name as a suffix. The false-positive risk is negligible: a
- * non-HTTP annotation ending in `PostMapping`/`GetMapping`/… is unprecedented
- * in the ecosystem.
- *
- * Returns the base annotation name (`PostMapping`, `RequestMapping`, …) for
- * names that are NOT themselves a known mapping annotation but end with one,
- * or `undefined` otherwise. Exact-known names (`PostMapping`, `RequestMapping`,
- * …) return `undefined` — callers handle those directly.
- */
-const REGISTERED_VENDOR_PREFIXES: ReadonlySet<string> = new Set(
-  (process.env.GITNEXUS_SPRING_VENDOR_PREFIXES ?? 'Win')
-    .split(',')
-    .map((p) => p.trim())
-    .filter(Boolean),
-);
-
-/**
  * Resolve a REGISTERED vendor-derived Spring mapping annotation to its base.
+ *
+ * Vendor definitions often live in binary dependencies, so their Spring
+ * meta-annotations cannot be inspected from repository source. Resolution uses
+ * the conventional `<vendorPrefix><baseAnnotation>` name instead.
  *
  * Suffix matching alone accepted unrelated annotations (`@AuditPostMapping`
  * produced a phantom route — review P2). Resolution now requires the name to
  * be `<registeredPrefix><base>` with the prefix drawn from a small registry:
  * `Win` by default (Winning Health), extendable via
- * `GITNEXUS_SPRING_VENDOR_PREFIXES=Win,Acme,Other` without a rebuild. The
- * registry is deliberately tiny — vendors that meta-annotate with Spring's
- * own `@*Mapping` need no entry at all (the suffix path never fires for
- * them because the simple name IS the base).
+ * `GITNEXUS_SPRING_VENDOR_PREFIXES=Win,Acme,Other`. Changing the registry
+ * invalidates persisted JVM route evidence on the next analysis. Exact-known
+ * Spring annotation names return `undefined`; callers handle those directly.
  */
 export function resolveSpringAnnotationAlias(annotationName: string): string | undefined {
+  const registeredVendorPrefixes = springVendorPrefixes();
   for (const base of SPRING_MAPPING_NAMES) {
     if (annotationName.length > base.length && annotationName.endsWith(base)) {
       const prefix = annotationName.slice(0, annotationName.length - base.length);
-      if (REGISTERED_VENDOR_PREFIXES.has(prefix)) {
+      if (registeredVendorPrefixes.has(prefix)) {
         return base;
       }
     }
@@ -97,7 +75,8 @@ export function resolveSpringAnnotationAlias(annotationName: string): string | u
 }
 
 /**
- * Parse one `RequestMethod.X` literal or a Java annotation array of literals.
+ * Parse one `RequestMethod.X` literal or a Java `{…}` / Kotlin `[…]` array of
+ * those literals.
  * An empty array is valid and means Spring's unrestricted/default method set.
  * Runtime expressions fail closed instead of producing a guessed route.
  */
@@ -121,16 +100,25 @@ function parseRequestMethodValues(value: string): readonly string[] | null {
     }
     trimmed += char;
   }
-  const hasOpeningBrace = trimmed.startsWith('{');
-  const hasClosingBrace = trimmed.endsWith('}');
-  if (hasOpeningBrace !== hasClosingBrace) return null;
-  const body = hasOpeningBrace ? trimmed.slice(1, -1).trim() : trimmed;
+  const wrapped =
+    (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+    (trimmed.startsWith('[') && trimmed.endsWith(']'));
+  if (
+    !wrapped &&
+    (trimmed.startsWith('{') ||
+      trimmed.startsWith('[') ||
+      trimmed.endsWith('}') ||
+      trimmed.endsWith(']'))
+  ) {
+    return null;
+  }
+  const body = wrapped ? trimmed.slice(1, -1).trim() : trimmed;
   if (body.length === 0) return [];
-  if (!hasOpeningBrace && body.includes(',')) return null;
+  if (!wrapped && body.includes(',')) return null;
 
   const methods: string[] = [];
   const parts = body.split(',');
-  if (hasOpeningBrace && parts[parts.length - 1].trim() === '') parts.pop();
+  if (wrapped && parts[parts.length - 1].trim() === '') parts.pop();
   for (const rawPart of parts) {
     const part = rawPart.trim();
     const match =
