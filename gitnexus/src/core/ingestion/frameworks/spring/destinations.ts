@@ -40,7 +40,22 @@ import type { SpringMessageProducerTemplate } from './message-producers.js';
  * that says whether it works.
  */
 
-/** Broker family behind a destination, as far as the syntax can attest. */
+/**
+ * Broker family behind a destination, as far as the syntax can attest.
+ *
+ * Part of the `Destination` node IDENTITY, not merely a label on it: the phase
+ * keys a resolved node by `(broker, address)` via the framework-neutral
+ * `ingestion/destination-key.ts`, so two brokers claiming one address are two
+ * ordinary nodes. Adding or renaming a member here therefore re-keys every node
+ * it applies to, which a full re-index absorbs and an incremental one does not
+ * — the destination layer is delete-alled and rebuilt graph-wide on every
+ * incremental writeback for exactly this class of reason.
+ *
+ * A member is only added when the SYNTAX attests to it. A guess here becomes a
+ * guess in the identity, and the cost of a wrong one is a real pair split in
+ * two (see `destinationNodeKey` for why that cost is nonetheless the cheaper
+ * of the two failures available).
+ */
 export type SpringDestinationBroker =
   | 'kafka'
   | 'rabbit'
