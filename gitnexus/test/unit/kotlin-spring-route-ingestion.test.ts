@@ -4,7 +4,7 @@
  * The Kotlin grammar is optional. Importing the extractor itself must not load
  * that grammar; only this guarded test setup does.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import { extractKotlinSpringRoutes } from '../../src/core/ingestion/route-extractors/kotlin-spring.js';
@@ -29,16 +29,23 @@ if (Kotlin) parser.setLanguage(Kotlin as Parser.Language);
 const parse = (source: string): Parser.Tree => parser.parse(source);
 const describeKotlin = Kotlin ? describe : describe.skip;
 
-function constantsOf(files: Record<string, string>): RepoConstants {
-  return new Map(
-    Object.entries(files).map(([filePath, source]) => [
-      filePath,
-      extractKotlinModuleConstants(parse(source)),
-    ]),
-  );
-}
-
 describeKotlin('extractKotlinSpringRoutes', () => {
+  beforeEach(() => {
+    vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win');
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function constantsOf(files: Record<string, string>): RepoConstants {
+    return new Map(
+      Object.entries(files).map(([filePath, source]) => [
+        filePath,
+        extractKotlinModuleConstants(parse(source)),
+      ]),
+    );
+  }
+
   it('extracts direct RestController functions with independent class prefixes and handlers', () => {
     const routes = extractKotlinSpringRoutes(
       parse(`
@@ -626,5 +633,135 @@ class PetsController {
     );
 
     expect(ingestion).toEqual(group);
+  });
+
+  it('resolves vendor-derived mapping aliases like Java (WinGetMapping / WinRequestMapping)', () => {
+    expect(KOTLIN_HTTP_PLUGIN).not.toBeNull();
+    if (!KOTLIN_HTTP_PLUGIN) throw new Error('expected Kotlin HTTP plugin');
+    const source = `
+@RestController
+@WinRequestMapping("/vendor")
+class VendorController {
+    @WinGetMapping("/users")
+    fun users(): String = "ok"
+}
+`;
+    const tree = parse(source);
+    const ingestion = extractKotlinSpringRoutes(tree, 'VendorController.kt');
+    expect(ingestion).toHaveLength(1);
+    expect(ingestion[0]?.httpMethod).toBe('GET');
+    expect(ingestion[0]?.prefix).toBe('/vendor');
+    expect(ingestion[0]?.routePath).toBe('/users');
+
+    const group = KOTLIN_HTTP_PLUGIN.scan(tree, undefined, 'VendorController.kt').filter(
+      (detection) => detection.role === 'provider',
+    );
+    expect(group).toEqual(
+      expect.arrayContaining([expect.objectContaining({ method: 'GET', path: '/vendor/users' })]),
+    );
+  });
+
+  it('normalizes Kotlin method arrays for aliased RequestMapping annotations', () => {
+    expect(KOTLIN_HTTP_PLUGIN).not.toBeNull();
+    if (!KOTLIN_HTTP_PLUGIN) throw new Error('expected Kotlin HTTP plugin');
+    const source = `
+@RestController
+@WinRequestMapping("/vendor")
+class VendorController {
+    @WinRequestMapping(path = "/inspect", method = [RequestMethod.GET, RequestMethod.HEAD])
+    fun inspect(): String = "ok"
+}
+`;
+    const tree = parse(source);
+    const ingestion = new Set(
+      extractKotlinSpringRoutes(tree, 'VendorController.kt').map(
+        (route) => `${route.httpMethod} ${joinPath(route.prefix ?? '', route.routePath)}`,
+      ),
+    );
+    const group = new Set(
+      KOTLIN_HTTP_PLUGIN.scan(tree, undefined, 'VendorController.kt')
+        .filter((detection) => detection.role === 'provider')
+        .map((detection) => `${detection.method} ${detection.path}`),
+    );
+
+    expect(ingestion).toEqual(new Set(['GET /vendor/inspect', 'HEAD /vendor/inspect']));
+    expect(group).toEqual(ingestion);
+  });
+
+  it('applies aliased class-level Kotlin method arrays to handler routes', () => {
+    expect(KOTLIN_HTTP_PLUGIN).not.toBeNull();
+    if (!KOTLIN_HTTP_PLUGIN) throw new Error('expected Kotlin HTTP plugin');
+    const tree = parse(`
+@RestController
+@WinRequestMapping(path = "/vendor", method = [RequestMethod.GET, RequestMethod.HEAD])
+class VendorController {
+    @WinRequestMapping("/inspect")
+    fun inspect(): String = "ok"
+}
+`);
+    const ingestion = new Set(
+      extractKotlinSpringRoutes(tree, 'VendorController.kt').map(
+        (route) => `${route.httpMethod} ${joinPath(route.prefix ?? '', route.routePath)}`,
+      ),
+    );
+    const group = new Set(
+      KOTLIN_HTTP_PLUGIN.scan(tree, undefined, 'VendorController.kt')
+        .filter((detection) => detection.role === 'provider')
+        .map((detection) => `${detection.method} ${detection.path}`),
+    );
+
+    expect(ingestion).toEqual(new Set(['GET /vendor/inspect', 'HEAD /vendor/inspect']));
+    expect(group).toEqual(ingestion);
+  });
+
+  it('keeps aliased class method constraints in inherited group contracts', () => {
+    expect(KOTLIN_HTTP_PLUGIN?.scanProject).toBeDefined();
+    if (!KOTLIN_HTTP_PLUGIN?.scanProject) throw new Error('expected Kotlin project scanner');
+    const tree = parse(`
+@WinRequestMapping(path = "/contract", method = [RequestMethod.GET])
+interface Contract {
+    @WinRequestMapping(path = "/items", method = [RequestMethod.GET, RequestMethod.POST])
+    fun inspect(): String
+}
+
+@RestController
+@WinRequestMapping("/impl")
+class VendorController : Contract {
+    override fun inspect(): String = "ok"
+}
+`);
+
+    const detections = KOTLIN_HTTP_PLUGIN.scanProject([
+      { filePath: 'VendorController.kt', tree },
+    ]).flatMap((file) => file.detections);
+
+    expect(detections).toEqual([
+      expect.objectContaining({
+        role: 'provider',
+        method: 'GET',
+        path: '/impl/contract/items',
+      }),
+    ]);
+  });
+
+  it('does not treat unregistered suffix annotations as Kotlin routes', () => {
+    const source = `
+@RestController
+class AuditController {
+    @AuditPostMapping("/audit")
+    fun audit(): String = "x"
+
+    @AuditRequestMapping(path = "/request", method = [RequestMethod.POST])
+    fun request(): String = "x"
+}
+`;
+    const tree = parse(source);
+    expect(extractKotlinSpringRoutes(tree, 'AuditController.kt')).toHaveLength(0);
+    expect(KOTLIN_HTTP_PLUGIN).not.toBeNull();
+    expect(
+      KOTLIN_HTTP_PLUGIN?.scan(tree, undefined, 'AuditController.kt').filter(
+        (detection) => detection.role === 'provider',
+      ),
+    ).toEqual([]);
   });
 });
