@@ -4,10 +4,9 @@
  *
  * Minimal Phase B1 wiring: Lua's scope model (Module + Function/Method, no
  * static types) plugs into `runScopeResolution` with the least configuration
- * that unlocks CALLS + IMPORTS edges. middleclass EXTENDS + HAS_METHOD are
- * emitted by `emitLuaHeritageEdges` (heritage.ts), fed by the capture side
- * channel; middleclass MRO + `__base` super calls are Phase B2; the
- * receiver/arity polish for indirect value receivers is Phase B3.
+ * that unlocks CALLS + IMPORTS edges. middleclass EXTENDS + HAS_METHOD and
+ * generic MRO dispatch are emitted through the heritage hook; `__base` super
+ * calls remain intentionally unsupported.
  *
  * Reference: `languages/cobol/scope-resolver.ts` (minimal) + `languages/go/`.
  */
@@ -22,7 +21,6 @@ import {
 } from '../../import-resolvers/utils.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { typescriptArityCompatibility } from '../typescript/arity.js';
 import { luaProvider } from '../lua.js';
 import { emitLuaHeritageEdges } from './heritage.js';
 import { clearLuaHeritageFacts, type LuaCaptureSideChannel } from './capture-side-channel.js';
@@ -95,9 +93,9 @@ const luaScopeResolver: ScopeResolver = {
   // Lua: default local-first-then-imports merge (no language-specific precedence).
   mergeBindings: (existing, incoming) => [...existing, ...incoming],
 
-  // Lua varargs (...) + optional params make static arity checks unreliable —
-  // 'unknown' (no signal) is the safe minimal choice.
-  arityCompatibility: (callsite, def) => typescriptArityCompatibility(def, callsite),
+  // Lua supplies nil for missing positional arguments and ignores extras, so
+  // TypeScript-style min/max arity filtering would reject valid calls.
+  arityCompatibility: () => 'unknown',
 
   // middleclass uses single inheritance; the generic breadth-first
   // linearization is conservative and refuses no additional edges when the

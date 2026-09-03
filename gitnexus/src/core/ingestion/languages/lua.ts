@@ -20,8 +20,9 @@
  * `ParsedFile.captureSideChannel`, so `emitLuaHeritageEdges` emits EXTENDS +
  * HAS_METHOD on the main thread without re-reading or re-parsing (#1983).
  *
- * Pending: middleclass MRO + `__base` super-call resolution (Phase B2);
- * indirect value-receiver + arity precision (Phase B3).
+ * Pending: middleclass `__base` super-call resolution (Phase B2), plus
+ * constructor/type/framework/entry-point inference outside this provider's
+ * current scope.
  */
 import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';

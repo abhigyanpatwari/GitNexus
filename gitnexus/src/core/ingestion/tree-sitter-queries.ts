@@ -2447,7 +2447,6 @@ export const DART_QUERIES = `
   right: (_)) @assignment
 `;
 
-<<<<<<< HEAD
 // ── Zig ──────────────────────────────────────────────────────────────────────
 // Verified against @tree-sitter-grammars/tree-sitter-zig 1.1.2.
 // Container declarations (struct/enum/union) are anonymous in the grammar; the
@@ -2625,6 +2624,12 @@ export const LUA_QUERIES = `
 (local_function_definition_statement
   name: (identifier) @name) @definition.function
 
+; ── middleclass classes: local Foo = class("Foo"[, Parent]) ─────────────────────
+;   class() is a plain call; the Class node's name comes from the local var
+;   (quote-free). EXTENDS (Parent arg) + HAS_METHOD (function Foo:method() → Foo)
+;   the heritage marker links parent/owner relationships; middleclass methods
+;   are file-top-level (not class-body nested), so ownership is emitted by the
+;   Lua heritage hook rather than lexical class containment.
 (local_variable_declaration
   (variable_list (variable name: (identifier) @name))
   (expression_list
@@ -2632,6 +2637,8 @@ export const LUA_QUERIES = `
       function: (variable name: (identifier) @_class)
       (#eq? @_class "class")))) @definition.class
 
+; The canonical middleclass package is also commonly called directly as
+; middleclass("Name") before being assigned to a local class variable.
 (local_variable_declaration
   (variable_list (variable name: (identifier) @name))
   (expression_list
@@ -2639,6 +2646,9 @@ export const LUA_QUERIES = `
       function: (variable name: (identifier) @_middleclass)
       (#eq? @_middleclass "middleclass")))) @definition.class
 
+; ── Calls: foo(), obj:bar(), obj.baz() ────────────────────────────────────────
+;   call.function is a (variable); @call.name lands on the invoked identifier
+;   so the generic call extractor can derive calledName + callForm + receiver.
 (call
   function: (variable
     name: (identifier) @call.name)) @call

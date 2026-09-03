@@ -50,7 +50,9 @@ export function emitLuaHeritageEdges(
       (edge) => edge.localName === importName && edge.targetFile !== null,
     );
     if (matches.length !== 1) return undefined;
-    const target = parsedByFile.get(matches[0].targetFile!);
+    const targetFile = matches[0]?.targetFile;
+    if (targetFile === null || targetFile === undefined) return undefined;
+    const target = parsedByFile.get(targetFile);
     if (target === undefined) return undefined;
     const classes = target.localDefs.filter((def) => isClassLike(def.type));
     const returnedNames = target.captureSideChannel as LuaCaptureSideChannel | undefined;

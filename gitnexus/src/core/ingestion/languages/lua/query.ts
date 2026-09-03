@@ -137,6 +137,14 @@ const METHOD_OWNER_QUERY = `
       field: (identifier) @method.name))
   (expression_list
     value: (function_definition) @method.def))
+
+(variable_assignment
+  (variable_list
+    (variable
+      table: (identifier) @method.owner
+      field: (string) @method.name))
+  (expression_list
+    value: (function_definition) @method.def))
 `;
 
 let _parser: Parser | null = null;
