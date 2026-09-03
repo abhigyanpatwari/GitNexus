@@ -9,19 +9,7 @@ import { cleanupTempDir } from '../helpers/test-db.js';
 const tempDirs: string[] = [];
 const loops: WatchFileLoop[] = [];
 
-// Busy CI runners can delay real filesystem watcher events (chokidar's
-// awaitWriteFinish polling plus scheduler contention) well past what a quiet
-// local machine sees. Budget more time under CI, matching FIRST_FRAME_BUDGET_MS
-// in mcp/server-startup.test.ts (15s/5s). Two tests chain five waitFor calls
-// (worst case 75s of waits), so the per-test ceiling is 90s under CI to leave
-// headroom for setup — a chain that hits it fails as a generic vitest timeout.
-const DEFAULT_WAIT_FOR_TIMEOUT_MS = process.env.CI ? 15_000 : 5_000;
-const TEST_TIMEOUT_MS = process.env.CI ? 90_000 : 30_000;
-
-async function waitFor(
-  predicate: () => boolean,
-  timeoutMs = DEFAULT_WAIT_FOR_TIMEOUT_MS,
-): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
   while (!predicate()) {
@@ -47,231 +35,235 @@ afterEach(async () => {
 });
 
 describe('watch filesystem integration', () => {
-  it(
-    'fails startup and closes the watcher when the initial analysis fails',
-    async () => {
-      const repo = await makeRepo();
-      const onError = vi.fn();
+  it('fails startup and closes the watcher when the initial analysis fails', async () => {
+    const repo = await makeRepo();
+    const onError = vi.fn();
 
-      await expect(
-        startWatchFileLoop(
-          repo,
-          25,
-          async () => {
-            throw new Error('initial analysis failed');
-          },
-          onError,
-        ),
-      ).rejects.toThrow('initial analysis failed');
-      expect(onError).not.toHaveBeenCalled();
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
-    'never enqueues analyzer-owned .gitnexus writes created by the initial refresh',
-    async () => {
-      const repo = await makeRepo();
-      const batches: string[][] = [];
-      const loop = await startWatchFileLoop(
+    await expect(
+      startWatchFileLoop(
         repo,
         25,
-        async (paths) => {
-          batches.push([...paths]);
-          if (paths.length === 0) {
-            await fs.mkdir(path.join(repo, '.gitnexus'), { recursive: true });
-            await fs.writeFile(path.join(repo, '.gitnexus', 'gitnexus.json'), '{}\n', 'utf8');
-            await fs.writeFile(path.join(repo, '.gitnexus', 'lbug'), 'index bytes', 'utf8');
-          }
+        async () => {
+          throw new Error('initial analysis failed');
         },
-        (error) => {
-          throw error;
-        },
-      );
-      loops.push(loop);
+        onError,
+      ),
+    ).rejects.toThrow('initial analysis failed');
+    expect(onError).not.toHaveBeenCalled();
+  });
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      await loop.waitForIdle();
+  it('never enqueues analyzer-owned .gitnexus writes created by the initial refresh', async () => {
+    const repo = await makeRepo();
+    const batches: string[][] = [];
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => {
+        batches.push([...paths]);
+        if (paths.length === 0) {
+          await fs.mkdir(path.join(repo, '.gitnexus'), { recursive: true });
+          await fs.writeFile(path.join(repo, '.gitnexus', 'gitnexus.json'), '{}\n', 'utf8');
+          await fs.writeFile(path.join(repo, '.gitnexus', 'lbug'), 'index bytes', 'utf8');
+        }
+      },
+      (error) => {
+        throw error;
+      },
+    );
+    loops.push(loop);
 
-      expect(batches).toEqual([[]]);
-    },
-    TEST_TIMEOUT_MS,
-  );
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await loop.waitForIdle();
 
-  it(
-    'coalesces indexed add/change/rename/delete events and stops cleanly',
-    async () => {
-      const repo = await makeRepo();
-      const batches: string[][] = [];
-      const loop = await startWatchFileLoop(
-        repo,
-        30,
-        async (paths) => batches.push([...paths]),
-        (error) => {
-          throw error;
-        },
-      );
-      loops.push(loop);
-      expect(batches).toEqual([[]]);
+    expect(batches).toEqual([[]]);
+  });
 
-      await fs.writeFile(path.join(repo, 'README.md'), '# One', 'utf8');
-      await fs.writeFile(path.join(repo, 'src.ts'), 'export const one = 1;', 'utf8');
-      await fs.writeFile(path.join(repo, 'src.ts'), 'export const one = 2;', 'utf8');
-      await waitFor(
-        () => batches.flat().includes('README.md') && batches.flat().includes('src.ts'),
-      );
+  it('coalesces indexed add/change/rename/delete events and stops cleanly', async () => {
+    const repo = await makeRepo();
+    const batches: string[][] = [];
+    const loop = await startWatchFileLoop(
+      repo,
+      30,
+      async (paths) => batches.push([...paths]),
+      (error) => {
+        throw error;
+      },
+    );
+    loops.push(loop);
+    expect(batches).toEqual([[]]);
 
-      await fs.rename(path.join(repo, 'src.ts'), path.join(repo, 'renamed.ts'));
-      await waitFor(() => batches.flat().includes('renamed.ts'));
-      await fs.rm(path.join(repo, 'renamed.ts'));
-      await waitFor(() => batches.flat().filter((entry) => entry === 'renamed.ts').length >= 2);
+    await fs.writeFile(path.join(repo, 'README.md'), '# One', 'utf8');
+    await fs.writeFile(path.join(repo, 'src.ts'), 'export const one = 1;', 'utf8');
+    await fs.writeFile(path.join(repo, 'src.ts'), 'export const one = 2;', 'utf8');
+    await waitFor(() => batches.flat().includes('README.md') && batches.flat().includes('src.ts'));
 
-      expect(batches.flat()).toEqual(expect.arrayContaining(['README.md', 'src.ts', 'renamed.ts']));
-      await loop.close();
-      loops.pop();
-      const countAfterClose = batches.length;
-      await fs.writeFile(path.join(repo, 'after-close.ts'), 'export {};', 'utf8');
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      expect(batches).toHaveLength(countAfterClose);
-    },
-    TEST_TIMEOUT_MS,
-  );
+    await fs.rename(path.join(repo, 'src.ts'), path.join(repo, 'renamed.ts'));
+    await waitFor(() => batches.flat().includes('renamed.ts'));
+    await fs.rm(path.join(repo, 'renamed.ts'));
+    await waitFor(() => batches.flat().filter((entry) => entry === 'renamed.ts').length >= 2);
 
-  it(
-    'queues edits during refresh, recovers after failure, and ignores external symlinks',
-    async () => {
-      const repo = await makeRepo();
-      const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-watch-outside-'));
-      tempDirs.push(outside);
-      await fs.symlink(
-        outside,
-        path.join(repo, 'external'),
-        process.platform === 'win32' ? 'junction' : 'dir',
-      );
-      const successful: string[][] = [];
-      const errors: string[][] = [];
-      let failNext = false;
-      let releaseRefresh: (() => void) | undefined;
-      const loop = await startWatchFileLoop(
-        repo,
-        25,
-        async (paths) => {
-          if (failNext) {
-            failNext = false;
-            throw new Error('injected refresh failure');
-          }
-          successful.push([...paths]);
-          if (paths.includes('first.ts')) {
-            await new Promise<void>((resolve) => {
-              releaseRefresh = resolve;
-            });
-          }
-        },
-        (_error, paths) => errors.push([...paths]),
-      );
-      loops.push(loop);
+    expect(batches.flat()).toEqual(expect.arrayContaining(['README.md', 'src.ts', 'renamed.ts']));
+    await loop.close();
+    loops.pop();
+    const countAfterClose = batches.length;
+    await fs.writeFile(path.join(repo, 'after-close.ts'), 'export {};', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(batches).toHaveLength(countAfterClose);
+  });
 
-      await fs.writeFile(path.join(repo, 'first.ts'), 'export const first = 1;', 'utf8');
-      await waitFor(() => releaseRefresh !== undefined);
-      await fs.writeFile(path.join(repo, 'during.ts'), 'export const during = 1;', 'utf8');
-      releaseRefresh!();
-      await waitFor(() => successful.flat().includes('during.ts'));
+  it('queues edits during refresh, recovers after failure, and ignores external symlinks', async () => {
+    const repo = await makeRepo();
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-watch-outside-'));
+    tempDirs.push(outside);
+    await fs.symlink(
+      outside,
+      path.join(repo, 'external'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const successful: string[][] = [];
+    const errors: string[][] = [];
+    let failNext = false;
+    let releaseRefresh: (() => void) | undefined;
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error('injected refresh failure');
+        }
+        successful.push([...paths]);
+        if (paths.includes('first.ts')) {
+          await new Promise<void>((resolve) => {
+            releaseRefresh = resolve;
+          });
+        }
+      },
+      (_error, paths) => errors.push([...paths]),
+    );
+    loops.push(loop);
 
-      failNext = true;
-      await fs.writeFile(path.join(repo, 'fails.ts'), 'export const fail = 1;', 'utf8');
-      await waitFor(() => errors.length === 1);
-      await waitFor(() => successful.flat().includes('fails.ts'));
-      await fs.writeFile(path.join(repo, 'retry.ts'), 'export const retry = 1;', 'utf8');
-      await waitFor(() => successful.flat().includes('retry.ts'));
+    await fs.writeFile(path.join(repo, 'first.ts'), 'export const first = 1;', 'utf8');
+    await waitFor(() => releaseRefresh !== undefined);
+    await fs.writeFile(path.join(repo, 'during.ts'), 'export const during = 1;', 'utf8');
+    releaseRefresh!();
+    await waitFor(() => successful.flat().includes('during.ts'));
 
-      const beforeExternal = successful.length + errors.length;
-      await fs.writeFile(path.join(outside, 'outside.ts'), 'export const outside = 1;', 'utf8');
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(successful.length + errors.length).toBe(beforeExternal);
-    },
-    TEST_TIMEOUT_MS,
-  );
+    failNext = true;
+    await fs.writeFile(path.join(repo, 'fails.ts'), 'export const fail = 1;', 'utf8');
+    await waitFor(() => errors.length === 1);
+    await waitFor(() => successful.flat().includes('fails.ts'));
+    await fs.writeFile(path.join(repo, 'retry.ts'), 'export const retry = 1;', 'utf8');
+    await waitFor(() => successful.flat().includes('retry.ts'));
 
-  it(
-    'reloads gitignore rules before processing subsequent file events',
-    async () => {
-      const repo = await makeRepo();
-      await fs.writeFile(path.join(repo, '.gitignore'), 'blocked.ts\n', 'utf8');
-      const batches: string[][] = [];
-      const loop = await startWatchFileLoop(
-        repo,
-        25,
-        async (paths) => batches.push([...paths]),
-        (error) => {
-          throw error;
-        },
-      );
-      loops.push(loop);
+    const beforeExternal = successful.length + errors.length;
+    await fs.writeFile(path.join(outside, 'outside.ts'), 'export const outside = 1;', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(successful.length + errors.length).toBe(beforeExternal);
+  });
 
-      await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 1;', 'utf8');
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(batches.flat()).not.toContain('blocked.ts');
+  it('reloads gitignore rules before processing subsequent file events', async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, '.gitignore'), 'blocked.ts\n', 'utf8');
+    const batches: string[][] = [];
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => batches.push([...paths]),
+      (error) => {
+        throw error;
+      },
+    );
+    loops.push(loop);
 
-      await fs.writeFile(path.join(repo, '.gitignore'), '', 'utf8');
-      await waitFor(() => batches.flat().includes('.gitignore'));
-      await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 2;', 'utf8');
-      await waitFor(() => batches.flat().includes('blocked.ts'));
-    },
-    TEST_TIMEOUT_MS,
-  );
+    await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 1;', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(batches.flat()).not.toContain('blocked.ts');
 
-  it(
-    'keeps the last valid ignore predicate after an oversized reload and later recovers',
-    async () => {
-      const repo = await makeRepo();
-      await fs.writeFile(path.join(repo, '.gitignore'), 'blocked.ts\n', 'utf8');
-      const batches: string[][] = [];
-      const errors: string[][] = [];
-      const loop = await startWatchFileLoop(
-        repo,
-        25,
-        async (paths) => batches.push([...paths]),
-        (_error, paths) => errors.push([...paths]),
-      );
-      loops.push(loop);
+    await fs.writeFile(path.join(repo, '.gitignore'), '', 'utf8');
+    await waitFor(() => batches.flat().includes('.gitignore'));
+    await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 2;', 'utf8');
+    await waitFor(() => batches.flat().includes('blocked.ts'));
+  });
 
-      await fs.writeFile(path.join(repo, '.gitignore'), 'x'.repeat(1024 * 1024 + 1), 'utf8');
-      await waitFor(() => errors.flat().includes('.gitignore'));
-      await waitFor(() => errors.length >= 2);
-      await fs.writeFile(path.join(repo, 'other.ts'), 'export const other = 1;', 'utf8');
-      await waitFor(() => errors.flat().includes('other.ts'));
-      expect(batches.flat()).not.toContain('other.ts');
-      await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 1;', 'utf8');
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      expect(batches.flat()).not.toContain('blocked.ts');
+  it('reports writes issued the instant a gitignore reload re-arms the watcher', async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, '.gitignore'), 'blocked.ts\n', 'utf8');
+    await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 1;', 'utf8');
+    await fs.writeFile(path.join(repo, 'tracked.ts'), 'export const tracked = 1;', 'utf8');
+    const batches: string[][] = [];
+    let rewritten = false;
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => {
+        batches.push([...paths]);
+        // Writing from inside the refresh puts these rewrites right after the
+        // re-arm returns. Polling from the test body instead would leave enough
+        // slack for a watcher that is not armed yet to look armed.
+        if (paths.includes('.gitignore') && !rewritten) {
+          rewritten = true;
+          await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 2;', 'utf8');
+          await fs.writeFile(path.join(repo, 'tracked.ts'), 'export const tracked = 2;', 'utf8');
+        }
+      },
+      (error) => {
+        throw error;
+      },
+    );
+    loops.push(loop);
 
-      await fs.writeFile(path.join(repo, '.gitignore'), '', 'utf8');
-      await waitFor(() => batches.flat().includes('.gitignore'));
-      await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 2;', 'utf8');
-      await waitFor(() => batches.flat().includes('blocked.ts'));
-    },
-    TEST_TIMEOUT_MS,
-  );
+    await fs.writeFile(path.join(repo, '.gitignore'), '', 'utf8');
+    // The newly unignored file must be picked up, and the swap must not drop
+    // the file the retired watcher was already tracking.
+    await waitFor(() => batches.flat().includes('blocked.ts'));
+    await waitFor(() => batches.flat().includes('tracked.ts'));
+  });
 
-  it(
-    'observes root control files even when gitignore excludes them',
-    async () => {
-      const repo = await makeRepo();
-      await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexusrc\n', 'utf8');
-      const batches: string[][] = [];
-      const loop = await startWatchFileLoop(
-        repo,
-        25,
-        async (paths) => batches.push([...paths]),
-        (error) => {
-          throw error;
-        },
-      );
-      loops.push(loop);
+  it('keeps the last valid ignore predicate after an oversized reload and later recovers', async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, '.gitignore'), 'blocked.ts\n', 'utf8');
+    const batches: string[][] = [];
+    const errors: string[][] = [];
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => batches.push([...paths]),
+      (_error, paths) => errors.push([...paths]),
+    );
+    loops.push(loop);
 
-      await fs.writeFile(path.join(repo, '.gitnexusrc'), '{}\n', 'utf8');
-      await waitFor(() => batches.flat().includes('.gitnexusrc'));
-    },
-    TEST_TIMEOUT_MS,
-  );
+    await fs.writeFile(path.join(repo, '.gitignore'), 'x'.repeat(1024 * 1024 + 1), 'utf8');
+    await waitFor(() => errors.flat().includes('.gitignore'));
+    await waitFor(() => errors.length >= 2);
+    await fs.writeFile(path.join(repo, 'other.ts'), 'export const other = 1;', 'utf8');
+    await waitFor(() => errors.flat().includes('other.ts'));
+    expect(batches.flat()).not.toContain('other.ts');
+    await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 1;', 'utf8');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(batches.flat()).not.toContain('blocked.ts');
+
+    await fs.writeFile(path.join(repo, '.gitignore'), '', 'utf8');
+    await waitFor(() => batches.flat().includes('.gitignore'));
+    await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 2;', 'utf8');
+    await waitFor(() => batches.flat().includes('blocked.ts'));
+  });
+
+  it('observes root control files even when gitignore excludes them', async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexusrc\n', 'utf8');
+    const batches: string[][] = [];
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => batches.push([...paths]),
+      (error) => {
+        throw error;
+      },
+    );
+    loops.push(loop);
+
+    await fs.writeFile(path.join(repo, '.gitnexusrc'), '{}\n', 'utf8');
+    await waitFor(() => batches.flat().includes('.gitnexusrc'));
+  });
 });
