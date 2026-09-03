@@ -323,8 +323,7 @@ export async function startWatchFileLoop(
       }
     });
     created.on('error', (error) => {
-      // A retired instance says nothing about live coverage, and a replacement
-      // that fails before the swap is reported through `waitUntilReady`.
+      // Replacement failures before the swap are reported through `waitUntilReady`.
       if (created !== watcher) return;
       // Chokidar can surface a transient EPERM on Windows while an ignored
       // analyzer-owned path is replaced. Re-arm the watcher and force one
@@ -359,12 +358,13 @@ export async function startWatchFileLoop(
       await waitUntilReady(replacement);
     } catch (error) {
       rearmPending = true;
-      await replacement.close().catch(() => {});
+      try {
+        await replacement.close();
+      } catch {
+        // The instance never became live; the arm error is the one to report.
+      }
       throw new WatchControlReloadError(
-        new Error(
-          `Unable to re-arm the filesystem watcher: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        ),
+        new Error('Unable to re-arm the filesystem watcher', { cause: error }),
       );
     }
     const retired = watcher;

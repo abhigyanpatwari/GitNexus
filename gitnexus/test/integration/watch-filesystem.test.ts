@@ -10,13 +10,10 @@ const tempDirs: string[] = [];
 const loops: WatchFileLoop[] = [];
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const startedAt = Date.now();
-  const deadline = startedAt + timeoutMs;
+  const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) {
-      throw new Error(
-        `timed out waiting for watcher event after ${timeoutMs}ms (elapsed ${Date.now() - startedAt}ms)`,
-      );
+      throw new Error(`timed out waiting for watcher event after ${timeoutMs}ms`);
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -214,10 +211,9 @@ describe('watch filesystem integration', () => {
     loops.push(loop);
 
     await fs.writeFile(path.join(repo, '.gitignore'), '', 'utf8');
-    // The newly unignored file must be picked up, and the swap must not drop
-    // the file the retired watcher was already tracking.
-    await waitFor(() => batches.flat().includes('blocked.ts'));
-    await waitFor(() => batches.flat().includes('tracked.ts'));
+    await waitFor(
+      () => batches.flat().includes('blocked.ts') && batches.flat().includes('tracked.ts'),
+    );
   });
 
   it('keeps the last valid ignore predicate after an oversized reload and later recovers', async () => {
