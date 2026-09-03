@@ -223,7 +223,14 @@ jobs:
             echo "::error::${needrestart_policy} must contain: ${needrestart_line}"
             exit 1
           fi
+          # The runner sets job processes to 500; the host oom-guard rewrites
+          # them to -900. Read once and the check loses that race.
           oom_score_adjustment="$(</proc/self/oom_score_adj)"
+          deadline=$((SECONDS + 5))
+          while (( oom_score_adjustment > -900 && SECONDS < deadline )); do
+            sleep 0.05
+            oom_score_adjustment="$(</proc/self/oom_score_adj)"
+          done
           if (( oom_score_adjustment > -900 )); then
             echo "::error::Runner.Worker descendants require OOMScoreAdjust=-900 or stronger; effective value is ${oom_score_adjustment}."
             exit 1

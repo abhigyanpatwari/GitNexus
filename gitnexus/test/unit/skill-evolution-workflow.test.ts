@@ -432,6 +432,7 @@ exit 1`);
     expect(preflight).toContain("$nrconf{restart} = 'l';");
     expect(preflight).toContain('/proc/self/oom_score_adj');
     expect(preflight).toContain('oom_score_adjustment > -900');
+    expect(preflight).toContain('SECONDS + 5');
   });
 
   it('labels the upload-artifact pin with its real version', () => {
