@@ -3,9 +3,11 @@
  *
  * Minimal grouping: parse (or reuse the worker's cached AST) → run the scope
  * query → group each match's captures into a CaptureMatch keyed by `@name`.
- * No Ruby-style decomposition (Lua's require is captured directly in the query
- * as @import.statement + @import.source + @import.localName), no YARD, no
- * receiver synthesis — those are deferred (receiver/arity polish, Phase B3).
+ * No Ruby-style decomposition, no YARD, and no static type inference. Lua
+ * require imports are collected structurally so positional local/RHS pairing
+ * remains correct for multi-assignment and parenthesis-free forms. Lua
+ * callable-value-flow facts are synthesized
+ * through the shared provider contract below.
  *
  * Side effect: also runs the heritage + method-owner queries against the same
  * AST and stashes the pairs into the capture-side-channel map, so the main-
@@ -30,6 +32,48 @@ import {
 } from './capture-side-channel.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+
+const LUA_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set([
+    'function_definition_statement',
+    'local_function_definition_statement',
+    'function_definition',
+  ]),
+  callNodeTypes: new Set(['call']),
+  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterNodeTypes: new Set(['identifier', 'vararg_expression']),
+  bindingNodeTypes: new Set(['local_variable_declaration']),
+  assignmentNodeTypes: new Set(['variable_assignment']),
+  identifierNodeTypes: new Set(['identifier']),
+  functionScopedValueBindings: true,
+  extractAssignment: (node: Parser.SyntaxNode) => {
+    if (node.type !== 'local_variable_declaration' && node.type !== 'variable_assignment') {
+      return undefined;
+    }
+    const destinations =
+      node.namedChildren.find((child) => child.type === 'variable_list')?.namedChildren ?? [];
+    const sources =
+      node.namedChildren.find((child) => child.type === 'expression_list')?.namedChildren ?? [];
+    if (destinations.length === 0 || sources.length === 0) return [];
+    return destinations.slice(0, sources.length).flatMap((destination, index) => {
+      const source = sources[index];
+      const simpleDestination =
+        destination.type === 'variable' &&
+        destination.childForFieldName('name')?.type === 'identifier' &&
+        destination.childForFieldName('table') === null &&
+        destination.childForFieldName('field') === null;
+      const simpleSource =
+        source?.type === 'variable' &&
+        source.childForFieldName('name')?.type === 'identifier' &&
+        source.childForFieldName('table') === null &&
+        source.childForFieldName('field') === null;
+      return simpleDestination && simpleSource && source !== undefined
+        ? [{ destination, source }]
+        : [];
+    });
+  },
+} as const;
 
 function stripQuotes(s: string): string {
   return s.replace(/^["']|["']$/g, '');
@@ -145,10 +189,11 @@ function collectLuaReturnedFields(root: Parser.SyntaxNode): readonly LuaReturned
       if (field.type !== 'field') continue;
       const key = field.childForFieldName('key');
       const value = field.childForFieldName('value');
-      if (key?.type !== 'identifier' || value?.type !== 'variable') continue;
+      if ((key?.type !== 'identifier' && key?.type !== 'string') || value?.type !== 'variable')
+        continue;
       const localName = value.childForFieldName('name');
       if (localName?.type !== 'identifier') continue;
-      returnedFields.push({ exportName: key.text, localName: localName.text });
+      returnedFields.push({ exportName: stripQuotes(key.text), localName: localName.text });
     }
   }
   return returnedFields;
@@ -167,7 +212,7 @@ function collectLuaAssignmentMethodCaptures(root: Parser.SyntaxNode): readonly C
       if (
         variable?.type === 'variable' &&
         owner?.type === 'identifier' &&
-        method?.type === 'identifier' &&
+        (method?.type === 'identifier' || method?.type === 'string') &&
         value?.type === 'function_definition'
       ) {
         let enclosing = node.parent;
@@ -190,7 +235,10 @@ function collectLuaAssignmentMethodCaptures(root: Parser.SyntaxNode): readonly C
         const match: Record<string, Capture> = {
           '@scope.function': nodeToCapture('@scope.function', value),
           '@declaration.method': nodeToCapture('@declaration.method', value),
-          '@declaration.name': nodeToCapture('@declaration.name', method),
+          '@declaration.name': {
+            ...nodeToCapture('@declaration.name', method),
+            text: method.type === 'string' ? stripQuotes(method.text) : method.text,
+          },
         };
         addLuaArityCaptures(match, value);
         out.push(match);
@@ -272,6 +320,7 @@ export function emitLuaScopeCaptures(
   // string-call forms without producing a cross-product of captures.
   out.push(...collectLuaImportCaptures(tree.rootNode));
   out.push(...collectLuaAssignmentMethodCaptures(tree.rootNode));
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, LUA_CALLABLE_CAPTURE_OPTIONS));
 
   // Heritage pairs (middleclass EXTENDS + HAS_METHOD) — collected here in the
   // worker where the AST is live, snapshotted onto ParsedFile.captureSideChannel
@@ -311,7 +360,11 @@ export function emitLuaScopeCaptures(
       enclosing = enclosing.parent;
     }
     if (nestedInFunction) continue;
-    methodOwners.push({ owner, method, defRow: defNode.startPosition.row });
+    methodOwners.push({
+      owner,
+      method: stripQuotes(method),
+      defRow: defNode.startPosition.row,
+    });
   }
   const classNames = new Set(
     out

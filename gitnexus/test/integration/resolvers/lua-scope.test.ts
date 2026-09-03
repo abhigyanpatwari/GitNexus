@@ -76,7 +76,7 @@ describe('Lua scope resolver import extensions', () => {
 });
 
 describe('Lua scope resolver arity compatibility', () => {
-  it('accepts fixed arity and rejects impossible argument counts', () => {
+  it('does not narrow calls by positional arity', () => {
     const def = {
       nodeId: 'fixed',
       filePath: 'x.lua',
@@ -86,23 +86,9 @@ describe('Lua scope resolver arity compatibility', () => {
       requiredParameterCount: 2,
       parameterTypes: [],
     } as const;
-    expect(luaScopeResolver.arityCompatibility({ arity: 2 }, def)).toBe('compatible');
-    expect(luaScopeResolver.arityCompatibility({ arity: 1 }, def)).toBe('incompatible');
-    expect(luaScopeResolver.arityCompatibility({ arity: 3 }, def)).toBe('incompatible');
-  });
-
-  it('accepts extra arguments for a vararg definition', () => {
-    const def = {
-      nodeId: 'variadic',
-      filePath: 'x.lua',
-      type: 'Function',
-      qualifiedName: 'variadic',
-      requiredParameterCount: 1,
-      parameterTypes: ['params'],
-    } as const;
-    expect(luaScopeResolver.arityCompatibility({ arity: 1 }, def)).toBe('compatible');
-    expect(luaScopeResolver.arityCompatibility({ arity: 5 }, def)).toBe('compatible');
-    expect(luaScopeResolver.arityCompatibility({ arity: 0 }, def)).toBe('incompatible');
+    expect(luaScopeResolver.arityCompatibility({ arity: 0 }, def)).toBe('unknown');
+    expect(luaScopeResolver.arityCompatibility({ arity: 2 }, def)).toBe('unknown');
+    expect(luaScopeResolver.arityCompatibility({ arity: 5 }, def)).toBe('unknown');
   });
 });
 
@@ -496,6 +482,45 @@ return Dog
     }
   }, 60000);
 
+  it('captures static string-key assignment-form methods', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-string-method-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'dog.lua': `local Dog = class("Dog")
+Dog["bark"] = function(self)
+  return "woof"
+end
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'HAS_METHOD').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'bark',
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('recognizes the canonical middleclass constructor name', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-class-alias-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'dog.lua': `local Dog = middleclass("Dog")
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(getNodesByLabel(result, 'Class')).toContain('Dog');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
   it('does not attach a nested function method to a middleclass owner', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-nested-method-'));
     try {
@@ -543,6 +568,30 @@ return Dog
       );
       expect(edge).toBeDefined();
       expect(edge?.targetFilePath).toContain('base.lua');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('selects an imported parent from a static string-key table export', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-string-table-export-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+return { ["Animal"] = Animal }
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base.Animal)
+return Dog
+`,
+      });
+
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'EXTENDS').some(
+          (edge) => edge.source === 'Dog' && edge.target === 'Animal',
+        ),
+      ).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

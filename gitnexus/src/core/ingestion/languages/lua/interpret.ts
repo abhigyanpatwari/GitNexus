@@ -14,8 +14,8 @@
  * `lib.util`) — used by finalize to bind the target's self-named export when
  * present; harmless when the module returns an unnamed table.
  *
- * Receiver/arity precision beyond the namespace-receiver path (e.g. resolving
- * `local f = M.answer; f()`) remains Phase B3.
+ * Local callable values and callback arguments are handled by the Lua capture
+ * provider; receiver aliases that depend on table shape remain conservative.
  */
 import type { CaptureMatch, ParsedImport } from 'gitnexus-shared';
 
