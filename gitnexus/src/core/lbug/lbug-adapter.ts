@@ -1466,22 +1466,28 @@ export const fallbackRelationshipInserts = async (
   for (let i = 1; i < validRelLines.length; i++) {
     const line = validRelLines[i];
     try {
-      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
+      // CSV layout: from,to,type,confidence,reason,step[,staticGated]
+      // The trailing `staticGated` column (0/1) is optional so we remain
+      // tolerant of legacy CSVs written before the column existed.
+      const match = line.match(
+        /"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)(?:,([01]))?/,
+      );
       if (!match) continue;
-      const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+      const [, fromId, toId, relType, confidenceStr, reason, stepStr, gatedStr] = match;
       const fromLabel = getNodeLabel(fromId);
       const toLabel = getNodeLabel(toId);
       if (!validTables.has(fromLabel) || !validTables.has(toLabel)) continue;
 
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
+      const staticGated = gatedStr === '1';
 
       await queryAndDrain(
         conn,
         `
         MATCH (a:${escapeLabel(fromLabel)} {id: ${formatCypherValue(fromId)} }),
               (b:${escapeLabel(toLabel)} {id: ${formatCypherValue(toId)} })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}}]->(b)
+        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}, staticGated: ${staticGated}}]->(b)
       `,
       );
     } catch {
