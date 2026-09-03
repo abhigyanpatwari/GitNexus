@@ -13,31 +13,29 @@
  * Conservative by design: we only tag an edge when we can prove the
  * gating expression evaluates to `false`.  Anything ambiguous → live.
  *
- * v1 supports two scopes of resolution:
+ * Scope of v1:
  *
- *   (a) **File-local** consts (`pub const FOO = false;`) — built per
- *       Zig file once and cached.
- *   (b) **One-hop @import alias** (`const cfg = @import("./cfg.zig");
- *       if (cfg.FOO) { ... }`) — resolved via the existing Zig import
- *       resolver, with a separate per-file alias map.
+ *   (a) **File-local** consts (`pub const FOO = false;`, plus const-to-const
+ *       aliases up to 5 hops), built once per file by `buildZigBoolConstMap`.
+ *   (b) **Cross-file** (`const cfg = @import("./cfg.zig"); if (cfg.FOO)`) is
+ *       NOT resolved yet. The evaluator keeps the seam for it (`importAliases`
+ *       + `lookupBoolsForPath`, consumed by the `field_expression` case), but
+ *       the only caller passes an empty alias map and a lookup that always
+ *       returns `undefined`, because the capture emitter runs in the parse
+ *       worker and sees only the current file. Tracked in #3162. Until then
+ *       every `cfg.FOO` condition folds to unknown, i.e. live.
  *
- * Out of scope for v1:
- *   - Multi-hop: `cfg.sub.FOO` (we only handle one identifier dot one).
- *   - Re-exported consts across multiple files.
- *   - Runtime-evaluated bools (`const FOO = computeIt();`).
- *   - Field re-aliasing (`const FOO = OTHER;`).
+ * Also out of scope: multi-hop member access (`cfg.sub.FOO`), re-exported
+ * consts, runtime-evaluated bools (`const FOO = computeIt();`), and
+ * `builtin.mode` gates.
  *
- * Wire-up: see ./configs/zig.ts — the call extractor's
- * `extractLanguageCallSite` hook walks ancestors and consults the
- * resolver to decide whether to emit `staticGated: true`.
+ * Wire-up: `stampZigStaticGating` in ../languages/zig/captures.ts calls
+ * `collectZigStaticGatedRanges` once per file and marks every call capture
+ * whose position falls inside a dead range with `@reference.static-gated`;
+ * the scope-resolution pipeline carries that marker to the CALLS edge.
  */
 
 import type { SyntaxNode } from '../utils/ast-helpers.js';
-import { resolveZigImportInternal } from '../import-resolvers/zig.js';
-import type { ZigBuildZonConfig } from '../language-config.js';
-
-/** Maximum number of `if_statement` ancestors we walk above a call. */
-const MAX_IF_ANCESTORS = 5;
 
 /** Maximum recursion depth when evaluating a boolean condition expression. */
 const MAX_COND_DEPTH = 4;
@@ -189,192 +187,10 @@ function extractBoolConstOrAlias(decl: SyntaxNode): RawDecl | null {
   return null;
 }
 
-/**
- * Walk the top-level of a Zig source file and collect `@import` alias
- * declarations:
- *
- *   `const cfg = @import("./cfg.zig");`  →  Map { 'cfg' → 'src/cfg.zig' }
- *
- * Imports that don't resolve to a file in the repo (`@import("std")`,
- * package deps without a build.zig.zon path, etc.) are skipped.
- */
-export function buildZigImportAliasMap(
-  rootNode: SyntaxNode,
-  currentFilePath: string,
-  allFilePaths: Set<string>,
-  buildZon: ZigBuildZonConfig | null | undefined,
-): ZigImportAliasMap {
-  const out = new Map<string, string>();
-  for (const child of rootNode.namedChildren) {
-    if (child.type !== 'variable_declaration') continue;
-    const entry = extractImportAlias(child, currentFilePath, allFilePaths, buildZon);
-    if (entry) out.set(entry.name, entry.target);
-  }
-  return out;
-}
-
-/**
- * Worker-side variant of `buildZigImportAliasMap` that emits the raw
- * `@import("...")` path strings without resolving them — workers don't
- * have access to the global file list / build.zig.zon needed for path
- * resolution.  The main thread later resolves each entry via
- * `resolveZigImportInternal` when aggregating cross-file gating context.
- *
- *   `const cfg = @import("./cfg.zig");`  →  Map { 'cfg' → './cfg.zig' }
- */
-export function buildZigRawImportAliasMap(rootNode: SyntaxNode): ReadonlyMap<string, string> {
-  const out = new Map<string, string>();
-  for (const child of rootNode.namedChildren) {
-    if (child.type !== 'variable_declaration') continue;
-    const entry = extractRawImportAlias(child);
-    if (entry) out.set(entry.name, entry.importPath);
-  }
-  return out;
-}
-
-function extractRawImportAlias(decl: SyntaxNode): { name: string; importPath: string } | null {
-  let isConst = false;
-  let isVar = false;
-  for (let i = 0; i < decl.childCount; i++) {
-    const c = decl.child(i);
-    if (!c || c.isNamed) continue;
-    if (c.type === 'const') isConst = true;
-    else if (c.type === 'var') isVar = true;
-  }
-  if (!isConst || isVar) return null;
-
-  let name: string | undefined;
-  let importPath: string | undefined;
-
-  for (const c of decl.namedChildren) {
-    if (c.type === 'identifier' && name === undefined) {
-      name = c.text;
-      continue;
-    }
-    if (c.type === 'builtin_function') {
-      const ident = c.namedChildren.find((cc) => cc.type === 'builtin_identifier');
-      if (!ident || ident.text !== '@import') continue;
-      const args = c.namedChildren.find((cc) => cc.type === 'arguments');
-      if (!args) continue;
-      const str = args.namedChildren.find((cc) => cc.type === 'string');
-      if (!str) continue;
-      const content = str.namedChildren.find((cc) => cc.type === 'string_content');
-      if (content) importPath = content.text;
-    }
-  }
-
-  if (name === undefined || importPath === undefined) return null;
-  return { name, importPath };
-}
-
-function extractImportAlias(
-  decl: SyntaxNode,
-  currentFilePath: string,
-  allFilePaths: Set<string>,
-  buildZon: ZigBuildZonConfig | null | undefined,
-): { name: string; target: string } | null {
-  // Require `const` (the idiomatic spelling for `@import` aliases).
-  // `var cfg = @import(...)` is technically legal but would let a
-  // later assignment shadow the import; we don't follow assignments.
-  let isConst = false;
-  let isVar = false;
-  for (let i = 0; i < decl.childCount; i++) {
-    const c = decl.child(i);
-    if (!c || c.isNamed) continue;
-    if (c.type === 'const') isConst = true;
-    else if (c.type === 'var') isVar = true;
-  }
-  if (!isConst || isVar) return null;
-
-  let name: string | undefined;
-  let importPath: string | undefined;
-
-  for (const c of decl.namedChildren) {
-    if (c.type === 'identifier' && name === undefined) {
-      name = c.text;
-      continue;
-    }
-    if (c.type === 'builtin_function') {
-      // Look for @import("...") shape.
-      const ident = c.namedChildren.find((cc) => cc.type === 'builtin_identifier');
-      if (!ident || ident.text !== '@import') continue;
-      const args = c.namedChildren.find((cc) => cc.type === 'arguments');
-      if (!args) continue;
-      const str = args.namedChildren.find((cc) => cc.type === 'string');
-      if (!str) continue;
-      const content = str.namedChildren.find((cc) => cc.type === 'string_content');
-      if (content) importPath = content.text;
-    }
-  }
-
-  if (name === undefined || importPath === undefined) return null;
-  const resolved = resolveZigImportInternal(currentFilePath, importPath, allFilePaths, buildZon);
-  if (!resolved) return null;
-  return { name, target: resolved };
-}
-
 // ---------------------------------------------------------------------------
-// Phase 3: ancestor walk + condition evaluation
+// Phase 3: dead-range collection + condition evaluation
 // ---------------------------------------------------------------------------
 
-/**
- * Decide whether a call expression sits inside a statically-dead
- * branch of any enclosing `if` statement.
- *
- * Walks up to {@link MAX_IF_ANCESTORS} `if_statement` ancestors,
- * tracking the descent direction (consequence vs alternative) so we
- * can flag the dead branch correctly:
- *
- *    cond=false, via body         → DEAD (gated)
- *    cond=true,  via else_clause  → DEAD (gated)
- *    cond=true,  via body         → live (no signal from this ancestor)
- *    cond=false, via else_clause  → live (no signal)
- *    cond=unknown                 → no signal
- *
- * Returns `true` if ANY ancestor proves the call is dead.  `else if`
- * chains nest naturally as `else_clause → if_statement → ...`, so
- * each level applies the rule independently and the walker visits
- * them all on the way up.
- */
-export function isCallStaticGated(
-  callNode: SyntaxNode,
-  localBools: ZigBoolConstMap,
-  importAliases: ZigImportAliasMap,
-  lookupBoolsForPath: ZigBoolConstLookup,
-): boolean {
-  let child: SyntaxNode = callNode;
-  let parent: SyntaxNode | null = callNode.parent;
-  let ifCount = 0;
-  while (parent && ifCount < MAX_IF_ANCESTORS) {
-    if (parent.type === 'if_statement') {
-      ifCount++;
-      const direction = ifBranchDirection(parent, child);
-      if (direction !== 'condition') {
-        const cond = findIfCondition(parent);
-        if (cond) {
-          const result = evalCond(cond, localBools, importAliases, lookupBoolsForPath, 0);
-          if (result === false && direction === 'consequence') return true;
-          if (result === true && direction === 'alternative') return true;
-        }
-      }
-    }
-    child = parent;
-    parent = parent.parent;
-  }
-  return false;
-}
-
-/**
- * Given an `if_statement` and a direct child node we just ascended
- * from, classify which slot of the if the child sits in.
- *
- * Returns `'consequence'` when the child is the body (the THEN
- * branch), `'alternative'` when the child is the `else_clause` (or
- * the call lives inside its subtree, which it does because we walked
- * up through it), and `'condition'` when — pathologically — the call
- * lives inside the condition expression itself.  Conditions don't
- * gate themselves, so the caller treats `'condition'` as no-op.
- */
 /**
  * Every source range that is statically dead in this file: the body of an
  * `if` whose condition folds to `false`, and the `else` clause of an `if`
@@ -385,8 +201,8 @@ export function isCallStaticGated(
  * only keeps `Capture.range` (no node) can still stamp its call sites —
  * that is how the scope-resolution provider consumes this module.
  *
- * Same evaluation as `isCallStaticGated`, walked once per file instead of
- * once per call; nesting needs no special case because an inner branch
+ * One walk per file over every `if`, so a call site is classified by
+ * position lookup; nesting needs no special case because an inner branch
  * inside a dead body is inside the dead body's range already.
  */
 export interface ZigGatedRange {
@@ -479,34 +295,6 @@ export function isPositionStaticGated(
     return true;
   }
   return false;
-}
-
-function ifBranchDirection(
-  ifNode: SyntaxNode,
-  ascendedFrom: SyntaxNode,
-): 'consequence' | 'alternative' | 'condition' {
-  if (ascendedFrom.type === 'else_clause') return 'alternative';
-  const body = ifNode.childForFieldName('body');
-  // tree-sitter wraps each accessor call in a fresh JS object, so
-  // reference equality (`a === b`) is unreliable even when both
-  // wrappers point at the same underlying syntax node.  Compare by
-  // the stable numeric `id` instead — every wrapper for one node
-  // exposes the same `id`.
-  if (body && nodesEqual(body, ascendedFrom)) return 'consequence';
-  // Fall through: must be the condition expression.
-  return 'condition';
-}
-
-/** Reference-equal-by-stable-id check for tree-sitter syntax nodes. */
-function nodesEqual(a: SyntaxNode, b: SyntaxNode): boolean {
-  // The native binding exposes a numeric `id` per node.  TypeScript's
-  // `SyntaxNode` typing doesn't surface it, so we widen to `unknown`
-  // and read defensively — if the runtime lacks `id`, fall back to
-  // structural equality on byte range + type.
-  const aId = (a as unknown as { id?: number }).id;
-  const bId = (b as unknown as { id?: number }).id;
-  if (typeof aId === 'number' && typeof bId === 'number') return aId === bId;
-  return a.type === b.type && a.startIndex === b.startIndex && a.endIndex === b.endIndex;
 }
 
 /** Pick the condition node out of an `if_statement`. The condition is
