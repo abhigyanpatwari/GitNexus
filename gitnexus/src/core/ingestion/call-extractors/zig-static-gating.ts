@@ -4,7 +4,8 @@
  * Zig static-gating resolver.
  *
  * Detects calls inside `if (CONST_FALSE)` blocks (and trivial boolean
- * extensions: `and`, `or`, simple negation) so the call edge can be
+ * extensions: `and`, `or`, `==`/`!=`, parentheses, and prefix `!` negation,
+ * which tree-sitter-zig parses as `error_union_type`) so the call edge can be
  * tagged with `staticGated: true`.  The flag lets impact-analysis
  * consumers filter out paper-tiger callers that live in dead branches
  * gated behind a comptime-known `false` constant.
@@ -377,7 +378,10 @@ export function isCallStaticGated(
 /**
  * Every source range that is statically dead in this file: the body of an
  * `if` whose condition folds to `false`, and the `else` clause of an `if`
- * whose condition folds to `true`. Line/col ranges, so a capture layer that
+ * whose condition folds to `true`. Both the statement form (`if (c) { .. }`)
+ * and the expression form (`const x = if (c) a else b;`) are walked; the
+ * arms differ only in how the grammar exposes them, see `ifExpressionArms`.
+ * Line/col ranges, so a capture layer that
  * only keeps `Capture.range` (no node) can still stamp its call sites —
  * that is how the scope-resolution provider consumes this module.
  *
@@ -402,14 +406,21 @@ export function collectZigStaticGatedRanges(
   const stack: SyntaxNode[] = [rootNode];
   while (stack.length > 0) {
     const node = stack.pop()!;
-    if (node.type === 'if_statement') {
+    if (node.type === 'if_statement' || node.type === 'if_expression') {
       const cond = findIfCondition(node);
       const result = cond
         ? evalCond(cond, localBools, importAliases, lookupBoolsForPath, 0)
         : undefined;
       let dead: SyntaxNode | null = null;
-      if (result === false) dead = node.childForFieldName('body');
-      if (result === true) dead = node.namedChildren.find((c) => c.type === 'else_clause') ?? null;
+      if (node.type === 'if_statement') {
+        if (result === false) dead = node.childForFieldName('body');
+        if (result === true)
+          dead = node.namedChildren.find((c) => c.type === 'else_clause') ?? null;
+      } else {
+        const arms = ifExpressionArms(node);
+        if (result === false) dead = arms.consequence;
+        if (result === true) dead = arms.alternative;
+      }
       if (dead) {
         out.push({
           startLine: dead.startPosition.row + 1,
@@ -425,6 +436,34 @@ export function collectZigStaticGatedRanges(
     }
   }
   return out;
+}
+
+/**
+ * The two arms of an `if_expression` (`const x = if (c) a else b;`). Unlike
+ * `if_statement` the grammar gives them no field names and no `else_clause`
+ * wrapper: the consequence is the first named child after the closing `)`
+ * of the condition, the alternative is the first named child after the
+ * anonymous `else` token. Either may be absent.
+ */
+function ifExpressionArms(node: SyntaxNode): {
+  consequence: SyntaxNode | null;
+  alternative: SyntaxNode | null;
+} {
+  let consequence: SyntaxNode | null = null;
+  let alternative: SyntaxNode | null = null;
+  let slot: 'none' | 'consequence' | 'alternative' = 'none';
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (!c) continue;
+    if (!c.isNamed) {
+      if (c.type === ')' && slot === 'none') slot = 'consequence';
+      else if (c.type === 'else') slot = 'alternative';
+      continue;
+    }
+    if (slot === 'consequence' && !consequence) consequence = c;
+    else if (slot === 'alternative' && !alternative) alternative = c;
+  }
+  return { consequence, alternative };
 }
 
 /** Is a (1-based line, 0-based col) position inside one of `ranges`? */
@@ -554,13 +593,19 @@ function evalCond(
       return undefined;
     }
 
+    case 'parenthesized_expression': {
+      // `(cond)`: transparent.
+      const inner = node.namedChildren[0];
+      if (!inner) return undefined;
+      return evalCond(inner, localBools, importAliases, lookupBoolsForPath, depth + 1);
+    }
+
     case 'error_union_type': {
-      // tree-sitter-zig misparses prefix `!FOO` (boolean negation) as
-      // `error_union_type` because the same `!` token is used for
-      // error-union types.  We handle the pragmatic case: a single
-      // resolvable identifier inside an `error_union_type` whose
-      // immediate parent is an `if_statement` condition position.
-      // Negate the inner value.
+      // tree-sitter-zig has no unary `!` node: prefix `!cond` (boolean
+      // negation) parses as `error_union_type` because the same `!` token
+      // introduces error-union types. In condition position that reading is
+      // never a type, so negate whatever the operand folds to: an
+      // identifier, a literal, or a parenthesized compound like `!(A and B)`.
       const inner = node.namedChildren[0];
       if (!inner) return undefined;
       const v = evalCond(inner, localBools, importAliases, lookupBoolsForPath, depth + 1);

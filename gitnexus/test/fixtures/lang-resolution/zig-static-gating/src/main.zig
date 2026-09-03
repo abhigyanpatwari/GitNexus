@@ -178,6 +178,33 @@ pub fn run() void {
     if (UPGRADERS_ENABLED) {
         live_and_gated_same_callee();
     }
+
+    // Negation and parentheses (PR #3161 tri-review, finding 4). tree-sitter-zig
+    // parses prefix `!` as `error_union_type`; the evaluator negates the operand.
+    if (!DEBUG) {
+        gated_not_true();
+    }
+    if (!UPGRADERS_ENABLED) {
+        live_not_false();
+    }
+    if (!(DEBUG and DEBUG)) {
+        gated_not_paren_and();
+    }
+    if ((UPGRADERS_ENABLED)) {
+        gated_paren_ident();
+    }
+
+    // `if` as an EXPRESSION is a different grammar node (`if_expression`)
+    // with no `else_clause` wrapper (PR #3161 tri-review, finding 5).
+    const e1 = if (UPGRADERS_ENABLED) gated_expr_then() else live_expr_else();
+    const e2 = if (DEBUG) live_expr_then() else gated_expr_else();
+    const e3 = if (UPGRADERS_ENABLED) blk: {
+        gated_expr_block();
+        break :blk 1;
+    } else 2;
+    _ = e1;
+    _ = e2;
+    _ = e3;
 }
 
 fn live_unconditional() void {
@@ -328,5 +355,41 @@ fn live_and_gated_same_callee() void {
 }
 
 fn gated_then_live_same_callee() void {
+    _ = 1;
+}
+
+fn gated_not_true() void {
+    _ = 1;
+}
+
+fn live_not_false() void {
+    _ = 1;
+}
+
+fn gated_not_paren_and() void {
+    _ = 1;
+}
+
+fn gated_paren_ident() void {
+    _ = 1;
+}
+
+fn gated_expr_then() i32 {
+    return 1;
+}
+
+fn live_expr_else() i32 {
+    return 2;
+}
+
+fn live_expr_then() i32 {
+    return 3;
+}
+
+fn gated_expr_else() i32 {
+    return 4;
+}
+
+fn gated_expr_block() void {
     _ = 1;
 }

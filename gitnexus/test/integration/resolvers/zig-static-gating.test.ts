@@ -52,6 +52,36 @@ describe('Zig static-gated edges', () => {
     expect(isGated('gated_then_live_same_callee')).toBe(false);
   });
 
+  it('tags `if (!TRUE_CONST)` (negation of a true constant is dead)', () => {
+    expect(isGated('gated_not_true')).toBe(true);
+  });
+
+  it('does NOT tag `if (!FALSE_CONST)` (negation of a false constant is live)', () => {
+    expect(isGated('live_not_false')).toBe(false);
+  });
+
+  it('tags `if (!(TRUE and TRUE))` (negated parenthesized compound)', () => {
+    expect(isGated('gated_not_paren_and')).toBe(true);
+  });
+
+  it('tags `if ((FALSE_CONST))` (parentheses are transparent)', () => {
+    expect(isGated('gated_paren_ident')).toBe(true);
+  });
+
+  it('tags the THEN arm of an if-EXPRESSION `x = if (FALSE) a() else b()`', () => {
+    expect(isGated('gated_expr_then')).toBe(true);
+    expect(isGated('live_expr_else')).toBe(false);
+  });
+
+  it('tags the ELSE arm of an if-EXPRESSION `x = if (TRUE) a() else b()`', () => {
+    expect(isGated('live_expr_then')).toBe(false);
+    expect(isGated('gated_expr_else')).toBe(true);
+  });
+
+  it('tags calls inside a labeled-block THEN arm of an if-expression', () => {
+    expect(isGated('gated_expr_block')).toBe(true);
+  });
+
   it('does NOT tag unconditional calls', () => {
     expect(isGated('live_unconditional')).toBe(false);
   });
@@ -149,7 +179,7 @@ describe('Zig static-gated edges', () => {
   // parse worker with only `{ path, content }` in hand — no sibling sources —
   // so v1 stamps file-local constants only. Re-enable once the emitter can
   // see imported files (see PR description, "Cross-file constants").
-  it.skip('tags `if (cfg.FOO)` cross-file when FOO is false in cfg.zig', () => {
+  it.skip('tags `if (cfg.FOO)` cross-file when FOO is false in cfg.zig (tracked: #3162)', () => {
     expect(isGated('gated_cross_file_foo')).toBe(true);
   });
 
@@ -157,7 +187,7 @@ describe('Zig static-gated edges', () => {
     expect(isGated('live_cross_file_bar')).toBe(false);
   });
 
-  it.skip('tags the ELSE branch of `if (cfg.BAR)` when BAR is true', () => {
+  it.skip('tags the ELSE branch of `if (cfg.BAR)` when BAR is true (tracked: #3162)', () => {
     expect(isGated('gated_cross_file_else')).toBe(true);
   });
 

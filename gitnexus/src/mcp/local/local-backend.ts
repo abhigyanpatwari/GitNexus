@@ -7522,6 +7522,9 @@ export class LocalBackend {
             filePath: edge.filePath,
             relationType,
             confidence: effectiveConfidence,
+            // Surfaced, never acted on: traversal and ranking ignore the flag
+            // (see GraphRelationship.staticGated). Absent = live or unmodelled.
+            ...(edge.staticGated === true ? { staticGated: true } : {}),
           });
         }
       } catch (e) {
