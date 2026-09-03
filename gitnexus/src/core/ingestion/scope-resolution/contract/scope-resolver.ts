@@ -879,6 +879,71 @@ export interface ScopeResolver {
   readonly constructorCallTargetsClass?: boolean;
 
   /**
+   * When true, the CALLS edge emitted for a constructor-form site
+   * (`callForm === 'constructor'`) carries ` (constructor)` appended to its
+   * `reason` — `local-call (constructor)`, `import-resolved (constructor)`,
+   * `scope-resolution: call (constructor)` — so a consumer can tell
+   * "constructs an instance of" apart from "invokes" on the edge alone.
+   *
+   * Opt-in because the unsuffixed strings are a pinned contract: the legacy
+   * DAG vocabulary (`'import-resolved' | 'local-call' | …`, see the
+   * same-graph guarantee above) is asserted verbatim by consumers and by the
+   * per-language resolver suites, constructor sites included. A language
+   * that links a construction site to the TYPE node itself — a struct
+   * literal `T{…}` in Zig, where nothing but the marker distinguishes the
+   * edge from an invocation in the schema (PR #1432 review) — opts in; the
+   * default leaves every existing edge byte-identical.
+   *
+   * The marker rides in `reason` because relationships carry no arbitrary
+   * properties (adding one moves SCHEMA_FINGERPRINT — the IMPLEMENTS
+   * `-pointer` precedent in `pipeline/run.ts`). Applies to the free-call
+   * fallback, the reference bridge and the receiver-bound paths — a
+   * namespace-qualified literal (`mod.T{…}`, Case 1), a type nested in the
+   * receiver's class (`A.Item{}`, Case 2) and a dotted type binding (Case 3)
+   * all go through `constructionSiteReason` — so an opted-in provider sees
+   * one vocabulary whichever path resolved the site.
+   */
+  readonly markConstructionSites?: boolean;
+
+  /**
+   * When true, a namespace's exported member may also be a name the target
+   * module IMPORTED and publishes as its own — the hub-module shape, a file
+   * made only of re-exports (`pub const Terminal = @import("Terminal.zig");`,
+   * `pub const Thing = @import("thing.zig").Thing;`). Such a file owns no
+   * local binding, so the default local-only export lookup
+   * (`findExportedDef`) finds nothing for `terminal.Terminal.init()`,
+   * `t: stdx.Thing`, `var p = stdx.PRNG.from_seed()` or `var a:
+   * stdx.BoundedArrayType(u8, 4)`, and the receiver-bound namespace paths
+   * (Case 1, Case 3, the compound resolver's namespace branch) fall through.
+   * With the flag those paths use `findExportedDefIncludingImportedNames`,
+   * which reads the finalized channel where the published names live.
+   *
+   * Off by default: in most languages a module's imports are not its exports
+   * (TypeScript `import { X }` publishes nothing), and the finalized edge does
+   * not record whether the import was written `pub`. Zig opts in — a hub
+   * member a consumer can name through the hub is public by construction.
+   */
+  readonly namespaceExportsIncludeImportedNames?: boolean;
+
+  /**
+   * When true, a qualified receiver is walked SEGMENT BY SEGMENT from its
+   * verified namespace root instead of being split once at the last dot:
+   * `hub.sub.Thing{}` (a namespace republished by a hub — `pub const sub =
+   * @import("sub.zig");`), `mod.Outer.Inner{}` (a type nested in a type),
+   * `opmod.Op.lookup` (an enum variant reached through the module), and the
+   * typed forms `x: mod.Outer.Inner`. Each hop is either a class-like member
+   * of the current module(s) / the current class, or a namespace import
+   * edge the current module's scope binds under that name; a hop that is
+   * ambiguous — two files behind one handle disagree, or a name is both a
+   * type and a republished module — resolves nothing rather than picking a
+   * first match. Off, the receiver-bound paths (Case 1, Case 2's
+   * namespace-qualified class, Case 3) keep their one-hop lookups exactly
+   * as they are, so no existing edge moves; Zig opts in (PR #1432 review,
+   * 8.10), whose module system is nothing but nested `const` handles.
+   */
+  readonly resolveNamespaceChains?: boolean;
+
+  /**
    * How this language spells a construction expression, so the compound
    * receiver resolver can type an INLINE constructor receiver — the
    * `Service(db).do_work()` shape, where the receiver is the constructed
