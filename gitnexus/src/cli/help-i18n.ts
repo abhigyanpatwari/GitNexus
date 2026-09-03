@@ -53,6 +53,7 @@ const OPTION_DESCRIPTION_KEYS = {
   '|-V, --version': 'help.option.version',
   'setup|-c, --coding-agent <agents>': 'help.option.setup.codingAgent',
   'analyze|-f, --force': 'help.option.analyze.force',
+  'analyze|--no-parse-cache': 'help.option.analyze.noParseCache',
   'analyze|--repair-fts': 'help.option.analyze.repairFts',
   'analyze|--embeddings [limit]': 'help.option.analyze.embeddings',
   'analyze|--drop-embeddings': 'help.option.analyze.dropEmbeddings',

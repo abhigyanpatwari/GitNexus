@@ -338,6 +338,8 @@ export interface AnalyzeOptions {
    * bypass. See `allowDuplicateName` below.
    */
   force?: boolean;
+  /** Reuse content-addressed parser output. Defaults to true. */
+  useParseCache?: boolean;
   /** Repair only search indexes without re-running full parsing/indexing. */
   repairFts?: boolean;
   /** Emit per-index FTS create logs. */
@@ -1964,11 +1966,18 @@ async function runFullAnalysisInner(
   }
 
   // ── Load incremental parse cache ──────────────────────────────────
-  // Content-addressed: safe to reuse across `--force` runs (chunks whose
-  // file contents haven't changed produce identical worker output).
+  // Content-addressed: safe to reuse across `--force` runs when the parser
+  // implementation is unchanged. Developers iterating on capture/query code
+  // can opt out so unchanged source files are parsed again (#3152).
   // Loaded into a single ParseCache object that the pipeline mutates
   // in-place (cache hits leave entries unchanged; misses add new ones).
-  const parseCache = await loadParseCache(storagePath);
+  // Omitting storagePath on the empty runtime cache also prevents the sibling
+  // parsedfile-cache from being consulted. The fresh results are still saved
+  // at the end of the run and replace both durable cache generations.
+  const parseCache =
+    options.useParseCache === false
+      ? { version: PARSE_CACHE_VERSION, entries: new Map(), usedKeys: new Set<string>() }
+      : await loadParseCache(storagePath);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
