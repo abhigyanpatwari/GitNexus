@@ -560,22 +560,34 @@ def test_proposer_refuses_a_prior_proposal_that_lost_its_trust_boundary(tmp_path
         )
 
 
-def test_run_proposer_keeps_trusted_input_hook_enabled(monkeypatch, tmp_path):
+def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(monkeypatch, tmp_path):
+    """The proposer writes the artifact the arms are scored with.
+
+    So its clone must be sanitized before the session starts — a proposer that
+    can read eval/workflow_bench reads the task prompts and hidden oracles it
+    is about to be graded against, and can encode the answers into the skill.
+    """
+
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     transcript_projects = tmp_path / "transcript-projects"
     transcript_projects.mkdir()
     captured: dict[str, object] = {}
+    sanitized: list[Path] = []
 
     def fake_make_worktree(_repo, _ref, destination):
         clone = destination / "clone"
         clone.mkdir()
         return clone
 
+    def fake_sanitize(clone):
+        sanitized.append(clone)
+        return "0" * 40
+
     class FakeSandbox:
         claude_bin = "claude"
         command_prefix: list[str] = []
-        settings_json = '{"hooks":{"PreToolUse":[]}}'
+        settings_json = '{"permissions":{"allow":["Read"]}}'
 
         @property
         def transcript_projects(self):
@@ -591,6 +603,7 @@ def test_run_proposer_keeps_trusted_input_hook_enabled(monkeypatch, tmp_path):
 
     monkeypatch.setattr(evolve.runner, "make_worktree", fake_make_worktree)
     monkeypatch.setattr(evolve.runner, "remove_clone", lambda _clone: None)
+    monkeypatch.setattr(evolve, "sanitize_clone_for_hidden_oracles", fake_sanitize)
     monkeypatch.setattr(evolve, "prepare_sandbox", fake_prepare_sandbox)
     monkeypatch.setattr(evolve.runner, "run_claude", fake_run_claude)
     args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "model"])
@@ -605,6 +618,10 @@ def test_run_proposer_keeps_trusted_input_hook_enabled(monkeypatch, tmp_path):
     )
 
     assert record["ok"] is False
+    # Sanitization has to happen on the clone the session actually runs in,
+    # and before the sandbox is prepared around it.
+    assert [clone.name for clone in sanitized] == ["clone"]
+    # Not --bare: bare ignores --tools and would cost the proposer Grep/Glob.
     assert captured.get("bare", False) is False
     assert captured["allowed_tools"] == evolve.PROPOSER_ALLOWED_TOOLS
     assert captured["settings_json"] == FakeSandbox.settings_json

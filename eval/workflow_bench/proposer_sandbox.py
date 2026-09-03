@@ -28,7 +28,6 @@ SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
 SANDBOX_PYTHON3 = "/opt/claude/python3"
 SANDBOX_GITNEXUS_CLI = "/opt/claude/gitnexus"
-SANDBOX_TOOL_INPUT_NORMALIZER = "/opt/claude/normalize-tool-input"
 SANDBOX_GIT_EXCLUDES = "/opt/claude/git-excludes"
 SANDBOX_NODE = "/opt/claude/node"
 SANDBOX_NODE_PREFIX = "/opt/claude/nodejs"
@@ -328,7 +327,15 @@ def build_sandbox_environment(
 
 
 def build_claude_settings() -> str:
-    """Inline settings: one trusted normalizer hook; every Bash stays sandboxed."""
+    """Inline settings that keep every Bash sandboxed and pre-approve the tools.
+
+    Deliberately hook-free: headless ``claude -p`` (2.1.247) never dispatches
+    ``PreToolUse``, whatever source the hook is declared in — inline
+    ``--settings``, a settings file, project/user/local ``--setting-sources``,
+    or a trusted project entry in ``~/.claude.json``. Confinement therefore
+    rests only on mechanisms the CLI honors in this mode: the sandbox policy
+    below, ``--tools``/``--allowedTools``, and the bwrap mounts.
+    """
 
     settings = {
         "sandbox": {
@@ -361,20 +368,6 @@ def build_claude_settings() -> str:
                     SANDBOX_EVIDENCE,
                 ],
             },
-        },
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "matcher": r"Read|mcp__gitnexus__.*",
-                    "hooks": [
-                        {
-                            "type": "command",
-                            "command": SANDBOX_TOOL_INPUT_NORMALIZER,
-                            "timeout": 5,
-                        }
-                    ],
-                }
-            ]
         },
         "permissions": {
             # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB forces permission mode to
@@ -505,36 +498,6 @@ def _create_gitnexus_wrapper(private_root: Path) -> Path:
 
     wrapper = private_root / "gitnexus"
     wrapper.write_text(f'#!/bin/bash\nset -eu\nexec {SANDBOX_NODE} {SANDBOX_GITNEXUS}/dist/cli/index.js "$@"\n')
-    wrapper.chmod(0o500)
-    return wrapper
-
-
-def _create_tool_input_normalizer(private_root: Path) -> Path:
-    """Create the trusted PreToolUse adapter for strict provider defaults."""
-
-    wrapper = private_root / "normalize-tool-input"
-    wrapper.write_text(
-        f"#!{SANDBOX_PYTHON3}\n"
-        "import json, sys\n"
-        "try:\n"
-        "    event = json.load(sys.stdin)\n"
-        "    tool_input = event.get('tool_input')\n"
-        "    if not isinstance(tool_input, dict):\n"
-        "        raise ValueError('tool_input is not an object')\n"
-        "    normalized = {\n"
-        "        key: value for key, value in tool_input.items()\n"
-        "        if not (isinstance(value, str) and not value.strip())\n"
-        "    }\n"
-        "    if normalized != tool_input:\n"
-        "        print(json.dumps({'hookSpecificOutput': {\n"
-        "            'hookEventName': 'PreToolUse',\n"
-        "            'permissionDecision': 'allow',\n"
-        "            'updatedInput': normalized,\n"
-        "        }}, separators=(',', ':')))\n"
-        "except Exception as exc:\n"
-        "    print(f'tool-input normalizer failed closed: {exc}', file=sys.stderr)\n"
-        "    sys.exit(2)\n"
-    )
     wrapper.chmod(0o500)
     return wrapper
 
@@ -821,7 +784,6 @@ def prepare_sandbox(
     shell_prefix = _create_shell_prefix_wrapper(private_root)
     python3_wrapper = _create_python3_wrapper(private_root)
     gitnexus_wrapper = _create_gitnexus_wrapper(private_root)
-    tool_input_normalizer = _create_tool_input_normalizer(private_root)
     git_excludes = _create_git_excludes(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
     # writable for normal CLI state, but overlay an immutable empty skills root
@@ -835,7 +797,6 @@ def prepare_sandbox(
         ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
         ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
         ReadOnlyMount(source=gitnexus_wrapper, target=SANDBOX_GITNEXUS_CLI),
-        ReadOnlyMount(source=tool_input_normalizer, target=SANDBOX_TOOL_INPUT_NORMALIZER),
         ReadOnlyMount(source=git_excludes, target=SANDBOX_GIT_EXCLUDES),
     )
     primary: BaseException | None = None

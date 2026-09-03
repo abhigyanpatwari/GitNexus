@@ -29,7 +29,6 @@ from workflow_bench.proposer_sandbox import (
     SANDBOX_PATH,
     SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
-    SANDBOX_TOOL_INPUT_NORMALIZER,
     SANDBOX_USER_SKILLS,
     ReadOnlyMount,
     SandboxError,
@@ -70,9 +69,10 @@ def test_environment_is_allowlisted_and_shell_children_are_credential_free(monke
     assert settings["sandbox"]["allowUnsandboxedCommands"] is False
     assert settings["sandbox"]["network"]["deniedDomains"] == ["*"]
     assert SANDBOX_EVIDENCE in settings["sandbox"]["filesystem"]["allowRead"]
-    normalizer_hook = settings["hooks"]["PreToolUse"][0]
-    assert normalizer_hook["matcher"] == r"Read|mcp__gitnexus__.*"
-    assert normalizer_hook["hooks"][0]["command"] == SANDBOX_TOOL_INPUT_NORMALIZER
+    # Headless `claude -p` (2.1.247) never dispatches PreToolUse from any
+    # settings source, so a hook here would be confinement theater: it would
+    # read as a control in review while enforcing nothing at runtime.
+    assert "hooks" not in settings
     # ENV_SCRUB forces "default" mode; the proposer's tools (Bash writes the
     # overlay) run headless only because they are explicitly pre-approved.
     # Requesting a non-default defaultMode would merely warn, so it must be gone.
@@ -177,32 +177,6 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         )
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout == f"/home/agent|{SANDBOX_PATH}"
-
-        normalizer_index = argv.index(SANDBOX_TOOL_INPUT_NORMALIZER)
-        normalizer = Path(argv[normalizer_index - 1])
-        event = json.dumps(
-            {
-                "hook_event_name": "PreToolUse",
-                "tool_name": "Read",
-                "tool_input": {
-                    "file_path": "/evidence/rows.json",
-                    "pages": "",
-                    "limit": 100,
-                },
-            }
-        )
-        normalized = subprocess.run(
-            [sys.executable, normalizer],
-            input=event,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        output = json.loads(normalized.stdout)
-        assert output["hookSpecificOutput"]["updatedInput"] == {
-            "file_path": "/evidence/rows.json",
-            "limit": 100,
-        }
 
         gitnexus_index = argv.index(SANDBOX_GITNEXUS_CLI)
         gitnexus_wrapper = Path(argv[gitnexus_index - 1])
@@ -883,7 +857,7 @@ def test_clone_controlled_mcp_replacement_is_never_executed_or_credentialed(tmp_
     os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
     reason="real Claude/Bash/MCP canary is mandatory in the named Ubuntu CI job",
 )
-def test_real_claude_hooks_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path) -> None:
+def test_real_claude_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path) -> None:
     """Exercise the exact CLI boundary without contacting a paid model."""
 
     claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()

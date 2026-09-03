@@ -258,7 +258,12 @@ loser rows, their session transcripts and patches, the rejected
 `proposal.md` when available (including a workflow seed from a prior run), and
 the learning queue,
 then writes ONE bounded candidate overlay plus a reviewer-facing
-`proposal.md`. The overlay is re-validated by `candidate_overlay_files`
+`proposal.md`. The proposer's clone is sanitized exactly like an arm's before
+its session starts: it authors the artifact the arms are scored with, so
+letting it read `eval/workflow_bench` would hand it the task prompts and the
+hidden oracles it is about to be graded against, and a proposal could win the
+gate by encoding the expected behavior into a skill rather than by being a
+better skill. The overlay is re-validated by `candidate_overlay_files`
 (same boundary: Markdown under the plan/work trees, nothing else), frozen,
 and exercised only by its exact required pairs. Task refs are resolved once
 before generation zero and the immutable task bindings are forwarded to every

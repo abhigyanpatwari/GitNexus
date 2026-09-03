@@ -66,7 +66,7 @@ from .evolution import (
     candidate_overlay_files,
     required_candidate_arms,
 )
-from .oracle_assets import MAX_CLONE_REFS
+from .oracle_assets import MAX_CLONE_REFS, sanitize_clone_for_hidden_oracles
 from .promotion_apply import (
     apply_promoted_overlay as apply_promoted_overlay,
     committed_destination_base_digests as committed_destination_base_digests,
@@ -639,7 +639,7 @@ def stage_proposer_evidence_bundle(
 # The proposer's exact tool surface. Read/Grep/Glob observe the read-only
 # evidence bundle and the incumbent skills; Bash writes the candidate overlay.
 # `--tools` restricts non-bare Claude to this list, so Write/Edit/Skill/Web are
-# unavailable while the trusted PreToolUse normalizer remains enabled. Settings
+# unavailable, and Grep/Glob stay available (--bare would drop them). Settings
 # pre-authorize Bash via autoAllowBashIfSandboxed, and the sandbox filesystem
 # policy confines writes to workspace/tmp/home. Exported so containment tests
 # exercise the production allowlist without drift.
@@ -662,6 +662,14 @@ def run_proposer(
         clone = runner.make_worktree(REPO_ROOT, "HEAD", Path(tmp))
         primary: BaseException | None = None
         try:
+            # The proposer authors the skill overlay that the arms are then
+            # scored with, so it must not see what it is scored against. Its
+            # clone carries eval/workflow_bench — the task prompts and the
+            # hidden oracles — which would let a proposal encode the expected
+            # behavior directly into a skill and win the gate without the
+            # skill being any better. Strip it from the working tree and from
+            # recoverable history exactly as the benchmark arms do.
+            sanitize_clone_for_hidden_oracles(clone)
             output_root = clone / ".wfbench-output"
             output_root.mkdir(mode=0o700)
             internal_overlay = output_root / "overlay"
@@ -693,9 +701,9 @@ def run_proposer(
                     # No permission_mode: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
                     # forces "default", so requesting dontAsk only warns. Tools
                     # are pre-approved via settings permissions.allow
-                    # (proposer_sandbox.build_claude_settings). Do not use
-                    # Claude's --bare flag here: it disables that trusted
-                    # PreToolUse hook along with untrusted hooks/plugins.
+                    # (proposer_sandbox.build_claude_settings). Not --bare:
+                    # bare ignores --tools and imposes its own Bash/Edit/Read
+                    # ceiling, which would cost the proposer Grep and Glob.
                     command_prefix=sandbox.command_prefix,
                     require_pid_namespace=True,
                     settings_json=sandbox.settings_json,
