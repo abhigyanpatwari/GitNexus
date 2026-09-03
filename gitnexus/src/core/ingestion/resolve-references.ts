@@ -322,6 +322,10 @@ function buildReference(site: ReferenceSite, top: Resolution): Reference {
     toDef: top.def.nodeId,
     atRange: site.atRange,
     kind: site.kind,
+    // The call form survives resolution so the graph bridge can mark
+    // construction sites (`callForm: 'constructor'`) on the CALLS edge it
+    // emits — a `Reference` otherwise keeps only the resolved def.
+    ...(site.kind === 'call' && site.callForm !== undefined ? { callForm: site.callForm } : {}),
     confidence: top.confidence,
     evidence: top.evidence,
   };

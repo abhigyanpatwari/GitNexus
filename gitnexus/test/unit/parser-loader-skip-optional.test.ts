@@ -39,6 +39,17 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(false);
     expect(isLanguageAvailable(SupportedLanguages.Dart)).toBe(false);
     expect(isLanguageAvailable(SupportedLanguages.Kotlin)).toBe(false);
+    // Zig is an npm optionalDependency rather than a vendored grammar, but it
+    // is just as genuinely optional: the documented opt-out must cover it too
+    // (`optional-grammars.ts` lists it among the skippable grammars).
+    expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
+  });
+
+  it('a comma list can name zig on its own', async () => {
+    const { isLanguageAvailable, isGrammarRuntimeSkipped } = await freshLoader('zig');
+    expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
+    expect(isGrammarRuntimeSkipped(SupportedLanguages.Zig)).toBe(true);
+    expect(isGrammarRuntimeSkipped(SupportedLanguages.Swift)).toBe(false);
   });
 
   it('skip=all/true/* also skip every optional grammar', async () => {
