@@ -41,7 +41,7 @@ import tempfile
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Sequence
 
 import yaml
 
@@ -76,6 +76,7 @@ from .promotion_apply import (
 )
 from .process_control import run_managed
 from .proposer_sandbox import (
+    MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
     ReadOnlyMount,
     SandboxError,
@@ -501,6 +502,60 @@ def proposer_evidence_entries(
                 artifact,
             )
     return entries
+
+
+def stage_proposer_evidence_bundle(
+    destination: Path,
+    *,
+    results_dir: Path | None,
+    evidence: list[dict[str, Any]],
+    learnings: list[dict[str, Any]],
+    gate_summary: list[str],
+    prior_proposal: Path | None = None,
+    secrets: Sequence[str] = (),
+) -> Path:
+    """Stage proposer evidence, dropping lowest-priority rows until the bundle fits.
+
+    ``select_evidence`` can return enough per-file-capped artifacts that the
+    aggregate exceeds ``MAX_BUNDLE_BYTES``. The seed preflight and the live
+    generation share this helper so an oversized prior run is skipped or
+    trimmed instead of aborting the whole evolution job.
+    """
+
+    remaining = list(evidence)
+    include_prior = prior_proposal
+    dropped_rows = 0
+    while True:
+        entries = proposer_evidence_entries(
+            results_dir=results_dir,
+            evidence=remaining,
+            learnings=learnings,
+            gate_summary=gate_summary,
+            prior_proposal=include_prior,
+        )
+        try:
+            bundle = stage_evidence_bundle(destination, entries, secrets=secrets)
+        except SandboxError as exc:
+            if "total byte limit" not in str(exc):
+                raise
+            if remaining:
+                remaining = remaining[:-1]
+                dropped_rows += 1
+                continue
+            if include_prior is not None:
+                include_prior = None
+                continue
+            raise SandboxError(
+                f"evidence bundle exceeds the {MAX_BUNDLE_BYTES} byte limit even after "
+                "dropping selected rows and the prior proposal"
+            ) from exc
+        if dropped_rows or include_prior is not prior_proposal:
+            print(
+                f"trimmed proposer evidence to fit the {MAX_BUNDLE_BYTES} byte budget "
+                f"(dropped {dropped_rows} row(s)"
+                f"{', omitted prior proposal' if include_prior is not prior_proposal else ''})"
+            )
+        return bundle
 
 
 # The proposer's exact tool surface. Read/Grep/Glob observe the read-only
@@ -1120,16 +1175,14 @@ def _run_generations(
                     staged_prior_proposal = seeded_proposal
             learnings = read_learnings(args.learnings)
             with tempfile.TemporaryDirectory(prefix="wfevidence-") as evidence_tmp:
-                bundle = stage_evidence_bundle(
+                bundle = stage_proposer_evidence_bundle(
                     Path(evidence_tmp) / "bundle",
-                    proposer_evidence_entries(
-                        results_dir=evidence_dir,
-                        evidence=evidence,
-                        learnings=learnings,
-                        gate_summary=gate_summary,
-                        prior_proposal=staged_prior_proposal,
-                    ),
-                    secrets=[args.auth_token or ""],
+                    results_dir=evidence_dir,
+                    evidence=evidence,
+                    learnings=learnings,
+                    gate_summary=gate_summary,
+                    prior_proposal=staged_prior_proposal,
+                    secrets=credential_secrets(args),
                 )
                 prompt = build_proposer_prompt(
                     results_dir=Path("/evidence") if evidence_dir else None,

@@ -234,7 +234,7 @@ describe('gitnexus skill-evolution workflow contract', () => {
     // The usability check must stay the proposer's own preflight. Narrowing it
     // to "the file has rows" would re-admit artifacts whose transcripts the
     // proposer then refuses to read, costing the generation its evidence.
-    expect(seed).toContain('proposer_evidence_entries');
+    expect(seed).toContain('stage_proposer_evidence_bundle');
     expect(seed).toContain('break');
   });
 

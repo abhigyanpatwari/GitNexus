@@ -421,7 +421,7 @@ jobs:
             # selection and transcript/digest preflight the proposer will use,
             # so an unusable newer run cannot hide an older useful one.
             if uv run --project eval --locked --extra dev python -c \
-              'from pathlib import Path; import json, sys; from workflow_bench.evolve import load_jsonl, proposer_evidence_entries, select_evidence, summarize_gate; result = Path(sys.argv[1]); root = result.parent; rows = select_evidence(load_jsonl(result)); rows or sys.exit(10); promotion = root / "promotion.json"; gate = summarize_gate(json.loads(promotion.read_text())) if promotion.is_file() else []; proposer_evidence_entries(results_dir=root, evidence=rows, learnings=[], gate_summary=gate)' \
+              'from pathlib import Path; import json, sys, tempfile; from workflow_bench.evolve import load_jsonl, select_evidence, stage_proposer_evidence_bundle, summarize_gate; result = Path(sys.argv[1]); root = result.parent; rows = select_evidence(load_jsonl(result)); rows or sys.exit(10); promotion = root / "promotion.json"; gate = summarize_gate(json.loads(promotion.read_text())) if promotion.is_file() else []; prior = root.parent / "proposal.md"; prior = prior if prior.is_file() and not prior.is_symlink() else None; dest = Path(tempfile.mkdtemp(prefix="wfseed-preflight-")) / "bundle"; stage_proposer_evidence_bundle(dest, results_dir=root, evidence=rows, learnings=[], gate_summary=gate, prior_proposal=prior)' \
               "${latest}"; then
               :
             else

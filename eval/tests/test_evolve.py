@@ -365,6 +365,44 @@ def test_proposer_stages_the_bounded_prior_proposal(tmp_path):
     assert len(bounded["prior-proposal.md"]) == evolve.MAX_EVIDENCE_FILE_BYTES
 
 
+def test_stage_proposer_evidence_bundle_drops_prior_proposal_to_fit_budget(tmp_path, monkeypatch, capsys):
+    # Per-file caps alone can still exceed the aggregate budget; the helper must
+    # drop the prior proposal instead of aborting the generation.
+    monkeypatch.setattr(evolve, "MAX_BUNDLE_BYTES", 2048)
+    monkeypatch.setattr("workflow_bench.proposer_sandbox.MAX_BUNDLE_BYTES", 2048)
+
+    prior = tmp_path / "proposal.md"
+    prior.write_text("x" * 2500)
+    prior.chmod(0o600)
+
+    from workflow_bench.proposer_sandbox import SandboxError, stage_evidence_bundle
+
+    oversized = evolve.proposer_evidence_entries(
+        results_dir=None,
+        evidence=[],
+        learnings=[],
+        gate_summary=[],
+        prior_proposal=prior,
+    )
+    with pytest.raises(SandboxError, match="total byte limit"):
+        stage_evidence_bundle(tmp_path / "raw", oversized)
+
+    bundle = evolve.stage_proposer_evidence_bundle(
+        tmp_path / "bundle",
+        results_dir=None,
+        evidence=[],
+        learnings=[],
+        gate_summary=[],
+        prior_proposal=prior,
+    )
+    names = {path.name for path in bundle.iterdir()}
+    assert "selected-rows.json" in names
+    assert "prior-proposal.md" not in names
+    logged = capsys.readouterr().out
+    assert "trimmed proposer evidence" in logged
+    assert "omitted prior proposal" in logged
+
+
 @pytest.mark.skipif(os.name == "nt", reason="proposal containment checks are POSIX-only")
 def test_proposer_refuses_a_prior_proposal_that_lost_its_trust_boundary(tmp_path):
     outside = tmp_path / "outside.md"
