@@ -22,6 +22,8 @@ export interface LuaMethodOwnerPair {
   readonly method: string;
   /** 0-based row of the `function_definition_statement` (for Method node lookup). */
   readonly defRow: number;
+  /** 0-based inclusive end row of the function definition (fallback node range). */
+  readonly defEndRow: number;
 }
 
 export interface LuaReturnedField {

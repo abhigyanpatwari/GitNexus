@@ -277,14 +277,11 @@ describe('Lua scope: bare require import', () => {
     try {
       writeFixtureRepo(tmpDir, {
         'lib/util.lua': 'return {}\n',
+        'lib.lua': 'return {}\n',
         'main.lua': 'local name = "lib.util"\nrequire(name)\nrequire("lib." .. "util")\n',
       });
       const result = await runPipelineFromRepo(tmpDir, () => {});
-      expect(
-        getRelationships(result, 'IMPORTS').some((edge) =>
-          edge.sourceFilePath?.endsWith('main.lua'),
-        ),
-      ).toBe(false);
+      expect(getRelationships(result, 'IMPORTS')).toEqual([]);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

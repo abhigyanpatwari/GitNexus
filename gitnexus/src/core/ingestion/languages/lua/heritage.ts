@@ -120,7 +120,7 @@ export function emitLuaHeritageEdges(
     }
 
     // ── HAS_METHOD: function ClassName:method() / function ClassName.method() ─
-    for (const { owner, method, defRow } of channel.methodOwners) {
+    for (const { owner, method, defRow, defEndRow } of channel.methodOwners) {
       const classGid = graphIdByFileAndName.get(`${parsed.filePath}::${owner}`);
       if (classGid === undefined) continue;
       // Resolve the Method graph node by position (0-based row + simple name).
@@ -137,8 +137,8 @@ export function emitLuaHeritageEdges(
             name: method,
             filePath: parsed.filePath,
             qualifiedName: `${owner}.${method}`,
-            startLine: defRow,
-            endLine: defRow,
+            startLine: defRow + 1,
+            endLine: defEndRow + 1,
             language: 'lua',
             isExported: true,
           },
