@@ -1041,10 +1041,6 @@ export function parseZigBuildModules(
   }));
 }
 
-/**
- * Index of the `)` matching the `(` that precedes `start`, skipping parens
- * inside `"…"` literals. -1 when unbalanced. Call on comment-stripped text.
- */
 /** First `.root_source_file = b.path("….zig")` at the TOP level of a
  *  module-options `.{ … }` — not a nested `.imports = &.{ .{ … } }` entry. */
 function zigTopLevelStaticRoot(args: string): string | null {
@@ -1072,6 +1068,10 @@ function zigTopLevelStaticRoot(args: string): string | null {
 /** `const m = b.createModule` / `const m = b.addModule` — not `config.createModule`. */
 const ZIG_MODULE_BINDING_RE = /(?:const|var)\s+([A-Za-z_]\w*)\s*=\s*b\.$/;
 
+/**
+ * Index of the `)` matching the `(` that precedes `start`, skipping parens
+ * inside `"…"` literals. -1 when unbalanced. Call on comment-stripped text.
+ */
 function findZigParenEnd(text: string, start: number): number {
   let depth = 1;
   let inString = false;
