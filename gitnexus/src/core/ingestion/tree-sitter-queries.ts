@@ -2638,7 +2638,8 @@ export const LUA_QUERIES = `
       (#eq? @_class "class")))) @definition.class
 
 ; The canonical middleclass package is also commonly called directly as
-; middleclass("Name") before being assigned to a local class variable.
+; middleclass("Name") before being assigned to a local class variable. Keep
+; the class name anchored to the local binding, matching the scope query.
 (local_variable_declaration
   (variable_list (variable name: (identifier) @name))
   (expression_list

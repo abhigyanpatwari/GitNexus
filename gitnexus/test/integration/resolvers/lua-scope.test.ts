@@ -790,7 +790,46 @@ local Cat = log("Cat")
       });
       const result = await runPipelineFromRepo(tmpDir, () => {});
       const classes = getNodesByLabel(result, 'Class');
-      expect(classes.some((node) => node.name === 'Dog' || node.name === 'Cat')).toBe(false);
+      expect(classes.some((name) => name === 'Dog' || name === 'Cat')).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('keeps direct middleclass aliases aligned with the local class identity', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-middleclass-alias-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'main.lua': 'local Foo = middleclass("Bar")\nreturn Foo\n',
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const classes = getNodesByLabel(result, 'Class');
+      expect(classes).toContain('Foo');
+      expect(classes).not.toContain('Bar');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not assign nested anonymous method values to a middleclass owner', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-nested-method-owner-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'main.lua': `local M = class("M")
+function outer()
+  M.helper = function()
+    return 1
+  end
+end
+return M
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      expect(
+        getRelationships(result, 'HAS_METHOD').some(
+          (edge) => edge.source === 'M' && edge.target === 'helper',
+        ),
+      ).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
