@@ -29,6 +29,7 @@ const workflowDocument = load(workflow) as {
     {
       environment?: unknown;
       env?: Record<string, string>;
+      if?: unknown;
       'timeout-minutes'?: unknown;
       steps?: Array<{
         name?: string;
@@ -407,6 +408,21 @@ exit 1`);
     expect(mint?.with).not.toHaveProperty('app-id');
   });
 
+  it('keeps scheduled runs off until the three-worker proof is explicitly enabled', () => {
+    const condition = String(evolveJob?.if);
+    expect(condition).toContain("github.event_name == 'workflow_dispatch'");
+    expect(condition).toContain("vars.GITNEXUS_EVOLUTION_ENABLED == 'true'");
+    expect(condition).toContain("vars.GITNEXUS_EVOLUTION_WORKERS == '3'");
+  });
+
+  it('fails before paid work when runner survival protections are ineffective', () => {
+    const preflight = stepRun('Verify runner survival policy');
+    expect(preflight).toContain('/etc/needrestart/conf.d/90-gitnexus-evolution.conf');
+    expect(preflight).toContain("$nrconf{restart} = 'l';");
+    expect(preflight).toContain('/proc/self/oom_score_adj');
+    expect(preflight).toContain('oom_score_adjustment > -900');
+  });
+
   it('labels the upload-artifact pin with its real version', () => {
     expect(workflow).toContain(
       'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1',
@@ -456,7 +472,7 @@ exit 1`);
     expect(workflow).toContain('RELEASE_APP_ID');
     expect(workflow).toContain('RELEASE_APP_PRIVATE_KEY');
     expect(workflow).toContain('gitnexus-evolution');
-    expect(workflow).toContain('[x] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true');
+    expect(workflow).toContain('GITNEXUS_EVOLUTION_ENABLED=true for scheduled runs');
     expect(workflow).toContain('GITNEXUS_EVOLUTION_WORKERS');
   });
 });

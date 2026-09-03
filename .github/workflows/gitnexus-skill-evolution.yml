@@ -41,7 +41,8 @@
 #     most weekly. Revisit if run frequency increases or the threat model
 #     changes; stopping already bounds the exposure window to the job's own
 #     runtime on 1 day out of 7.
-# [ ] Stop the runner box from restarting services under a running job. A run
+# [ ] Install and verify the runner survival policy below before enabling
+#     scheduled runs. A run
 #     spans ~15h and apt-daily-upgrade.timer fires daily (~06:34), so every
 #     scheduled run crosses it. On 2026-08-02 unattended-upgrades upgraded
 #     openssl at 07:54:02 and needrestart restarted the Actions runner five
@@ -58,14 +59,13 @@
 #     uploads, and a promotion (if any) opens a well-formed PR. Run
 #     29907431284 (2026-07-22) went green end to end in 14h45m and reached a
 #     gate decision (`insufficient_evidence`, no promotion).
-# [x] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true. Roll back
-#     the scheduled lane by setting it to false. workflow_dispatch always runs
-#     the full benchmark loop regardless and bills real API usage on
-#     GITNEXUS_BENCH_AUTH_TOKEN.
 # [ ] After resizing the runner, prove a manual workers=3 run has zero excluded
 #     runs and does not stretch the 48-minute serial mean toward the session
-#     ceiling; then set GITNEXUS_EVOLUTION_WORKERS=3 for scheduled runs. Leave
-#     it unset or set it to 1 for the serial fallback and immediate rollback.
+#     ceiling; then set GITNEXUS_EVOLUTION_WORKERS=3 and
+#     GITNEXUS_EVOLUTION_ENABLED=true for scheduled runs. Scheduled runs
+#     require both values, so leaving workers unset/1 is an immediate rollback;
+#     workflow_dispatch remains available for the proof and bills real API
+#     usage on GITNEXUS_BENCH_AUTH_TOKEN.
 name: GitNexus skill evolution
 
 on:
@@ -121,7 +121,10 @@ jobs:
       github.repository == 'abhigyanpatwari/GitNexus' &&
       (
         github.event_name == 'workflow_dispatch' ||
-        vars.GITNEXUS_EVOLUTION_ENABLED == 'true'
+        (
+          vars.GITNEXUS_EVOLUTION_ENABLED == 'true' &&
+          vars.GITNEXUS_EVOLUTION_WORKERS == '3'
+        )
       )
     runs-on: [self-hosted, linux, x64, gitnexus-evolution]
     # Gate promotion runs on a protected Environment. An admin must attach a
@@ -161,6 +164,20 @@ jobs:
           set -euo pipefail
           if [[ "${HAS_TOKEN}" != 'true' ]]; then
             echo '::error::GITNEXUS_BENCH_AUTH_TOKEN is not configured. The evolution loop runs real benchmark sessions and needs an Anthropic API key (not the Claude Code OAuth token).'
+            exit 1
+          fi
+
+      - name: Verify runner survival policy
+        run: |
+          set -euo pipefail
+          needrestart_policy=/etc/needrestart/conf.d/90-gitnexus-evolution.conf
+          if [[ ! -r "${needrestart_policy}" ]] || ! grep -Fqx '$nrconf{restart} = '\''l'\'';' "${needrestart_policy}"; then
+            echo "::error::${needrestart_policy} must contain: \$nrconf{restart} = 'l';"
+            exit 1
+          fi
+          oom_score_adjustment="$(</proc/self/oom_score_adj)"
+          if (( oom_score_adjustment > -900 )); then
+            echo "::error::Runner.Worker descendants require OOMScoreAdjust=-900 or stronger; effective value is ${oom_score_adjustment}."
             exit 1
           fi
 
