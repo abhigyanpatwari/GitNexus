@@ -4044,52 +4044,8 @@ async function runFullAnalysisInner(
     // meta.indexedAt = T_new while lbugPath still resolves to the pre-swap
     // inode (which latched the reader on the stale index permanently). The meta
     // object is fully computed at this point; only its write is deferred.
-
-    // Persist the incremental parse cache for the next run. Wraps in
-    // try/catch so a cache-write failure never breaks an otherwise
-    // successful indexing run. Prune stale chunk-hash entries first so
-    // the cache file size stays bounded across runs (chunks whose
-    // composition no longer matches anything in the current scan are
-    // dead weight; the parse phase populates `usedKeys` as it processes
-    // chunks).
-    try {
-      // #2106 R6: the parse cache + durable store are shared across branches.
-      // Before pruning to this run's keys, fold in the OTHER branches' recorded
-      // chunk keys so a branch switch doesn't evict their still-live shards.
-      // Adding to usedKeys makes them survive pruneCache AND land in the saved
-      // index (saveParseCache builds the index from usedKeys). Excludes this
-      // run's own meta dir, so a single-branch repo folds in nothing → prune
-      // set byte-identical to today.
-      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
-      if (complete) {
-        for (const k of siblingKeys) parseCache.usedKeys.add(k);
-      } else {
-        // Fail-safe toward retention: a sibling meta was unreadable, so keep
-        // everything currently loaded rather than evict on incomplete info.
-        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
-        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
-      }
-      const pruned = pruneCache(parseCache, parseCache.usedKeys);
-      if (pruned > 0) {
-        log(`Parse cache: pruned ${pruned} stale chunk entries`);
-      }
-      const savedKeys = await saveParseCache(storagePath, parseCache);
-      // Prune the durable ParsedFile store to EXACTLY the parse cache's
-      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
-      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
-      // and its durable shards exist. A quarantined chunk (in usedKeys but with
-      // no parse-cache shard) drops its durable subdir here and re-dispatches
-      // next run. Same try/catch — a durable-store write failure must never
-      // break an otherwise successful run (next run treats it as a miss).
-      await mergeStagedDurableParsedFileStore(
-        storagePath,
-        parseCache.storagePath ?? storagePath,
-        PARSE_CACHE_VERSION,
-        new Set(savedKeys),
-      );
-    } catch (e) {
-      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
-    }
+    // Parse-cache publish waits until after that swap + saveMeta so a failed
+    // registerRepo / close / swap cannot replace live shards (#3153).
 
     // Forward the --name alias and the registry-collision bypass bit.
     // `allowDuplicateName` is its own concern — independent from the
@@ -4112,8 +4068,8 @@ async function runFullAnalysisInner(
     // ── #2354: the flat workspace slot has adopted this run's branch ──────
     // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
     // (unreachable once the flat slot serves it) and align the registry's
-    // top-level branch label. Best-effort like the parse-cache save above
-    // (#2364 review F5): the index is complete and registered, and a failure
+    // top-level branch label. Best-effort (#2364 review F5): the index is
+    // complete and registered, and a failure
     // here leaves only a stale registry label / undeleted shadowed dir —
     // never wrong routing, because the flat meta this run already stamped is
     // what applyBranchScope trusts. Retried by the next content-changing run
@@ -4240,6 +4196,51 @@ async function runFullAnalysisInner(
     // is a crash-safety improvement: a failed swap leaves the previous index
     // live and the next run recovers via the full-rebuild path.
     await saveMeta(metaDir, meta);
+
+    // Persist the incremental parse cache only after a successful graph
+    // publish (#3153). try/catch so a cache-write failure never breaks an
+    // otherwise successful indexing run. Prune stale chunk-hash entries first
+    // so the cache file size stays bounded across runs (chunks whose
+    // composition no longer matches anything in the current scan are dead
+    // weight; the parse phase populates `usedKeys` as it processes chunks).
+    try {
+      // #2106 R6: the parse cache + durable store are shared across branches.
+      // Before pruning to this run's keys, fold in the OTHER branches' recorded
+      // chunk keys so a branch switch doesn't evict their still-live shards.
+      // Adding to usedKeys makes them survive pruneCache AND land in the saved
+      // index (saveParseCache builds the index from usedKeys). Excludes this
+      // run's own meta dir, so a single-branch repo folds in nothing → prune
+      // set byte-identical to today.
+      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+      if (complete) {
+        for (const k of siblingKeys) parseCache.usedKeys.add(k);
+      } else {
+        // Fail-safe toward retention: a sibling meta was unreadable, so keep
+        // everything currently loaded rather than evict on incomplete info.
+        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
+        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+      }
+      const pruned = pruneCache(parseCache, parseCache.usedKeys);
+      if (pruned > 0) {
+        log(`Parse cache: pruned ${pruned} stale chunk entries`);
+      }
+      const savedKeys = await saveParseCache(storagePath, parseCache);
+      // Prune the durable ParsedFile store to EXACTLY the parse cache's
+      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
+      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
+      // and its durable shards exist. A quarantined chunk (in usedKeys but with
+      // no parse-cache shard) drops its durable subdir here and re-dispatches
+      // next run. Same try/catch — a durable-store write failure must never
+      // break an otherwise successful run (next run treats it as a miss).
+      await mergeStagedDurableParsedFileStore(
+        storagePath,
+        parseCache.storagePath ?? storagePath,
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
+    } catch (e) {
+      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
+    }
 
     progress('done', 100, 'Done');
 
