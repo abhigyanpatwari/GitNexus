@@ -790,8 +790,10 @@ def test_workers_is_bounded_at_both_ends_before_the_sweep_starts():
             runner.build_parser().parse_args([*base, "--workers", rejected])
 
 
-def test_progress_line_reports_an_infra_error_as_unmeasured_not_as_free():
+@pytest.mark.parametrize("error_kind", ["infra-error", "cleanup-failure"])
+def test_progress_line_reports_an_unmeasured_failure_as_unmeasured_not_as_free(error_kind):
     dead = runner.infra_error_record(RuntimeError("bwrap died"))
+    dead["error_kind"] = error_kind
 
     line = runner.cell_progress_line("task", "workflow", 0, dead)
 
@@ -799,7 +801,7 @@ def test_progress_line_reports_an_infra_error_as_unmeasured_not_as_free():
     # as numbers they read as a cell that ran instantly for free.
     assert "cost=n/a" in line
     assert "took=n/a" in line
-    assert "error_kind=infra-error" in line
+    assert f"error_kind={error_kind}" in line
     # results.jsonl is promotion evidence — only the display changes.
     assert dead["cost_usd"] == 0.0
     assert dead["duration_s"] == 0.0

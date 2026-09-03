@@ -1062,7 +1062,7 @@ def cell_progress_line(task_id: str, arm: str, run_idx: int, record: dict[str, A
     The row on disk is untouched: results.jsonl is promotion evidence and its
     field types stay as they are.
     """
-    measured = record.get("error_kind") != "infra-error"
+    measured = record.get("error_kind") not in {"infra-error", "cleanup-failure"}
     cost_usd = record.get("cost_usd") if measured else None
     duration_s = record.get("duration_s") if measured else None
     return (

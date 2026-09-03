@@ -832,11 +832,20 @@ def validate_promotion_for_apply(
             raise ValueError(f"candidate arm is not promotable: {candidate}")
         if decision.get("metric") != policy.get("metric"):
             raise ValueError(f"promotion decision metric mismatch for {candidate}")
-        _require_gate_evidence(decision, candidate=candidate)
+        _require_gate_evidence(
+            decision,
+            candidate=candidate,
+            selected_tasks={task["id"] for task in selected_tasks},
+        )
     return [by_arm[candidate] for candidate in required_candidate_arms]
 
 
-def _require_gate_evidence(decision: dict[str, Any], *, candidate: str) -> None:
+def _require_gate_evidence(
+    decision: dict[str, Any],
+    *,
+    candidate: str,
+    selected_tasks: set[str],
+) -> None:
     """Bind the schema 4 gate fields a schema 3 decision cannot supply.
 
     Schema 4 promotes on a partial evidence base — some tasks can sit outside
@@ -860,6 +869,8 @@ def _require_gate_evidence(decision: dict[str, Any], *, candidate: str) -> None:
         (gated if row["gated"] else ungated).append(row["task"])
     if len(set(gated) | set(ungated)) != len(tasks):
         raise ValueError(f"promotion decision repeats a task in its gate evidence for {candidate}")
+    if set(gated) | set(ungated) != selected_tasks:
+        raise ValueError(f"promotion decision task evidence does not match selected tasks for {candidate}")
 
     declared = decision.get("ungated_tasks")
     if not isinstance(declared, list) or any(not isinstance(task, str) for task in declared):

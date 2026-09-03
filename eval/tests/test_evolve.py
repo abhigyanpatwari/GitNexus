@@ -812,9 +812,9 @@ def test_resolve_incumbent_arms_rejects_incomplete_and_extra_explicit_sets(tmp_p
         resolve_incumbent_arms(work, ["workflow"])
 
 
-def bound_task_fixture():
+def bound_task_fixture(task_id="task-a"):
     return {
-        "id": "task",
+        "id": task_id,
         "prompt_digest": "prompt",
         "oracle_digest": "a" * 64,
         "oracle_command_digest": "b" * 64,
@@ -823,6 +823,10 @@ def bound_task_fixture():
         "sandbox_dependency_manifest_digest": "f" * 64,
         "oracle_files": [{"target": "oracle.test.ts", "sha256": "d" * 64, "size": 10}],
     }
+
+
+def bound_task_fixtures():
+    return [bound_task_fixture("task-a"), bound_task_fixture("task-impossible")]
 
 
 def promote_decision(**overrides):
@@ -854,7 +858,7 @@ def promotion_fixture(*, decisions=None, expires_delta=timedelta(days=1)):
         "candidate_overlay_digest": "digest",
         "target_base_digests": {"path": "base"},
         "required_candidate_arms": ["candidate_workflow"],
-        "selected_tasks": [bound_task_fixture()],
+        "selected_tasks": bound_task_fixtures(),
         "policy": {
             "metric": "cost_usd",
             "min_runs": 3,
@@ -871,7 +875,7 @@ def validate_fixture(promotion):
         overlay_digest="digest",
         benchmark_model="bench-model",
         proposer_model="proposer-model",
-        selected_tasks=[bound_task_fixture()],
+        selected_tasks=bound_task_fixtures(),
         target_base_digests={"path": "base"},
         required_candidate_arms=["candidate_workflow"],
         policy={
@@ -908,6 +912,10 @@ def test_promotion_apply_requires_one_promote_for_every_bound_arm():
             {"tasks": [{"task": "task-a", "gated": True}, {"task": "task-a", "gated": False}]},
             "repeats a task",
         ),
+        (
+            {"ungated_tasks": [], "tasks": [{"task": "fabricated", "gated": True}]},
+            "does not match selected tasks",
+        ),
         ({"ungated_tasks": None}, "missing its ungated task list"),
         # The verdict claims a full gate; the per-task rows say a task sat
         # outside it.
@@ -921,18 +929,6 @@ def test_promotion_apply_requires_one_promote_for_every_bound_arm():
                 ],
             },
             "no gated task",
-        ),
-        # One gated task out of three decides nothing.
-        (
-            {
-                "ungated_tasks": ["task-impossible", "task-impossible-2"],
-                "tasks": [
-                    {"task": "task-a", "gated": True},
-                    {"task": "task-impossible", "gated": False},
-                    {"task": "task-impossible-2", "gated": False},
-                ],
-            },
-            "too thin a gated evidence base",
         ),
     ],
 )
@@ -948,6 +944,32 @@ def test_promotion_apply_binds_the_schema_4_gate_evidence(overrides, match):
         validate_fixture(promotion_fixture(decisions=[decision]))
 
 
+def test_promotion_apply_rejects_a_gate_with_only_one_of_three_selected_tasks():
+    selected = [*bound_task_fixtures(), bound_task_fixture("task-impossible-2")]
+    decision = promote_decision(
+        ungated_tasks=["task-impossible", "task-impossible-2"],
+        tasks=[
+            {"task": "task-a", "gated": True},
+            {"task": "task-impossible", "gated": False},
+            {"task": "task-impossible-2", "gated": False},
+        ],
+    )
+    promotion = promotion_fixture(decisions=[decision])
+    promotion["selected_tasks"] = selected
+
+    with pytest.raises(ValueError, match="too thin a gated evidence base"):
+        validate_promotion_for_apply(
+            promotion,
+            overlay_digest="digest",
+            benchmark_model="bench-model",
+            proposer_model="proposer-model",
+            selected_tasks=selected,
+            target_base_digests={"path": "base"},
+            required_candidate_arms=["candidate_workflow"],
+            policy=promotion["policy"],
+        )
+
+
 def test_manual_initial_overlay_has_no_fictitious_proposer_model():
     promotion = promotion_fixture()
     promotion["proposer_model"] = None
@@ -958,7 +980,7 @@ def test_manual_initial_overlay_has_no_fictitious_proposer_model():
         overlay_digest="digest",
         benchmark_model="bench-model",
         proposer_model=None,
-        selected_tasks=[bound_task_fixture()],
+        selected_tasks=bound_task_fixtures(),
         target_base_digests={"path": "base"},
         required_candidate_arms=["candidate_workflow"],
         policy=promotion["policy"],
