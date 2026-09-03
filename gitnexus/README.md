@@ -236,7 +236,8 @@ gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks 
 gitnexus analyze [path]          # Index a repository (or update stale index)
 gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
-gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
+gitnexus analyze --force         # Rebuild graph + FTS; may reuse unchanged parser output
+gitnexus analyze --no-parse-cache # Re-parse every source file, then rebuild graph + FTS
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities

@@ -75,7 +75,7 @@ program
   .description('Index a repository (full analysis)')
   .option('--watch', 'Keep the index current with serialized incremental refreshes')
   .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
-  .option('-f, --force', 'Force full re-index even if up to date')
+  .option('-f, --force', 'Force graph and FTS rebuild; unchanged parser output may be reused')
   .option(
     '--no-parse-cache',
     'Re-parse every source file instead of replaying cached parser output',

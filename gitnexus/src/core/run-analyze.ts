@@ -1971,12 +1971,18 @@ async function runFullAnalysisInner(
   // can opt out so unchanged source files are parsed again (#3152).
   // Loaded into a single ParseCache object that the pipeline mutates
   // in-place (cache hits leave entries unchanged; misses add new ones).
-  // Omitting storagePath on the empty runtime cache also prevents the sibling
-  // parsedfile-cache from being consulted. The fresh results are still saved
-  // at the end of the run and replace both durable cache generations.
+  // Keep storagePath so cold runs retain disk-backed ParsedFile offload and
+  // rewrite the sibling durable store. Empty readable-key state prevents any
+  // parse-cache or ParsedFile shard from the previous generation being replayed.
   const parseCache =
     options.useParseCache === false
-      ? { version: PARSE_CACHE_VERSION, entries: new Map(), usedKeys: new Set<string>() }
+      ? {
+          version: PARSE_CACHE_VERSION,
+          entries: new Map(),
+          usedKeys: new Set<string>(),
+          storagePath,
+          onDiskKeys: new Set<string>(),
+        }
       : await loadParseCache(storagePath);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
