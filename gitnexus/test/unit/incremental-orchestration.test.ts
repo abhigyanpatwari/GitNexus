@@ -663,12 +663,17 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(steady.alreadyUpToDate).toBe(true);
 
+      const forceLogs: string[] = [];
       const forcedSteady = await runFullAnalysis(
         repo.dbPath,
         { skipAgentsMd: true, force: true },
-        { onProgress: () => {} },
+        { onProgress: () => {}, onLog: (message) => forceLogs.push(message) },
       );
       expect(forcedSteady.alreadyUpToDate).toBeUndefined();
+      expect(forceLogs.join('\n')).toContain(
+        '--force rebuilt the graph and FTS while reusing cached parser output',
+      );
+      expect(forceLogs.join('\n')).toContain('increment SCHEMA_BUMP');
       expect(
         await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
       ).toEqual([]);

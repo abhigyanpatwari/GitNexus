@@ -2069,6 +2069,16 @@ async function runFullAnalysisInner(
     },
   );
 
+  if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
+    log(
+      `--force rebuilt the graph and FTS while reusing cached parser output for ` +
+        `${pipelineResult.parseCacheHitFileCount} file(s) ` +
+        `(parse cache ${PARSE_CACHE_VERSION}). ` +
+        `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
+        `src/storage/parse-cache.ts to invalidate parser output.`,
+    );
+  }
+
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
 
