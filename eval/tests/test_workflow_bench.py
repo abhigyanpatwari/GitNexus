@@ -91,7 +91,7 @@ def task_row(task_id: str, **overrides):
             "command": "true",
             "files": [
                 {
-                    "source": "trivial-version-alias.oracle.test.ts",
+                    "source": "trivial-status-json-alias.oracle.test.ts",
                     "target": "oracle.test.ts",
                 }
             ],
@@ -236,8 +236,8 @@ def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_asset
     tasks = yaml.safe_load(task_file.read_text())["tasks"]
     selected, skipped = select_tasks(tasks, include_expensive=False)
     assert [task["id"] for task in selected] == [
-        "trivial-version-alias",
-        "inv-bug-pdg-note",
+        "trivial-status-json-alias",
+        "inv-bug-c-system-include",
         "inv-feature-list-repos-filter",
     ]
     assert skipped == ["cross-module-parse-retry"]

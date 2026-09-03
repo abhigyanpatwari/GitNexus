@@ -400,6 +400,34 @@ describe('LocalBackend.callTool', () => {
     expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
   });
 
+  it('treats adapter-materialized blank optional aliases as absent', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+    const contextSpy = vi
+      .spyOn(backend as any, 'context')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      name: '',
+      symbol: ' ',
+      direction: 'upstream',
+    });
+    await backend.callTool('context', {
+      name: 'validate',
+      file_path: '',
+      file: ' ',
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate' });
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('name');
+    expect(impactSpy.mock.calls[0][1]).not.toHaveProperty('symbol');
+    expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
+    expect(contextSpy.mock.calls[0][1]).not.toHaveProperty('file_path');
+    expect(contextSpy.mock.calls[0][1]).not.toHaveProperty('file');
+  });
+
   it('allows agreeing canonical and alias values after trimming', async () => {
     const impactSpy = vi
       .spyOn(backend as any, 'impact')
@@ -429,9 +457,7 @@ describe('LocalBackend.callTool', () => {
   });
 
   it.each([
-    ['impact', { target: '', direction: 'upstream' }],
     ['impact', { name: 42, direction: 'upstream' }],
-    ['context', { name: 'validate', file: '   ' }],
     ['context', { name: 'validate', file: null }],
   ])('rejects invalid %s aliases before repository resolution', async (method, params) => {
     const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
@@ -439,6 +465,19 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool(method, params);
 
     expect(result.error).toMatch(/non-empty string/i);
+    expect(resolveSpy).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a blank required impact target before repository resolution', async () => {
+    const resolveSpy = vi.spyOn(backend, 'selectToolRepository');
+
+    const result = await backend.callTool('impact', {
+      target: '',
+      name: ' ',
+      direction: 'upstream',
+    });
+
+    expect(result.error).toMatch(/requires target, name, symbol, or target_uid/i);
     expect(resolveSpy).not.toHaveBeenCalled();
   });
 

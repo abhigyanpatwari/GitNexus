@@ -128,6 +128,48 @@ def test_progress_reports_errors_and_mcp_io_but_skips_other_tool_payloads() -> N
     assert "edited secret.py" not in output
 
 
+def test_progress_distinguishes_mcp_semantic_errors_from_transport_success() -> None:
+    stream = io.StringIO()
+    progress = SessionProgress("flow", stream=stream, heartbeat_s=3600)
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "m1",
+                        "name": "mcp__gitnexus__impact",
+                        "input": {"target": "missing", "direction": "upstream"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "m1",
+                        "is_error": False,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '{"error":"Target missing not found"}\n\n---\n**Next:** retry',
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+    ]
+    for event in events:
+        progress.observe((json.dumps(event) + "\n").encode())
+
+    assert "tool mcp__gitnexus__impact result=semantic-error" in stream.getvalue()
+
+
 def test_progress_calls_out_api_retries_because_that_is_the_stuck_signature() -> None:
     stream = io.StringIO()
     progress = SessionProgress("proposer", stream=stream, heartbeat_s=3600)
@@ -193,7 +235,7 @@ def test_cell_failure_detail_line_explains_why_a_cell_failed() -> None:
     assert cell_failure_detail_line("t", "workflow", 0, {"error_kind": "x"}) is None
 
     line = cell_failure_detail_line(
-        "trivial-version-alias",
+        "trivial-status-json-alias",
         "candidate_workflow",
         1,
         {
@@ -203,7 +245,7 @@ def test_cell_failure_detail_line_explains_why_a_cell_failed() -> None:
         ("sk-secret-value",),
     )
     assert line is not None
-    assert line.startswith("[trivial-version-alias][candidate_workflow][run 1] detail: ")
+    assert line.startswith("[trivial-status-json-alias][candidate_workflow][run 1] detail: ")
     assert "unauthorized workspace path" in line
     assert "sk-secret-value" not in line
     assert "\n" not in line

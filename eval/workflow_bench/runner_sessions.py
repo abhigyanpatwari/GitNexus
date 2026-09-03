@@ -37,7 +37,7 @@ USAGE_FIELDS = (
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 # Wall-clock ceiling for one headless session, shared by the runner and the
 # evolution loop so both CLIs kill a session at the same point. 3600s was too
-# tight for the `workflow` arm: run 29907431284 lost two inv-bug-pdg-note
+# tight for the `workflow` arm: run 29907431284 lost two investigation-task
 # incumbent runs to SIGTERM at the ceiling while a Bash verification step was
 # still going, and the promotion gate demands zero excluded runs in both paired
 # arms — so a single ceiling hit costs the whole generation. Successful
@@ -79,6 +79,40 @@ def _tool_preview(value: Any, secrets: Sequence[str]) -> str:
         return redacted
     omitted = len(redacted) - MAX_TOOL_PREVIEW_CHARS
     return f"{redacted[:MAX_TOOL_PREVIEW_CHARS]}…[truncated {omitted} chars]"
+
+
+def _tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _mcp_result_has_semantic_error(content: Any) -> bool:
+    """Recognize GitNexus error envelopes that MCP transported successfully."""
+
+    text = _tool_result_text(content).strip()
+    if not text:
+        return False
+    payload = text.split("\n\n---", 1)[0].strip()
+    try:
+        decoded = json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        return bool(re.match(r"^error\s*:", payload, re.IGNORECASE))
+    return isinstance(decoded, dict) and isinstance(decoded.get("error"), str)
+
+
+def _tool_result_log_status(name: str, block: dict[str, Any]) -> str:
+    if block.get("is_error") is True:
+        return "error"
+    if name.startswith("mcp__") and _mcp_result_has_semantic_error(block.get("content")):
+        return "semantic-error"
+    return "ok"
 
 
 class SessionProgress:
@@ -205,7 +239,7 @@ class SessionProgress:
                 name = self._pending_tools.pop(tool_id, "tool") if isinstance(tool_id, str) else "tool"
                 if not _debuggable_tool(name):
                     continue
-                status = "error" if block.get("is_error") is True else "ok"
+                status = _tool_result_log_status(name, block)
                 self._last_activity = f"{name} result {status}"
                 self._say(f"tool {name} result={status} output={_tool_preview(block.get('content'), self._secrets)}")
         elif kind == "system" and event.get("subtype") == "api_retry":

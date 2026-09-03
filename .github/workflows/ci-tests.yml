@@ -821,7 +821,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap socat
+          sudo apt-get install --yes --no-install-recommends bubblewrap ripgrep socat
           apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

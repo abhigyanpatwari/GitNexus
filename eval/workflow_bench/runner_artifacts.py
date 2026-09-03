@@ -34,6 +34,8 @@ MAX_WORKSPACE_SNAPSHOT_FILE_BYTES = 1024 * 1024 * 1024
 WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE = frozenset(
     {
         ".claude",
+        ".bash_profile",
+        ".bashrc",
         ".env",
         ".env.development",
         ".env.development.local",
@@ -43,14 +45,22 @@ WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE = frozenset(
         ".env.test",
         ".env.test.local",
         ".gitmodules",
+        ".gitconfig",
+        ".idea",
         ".npmrc",
+        ".profile",
+        ".ripgreprc",
+        ".vscode",
         ".yarnrc",
         ".yarnrc.yml",
+        ".zprofile",
+        ".zshrc",
         "bunfig.toml",
         "node_modules",
         "package-lock.json",
         "package.json",
         "pnpm-lock.yaml",
+        "scripts",
         "yarn.lock",
     }
 )

@@ -263,7 +263,7 @@ jobs:
           # begin their catch-up run shortly after boot. Wait for dpkg instead
           # of racing the same package lock and failing the weekly lane.
           sudo apt-get -o DPkg::Lock::Timeout=600 update
-          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends bubblewrap socat
+          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends bubblewrap ripgrep socat
           apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

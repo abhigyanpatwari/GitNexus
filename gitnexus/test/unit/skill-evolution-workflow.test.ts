@@ -389,6 +389,7 @@ exit 1`);
     const install = stepRun('Install sandbox runtime and pinned Claude CLI');
     expect(install).toContain('DPkg::Lock::Timeout=600 update');
     expect(install).toContain('DPkg::Lock::Timeout=600 install');
+    expect(install).toContain('ripgrep');
   });
 
   it('names the promotion branch with the run attempt for re-run recovery', () => {

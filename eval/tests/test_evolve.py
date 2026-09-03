@@ -137,6 +137,8 @@ def test_build_proposer_prompt_carries_evidence_constraints_and_paths(tmp_path):
     assert "node .gitnexus/run.cjs analyze" in prompt
     assert "1 row(s) in /evidence/learnings.json" in prompt
     assert "1 selected row(s) in /evidence/selected-rows.json" in prompt
+    assert "exact staged" in prompt
+    assert "no full results.jsonl" in prompt
     assert "1 decision(s) in /evidence/gate-summary.json" in prompt
     assert "budget blown on reruns" not in prompt
     assert "verify-failed" not in prompt
@@ -182,6 +184,8 @@ def test_proposer_reads_only_digest_bound_transcripts_below_results(tmp_path, mo
     artifact = transcripts / "task-workflow-run0-session.jsonl"
     artifact.write_bytes(payload)
     artifact.chmod(0o600)
+    patch = results / "demo-task-workflow-run0.patch"
+    patch.write_text("diff --git a/a b/a\n")
     metadata = {
         "path": "transcripts/task-workflow-run0-session.jsonl",
         "sha256": hashlib.sha256(payload).hexdigest(),
@@ -202,6 +206,10 @@ def test_proposer_reads_only_digest_bound_transcripts_below_results(tmp_path, mo
     )
 
     assert entries["transcript-0-0.jsonl"] == payload.decode()
+    assert entries["patch-0.diff"] == patch.read_text()
+    staged_rows = entries["selected-rows.json"]
+    assert staged_rows[0]["patch_file"] == "patch-0.diff"
+    assert staged_rows[0]["transcript_files"] == ["transcript-0-0.jsonl"]
     assert "foreign host transcript" not in json.dumps(entries)
 
     bad_digest = {**metadata, "sha256": "0" * 64}
@@ -401,6 +409,49 @@ def test_stage_proposer_evidence_bundle_drops_prior_proposal_to_fit_budget(tmp_p
     logged = capsys.readouterr().out
     assert "trimmed proposer evidence" in logged
     assert "omitted prior proposal" in logged
+
+
+def test_stage_proposer_evidence_bundle_compacts_artifacts_before_dropping_rows(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(evolve, "MAX_BUNDLE_BYTES", 300_000)
+    monkeypatch.setattr("workflow_bench.proposer_sandbox.MAX_BUNDLE_BYTES", 300_000)
+    results = tmp_path / "results"
+    transcripts = results / "transcripts"
+    transcripts.mkdir(parents=True, mode=0o700)
+    rows = []
+    for index in range(2):
+        payload = f"session-{index}\n".encode() + b"x" * 100_000
+        transcript = transcripts / f"session-{index}.jsonl"
+        transcript.write_bytes(payload)
+        transcript.chmod(0o600)
+        (results / f"task-{index}-workflow-run0.patch").write_bytes(b"p" * 100_000)
+        rows.append(
+            row(
+                task=f"task-{index}",
+                transcript_artifacts=[
+                    {
+                        "path": f"transcripts/session-{index}.jsonl",
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "bytes": len(payload),
+                        "source": PARENT_EVENT_STREAM_SOURCE,
+                    }
+                ],
+            )
+        )
+
+    bundle = evolve.stage_proposer_evidence_bundle(
+        tmp_path / "bundle",
+        results_dir=results,
+        evidence=rows,
+        learnings=[],
+        gate_summary=[],
+    )
+
+    staged_rows = json.loads((bundle / "selected-rows.json").read_text())
+    assert len(staged_rows) == 2
+    assert all((bundle / staged["patch_file"]).is_file() for staged in staged_rows)
+    logged = capsys.readouterr().out
+    assert "artifact cap" in logged
+    assert "dropped 0 row(s)" in logged
 
 
 @pytest.mark.skipif(os.name == "nt", reason="proposal containment checks are POSIX-only")
@@ -736,7 +787,7 @@ def test_runner_argv_keeps_task_commit_pinned_when_ref_moves(tmp_path):
             "command": "true",
             "files": [
                 {
-                    "source": "trivial-version-alias.oracle.test.ts",
+                    "source": "trivial-status-json-alias.oracle.test.ts",
                     "target": "oracle.test.ts",
                 }
             ],
