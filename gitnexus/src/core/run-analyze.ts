@@ -2042,52 +2042,52 @@ async function runFullAnalysisInner(
   let pipelineResult;
   try {
     pipelineResult = await runPipelineFromRepo(
-    repoPath,
-    (p) => {
-      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-      const scaled = Math.round(p.percent * 0.6);
-      const message = p.detail
-        ? `${p.message || phaseLabel} (${p.detail})`
-        : p.message || phaseLabel;
-      progress(p.phase, scaled, message);
-    },
-    {
-      parseCache,
-      workerPoolSize: options.workerPoolSize,
-      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
-      // build gate (workerData.pdg) and the scope-resolution emit gate.
-      pdg: options.pdg === true,
-      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
-      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
-      pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
-      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
-      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
-      pdgMaxTaintHops: options.pdgMaxTaintHops,
-      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
-      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
-      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
-      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
-      // (force === true) so the incremental writeback never reads back an
-      // offloaded BasicBlock layer. Memory-only; byte-identical output.
-      streamPdgEmit: resolveStreamPdgEmit(options),
-      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
-      // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
-      // toggle above, for the same incremental-writeback reason.
-      streamGraphEmit: streamGraphEmitActive,
-      // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
-      // path this helper mkdtempSyncs a real directory, so evaluating it
-      // unconditionally would leak one temp dir per analyze even with the flag
-      // off. The PDG sibling resolves inside its guard for the same reason.
-      graphEmitCsvDir: streamGraphEmitActive
-        ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
-        : undefined,
-      fetchWrappers: options.fetchWrappers,
-      skipDerivedGraphPhases,
-      springActuatorPath: options.springActuatorPath,
-      asyncApiSpecPath: options.asyncApiSpecPath,
-      springActuatorScanExclusions,
-    },
-  );
+      repoPath,
+      (p) => {
+        const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+        const scaled = Math.round(p.percent * 0.6);
+        const message = p.detail
+          ? `${p.message || phaseLabel} (${p.detail})`
+          : p.message || phaseLabel;
+        progress(p.phase, scaled, message);
+      },
+      {
+        parseCache,
+        workerPoolSize: options.workerPoolSize,
+        // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+        // build gate (workerData.pdg) and the scope-resolution emit gate.
+        pdg: options.pdg === true,
+        pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+        pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
+        pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+        pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+        pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+        pdgMaxTaintHops: options.pdgMaxTaintHops,
+        pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+        pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+        pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+        // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+        // (force === true) so the incremental writeback never reads back an
+        // offloaded BasicBlock layer. Memory-only; byte-identical output.
+        streamPdgEmit: resolveStreamPdgEmit(options),
+        pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+        // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
+        // toggle above, for the same incremental-writeback reason.
+        streamGraphEmit: streamGraphEmitActive,
+        // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
+        // path this helper mkdtempSyncs a real directory, so evaluating it
+        // unconditionally would leak one temp dir per analyze even with the flag
+        // off. The PDG sibling resolves inside its guard for the same reason.
+        graphEmitCsvDir: streamGraphEmitActive
+          ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
+          : undefined,
+        fetchWrappers: options.fetchWrappers,
+        skipDerivedGraphPhases,
+        springActuatorPath: options.springActuatorPath,
+        asyncApiSpecPath: options.asyncApiSpecPath,
+        springActuatorScanExclusions,
+      },
+    );
   } catch (err) {
     await removeColdParseRebuildDir(coldParseRebuildDir, true);
     throw err;
