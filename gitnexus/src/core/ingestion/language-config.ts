@@ -782,8 +782,8 @@ export function parseZigBuildModuleRoots(buildZig: string, preferredName: string
     const args = text.slice(argsStart, argsEnd);
     const nameMatch = /^\s*"([^"\n]+)"\s*,/.exec(args);
     if (nameMatch?.[1] !== preferredName) continue;
-    const rootMatch = rootRe.exec(args);
-    if (rootMatch) add(named, rootMatch[1]!);
+    const root = zigTopLevelStaticRoot(args);
+    if (root !== null) add(named, root);
   }
   const anyRe = new RegExp(rootRe.source, 'g');
   while ((m = anyRe.exec(text)) !== null) add(unnamed, m[1]!);
@@ -816,8 +816,6 @@ export function parseZigRootModules(buildZig: string): Map<string, string> {
   // identifier → repo-relative root, for `const m = b.createModule(…)` /
   // `const m = b.addModule(…)` bindings later named via addImport.
   const bindings = new Map<string, string>();
-  const rootRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/;
-  const bindingRe = /(?:const|var)\s+([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*$/;
   const callRe = /\b(addModule|createModule)\s*\(/g;
   let m: RegExpExecArray | null;
   while ((m = callRe.exec(text)) !== null) {
@@ -826,14 +824,13 @@ export function parseZigRootModules(buildZig: string): Map<string, string> {
     const argsEnd = findZigParenEnd(text, argsStart);
     if (argsEnd < 0) break;
     const args = text.slice(argsStart, argsEnd);
-    const rootMatch = rootRe.exec(args);
-    const root = rootMatch ? normalizeZigDepPath(rootMatch[1]!) : null;
-    if (root === null || root === '' || !root.endsWith('.zig')) continue;
+    const root = zigTopLevelStaticRoot(args);
+    if (root === null) continue;
     if (m[1] === 'addModule') {
       const nameMatch = /^\s*"([^"\n]+)"\s*,/.exec(args);
       if (nameMatch && !modules.has(nameMatch[1]!)) modules.set(nameMatch[1]!, root);
     }
-    const binding = bindingRe.exec(text.slice(0, m.index));
+    const binding = ZIG_MODULE_BINDING_RE.exec(text.slice(0, m.index));
     if (binding && !bindings.has(binding[1]!)) bindings.set(binding[1]!, root);
   }
   if (bindings.size === 0) return modules;
@@ -889,13 +886,7 @@ export function parseZigBuildModules(
 ): ZigBuildModule[] {
   const text = stripZonComments(buildZig);
   const mask = zonStringMask(text);
-  const rootRe = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/;
-  const bindingRe = /(?:const|var)\s+([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_]\w*\.)*$/;
-  const staticRoot = (args: string): string | null => {
-    const rootMatch = rootRe.exec(args);
-    const root = rootMatch ? normalizeZigDepPath(rootMatch[1]!) : null;
-    return root === null || root === '' || !root.endsWith('.zig') ? null : root;
-  };
+  const staticRoot = (args: string): string | null => zigTopLevelStaticRoot(args);
 
   // Pass 1 — modules and the identifiers bound to them. `at` is the offset
   // of the call's name token, so an inline `.root_module = b.createModule(…)`
@@ -911,7 +902,7 @@ export function parseZigBuildModules(
   const drafts: Draft[] = [];
   const bindings = new Map<string, number>(); // identifier → drafts index
   const bind = (prefixEnd: number, idx: number): void => {
-    const binding = bindingRe.exec(text.slice(0, prefixEnd));
+    const binding = ZIG_MODULE_BINDING_RE.exec(text.slice(0, prefixEnd));
     if (binding && !bindings.has(binding[1]!)) bindings.set(binding[1]!, idx);
   };
   // Artifact bindings whose `.root_module = <ident>` names a module declared
@@ -951,7 +942,7 @@ export function parseZigBuildModules(
         // by the createModule call inside these args (a later iteration of
         // this loop); remember the artifact's binding for it.
         const nameOffset = rootModule.index + rootModule[0].lastIndexOf('createModule');
-        const binding = bindingRe.exec(text.slice(0, m.index));
+        const binding = ZIG_MODULE_BINDING_RE.exec(text.slice(0, m.index));
         if (binding) {
           pendingArtifactAliases.push({
             ident: binding[1]!,
@@ -959,7 +950,7 @@ export function parseZigBuildModules(
           });
         }
       } else if (rootModule[1] === '' && rootModule[3] === undefined) {
-        const binding = bindingRe.exec(text.slice(0, m.index));
+        const binding = ZIG_MODULE_BINDING_RE.exec(text.slice(0, m.index));
         if (binding) pendingArtifactAliases.push({ ident: binding[1]!, module: rootModule[2]! });
       }
       continue;
@@ -1054,6 +1045,33 @@ export function parseZigBuildModules(
  * Index of the `)` matching the `(` that precedes `start`, skipping parens
  * inside `"…"` literals. -1 when unbalanced. Call on comment-stripped text.
  */
+/** First `.root_source_file = b.path("….zig")` at the TOP level of a
+ *  module-options `.{ … }` — not a nested `.imports = &.{ .{ … } }` entry. */
+function zigTopLevelStaticRoot(args: string): string | null {
+  const structAt = args.indexOf('.{');
+  const haystack = structAt >= 0 ? args.slice(structAt) : args;
+  let depth = 0;
+  for (let i = 0; i < haystack.length; i++) {
+    const ch = haystack[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth <= 0) break;
+    } else if (depth === 1 && haystack.startsWith('.root_source_file', i)) {
+      const match = /^\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/.exec(
+        haystack.slice(i),
+      );
+      if (match === null) continue;
+      const root = normalizeZigDepPath(match[1]!);
+      return root === null || root === '' || !root.endsWith('.zig') ? null : root;
+    }
+  }
+  return null;
+}
+
+/** `const m = b.createModule` / `const m = b.addModule` — not `config.createModule`. */
+const ZIG_MODULE_BINDING_RE = /(?:const|var)\s+([A-Za-z_]\w*)\s*=\s*b\.$/;
+
 function findZigParenEnd(text: string, start: number): number {
   let depth = 1;
   let inString = false;

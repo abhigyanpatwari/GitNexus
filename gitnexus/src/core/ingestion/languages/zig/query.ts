@@ -49,20 +49,34 @@ const ZIG_SCOPE_QUERY = `
 ;; range equals the @scope.class range: the extractor then attaches the def
 ;; to the class scope (walkers.populateClassOwnedMembers expects the
 ;; class-like def among the class scope's ownedDefs) and auto-hoists the
-;; name binding to the parent scope.
+;; name binding to the parent scope. Keyword-gated like the ordinary
+;; binding rules: a keyword-less \`x = struct {…};\` is an assignment
+;; (tree-sitter-zig 1.1.2 reuses variable_declaration), not a container def.
 (variable_declaration
-  (identifier) @declaration.name
+  "const" . (identifier) @declaration.name
   (struct_declaration) @declaration.struct)
 (variable_declaration
-  (identifier) @declaration.name
+  "var" . (identifier) @declaration.name
+  (struct_declaration) @declaration.struct)
+(variable_declaration
+  "const" . (identifier) @declaration.name
   (enum_declaration) @declaration.enum)
 (variable_declaration
-  (identifier) @declaration.name
+  "var" . (identifier) @declaration.name
+  (enum_declaration) @declaration.enum)
+(variable_declaration
+  "const" . (identifier) @declaration.name
+  (union_declaration) @declaration.union)
+(variable_declaration
+  "var" . (identifier) @declaration.name
   (union_declaration) @declaration.union)
 ;; opaque {} is a fieldless container that may own methods — Struct, as in
 ;; ZIG_QUERIES (see the rationale there).
 (variable_declaration
-  (identifier) @declaration.name
+  "const" . (identifier) @declaration.name
+  (opaque_declaration) @declaration.struct)
+(variable_declaration
+  "var" . (identifier) @declaration.name
   (opaque_declaration) @declaration.struct)
 
 ;; Declarations — generic type constructors. \`fn List(comptime T: type) type

@@ -25,7 +25,7 @@ describeGrammarPresence(zig);
 describe.skipIf(!zigAvailable)('Zig per-module build imports (zig-buildmodules fixture)', () => {
   let result: PipelineResult;
   let imports: string[];
-  let calls: Set<string>;
+  let calls: string[];
 
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'zig-buildmodules'), () => {});

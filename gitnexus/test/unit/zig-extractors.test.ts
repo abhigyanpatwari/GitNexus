@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import Parser from 'tree-sitter';
 import { SupportedLanguages } from 'gitnexus-shared';
+import type { BindingRef, SymbolDefinition } from 'gitnexus-shared';
 import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { zigExportChecker } from '../../src/core/ingestion/export-detection.js';
@@ -30,7 +31,9 @@ import {
   zigContainerBindingName,
   zigContainerName,
   zigFileStructName,
+  zigReceiverParameter,
 } from '../../src/core/ingestion/languages/zig/captures.js';
+import { zigMergeBindings } from '../../src/core/ingestion/languages/zig/simple-hooks.js';
 import {
   interpretZigImport,
   interpretZigTypeBinding,
@@ -1262,6 +1265,25 @@ pub fn helper() u32 { return 1; }
       expect(nsCaps.some((m) => m['@declaration.function'] !== undefined)).toBe(true);
     });
 
+    it('does not treat a namespace-file free fn whose first param is named `self` as a receiver', () => {
+      const fn = find(
+        parse('pub fn helper(self: *Thing) void { _ = self; }\n').rootNode,
+        'function_declaration',
+      );
+      expect(zigReceiverParameter(fn, 'src/util.zig')).toBeNull();
+    });
+
+    it('does not capture a keywordless `x = struct {…}` assignment as a container binding', () => {
+      const names = emitZigScopeCaptures(
+        'var x: type = undefined;\nx = struct { n: u32 };\nconst Real = struct { n: u32 };\n',
+        'src/t.zig',
+      )
+        .filter((m) => m['@declaration.struct'] !== undefined)
+        .map((m) => m['@declaration.name']?.text);
+      expect(names).toContain('Real');
+      expect(names).not.toContain('x');
+    });
+
     it('drops the file-level `const Page = @This();` binding of a file-struct, keeps a namespace alias', () => {
       // A Const named `Page` beside `Struct Page` would shadow the type for
       // every `x: *Page` (locals outrank imports in zigMergeBindings).
@@ -2086,5 +2108,23 @@ const S = struct {
     // …while a primitive annotation and an argument position emit nothing.
     expect(sites.some((s) => s.includes('u32'))).toBe(false);
     expect(sites.some((s) => s.endsWith('@12'))).toBe(false);
+  });
+});
+
+describe('zigMergeBindings', () => {
+  const def = (nodeId: string): SymbolDefinition => ({
+    nodeId,
+    filePath: 't.zig',
+    type: 'Variable',
+  });
+  const binding = (origin: BindingRef['origin'], nodeId: string): BindingRef => ({
+    def: def(nodeId),
+    origin,
+  });
+
+  it('keeps only the best tier so a local declaration shadows an import of the same name', () => {
+    expect(
+      zigMergeBindings([binding('import', 'imp')], [binding('local', 'loc')], 'scope'),
+    ).toEqual([binding('local', 'loc')]);
   });
 });

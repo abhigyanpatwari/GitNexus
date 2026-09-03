@@ -294,6 +294,11 @@ function zigThisAliasNamesIn(container: SyntaxNode): Set<string> {
  *  (parameters / receiver type / `isStatic`) and `emitZigScopeCaptures`
  *  (`@type-binding.receiver`), so the structure and scope phases agree. */
 export function zigReceiverParameter(fn: SyntaxNode, filePath?: string): SyntaxNode | null {
+  const container = fn.parent;
+  if (container === null || container === undefined) return null;
+  const inContainer = ZIG_CONTAINER_TYPES.has(container.type);
+  const inFileStruct = container.type === 'source_file' && isZigFileStruct(container);
+  if (!inContainer && !inFileStruct) return null;
   const paramList = fn.namedChildren.find(
     (child): child is SyntaxNode => child?.type === 'parameters',
   );
@@ -305,9 +310,6 @@ export function zigReceiverParameter(fn: SyntaxNode, filePath?: string): SyntaxN
   const nominal = zigParameterNominalType(typeNode.text);
   if (nominal.length === 0) return null;
   if (nominal === '@This()') return first;
-  const container = fn.parent;
-  if (container === null || container === undefined) return null;
-  if (!ZIG_CONTAINER_TYPES.has(container.type) && container.type !== 'source_file') return null;
   if (zigThisAliasNamesIn(container).has(nominal)) return first;
   const binding = zigContainerBindingName(container, filePath);
   return binding !== undefined && nominal === binding ? first : null;

@@ -69,8 +69,9 @@ function zigModulesContaining(
  * tables. `undefined` when no containing module binds the name (the caller
  * falls back to the repo-wide tables); `null` when the containing modules
  * DISAGREE — two same-directory modules that bind one alias to different
- * roots — or when the alias is bound to a root that is not indexed (a
- * generated or skipped file). Both are fail-closed on purpose: the module's
+ * roots — or when ANY containing module binds the alias to a root that is
+ * not indexed (a generated or skipped file), including the mixed case
+ * where a sibling module's target *is* indexed. Both are fail-closed on purpose: the module's
  * own table is the authority for the alias, and falling through to the
  * repo-wide map would reintroduce the first-wins answer this table exists
  * to remove, under a name the module never meant.
@@ -87,7 +88,8 @@ function resolveThroughBuildModules(
     const target = mod.imports.get(importPath);
     if (target === undefined) continue;
     bound = true;
-    if (allFiles.has(target)) targets.add(target);
+    if (!allFiles.has(target)) return null;
+    targets.add(target);
   }
   if (targets.size === 0) return bound ? null : undefined;
   if (targets.size > 1) return null;

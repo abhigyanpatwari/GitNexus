@@ -341,6 +341,19 @@ describe('resolveZigImportInternal', () => {
     expect(resolveZigImportInternal('other/x.zig', 'cfg', outside, stale)).toBe('src/cfg.zig');
   });
 
+  it('fails closed when one same-directory module binds the alias to an unindexed root', () => {
+    const files = new Set<string>(['src/a.zig', 'src/b.zig', 'src/helper.zig', 'src/config.zig']);
+    const config = {
+      pathDeps: new Map<string, string>(),
+      rootModules: new Map<string, string>(),
+      buildModules: [
+        { root: 'src/a.zig', imports: new Map([['cfg', 'src/gone.zig']]) },
+        { root: 'src/b.zig', imports: new Map([['cfg', 'src/config.zig']]) },
+      ],
+    };
+    expect(resolveZigImportInternal('src/helper.zig', 'cfg', files, config)).toBeNull();
+  });
+
   it('returns null for an unknown bare name not in build.zig.zon', () => {
     const files = new Set<string>(['src/main.zig']);
     const buildZon = { pathDeps: new Map([['ziggit', 'vendor/ziggit']]) };
@@ -636,6 +649,27 @@ _ = b.addModule("out", .{ .root_source_file = b.path("../outside.zig") });
 _ = b.addModule("abs", .{ .root_source_file = .{ .cwd_relative = "/abs/x.zig" } });
 `;
     expect(parseZigRootModules(buildZig)).toEqual(new Map([['x', 'src/x.zig']]));
+  });
+
+  it('takes the outer module root, not a nested `.imports` inline root', () => {
+    const buildZig = `
+_ = b.addModule("dep", .{
+    .imports = &.{ .{ .name = "nested", .root_source_file = b.path("src/nested.zig") } },
+    .root_source_file = b.path("lib/root.zig"),
+});
+`;
+    expect(parseZigBuildModuleRoots(buildZig, 'dep')[0]).toBe('lib/root.zig');
+    expect(parseZigRootModules(buildZig).get('dep')).toBe('lib/root.zig');
+  });
+
+  it('ignores createModule bindings that are not `b.createModule`', () => {
+    const buildZig = `
+const decoy = config.createModule(.{ .root_source_file = b.path("src/decoy.zig") });
+exe.addImport("name", decoy);
+const real = b.createModule(.{ .root_source_file = b.path("src/real.zig") });
+exe.addImport("ok", real);
+`;
+    expect(parseZigRootModules(buildZig)).toEqual(new Map([['ok', 'src/real.zig']]));
   });
 
   it('returns an empty map for a build.zig that names no module', () => {
