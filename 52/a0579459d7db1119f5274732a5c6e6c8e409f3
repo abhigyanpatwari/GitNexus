@@ -1,0 +1,35 @@
+gitnexus/test/unit/name-guessed-edges-excluded-from-flows.test.ts
+  s_2fc6857ad45390::t_952078364de191 1-157
+gitnexus/src/core/ingestion/community-processor.ts
+  s_2fc6857ad45390::t_4104359c9cb0aa 22,135-146,318,320-325,361,363-364
+gitnexus/src/core/ingestion/process-processor.ts
+  s_2fc6857ad45390::t_06673d6249a30d 13,15,440-455,459-461,473-474
+CHANGELOG.md
+  s_b3fb8faa15e34b::t_3e3c9bee5c8906 15-18
+gitnexus/CHANGELOG.md
+  s_b3fb8faa15e34b::t_690993843976ea 33-36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "52a0579459d7db1119f5274732a5c6e6c8e409f3",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_b3fb8faa15e34b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0652d86-8724-480b-abcf-b7d79c011b99",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
