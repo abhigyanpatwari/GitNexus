@@ -593,6 +593,8 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
 
       expect(cold.alreadyUpToDate).toBeUndefined();
+      expect(cold.pipelineResult?.parseCacheHitFileCount ?? 0).toBe(0);
+      expect(cold.pipelineResult?.reparsedFileCount).toBe(7);
       expect(logs.join('\n')).toContain('Parser cache bypass requested');
     } finally {
       await repo.cleanup();
@@ -691,7 +693,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(forcedSteady.alreadyUpToDate).toBeUndefined();
       expect(forceLogs.join('\n')).toContain(
-        '--force rebuilt the graph and FTS while reusing cached parser output',
+        'Rebuilt the graph and FTS while reusing cached parser output',
       );
       expect(forceLogs.join('\n')).toContain('increment SCHEMA_BUMP');
       expect(

@@ -15,6 +15,7 @@ import {
   saveParseCache,
   pruneCache,
   slimParseWorkerResultsForCache,
+  getColdParseRebuildDir,
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
 import { writeV8CacheFile } from '../../src/storage/v8-sidecar.js';
@@ -943,6 +944,67 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await rm(path.join(dir, 'parse-cache', `${key}.v8`), { force: true });
       const loaded = await loadParseCacheChunk(cache, key);
       expect(loaded).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists cold-rebuild shards under staging without touching the live parse-cache dir', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-stage-'));
+    try {
+      const liveKey = 'a'.repeat(64);
+      const stagedKey = 'b'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[liveKey, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([liveKey]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([liveKey, stagedKey]),
+        storagePath: staging,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, stagedKey, [minimalResult({ fileCount: 99 })]);
+      const liveNames = await readdir(path.join(dir, 'parse-cache'));
+      expect(liveNames).toContain(`${liveKey}.v8`);
+      expect(liveNames).not.toContain(`${stagedKey}.v8`);
+      const stagedNames = await readdir(path.join(staging, 'parse-cache'));
+      expect(stagedNames).toContain(`${stagedKey}.v8`);
+
+      const saved = await saveParseCache(dir, cache);
+      expect(saved.sort()).toEqual([liveKey, stagedKey].sort());
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, liveKey))?.[0]?.fileCount).toBe(1);
+      expect((await loadParseCacheChunk(loaded, stagedKey))?.[0]?.fileCount).toBe(99);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers a staged shard over a same-hash live shard when publishing', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-pref-'));
+    try {
+      const key = 'c'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[key, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([key]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: staging,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
+      await saveParseCache(dir, cache);
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(7);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

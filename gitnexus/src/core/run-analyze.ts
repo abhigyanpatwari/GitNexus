@@ -157,10 +157,12 @@ import {
   saveParseCache,
   pruneCache,
   PARSE_CACHE_VERSION,
+  getColdParseRebuildDir,
 } from '../storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
+  mergeStagedDurableParsedFileStore,
 } from '../storage/parsedfile-store.js';
 import {
   getCurrentCommit,
@@ -332,13 +334,18 @@ export interface AnalyzeCallbacks {
 
 export interface AnalyzeOptions {
   /**
-   * Force a full re-index of the pipeline. Callers may OR this with
-   * other flags that imply re-analysis (e.g. `--skills`), so the value
-   * here is the PIPELINE-force signal, NOT the registry-collision
-   * bypass. See `allowDuplicateName` below.
+   * Rebuild the graph and FTS. Parser output is still reused from the
+   * content-addressed parse cache unless `useParseCache` is false.
+   * Callers may OR this with other flags that imply re-analysis
+   * (e.g. `--skills`), so the value here is the PIPELINE-force signal,
+   * NOT the registry-collision bypass. See `allowDuplicateName` below.
    */
   force?: boolean;
-  /** Reuse content-addressed parser output. Defaults to true. */
+  /**
+   * Reuse content-addressed parser output. Defaults to true. When false,
+   * analysis reparses every file and publishes a new parse-cache generation
+   * only after a successful run (live shards stay untouched if the run fails).
+   */
   useParseCache?: boolean;
   /** Repair only search indexes without re-running full parsing/indexing. */
   repairFts?: boolean;
@@ -1134,6 +1141,7 @@ async function runFullAnalysisInner(
   // does not own the flat slot. See resolveWriteTarget for the full contract.
   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
     writeTarget;
+  let coldParseRebuildDir: string | undefined;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1981,16 +1989,23 @@ async function runFullAnalysisInner(
   // can opt out so unchanged source files are parsed again (#3152).
   // Loaded into a single ParseCache object that the pipeline mutates
   // in-place (cache hits leave entries unchanged; misses add new ones).
-  // Keep storagePath so cold runs retain disk-backed ParsedFile offload and
-  // rewrite the sibling durable store. Empty readable-key state prevents any
-  // parse-cache or ParsedFile shard from the previous generation being replayed.
+  // Keep a storagePath so cold runs retain disk-backed ParsedFile offload.
+  // Write mid-run shards under a staging directory so a crash cannot mix a
+  // new generation into the live parse-cache / parsedfile-cache trees; publish
+  // happens in saveParseCache after a successful analysis. Empty readable-key
+  // state prevents any previous generation from being replayed.
+  if (options.useParseCache === false) {
+    coldParseRebuildDir = getColdParseRebuildDir(storagePath);
+    await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
+    await fs.mkdir(coldParseRebuildDir, { recursive: true });
+  }
   const parseCache =
     options.useParseCache === false
       ? {
           version: PARSE_CACHE_VERSION,
           entries: new Map(),
           usedKeys: new Set<string>(),
-          storagePath,
+          storagePath: coldParseRebuildDir,
           onDiskKeys: new Set<string>(),
         }
       : await loadParseCache(storagePath);
@@ -2031,7 +2046,9 @@ async function runFullAnalysisInner(
     !schemaFingerprintMismatch(existingMeta.schemaFingerprint);
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(
+  let pipelineResult;
+  try {
+    pipelineResult = await runPipelineFromRepo(
     repoPath,
     (p) => {
       const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
@@ -2078,10 +2095,20 @@ async function runFullAnalysisInner(
       springActuatorScanExclusions,
     },
   );
+  } catch (err) {
+    if (coldParseRebuildDir) {
+      try {
+        await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
+      } catch {
+        /* next cold run removes leftovers */
+      }
+    }
+    throw err;
+  }
 
   if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
     log(
-      `--force rebuilt the graph and FTS while reusing cached parser output for ` +
+      `Rebuilt the graph and FTS while reusing cached parser output for ` +
         `${pipelineResult.parseCacheHitFileCount} file(s) ` +
         `(parse cache ${PARSE_CACHE_VERSION}). ` +
         `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
@@ -4066,11 +4093,21 @@ async function runFullAnalysisInner(
       // no parse-cache shard) drops its durable subdir here and re-dispatches
       // next run. Same try/catch — a durable-store write failure must never
       // break an otherwise successful run (next run treats it as a miss).
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storagePath),
-        PARSE_CACHE_VERSION,
-        new Set(savedKeys),
-      );
+      const savedKeySet = new Set(savedKeys);
+      if (coldParseRebuildDir && parseCache.storagePath === coldParseRebuildDir) {
+        await mergeStagedDurableParsedFileStore(
+          storagePath,
+          coldParseRebuildDir,
+          PARSE_CACHE_VERSION,
+          savedKeySet,
+        );
+      } else {
+        await pruneAndSaveDurableParsedFileStore(
+          getDurableParsedFileDir(storagePath),
+          PARSE_CACHE_VERSION,
+          savedKeySet,
+        );
+      }
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }
@@ -4227,6 +4264,10 @@ async function runFullAnalysisInner(
 
     progress('done', 100, 'Done');
 
+    if (coldParseRebuildDir) {
+      await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
+    }
+
     return {
       repoName: projectName,
       repoPath,
@@ -4278,6 +4319,13 @@ async function runFullAnalysisInner(
         await wipeLbugDbFiles(buildPath);
       } catch {
         /* swallow — orphan reclamation must never mask the real failure */
+      }
+    }
+    if (coldParseRebuildDir) {
+      try {
+        await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
+      } catch {
+        /* swallow — next cold run rm's the leftover staging tree */
       }
     }
     if (liveIndexMutationStarted) {

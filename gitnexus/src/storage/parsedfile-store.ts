@@ -722,3 +722,44 @@ export const pruneAndSaveDurableParsedFileStore = async (
   await fs.writeFile(tmp, JSON.stringify(idx), 'utf-8');
   await fs.rename(tmp, path.join(durableDir, DURABLE_INDEX_FILENAME));
 };
+
+/**
+ * Overlay this run's staged durable ParsedFile chunks onto the live store,
+ * then prune the live tree to `keepKeys`. Live chunks this run did not rewrite
+ * (other branches, unused hashes) stay until prune. No-op overlay when the
+ * staged dir is missing.
+ */
+export const mergeStagedDurableParsedFileStore = async (
+  liveStoragePath: string,
+  stagedStoragePath: string,
+  version: string,
+  keepKeys: ReadonlySet<string>,
+): Promise<void> => {
+  const liveDir = getDurableParsedFileDir(liveStoragePath);
+  if (stagedStoragePath === liveStoragePath) {
+    await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
+    return;
+  }
+  const stagedDir = getDurableParsedFileDir(stagedStoragePath);
+  await fs.mkdir(liveDir, { recursive: true });
+  let stagedEntries: string[] = [];
+  try {
+    stagedEntries = await fs.readdir(stagedDir);
+  } catch {
+    await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
+    return;
+  }
+  for (const name of stagedEntries) {
+    if (name === DURABLE_INDEX_FILENAME) continue;
+    const from = path.join(stagedDir, name);
+    const to = path.join(liveDir, name);
+    await fs.rm(to, { recursive: true, force: true });
+    try {
+      await fs.rename(from, to);
+    } catch {
+      await fs.cp(from, to, { recursive: true });
+      await fs.rm(from, { recursive: true, force: true });
+    }
+  }
+  await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
+};

@@ -815,6 +815,16 @@ export const packParseCacheChunks = (
 
 const LEGACY_CACHE_FILENAME = 'parse-cache.json';
 const CACHE_DIRNAME = 'parse-cache';
+/**
+ * Per-run staging root for `useParseCache: false`. Parse-cache shards and the
+ * ParsedFile stores write here so a crash cannot mix a new generation into the
+ * live `.gitnexus/parse-cache` / `parsedfile-cache` trees. `saveParseCache`
+ * publishes onto the live `storagePath` only after a successful analysis.
+ */
+export const COLD_PARSE_REBUILD_DIRNAME = 'parse-rebuild';
+
+export const getColdParseRebuildDir = (storagePath: string): string =>
+  path.join(storagePath, COLD_PARSE_REBUILD_DIRNAME);
 const CACHE_INDEX_FILENAME = 'index.json';
 
 /** Keys on disk always come from `computeChunkHash` — 64-char lowercase hex. */
@@ -851,6 +861,8 @@ export interface ParseCache {
    * When set, chunk payloads are loaded from / flushed to sharded files on
    * demand instead of retaining every chunk in `entries` for the whole run
    * (#1983 — Linux kernel OOM from duplicate in-memory cache + graph).
+   * May be a per-run staging directory (`getColdParseRebuildDir`) while the
+   * live index root is passed separately to `saveParseCache`.
    */
   storagePath?: string;
   /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
@@ -1171,8 +1183,18 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
       }
       continue;
     }
-    const existingPath = getCacheChunkPath(storagePath, chunkHash);
-    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
+    // Cold rebuilds persist mid-run under `cache.storagePath` (staging). Prefer
+    // that generation over a same-hash shard still sitting in the live dir so
+    // we never publish a mixed old/new pair. Sibling-branch keys (#2106) that
+    // this run did not rewrite still copy from the live path.
+    const stagedPath =
+      cache.storagePath !== undefined && cache.storagePath !== storagePath
+        ? getCacheChunkPath(cache.storagePath, chunkHash)
+        : undefined;
+    const livePath = getCacheChunkPath(storagePath, chunkHash);
+    if (stagedPath && (await copyV8CacheIfPresent(stagedPath, chunkPath))) {
+      writtenKeys.push(chunkHash);
+    } else if (await copyV8CacheIfPresent(livePath, chunkPath)) {
       writtenKeys.push(chunkHash);
     }
   }

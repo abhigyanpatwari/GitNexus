@@ -15,6 +15,9 @@ import {
   getParsedFileStoreDir,
   getDurableParsedFileDir,
   parsedFileLoadGc,
+  prepareDurableParsedFileChunk,
+  pruneAndSaveDurableParsedFileStore,
+  mergeStagedDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
 
 /**
@@ -844,6 +847,59 @@ describe('parsedfile-store receiverChain sanitation', () => {
       expect((await loadParsedFilesForPaths(dir, new Set(['a.c']))).size).toBe(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('overlays staged durable chunks onto the live store without dropping live-only keys', async () => {
+    const live = await mkdtemp(path.join(tmpdir(), 'pf-live-'));
+    const staged = await mkdtemp(path.join(tmpdir(), 'pf-stg-'));
+    try {
+      const liveOnly = '1'.repeat(64);
+      const rewritten = '2'.repeat(64);
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), liveOnly);
+      persistDurableParsedFileShardSync(
+        getDurableParsedFileDir(live),
+        liveOnly,
+        1,
+        0,
+        [makeParsedFile('keep.c')],
+      );
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), rewritten);
+      persistDurableParsedFileShardSync(
+        getDurableParsedFileDir(live),
+        rewritten,
+        1,
+        0,
+        [makeParsedFile('old.c')],
+      );
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(live),
+        'v-test',
+        new Set([liveOnly, rewritten]),
+      );
+
+      await prepareDurableParsedFileChunk(getDurableParsedFileDir(staged), rewritten);
+      persistDurableParsedFileShardSync(
+        getDurableParsedFileDir(staged),
+        rewritten,
+        1,
+        0,
+        [makeParsedFile('new.c')],
+      );
+
+      await mergeStagedDurableParsedFileStore(
+        live,
+        staged,
+        'v-test',
+        new Set([liveOnly, rewritten]),
+      );
+
+      expect(await durableChunkHasShards(live, liveOnly, new Set(['keep.c']))).toBe(true);
+      expect(await durableChunkHasShards(live, rewritten, new Set(['new.c']))).toBe(true);
+      expect(await durableChunkHasShards(live, rewritten, new Set(['old.c']))).toBe(false);
+    } finally {
+      await rm(live, { recursive: true, force: true });
+      await rm(staged, { recursive: true, force: true });
     }
   });
 });
