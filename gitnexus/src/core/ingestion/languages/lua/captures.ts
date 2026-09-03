@@ -29,6 +29,7 @@ import {
   type LuaExtendsPair,
   type LuaMethodOwnerPair,
   type LuaReturnedField,
+  type LuaCallableAlias,
 } from './capture-side-channel.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -250,6 +251,53 @@ function collectLuaAssignmentMethodCaptures(root: Parser.SyntaxNode): readonly C
   return out;
 }
 
+function collectLuaCallableAliases(root: Parser.SyntaxNode): readonly LuaCallableAlias[] {
+  const aliases: LuaCallableAlias[] = [];
+  const visit = (node: Parser.SyntaxNode, inFunction: boolean): void => {
+    const nextInFunction =
+      inFunction ||
+      node.type === 'function_definition_statement' ||
+      node.type === 'local_function_definition_statement' ||
+      node.type === 'function_definition';
+    if (
+      !nextInFunction &&
+      (node.type === 'local_variable_declaration' || node.type === 'variable_assignment')
+    ) {
+      const destination = node.namedChildren.find((child) => child.type === 'variable_list')
+        ?.namedChildren[0];
+      const source = node.namedChildren.find((child) => child.type === 'expression_list')
+        ?.namedChildren[0];
+      const destinationName =
+        destination?.type === 'variable' &&
+        destination.childForFieldName('name')?.type === 'identifier' &&
+        destination.childForFieldName('table') === null &&
+        destination.childForFieldName('field') === null
+          ? destination.childForFieldName('name')?.text
+          : undefined;
+      const sourceIsStaticMember =
+        source?.type === 'variable' &&
+        source.childForFieldName('table')?.type === 'identifier' &&
+        (source.childForFieldName('field')?.type === 'identifier' ||
+          source.childForFieldName('method')?.type === 'identifier');
+      const sourceIsSimple =
+        source?.type === 'variable' &&
+        source.childForFieldName('name')?.type === 'identifier' &&
+        source.childForFieldName('table') === null &&
+        source.childForFieldName('field') === null;
+      if (
+        destinationName !== undefined &&
+        source !== undefined &&
+        (sourceIsStaticMember || sourceIsSimple)
+      ) {
+        aliases.push({ destination: destinationName, source: source.text });
+      }
+    }
+    for (const child of node.namedChildren) visit(child, nextInFunction);
+  };
+  visit(root, false);
+  return aliases;
+}
+
 function addLuaArityCaptures(
   match: Record<string, Capture>,
   functionNode: Parser.SyntaxNode,
@@ -377,11 +425,13 @@ export function emitLuaScopeCaptures(
     classNames.has(name),
   );
   const returnedFields = collectLuaReturnedFields(tree.rootNode);
+  const callableAliases = collectLuaCallableAliases(tree.rootNode);
   if (
     extendsPairs.length > 0 ||
     methodOwners.length > 0 ||
     returnedNames.length > 0 ||
-    returnedFields.length > 0
+    returnedFields.length > 0 ||
+    callableAliases.length > 0
   ) {
     setLuaHeritageFacts(filePath, {
       kind: 'lua',
@@ -389,6 +439,7 @@ export function emitLuaScopeCaptures(
       methodOwners,
       returnedNames,
       returnedFields,
+      callableAliases,
     });
   } else {
     // Re-capture produced no heritage — drop any prior facts for this file so
