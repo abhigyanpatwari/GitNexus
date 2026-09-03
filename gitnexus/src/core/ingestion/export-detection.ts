@@ -242,3 +242,64 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/** Zig declaration node types whose `pub` / `export` keyword child marks the symbol public. */
+const ZIG_DECL_TYPES = new Set(['function_declaration', 'variable_declaration']);
+
+/**
+ * Zig: walk to the enclosing decl, scan its direct children for an unnamed `pub`
+ * or `export` keyword token (tree-sitter-zig models both as anonymous keyword
+ * children of function_declaration / variable_declaration). Two different
+ * facts share this one flag, on purpose:
+ *   - `pub` is Zig-module visibility — reachable from another `.zig` file
+ *     through `@import`;
+ *   - `export` is C-ABI linkage (`export fn add(...)`) — the symbol lands in
+ *     the object file for FFI callers, and it never carries `pub`.
+ * `isExported` means "visible outside this compilation unit" graph-wide (C uses
+ * external linkage for the same flag), so both qualify. The `visibility`
+ * property is the Zig-only fact and is `pub`-only — see `hasZigPubKeyword`:
+ * an `export fn` without `pub` is public to C and PRIVATE to other Zig files.
+ * Container fields (struct/enum variants) are public if their enclosing
+ * variable_declaration is public.
+ *
+ * The walk stops at the FIRST declaration it reaches: a `fn` inside
+ * `pub const T = struct { … }` carries its own `pub` (or not), independent of
+ * the container's. Continuing up to the wrapper marked every private method of
+ * a public container as exported.
+ */
+export const zigExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (ZIG_DECL_TYPES.has(current.type)) return hasZigVisibilityKeyword(current);
+    current = current.parent;
+  }
+  return false;
+};
+
+/**
+ * Does this Zig declaration carry a `pub` or `export` keyword child? Feeds
+ * `isExported` (visible outside the compilation unit — to Zig importers OR to
+ * C callers).
+ */
+export function hasZigVisibilityKeyword(declNode: SyntaxNode): boolean {
+  for (let i = 0; i < declNode.childCount; i++) {
+    const child = declNode.child(i);
+    if (child?.type === 'pub' || child?.type === 'export') return true;
+  }
+  return false;
+}
+
+/**
+ * Does this Zig declaration carry a `pub` keyword child? Feeds `visibility`,
+ * the Zig-module fact: per the language reference, only `pub` declarations are
+ * accessible from another file via `@import`; `export` alone gives C linkage
+ * and leaves the declaration private to Zig code. So `export fn c_add` reports
+ * `isExported: true` (FFI surface) with `visibility: 'private'` (Zig surface)
+ * — two facts, two properties, deliberately not one.
+ */
+export function hasZigPubKeyword(declNode: SyntaxNode): boolean {
+  for (let i = 0; i < declNode.childCount; i++) {
+    if (declNode.child(i)?.type === 'pub') return true;
+  }
+  return false;
+}

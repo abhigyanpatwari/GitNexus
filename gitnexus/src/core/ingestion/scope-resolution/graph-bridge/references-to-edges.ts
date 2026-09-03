@@ -6,7 +6,7 @@
  *      chain looking for an enclosing Function/Method/Class.
  *   2. Resolve `toDef` → target graph-node id via `nodeLookup`.
  *   3. Emit the edge (`CALLS` / `READS` / `WRITES` / `EXTENDS` / `USES`)
- *      with the standard reason format.
+ *      with the standard reason format (`referenceEdgeReason`).
  *
  * Skips (without throwing) when either side fails to map — either side
  * may legitimately not exist as a graph node (e.g. a resolved target
@@ -35,6 +35,36 @@ import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
  * `${filePath}:${startLine}:${startCol}`.
  */
 type ReferenceSiteSkipSet = ReadonlySet<string>;
+
+export interface EmitReferencesOptions {
+  /** When true, a constructor-form call site's edge gets ` (constructor)`
+   *  appended to its reason. See `ScopeResolver.markConstructionSites`. */
+  readonly markConstructionSites?: boolean;
+}
+
+/**
+ * `reason` of the edge a resolved reference emits: `scope-resolution: <kind>`,
+ * plus ` (constructor)` for a construction site when the provider opted in —
+ * a struct literal (`T{…}` in Zig, `T { .. }` in Rust, `T{}` in Go) or a
+ * `new T()` resolves to the type (or its constructor) as a CALLS edge exactly
+ * like an invocation does, and nothing else on the edge tells the two apart
+ * (PR #1432 review).
+ *
+ * The marker rides in `reason` because relationships carry no arbitrary
+ * properties — adding one would change the relation DDL and move
+ * SCHEMA_FINGERPRINT (see the IMPLEMENTS `-pointer` precedent in
+ * `pipeline/run.ts`). The plain `scope-resolution: call` prefix is kept, so a
+ * consumer matching the prefix still sees every call; one matching the exact
+ * string sees invocations only.
+ */
+export function referenceEdgeReason(
+  ref: Pick<Reference, 'kind' | 'callForm'>,
+  markConstructionSites: boolean | undefined,
+): string {
+  return markConstructionSites === true && ref.kind === 'call' && ref.callForm === 'constructor'
+    ? 'scope-resolution: call (constructor)'
+    : `scope-resolution: ${ref.kind}`;
+}
 
 /**
  * Value labels whose defs MAY be function-local. A reference to one of these is
@@ -76,6 +106,7 @@ export function emitReferencesViaLookup(
    * Optional so callers that never capture bare identifiers are unchanged.
    */
   functionLocalValueDefIds?: ReadonlySet<string>,
+  options?: EmitReferencesOptions,
 ): { emitted: number; skipped: number } {
   let emitted = 0;
   let skipped = 0;
@@ -153,7 +184,7 @@ export function emitReferencesViaLookup(
         targetId: targetGraphId,
         type: edgeType,
         confidence: ref.confidence,
-        reason: `scope-resolution: ${ref.kind}`,
+        reason: referenceEdgeReason(ref, options?.markConstructionSites),
       });
       emitted++;
     }

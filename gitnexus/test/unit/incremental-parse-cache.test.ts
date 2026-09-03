@@ -251,12 +251,16 @@ describe('PARSE_CACHE_VERSION', () => {
   // at merge.
   // Moved 90 -> 91 for #3130's Kotlin Spring decoratorRoutes and Kotlin
   // ModuleConstants shadow metadata, both persisted worker output.
-  it('pins SCHEMA_BUMP to 91 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(91);
+  // Moved 91 -> 92 for #1432 (Zig): the shared callable-flow reader's member-call
+  // capture facts change for Kotlin / C++ / C# / TypeScript, and Zig is captured
+  // for the first time with rules that moved within the PR — a warm cache from
+  // an earlier head of that branch replayed the old facts across `--force`.
+  it('pins SCHEMA_BUMP to 92 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(92);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
