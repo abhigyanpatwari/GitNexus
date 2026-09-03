@@ -368,6 +368,13 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
   lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
   lines.push(`  spring_actuator: ${JSON.stringify(freshMeta?.springActuator ?? null)}`);
+  // Surfaced beside the Actuator flag, and it matters more than that one does:
+  // Actuator only annotates nodes the source pass already found, whereas
+  // document reading MINTS destinations and edges that have no code site at
+  // all. Without this line an agent reading the context sees `Destination`
+  // nodes rooted at `asyncapi:`-prefixed pseudo-files with nothing to say where
+  // they came from.
+  lines.push(`  asyncapi_spec: ${JSON.stringify(freshMeta?.asyncApiSpec ?? null)}`);
   const indexedRunnerSchema = (freshMeta?.runnerIdentity as { schemaVersion?: unknown } | undefined)
     ?.schemaVersion;
   lines.push(

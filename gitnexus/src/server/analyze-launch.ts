@@ -47,6 +47,7 @@ export interface LaunchOptions {
   embeddings?: boolean;
   dropEmbeddings?: boolean;
   springActuatorPath?: string;
+  asyncApiSpecPath?: string;
   registryName?: string;
 }
 
@@ -336,6 +337,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           embeddings: !!opts.embeddings,
           dropEmbeddings: !!opts.dropEmbeddings,
           ...(opts.springActuatorPath ? { springActuatorPath: opts.springActuatorPath } : {}),
+          ...(opts.asyncApiSpecPath ? { asyncApiSpecPath: opts.asyncApiSpecPath } : {}),
           ...(opts.registryName ? { registryName: opts.registryName } : {}),
         },
       });

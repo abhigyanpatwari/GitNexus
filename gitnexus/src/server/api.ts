@@ -1521,6 +1521,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           embeddings,
           dropEmbeddings,
           springActuatorPath,
+          asyncApiSpecPath,
           token: repoToken,
         } = req.body;
 
@@ -1538,6 +1539,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           (typeof springActuatorPath !== 'string' || springActuatorPath.trim().length === 0)
         ) {
           res.status(400).json({ error: '"springActuatorPath" must be a non-empty string' });
+          return;
+        }
+        if (
+          asyncApiSpecPath !== undefined &&
+          (typeof asyncApiSpecPath !== 'string' || asyncApiSpecPath.trim().length === 0)
+        ) {
+          res.status(400).json({ error: '"asyncApiSpecPath" must be a non-empty string' });
           return;
         }
 
@@ -1628,6 +1636,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               embeddings,
               dropEmbeddings,
               springActuatorPath,
+              asyncApiSpecPath,
             });
           } catch (err: any) {
             if (targetPath) releaseRepoLock(getStoragePath(targetPath));

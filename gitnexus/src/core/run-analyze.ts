@@ -190,22 +190,13 @@ import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/b
 import { isSpringBeanFactoryDeclaration } from './ingestion/frameworks/spring/bean-factories.js';
 import { SPRING_CONFIG_UNRESOLVED_PREFIX } from './ingestion/frameworks/spring/config-bindings.js';
 import { classifySpringConfigFile } from './ingestion/pipeline-phases/spring-config.js';
+import { SPRING_ROUTE_BINDINGS_FEATURE } from './ingestion/frameworks/spring/analysis-features.js';
+import { springVendorPrefixesKey } from './ingestion/frameworks/spring/vendor-prefixes.js';
 import {
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-} from './ingestion/frameworks/spring/analysis-features.js';
-import {
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-} from './ingestion/languages/java/analysis-features.js';
-import {
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   findAnalysisFeatureMismatches,
   resolveAnalysisFeatureVersions,
 } from './analysis-features.js';
+import { ANALYSIS_FEATURES } from './analysis-feature-registry.js';
 import {
   analyzerRunnerIdentitiesEqual,
   finalizeAnalyzerRunnerIdentity,
@@ -246,17 +237,6 @@ import type { EmbeddingCheckpoint } from './embedding-checkpoint.js';
  */
 const stripControlCharacters = (msg: string): string =>
   msg.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g, '');
-
-const ANALYSIS_FEATURES = [
-  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
-  SPRING_AOP_FEATURE,
-  SPRING_BEAN_INVENTORY_FEATURE,
-  SPRING_CONDITIONALS_FEATURE,
-  SPRING_NON_HTTP_HANDLERS_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-] as const;
 
 interface PersistedFrameworkAnnotationRow {
   readonly id?: unknown;
@@ -489,6 +469,11 @@ export interface AnalyzeOptions {
    * the Spring enrichment phase. Undefined keeps static-only analysis.
    */
   springActuatorPath?: string;
+  /**
+   * Explicit local AsyncAPI 3.x document input, forwarded to the destination
+   * phase. Undefined keeps source-only address resolution.
+   */
+  asyncApiSpecPath?: string;
   /**
    * The caller will `process.exit()` immediately after this analyze returns (the
    * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
@@ -1597,6 +1582,20 @@ async function runFullAnalysisInner(
     analysisFeatureMismatchLogged = true;
   }
 
+  const currentSpringVendorPrefixes = springVendorPrefixesKey();
+  const persistedRouteBindings = existingMeta?.analysisFeatures?.[SPRING_ROUTE_BINDINGS_FEATURE.id];
+  if (
+    existingMeta &&
+    persistedRouteBindings === SPRING_ROUTE_BINDINGS_FEATURE.version &&
+    existingMeta.springVendorPrefixes !== currentSpringVendorPrefixes
+  ) {
+    log(
+      'Spring vendor mapping prefixes changed; forcing a full rebuild so persisted Route ' +
+        'evidence matches the configured aliases.',
+    );
+    options = { ...options, force: true };
+  }
+
   // Analyzer provenance is part of freshness, not merely diagnostics. A
   // same-commit fast path must not preserve metadata produced by an older,
   // malformed, or dependency/native-different runner. Force a real rebuild so
@@ -1713,6 +1712,35 @@ async function runFullAnalysisInner(
   }
   const springActuatorScanExclusions =
     retainedActuatorInputs.length === 0 ? undefined : retainedActuatorInputs;
+
+  // AsyncAPI documents are the same class of input as Actuator snapshots and
+  // need the same treatment, for a reason git cannot see: the documents live
+  // outside the tree as often as in it, and NOTHING about replacing one moves
+  // the commit or dirties the working tree. Without this, the second run of an
+  // out-of-band cache — the workflow the option exists for — takes the
+  // already-up-to-date fast path below, never opens a document, and serves the
+  // previous run's addresses while reporting success. Measured, not reasoned:
+  // editing a document and re-running printed "Already up to date" and left the
+  // old address in the graph.
+  //
+  // Forcing the rebuild also settles a second defect for free. A synthetic
+  // `File` node for an out-of-tree document (`asyncapi:<label>`) carries a path
+  // that is in no write set and is not covered by `isGraphWideNode`, so on an
+  // incremental writeback the node is dropped while its edges — anchored to a
+  // graph-wide `Destination` — are kept, and the edges then COPY against a row
+  // that was never written. A full rebuild has no incremental subgraph to get
+  // that wrong, so the pair cannot come apart.
+  const asyncApiSpecRequested = options.asyncApiSpecPath !== undefined;
+  const asyncApiSpecPreviouslyEnabled = existingMeta?.asyncApiSpec?.enabled === true;
+  if (asyncApiSpecRequested) {
+    if (!options.force) {
+      log('AsyncAPI document reading requested; forcing a full rebuild.');
+    }
+    options = { ...options, force: true };
+  } else if (asyncApiSpecPreviouslyEnabled) {
+    log('AsyncAPI document reading disabled; rebuilding to remove document-derived evidence.');
+    options = { ...options, force: true };
+  }
 
   // ── Early-return: already up to date ──────────────────────────────
   if (
@@ -2021,6 +2049,7 @@ async function runFullAnalysisInner(
       fetchWrappers: options.fetchWrappers,
       skipDerivedGraphPhases,
       springActuatorPath: options.springActuatorPath,
+      asyncApiSpecPath: options.asyncApiSpecPath,
       springActuatorScanExclusions,
     },
   );
@@ -3803,6 +3832,11 @@ async function runFullAnalysisInner(
             },
           }
         : {}),
+      // Written only while enabled. Once the option is dropped, the disable
+      // transition above has already forced the cleanup rebuild, so carrying a
+      // `{ enabled: false }` stamp forward would only make every subsequent run
+      // re-decide a question that is already settled.
+      ...(asyncApiSpecRequested ? { asyncApiSpec: { enabled: true } } : {}),
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
@@ -3911,6 +3945,7 @@ async function runFullAnalysisInner(
           ? existingMeta?.undecidedInterfaceSatisfaction
           : summarizeUndecidedSatisfaction(pipelineResult.undecidedSatisfaction),
       analysisFeatures: currentAnalysisFeatures,
+      springVendorPrefixes: currentSpringVendorPrefixes,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.
