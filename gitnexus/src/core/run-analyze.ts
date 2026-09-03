@@ -4242,7 +4242,7 @@ async function runFullAnalysisInner(
 
     progress('done', 100, 'Done');
 
-    await removeColdParseRebuildDir(coldParseRebuildDir, false);
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
 
     return {
       repoName: projectName,

@@ -753,17 +753,43 @@ export const mergeStagedDurableParsedFileStore = async (
     if (name === DURABLE_INDEX_FILENAME) continue;
     const from = path.join(stagedDir, name);
     const to = path.join(liveDir, name);
+    await replaceDurableChunkDir(from, to);
+  }
+  await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
+};
+
+/** Move `from` onto `to` without deleting `to` until the new tree is in place. */
+const replaceDurableChunkDir = async (from: string, to: string): Promise<void> => {
+  try {
+    await fs.rename(from, to);
+    return;
+  } catch {
+    /* dest exists, or the rename is cross-device */
+  }
+  const backup = `${to}.replacing`;
+  await fs.rm(backup, { recursive: true, force: true });
+  let backedUp = false;
+  try {
+    await fs.rename(to, backup);
+    backedUp = true;
+  } catch {
+    /* dest was missing */
+  }
+  try {
     try {
       await fs.rename(from, to);
     } catch {
-      await fs.rm(to, { recursive: true, force: true });
-      try {
-        await fs.rename(from, to);
-      } catch {
-        await fs.cp(from, to, { recursive: true });
-        await fs.rm(from, { recursive: true, force: true });
-      }
+      await fs.cp(from, to, { recursive: true });
+      await fs.rm(from, { recursive: true, force: true });
     }
+  } catch (err) {
+    if (backedUp) {
+      await fs.rm(to, { recursive: true, force: true }).catch(() => {});
+      await fs.rename(backup, to).catch(() => {});
+    }
+    throw err;
   }
-  await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
+  if (backedUp) {
+    await fs.rm(backup, { recursive: true, force: true });
+  }
 };
