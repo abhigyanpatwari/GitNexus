@@ -727,17 +727,18 @@ def test_sweep_of_one_worker_never_leaves_the_calling_thread():
     assert seen == [caller] * len(CELLS)
 
 
-def test_sweep_keeps_the_rows_of_cells_that_finished_beside_a_failing_one():
+@pytest.mark.parametrize("failure", [KeyError("harness bug"), SystemExit(97)])
+def test_sweep_keeps_the_rows_of_cells_that_finished_beside_a_failing_one(failure):
     def run(run_idx, arm):
         if (run_idx, arm) == (0, "candidate_workflow"):
-            raise KeyError("harness bug")
+            raise failure
         return _row()
 
     progress = _progress()
     # The failing cell's two siblings completed and spent their budget before
     # the harness bug surfaced. Reading the futures in order and raising on the
     # first failure would drop their rows: money spent, no evidence written.
-    with pytest.raises(KeyError):
+    with pytest.raises(type(failure)):
         _sweep(CELLS, workers=3, run=run, into=progress)
 
     assert progress.kept == [(0, "workflow"), (1, "workflow")]

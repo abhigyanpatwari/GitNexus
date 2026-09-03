@@ -687,10 +687,10 @@ def _run_wave(
 
 def _settle(future: Future[dict[str, Any]]) -> CellOutcome:
     """A completed future as (record, error) — exactly one of them is set."""
-    try:
-        return future.result(), None
-    except BaseException as error:  # noqa: BLE001 - re-raised by the caller, in order
+    error = future.exception()
+    if error is not None:
         return None, error
+    return future.result(), None
 
 
 def sweep_task_cells(
