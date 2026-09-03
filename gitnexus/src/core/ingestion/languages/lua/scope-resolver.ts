@@ -46,7 +46,10 @@ function populateLuaOwners(parsed: ParsedFile): void {
         (def) =>
           def.type === 'Method' &&
           def.qualifiedName === pair.method &&
-          def.nodeId.includes(`#${pair.defRow + 1}:`),
+          // Match the declaration position, not an arbitrary `#<row>:` token.
+          // Callable ids may carry an arity/signature suffix; a loose
+          // substring check can associate a method with the wrong declaration.
+          new RegExp(`#${pair.defRow + 1}:\\d+:Method:`).test(def.nodeId),
       );
       const owner = classes.get(pair.owner);
       if (method !== undefined && owner !== undefined) method.ownerId = owner.nodeId;

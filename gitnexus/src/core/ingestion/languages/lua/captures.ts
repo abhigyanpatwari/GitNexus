@@ -364,6 +364,7 @@ export function emitLuaScopeCaptures(
       owner,
       method: stripQuotes(method),
       defRow: defNode.startPosition.row,
+      defEndRow: defNode.endPosition.row,
     });
   }
   const classNames = new Set(
