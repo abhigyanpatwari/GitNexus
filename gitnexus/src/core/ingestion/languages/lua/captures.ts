@@ -400,7 +400,8 @@ export function emitLuaScopeCaptures(
     while (enclosing !== null) {
       if (
         enclosing.type === 'function_definition_statement' ||
-        enclosing.type === 'local_function_definition_statement'
+        enclosing.type === 'local_function_definition_statement' ||
+        enclosing.type === 'function_definition'
       ) {
         nestedInFunction = true;
         break;
