@@ -1089,6 +1089,36 @@ def cell_progress_line(task_id: str, arm: str, run_idx: int, record: dict[str, A
     )
 
 
+# A failing cell's error_kind names the category; the detail names the cause.
+# Bounded because a session-error detail carries stdout/stderr tails.
+MAX_CELL_DETAIL_CHARS = 1200
+
+
+def cell_failure_detail_line(
+    task_id: str,
+    arm: str,
+    run_idx: int,
+    record: Mapping[str, Any],
+    secrets: Sequence[str] = (),
+) -> str | None:
+    """The redacted reason a cell failed, or None when it succeeded.
+
+    Without this the log says only ``error_kind=plan-evidence-invalid`` and the
+    reason stays locked in results.jsonl, which is an uploaded artifact rather
+    than something a watcher can read while the sweep is still running.
+    """
+    if not record.get("error_kind"):
+        return None
+    detail = record.get("error_detail")
+    if detail in (None, "", {}, []):
+        return None
+    rendered = detail if isinstance(detail, str) else json.dumps(detail, default=str, sort_keys=True)
+    rendered = redact_text(rendered, secrets).replace("\n", " ⏎ ")
+    if len(rendered) > MAX_CELL_DETAIL_CHARS:
+        rendered = f"{rendered[:MAX_CELL_DETAIL_CHARS]}…[truncated {len(rendered) - MAX_CELL_DETAIL_CHARS} chars]"
+    return f"[{task_id}][{arm}][run {run_idx}] detail: {rendered}"
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Median metrics + resolve rate across repeated runs of one task+arm.
 
@@ -1608,6 +1638,9 @@ def _run_sweep(
                     # sink was not).
                     fh.write(redact_text(json.dumps(record), credential_secrets(args)) + "\n")
                 print(cell_progress_line(task["id"], arm, run_idx, record))
+                failure = cell_failure_detail_line(task["id"], arm, run_idx, record, credential_secrets(args))
+                if failure:
+                    print(failure)
 
             outage_streak, outage_tripped = sweep_task_cells(
                 cells,

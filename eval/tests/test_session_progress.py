@@ -184,3 +184,37 @@ def test_progress_sanitizes_a_hostile_tool_name() -> None:
 
     assert "FAKE-LOG-LINE" not in stream.getvalue()
     assert len(_drain_lines(stream)) == 1
+
+
+def test_cell_failure_detail_line_explains_why_a_cell_failed() -> None:
+    from workflow_bench.runner import cell_failure_detail_line
+
+    assert cell_failure_detail_line("t", "workflow", 0, {"error_kind": None}) is None
+    assert cell_failure_detail_line("t", "workflow", 0, {"error_kind": "x"}) is None
+
+    line = cell_failure_detail_line(
+        "trivial-version-alias",
+        "candidate_workflow",
+        1,
+        {
+            "error_kind": "plan-evidence-invalid",
+            "error_detail": "unauthorized workspace path\ntoken=sk-secret-value",
+        },
+        ("sk-secret-value",),
+    )
+    assert line is not None
+    assert line.startswith("[trivial-version-alias][candidate_workflow][run 1] detail: ")
+    assert "unauthorized workspace path" in line
+    assert "sk-secret-value" not in line
+    assert "\n" not in line
+
+
+def test_cell_failure_detail_line_bounds_a_huge_detail() -> None:
+    from workflow_bench.runner import MAX_CELL_DETAIL_CHARS, cell_failure_detail_line
+
+    line = cell_failure_detail_line(
+        "t", "workflow", 0, {"error_kind": "session-error", "error_detail": {"stdout_tail": "y" * 50_000}}
+    )
+    assert line is not None
+    assert "truncated" in line
+    assert len(line) < MAX_CELL_DETAIL_CHARS + 200
