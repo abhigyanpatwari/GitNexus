@@ -1744,6 +1744,16 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Cold parser rebuild (#3152). CLI ORs `--no-parse-cache` into `force`
+  // because bypassing cached parser output is meaningless if this guard
+  // returns first. Programmatic `useParseCache: false` must do the same:
+  // otherwise a clean git repo with an existing index never reaches the
+  // empty-cache construction below.
+  if (options.useParseCache === false && !options.force) {
+    log('Parser cache bypass requested; forcing a full rebuild so unchanged files are re-parsed.');
+    options = { ...options, force: true };
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&

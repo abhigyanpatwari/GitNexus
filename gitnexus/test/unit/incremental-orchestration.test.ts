@@ -579,6 +579,26 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('useParseCache:false bypasses the alreadyUpToDate fast path without --force', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const logs: string[] = [];
+      const cold = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, useParseCache: false },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(cold.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain('Parser cache bypass requested');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('rebuilds for Actuator snapshots and once more when runtime enrichment is disabled', async () => {
     const repo = await setupMiniRepo();
     const runtimeInput = 'runtime-actuator';
