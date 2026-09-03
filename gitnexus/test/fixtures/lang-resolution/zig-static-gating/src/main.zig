@@ -162,6 +162,22 @@ pub fn run() void {
     if (cfg.NOT_A_BOOL != 0) {
         live_cross_file_not_bool();
     }
+
+    // Bare literal gate: no constant table involved, must still be gated
+    // (PR #3161 review, finding 1).
+    if (false) {
+        gated_bare_literal();
+    }
+
+    // Same callee reached from a LIVE site and a GATED site in one caller: the
+    // free-call edge is deduplicated per (caller, callee), so the flag must be
+    // the AND over all sites, never whichever site was visited first
+    // (PR #3161 review, finding 2). Live first here, gated first in
+    // `run_gated_first` below.
+    live_and_gated_same_callee();
+    if (UPGRADERS_ENABLED) {
+        live_and_gated_same_callee();
+    }
 }
 
 fn live_unconditional() void {
@@ -294,4 +310,23 @@ fn live_cross_file_not_bool() void {
 
 fn some_runtime_flag() bool {
     return false;
+}
+
+pub fn run_gated_first() void {
+    if (UPGRADERS_ENABLED) {
+        gated_then_live_same_callee();
+    }
+    gated_then_live_same_callee();
+}
+
+fn gated_bare_literal() void {
+    _ = 1;
+}
+
+fn live_and_gated_same_callee() void {
+    _ = 1;
+}
+
+fn gated_then_live_same_callee() void {
+    _ = 1;
 }

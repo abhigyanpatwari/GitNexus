@@ -40,6 +40,18 @@ describe('Zig static-gated edges', () => {
     expect(isGated('gated_or_both_false')).toBe(true);
   });
 
+  it('tags a bare `if (false)` gate even when the file declares no bool constants', () => {
+    expect(isGated('gated_bare_literal')).toBe(true);
+  });
+
+  it('keeps a deduplicated edge LIVE when a live site precedes a gated site', () => {
+    expect(isGated('live_and_gated_same_callee')).toBe(false);
+  });
+
+  it('keeps a deduplicated edge LIVE when a gated site precedes a live site', () => {
+    expect(isGated('gated_then_live_same_callee')).toBe(false);
+  });
+
   it('does NOT tag unconditional calls', () => {
     expect(isGated('live_unconditional')).toBe(false);
   });

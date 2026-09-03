@@ -34,8 +34,9 @@ const NO_IMPORT_ALIASES: ZigImportAliasMap = new Map();
  *  cross-file alias walk in `zig-static-gating.ts` needs the repo file list,
  *  which the capture layer does not see. */
 function stampZigStaticGating(out: readonly CaptureMatch[], root: SyntaxNode): CaptureMatch[] {
+  // No early return on an empty constant table: `collectZigStaticGatedRanges`
+  // also folds bare literals (`if (false) { ... }`), which need no constants.
   const bools = buildZigBoolConstMap(root);
-  if (bools.size === 0) return [...out];
   const ranges = collectZigStaticGatedRanges(root, bools, NO_IMPORT_ALIASES, () => undefined);
   if (ranges.length === 0) return [...out];
   return out.map((m) => {
