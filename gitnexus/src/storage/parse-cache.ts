@@ -720,7 +720,22 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // ModuleConstants shadow metadata. A warm v90 cache would replay unchanged
 // Kotlin files with neither route candidates nor the constant declarations
 // needed to fold them, leaving the new ingestion path silently inert.
-const SCHEMA_BUMP = 91;
+// 91 -> 92 (#1432): the shared callable-flow reader (`callable-flow-captures.ts`)
+// no longer names a callee by simple name for a MEMBER call and gates a
+// field-stored-callable invoke on a visible member store — parse-time capture
+// facts for Kotlin / C++ / C# / TypeScript member calls change (the
+// scope-capture bench re-baselined all four), and Zig files are captured for
+// the first time, with rules that changed within the PR (qualified struct
+// literals, enum-variant field bindings, receiver tagging). A warm v91 cache
+// replays the old facts verbatim, `--force` included: a reviewer re-testing a
+// later head of this PR on an index built from an earlier one measured a
+// byte-identical graph until `parse-cache/` and `parsedfile-cache/` were
+// deleted by hand. 92 is the next free value above origin/main (91) at merge
+// time. RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+// v93: Zig call captures inside a comptime-false branch carry
+// `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
+// `staticGated` and the CALLS edge a BOOLEAN column.
+const SCHEMA_BUMP = 93;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

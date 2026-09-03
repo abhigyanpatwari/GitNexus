@@ -11,6 +11,7 @@ import {
   intersectSpringHttpMethods,
   isRouteMemberKey,
   findEnclosingClass,
+  isClassLevelMappingAnnotation,
   joinPath,
   type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
@@ -467,13 +468,15 @@ function annotationHasRouteMember(annotation: Parser.SyntaxNode): boolean {
 }
 
 function typeRequestMethods(typeNode: Parser.SyntaxNode): readonly string[] {
-  const mappings = declarationAnnotations(typeNode).filter(
-    (annotation) =>
-      simpleName(annotation.childForFieldName('name')?.text ?? '') === 'RequestMapping',
+  const mappings = declarationAnnotations(typeNode).filter((annotation) =>
+    isClassLevelMappingAnnotation(simpleName(annotation.childForFieldName('name')?.text ?? '')),
   );
   if (mappings.length === 0) return ['*'];
   if (mappings.length !== 1) return [];
-  return springAnnotationHttpMethods('RequestMapping', mappings[0].text);
+  return springAnnotationHttpMethods(
+    simpleName(mappings[0].childForFieldName('name')?.text ?? 'RequestMapping'),
+    mappings[0].text,
+  );
 }
 
 function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[]): boolean {
@@ -675,7 +678,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
 
     // Type-level (class or interface): a Spring `@RequestMapping` URL prefix, or
     // — on an interface — an OpenFeign `@FeignClient(path = "...")` prefix.
-    if (ann === 'RequestMapping') {
+    if (isClassLevelMappingAnnotation(ann)) {
       if (!isRouteMemberKey(keyNode)) continue;
       if (!valueNode) {
         // Constant-valued class prefix — see `typesWithUnfoldablePrefix`.

@@ -843,3 +843,198 @@ describe('resolveJsImport', () => {
     );
   });
 });
+
+describe('wrapped X.request({ url, method }) detections', () => {
+  it('keeps the raw template so mid-path interpolations survive to the normalizer', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(
+          'httpClient.request({ url: `${client}/api/${tenant}/orders`, method: "GET" });',
+        ),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.framework).toBe('request');
+    expect(detections[0]?.method).toBe('GET');
+    expect(detections[0]?.path).toBe('${client}/api/${tenant}/orders');
+  });
+
+  it('emits * when method is present but not a literal', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", method: verb });'),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.method).toBe('*');
+  });
+
+  it('uses the last duplicate method key, matching JS evaluation', () => {
+    const dynamicLast = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: '/api/orders', method: 'GET', method: verb });"),
+      ),
+    );
+    expect(dynamicLast[0]?.method).toBe('*');
+    const literalLast = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: '/api/orders', method: verb, method: 'POST' });"),
+      ),
+    );
+    expect(literalLast[0]?.method).toBe('POST');
+  });
+
+  it('defaults to GET only when method/type is absent', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(jsParser.parse('httpClient.request({ url: "/api/orders" });')),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.method).toBe('GET');
+  });
+
+  it('drops a static relative url at scan time', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: 'api/orders', method: 'GET' });"),
+      ),
+    );
+    expect(detections).toHaveLength(0);
+  });
+
+  it('does not treat cy.request or queue.request as HTTP consumers', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(`
+cy.request({ url: '/api/v1/orders', method: 'GET' });
+queue.request({ url: '/admin', method: 'DELETE' });
+`),
+      ),
+    );
+    expect(detections).toHaveLength(0);
+  });
+
+  it('ignores a config object that is not the first request argument', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request('/actual', { url: '/metadata', method: 'GET' });"),
+      ),
+    );
+    expect(detections).toHaveLength(0);
+  });
+
+  it('admits $http by spelling but not a bare api without axios proof', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse(`
+$http.request({ url: '/api/orders', method: 'GET' });
+api.request({ url: '/api/users', method: 'POST' });
+`),
+      ),
+    );
+    expect(detections).toEqual([
+      expect.objectContaining({ method: 'GET', path: '/api/orders', framework: 'request' }),
+    ]);
+  });
+
+  it('reads quoted method/type keys and type: as the verb', () => {
+    const quoted = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", "method": "POST" });'),
+      ),
+    );
+    expect(quoted[0]?.method).toBe('POST');
+    const typed = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: '/api/items', type: 'PUT' });"),
+      ),
+    );
+    expect(typed[0]?.method).toBe('PUT');
+  });
+
+  it('emits * when method may arrive via object spread', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", ...config });'),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.method).toBe('*');
+  });
+
+  it('keeps static absolute wrapped-request urls for host stripping', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: 'https://host/api/x', method: 'GET' });"),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.path).toBe('https://host/api/x');
+  });
+
+  it('admits axios.create instances calling .request', () => {
+    const detections = consumers(
+      scanRepo(
+        {
+          'src/lib/client.ts': `
+            import axios from 'axios';
+            export const api = axios.create({ baseURL: '/' });
+          `,
+          'src/api/orders.ts': `
+            import { api } from '../lib/client';
+            export const create = () => api.request({ url: '/api/orders', method: 'POST' });
+          `,
+        },
+        'src/api/orders.ts',
+      ),
+    );
+    expect(detections).toContainEqual(
+      expect.objectContaining({ role: 'consumer', method: 'POST', path: '/api/orders' }),
+    );
+  });
+
+  it('admits member-verb calls with a gateway-prefixed template', () => {
+    const detections = consumers(
+      scanRepo(
+        {
+          'src/lib/client.ts': `
+            import axios from 'axios';
+            export default axios.create({ baseURL: '/' });
+          `,
+          'src/api/users.ts': `
+            import api from '../lib/client';
+            export const list = (gateway: string) => api.get(\`\${gateway}/api/v1/users\`);
+            export const bare = (id: string) => api.get(\`\${id}\`);
+            export const glue = (c: string) => api.get(\`\${c}api/x\`);
+          `,
+        },
+        'src/api/users.ts',
+      ),
+    );
+    expect(detections.map((d) => d.path)).toEqual(['${gateway}/api/v1/users']);
+  });
+
+  it('trims whitespace-prefixed absolute paths at scan time', () => {
+    const detections = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: ' /api/orders', method: 'GET' });"),
+      ),
+    );
+    expect(detections).toHaveLength(1);
+    expect(detections[0]?.path).toBe('/api/orders');
+  });
+
+  it('emits * for interpolated method templates and shorthand method keys', () => {
+    const interpolated = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse('httpClient.request({ url: "/api/orders", method: `${verb}` });'),
+      ),
+    );
+    expect(interpolated[0]?.method).toBe('*');
+    const shorthand = consumers(
+      JAVASCRIPT_HTTP_PLUGIN.scan(
+        jsParser.parse("httpClient.request({ url: '/api/orders', method });"),
+      ),
+    );
+    expect(shorthand[0]?.method).toBe('*');
+  });
+});

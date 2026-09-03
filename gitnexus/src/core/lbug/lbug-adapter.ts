@@ -72,6 +72,7 @@ import {
   shadowSidecarRecoveryMessage,
   sidecarPreflightDisabled,
 } from './sidecar-recovery.js';
+import { isProcessAlive } from '../../utils/process-identity.js';
 
 import { logger } from '../logger.js';
 import {
@@ -329,20 +330,6 @@ const INIT_LOCK_MAX_ATTEMPTS = 6;
 const INIT_LOCK_RETRY_DELAY_MS = 500;
 
 const initLockPath = (dbPath: string): string => `${dbPath}.init.lock`;
-
-/**
- * Returns true when the process identified by `pid` is still running.
- * Uses `process.kill(pid, 0)` which sends signal 0 (a no-op probe) —
- * it throws ESRCH when the process does not exist.
- */
-const isProcessAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 /**
  * Try to break a stale lock whose owning process has exited.
@@ -1479,22 +1466,28 @@ export const fallbackRelationshipInserts = async (
   for (let i = 1; i < validRelLines.length; i++) {
     const line = validRelLines[i];
     try {
-      const match = line.match(/"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)/);
+      // CSV layout: from,to,type,confidence,reason,step[,staticGated]
+      // The trailing `staticGated` column (0/1) is optional so we remain
+      // tolerant of legacy CSVs written before the column existed.
+      const match = line.match(
+        /"([^"]*)","([^"]*)","([^"]*)",([0-9.]+),"([^"]*)",([0-9-]+)(?:,([01]))?/,
+      );
       if (!match) continue;
-      const [, fromId, toId, relType, confidenceStr, reason, stepStr] = match;
+      const [, fromId, toId, relType, confidenceStr, reason, stepStr, gatedStr] = match;
       const fromLabel = getNodeLabel(fromId);
       const toLabel = getNodeLabel(toId);
       if (!validTables.has(fromLabel) || !validTables.has(toLabel)) continue;
 
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
+      const staticGated = gatedStr === '1';
 
       await queryAndDrain(
         conn,
         `
         MATCH (a:${escapeLabel(fromLabel)} {id: ${formatCypherValue(fromId)} }),
               (b:${escapeLabel(toLabel)} {id: ${formatCypherValue(toId)} })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}}]->(b)
+        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}, staticGated: ${staticGated}}]->(b)
       `,
       );
     } catch {

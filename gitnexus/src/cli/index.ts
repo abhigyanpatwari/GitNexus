@@ -45,6 +45,22 @@ program
   .option('-f, --force', 'Apply the changes (default is a dry-run preview)')
   .action(createLazyAction(() => import('./uninstall.js'), 'uninstallCommand'));
 
+program
+  .command('auto-sync [action]')
+  .description(
+    'Control scheduled repository clone/pull and analysis from GITNEXUS_HOME/watch_config.yml',
+  )
+  .addHelpText('after', () => t('help.autoSync.details'))
+  .action(createLazyAction(() => import('./auto-sync.js'), 'autoSyncCommand'));
+
+program
+  .command('watch [action]')
+  .description(
+    'Ambiguous: use `analyze --watch` for local files, or `auto-sync` for scheduled remotes',
+  )
+  .addHelpText('after', () => t('help.watch.details'))
+  .action(createLazyAction(() => import('./watch.js'), 'watchAmbiguousCommand'));
+
 // Baseline of GITNEXUS_EMBEDDING_DIMS captured by the analyze preAction hook
 // before it overwrites the var, so the postAction hook can restore it. The
 // analyzeCommand env snapshot is taken AFTER this hook runs, so it cannot undo
@@ -146,6 +162,11 @@ program
     '--spring-actuator <path>',
     'Import local Spring Boot Actuator JSON snapshots (mappings, beans, conditions, ' +
       'configprops, env). Explicit opt-in; disabled by default.',
+  )
+  .option(
+    '--asyncapi-spec <path>',
+    'Read AsyncAPI 3.x documents from this directory or file and resolve broker ' +
+      'addresses from them. Explicit opt-in; disabled by default.',
   )
   .option('--embedding-threads <n>', 'Limit local ONNX embedding CPU threads')
   .option('--embedding-batch-size <n>', 'Number of nodes per embedding batch')

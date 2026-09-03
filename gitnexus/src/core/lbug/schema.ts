@@ -494,14 +494,14 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
 ];
 
 /**
- * The 69 pairs NEITHER rule above generates — everything left after the two
+ * The 66 pairs NEITHER rule above generates — everything left after the two
  * cross products are subtracted. Carried by CONTAINMENT, inheritance, imports
  * and DI: a container label crossed with a contained label. No predicate
  * describes that surface (any container can hold any definition).
  *
  * What survives here is characteristic, not arbitrary. Almost all of it is a
  * TARGET no rule reaches — `CodeElement`, `Impl`, `Namespace`, `Template`,
- * `Typedef`, `Union`, `Static`, `Section`, `Folder` are in neither
+ * `Typedef`, `Static`, `Section`, `Folder` are in neither
  * `SCOPE_BRIDGE_TARGET_LABELS` nor {@link ATTACHMENT_TARGET_LABELS} — plus the
  * `Impl|*` and `Template|*` member rows (Rust `impl`/`trait` bodies, C++
  * templates), the two `Route|Process` / `Tool|Process` entry points whose
@@ -529,7 +529,7 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
  * from it and so moves with any change to it.
  *
  * Folding this remainder into a third cross product
- * (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef, Union,
+ * (`DEFINITION_ANCHOR_LABELS × {CodeElement, Section, Typedef,
  * Namespace, Impl, TypeAlias, Static, Template}`) would take the table to 641
  * pairs and leave only ~29 lines here. `bench/schema-pairs` measures 641 at
  * 1.22–1.43× on the historical reference box; current production's 461 pairs
@@ -546,7 +546,6 @@ const ATTACHMENT_TARGET_LABELS: readonly NodeTableName[] = [
 export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM File TO CodeElement,
   FROM File TO \`Typedef\`,
-  FROM File TO \`Union\`,
   FROM File TO \`Namespace\`,
   FROM File TO \`Impl\`,
   FROM File TO \`Static\`,
@@ -558,11 +557,9 @@ export const STRUCTURAL_PAIR_DDL = `  FROM File TO Folder,
   FROM Function TO \`Namespace\`,
   FROM Function TO \`Impl\`,
   FROM Function TO \`Typedef\`,
-  FROM Function TO \`Union\`,
   FROM Function TO CodeElement,
   FROM Class TO \`Template\`,
   FROM Class TO \`Impl\`,
-  FROM Class TO \`Union\`,
   FROM Class TO \`Namespace\`,
   FROM Class TO \`Typedef\`,
   FROM Class TO CodeElement,
@@ -660,7 +657,8 @@ ${generatedPairDdl()},
   type STRING,
   confidence DOUBLE,
   reason STRING,
-  step INT32
+  step INT32,
+  staticGated BOOLEAN
 )`;
 
 // ============================================================================

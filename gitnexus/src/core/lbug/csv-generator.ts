@@ -396,7 +396,7 @@ class BufferedCSVWriter {
 
 /** Canonical relationship CSV header — shared by the emit pass and the
  * `splitRelCsvByLabelPair` differential oracle. */
-export const REL_CSV_HEADER = 'from,to,type,confidence,reason,step';
+export const REL_CSV_HEADER = 'from,to,type,confidence,reason,step,staticGated';
 
 /** Build the escaped CSV row (no trailing newline) for one relationship.
  * Single source of the relationship row bytes — used by the emit pass and by
@@ -409,6 +409,10 @@ export const buildRelRow = (rel: GraphRelationship): string =>
     escapeCSVNumber(rel.confidence, 1.0),
     escapeCSVField(rel.reason),
     escapeCSVNumber(rel.step, 0),
+    // `staticGated` persists as 0/1 (LadybugDB BOOLEAN COPY accepts both).
+    // Every edge that does not carry the flag writes 0, so readers treat
+    // absence and `false` identically.
+    rel.staticGated === true ? '1' : '0',
   ].join(',');
 
 /** Canonical BasicBlock node CSV header — taint/PDG substrate (issue #2080).

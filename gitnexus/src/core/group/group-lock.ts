@@ -21,12 +21,11 @@
  * else claims: group directories live under `~/.gitnexus/groups/<name>` (or
  * `$GITNEXUS_HOME`), never under a repo's `.gitnexus[/branches/<slug>]`.
  *
- * WHY IT FAILS CLOSED, unlike the registry lock. `withRegistryLock` degrades to
- * running UNLOCKED on timeout, and that is right for it: it guards a sub-second
- * JSON read/merge/write on a latency-critical path (`augment` runs on every
- * editor tool call), and running unlocked is merely the pre-lock status quo. A
- * group sync is the opposite on every axis — it is long, expensive, operator-
- * initiated, and its lost update destroys contracts rather than a registry field.
+ * WHY IT FAILS CLOSED, like the registry lock. `withRegistryLock` also
+ * refuses to continue unlocked on timeout: a lost registry update can drop a
+ * concurrent registration. A group sync still fails closed for additional
+ * reasons — it is long, expensive, operator-initiated, and a lost update
+ * destroys contracts rather than a registry field.
  * A sync that cannot be protected must not run at all, and there are three
  * distinct ways it can fail to be protected; all three throw
  * {@link GroupSyncLockError}:
