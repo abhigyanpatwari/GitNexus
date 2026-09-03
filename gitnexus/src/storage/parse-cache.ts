@@ -19,9 +19,9 @@
  * - Chunk-level invalidation gives a useful speedup floor (98% on a single
  *   1-of-50 invalidated chunk) without touching the worker.
  *
- * Survives `--force` because it's content-addressed: the same bytes always
- * produce the same key. `--force` only matters for the LadybugDB writeback;
- * the cache itself is always safe to reuse.
+ * `--force` still reuses content-addressed shards (it only rebuilds graph/FTS).
+ * `useParseCache: false` reparses every file, writes a staging generation, and
+ * publishes onto this cache only after a successful analysis.
  */
 
 import { createHash } from 'crypto';
@@ -1046,6 +1046,11 @@ export const loadParseCacheChunk = async (
  */
 const createdCacheDirs = new Set<string>();
 
+/** Drop the mkdir memo after the staging tree is wiped so the next persist recreates it. */
+export const forgetCreatedParseCacheDir = (storagePath: string): void => {
+  createdCacheDirs.delete(getCacheDirPath(storagePath));
+};
+
 /**
  * Persist one chunk shard and avoid retaining it in RAM for the rest of the
  * run. Falls back to `cache.entries` when `storagePath` is unset (unit tests).
@@ -1192,9 +1197,9 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
         ? getCacheChunkPath(cache.storagePath, chunkHash)
         : undefined;
     const livePath = getCacheChunkPath(storagePath, chunkHash);
-    if (stagedPath && (await copyV8CacheIfPresent(stagedPath, chunkPath))) {
-      writtenKeys.push(chunkHash);
-    } else if (await copyV8CacheIfPresent(livePath, chunkPath)) {
+    const fromStaged = Boolean(stagedPath && cache.onDiskKeys?.has(chunkHash));
+    const sourcePath = fromStaged && stagedPath ? stagedPath : livePath;
+    if (await copyV8CacheIfPresent(sourcePath, chunkPath)) {
       writtenKeys.push(chunkHash);
     }
   }
@@ -1238,10 +1243,12 @@ export const pruneCache = (cache: ParseCache, usedHashes: ReadonlySet<string>): 
   return removed;
 };
 
-const emptyCache = (storagePath?: string): ParseCache => ({
+export const emptyParseCache = (storagePath?: string): ParseCache => ({
   version: PARSE_CACHE_VERSION,
   entries: new Map<string, ParseWorkerResult[]>(),
   usedKeys: new Set<string>(),
   storagePath,
   onDiskKeys: storagePath ? new Set<string>() : undefined,
 });
+
+const emptyCache = emptyParseCache;

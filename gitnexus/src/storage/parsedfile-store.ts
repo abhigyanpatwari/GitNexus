@@ -753,12 +753,16 @@ export const mergeStagedDurableParsedFileStore = async (
     if (name === DURABLE_INDEX_FILENAME) continue;
     const from = path.join(stagedDir, name);
     const to = path.join(liveDir, name);
-    await fs.rm(to, { recursive: true, force: true });
     try {
       await fs.rename(from, to);
     } catch {
-      await fs.cp(from, to, { recursive: true });
-      await fs.rm(from, { recursive: true, force: true });
+      await fs.rm(to, { recursive: true, force: true });
+      try {
+        await fs.rename(from, to);
+      } catch {
+        await fs.cp(from, to, { recursive: true });
+        await fs.rm(from, { recursive: true, force: true });
+      }
     }
   }
   await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);

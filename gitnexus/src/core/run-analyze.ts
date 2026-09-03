@@ -158,12 +158,10 @@ import {
   pruneCache,
   PARSE_CACHE_VERSION,
   getColdParseRebuildDir,
+  emptyParseCache,
+  forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
-import {
-  getDurableParsedFileDir,
-  pruneAndSaveDurableParsedFileStore,
-  mergeStagedDurableParsedFileStore,
-} from '../storage/parsedfile-store.js';
+import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
 import {
   getCurrentCommit,
   getCurrentBranch,
@@ -1038,6 +1036,18 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   };
 }
 
+async function removeColdParseRebuildDir(
+  dir: string | undefined,
+  ignoreErrors: boolean,
+): Promise<void> {
+  if (!dir) return;
+  try {
+    await fs.rm(dir, { recursive: true, force: true });
+  } catch (err) {
+    if (!ignoreErrors) throw err;
+  }
+}
+
 /**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
@@ -1752,11 +1762,8 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
-  // Cold parser rebuild (#3152). CLI ORs `--no-parse-cache` into `force`
-  // because bypassing cached parser output is meaningless if this guard
-  // returns first. Programmatic `useParseCache: false` must do the same:
-  // otherwise a clean git repo with an existing index never reaches the
-  // empty-cache construction below.
+  // Programmatic `useParseCache: false` must set force or the up-to-date
+  // guard returns before the empty-cache construction below.
   if (options.useParseCache === false && !options.force) {
     log('Parser cache bypass requested; forcing a full rebuild so unchanged files are re-parsed.');
     options = { ...options, force: true };
@@ -1984,30 +1991,16 @@ async function runFullAnalysisInner(
   }
 
   // ── Load incremental parse cache ──────────────────────────────────
-  // Content-addressed: safe to reuse across `--force` runs when the parser
-  // implementation is unchanged. Developers iterating on capture/query code
-  // can opt out so unchanged source files are parsed again (#3152).
-  // Loaded into a single ParseCache object that the pipeline mutates
-  // in-place (cache hits leave entries unchanged; misses add new ones).
-  // Keep a storagePath so cold runs retain disk-backed ParsedFile offload.
-  // Write mid-run shards under a staging directory so a crash cannot mix a
-  // new generation into the live parse-cache / parsedfile-cache trees; publish
-  // happens in saveParseCache after a successful analysis. Empty readable-key
-  // state prevents any previous generation from being replayed.
+  // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
+  // stages a new generation under parse-rebuild/ and publishes after success.
   if (options.useParseCache === false) {
     coldParseRebuildDir = getColdParseRebuildDir(storagePath);
-    await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
-    await fs.mkdir(coldParseRebuildDir, { recursive: true });
+    await removeColdParseRebuildDir(coldParseRebuildDir, false);
+    forgetCreatedParseCacheDir(coldParseRebuildDir);
   }
   const parseCache =
     options.useParseCache === false
-      ? {
-          version: PARSE_CACHE_VERSION,
-          entries: new Map(),
-          usedKeys: new Set<string>(),
-          storagePath: coldParseRebuildDir,
-          onDiskKeys: new Set<string>(),
-        }
+      ? emptyParseCache(coldParseRebuildDir)
       : await loadParseCache(storagePath);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
@@ -2096,13 +2089,7 @@ async function runFullAnalysisInner(
     },
   );
   } catch (err) {
-    if (coldParseRebuildDir) {
-      try {
-        await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
-      } catch {
-        /* next cold run removes leftovers */
-      }
-    }
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
     throw err;
   }
 
@@ -4093,21 +4080,12 @@ async function runFullAnalysisInner(
       // no parse-cache shard) drops its durable subdir here and re-dispatches
       // next run. Same try/catch — a durable-store write failure must never
       // break an otherwise successful run (next run treats it as a miss).
-      const savedKeySet = new Set(savedKeys);
-      if (coldParseRebuildDir && parseCache.storagePath === coldParseRebuildDir) {
-        await mergeStagedDurableParsedFileStore(
-          storagePath,
-          coldParseRebuildDir,
-          PARSE_CACHE_VERSION,
-          savedKeySet,
-        );
-      } else {
-        await pruneAndSaveDurableParsedFileStore(
-          getDurableParsedFileDir(storagePath),
-          PARSE_CACHE_VERSION,
-          savedKeySet,
-        );
-      }
+      await mergeStagedDurableParsedFileStore(
+        storagePath,
+        parseCache.storagePath ?? storagePath,
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }
@@ -4264,9 +4242,7 @@ async function runFullAnalysisInner(
 
     progress('done', 100, 'Done');
 
-    if (coldParseRebuildDir) {
-      await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
-    }
+    await removeColdParseRebuildDir(coldParseRebuildDir, false);
 
     return {
       repoName: projectName,
@@ -4321,13 +4297,7 @@ async function runFullAnalysisInner(
         /* swallow — orphan reclamation must never mask the real failure */
       }
     }
-    if (coldParseRebuildDir) {
-      try {
-        await fs.rm(coldParseRebuildDir, { recursive: true, force: true });
-      } catch {
-        /* swallow — next cold run rm's the leftover staging tree */
-      }
-    }
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
     if (liveIndexMutationStarted) {
       // Preserve the original error identity/prototype: callers distinguish
       // IndexLockTimeoutError and other domain failures with `instanceof`.
