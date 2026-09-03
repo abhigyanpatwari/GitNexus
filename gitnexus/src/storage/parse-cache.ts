@@ -823,8 +823,19 @@ const CACHE_DIRNAME = 'parse-cache';
  */
 export const COLD_PARSE_REBUILD_DIRNAME = 'parse-rebuild';
 
+/** Deterministic staging path — tests only. Production uses {@link createColdParseRebuildDir}. */
 export const getColdParseRebuildDir = (storagePath: string): string =>
   path.join(storagePath, COLD_PARSE_REBUILD_DIRNAME);
+
+/**
+ * Unique per analyze process so concurrent `--no-parse-cache` runs on
+ * different branch slots (shared `.gitnexus`, separate index locks) do not
+ * delete each other's staging tree.
+ */
+export const createColdParseRebuildDir = async (storagePath: string): Promise<string> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  return fs.mkdtemp(path.join(storagePath, `${COLD_PARSE_REBUILD_DIRNAME}.`));
+};
 const CACHE_INDEX_FILENAME = 'index.json';
 
 /** Keys on disk always come from `computeChunkHash` — 64-char lowercase hex. */

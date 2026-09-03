@@ -16,6 +16,7 @@ import {
   pruneCache,
   slimParseWorkerResultsForCache,
   getColdParseRebuildDir,
+  createColdParseRebuildDir,
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
 import { writeV8CacheFile } from '../../src/storage/v8-sidecar.js';
@@ -1005,6 +1006,19 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await saveParseCache(dir, cache);
       const loaded = await loadParseCache(dir);
       expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(7);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('createColdParseRebuildDir returns distinct directories under the same storage root', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-uniq-'));
+    try {
+      const a = await createColdParseRebuildDir(dir);
+      const b = await createColdParseRebuildDir(dir);
+      expect(a).not.toBe(b);
+      expect(a.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
+      expect(b.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

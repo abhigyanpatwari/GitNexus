@@ -157,7 +157,7 @@ import {
   saveParseCache,
   pruneCache,
   PARSE_CACHE_VERSION,
-  getColdParseRebuildDir,
+  createColdParseRebuildDir,
   emptyParseCache,
   forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
@@ -1992,10 +1992,11 @@ async function runFullAnalysisInner(
 
   // ── Load incremental parse cache ──────────────────────────────────
   // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
-  // stages a new generation under parse-rebuild/ and publishes after success.
+  // stages a new generation under a run-unique parse-rebuild.* dir and publishes
+  // after success. Unique because index locks are per branch slot while this
+  // cache root is shared across branches.
   if (options.useParseCache === false) {
-    coldParseRebuildDir = getColdParseRebuildDir(storagePath);
-    await removeColdParseRebuildDir(coldParseRebuildDir, false);
+    coldParseRebuildDir = await createColdParseRebuildDir(storagePath);
     forgetCreatedParseCacheDir(coldParseRebuildDir);
   }
   const parseCache =
