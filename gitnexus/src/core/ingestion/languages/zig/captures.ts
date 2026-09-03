@@ -14,9 +14,9 @@ import {
 } from '../../call-extractors/zig-static-gating.js';
 
 /**
- * Static-gating marker (feat/zig-static-gated-edges). A call capture inside
- * an `if (CONST_FALSE)` body (or the `else` of an `if (CONST_TRUE)`) gets
- * this extra key; `scope-extractor` turns it into `ReferenceSite.staticGated`
+ * A call capture inside an `if (CONST_FALSE)` body (or the `else` of an
+ * `if (CONST_TRUE)`) gets this extra key; `scope-extractor` turns it into
+ * `ReferenceSite.staticGated`
  * and the emitters copy it onto the CALLS edge. Same idiom as Go's
  * `@reference.callee-position`: a zero-range marker, present or absent, so
  * every ungated site's capture set stays byte-identical.
@@ -33,16 +33,20 @@ const NO_IMPORT_ALIASES: ZigImportAliasMap = new Map();
  *  in a statically dead range. File-local constants only for now (v1): the
  *  cross-file alias walk in `zig-static-gating.ts` needs the repo file list,
  *  which the capture layer does not see. */
-function stampZigStaticGating(out: readonly CaptureMatch[], root: SyntaxNode): CaptureMatch[] {
+function stampZigStaticGating(
+  out: readonly CaptureMatch[],
+  root: SyntaxNode,
+): readonly CaptureMatch[] {
   // No early return on an empty constant table: `collectZigStaticGatedRanges`
   // also folds bare literals (`if (false) { ... }`), which need no constants.
   const bools = buildZigBoolConstMap(root);
   const ranges = collectZigStaticGatedRanges(root, bools, NO_IMPORT_ALIASES, () => undefined);
-  if (ranges.length === 0) return [...out];
+  if (ranges.length === 0) return out;
   return out.map((m) => {
-    const key = Object.keys(m).find((k) => k.startsWith('@reference.call'));
+    const key = Object.keys(m).find((k) => k.startsWith('@reference.call.'));
     if (key === undefined) return m;
-    const anchor = m[key]!;
+    const anchor = m[key];
+    if (anchor === undefined) return m;
     return isPositionStaticGated(anchor.range.startLine, anchor.range.startCol, ranges)
       ? { ...m, '@reference.static-gated': STATIC_GATED_MARKER }
       : m;

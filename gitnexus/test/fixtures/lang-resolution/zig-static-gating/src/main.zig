@@ -163,24 +163,22 @@ pub fn run() void {
         live_cross_file_not_bool();
     }
 
-    // Bare literal gate: no constant table involved, must still be gated
-    // (PR #3161 review, finding 1).
+    // Bare literal gate: no constant table involved, but it must still be gated.
     if (false) {
         gated_bare_literal();
     }
 
     // Same callee reached from a LIVE site and a GATED site in one caller: the
     // free-call edge is deduplicated per (caller, callee), so the flag must be
-    // the AND over all sites, never whichever site was visited first
-    // (PR #3161 review, finding 2). Live first here, gated first in
-    // `run_gated_first` below.
+    // the AND over all sites, never whichever site was visited first. Live
+    // first here, gated first in `run_gated_first` below.
     live_and_gated_same_callee();
     if (UPGRADERS_ENABLED) {
         live_and_gated_same_callee();
     }
 
-    // Negation and parentheses (PR #3161 tri-review, finding 4). tree-sitter-zig
-    // parses prefix `!` as `error_union_type`; the evaluator negates the operand.
+    // Negation and parentheses. tree-sitter-zig parses prefix `!` as
+    // `error_union_type`; the evaluator negates the operand.
     if (!DEBUG) {
         gated_not_true();
     }
@@ -195,7 +193,7 @@ pub fn run() void {
     }
 
     // `if` as an EXPRESSION is a different grammar node (`if_expression`)
-    // with no `else_clause` wrapper (PR #3161 tri-review, finding 5).
+    // with no `else_clause` wrapper.
     const e1 = if (UPGRADERS_ENABLED) gated_expr_then() else live_expr_else();
     const e2 = if (DEBUG) live_expr_then() else gated_expr_else();
     const e3 = if (UPGRADERS_ENABLED) blk: {

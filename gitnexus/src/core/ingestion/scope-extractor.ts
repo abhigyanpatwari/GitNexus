@@ -1800,6 +1800,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.property-key',
   '@reference.callee-position',
   '@reference.embedded-pointer',
+  '@reference.static-gated',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

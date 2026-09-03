@@ -219,36 +219,28 @@ export function collectZigStaticGatedRanges(
   lookupBoolsForPath: ZigBoolConstLookup,
 ): readonly ZigGatedRange[] {
   const out: ZigGatedRange[] = [];
-  const stack: SyntaxNode[] = [rootNode];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    if (node.type === 'if_statement' || node.type === 'if_expression') {
-      const cond = findIfCondition(node);
-      const result = cond
-        ? evalCond(cond, localBools, importAliases, lookupBoolsForPath, 0)
-        : undefined;
-      let dead: SyntaxNode | null = null;
-      if (node.type === 'if_statement') {
-        if (result === false) dead = node.childForFieldName('body');
-        if (result === true)
-          dead = node.namedChildren.find((c) => c.type === 'else_clause') ?? null;
-      } else {
-        const arms = ifExpressionArms(node);
-        if (result === false) dead = arms.consequence;
-        if (result === true) dead = arms.alternative;
-      }
-      if (dead) {
-        out.push({
-          startLine: dead.startPosition.row + 1,
-          startCol: dead.startPosition.column,
-          endLine: dead.endPosition.row + 1,
-          endCol: dead.endPosition.column,
-        });
-      }
+  for (const node of rootNode.descendantsOfType(['if_statement', 'if_expression'])) {
+    const cond = findIfCondition(node);
+    const result = cond
+      ? evalCond(cond, localBools, importAliases, lookupBoolsForPath, 0)
+      : undefined;
+    let dead: SyntaxNode | null = null;
+    if (node.type === 'if_statement') {
+      if (result === false) dead = node.childForFieldName('body');
+      if (result === true)
+        dead = node.namedChildren.find((c) => c.type === 'else_clause') ?? null;
+    } else {
+      const arms = ifExpressionArms(node);
+      if (result === false) dead = arms.consequence;
+      if (result === true) dead = arms.alternative;
     }
-    for (let i = node.namedChildCount - 1; i >= 0; i--) {
-      const c = node.namedChild(i);
-      if (c) stack.push(c);
+    if (dead) {
+      out.push({
+        startLine: dead.startPosition.row + 1,
+        startCol: dead.startPosition.column,
+        endLine: dead.endPosition.row + 1,
+        endCol: dead.endPosition.column,
+      });
     }
   }
   return out;

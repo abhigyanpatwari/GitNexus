@@ -313,11 +313,11 @@ export interface GraphRelationship {
    * `if (CONST_TRUE)`, where the condition folds to a comptime-known
    * boolean.
    *
-   * GRAPH CONTRACT (PR #3161 review): this does NOT change what a
-   * `CALLS` edge means. `CALLS` still means "there is a resolved call
-   * site from A to B"; it has never meant "B is reachable from A", and
-   * this flag does not make it mean that. `staticGated` is additional,
-   * statically provable path-feasibility METADATA on the edge: an opt-in
+   * This does NOT change what a `CALLS` edge means. `CALLS` still means
+   * "there is a resolved call site from A to B"; it has never meant "B is
+   * reachable from A", and this flag does not make it mean that.
+   * `staticGated` is additional, statically provable path-feasibility
+   * metadata on the edge: an opt-in
    * analysis layer that a consumer may read (for example to rank or
    * filter callers in an impact view) and that no core pass acts on.
    * The edge is emitted, persisted, traversed and counted exactly as it
