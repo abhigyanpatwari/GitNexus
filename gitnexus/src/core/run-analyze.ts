@@ -17,6 +17,11 @@ import { constants as fsConstants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
+import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/node-workspace-packages.js';
+import {
+  logNameFallbackSummary,
+  summarizeNameFallback,
+} from './ingestion/scope-resolution/name-fallback-summary.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import {
   logUnresolvedReceiverFiles,
@@ -1076,6 +1081,9 @@ export async function runFullAnalysis(
   // Scope the degraded-parse log throttle to this run (module-level counter
   // would otherwise stay saturated on a reused process).
   resetDegradedParseCounter();
+  // The workspace-package memo is per process: this run must see the tree as it
+  // is now, not as the previous run in a long-lived watch/server process saw it.
+  invalidateNodeWorkspacePackages(repoPath);
 
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const acquireOpts = {
@@ -3861,6 +3869,11 @@ async function runFullAnalysisInner(
 
     const resolutionOutcomes = pipelineResult.resolutionOutcomes ?? [];
     logUnresolvedReceiverFiles(resolutionOutcomes);
+    // Census of name-guessed CALLS edges (labeled `global-name-fallback`), refused
+    // impossibles and ambiguous `export *` names — the honesty readout for this
+    // run's resolution. Logged, and persisted below as `nameFallbackEdges`.
+    const nameFallbackSummary = summarizeNameFallback(resolutionOutcomes);
+    logNameFallbackSummary(nameFallbackSummary);
 
     // Annotated so the capabilities stamp below is compile-checked against
     // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
@@ -3977,6 +3990,7 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      nameFallbackEdges: nameFallbackSummary,
       scopeExtractionFailures: summarizeScopeExtractionFailures(
         pipelineResult.scopeExtractionFailures,
       ),

@@ -163,9 +163,17 @@ export const createKnowledgeGraph = (): KnowledgeGraph => {
       relationshipMap.forEach(fn);
     },
     forEachRelationshipFields(
-      fn: (sourceId: string, targetId: string, type: RelationshipType, confidence: number) => void,
+      fn: (
+        sourceId: string,
+        targetId: string,
+        type: RelationshipType,
+        confidence: number,
+        reason: string,
+      ) => void,
     ) {
-      relationshipMap.forEach((rel) => fn(rel.sourceId, rel.targetId, rel.type, rel.confidence));
+      relationshipMap.forEach((rel) =>
+        fn(rel.sourceId, rel.targetId, rel.type, rel.confidence, rel.reason),
+      );
     },
     getNode: (id: string) => nodeMap.get(id),
 
