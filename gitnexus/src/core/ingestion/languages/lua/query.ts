@@ -58,6 +58,16 @@ const LUA_SCOPE_QUERY = `
   arguments: (argument_list (expression_list (string) @declaration.name))
   (#eq? @_class "class")) @declaration.class
 
+;; local Foo = middleclass("Name") — the local binding is the class identity
+;; used by method ownership and heritage resolution, so keep it aligned with
+;; the legacy graph query instead of deriving a second name from the string.
+(local_variable_declaration
+  (variable_list (variable name: (identifier) @declaration.name))
+  (expression_list
+    value: (call
+      function: (variable name: (identifier) @_middleclass)
+      (#eq? @_middleclass "middleclass")))) @declaration.class
+
 ;; ── Imports — Lua module-loading calls ───────────────────────────────────────
 ;;   Import captures are emitted by captures.ts rather than this query. A
 ;;   query match cannot preserve positional pairing for
