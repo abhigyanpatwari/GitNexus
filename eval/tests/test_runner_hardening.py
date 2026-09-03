@@ -582,20 +582,28 @@ def test_run_cell_fails_closed_when_a_per_task_snapshot_never_materialized(tmp_p
     assert "no assets" in str(record["error_detail"])
 
 
-def _sweep(cells, *, workers, run, outage_limit=5, streak=0):
-    """Drive sweep_task_cells, recording what it started and kept."""
-    started: list[tuple[int, str]] = []
-    kept: list[tuple[int, str]] = []
-    ending_streak, tripped = runner.sweep_task_cells(
+def _progress():
+    """Collector for what a sweep started and kept, readable after it raises."""
+    return SimpleNamespace(started=[], kept=[], streak=0, tripped=False)
+
+
+def _sweep(cells, *, workers, run, outage_limit=5, streak=0, into=None):
+    """Drive sweep_task_cells, recording what it started and kept.
+
+    Pass ``into`` a ``_progress()`` when the sweep is expected to raise: the
+    collector survives the exception, the return value does not.
+    """
+    result = _progress() if into is None else into
+    result.streak, result.tripped = runner.sweep_task_cells(
         cells,
         workers=workers,
         run=run,
-        on_start=lambda run_idx, arm: started.append((run_idx, arm)),
-        on_record=lambda run_idx, arm, _record: kept.append((run_idx, arm)),
+        on_start=lambda run_idx, arm: result.started.append((run_idx, arm)),
+        on_record=lambda run_idx, arm, _record: result.kept.append((run_idx, arm)),
         outage_streak=streak,
         outage_limit=outage_limit,
     )
-    return SimpleNamespace(started=started, kept=kept, streak=ending_streak, tripped=tripped)
+    return result
 
 
 def _row(error_kind=None):
@@ -605,21 +613,45 @@ def _row(error_kind=None):
 CELLS = [(run_idx, arm) for run_idx in range(3) for arm in ("workflow", "candidate_workflow")]
 
 
-def test_sweep_keeps_rows_in_submission_order_whatever_order_they_finish(tmp_path):
+def test_sweep_keeps_rows_in_submission_order_whatever_order_they_finish():
     # Cells finish in whatever order the machine allows, but a wave is folded
     # in submission order — the outage streak counts consecutive failures, and
     # "consecutive" in completion order would make the trip point flaky.
-    import time as _time
+    import threading
+
+    first_wave = CELLS[:3]
+    rendezvous = threading.Barrier(3, timeout=10)
+    release_first = threading.Event()
+    fast_finished = threading.Event()
+    finished: list[tuple[int, str]] = []
+    result: list[SimpleNamespace] = []
 
     def run(run_idx, arm):
-        _time.sleep(0.02 if run_idx == 0 else 0.0)
+        cell = (run_idx, arm)
+        if cell in first_wave:
+            rendezvous.wait()
+            if cell == first_wave[0]:
+                release_first.wait(timeout=10)
+            else:
+                finished.append(cell)
+                if len(finished) == 2:
+                    fast_finished.set()
         return _row()
 
-    result = _sweep(CELLS, workers=3, run=run)
+    sweep = threading.Thread(target=lambda: result.append(_sweep(CELLS, workers=3, run=run)))
+    sweep.start()
+    try:
+        assert fast_finished.wait(timeout=10)
+        assert first_wave[0] not in finished
+        assert set(finished) == set(first_wave[1:])
+    finally:
+        release_first.set()
+        sweep.join(timeout=10)
 
-    assert result.kept == CELLS
-    assert result.started == CELLS
-    assert result.tripped is False
+    assert not sweep.is_alive()
+    assert result[0].kept == CELLS
+    assert result[0].started == CELLS
+    assert result[0].tripped is False
 
 
 @pytest.mark.parametrize("workers", [1, 2, 3])
@@ -693,3 +725,101 @@ def test_sweep_of_one_worker_never_leaves_the_calling_thread():
     _sweep(CELLS, workers=1, run=run)
 
     assert seen == [caller] * len(CELLS)
+
+
+def test_sweep_keeps_the_rows_of_cells_that_finished_beside_a_failing_one():
+    def run(run_idx, arm):
+        if (run_idx, arm) == (0, "candidate_workflow"):
+            raise KeyError("harness bug")
+        return _row()
+
+    progress = _progress()
+    # The failing cell's two siblings completed and spent their budget before
+    # the harness bug surfaced. Reading the futures in order and raising on the
+    # first failure would drop their rows: money spent, no evidence written.
+    with pytest.raises(KeyError):
+        _sweep(CELLS, workers=3, run=run, into=progress)
+
+    assert progress.kept == [(0, "workflow"), (1, "workflow")]
+
+
+def test_sweep_hands_a_ctrl_c_back_without_waiting_for_the_running_cells(monkeypatch):
+    import threading
+
+    in_flight = threading.Barrier(3, timeout=10)
+    release = threading.Event()
+    finished: list[tuple[int, str]] = []
+
+    def run(run_idx, arm):
+        in_flight.wait()
+        release.wait(timeout=10)
+        finished.append((run_idx, arm))
+        return _row()
+
+    def interrupt_once_the_wave_is_running(_futures, *_args, **_kwargs):
+        # Stands in for the Ctrl-C an operator types mid-wave: an async
+        # KeyboardInterrupt is delivered to the main thread, which is the one
+        # blocked here waiting on the wave.
+        in_flight.wait()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "wait", interrupt_once_the_wave_is_running)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _sweep(CELLS, workers=2, run=run)
+
+        # Both cells are still parked on `release`, so the abort could not have
+        # joined them — an executor shut down through its context manager waits
+        # for exactly that, which is what made Ctrl-C look ignored.
+        assert finished == []
+    finally:
+        release.set()
+
+
+def test_workers_is_bounded_at_both_ends_before_the_sweep_starts():
+    base = ["--tasks", "tasks.yaml", "--model", "pinned-model"]
+
+    assert runner.build_parser().parse_args(base).workers == 1
+    at_max = runner.build_parser().parse_args([*base, "--workers", str(runner.MAX_WORKERS)])
+    assert at_max.workers == runner.MAX_WORKERS
+
+    # A mistyped worker count has to fail at the command line: hours later it
+    # only shows up as timed-out sessions, which the promotion gate throws away.
+    for rejected in ("0", "-1", str(runner.MAX_WORKERS + 1)):
+        with pytest.raises(SystemExit):
+            runner.build_parser().parse_args([*base, "--workers", rejected])
+
+
+def test_progress_line_reports_an_infra_error_as_unmeasured_not_as_free():
+    dead = runner.infra_error_record(RuntimeError("bwrap died"))
+
+    line = runner.cell_progress_line("task", "workflow", 0, dead)
+
+    # The 0.0s are placeholders for numbers no session ever produced; printed
+    # as numbers they read as a cell that ran instantly for free.
+    assert "cost=n/a" in line
+    assert "took=n/a" in line
+    assert "error_kind=infra-error" in line
+    # results.jsonl is promotion evidence — only the display changes.
+    assert dead["cost_usd"] == 0.0
+    assert dead["duration_s"] == 0.0
+
+
+def test_progress_line_reports_the_numbers_a_real_run_measured():
+    line = runner.cell_progress_line(
+        "task",
+        "workflow",
+        1,
+        {
+            "resolved": True,
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cost_usd": 0.5,
+            "duration_s": 12.0,
+            "error_kind": None,
+        },
+    )
+
+    assert "cost=$0.5" in line
+    assert "took=12.0s" in line
+    assert "error_kind=none" in line

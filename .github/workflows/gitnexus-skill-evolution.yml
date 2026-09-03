@@ -187,8 +187,11 @@ jobs:
       - name: Install sandbox runtime and pinned Claude CLI
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap socat
+          # This box is stopped six days a week, so persistent apt timers can
+          # begin their catch-up run shortly after boot. Wait for dpkg instead
+          # of racing the same package lock and failing the weekly lane.
+          sudo apt-get -o DPkg::Lock::Timeout=600 update
+          sudo apt-get -o DPkg::Lock::Timeout=600 install --yes --no-install-recommends bubblewrap socat
           apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -245,6 +248,10 @@ jobs:
           # at ${GITHUB_WORKSPACE}; link it so runner_tasks.py can resolve the
           # task `repo` path. The benchmark only clones the repo (copy-on-write)
           # and mounts dependencies read-only, so the checkout is never mutated.
+          if [[ -e "${HOME}/GitNexus" && ! -L "${HOME}/GitNexus" ]]; then
+            echo '::error::~/GitNexus exists and is not a symlink; refusing to place the checkout inside it.'
+            exit 1
+          fi
           ln -sfn "${GITHUB_WORKSPACE}" "${HOME}/GitNexus"
           # Every task in tasks.scenarios.yaml names `ref: main`, and resolving
           # it is the first thing task binding does. actions/checkout only
@@ -257,13 +264,24 @@ jobs:
 
       - name: Seed the proposer with the previous run's evidence
         id: seed
+        # Best-effort seeding must not consume the benchmark's budget. This
+        # step walks up to 10 prior runs and every iteration blocks on network
+        # it does not control (`gh run download` of a multi-hundred-megabyte
+        # artifact). Unbounded, a wedged download sits here until the 21h job
+        # timeout CANCELS the job — and a cancelled job skips even
+        # `if: always()`, so the sweep never starts and nothing is uploaded.
+        # Bounding the step instead fails it in minutes, which is a loud,
+        # cheap, re-runnable failure rather than a silent 21h loss. 15 minutes
+        # is an order of magnitude above the observed walk (well under a
+        # minute) and a rounding error against the 19h sweep it protects.
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Without this the weekly lane is memoryless: `--seed-results` is the
-          # only way a run sees what already lost (evolve.summarize_gate feeds
-          # the prior promotion.json to the proposer as "what already lost"),
+          # only way a run sees what already lost (evolve stages the prior
+          # proposal when present and summarizes promotion.json when present),
           # and with the default --generations 1 there is no earlier generation
           # in-process to supply it. Every Saturday would otherwise propose
           # from a blank slate and could re-propose the same rejected candidate

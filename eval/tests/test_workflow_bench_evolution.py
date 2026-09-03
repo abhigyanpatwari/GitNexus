@@ -426,9 +426,7 @@ def test_candidate_gate_refuses_promotion_on_unmeasured_cost():
     results = {
         "task-a": {
             "workflow_direct": aggregate([record(cost_usd=1.0) for _ in range(3)]),
-            "candidate_workflow_direct": aggregate(
-                [record(cost_usd=0.1), record(cost_usd=None), record(cost_usd=0.1)]
-            ),
+            "candidate_workflow_direct": aggregate([record(cost_usd=0.1), record(cost_usd=None), record(cost_usd=0.1)]),
         }
     }
     decision = evaluate_candidate(
@@ -558,7 +556,7 @@ def test_a_task_no_arm_can_resolve_is_reported_but_does_not_veto_promotion():
     }
     unsolvable = {
         "workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
-        "candidate_workflow": aggregate([record(cost_usd=9.0, resolved=False) for _ in range(3)]),
+        "candidate_workflow": aggregate([record(cost_usd=1.3, resolved=False) for _ in range(3)]),
     }
     decision = evaluate_candidate(
         {"task-a": solvable, "task-impossible": unsolvable},
@@ -569,16 +567,158 @@ def test_a_task_no_arm_can_resolve_is_reported_but_does_not_veto_promotion():
 
     assert decision["decision"] == "promote"
     assert decision["ungated_tasks"] == ["task-impossible"]
+    assert decision["gated_tasks"] == ["task-a"]
     assert [row["gated"] for row in decision["tasks"]] == [True, False]
-    # The ungated task's 800% cost regression must not reach the median or the
-    # per-task cap; only the gated task ranks.
+    # The ungated task's 30% cost regression stays under the failed-task cap
+    # but must not reach the median or the (tighter) gated per-task cap.
     assert decision["median_improvement_pct"] == 0.0
     assert not any("above the" in reason for reason in decision["reasons"])
     # One aggregate line, so a growing set of unsolvable tasks cannot crowd the
-    # real verdict out of the three reasons the proposer is shown.
+    # real verdict out of the three reasons the proposer is shown — and it
+    # discloses how much of the set the verdict actually rests on.
     assert [reason for reason in decision["reasons"] if "not gated on" in reason] == [
-        "not gated on 1 task(s) neither arm resolved: task-impossible"
+        "not gated on 1 task(s) neither arm resolved: task-impossible (evidence base: 1/2 paired tasks gated)"
     ]
+
+
+def test_an_ungated_task_still_ranks_against_the_failed_task_cost_cap():
+    # Leaving the quality gate is not leaving the spend gate: burning 9x the
+    # incumbent's cost to fail the same oracle is a regression the gate has to
+    # see, or a candidate can hide unbounded waste inside "task health".
+    solvable = {
+        "workflow": aggregate([record(cost_usd=1.0, resolved=index > 1) for index in range(3)]),
+        "candidate_workflow": aggregate([record(cost_usd=1.0) for _ in range(3)]),
+    }
+    unsolvable = {
+        "workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
+        "candidate_workflow": aggregate([record(cost_usd=9.0, resolved=False) for _ in range(3)]),
+    }
+
+    decision = evaluate_candidate(
+        {"task-a": solvable, "task-impossible": unsolvable},
+        incumbent_arm="workflow",
+        candidate_arm="candidate_workflow",
+        model="pinned-model",
+    )
+
+    assert decision["decision"] == "keep_incumbent"
+    assert decision["ungated_tasks"] == ["task-impossible"]
+    assert any("failed-task cap" in reason for reason in decision["reasons"])
+
+
+def test_a_mutually_failed_task_stays_gated_when_the_skill_never_loaded():
+    # skill-not-invoked is prompt evidence, not task health: the skill under
+    # test never ran, so the task cannot be written off as beyond both arms.
+    results = {
+        "task-a": {
+            "workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
+            "candidate_workflow": aggregate(
+                [record(cost_usd=0.01, resolved=False, error_kind="skill-not-invoked") for _ in range(3)]
+            ),
+        }
+    }
+
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow",
+        candidate_arm="candidate_workflow",
+        model="pinned-model",
+    )
+
+    assert decision["ungated_tasks"] == []
+    assert decision["tasks"][0]["gated"] is True
+    assert decision["tasks"][0]["skill_attributable_failure"] is True
+    # Gated with teeth: the 99% cost "win" must not carry a candidate whose
+    # skill never loaded.
+    assert decision["decision"] == "keep_incumbent"
+    assert any("never invoked the skill under test" in reason for reason in decision["reasons"])
+
+
+def test_a_mutually_failed_task_stays_gated_when_its_metric_was_never_measured():
+    # Ungating is a claim about spend as well as quality. With no measured
+    # cost there is nothing to claim, so the task stays in the gate and the
+    # missing measurement is named instead of silently skipped.
+    results = {
+        "task-a": {
+            "workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
+            "candidate_workflow": aggregate(
+                [record(cost_usd=None, resolved=False), *(record(cost_usd=0.1, resolved=False) for _ in range(2))]
+            ),
+        }
+    }
+
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow",
+        candidate_arm="candidate_workflow",
+        model="pinned-model",
+    )
+
+    assert decision["ungated_tasks"] == []
+    assert decision["decision"] == "insufficient_evidence"
+    assert any("was not measured on every run" in reason for reason in decision["reasons"])
+
+
+def test_partial_progress_on_a_task_the_incumbent_never_resolves_is_not_punished():
+    # Resolving 1 of 3 runs where the incumbent resolves none is strictly
+    # better than resolving none — which the gate ungates and forgives. Holding
+    # the partial run to the quality floor made improvement score worse than
+    # inaction.
+    def outcome(candidate_resolved: int) -> dict[str, object]:
+        return evaluate_candidate(
+            {
+                "task-a": {
+                    "workflow": aggregate([record(cost_usd=1.0) for _ in range(3)]),
+                    "candidate_workflow": aggregate([record(cost_usd=0.5) for _ in range(3)]),
+                },
+                "task-hard": {
+                    "workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
+                    "candidate_workflow": aggregate(
+                        [record(cost_usd=1.0, resolved=index < candidate_resolved) for index in range(3)]
+                    ),
+                },
+            },
+            incumbent_arm="workflow",
+            candidate_arm="candidate_workflow",
+            model="pinned-model",
+        )
+
+    no_progress = outcome(0)
+    some_progress = outcome(1)
+
+    assert no_progress["decision"] == "promote"
+    assert no_progress["ungated_tasks"] == ["task-hard"]
+    # The partial run gives the task quality signal, so it is gated — but as
+    # improvement, not as a floor failure the zero-progress candidate escapes.
+    assert some_progress["decision"] == "promote"
+    assert some_progress["ungated_tasks"] == []
+    assert some_progress["tasks"][1]["quality_floor_enforced"] is False
+    assert not any("quality floor" in reason for reason in some_progress["reasons"])
+
+
+def test_promotion_requires_a_gated_majority_of_the_paired_tasks():
+    # Two of three tasks written off as task health leaves one task deciding
+    # the whole promotion. Ungating keeps promotion reachable; it must not
+    # hollow out the evidence base that makes a promotion mean anything.
+    solvable = {
+        "workflow": aggregate([record(cost_usd=1.0, resolved=index > 1) for index in range(3)]),
+        "candidate_workflow": aggregate([record(cost_usd=0.1) for _ in range(3)]),
+    }
+    unsolvable = {
+        "workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
+        "candidate_workflow": aggregate([record(cost_usd=1.0, resolved=False) for _ in range(3)]),
+    }
+
+    decision = evaluate_candidate(
+        {"task-a": solvable, "task-impossible": unsolvable, "task-impossible-2": dict(unsolvable)},
+        incumbent_arm="workflow",
+        candidate_arm="candidate_workflow",
+        model="pinned-model",
+    )
+
+    assert decision["decision"] == "insufficient_evidence"
+    assert decision["gated_tasks"] == ["task-a"]
+    assert any("evidence base is too thin" in reason for reason in decision["reasons"])
 
 
 def test_candidate_gate_promotes_on_a_two_run_resolution_margin():

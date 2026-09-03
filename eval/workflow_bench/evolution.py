@@ -54,6 +54,19 @@ MAIN_LOOP_ONLY_WARNING = (
     "each run output, deduplicating events "
     "that share one message.id."
 )
+# Failure kinds the prompts under test cause, not the task: the skill never
+# ran at all. Both arms failing a task this way is evidence about the skills,
+# so such a task stays inside the gate however unresolvable it looks.
+SKILL_ATTRIBUTABLE_ERROR_KINDS = frozenset({"skill-not-invoked"})
+# Leaving the quality gate is not leaving the spend gate. A candidate may fail
+# the same oracle the incumbent fails, but not at a multiple of its cost — an
+# ungated task is still real money and still ranks on the metric.
+MAX_FAILED_TASK_REGRESSION_PCT = 100.0
+# Promotion must rest on a real evidence base. Half the paired tasks is the
+# loosest rule the three-task production set can carry: it tolerates the one
+# scenario neither arm resolves and refuses a generation that has quietly
+# decayed to a single gated task deciding everything.
+MIN_GATED_TASK_RATIO = 0.5
 EVIDENCE_MAX_AGE_DAYS = 90
 MAX_CANDIDATE_OVERLAY_BYTES = 4 * 1024 * 1024
 MAX_SKILL_FINGERPRINT_BYTES = 4 * 1024 * 1024
@@ -485,12 +498,18 @@ def evaluate_candidate(
     min_runs: int = 3,
     min_improvement_pct: float = 5.0,
     max_task_regression_pct: float = 20.0,
+    max_failed_task_regression_pct: float = MAX_FAILED_TASK_REGRESSION_PCT,
 ) -> dict[str, Any]:
     """Deterministically decide whether a prompt candidate is promotable.
 
     Resolution is lexicographically primary: a cheaper candidate that fails
     more tasks never wins. With equal quality, the candidate must clear the
     configured median efficiency gain without a large per-task regression.
+
+    A task neither arm can resolve leaves the quality gate, but only on
+    evidence: a comparable metric, no skill-not-invoked run, and enough tasks
+    left inside the gate to decide anything. It still ranks against the
+    failed-task spend cap.
     """
     if metric not in PROMOTION_METRICS:
         raise ValueError(f"unsupported promotion metric: {metric}")
@@ -543,13 +562,31 @@ def evaluate_candidate(
         # candidate, and one such task vetoes every future promotion for as
         # long as it stays in the set. Keep it in the evidence, out of the gate,
         # and name it as task health instead.
+        #
+        # Ungating is itself a claim, so it needs evidence: the failures must
+        # be the task's (not a skill that never loaded) and the metric must be
+        # comparable, otherwise the task stays gated and the checks below name
+        # what is missing.
         fully_measured = (
             incumbent_runs >= min_runs
             and candidate_runs >= min_runs
             and not incumbent_excluded
             and not candidate_excluded
         )
-        gated = not (fully_measured and not incumbent["resolved"] and not candidate["resolved"])
+        skill_attributable = bool(
+            (set(incumbent.get("error_kinds", {})) | set(candidate.get("error_kinds", {})))
+            & SKILL_ATTRIBUTABLE_ERROR_KINDS
+        )
+        mutually_unresolved = fully_measured and not incumbent["resolved"] and not candidate["resolved"]
+        gated = not (mutually_unresolved and not skill_attributable and improvement is not None)
+        # The floor asks the candidate to be reliable where the incumbent is.
+        # On a task the incumbent never resolves there is no reliability to
+        # match, and holding partial candidate progress to it punished a
+        # candidate for resolving 1 of 3 runs while excusing it for resolving
+        # none — the strictly worse result. A skill that never loaded is the
+        # exception: those failures belong to the prompts, so the floor applies
+        # even with nothing on the incumbent's side to match.
+        quality_floor_enforced = bool(incumbent["resolved"]) or skill_attributable
         task_rows.append(
             {
                 "task": task_id,
@@ -559,13 +596,21 @@ def evaluate_candidate(
                 "incumbent_excluded_runs": incumbent_excluded,
                 "candidate_excluded_runs": candidate_excluded,
                 "candidate_quality_floor_met": candidate_runs > 0 and candidate["resolved"] == candidate_runs,
+                "quality_floor_enforced": quality_floor_enforced,
                 "incumbent_metric": incumbent_metric,
                 "candidate_metric": candidate_metric,
                 "improvement_pct": improvement,
                 "gated": gated,
+                "skill_attributable_failure": skill_attributable,
             }
         )
         if not gated:
+            if improvement < -max_failed_task_regression_pct:
+                efficiency_regression = True
+                reasons.append(
+                    f"{task_id}: {metric} regressed {-improvement:.1f}% on a task neither arm resolved, "
+                    f"above the {max_failed_task_regression_pct:.1f}% failed-task cap"
+                )
             continue
 
         if incumbent_runs < min_runs or candidate_runs < min_runs:
@@ -588,11 +633,16 @@ def evaluate_candidate(
         if candidate_rate < incumbent_rate:
             quality_regression = True
             reasons.append(f"{task_id}: resolution regressed from {incumbent_rate:.0%} to {candidate_rate:.0%}")
-        if candidate_runs > 0 and candidate["resolved"] != candidate_runs:
+        if quality_floor_enforced and candidate_runs > 0 and candidate["resolved"] != candidate_runs:
             quality_floor_failed = True
+            floor_trigger = (
+                "a run never invoked the skill under test"
+                if skill_attributable
+                else f"the incumbent resolves {incumbent['resolved']}/{incumbent_runs}"
+            )
             reasons.append(
                 f"{task_id}: candidate must resolve every valid run for the oracle-backed quality floor "
-                f"(got {candidate['resolved']}/{candidate_runs})"
+                f"({floor_trigger}; got {candidate['resolved']}/{candidate_runs})"
             )
         if metric_unavailable:
             insufficient = True
@@ -610,21 +660,33 @@ def evaluate_candidate(
             )
 
     ungated_tasks = [row["task"] for row in task_rows if not row["gated"]]
+    gated_tasks = [row["task"] for row in task_rows if row["gated"]]
     if ungated_tasks:
         # One line, not one per task: `reasons` is truncated to three entries
         # when it is fed back to the proposer (evolve.summarize_gate), and a
         # growing set of unsolvable tasks must not crowd out the reason the
         # candidate actually won or lost. The full list ships structurally.
-        reasons.append(f"not gated on {len(ungated_tasks)} task(s) neither arm resolved: {', '.join(ungated_tasks)}")
+        reasons.append(
+            f"not gated on {len(ungated_tasks)} task(s) neither arm resolved: {', '.join(ungated_tasks)} "
+            f"(evidence base: {len(gated_tasks)}/{len(task_rows)} paired tasks gated)"
+        )
     if not task_rows:
         insufficient = True
         reasons.append("no paired task results were found")
-    elif len(ungated_tasks) == len(task_rows):
+    elif not gated_tasks:
         # Every paired task was ungated, so nothing in this generation says
         # anything about candidate quality. Refuse rather than fall through to
         # an efficiency-only verdict on runs that all failed their oracle.
         insufficient = True
         reasons.append("no task supplied quality signal: neither arm resolved a run anywhere in the set")
+    elif len(gated_tasks) < MIN_GATED_TASK_RATIO * len(task_rows):
+        # Ungating one unsolvable task keeps promotion reachable; ungating most
+        # of the set turns "promote" into a verdict from whatever is left.
+        insufficient = True
+        reasons.append(
+            f"promotion evidence base is too thin: {len(gated_tasks)}/{len(task_rows)} paired tasks are gated "
+            f"(at least {MIN_GATED_TASK_RATIO:.0%} required)"
+        )
 
     improvements = [row["improvement_pct"] for row in task_rows if row["gated"] and row["improvement_pct"] is not None]
     median_improvement = round(statistics.median(improvements), 1) if improvements else None
@@ -671,6 +733,7 @@ def evaluate_candidate(
         "metric_warning": (MAIN_LOOP_ONLY_WARNING if metric in MAIN_LOOP_ONLY_METRICS else None),
         "median_improvement_pct": median_improvement,
         "ungated_tasks": ungated_tasks,
+        "gated_tasks": gated_tasks,
         "reasons": reasons,
         "tasks": task_rows,
     }

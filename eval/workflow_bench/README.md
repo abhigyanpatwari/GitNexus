@@ -189,10 +189,17 @@ deterministic gate is deliberately conservative:
 - at least 3 paired VALID runs per task, zero excluded runs in either arm
   (session/infra-error rows therefore block promotion), and a named model;
 - a fully measured task that neither arm ever resolves remains reported but is
-  ungated from quality and efficiency comparisons; if every task is ungated,
-  the generation is `insufficient_evidence`;
-- the candidate must pass the hidden oracle on every valid run for every gated
-  task;
+  ungated from the quality comparison — only if its metric was measured in both
+  arms and no run hit `skill-not-invoked` (a skill that never loaded is prompt
+  evidence, not task health). An ungated task still ranks against a looser 100%
+  failed-task regression cap on the promotion metric;
+- at least half the paired tasks must stay gated, and `promotion.json` discloses
+  the gated/ungated split per decision; a set with no gated task at all is
+  `insufficient_evidence`;
+- the candidate must pass the hidden oracle on every valid run of every gated
+  task the incumbent resolves at least once — on a task the incumbent never
+  resolves, partial candidate progress counts as improvement instead of failing
+  the floor, so making some progress is never scored worse than making none;
 - no per-task resolution-rate regression (quality is lexicographically first);
 - promotion by resolution needs a margin of at least 2 resolved runs —
   a 1-run difference is noise at this run count and falls through to the
@@ -237,7 +244,9 @@ uv run --locked --extra dev python -m workflow_bench.evolve \
 
 Each generation: a confined **proposer** session reads the incumbent plan/work
 skills, the prior generation's `results.jsonl`
-loser rows, their session transcripts and patches, and the learning queue,
+loser rows, their session transcripts and patches, the rejected
+`proposal.md` when available (including a workflow seed from a prior run), and
+the learning queue,
 then writes ONE bounded candidate overlay plus a reviewer-facing
 `proposal.md`. The overlay is re-validated by `candidate_overlay_files`
 (same boundary: Markdown under the plan/work trees, nothing else), frozen,
@@ -267,7 +276,8 @@ For ad-hoc use, run the driver on the existing re-evaluation triggers
 (model/harness change or 90-day staleness). The repository workflow runs a
 deliberate weekly drift check: scheduled concurrency stays serial unless
 `GITNEXUS_EVOLUTION_WORKERS` is raised after a funded host-sized proof, and
-`--generations` remains the only loop bound.
+`--workers` is bounded to 1–8 before paid work starts. `--generations` remains
+the only loop bound.
 
 ## Free-model setup (no paid tokens)
 

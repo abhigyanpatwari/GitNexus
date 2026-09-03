@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -19,10 +20,8 @@ import { describe, expect, it } from 'vitest';
 // could not resolve its task repo on a hosted runner) reached production
 // because nothing exercised this workflow's path. Assert the structural
 // contract so a regression fails loudly in CI instead of on the first real run.
-const WORKFLOW_PATH = path.resolve(
-  __dirname,
-  '../../../.github/workflows/gitnexus-skill-evolution.yml',
-);
+const REPO_ROOT = path.resolve(__dirname, '../../..');
+const WORKFLOW_PATH = path.resolve(REPO_ROOT, '.github/workflows/gitnexus-skill-evolution.yml');
 const workflow = readFileSync(WORKFLOW_PATH, 'utf8');
 const workflowDocument = load(workflow) as {
   jobs?: Record<
@@ -56,13 +55,93 @@ function stepRun(stepName: string): string {
   return typeof step?.run === 'string' ? step.run : '';
 }
 
+// The seed step's usability check is the proposer's OWN preflight
+// (select_evidence + proposer_evidence_entries), invoked through uv. Stubbing
+// uv would make these tests assert nothing about it: a stub accepts whatever
+// fixture it is handed, so a fixture with a wrong digest, a wrong byte count,
+// or world-readable transcripts would "pass" a check that rejects it in
+// production — exactly backwards for a test whose subject is that rejection.
+// So run the real thing, and skip rather than pretend when the eval project's
+// environment is not provisioned (the node-only CI test jobs do not set up
+// uv; `eval-tests` and this workflow's own runner do). UV_OFFLINE keeps the
+// probe and the step itself from ever reaching the network mid-test.
+const REAL_PREFLIGHT_AVAILABLE =
+  process.platform !== 'win32' &&
+  (() => {
+    try {
+      execFileSync(
+        'uv',
+        [
+          'run',
+          '--project',
+          'eval',
+          '--locked',
+          '--extra',
+          'dev',
+          '--offline',
+          'python',
+          '-c',
+          'import workflow_bench.evolve',
+        ],
+        { cwd: REPO_ROOT, stdio: 'ignore' },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+// Provisioning uv is not free, and neither is the first `uv run` in a cold
+// project, so give the two tests that shell out to it real headroom.
+const PREFLIGHT_TEST_TIMEOUT_MS = 120_000;
+
+// sha256 of the 3-byte transcript body the fixture writes. evolve.py re-hashes
+// the file on disk and compares it against the results row, so this pair has
+// to be genuinely consistent — and the wrong-but-well-formed digest below has
+// to be 64 hex characters, or it would be rejected as malformed metadata
+// before anything is ever hashed.
+const TRANSCRIPT_DIGEST = 'ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356';
+const WRONG_TRANSCRIPT_DIGEST = '0'.repeat(64);
+
+/** Bash that materializes one downloaded evidence artifact under `destination`. */
+function artifactFixture({ generation, digest }: { generation: number; digest: string }): string {
+  const bench = `\${destination}/artifact/gen-${generation}/bench`;
+  const row = JSON.stringify({
+    task: 'demo',
+    arm: 'workflow',
+    run: 0,
+    resolved: false,
+    // A measured outcome, not a harness death: select_evidence keeps this and
+    // drops session-error/infra-error rows.
+    error_kind: 'oracle-failed',
+    transcript_artifacts: [
+      {
+        path: 'transcripts/session.jsonl',
+        sha256: digest,
+        bytes: 3,
+        source: 'parent-captured-stream-json',
+      },
+    ],
+  });
+  return `    mkdir -p "${bench}/transcripts"
+    printf '%s\\n' '${row}' > "${bench}/results.jsonl"
+    printf '{}\\n' > "${bench}/transcripts/session.jsonl"
+    # upload-artifact normalizes to 0755/0644 on the way out; the step's
+    # chmod -R go-rwx is what has to restore the owner-only modes the real
+    # transcript reader requires, so hand it the un-restored modes.
+    chmod 0755 "${bench}/transcripts"
+    chmod 0644 "${bench}/transcripts/session.jsonl"`;
+}
+
 function runSeedStep(ghImplementation: string): {
   output: string;
   trace: string;
   transcriptDirectoryMode?: number;
   transcriptMode?: number;
 } {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-evolution-seed-'));
+  // realpath: _real_results_root() in evolve.py rejects a results directory
+  // whose path traverses a symlink, and macOS hands out $TMPDIR under one.
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'gitnexus-evolution-seed-')));
   try {
     const bin = path.join(root, 'bin');
     const runnerTemp = path.join(root, 'runner-temp');
@@ -74,24 +153,18 @@ function runSeedStep(ghImplementation: string): {
     const gh = path.join(bin, 'gh');
     writeFileSync(gh, `#!/usr/bin/env bash\nset -euo pipefail\n${ghImplementation}\n`);
     chmodSync(gh, 0o700);
-    const uv = path.join(bin, 'uv');
-    writeFileSync(
-      uv,
-      `#!/usr/bin/env bash
-set -euo pipefail
-results=''
-for argument in "$@"; do results="$argument"; done
-content="$(cat "$results")"
-if [[ -z "$content" || "$content" == *'"error_kind":"session-error"'* ]]; then exit 10; fi
-exit 0
-`,
-    );
-    chmodSync(uv, 0o700);
 
+    // Only `gh` is stubbed — it is the step's input (which runs exist, what
+    // their artifacts contain). `uv` is deliberately NOT on the stub PATH, so
+    // the usability check below resolves the real uv and runs the real
+    // preflight against these fixtures. cwd is the repo root because that is
+    // where the workflow runs the step from, and `--project eval` is relative
+    // to it.
     execFileSync(
       '/bin/bash',
       ['-c', stepRun("Seed the proposer with the previous run's evidence")],
       {
+        cwd: REPO_ROOT,
         env: {
           ...process.env,
           PATH: `${bin}:${process.env.PATH ?? ''}`,
@@ -100,6 +173,7 @@ exit 0
           GITHUB_RUN_ID: '999',
           RUNNER_TEMP: runnerTemp,
           TRACE: trace,
+          UV_OFFLINE: '1',
         },
         stdio: 'pipe',
       },
@@ -158,10 +232,29 @@ describe('gitnexus skill-evolution workflow contract', () => {
     expect(seed).toContain('gen-*/bench/results.jsonl');
     expect(seed).toContain('chmod -R go-rwx');
     expect(seed).toContain('select_evidence(load_jsonl');
+    // The usability check must stay the proposer's own preflight. Narrowing it
+    // to "the file has rows" would re-admit artifacts whose transcripts the
+    // proposer then refuses to read, costing the generation its evidence.
+    expect(seed).toContain('proposer_evidence_entries');
     expect(seed).toContain('break');
   });
 
-  it.skipIf(process.platform === 'win32')(
+  it('bounds the best-effort seed walk well inside the job budget', () => {
+    // Every iteration blocks on a network download this job does not control,
+    // and the job-level timeout CANCELS rather than fails — which skips the
+    // `if: always()` upload and loses the sweep's evidence. So the walk needs
+    // its own budget: long enough to never trip on a healthy run, short
+    // enough that a wedged download is a fast, obvious failure.
+    const seedBudget = findStep("Seed the proposer with the previous run's evidence")?.[
+      'timeout-minutes'
+    ];
+    expect(typeof seedBudget).toBe('number');
+    expect(seedBudget as number).toBeGreaterThanOrEqual(10);
+    expect(seedBudget as number).toBeLessThanOrEqual(30);
+    expect(seedBudget as number).toBeLessThan(evolveJob?.['timeout-minutes'] as number);
+  });
+
+  it.skipIf(!REAL_PREFLIGHT_AVAILABLE)(
     'falls back past an empty newer artifact to an older usable run',
     () => {
       const result = runSeedStep(`
@@ -181,22 +274,56 @@ if [[ "$1 $2" == 'run download' ]]; then
     mkdir -p "\${destination}/artifact/gen-3/bench"
     printf '%s\\n' '{"error_kind":"session-error","resolved":false}' > "\${destination}/artifact/gen-3/bench/results.jsonl"
   elif [[ "\${run_id}" == '200' ]]; then
-    mkdir -p "\${destination}/artifact/gen-2/bench"
-    mkdir -p "\${destination}/artifact/gen-2/bench/transcripts"
-    printf '%s\\n' '{"task":"demo","arm":"workflow","run":0,"resolved":false,"error_kind":"oracle-failed","transcript_artifacts":[{"path":"transcripts/session.jsonl","sha256":"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356","bytes":3,"source":"parent-captured-stream-json"}]}' > "\${destination}/artifact/gen-2/bench/results.jsonl"
-    printf '{}\\n' > "\${destination}/artifact/gen-2/bench/transcripts/session.jsonl"
-    chmod 0755 "\${destination}/artifact/gen-2/bench/transcripts"
-    chmod 0644 "\${destination}/artifact/gen-2/bench/transcripts/session.jsonl"
+${artifactFixture({ generation: 2, digest: TRANSCRIPT_DIGEST })}
   fi
   exit 0
 fi
 exit 1`);
 
+      // select_evidence drops session-error rows as unattributable, leaving
+      // gen-3 with nothing to propose from.
       expect(result.trace).toBe('300\n200\n');
       expect(result.output).toMatch(/seed=.*\/200\/artifact\/gen-2\/bench\n/);
       expect(result.transcriptDirectoryMode).toBe(0o700);
       expect(result.transcriptMode).toBe(0o600);
     },
+    PREFLIGHT_TEST_TIMEOUT_MS,
+  );
+
+  it.skipIf(!REAL_PREFLIGHT_AVAILABLE)(
+    'falls back past a newer artifact whose transcript digest does not match',
+    () => {
+      // The sharp edge of running the real preflight: this artifact is
+      // non-empty and structurally well-formed, so every cheap check passes
+      // it. Only hashing the transcript and comparing against the row the
+      // proposer would trust rejects it — which is the whole reason the step
+      // shells out to the proposer's own code instead of grepping the JSONL.
+      const result = runSeedStep(`
+if [[ "$1 $2" == 'run list' ]]; then
+  printf '400\\n200\\n'
+  exit 0
+fi
+if [[ "$1 $2" == 'run download' ]]; then
+  run_id="$3"
+  shift 3
+  destination=''
+  while (( $# )); do
+    if [[ "$1" == '--dir' ]]; then destination="$2"; shift 2; else shift; fi
+  done
+  printf '%s\\n' "\${run_id}" >> "\${TRACE}"
+  if [[ "\${run_id}" == '400' ]]; then
+${artifactFixture({ generation: 4, digest: WRONG_TRANSCRIPT_DIGEST })}
+  elif [[ "\${run_id}" == '200' ]]; then
+${artifactFixture({ generation: 2, digest: TRANSCRIPT_DIGEST })}
+  fi
+  exit 0
+fi
+exit 1`);
+
+      expect(result.trace).toBe('400\n200\n');
+      expect(result.output).toMatch(/seed=.*\/200\/artifact\/gen-2\/bench\n/);
+    },
+    PREFLIGHT_TEST_TIMEOUT_MS,
   );
 
   it.skipIf(process.platform === 'win32')(
@@ -228,6 +355,7 @@ exit 1`);
 
   it('provisions the benchmark task repo at ~/GitNexus before the loop', () => {
     const provision = stepRun('Point the benchmark task repo at the checkout');
+    expect(provision).toContain('[[ -e "${HOME}/GitNexus" && ! -L "${HOME}/GitNexus" ]]');
     expect(provision).toContain('ln -sfn');
     expect(provision).toContain('${GITHUB_WORKSPACE}');
     expect(provision).toContain('${HOME}/GitNexus');
@@ -243,6 +371,12 @@ exit 1`);
     expect(String(rootStep?.run)).toContain('npm ci');
     expect(stepRun('Build pinned shared runtime')).toContain('npm ci');
     expect(stepRun('Install and build pinned GitNexus runtime')).toContain('npm ci');
+  });
+
+  it('waits for the runner boot-time package lock before installing containment tools', () => {
+    const install = stepRun('Install sandbox runtime and pinned Claude CLI');
+    expect(install).toContain('DPkg::Lock::Timeout=600 update');
+    expect(install).toContain('DPkg::Lock::Timeout=600 install');
   });
 
   it('names the promotion branch with the run attempt for re-run recovery', () => {

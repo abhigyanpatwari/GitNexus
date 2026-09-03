@@ -25,7 +25,7 @@ from workflow_bench.evolve import (
     summarize_gate,
     validate_promotion_for_apply,
 )
-from workflow_bench.process_control import run_managed
+from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import pid_namespace_command, preflight_bubblewrap
 
 
@@ -141,6 +141,22 @@ def test_build_proposer_prompt_carries_evidence_constraints_and_paths(tmp_path):
     assert "budget blown on reruns" not in prompt
     assert "verify-failed" not in prompt
     assert "~/.claude/projects" not in prompt
+
+
+def test_build_proposer_prompt_points_at_the_rejected_prior_proposal(tmp_path):
+    common = {
+        "results_dir": tmp_path / "bench",
+        "evidence": [],
+        "learnings": [],
+        "gate_summary": ["candidate_workflow: keep_incumbent — cost regressed"],
+        "overlay_dir": tmp_path / "overlay",
+        "proposal_path": tmp_path / "proposal.md",
+        "incumbent_arms": ["workflow"],
+    }
+    # The gate summary alone says a candidate lost, never what it proposed —
+    # so without this line the proposer can re-propose the same prose forever.
+    assert "/evidence/prior-proposal.md" in build_proposer_prompt(**common, prior_proposal=True)
+    assert "/evidence/prior-proposal.md" not in build_proposer_prompt(**common)
 
 
 def test_build_proposer_prompt_first_generation_has_no_results_dir(tmp_path):
@@ -299,6 +315,96 @@ def test_proposer_bounds_transcript_metadata_per_row_and_globally_before_materia
         )
 
 
+def test_proposer_refuses_a_selected_row_with_no_transcript_reference():
+    # Every selectable row comes from sum_sessions(), which always emits the
+    # key, and select_evidence() drops the kinds a failed transcript
+    # persistence produces (session-error, infra-error, evidence-unverified,
+    # cleanup-failure). A selected row without a transcript is therefore
+    # evidence lost between producer and proposer, not a row that had none.
+    with pytest.raises(evolve.SandboxError, match="missing transcript_artifacts"):
+        proposer_evidence_entries(
+            results_dir=None,
+            evidence=[row()],
+            learnings=[],
+            gate_summary=[],
+        )
+    with pytest.raises(evolve.SandboxError, match="carries no transcript artifact"):
+        proposer_evidence_entries(
+            results_dir=None,
+            evidence=[row(transcript_artifacts=[])],
+            learnings=[],
+            gate_summary=[],
+        )
+
+
+def test_proposer_stages_the_bounded_prior_proposal(tmp_path):
+    proposal = tmp_path / "proposal.md"
+    proposal.write_text("# rejected candidate\n\nTightened the plan budget.\n")
+    proposal.chmod(0o600)
+
+    entries = proposer_evidence_entries(
+        results_dir=None,
+        evidence=[],
+        learnings=[],
+        gate_summary=[],
+        prior_proposal=proposal,
+    )
+
+    assert entries["prior-proposal.md"] == proposal.read_text()
+
+    oversized = tmp_path / "oversized.md"
+    oversized.write_bytes(b"x" * (evolve.MAX_EVIDENCE_FILE_BYTES + 4096))
+    oversized.chmod(0o600)
+    bounded = proposer_evidence_entries(
+        results_dir=None,
+        evidence=[],
+        learnings=[],
+        gate_summary=[],
+        prior_proposal=oversized,
+    )
+    assert len(bounded["prior-proposal.md"]) == evolve.MAX_EVIDENCE_FILE_BYTES
+
+
+@pytest.mark.skipif(os.name == "nt", reason="proposal containment checks are POSIX-only")
+def test_proposer_refuses_a_prior_proposal_that_lost_its_trust_boundary(tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("attacker-controlled prose")
+    linked = tmp_path / "linked-proposal.md"
+    linked.symlink_to(outside)
+
+    with pytest.raises(evolve.SandboxError, match="regular non-symlink"):
+        proposer_evidence_entries(
+            results_dir=None,
+            evidence=[],
+            learnings=[],
+            gate_summary=[],
+            prior_proposal=linked,
+        )
+
+    # run_proposer copies the proposal out 0600; anything looser means the
+    # bytes are no longer only the ones this driver wrote.
+    shared = tmp_path / "shared-proposal.md"
+    shared.write_text("proposal")
+    shared.chmod(0o644)
+    with pytest.raises(evolve.SandboxError, match="owner-only"):
+        proposer_evidence_entries(
+            results_dir=None,
+            evidence=[],
+            learnings=[],
+            gate_summary=[],
+            prior_proposal=shared,
+        )
+
+    with pytest.raises(evolve.SandboxError, match="unavailable"):
+        proposer_evidence_entries(
+            results_dir=None,
+            evidence=[],
+            learnings=[],
+            gate_summary=[],
+            prior_proposal=tmp_path / "absent.md",
+        )
+
+
 def test_parser_defaults_match_the_gate_minimums():
     args = build_parser().parse_args(["--tasks", "t.yaml", "--model", "pinned"])
     assert args.runs == 3
@@ -368,7 +474,7 @@ def test_evolve_proposer_failure_returns_nonzero(monkeypatch, tmp_path):
     assert evolve.main() == 1
 
 
-def test_proposer_session_record_is_redacted_before_upload(monkeypatch, tmp_path):
+def test_proposer_session_record_is_redacted_before_upload(monkeypatch, tmp_path, capsys):
     tasks = tmp_path / "tasks.yaml"
     tasks.write_text(
         """tasks:
@@ -421,6 +527,84 @@ def test_proposer_session_record_is_redacted_before_upload(monkeypatch, tmp_path
     assert literal_token not in written
     assert pattern_token not in written
     assert "[REDACTED]" in written
+
+    # The same record is printed one line later, and the driver's stdout is a
+    # live CI log now that the sweep echoes it — same bar as the artifact.
+    printed = capsys.readouterr().out
+    assert "proposer session failed" in printed
+    assert literal_token not in printed
+    assert pattern_token not in printed
+    assert "[REDACTED]" in printed
+
+
+def test_benchmark_failure_print_is_redacted(monkeypatch, tmp_path, capsys):
+    tasks = tmp_path / "tasks.yaml"
+    tasks.write_text(
+        """tasks:
+  - id: demo
+    class: test
+    repo: .
+    prompt: implement
+    verify: "true"
+    oracle:
+      command: "true"
+      files:
+        - source: hidden.test.ts
+          target: hidden.test.ts
+"""
+    )
+    overlay = tmp_path / "overlay"
+    skill = overlay / ".claude" / "skills" / "gitnexus-plan" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("candidate")
+    literal_token = "secret-LITERAL-XYZ"
+    pattern_token = "sk-ant-FAKEEXAMPLE0000"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "workflow_bench.evolve",
+            "--tasks",
+            str(tasks),
+            "--model",
+            "pinned-model",
+            "--out-root",
+            str(tmp_path / "out"),
+            "--initial-overlay",
+            str(overlay),
+            "--auth-token",
+            literal_token,
+        ],
+    )
+    monkeypatch.setattr(evolve.runner, "selected_task_bindings", lambda _tasks: [{"id": "demo"}])
+    monkeypatch.setattr(evolve, "preflight_bubblewrap", lambda: tmp_path / "bwrap")
+    monkeypatch.setattr(evolve, "require_claude_sandbox_helpers", lambda: None)
+    monkeypatch.setattr(evolve, "resolve_incumbent_arms", lambda *_args, **_kwargs: ["workflow"])
+    monkeypatch.setattr(evolve, "freeze_overlay", lambda _source, _destination: "d" * 64)
+    monkeypatch.setattr(evolve, "committed_destination_base_digests", lambda _overlay: {})
+    monkeypatch.setattr(evolve, "destination_base_digests", lambda _overlay: {})
+    # The sweep is launched with GITNEXUS_BENCH_AUTH_TOKEN in its environment,
+    # so its detail/stderr tail is as token-bearing as any session record.
+    monkeypatch.setattr(
+        evolve,
+        "run_managed",
+        lambda *_args, **_kwargs: ManagedProcessResult(
+            state="exited",
+            returncode=2,
+            stdout_tail="",
+            stderr_tail=f"ANTHROPIC_API_KEY={pattern_token}",
+            duration_s=1.0,
+            detail=f"sweep died with {literal_token}",
+        ),
+    )
+
+    assert evolve.main() == 1
+
+    printed = capsys.readouterr().out
+    assert "benchmark run failed" in printed
+    assert literal_token not in printed
+    assert pattern_token not in printed
+    assert "[REDACTED]" in printed
 
 
 def test_runner_argv_pairs_each_incumbent_with_its_candidate(tmp_path):
@@ -641,6 +825,23 @@ def bound_task_fixture():
     }
 
 
+def promote_decision(**overrides):
+    """A schema 4 decision: a verdict plus the gated evidence base behind it."""
+    decision = {
+        "incumbent_arm": "workflow",
+        "candidate_arm": "candidate_workflow",
+        "decision": "promote",
+        "metric": "cost_usd",
+        "ungated_tasks": ["task-impossible"],
+        "tasks": [
+            {"task": "task-a", "gated": True},
+            {"task": "task-impossible", "gated": False},
+        ],
+    }
+    decision.update(overrides)
+    return decision
+
+
 def promotion_fixture(*, decisions=None, expires_delta=timedelta(days=1)):
     now = datetime.now(UTC)
     return {
@@ -660,18 +861,7 @@ def promotion_fixture(*, decisions=None, expires_delta=timedelta(days=1)):
             "min_improvement_pct": 5.0,
             "max_task_regression_pct": 20.0,
         },
-        "decisions": (
-            decisions
-            if decisions is not None
-            else [
-                {
-                    "incumbent_arm": "workflow",
-                    "candidate_arm": "candidate_workflow",
-                    "decision": "promote",
-                    "metric": "cost_usd",
-                }
-            ]
-        ),
+        "decisions": decisions if decisions is not None else [promote_decision()],
     }
 
 
@@ -698,39 +888,64 @@ def test_promotion_apply_requires_one_promote_for_every_bound_arm():
 
     for decisions in (
         [],
-        [
-            {
-                "incumbent_arm": "workflow",
-                "candidate_arm": "candidate_workflow",
-                "decision": "keep_incumbent",
-                "metric": "cost_usd",
-            }
-        ],
-        [
-            {
-                "incumbent_arm": "workflow",
-                "candidate_arm": "candidate_workflow",
-                "decision": "promote",
-                "metric": "cost_usd",
-            },
-            {
-                "incumbent_arm": "workflow",
-                "candidate_arm": "candidate_workflow",
-                "decision": "promote",
-                "metric": "cost_usd",
-            },
-        ],
-        [
-            {
-                "incumbent_arm": "workflow_direct",
-                "candidate_arm": "candidate_workflow_direct",
-                "decision": "promote",
-                "metric": "cost_usd",
-            }
-        ],
+        [promote_decision(decision="keep_incumbent")],
+        [promote_decision(), promote_decision()],
+        [promote_decision(incumbent_arm="workflow_direct", candidate_arm="candidate_workflow_direct")],
     ):
         with pytest.raises(ValueError):
             validate_fixture(promotion_fixture(decisions=decisions))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        # A schema 3 decision relabeled as schema 4: the verdict without the
+        # gated evidence base schema 4 promotes on.
+        ({"tasks": None, "ungated_tasks": None}, "no per-task gate evidence"),
+        ({"tasks": [{"task": "task-a"}]}, "malformed per-task gate evidence"),
+        ({"tasks": [{"task": "task-a", "gated": "yes"}]}, "malformed per-task gate evidence"),
+        (
+            {"tasks": [{"task": "task-a", "gated": True}, {"task": "task-a", "gated": False}]},
+            "repeats a task",
+        ),
+        ({"ungated_tasks": None}, "missing its ungated task list"),
+        # The verdict claims a full gate; the per-task rows say a task sat
+        # outside it.
+        ({"ungated_tasks": []}, "disagree with its per-task evidence"),
+        (
+            {
+                "ungated_tasks": ["task-a", "task-impossible"],
+                "tasks": [
+                    {"task": "task-a", "gated": False},
+                    {"task": "task-impossible", "gated": False},
+                ],
+            },
+            "no gated task",
+        ),
+        # One gated task out of three decides nothing.
+        (
+            {
+                "ungated_tasks": ["task-impossible", "task-impossible-2"],
+                "tasks": [
+                    {"task": "task-a", "gated": True},
+                    {"task": "task-impossible", "gated": False},
+                    {"task": "task-impossible-2", "gated": False},
+                ],
+            },
+            "too thin a gated evidence base",
+        ),
+    ],
+)
+def test_promotion_apply_binds_the_schema_4_gate_evidence(overrides, match):
+    decision = promote_decision()
+    for field, value in overrides.items():
+        if value is None:
+            decision.pop(field)
+        else:
+            decision[field] = value
+
+    with pytest.raises(ValueError, match=match):
+        validate_fixture(promotion_fixture(decisions=[decision]))
 
 
 def test_manual_initial_overlay_has_no_fictitious_proposer_model():

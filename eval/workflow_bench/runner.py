@@ -35,7 +35,7 @@ model).
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, wait
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 import hashlib
 import json
 import os
@@ -60,6 +60,8 @@ from .evolution import (
     EVALUATED_ARM_SKILLS,
     MAIN_LOOP_ONLY_METRICS,
     MAIN_LOOP_ONLY_WARNING,
+    MAX_FAILED_TASK_REGRESSION_PCT,
+    MIN_GATED_TASK_RATIO,
     PROMOTION_METRICS,
     apply_candidate_overlay,
     candidate_overlay_digest,
@@ -634,10 +636,61 @@ EXCLUDED_ERROR_KINDS = frozenset({"session-error", "infra-error", "evidence-unve
 SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure"})
 DEFAULT_OUTAGE_STREAK = 5
 
+# A cell is a full clone plus a sandboxed agent session, so the ceiling is the
+# machine, not the flag. Past a handful of siblings the cells lose CPU to each
+# other, sessions reach their timeout, and a timed-out session is an excluded
+# run the promotion gate refuses to work with — a mistyped --workers must fail
+# at the command line rather than a quarter-day later as unusable evidence.
+MAX_WORKERS = 8
+
 
 def systemic_outage_streak(error_kind: str | None, prior_streak: int) -> int:
     """Consecutive systemic-failure count: +1 on a systemic kind, else reset to 0."""
     return prior_streak + 1 if error_kind in SYSTEMIC_ERROR_KINDS else 0
+
+
+CellOutcome = tuple[dict[str, Any] | None, BaseException | None]
+
+
+def _run_wave(
+    wave: Sequence[tuple[int, str]],
+    *,
+    workers: int,
+    run: Callable[[int, str], dict[str, Any]],
+) -> list[CellOutcome]:
+    """Run one wave on a pool and settle every future, in submission order.
+
+    The pool is owned explicitly rather than through ``with``: the context
+    manager exits through ``shutdown(wait=True)``, so a Ctrl-C would be handed
+    back to the operator only once the wave it was meant to abandon had
+    finished anyway. Here the interrupt cancels whatever has not started and
+    abandons — never joins — whatever has.
+
+    Every future is read even after one of them failed. An exception a cell did
+    not expect stays parked inside its Future until something asks for it, so
+    skipping the reads would turn a harness bug into a silently missing run
+    rather than a crash. Failures are returned rather than raised so the caller
+    can persist the rows of the cells that did complete first.
+    """
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = [pool.submit(run, run_idx, arm) for run_idx, arm in wave]
+        wait(futures)
+    except BaseException:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    # Nothing left to wait for — every future is done — so this only retires
+    # the wave's threads instead of leaking one pool's worth per wave.
+    pool.shutdown(wait=True)
+    return [_settle(future) for future in futures]
+
+
+def _settle(future: Future[dict[str, Any]]) -> CellOutcome:
+    """A completed future as (record, error) — exactly one of them is set."""
+    try:
+        return future.result(), None
+    except BaseException as error:  # noqa: BLE001 - re-raised by the caller, in order
+        return None, error
 
 
 def sweep_task_cells(
@@ -673,18 +726,18 @@ def sweep_task_cells(
         if workers == 1:
             records = [run(run_idx, arm) for run_idx, arm in wave]
         else:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(run, run_idx, arm) for run_idx, arm in wave]
-                try:
-                    wait(futures)
-                except KeyboardInterrupt:
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    raise
-                # Every future has to be read. An exception a cell did not
-                # expect stays parked inside its Future until something asks
-                # for it, so skipping this would turn a harness bug into a
-                # silently missing run rather than a crash.
-                records = [future.result() for future in futures]
+            outcomes = _run_wave(wave, workers=workers, run=run)
+            failure = next((error for _, error in outcomes if error is not None), None)
+            if failure is not None:
+                # The siblings of the failing cell have already completed and
+                # spent their budget. Persist their rows, in submission order,
+                # before the harness bug takes the process down — otherwise a
+                # crash in one cell silently erases the evidence of the others.
+                for (run_idx, arm), (record, error) in zip(wave, outcomes, strict=True):
+                    if error is None:
+                        on_record(run_idx, arm, record)
+                raise failure
+            records = [record for record, _ in outcomes]
         wave_tripped = False
         for (run_idx, arm), record in zip(wave, records, strict=True):
             # Every future in this wave has already completed and incurred its
@@ -999,6 +1052,30 @@ def infra_error_record(exc: BaseException) -> dict[str, Any]:
     return record
 
 
+def cell_progress_line(task_id: str, arm: str, run_idx: int, record: dict[str, Any]) -> str:
+    """The live one-line summary printed as each cell finishes.
+
+    An infra-error row carries 0.0 cost and 0.0 duration as placeholders: the
+    cell died before any session could report a number. Printed as bare zeros
+    next to real rows they read as a run that was instant and free — the exact
+    misreading ``_na`` exists to prevent — so they are rendered "n/a" instead.
+    The row on disk is untouched: results.jsonl is promotion evidence and its
+    field types stay as they are.
+    """
+    measured = record.get("error_kind") != "infra-error"
+    cost_usd = record.get("cost_usd") if measured else None
+    duration_s = record.get("duration_s") if measured else None
+    return (
+        f"[{task_id}][{arm}][run {run_idx}] resolved={record['resolved']} "
+        f"in={record['input_tokens']} out={record['output_tokens']} "
+        f"cost={'n/a' if cost_usd is None else f'${cost_usd}'} "
+        f"took={'n/a' if duration_s is None else f'{duration_s}s'} "
+        # An excluded run is what actually blocks promotion, so name it here
+        # instead of leaving it to results.jsonl.
+        f"error_kind={record.get('error_kind') or 'none'}"
+    )
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Median metrics + resolve rate across repeated runs of one task+arm.
 
@@ -1142,20 +1219,29 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 
+def worker_count(value: str) -> int:
+    """``--workers`` as a 1..MAX_WORKERS int, rejected at parse time."""
+    workers = int(value)
+    if not 1 <= workers <= MAX_WORKERS:
+        raise argparse.ArgumentTypeError(f"must be between 1 and {MAX_WORKERS}")
+    return workers
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument(
         "--workers",
-        type=int,
+        type=worker_count,
         default=1,
-        help="cells of one task to run at once (default 1, fully serial). Size "
-        "this to the machine: a cell that loses CPU to its siblings takes "
-        "longer, and a session that reaches its timeout is an excluded run the "
-        "promotion gate refuses to work with. Above 1 the cells run on worker "
-        "threads, so Ctrl-C no longer reaches the code owning a sandboxed "
-        "process and an abort waits for the running cells to finish.",
+        help=f"cells of one task to run at once (default 1, fully serial; max "
+        f"{MAX_WORKERS}). Size this to the machine: a cell that loses CPU to "
+        "its siblings takes longer, and a session that reaches its timeout is "
+        "an excluded run the promotion gate refuses to work with. Above 1 the "
+        "cells run on worker threads, so Ctrl-C no longer reaches the code "
+        "owning a sandboxed process and abandons the running cells instead of "
+        "cleaning up after them.",
     )
     parser.add_argument(
         "--outage-streak",
@@ -1297,8 +1383,6 @@ def main() -> None:
             parser.error(f"{candidate_arm} must be paired with {incumbent_arm}")
     if args.runs < 1 or args.promotion_min_runs < 1:
         parser.error("--runs and --promotion-min-runs must be positive")
-    if args.workers < 1:
-        parser.error("--workers must be positive")
 
     candidate_overlay = args.candidate_overlay.expanduser().absolute() if args.candidate_overlay is not None else None
     overlay_digest = candidate_overlay_digest(candidate_overlay) if candidate_overlay is not None else None
@@ -1452,15 +1536,7 @@ def main() -> None:
                     # results.jsonl artifact (transcripts are redacted; this
                     # sink was not).
                     fh.write(redact_text(json.dumps(record), [args.auth_token or ""]) + "\n")
-                print(
-                    f"[{task['id']}][{arm}][run {run_idx}] resolved={record['resolved']} "
-                    f"in={record['input_tokens']} out={record['output_tokens']} "
-                    f"cost=${_na(record['cost_usd'])} "
-                    f"took={_na(record.get('duration_s'))}s "
-                    # An excluded run is what actually blocks promotion, so name
-                    # it here instead of leaving it to results.jsonl.
-                    f"error_kind={record.get('error_kind') or 'none'}"
-                )
+                print(cell_progress_line(task["id"], arm, run_idx, record))
 
             outage_streak, outage_tripped = sweep_task_cells(
                 cells,
@@ -1493,9 +1569,12 @@ def main() -> None:
     if candidate_arms:
         promotion_generated_at = datetime.now(UTC)
         promotion = {
-            # Schema 3 is the first promotion evidence that requires hidden,
-            # byte-bound behavioral oracles. Older self-authored-only rows are
-            # intentionally ineligible for application.
+            # Schema 4 adds the gated/ungated task contract on top of schema 3's
+            # hidden, byte-bound behavioral oracles: a decision now states which
+            # tasks supplied quality signal and which were ungated because
+            # neither arm resolved them. Schema 3 bindings are rejected outright
+            # by the apply path — they cannot express that distinction, so their
+            # verdicts are not comparable with these.
             "schema_version": 4,
             "generated_at": promotion_generated_at.isoformat(),
             "evidence_expires_at": (promotion_generated_at + timedelta(days=EVIDENCE_MAX_AGE_DAYS)).isoformat(),
@@ -1514,6 +1593,8 @@ def main() -> None:
                 "min_runs": args.promotion_min_runs,
                 "min_improvement_pct": args.promotion_min_improvement,
                 "max_task_regression_pct": args.promotion_max_task_regression,
+                "max_failed_task_regression_pct": MAX_FAILED_TASK_REGRESSION_PCT,
+                "min_gated_task_ratio": MIN_GATED_TASK_RATIO,
                 "quality_rule": "no per-task resolution-rate regression",
                 "max_age_days": EVIDENCE_MAX_AGE_DAYS,
             },
