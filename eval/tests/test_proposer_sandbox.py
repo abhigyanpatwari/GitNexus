@@ -883,13 +883,14 @@ def test_clone_controlled_mcp_replacement_is_never_executed_or_credentialed(tmp_
     os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
     reason="real Claude/Bash/MCP canary is mandatory in the named Ubuntu CI job",
 )
-def test_real_claude_bare_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path) -> None:
+def test_real_claude_hooks_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path) -> None:
     """Exercise the exact CLI boundary without contacting a paid model."""
 
     claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
     assert claude.is_file()
     clone = tmp_path / "clone"
     clone.mkdir()
+    (clone / "canary.txt").write_text("hook-readable")
     fake_mcp = clone / "fake_mcp.py"
     fake_mcp.write_text(
         """import json
@@ -954,7 +955,20 @@ for line in sys.stdin:
                     and isinstance(block.get("tool_use_id"), str)
                 }
             )
-            if "toolu_mcp_canary" not in tool_result_ids:
+            if "toolu_read_canary" not in tool_result_ids:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_read_canary",
+                        "name": "Read",
+                        "input": {
+                            "file_path": "/workspace/canary.txt",
+                            "pages": "",
+                        },
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_mcp_canary" not in tool_result_ids:
                 blocks = [
                     {
                         "type": "tool_use",
@@ -1076,7 +1090,6 @@ for line in sys.stdin:
                     "text",
                     "--output-format",
                     "json",
-                    "--bare",
                     "--settings",
                     sandbox.settings_json,
                     "--strict-mcp-config",
@@ -1088,7 +1101,12 @@ for line in sys.stdin:
                     # authoritative empirical gate for that behavior.
                     "--model",
                     "claude-canary-20260718",
+                    "--tools",
+                    "Read",
+                    "Bash",
+                    "mcp__gitnexus__list_repos",
                     "--allowedTools",
+                    "Read",
                     "Bash",
                     "mcp__gitnexus__list_repos",
                 ],
@@ -1097,7 +1115,7 @@ for line in sys.stdin:
                     auth_token="offline-canary-key",
                     base_url=f"http://127.0.0.1:{server.server_port}",
                 ),
-                stdin_data=b"Use both available tools, then finish.",
+                stdin_data=b"Use all three available tools, then finish.",
             )
     finally:
         server.shutdown()
@@ -1107,6 +1125,9 @@ for line in sys.stdin:
     assert result.ok, result.stderr_tail + result.stdout_tail
     report = json.loads(result.stdout_tail)
     assert report["subtype"] == "success" and report["is_error"] is False, report
+    read_result = observed_tool_results["toolu_read_canary"]
+    assert read_result.get("is_error") is not True, read_result
+    assert "hook-readable" in json.dumps(read_result)
     bash_result = observed_tool_results["toolu_bash_canary"]
     assert bash_result.get("is_error") is not True, bash_result
     assert (clone / "bash-called").read_text() == "canary"

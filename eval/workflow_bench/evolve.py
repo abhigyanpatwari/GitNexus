@@ -451,8 +451,6 @@ def _bound_transcript_artifact(
         while chunk := os.read(descriptor, 64 * 1024):
             digest.update(chunk)
             content.extend(chunk)
-            if len(content) > limit:
-                del content[: len(content) - limit]
         after = os.fstat(descriptor)
         if (opened.st_size, opened.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
             raise SandboxError(f"transcript artifact changed while reading: {path}")
@@ -460,7 +458,57 @@ def _bound_transcript_artifact(
         os.close(descriptor)
     if digest.hexdigest() != expected_digest:
         raise SandboxError(f"transcript artifact digest does not match its results row: {path}")
-    return bytes(content).decode(errors="replace")
+    return _compact_transcript_jsonl(bytes(content), limit)
+
+
+def _compact_transcript_value(value: Any, *, key: str | None = None) -> Any:
+    """Bound large event fields while retaining valid, useful JSON."""
+
+    if key == "signature":
+        return "[OMITTED]"
+    if isinstance(value, str):
+        field_limit = 4096
+        if len(value) <= field_limit:
+            return value
+        half = field_limit // 2
+        return f"{value[:half]}…[compacted {len(value) - field_limit} chars]…{value[-half:]}"
+    if isinstance(value, list):
+        return [_compact_transcript_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(item_key): _compact_transcript_value(item, key=str(item_key)) for item_key, item in value.items()}
+    return value
+
+
+def _compact_transcript_jsonl(raw: bytes, limit: int) -> str:
+    """Select complete recent events; never cut through a JSON record."""
+
+    try:
+        source_events = [json.loads(line) for line in raw.decode("utf-8", errors="strict").splitlines() if line.strip()]
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise SandboxError(f"transcript artifact is not valid JSONL: {exc}") from exc
+
+    selected: list[bytes] = []
+    total = 0
+    for event in reversed(source_events):
+        encoded = (
+            json.dumps(
+                _compact_transcript_value(event),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+        if len(encoded) > limit or total + len(encoded) > limit:
+            continue
+        selected.append(encoded)
+        total += len(encoded)
+
+    if not selected:
+        raise SandboxError("transcript artifact has no complete event within the evidence limit")
+    selected.reverse()
+    return b"".join(selected).decode("utf-8")
 
 
 def _prior_proposal_text(path: Path) -> str:
@@ -590,12 +638,11 @@ def stage_proposer_evidence_bundle(
 
 # The proposer's exact tool surface. Read/Grep/Glob observe the read-only
 # evidence bundle and the incumbent skills; Bash writes the candidate overlay.
-# The proposer session runs --bare, which hard-disables the Write/Edit tools
-# ("Write exists but is not enabled in this context"), so Bash is the only
-# writable tool it enables — the settings pre-authorize it via
-# autoAllowBashIfSandboxed, and the sandbox filesystem policy confines writes to
-# the workspace/tmp/home. Exported so the containment canary tests the real
-# allowlist and cannot drift from production.
+# `--tools` restricts non-bare Claude to this list, so Write/Edit/Skill/Web are
+# unavailable while the trusted PreToolUse normalizer remains enabled. Settings
+# pre-authorize Bash via autoAllowBashIfSandboxed, and the sandbox filesystem
+# policy confines writes to workspace/tmp/home. Exported so containment tests
+# exercise the production allowlist without drift.
 PROPOSER_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Bash"]
 
 
@@ -646,10 +693,11 @@ def run_proposer(
                     # No permission_mode: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
                     # forces "default", so requesting dontAsk only warns. Tools
                     # are pre-approved via settings permissions.allow
-                    # (proposer_sandbox.build_claude_settings).
+                    # (proposer_sandbox.build_claude_settings). Do not use
+                    # Claude's --bare flag here: it disables that trusted
+                    # PreToolUse hook along with untrusted hooks/plugins.
                     command_prefix=sandbox.command_prefix,
                     require_pid_namespace=True,
-                    bare=True,
                     settings_json=sandbox.settings_json,
                     strict_mcp_config=True,
                     mcp_config_json='{"mcpServers":{}}',

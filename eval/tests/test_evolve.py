@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -205,7 +206,7 @@ def test_proposer_reads_only_digest_bound_transcripts_below_results(tmp_path, mo
         gate_summary=[],
     )
 
-    assert entries["transcript-0-0.jsonl"] == payload.decode()
+    assert [json.loads(line) for line in entries["transcript-0-0.jsonl"].splitlines()] == [json.loads(payload)]
     assert entries["patch-0.diff"] == patch.read_text()
     staged_rows = entries["selected-rows.json"]
     assert staged_rows[0]["patch_file"] == "patch-0.diff"
@@ -220,6 +221,61 @@ def test_proposer_reads_only_digest_bound_transcripts_below_results(tmp_path, mo
             learnings=[],
             gate_summary=[],
         )
+
+
+def test_proposer_compacts_transcripts_as_complete_json_events(tmp_path):
+    results = tmp_path / "results"
+    transcripts = results / "transcripts"
+    transcripts.mkdir(parents=True, mode=0o700)
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "analysis-" + ("x" * 100_000),
+                        "signature": "opaque-base64-signature",
+                    }
+                ]
+            },
+        },
+        {
+            "type": "result",
+            "session_id": "session-1",
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+        },
+    ]
+    payload = "".join(json.dumps(event) + "\n" for event in events).encode()
+    artifact = transcripts / "session.jsonl"
+    artifact.write_bytes(payload)
+    artifact.chmod(0o600)
+
+    entries = proposer_evidence_entries(
+        results_dir=results,
+        evidence=[
+            row(
+                transcript_artifacts=[
+                    {
+                        "path": "transcripts/session.jsonl",
+                        "sha256": hashlib.sha256(payload).hexdigest(),
+                        "bytes": len(payload),
+                        "source": PARENT_EVENT_STREAM_SOURCE,
+                    }
+                ]
+            )
+        ],
+        learnings=[],
+        gate_summary=[],
+        artifact_limit=8192,
+    )
+
+    staged = entries["transcript-0-0.jsonl"]
+    parsed = [json.loads(line) for line in staged.splitlines()]
+    assert len(staged.encode()) <= 8192
+    assert parsed[-1]["type"] == "result"
+    assert parsed[0]["message"]["content"][0]["signature"] == "[OMITTED]"
+    assert "opaque-base64-signature" not in staged
 
 
 @pytest.mark.skipif(os.name == "nt", reason="transcript symlink containment is POSIX-only")
@@ -412,14 +468,24 @@ def test_stage_proposer_evidence_bundle_drops_prior_proposal_to_fit_budget(tmp_p
 
 
 def test_stage_proposer_evidence_bundle_compacts_artifacts_before_dropping_rows(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(evolve, "MAX_BUNDLE_BYTES", 300_000)
-    monkeypatch.setattr("workflow_bench.proposer_sandbox.MAX_BUNDLE_BYTES", 300_000)
+    monkeypatch.setattr(evolve, "MAX_BUNDLE_BYTES", 150_000)
+    monkeypatch.setattr("workflow_bench.proposer_sandbox.MAX_BUNDLE_BYTES", 150_000)
     results = tmp_path / "results"
     transcripts = results / "transcripts"
     transcripts.mkdir(parents=True, mode=0o700)
     rows = []
     for index in range(2):
-        payload = f"session-{index}\n".encode() + b"x" * 100_000
+        payload = (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "x" * 100_000}]},
+                }
+            )
+            + "\n"
+            + json.dumps({"type": "result", "session_id": f"session-{index}"})
+            + "\n"
+        ).encode()
         transcript = transcripts / f"session-{index}.jsonl"
         transcript.write_bytes(payload)
         transcript.chmod(0o600)
@@ -492,6 +558,56 @@ def test_proposer_refuses_a_prior_proposal_that_lost_its_trust_boundary(tmp_path
             gate_summary=[],
             prior_proposal=tmp_path / "absent.md",
         )
+
+
+def test_run_proposer_keeps_trusted_input_hook_enabled(monkeypatch, tmp_path):
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    transcript_projects = tmp_path / "transcript-projects"
+    transcript_projects.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_make_worktree(_repo, _ref, destination):
+        clone = destination / "clone"
+        clone.mkdir()
+        return clone
+
+    class FakeSandbox:
+        claude_bin = "claude"
+        command_prefix: list[str] = []
+        settings_json = '{"hooks":{"PreToolUse":[]}}'
+
+        @property
+        def transcript_projects(self):
+            return transcript_projects
+
+    @contextmanager
+    def fake_prepare_sandbox(**_kwargs):
+        yield FakeSandbox()
+
+    def fake_run_claude(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": False, "error_kind": "session-error"}
+
+    monkeypatch.setattr(evolve.runner, "make_worktree", fake_make_worktree)
+    monkeypatch.setattr(evolve.runner, "remove_clone", lambda _clone: None)
+    monkeypatch.setattr(evolve, "prepare_sandbox", fake_prepare_sandbox)
+    monkeypatch.setattr(evolve.runner, "run_claude", fake_run_claude)
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "model"])
+
+    record = evolve.run_proposer(
+        "prompt",
+        args,
+        overlay_dir=tmp_path / "overlay",
+        proposal_path=tmp_path / "proposal.md",
+        evidence_bundle=evidence,
+        bwrap_bin=tmp_path / "bwrap",
+    )
+
+    assert record["ok"] is False
+    assert captured.get("bare", False) is False
+    assert captured["allowed_tools"] == evolve.PROPOSER_ALLOWED_TOOLS
+    assert captured["settings_json"] == FakeSandbox.settings_json
 
 
 def test_parser_defaults_match_the_gate_minimums():
