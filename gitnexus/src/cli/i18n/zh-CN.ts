@@ -155,6 +155,7 @@ export const zhCN = {
   'error.watch.ambiguous':
     '`gitnexus watch` 含义不明确。\n  本地工作区增量索引：gitnexus analyze --watch\n  定时远程 clone/pull 并分析：gitnexus auto-sync start\n',
   'help.command.analyze.description': '索引仓库（完整分析）',
+  'help.command.embeddings.sync.description': '向现有索引添加缺失的嵌入，并逐批次保存检查点以安全续跑',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',
   'help.command.mcp.description':
