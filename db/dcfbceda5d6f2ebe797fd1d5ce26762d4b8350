@@ -1,0 +1,35 @@
+gitnexus/src/core/ingestion/import-resolvers/node-workspace-packages.ts
+  s_2fc6857ad45390::t_3441409d4bbcf4 224-228,232-241,289-316,318-332,343-345,349-350,352-418,454-467,470-483,502-506,576-597,681-766
+gitnexus/test/unit/node-workspace-repo-root-race.test.ts
+  s_2fc6857ad45390::t_eaceb50454452a 1-134
+gitnexus/test/integration/resolvers/barrel-workspace-hop.test.ts
+  s_8e9d9d172b6358::t_464be5b4a6bfb3 1-219
+gitnexus/test/unit/node-workspace-nested-roots.test.ts
+  s_8e9d9d172b6358::t_d0c5723fe2298b 1-258
+gitnexus/test/unit/node-workspace-review-fixes.test.ts
+  s_8e9d9d172b6358::t_c5734fb5bea57f 1-330
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "dbdcfbceda5d6f2ebe797fd1d5ce26762d4b8350",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_8e9d9d172b6358": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-af4e3dde1128f9b34",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
