@@ -321,6 +321,9 @@ export const FUNCTION_NODE_TYPES = new Set([
   // Dart
   'function_signature',
   'method_signature',
+  // Zig: `test "…" { }` bodies are callable scopes — calls inside attribute
+  // to the test, not the file. Named via methodExtractor.extractFunctionName.
+  'test_declaration',
 ]);
 
 /**
@@ -370,6 +373,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Go
   'struct_type',
   'interface_type',
+  // Zig
+  'union_declaration',
+  'opaque_declaration',
 ]);
 
 /**
@@ -438,6 +444,12 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   companion_object: 'Class',
   struct_type: 'Struct',
   interface_type: 'Interface',
+  // Zig: tagged and untagged unions are class-like containers, and so is
+  // the fieldless `opaque {}` (may own methods; labelled Struct, see
+  // ZIG_QUERIES). `struct_declaration` and `enum_declaration` are already
+  // present (Dart / generic).
+  union_declaration: 'Union',
+  opaque_declaration: 'Struct',
 };
 
 /**
@@ -581,14 +593,17 @@ export function getLabelFromCaptures(
   const hasDefaultExportHocNameSeed =
     captureMap['definition.function'] !== undefined &&
     (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
-  // Nameless `definition.class` passes through: a class extractor may
-  // synthesize the name (Java anonymous class bodies → `Worker$N`, #2550).
-  // Downstream stays safe — parse-worker skips any nameless definition the
-  // extractor could not name (its `!nameNode && !extractedClassSymbol` gate).
+  // Nameless `definition.class` / `definition.struct` pass through: a class
+  // extractor may synthesize the name (Java anonymous class bodies →
+  // `Worker$N`, #2550; a file-level type named after its file — the
+  // extractor receives the file path for exactly this). Downstream stays
+  // safe — parse-worker skips any nameless definition the extractor could
+  // not name (its `!nameNode && !extractedClassSymbol` gate).
   if (
     !captureMap['name'] &&
     !captureMap['definition.constructor'] &&
     !captureMap['definition.class'] &&
+    !captureMap['definition.struct'] &&
     !hasDefaultExportHocNameSeed
   )
     return null;
@@ -806,6 +821,26 @@ const javaBinaryNameOfType = (node: SyntaxNode): string | undefined => {
 };
 
 /**
+ * For a container node that is the direct `return` value of a function whose
+ * declared return type is the literal `type` (`fn List(comptime T: type) type
+ * { return struct {…}; }`), the function's `name` node; undefined otherwise.
+ * Language-agnostic by shape — today only tree-sitter-zig produces it.
+ */
+function typeConstructorNameNode(container: SyntaxNode): SyntaxNode | undefined {
+  const ret = container.parent;
+  if (ret?.type !== 'return_expression') return undefined;
+  const stmt = ret.parent;
+  if (stmt?.type !== 'expression_statement') return undefined;
+  const block = stmt.parent;
+  if (block?.type !== 'block') return undefined;
+  const fn = block.parent;
+  if (fn?.type !== 'function_declaration') return undefined;
+  if (fn.childForFieldName?.('body')?.id !== block.id) return undefined;
+  if (fn.childForFieldName?.('type')?.text !== 'type') return undefined;
+  return fn.childForFieldName?.('name') ?? undefined;
+}
+
+/**
  * Authoritative Java local/anonymous type identity.
  *
  * JLS 13.1 defines the shape and immediate-host prefix. OpenJDK javac's
@@ -879,6 +914,29 @@ export const findEnclosingClassInfo = (
    * the node-id is built from, guaranteeing owner-id == node-id by construction.
    */
   getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
+  /**
+   * Optional: the type the whole FILE declares (`LanguageProvider.resolveFileTypeOwner`).
+   * Consulted only when the walk reaches the tree root without meeting a
+   * container, so a member declared at file level can be owned by the file's
+   * own type (Zig file-structs). The name is what the definition phase names
+   * the class-like node, so owner id == node id by construction.
+   */
+  resolveFileTypeOwner?: (
+    root: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null,
+  /**
+   * Optional: the type a CONTAINER node declares
+   * (`LanguageProvider.resolveContainerTypeOwner`). Consulted for every
+   * `CLASS_CONTAINER_TYPES` node the walk meets, before the generic name-child
+   * derivation, for languages whose containers are named from context (a
+   * binding wrapper, an enclosing callable, an anonymous ordinal). Null falls
+   * through to the generic derivation.
+   */
+  resolveContainerTypeOwner?: (
+    container: SyntaxNode,
+    filePath: string,
+  ) => { readonly name: string; readonly label: NodeLabel } | null,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
   let iterations = 0;
@@ -976,6 +1034,19 @@ export const findEnclosingClassInfo = (
         }
       }
 
+      // A container the PROVIDER names from context (binding wrapper,
+      // enclosing callable, anonymous ordinal — Zig). The name is what the
+      // class-like node is minted under, so owner id == node id.
+      if (resolveContainerTypeOwner !== undefined) {
+        const containerOwner = resolveContainerTypeOwner(current, filePath);
+        if (containerOwner !== null) {
+          return {
+            classId: generateId(containerOwner.label, `${filePath}:${containerOwner.name}`),
+            className: containerOwner.name,
+          };
+        }
+      }
+
       // Rust impl_item: for `impl Trait for Struct {}`, pick the type after `for`
       // NOTE: This impl_item ownership logic is mirrored in
       // method-extractors/configs/rust.ts (extractOwnerName, metadata only).
@@ -1064,7 +1135,27 @@ export const findEnclosingClassInfo = (
             c.type === 'identifier' ||
             c.type === 'name' ||
             c.type === 'constant',
-        );
+        ) ??
+        // An ANONYMOUS container bound by the enclosing declaration —
+        // `const Point = struct { … }` (tree-sitter-zig: struct/enum/union/
+        // opaque nodes carry no name; the binding identifier is the first
+        // named child of the parent `variable_declaration`). Same shape as the
+        // Go `type_spec` branch above: the name lives one level up. Without it
+        // the walk climbed past every Zig container and no member ever got a
+        // HAS_METHOD / HAS_PROPERTY owner. The definition phase names the
+        // container node from the same binding (`@name` on the wrapper), so
+        // the owner id and the node id agree by construction.
+        (current.parent?.type === 'variable_declaration'
+          ? current.parent.namedChildren?.find((c: SyntaxNode) => c.type === 'identifier')
+          : undefined) ??
+        // An anonymous container RETURNED by a type-constructor function —
+        // `pub fn List(comptime T: type) type { return struct { … }; }`
+        // (Zig's only spelling of a generic type). The container's name is
+        // the function's, which is what the definition phase uses too
+        // (`@name` on the fn identifier, anchor on the container), so the
+        // owner id and the node id agree by construction. Only the literal
+        // `return <container>` of a fn returning `type` qualifies.
+        typeConstructorNameNode(current);
       if (nameNode) {
         let label = CONTAINER_TYPE_TO_LABEL[current.type] || 'Class';
         // Kotlin: class_declaration with an anonymous "interface" keyword child
@@ -1118,6 +1209,17 @@ export const findEnclosingClassInfo = (
           classId: generateId(label, `${filePath}:${classIdName}`),
           className: nameNode.text,
           ...(qualifiedClassId !== undefined ? { qualifiedClassId } : {}),
+        };
+      }
+    }
+    if (current.parent === null && resolveFileTypeOwner !== undefined) {
+      // Tree root reached with no container on the way: ask the provider
+      // whether the file itself is the owner.
+      const fileOwner = resolveFileTypeOwner(current, filePath);
+      if (fileOwner !== null) {
+        return {
+          classId: generateId(fileOwner.label, `${filePath}:${fileOwner.name}`),
+          className: fileOwner.name,
         };
       }
     }

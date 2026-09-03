@@ -177,6 +177,23 @@ const SOURCES: Record<string, GrammarSource> = {
       'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
       `See ${ISSUES_URL}/2107.`,
   },
+  // Zig grammar declares peerOptional `tree-sitter@^0.22.1` but its native
+  // binding is ABI-compatible with the bundled `tree-sitter@0.21.x` runtime
+  // (verified by load-time smoke test). The peer-dep mismatch is suppressed
+  // via the `overrides` block in package.json. Listed as `optional: true`
+  // because the package is in `optionalDependencies` — users on platforms
+  // without a prebuild may not have it — and `userSkippable` because it is
+  // a genuinely-optional grammar: `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` must be
+  // able to disable it at analyze time like swift/dart/kotlin.
+  [SupportedLanguages.Zig]: {
+    load: () => _require('@tree-sitter-grammars/tree-sitter-zig'),
+    optional: true,
+    userSkippable: true,
+    unavailableNote:
+      'Zig parsing disabled: `@tree-sitter-grammars/tree-sitter-zig` is an ' +
+      'optionalDependency and is not installed (or its native binding failed ' +
+      'to load on this platform).',
+  },
 };
 
 /**

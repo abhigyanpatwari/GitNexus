@@ -24,8 +24,14 @@ jobs:
         shard: ${{ fromJSON(needs.shard-plan.outputs.cov_shards) }}
     # Fail loudly (don't silently skip) if the FTS extension is unavailable, so
     # FTS-dependent lbug integration suites are guaranteed to run in CI.
+    # Same contract for Zig's optionalDependency grammar: this runner is
+    # linux-x64, which @tree-sitter-grammars/tree-sitter-zig publishes a
+    # prebuild for, so an absent grammar here is a packaging regression and not
+    # an unsupported platform. Without it every Zig suite skips and the job is
+    # green having never executed the native Zig parser once.
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      GITNEXUS_REQUIRE_ZIG: '1'
     steps:
       # persist-credentials: false — runs tests + uploads a blob artifact; the
       # default-persisted token must not be capturable through it (zizmor
@@ -278,8 +284,14 @@ jobs:
         shell: bash
         run: python3 .github/scripts/check-tree-sitter-upgrade-readiness.py --assert-current
 
+      # GITNEXUS_REQUIRE_ZIG=1: every OS in this matrix has a published
+      # tree-sitter-zig prebuild, so the smoke's "optional grammar may be
+      # absent" exemption is revoked here and an ABI-broken Zig binding fails
+      # the job instead of being accepted as a clean absence.
       - name: Run parser-loader ABI load-smoke (dynamic)
         run: npx vitest run test/unit/parser-loader-abi.test.ts
+        env:
+          GITNEXUS_REQUIRE_ZIG: '1'
         working-directory: gitnexus
 
   # End-to-end smoke test for the #1728 packaging fix: pack the published

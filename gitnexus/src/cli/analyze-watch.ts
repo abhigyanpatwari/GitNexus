@@ -257,6 +257,8 @@ export async function startWatchFileLoop(
 ): Promise<WatchFileLoop> {
   let ignorePath = await createWatchIgnorePredicate(repoPath);
   let ignoreControlValid = true;
+  let rearmPending = false;
+  let closed = false;
   const queue = new WatchRefreshQueue(
     async (paths) => {
       if (paths.some(isIgnoreControlPath) || !ignoreControlValid) {
@@ -264,7 +266,7 @@ export async function startWatchFileLoop(
         try {
           ignorePath = await createWatchIgnorePredicate(repoPath);
           ignoreControlValid = true;
-          watcher.add(repoPath);
+          rearmPending = true;
         } catch (error) {
           ignoreControlValid = false;
           throw new WatchControlReloadError(
@@ -279,6 +281,11 @@ export async function startWatchFileLoop(
           );
         }
       }
+      // Re-arm before refreshing, never after: the refresh reads the whole
+      // repository, so a write that lands while the replacement watcher is
+      // arming is still picked up by this refresh, and a write that lands
+      // afterwards is reported by the armed watcher.
+      if (rearmPending) await rearmWatcher();
       await refresh(paths);
     },
     onError,
@@ -291,44 +298,87 @@ export async function startWatchFileLoop(
     },
   );
 
-  const watcher: FSWatcher = watch(repoPath, {
-    ignoreInitial: true,
-    atomic: true,
-    followSymlinks: false,
-    awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 },
-    ignored: (candidate, stats) => {
-      const relative = repoRelativeWatchPath(repoPath, candidate);
-      if (relative !== null && isAnalyzerOwnedWatchPath(relative)) return true;
-      if (relative !== null && (isIgnoreControlPath(relative) || isConfigControlPath(relative))) {
-        return false;
+  const createWatcher = (): FSWatcher => {
+    const created: FSWatcher = watch(repoPath, {
+      ignoreInitial: true,
+      atomic: true,
+      followSymlinks: false,
+      awaitWriteFinish: { stabilityThreshold: 100, pollInterval: 20 },
+      ignored: (candidate, stats) => {
+        const relative = repoRelativeWatchPath(repoPath, candidate);
+        if (relative !== null && isAnalyzerOwnedWatchPath(relative)) return true;
+        if (relative !== null && (isIgnoreControlPath(relative) || isConfigControlPath(relative))) {
+          return false;
+        }
+        return ignorePath(candidate, stats?.isDirectory() ?? false);
+      },
+    });
+    // Events from an instance being retired are kept: they overlap with the
+    // replacement's coverage and the queue coalesces the duplicates.
+    created.on('all', (event, changedPath) => {
+      if (event !== 'add' && event !== 'change' && event !== 'unlink') return;
+      const relative = repoRelativeWatchPath(repoPath, changedPath);
+      if (relative && isRelevantWatchPath(relative) && !isAnalyzerOwnedWatchPath(relative)) {
+        queue.enqueue(relative);
       }
-      return ignorePath(candidate, stats?.isDirectory() ?? false);
-    },
-  });
-  watcher.on('all', (event, changedPath) => {
-    if (event !== 'add' && event !== 'change' && event !== 'unlink') return;
-    const relative = repoRelativeWatchPath(repoPath, changedPath);
-    if (relative && isRelevantWatchPath(relative) && !isAnalyzerOwnedWatchPath(relative)) {
-      queue.enqueue(relative);
+    });
+    created.on('error', (error) => {
+      // Replacement failures before the swap are reported through `waitUntilReady`.
+      if (created !== watcher) return;
+      // Chokidar can surface a transient EPERM on Windows while an ignored
+      // analyzer-owned path is replaced. Re-arm the watcher and force one
+      // bounded catch-up refresh so a missed event cannot leave the graph
+      // stale. Other watcher errors may mean coverage was lost and stay fatal.
+      if (TRANSIENT_WATCH_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? '')) {
+        rearmPending = true;
+        queue.enqueue(WATCH_FULL_REFRESH_PATH);
+        return;
+      }
+      onWatcherError(error);
+    });
+    return created;
+  };
+
+  let watcher: FSWatcher = createWatcher();
+
+  // Chokidar emits `ready` once per instance and `add()` returns before the
+  // rescan it starts has finished, with no signal for that completion. A file
+  // an ignore-rule reload has just unignored is therefore still unregistered
+  // when `add()` returns, and because `ignoreInitial` suppresses the `add` the
+  // rescan would emit, an immediate rewrite of that file is dropped for good
+  // (reproduced on chokidar 4 and 5). So re-arm by arming a replacement
+  // watcher and awaiting its `ready` instead. The outgoing instance keeps
+  // reporting until the replacement is armed, so the swap has no blind window,
+  // and a replacement that fails to arm leaves the working instance in place.
+  const rearmWatcher = async (): Promise<void> => {
+    rearmPending = false;
+    if (closed) return;
+    const replacement = createWatcher();
+    try {
+      await waitUntilReady(replacement);
+    } catch (error) {
+      rearmPending = true;
+      try {
+        await replacement.close();
+      } catch {
+        // The instance never became live; the arm error is the one to report.
+      }
+      throw new WatchControlReloadError(
+        new Error('Unable to re-arm the filesystem watcher', { cause: error }),
+      );
     }
-  });
-  watcher.on('error', (error) => {
-    // Chokidar can surface a transient EPERM on Windows while an ignored
-    // analyzer-owned path is replaced. Re-arm the root and force one bounded
-    // catch-up refresh so a missed event cannot leave the graph stale. Other
-    // watcher errors may mean coverage was lost and remain fatal.
-    if (TRANSIENT_WATCH_ERROR_CODES.has((error as NodeJS.ErrnoException).code ?? '')) {
-      watcher.add(repoPath);
-      queue.enqueue(WATCH_FULL_REFRESH_PATH);
-      return;
-    }
-    onWatcherError(error);
-  });
+    const retired = watcher;
+    watcher = replacement;
+    await retired.close();
+    // `close()` can land between arming the replacement and the swap above.
+    if (closed) await replacement.close();
+  };
 
   try {
     await waitUntilReady(watcher);
     await queue.runInitial();
   } catch (error) {
+    closed = true;
     await watcher.close();
     await queue.close();
     throw error;
@@ -337,6 +387,7 @@ export async function startWatchFileLoop(
   return {
     waitForIdle: () => queue.waitForIdle(),
     close: async () => {
+      closed = true;
       await watcher.close();
       await queue.close();
     },

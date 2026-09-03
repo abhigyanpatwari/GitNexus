@@ -12,7 +12,9 @@ const loops: WatchFileLoop[] = [];
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('timed out waiting for watcher event');
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out waiting for watcher event after ${timeoutMs}ms`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -179,6 +181,39 @@ describe('watch filesystem integration', () => {
     await waitFor(() => batches.flat().includes('.gitignore'));
     await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 2;', 'utf8');
     await waitFor(() => batches.flat().includes('blocked.ts'));
+  });
+
+  it('reports writes issued the instant a gitignore reload re-arms the watcher', async () => {
+    const repo = await makeRepo();
+    await fs.writeFile(path.join(repo, '.gitignore'), 'blocked.ts\n', 'utf8');
+    await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 1;', 'utf8');
+    await fs.writeFile(path.join(repo, 'tracked.ts'), 'export const tracked = 1;', 'utf8');
+    const batches: string[][] = [];
+    let rewritten = false;
+    const loop = await startWatchFileLoop(
+      repo,
+      25,
+      async (paths) => {
+        batches.push([...paths]);
+        // Writing from inside the refresh puts these rewrites right after the
+        // re-arm returns. Polling from the test body instead would leave enough
+        // slack for a watcher that is not armed yet to look armed.
+        if (paths.includes('.gitignore') && !rewritten) {
+          rewritten = true;
+          await fs.writeFile(path.join(repo, 'blocked.ts'), 'export const blocked = 2;', 'utf8');
+          await fs.writeFile(path.join(repo, 'tracked.ts'), 'export const tracked = 2;', 'utf8');
+        }
+      },
+      (error) => {
+        throw error;
+      },
+    );
+    loops.push(loop);
+
+    await fs.writeFile(path.join(repo, '.gitignore'), '', 'utf8');
+    await waitFor(
+      () => batches.flat().includes('blocked.ts') && batches.flat().includes('tracked.ts'),
+    );
   });
 
   it('keeps the last valid ignore predicate after an oversized reload and later recovers', async () => {
