@@ -14,6 +14,7 @@ import argparse
 import os
 import re
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -182,6 +183,49 @@ def _free_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def litellm_proxy_argv(
+    *,
+    config: Path,
+    host: str,
+    port: int,
+    python_executable: str | None = None,
+) -> list[str]:
+    """Build the LiteLLM proxy argv for this interpreter.
+
+    ``python -m litellm`` fails on current releases (no ``litellm.__main__``).
+    Prefer the console script next to ``sys.executable``; under ``uv run`` that
+    path is the base CPython, so also honor ``VIRTUAL_ENV`` and ``PATH``.
+    """
+
+    python = Path(python_executable or sys.executable).resolve()
+    candidates: list[Path] = [python.with_name("litellm")]
+    virtual_env = (os.environ.get("VIRTUAL_ENV") or "").strip()
+    if virtual_env:
+        candidates.append(Path(virtual_env) / "bin" / "litellm")
+    which = shutil.which("litellm")
+    if which:
+        candidates.append(Path(which))
+    litellm_bin: Path | None = None
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            litellm_bin = candidate.resolve()
+            break
+    if litellm_bin is None:
+        raise RuntimeError(
+            f"LiteLLM console script missing next to {python} "
+            "(install litellm[proxy]; do not use python -m litellm)"
+        )
+    return [
+        str(litellm_bin),
+        "--config",
+        str(config),
+        "--host",
+        host,
+        "--port",
+        str(port),
+    ]
+
+
 class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
     def __init__(
         self,
@@ -214,17 +258,11 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
         }
         try:
             self._process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "litellm",
-                    "--config",
-                    str(config),
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(self.port),
-                ],
+                litellm_proxy_argv(
+                    config=config,
+                    host="127.0.0.1",
+                    port=self.port,
+                ),
                 cwd=str(self.work_dir),
                 env=env,
                 stdin=subprocess.DEVNULL,

@@ -12,6 +12,7 @@ from workflow_bench.model_gateway import (
     claude_gateway_model_env,
     credential_secrets,
     is_openai_model,
+    litellm_proxy_argv,
     openai_backend_model,
     openai_litellm_config,
     resolve_model_access,
@@ -132,6 +133,35 @@ def test_runner_environment_does_not_forward_the_openai_key() -> None:
 def test_openai_backend_model_preserves_openai_prefix() -> None:
     assert openai_backend_model("gpt-4.1") == "openai/gpt-4.1"
     assert openai_backend_model("openai/gpt-4.1") == "openai/gpt-4.1"
+
+
+def test_litellm_proxy_argv_uses_console_script_not_python_module(tmp_path: Path, monkeypatch) -> None:
+    # litellm 1.87 ships a console script and no litellm.__main__, so
+    # `python -m litellm` dies before the health check. Pin the supported argv.
+    # Under `uv run`, sys.executable is the base CPython — the script lives in
+    # VIRTUAL_ENV/bin instead.
+    python = tmp_path / "base" / "python"
+    venv_bin = tmp_path / "venv" / "bin"
+    python.parent.mkdir(parents=True)
+    venv_bin.mkdir(parents=True)
+    litellm = venv_bin / "litellm"
+    python.write_text("#!/bin/sh\n")
+    litellm.write_text("#!/bin/sh\n")
+    python.chmod(0o755)
+    litellm.chmod(0o755)
+    monkeypatch.setenv("VIRTUAL_ENV", str(tmp_path / "venv"))
+    monkeypatch.delenv("PATH", raising=False)
+    config = tmp_path / "litellm.yaml"
+    config.write_text("model_list: []\n")
+    argv = litellm_proxy_argv(
+        config=config,
+        host="127.0.0.1",
+        port=4010,
+        python_executable=str(python),
+    )
+    assert argv[0] == str(litellm.resolve())
+    assert "-m" not in argv
+    assert argv[1:] == ["--config", str(config), "--host", "127.0.0.1", "--port", "4010"]
 
 
 def test_anthropic_api_key_prefers_the_named_env_and_keeps_the_legacy_alias(monkeypatch) -> None:
