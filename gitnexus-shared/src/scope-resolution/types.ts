@@ -764,6 +764,11 @@ export interface Reference {
    * without it is emitted exactly as before.
    */
   readonly callForm?: CallForm;
+  /** Copied from `ReferenceSite.staticGated` for `kind === 'call'`: the site is
+   *  in a branch provably unreachable from the indexed source at compile time.
+   *  The emit phase writes it to `GraphRelationship.staticGated` as metadata;
+   *  see the contract note there. Optional and additive. */
+  readonly staticGated?: boolean;
   readonly confidence: number;
   readonly evidence: readonly ResolutionEvidence[];
 }
