@@ -52,6 +52,7 @@ PARENT_EVENT_STREAM_SOURCE = "parent-captured-stream-json"
 # reporter also speaks up on its own to distinguish "thinking" from "wedged".
 PROGRESS_HEARTBEAT_SECONDS = 60.0
 MAX_PROGRESS_LINE_BYTES = 1024 * 1024
+MAX_TOOL_PREVIEW_CHARS = 800
 _SAFE_TOOL_NAME = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 
 
@@ -60,6 +61,24 @@ def _safe_tool_name(value: Any) -> str:
 
     match = _SAFE_TOOL_NAME.fullmatch(value.strip()) if isinstance(value, str) else None
     return match.group(0) if match else "tool"
+
+
+def _debuggable_tool(name: str) -> bool:
+    return name in {"Read", "Bash", "Grep", "Glob"} or name.startswith("mcp__")
+
+
+def _tool_preview(value: Any, secrets: Sequence[str]) -> str:
+    """Render one bounded, redacted, single-line tool payload preview."""
+
+    try:
+        raw = json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        raw = json.dumps(str(value), ensure_ascii=True)
+    redacted = redact_text(raw, secrets)
+    if len(redacted) <= MAX_TOOL_PREVIEW_CHARS:
+        return redacted
+    omitted = len(redacted) - MAX_TOOL_PREVIEW_CHARS
+    return f"{redacted[:MAX_TOOL_PREVIEW_CHARS]}…[truncated {omitted} chars]"
 
 
 class SessionProgress:
@@ -78,9 +97,11 @@ class SessionProgress:
         *,
         stream: Any = None,
         heartbeat_s: float = PROGRESS_HEARTBEAT_SECONDS,
+        secrets: Sequence[str] = (),
     ) -> None:
         self.label = label
         self.heartbeat_s = heartbeat_s
+        self._secrets = tuple(secret for secret in secrets if secret)
         # stdout, not stderr: the benchmark sweep runs as a child of the
         # evolution loop, which echoes only the child's stdout as it arrives
         # (run_managed(echo_stdout=True)). Its stderr surfaces as a bounded
@@ -93,6 +114,7 @@ class SessionProgress:
         self._events = 0
         self._turns = 0
         self._tools = 0
+        self._pending_tools: dict[str, str] = {}
         self._last_activity = "starting"
         self._timer: threading.Thread | None = None
         self._done = threading.Event()
@@ -159,17 +181,33 @@ class SessionProgress:
         kind = event.get("type")
         if kind == "assistant":
             self._turns += 1
-            names = [
-                _safe_tool_name(block.get("name"))
-                for block in _event_content(event)
-                if isinstance(block, dict) and block.get("type") == "tool_use"
+            uses = [
+                block for block in _event_content(event) if isinstance(block, dict) and block.get("type") == "tool_use"
             ]
+            names = [_safe_tool_name(block.get("name")) for block in uses]
             if names:
                 self._tools += len(names)
                 self._last_activity = ", ".join(names[:4])
                 self._say(f"turn {self._turns} · {self._last_activity}")
+                for block, name in zip(uses, names, strict=True):
+                    tool_id = block.get("id")
+                    if isinstance(tool_id, str):
+                        self._pending_tools[tool_id] = name
+                    if _debuggable_tool(name):
+                        self._say(f"tool {name} input={_tool_preview(block.get('input'), self._secrets)}")
             else:
                 self._last_activity = "model reply"
+        elif kind == "user":
+            for block in _event_content(event):
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tool_id = block.get("tool_use_id")
+                name = self._pending_tools.pop(tool_id, "tool") if isinstance(tool_id, str) else "tool"
+                if not _debuggable_tool(name):
+                    continue
+                status = "error" if block.get("is_error") is True else "ok"
+                self._last_activity = f"{name} result {status}"
+                self._say(f"tool {name} result={status} output={_tool_preview(block.get('content'), self._secrets)}")
         elif kind == "system" and event.get("subtype") == "api_retry":
             # The signature of the gateway wedging: say it loudly and at once.
             attempt = event.get("attempt")
@@ -566,7 +604,16 @@ def run_claude(
     managed_cmd = [*(command_prefix or []), *cmd]
     started = time.monotonic()
     with contextlib.ExitStack() as progress_stack:
-        progress = progress_stack.enter_context(SessionProgress(progress_label)) if progress_label else None
+        progress = (
+            progress_stack.enter_context(
+                SessionProgress(
+                    progress_label,
+                    secrets=transcript_secrets,
+                )
+            )
+            if progress_label
+            else None
+        )
         proc = run_managed(
             managed_cmd,
             cwd=None if command_prefix else cwd,

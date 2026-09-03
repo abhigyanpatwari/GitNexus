@@ -627,6 +627,7 @@ def run_proposer(
                     disable_slash_commands=True,
                     transcript_projects=sandbox.transcript_projects,
                     transcript_cwd=Path("/workspace"),
+                    transcript_secrets=tuple(credential_secrets(args)),
                     progress_label=progress_label or "proposer",
                 )
             if not record["ok"]:

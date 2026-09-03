@@ -18,9 +18,14 @@ def _drain_lines(stream: io.StringIO) -> list[str]:
     return [line for line in stream.getvalue().splitlines() if line.strip()]
 
 
-def test_progress_reports_turns_and_tool_names_but_never_model_content() -> None:
+def test_progress_reports_bounded_redacted_tool_io_but_never_model_prose() -> None:
     stream = io.StringIO()
-    progress = SessionProgress("gen 0 proposer", stream=stream, heartbeat_s=3600)
+    progress = SessionProgress(
+        "gen 0 proposer",
+        stream=stream,
+        heartbeat_s=3600,
+        secrets=("SECRET-TOKEN-abc123",),
+    )
     events = [
         {"type": "system", "subtype": "init"},
         {
@@ -28,7 +33,29 @@ def test_progress_reports_turns_and_tool_names_but_never_model_content() -> None
             "message": {
                 "content": [
                     {"type": "text", "text": "SECRET-REASONING-abc123"},
-                    {"type": "tool_use", "id": "t1", "name": "Grep", "input": {"pattern": "SECRET-INPUT"}},
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Grep",
+                        "input": {
+                            "pattern": "TODO",
+                            "path": "/workspace",
+                            "token": "SECRET-TOKEN-abc123",
+                        },
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "is_error": False,
+                        "content": "src/a.py:1: TODO " + "x" * 1000,
+                    }
                 ]
             },
         },
@@ -39,10 +66,66 @@ def test_progress_reports_turns_and_tool_names_but_never_model_content() -> None
 
     output = stream.getvalue()
     assert "SECRET-REASONING-abc123" not in output
-    assert "SECRET-INPUT" not in output
+    assert "SECRET-TOKEN-abc123" not in output
+    assert "[REDACTED]" in output
     assert "session initialized" in output
     assert "turn 1 · Grep" in output
+    assert 'tool Grep input={"pattern":"TODO","path":"/workspace","token":"[REDACTED]"}' in output
+    assert "tool Grep result=ok output=" in output
+    assert "truncated" in output
     assert "finished · 1 turns · ok · $1.50" in output
+
+
+def test_progress_reports_errors_and_mcp_io_but_skips_other_tool_payloads() -> None:
+    stream = io.StringIO()
+    progress = SessionProgress("flow", stream=stream, heartbeat_s=3600)
+    events = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "m1",
+                        "name": "mcp__gitnexus__query",
+                        "input": {"search_query": "call resolution"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "e1",
+                        "name": "Edit",
+                        "input": {"file_path": "secret.py", "new_string": "do not log"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "m1",
+                        "is_error": True,
+                        "content": "repository is not indexed",
+                    },
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "e1",
+                        "content": "edited secret.py",
+                    },
+                ]
+            },
+        },
+    ]
+    for event in events:
+        progress.observe((json.dumps(event) + "\n").encode())
+
+    output = stream.getvalue()
+    assert 'tool mcp__gitnexus__query input={"search_query":"call resolution"}' in output
+    assert 'tool mcp__gitnexus__query result=error output="repository is not indexed"' in output
+    assert "do not log" not in output
+    assert "edited secret.py" not in output
 
 
 def test_progress_calls_out_api_retries_because_that_is_the_stuck_signature() -> None:
