@@ -227,8 +227,7 @@ export function collectZigStaticGatedRanges(
     let dead: SyntaxNode | null = null;
     if (node.type === 'if_statement') {
       if (result === false) dead = node.childForFieldName('body');
-      if (result === true)
-        dead = node.namedChildren.find((c) => c.type === 'else_clause') ?? null;
+      if (result === true) dead = node.namedChildren.find((c) => c.type === 'else_clause') ?? null;
     } else {
       const arms = ifExpressionArms(node);
       if (result === false) dead = arms.consequence;
