@@ -35,7 +35,7 @@ model).
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import Future, ThreadPoolExecutor, wait
+from concurrent.futures import ThreadPoolExecutor, wait
 import hashlib
 import json
 import os
@@ -649,15 +649,12 @@ def systemic_outage_streak(error_kind: str | None, prior_streak: int) -> int:
     return prior_streak + 1 if error_kind in SYSTEMIC_ERROR_KINDS else 0
 
 
-CellOutcome = tuple[dict[str, Any] | None, BaseException | None]
-
-
 def _run_wave(
     wave: Sequence[tuple[int, str]],
     *,
     workers: int,
     run: Callable[[int, str], dict[str, Any]],
-) -> list[CellOutcome]:
+) -> list[dict[str, Any] | BaseException]:
     """Run one wave on a pool and settle every future, in submission order.
 
     The pool is owned explicitly rather than through ``with``: the context
@@ -682,15 +679,11 @@ def _run_wave(
     # Nothing left to wait for — every future is done — so this only retires
     # the wave's threads instead of leaking one pool's worth per wave.
     pool.shutdown(wait=True)
-    return [_settle(future) for future in futures]
-
-
-def _settle(future: Future[dict[str, Any]]) -> CellOutcome:
-    """A completed future as (record, error) — exactly one of them is set."""
-    error = future.exception()
-    if error is not None:
-        return None, error
-    return future.result(), None
+    outcomes: list[dict[str, Any] | BaseException] = []
+    for future in futures:
+        error = future.exception()
+        outcomes.append(error if error is not None else future.result())
+    return outcomes
 
 
 def sweep_task_cells(
@@ -727,35 +720,31 @@ def sweep_task_cells(
             records = [run(run_idx, arm) for run_idx, arm in wave]
         else:
             outcomes = _run_wave(wave, workers=workers, run=run)
-            failure = next((error for _, error in outcomes if error is not None), None)
+            failure = next((outcome for outcome in outcomes if isinstance(outcome, BaseException)), None)
             if failure is not None:
                 # The siblings of the failing cell have already completed and
                 # spent their budget. Persist their rows, in submission order,
                 # before the harness bug takes the process down — otherwise a
                 # crash in one cell silently erases the evidence of the others.
-                for (run_idx, arm), (record, error) in zip(wave, outcomes, strict=True):
-                    if error is None:
-                        on_record(run_idx, arm, record)
+                for (run_idx, arm), outcome in zip(wave, outcomes, strict=True):
+                    if not isinstance(outcome, BaseException):
+                        on_record(run_idx, arm, outcome)
                 raise failure
-            records = [record for record, _ in outcomes]
-        wave_tripped = False
+            records = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
         for (run_idx, arm), record in zip(wave, records, strict=True):
             # Every future in this wave has already completed and incurred its
             # cost. Persist all of them in canonical submission order even if
             # an earlier row trips the breaker; only later waves are skipped.
             on_record(run_idx, arm, record)
-            if wave_tripped:
-                continue
+        for record in records:
             outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
             if outage_limit and outage_streak >= outage_limit:
-                wave_tripped = True
-        if wave_tripped:
-            print(
-                f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
-                "failures — aborting the remaining sweep; report and promotion are written "
-                "from partial evidence and the run exits non-zero."
-            )
-            return outage_streak, True
+                print(
+                    f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
+                    "failures — aborting the remaining sweep; report and promotion are written "
+                    "from partial evidence and the run exits non-zero."
+                )
+                return outage_streak, True
     return outage_streak, False
 
 
@@ -878,7 +867,8 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 phase="task setup",
             )
             if arm in CANDIDATE_ARMS:
-                assert ctx.candidate_overlay is not None
+                if ctx.candidate_overlay is None:
+                    raise RuntimeError("candidate overlay is unavailable")
                 applied_digest = apply_candidate_overlay(
                     ctx.candidate_overlay,
                     worktree,
@@ -889,7 +879,9 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             # The digest the model must preserve during its run is the
             # post-overlay skill surface (candidate skills for
             # candidate arms; unchanged base skills otherwise).
-            expected_skill_digest = skill_fingerprint(worktree, execution_arm)
+            expected_skill_digest = (
+                skill_fingerprint(worktree, execution_arm) if arm in CANDIDATE_ARMS else base_skill_digest
+            )
             orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
             if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
                 raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")

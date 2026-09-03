@@ -171,8 +171,9 @@ jobs:
         run: |
           set -euo pipefail
           needrestart_policy=/etc/needrestart/conf.d/90-gitnexus-evolution.conf
-          if [[ ! -r "${needrestart_policy}" ]] || ! grep -Fqx '$nrconf{restart} = '\''l'\'';' "${needrestart_policy}"; then
-            echo "::error::${needrestart_policy} must contain: \$nrconf{restart} = 'l';"
+          needrestart_line="\$nrconf{restart} = 'l';"
+          if [[ ! -r "${needrestart_policy}" ]] || ! grep -Fqx "${needrestart_line}" "${needrestart_policy}"; then
+            echo "::error::${needrestart_policy} must contain: ${needrestart_line}"
             exit 1
           fi
           oom_score_adjustment="$(</proc/self/oom_score_adj)"
