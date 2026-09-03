@@ -632,6 +632,7 @@ export function emitFreeCallFallback(
           site,
           options.markConstructionSites,
         ),
+        ...(site.staticGated === true ? { staticGated: true } : {}),
       });
       emitted++;
     }

@@ -374,6 +374,74 @@ export function isCallStaticGated(
  * lives inside the condition expression itself.  Conditions don't
  * gate themselves, so the caller treats `'condition'` as no-op.
  */
+/**
+ * Every source range that is statically dead in this file: the body of an
+ * `if` whose condition folds to `false`, and the `else` clause of an `if`
+ * whose condition folds to `true`. Line/col ranges, so a capture layer that
+ * only keeps `Capture.range` (no node) can still stamp its call sites —
+ * that is how the scope-resolution provider consumes this module.
+ *
+ * Same evaluation as `isCallStaticGated`, walked once per file instead of
+ * once per call; nesting needs no special case because an inner branch
+ * inside a dead body is inside the dead body's range already.
+ */
+export interface ZigGatedRange {
+  readonly startLine: number;
+  readonly startCol: number;
+  readonly endLine: number;
+  readonly endCol: number;
+}
+
+export function collectZigStaticGatedRanges(
+  rootNode: SyntaxNode,
+  localBools: ZigBoolConstMap,
+  importAliases: ZigImportAliasMap,
+  lookupBoolsForPath: ZigBoolConstLookup,
+): readonly ZigGatedRange[] {
+  const out: ZigGatedRange[] = [];
+  const stack: SyntaxNode[] = [rootNode];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'if_statement') {
+      const cond = findIfCondition(node);
+      const result = cond
+        ? evalCond(cond, localBools, importAliases, lookupBoolsForPath, 0)
+        : undefined;
+      let dead: SyntaxNode | null = null;
+      if (result === false) dead = node.childForFieldName('body');
+      if (result === true) dead = node.namedChildren.find((c) => c.type === 'else_clause') ?? null;
+      if (dead) {
+        out.push({
+          startLine: dead.startPosition.row + 1,
+          startCol: dead.startPosition.column,
+          endLine: dead.endPosition.row + 1,
+          endCol: dead.endPosition.column,
+        });
+      }
+    }
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const c = node.namedChild(i);
+      if (c) stack.push(c);
+    }
+  }
+  return out;
+}
+
+/** Is a (1-based line, 0-based col) position inside one of `ranges`? */
+export function isPositionStaticGated(
+  line: number,
+  col: number,
+  ranges: readonly ZigGatedRange[],
+): boolean {
+  for (const r of ranges) {
+    if (line < r.startLine || line > r.endLine) continue;
+    if (line === r.startLine && col < r.startCol) continue;
+    if (line === r.endLine && col >= r.endCol) continue;
+    return true;
+  }
+  return false;
+}
+
 function ifBranchDirection(
   ifNode: SyntaxNode,
   ascendedFrom: SyntaxNode,
@@ -399,11 +467,7 @@ function nodesEqual(a: SyntaxNode, b: SyntaxNode): boolean {
   const aId = (a as unknown as { id?: number }).id;
   const bId = (b as unknown as { id?: number }).id;
   if (typeof aId === 'number' && typeof bId === 'number') return aId === bId;
-  return (
-    a.type === b.type &&
-    a.startIndex === b.startIndex &&
-    a.endIndex === b.endIndex
-  );
+  return a.type === b.type && a.startIndex === b.startIndex && a.endIndex === b.endIndex;
 }
 
 /** Pick the condition node out of an `if_statement`. The condition is
@@ -445,10 +509,7 @@ function evalCond(
       // `cfg.FOO` — alias hop.
       const obj = node.namedChildren[0];
       const member = node.namedChildren[1];
-      if (
-        obj?.type !== 'identifier' ||
-        member?.type !== 'identifier'
-      ) {
+      if (obj?.type !== 'identifier' || member?.type !== 'identifier') {
         return undefined;
       }
       const targetFile = importAliases.get(obj.text);

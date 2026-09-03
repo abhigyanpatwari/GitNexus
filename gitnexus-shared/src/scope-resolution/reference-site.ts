@@ -208,6 +208,15 @@ export interface ReferenceSite {
    * else, so every other language's sites stay byte-identical.
    */
   readonly embeddedAsPointer?: boolean;
+  /**
+   * The call sits inside a branch known at index time to be unreachable —
+   * a Zig `if (CONST_FALSE)` body, or the `else` of `if (CONST_TRUE)`,
+   * where the condition folds to a comptime-known boolean. Set only when
+   * `kind === 'call'` and only by languages that compute static gating (Zig
+   * today); absent everywhere else, so every other site stays byte-identical.
+   * Threaded to `Reference.staticGated` and then `GraphRelationship.staticGated`.
+   */
+  readonly staticGated?: boolean;
 }
 
 /**

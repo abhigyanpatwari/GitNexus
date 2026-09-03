@@ -326,6 +326,7 @@ function buildReference(site: ReferenceSite, top: Resolution): Reference {
     // construction sites (`callForm: 'constructor'`) on the CALLS edge it
     // emits — a `Reference` otherwise keeps only the resolved def.
     ...(site.kind === 'call' && site.callForm !== undefined ? { callForm: site.callForm } : {}),
+    ...(site.kind === 'call' && site.staticGated === true ? { staticGated: true } : {}),
     confidence: top.confidence,
     evidence: top.evidence,
   };

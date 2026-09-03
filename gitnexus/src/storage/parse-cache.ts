@@ -732,7 +732,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // byte-identical graph until `parse-cache/` and `parsedfile-cache/` were
 // deleted by hand. 92 is the next free value above origin/main (91) at merge
 // time. RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 92;
+// v93: Zig call captures inside a comptime-false branch carry
+// `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
+// `staticGated` and the CALLS edge a BOOLEAN column.
+const SCHEMA_BUMP = 93;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

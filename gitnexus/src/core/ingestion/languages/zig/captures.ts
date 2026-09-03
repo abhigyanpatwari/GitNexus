@@ -6,6 +6,47 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { hasZigPubKeyword } from '../../export-detection.js';
 import { normalizeZigTypeName } from './interpret.js';
+import {
+  buildZigBoolConstMap,
+  collectZigStaticGatedRanges,
+  isPositionStaticGated,
+  type ZigImportAliasMap,
+} from '../../call-extractors/zig-static-gating.js';
+
+/**
+ * Static-gating marker (feat/zig-static-gated-edges). A call capture inside
+ * an `if (CONST_FALSE)` body (or the `else` of an `if (CONST_TRUE)`) gets
+ * this extra key; `scope-extractor` turns it into `ReferenceSite.staticGated`
+ * and the emitters copy it onto the CALLS edge. Same idiom as Go's
+ * `@reference.callee-position`: a zero-range marker, present or absent, so
+ * every ungated site's capture set stays byte-identical.
+ */
+const ZERO_RANGE = Object.freeze({ startLine: 0, startCol: 0, endLine: 0, endCol: 0 });
+const STATIC_GATED_MARKER: Capture = Object.freeze({
+  name: '@reference.static-gated',
+  range: ZERO_RANGE,
+  text: '',
+});
+const NO_IMPORT_ALIASES: ZigImportAliasMap = new Map();
+
+/** Stamp `@reference.static-gated` onto every call capture whose anchor sits
+ *  in a statically dead range. File-local constants only for now (v1): the
+ *  cross-file alias walk in `zig-static-gating.ts` needs the repo file list,
+ *  which the capture layer does not see. */
+function stampZigStaticGating(out: readonly CaptureMatch[], root: SyntaxNode): CaptureMatch[] {
+  const bools = buildZigBoolConstMap(root);
+  if (bools.size === 0) return [...out];
+  const ranges = collectZigStaticGatedRanges(root, bools, NO_IMPORT_ALIASES, () => undefined);
+  if (ranges.length === 0) return [...out];
+  return out.map((m) => {
+    const key = Object.keys(m).find((k) => k.startsWith('@reference.call'));
+    if (key === undefined) return m;
+    const anchor = m[key]!;
+    return isPositionStaticGated(anchor.range.startLine, anchor.range.startCol, ranges)
+      ? { ...m, '@reference.static-gated': STATIC_GATED_MARKER }
+      : m;
+  });
+}
 
 /** Zig container node types: `struct`, `enum`, `union` and the fieldless
  *  `opaque` all bind through `const T = <container> {…}` and may own methods.
@@ -1767,7 +1808,7 @@ export function emitZigScopeCaptures(
   rewriteZigDeepAliasReferences(out, deepAliases.aliases);
   rewriteZigFunctionLocalImportNames(out, fnLocalImports);
 
-  return out;
+  return stampZigStaticGating(out, tree.rootNode);
 }
 
 // ─── Use-site rewrites (8.4 / 8.9) and result-location sites (8.6) ────────────
