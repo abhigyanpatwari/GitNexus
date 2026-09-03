@@ -37,6 +37,11 @@ _OPENAI_MODEL = re.compile(
     r"^(?:openai/)?(?:gpt-|chatgpt-|o[0-9])",
     re.IGNORECASE,
 )
+# High reasoning effort on a full context window can leave a request without a
+# first token for many minutes. Claude Code's default client timeout is far
+# shorter than that, so both ends of the loopback hop get the same generous
+# budget and the session fails on real errors instead of on the clock.
+GATEWAY_REQUEST_TIMEOUT_S = 1800
 
 
 def is_openai_model(model: str) -> bool:
@@ -59,6 +64,7 @@ def claude_gateway_model_env(model: str) -> dict[str, str]:
         "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
         "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
         "CLAUDE_CODE_SUBAGENT_MODEL": model,
+        "API_TIMEOUT_MS": str(GATEWAY_REQUEST_TIMEOUT_S * 1000),
     }
 
 
@@ -160,6 +166,7 @@ def openai_litellm_config(model_names: Sequence[str]) -> dict[str, Any]:
                 "litellm_params": {
                     "model": openai_backend_model(name),
                     "api_key": "os.environ/OPENAI_API_KEY",
+                    "timeout": GATEWAY_REQUEST_TIMEOUT_S,
                 },
                 # GPT-5.6 tool use with active reasoning is supported through
                 # OpenAI's Responses API, not Chat Completions.
@@ -167,6 +174,7 @@ def openai_litellm_config(model_names: Sequence[str]) -> dict[str, Any]:
             }
             for name in seen
         ],
+        "litellm_settings": {"request_timeout": GATEWAY_REQUEST_TIMEOUT_S},
         "general_settings": {"master_key": "os.environ/LITELLM_MASTER_KEY"},
     }
 
@@ -242,7 +250,15 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
         self.auth_token = secrets.token_hex(16)
         self.port = _free_loopback_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
+        self.log_path = work_dir / "litellm.log"
         self._process: subprocess.Popen[bytes] | None = None
+        self._log: Any = None
+
+    def log_tail(self, limit: int = 1000) -> str:
+        try:
+            return self.log_path.read_bytes()[-limit:].decode(errors="replace")
+        except OSError:
+            return ""
 
     def __enter__(self) -> OpenAIGateway:
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +272,12 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
             "OPENAI_API_KEY": self.openai_api_key,
             "LITELLM_MASTER_KEY": self.auth_token,
         }
+        # Never hand the proxy a pipe: nothing drains it after startup, so the
+        # proxy would block forever once its request logs fill the 64 KiB pipe
+        # buffer, and every later session request would hang without a status.
         try:
+            self._log = self.log_path.open("wb")
+            self.log_path.chmod(0o600)
             self._process = subprocess.Popen(
                 litellm_proxy_argv(
                     config=config,
@@ -266,11 +287,12 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
                 cwd=str(self.work_dir),
                 env=env,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stdout=self._log,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
         except OSError as exc:
+            self.close()
             raise RuntimeError(f"failed to start the OpenAI LiteLLM gateway: {exc}") from exc
         try:
             self._wait_until_ready()
@@ -285,14 +307,18 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
     def close(self) -> None:
         process = self._process
         self._process = None
-        if process is None or process.poll() is not None:
-            return
-        process.terminate()
         try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=5)
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        finally:
+            log, self._log = self._log, None
+            if log is not None:
+                log.close()
 
     def _wait_until_ready(self) -> None:
         deadline = time.monotonic() + self.ready_timeout_s
@@ -304,10 +330,7 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
         while time.monotonic() < deadline:
             process = self._process
             if process is not None and process.poll() is not None:
-                stderr = b""
-                if process.stderr is not None:
-                    stderr = process.stderr.read() or b""
-                detail = stderr.decode(errors="replace")[-1000:]
+                detail = self.log_tail()
                 raise RuntimeError(
                     "OpenAI LiteLLM gateway exited before becoming ready"
                     + (f": {detail}" if detail else "")

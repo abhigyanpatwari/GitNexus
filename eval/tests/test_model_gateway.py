@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+from unittest import mock
 
 import pytest
 import yaml
 
 from workflow_bench.model_gateway import (
+    GATEWAY_REQUEST_TIMEOUT_S,
+    OpenAIGateway,
     anthropic_api_key_from_environ,
     claude_gateway_model_env,
     credential_secrets,
@@ -45,6 +49,8 @@ def test_openai_litellm_config_routes_each_id_to_openai_and_env_key(tmp_path: Pa
     assert config["model_list"][1]["litellm_params"]["model"] == "openai/gpt-4.1-mini"
     assert all(row["litellm_params"]["api_key"] == "os.environ/OPENAI_API_KEY" for row in config["model_list"])
     assert all(row["model_info"] == {"mode": "responses"} for row in config["model_list"])
+    assert all(row["litellm_params"]["timeout"] == GATEWAY_REQUEST_TIMEOUT_S for row in config["model_list"])
+    assert config["litellm_settings"]["request_timeout"] == GATEWAY_REQUEST_TIMEOUT_S
     path = write_openai_litellm_config(tmp_path / "litellm.yaml", ["gpt-4.1"])
     assert yaml.safe_load(path.read_text())["model_list"][0]["model_name"] == "gpt-4.1"
     assert path.stat().st_mode & 0o777 == 0o600
@@ -106,6 +112,33 @@ def test_claude_gateway_aliases_pin_every_internal_tier_to_the_session_model() -
     assert env["ANTHROPIC_MODEL"] == "gpt-4.1"
     assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "gpt-4.1"
     assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "gpt-4.1"
+    # High-effort reasoning outlives Claude Code's default client timeout.
+    assert env["API_TIMEOUT_MS"] == str(GATEWAY_REQUEST_TIMEOUT_S * 1000)
+
+
+def test_openai_gateway_never_leaves_proxy_output_on_an_undrained_pipe(tmp_path: Path) -> None:
+    # Nothing reads the proxy's output after startup, so a pipe would block the
+    # proxy once its request logs filled the buffer and hang every session.
+    gateway = OpenAIGateway(
+        openai_api_key="sk-openai-secret",
+        model_names=["gpt-4.1"],
+        work_dir=tmp_path / "gw",
+        ready_timeout_s=0.1,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_popen(argv, **kwargs):
+        captured.update(kwargs)
+        raise OSError("no proxy in this test")
+
+    with mock.patch.object(subprocess, "Popen", fake_popen):
+        with pytest.raises(RuntimeError, match="failed to start the OpenAI LiteLLM gateway"):
+            gateway.__enter__()
+
+    assert captured["stderr"] is subprocess.STDOUT
+    assert captured["stdout"] is not subprocess.PIPE
+    assert getattr(captured["stdout"], "name", "") == str(gateway.log_path)
+    assert gateway.log_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_runner_environment_does_not_forward_the_openai_key() -> None:
