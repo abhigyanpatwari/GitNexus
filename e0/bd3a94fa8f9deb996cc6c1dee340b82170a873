@@ -1,0 +1,31 @@
+gitnexus/test/integration/resolvers/go-external-test-package.test.ts
+  s_8e9d9d172b6358::t_2a9ef3c2cd00ba 1-145
+gitnexus/test/unit/scope-resolution/go/go-test-file-siblings.test.ts
+  s_2fc6857ad45390::t_efad5ecd050a46 1-147
+gitnexus/src/core/ingestion/languages/go/package-siblings.ts
+  s_2fc6857ad45390::t_3c5bcaba2b25ab 13-42,49-50,55-67,72-79,82,92-102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "e0bd3a94fa8f9deb996cc6c1dee340b82170a873",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_8e9d9d172b6358": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-af4e3dde1128f9b34",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
