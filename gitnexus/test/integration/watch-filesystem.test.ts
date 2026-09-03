@@ -11,10 +11,10 @@ const loops: WatchFileLoop[] = [];
 
 // Busy CI runners can delay real filesystem watcher events (chokidar's
 // awaitWriteFinish polling plus scheduler contention) well past what a quiet
-// local machine sees. Budget more time under CI, matching the pattern used
-// by other timing-sensitive integration tests in this suite. Some tests
-// chain several waitFor calls, so also raise the per-test timeout to give
-// the full chain room under the larger per-call budget.
+// local machine sees. Budget more time under CI, matching FIRST_FRAME_BUDGET_MS
+// in mcp/server-startup.test.ts (15s/5s). Two tests chain five waitFor calls
+// (worst case 75s of waits), so the per-test ceiling is 90s under CI to leave
+// headroom for setup — a chain that hits it fails as a generic vitest timeout.
 const DEFAULT_WAIT_FOR_TIMEOUT_MS = process.env.CI ? 15_000 : 5_000;
 const TEST_TIMEOUT_MS = process.env.CI ? 90_000 : 30_000;
 
@@ -22,9 +22,14 @@ async function waitFor(
   predicate: () => boolean,
   timeoutMs = DEFAULT_WAIT_FOR_TIMEOUT_MS,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
   while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('timed out waiting for watcher event');
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `timed out waiting for watcher event after ${timeoutMs}ms (elapsed ${Date.now() - startedAt}ms)`,
+      );
+    }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
