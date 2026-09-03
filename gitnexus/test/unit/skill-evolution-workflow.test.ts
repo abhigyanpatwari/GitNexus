@@ -238,6 +238,23 @@ describe('gitnexus skill-evolution workflow contract', () => {
     expect(seed).toContain('break');
   });
 
+  it('lets a dispatch start from a blank slate while the schedule always seeds', () => {
+    // Evidence from a run whose harness leaked the hidden oracles cannot be
+    // trusted, and the staged prior proposal is what carries that taint into
+    // every later generation. Without an opt-out the only remedy is waiting
+    // for the tainted artifact to expire.
+    const triggers = (workflowDocument as { on?: Record<string, unknown> }).on;
+    const inputs = (triggers?.workflow_dispatch as { inputs?: Record<string, unknown> } | undefined)
+      ?.inputs;
+    const input = inputs?.seed_from_previous as { type?: string; default?: unknown } | undefined;
+    expect(input?.type).toBe('boolean');
+    expect(input?.default).toBe(true);
+
+    const condition = findStep("Seed the proposer with the previous run's evidence")?.if;
+    expect(condition).toContain("github.event_name != 'workflow_dispatch'");
+    expect(condition).toContain('inputs.seed_from_previous');
+  });
+
   it('bounds the best-effort seed walk well inside the job budget', () => {
     // Every iteration blocks on a network download this job does not control,
     // and the job-level timeout CANCELS rather than fails — which skips the
