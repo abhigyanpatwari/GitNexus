@@ -577,6 +577,7 @@ def run_proposer(
     proposal_path: Path,
     evidence_bundle: Path,
     bwrap_bin: Path,
+    progress_label: str | None = None,
 ) -> dict[str, Any]:
     """Run one proposer in confinement and copy only validated outputs out."""
 
@@ -626,6 +627,7 @@ def run_proposer(
                     disable_slash_commands=True,
                     transcript_projects=sandbox.transcript_projects,
                     transcript_cwd=Path("/workspace"),
+                    progress_label=progress_label or "proposer",
                 )
             if not record["ok"]:
                 return record
@@ -1202,6 +1204,7 @@ def _run_generations(
                     proposal_path=gen_dir / "proposal.md",
                     evidence_bundle=bundle,
                     bwrap_bin=bwrap_bin,
+                    progress_label=f"gen {generation} proposer",
                 )
             # Redact any API token echoed into the session record (e.g. an
             # error_detail stderr_tail) before it enters the uploaded artifact.

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
 import os
 import re
 import stat
+import sys
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
@@ -45,6 +48,147 @@ SESSION_TIMEOUT_SECONDS = 5400
 # evidence preflight (evolve._transcript_artifact_metadata) validates against
 # this exact value, so producer and consumer stay pinned to one schema.
 PARENT_EVENT_STREAM_SOURCE = "parent-captured-stream-json"
+# Progress reporting only. A session can work quietly for many minutes, so the
+# reporter also speaks up on its own to distinguish "thinking" from "wedged".
+PROGRESS_HEARTBEAT_SECONDS = 60.0
+MAX_PROGRESS_LINE_BYTES = 1024 * 1024
+_SAFE_TOOL_NAME = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+
+
+def _safe_tool_name(value: Any) -> str:
+    """A tool name is an identifier; anything else is treated as content."""
+
+    match = _SAFE_TOOL_NAME.fullmatch(value.strip()) if isinstance(value, str) else None
+    return match.group(0) if match else "tool"
+
+
+class SessionProgress:
+    """Narrate a live Claude session without ever echoing its output.
+
+    A session's stdout is evidence: it is redacted before anything is written
+    out, so it can never be streamed to the log. This reports only what the
+    parent can derive safely — turn counts, tool names, API retries, and how
+    long the session has been quiet — which is what tells a watcher whether a
+    long run is working or stuck.
+    """
+
+    def __init__(
+        self,
+        label: str,
+        *,
+        stream: Any = None,
+        heartbeat_s: float = PROGRESS_HEARTBEAT_SECONDS,
+    ) -> None:
+        self.label = label
+        self.heartbeat_s = heartbeat_s
+        # stdout, not stderr: the benchmark sweep runs as a child of the
+        # evolution loop, which echoes only the child's stdout as it arrives
+        # (run_managed(echo_stdout=True)). Its stderr surfaces as a bounded
+        # tail after the fact, which is exactly the blind spot this closes.
+        self._stream = stream if stream is not None else sys.stdout
+        self._lock = threading.Lock()
+        self._buffer = bytearray()
+        self._started = time.monotonic()
+        self._last_spoke = self._started
+        self._events = 0
+        self._turns = 0
+        self._tools = 0
+        self._last_activity = "starting"
+        self._timer: threading.Thread | None = None
+        self._done = threading.Event()
+
+    def __enter__(self) -> SessionProgress:
+        self._say(f"started (heartbeat every {self.heartbeat_s:g}s)")
+        self._timer = threading.Thread(target=self._heartbeat, daemon=True)
+        self._timer.start()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._done.set()
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.join(timeout=2)
+
+    def _elapsed(self) -> str:
+        seconds = int(time.monotonic() - self._started)
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+
+    def _say(self, message: str) -> None:
+        try:
+            print(f"[{self.label} {self._elapsed()}] {message}", file=self._stream, flush=True)
+        except (OSError, ValueError):
+            return
+        self._last_spoke = time.monotonic()
+
+    def _heartbeat(self) -> None:
+        tick = min(1.0, max(self.heartbeat_s / 2, 0.01))
+        while not self._done.wait(tick):
+            with self._lock:
+                quiet = time.monotonic() - self._last_spoke
+                if quiet < self.heartbeat_s:
+                    continue
+                self._say(
+                    f"still running · {self._events} events · {self._turns} turns · "
+                    f"{self._tools} tool calls · last: {self._last_activity}"
+                )
+
+    def observe(self, chunk: bytes) -> None:
+        """Consume one stdout chunk. Never raises; never blocks on I/O."""
+
+        with self._lock:
+            self._buffer.extend(chunk)
+            # Bound the partial line: a single enormous event must not grow the
+            # buffer without limit just because it has no newline yet.
+            if len(self._buffer) > MAX_PROGRESS_LINE_BYTES:
+                del self._buffer[:-MAX_PROGRESS_LINE_BYTES]
+            while (newline := self._buffer.find(b"\n")) >= 0:
+                line = bytes(self._buffer[:newline])
+                del self._buffer[: newline + 1]
+                self._observe_line(line)
+
+    def _observe_line(self, line: bytes) -> None:
+        if not line.strip():
+            return
+        try:
+            event = json.loads(line.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(event, dict):
+            return
+        self._events += 1
+        kind = event.get("type")
+        if kind == "assistant":
+            self._turns += 1
+            names = [
+                _safe_tool_name(block.get("name"))
+                for block in _event_content(event)
+                if isinstance(block, dict) and block.get("type") == "tool_use"
+            ]
+            if names:
+                self._tools += len(names)
+                self._last_activity = ", ".join(names[:4])
+                self._say(f"turn {self._turns} · {self._last_activity}")
+            else:
+                self._last_activity = "model reply"
+        elif kind == "system" and event.get("subtype") == "api_retry":
+            # The signature of the gateway wedging: say it loudly and at once.
+            attempt = event.get("attempt")
+            limit = event.get("max_retries")
+            delay = event.get("retry_delay_ms")
+            wait = f" in {float(delay) / 1000:.0f}s" if isinstance(delay, (int, float)) else ""
+            self._last_activity = f"API retry {attempt}/{limit}"
+            self._say(f"API retry {attempt}/{limit}{wait} — no response from the model endpoint")
+        elif kind == "system" and event.get("subtype") == "init":
+            self._last_activity = "session init"
+            self._say("session initialized")
+        elif kind == "result":
+            cost = event.get("total_cost_usd")
+            self._last_activity = "result"
+            self._say(
+                f"finished · {event.get('num_turns', 0)} turns · "
+                f"{'error' if event.get('is_error') else 'ok'}"
+                + (f" · ${float(cost):.2f}" if isinstance(cost, (int, float)) else "")
+            )
 
 
 def measured_cost(raw: Any) -> float | None:
@@ -374,6 +518,7 @@ def run_claude(
     transcript_output_prefix: str | None = None,
     transcript_secrets: tuple[str, ...] = (),
     plugin_dirs: Sequence[str] = (),
+    progress_label: str | None = None,
 ) -> dict[str, Any]:
     """Run one headless session and return its usage record."""
 
@@ -420,15 +565,18 @@ def run_claude(
         cmd += ["--disallowedTools", tool]
     managed_cmd = [*(command_prefix or []), *cmd]
     started = time.monotonic()
-    proc = run_managed(
-        managed_cmd,
-        cwd=None if command_prefix else cwd,
-        timeout=timeout,
-        env=env,
-        require_pid_namespace=require_pid_namespace,
-        stdin_data=prompt.encode(),
-        capture_stdout_bytes=MAX_TRANSCRIPT_BYTES,
-    )
+    with contextlib.ExitStack() as progress_stack:
+        progress = progress_stack.enter_context(SessionProgress(progress_label)) if progress_label else None
+        proc = run_managed(
+            managed_cmd,
+            cwd=None if command_prefix else cwd,
+            timeout=timeout,
+            env=env,
+            require_pid_namespace=require_pid_namespace,
+            stdin_data=prompt.encode(),
+            capture_stdout_bytes=MAX_TRANSCRIPT_BYTES,
+            stdout_observer=progress.observe if progress is not None else None,
+        )
     wall_s = time.monotonic() - started
     event_stream_error: str | None = None
     events: list[dict[str, Any]] = []

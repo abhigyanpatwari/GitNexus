@@ -425,7 +425,9 @@ def run_arm(
     # rely on ANTHROPIC_API_KEY alone (the sandboxed HOME has no OAuth/
     # keychain state to conflict with it).
     bare = arm == "baseline_nomcp"
+    progress_label = transcript_output_prefix or f"{task.get('id', 'task')}-{arm}"
     common = {
+        "progress_label": progress_label,
         "claude_bin": sandbox.claude_bin,
         "timeout": args.timeout,
         "model": args.model,
@@ -460,7 +462,11 @@ def run_arm(
             plan_prompt.format(task=task["prompt"]),
             worktree,
             expected_skill=expected_skills[0],
-            **{**common, "allowed_tools": allowed_agent_tools(implementation=False)},
+            **{
+                **common,
+                "progress_label": f"{progress_label} plan",
+                "allowed_tools": allowed_agent_tools(implementation=False),
+            },
         )
         sessions.append(plan_session)
         if plan_session["ok"]:
@@ -487,7 +493,11 @@ def run_arm(
                     work_prompt.format(plan=plan_doc.relative_to(worktree)),
                     worktree,
                     expected_skill=expected_skills[1],
-                    **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
+                    **{
+                        **common,
+                        "progress_label": f"{progress_label} work",
+                        "allowed_tools": allowed_agent_tools(implementation=True),
+                    },
                 )
                 _require_implementation_fingerprint(
                     work_session,
