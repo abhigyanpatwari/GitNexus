@@ -31,6 +31,11 @@ export interface LuaReturnedField {
   readonly localName: string;
 }
 
+export interface LuaCallableAlias {
+  readonly destination: string;
+  readonly source: string;
+}
+
 export interface LuaCaptureSideChannel {
   readonly kind: 'lua';
   readonly extendsPairs: readonly LuaExtendsPair[];
@@ -39,6 +44,8 @@ export interface LuaCaptureSideChannel {
   readonly returnedNames: readonly string[];
   /** Static fields returned from a table literal, e.g. `{ Animal = Animal }`. */
   readonly returnedFields: readonly LuaReturnedField[];
+  /** Module-level static callable aliases, e.g. `local f = util.answer`. */
+  readonly callableAliases: readonly LuaCallableAlias[];
 }
 
 const _facts = new Map<string, LuaCaptureSideChannel>();
@@ -48,9 +55,7 @@ export function setLuaHeritageFacts(filePath: string, facts: LuaCaptureSideChann
   _facts.set(filePath, facts);
 }
 
-/** Snapshot hook for `LanguageProvider.collectCaptureSideChannel`. Returns
- *  `undefined` when no heritage pairs were collected (no middleclass in the
- *  file), so the field is omitted from the ParsedFile. */
+/** Snapshot hook for `LanguageProvider.collectCaptureSideChannel`. */
 export function collectLuaCaptureSideChannel(filePath: string): LuaCaptureSideChannel | undefined {
   return _facts.get(filePath);
 }

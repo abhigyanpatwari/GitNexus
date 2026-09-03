@@ -675,6 +675,126 @@ return Dog
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 60000);
+
+  it('resolves middleclass __base calls to the immediate parent method', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-base-call-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'base.lua': `local Animal = class("Animal")
+function Animal:speak()
+  return "animal"
+end
+return Animal
+`,
+        'dog.lua': `local Base = require("base")
+local Dog = class("Dog", Base)
+function Dog:speak()
+  return Dog.__base.speak(self)
+end
+Dog.speak()
+return Dog
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const calls = getRelationships(result, 'CALLS');
+      expect(
+        calls.some(
+          (edge) =>
+            edge.source === 'speak' &&
+            edge.sourceFilePath?.endsWith('dog.lua') &&
+            edge.target === 'speak' &&
+            edge.targetFilePath?.endsWith('base.lua'),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('resolves a bounded module-level callable alias chain', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-callable-alias-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'util.lua': `function answer()
+  return 42
+end
+return { answer = answer }
+`,
+        'main.lua': `local util = require("util")
+local first = util.answer
+local second = first
+second()
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const calls = getRelationships(result, 'CALLS');
+      expect(
+        calls.some(
+          (edge) =>
+            edge.sourceFilePath?.endsWith('main.lua') &&
+            edge.target === 'answer' &&
+            edge.targetFilePath?.endsWith('util.lua'),
+        ),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('fails closed for callable alias cycles, dynamic keys, and factory results', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-callable-alias-negative-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'util.lua': `function answer()
+  return 42
+end
+return { answer = answer }
+`,
+        'main.lua': `local util = require("util")
+local a = b
+local b = a
+a()
+local key = "answer"
+local dynamic = util[key]
+dynamic()
+local made = factory()
+made()
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const calls = getRelationships(result, 'CALLS');
+      expect(
+        calls.some(
+          (edge) =>
+            edge.sourceFilePath?.endsWith('main.lua') &&
+            edge.target === 'answer' &&
+            edge.targetFilePath?.endsWith('util.lua'),
+        ),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
+
+  it('does not synthesize partial classes for constructor aliases or 30log-style calls', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lua-scope-class-alias-negative-'));
+    try {
+      writeFixtureRepo(tmpDir, {
+        'middleclass.lua': 'return function(name, parent) return {} end\n',
+        '30log.lua': 'return function(name, parent) return {} end\n',
+        'main.lua': `local mc = require("middleclass")
+local log = require("30log")
+local Dog = mc("Dog")
+local Cat = log("Cat")
+`,
+      });
+      const result = await runPipelineFromRepo(tmpDir, () => {});
+      const classes = getNodesByLabel(result, 'Class');
+      expect(classes.some((node) => node.name === 'Dog' || node.name === 'Cat')).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 60000);
 });
 
 // ---------------------------------------------------------------------------
