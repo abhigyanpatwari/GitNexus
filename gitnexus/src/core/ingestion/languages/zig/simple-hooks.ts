@@ -134,12 +134,17 @@ export function zigMergeBindings(
 ): BindingRef[] {
   const all = [...existing, ...incoming];
   if (all.length === 0) return [];
-  const bestTier = Math.min(...all.map((b) => TIER[b.origin] ?? 99));
-  const seen = new Set<string>();
-  return all
-    .filter((b) => (TIER[b.origin] ?? 99) === bestTier)
-    .sort((a, b) => a.def.nodeId.localeCompare(b.def.nodeId))
-    .filter((b) => !seen.has(b.def.nodeId) && (seen.add(b.def.nodeId), true));
+  let bestTier = 99;
+  for (const b of all) {
+    const t = TIER[b.origin] ?? 99;
+    if (t < bestTier) bestTier = t;
+  }
+  const byNode = new Map<string, BindingRef>();
+  for (const b of all) {
+    if ((TIER[b.origin] ?? 99) !== bestTier) continue;
+    if (!byNode.has(b.def.nodeId)) byNode.set(b.def.nodeId, b);
+  }
+  return [...byNode.values()].sort((a, b) => a.def.nodeId.localeCompare(b.def.nodeId));
 }
 
 /** Zig has no overloading; without synthesized arity metadata on

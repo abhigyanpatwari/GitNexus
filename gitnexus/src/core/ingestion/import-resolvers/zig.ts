@@ -83,15 +83,13 @@ function resolveThroughBuildModules(
   modules: readonly ZigBuildModule[],
 ): string | null | undefined {
   const targets = new Set<string>();
-  let bound = false;
   for (const mod of zigModulesContaining(currentFile, modules)) {
     const target = mod.imports.get(importPath);
     if (target === undefined) continue;
-    bound = true;
     if (!allFiles.has(target)) return null;
     targets.add(target);
   }
-  if (targets.size === 0) return bound ? null : undefined;
+  if (targets.size === 0) return undefined;
   if (targets.size > 1) return null;
   return targets.values().next().value ?? null;
 }

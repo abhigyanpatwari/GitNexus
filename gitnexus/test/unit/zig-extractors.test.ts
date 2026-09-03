@@ -10,8 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import Parser from 'tree-sitter';
-import { SupportedLanguages } from 'gitnexus-shared';
-import type { BindingRef, SymbolDefinition } from 'gitnexus-shared';
+import { SupportedLanguages, type BindingRef, type SymbolDefinition } from 'gitnexus-shared';
 import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { zigExportChecker } from '../../src/core/ingestion/export-detection.js';

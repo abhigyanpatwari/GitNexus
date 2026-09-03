@@ -886,7 +886,6 @@ export function parseZigBuildModules(
 ): ZigBuildModule[] {
   const text = stripZonComments(buildZig);
   const mask = zonStringMask(text);
-  const staticRoot = (args: string): string | null => zigTopLevelStaticRoot(args);
 
   // Pass 1 — modules and the identifiers bound to them. `at` is the offset
   // of the call's name token, so an inline `.root_module = b.createModule(…)`
@@ -919,7 +918,7 @@ export function parseZigBuildModules(
     const args = text.slice(argsStart, argsEnd);
     const kind = m[1]!;
     if (kind === 'addModule' || kind === 'createModule') {
-      const root = staticRoot(args);
+      const root = zigTopLevelStaticRoot(args);
       if (root === null) continue;
       const nameMatch = kind === 'addModule' ? /^\s*"([^"\n]+)"\s*,/.exec(args) : null;
       drafts.push({
@@ -955,7 +954,7 @@ export function parseZigBuildModules(
       }
       continue;
     }
-    const root = staticRoot(args);
+    const root = zigTopLevelStaticRoot(args);
     if (root === null) continue;
     drafts.push({ root, at: m.index, argsStart, argsEnd, imports: new Map() });
     bind(m.index, drafts.length - 1);
@@ -1044,25 +1043,25 @@ export function parseZigBuildModules(
 /** First `.root_source_file = b.path("….zig")` at the TOP level of a
  *  module-options `.{ … }` — not a nested `.imports = &.{ .{ … } }` entry. */
 function zigTopLevelStaticRoot(args: string): string | null {
-  const structAt = args.indexOf('.{');
-  const haystack = structAt >= 0 ? args.slice(structAt) : args;
-  let depth = 0;
-  for (let i = 0; i < haystack.length; i++) {
-    const ch = haystack[i];
-    if (ch === '{') depth++;
-    else if (ch === '}') {
-      depth--;
-      if (depth <= 0) break;
-    } else if (depth === 1 && haystack.startsWith('.root_source_file', i)) {
-      const match = /^\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/.exec(
-        haystack.slice(i),
-      );
-      if (match === null) continue;
-      const root = normalizeZigDepPath(match[1]!);
-      return root === null || root === '' || !root.endsWith('.zig') ? null : root;
+  const mask = zonStringMask(args);
+  let structAt = -1;
+  for (let i = 0; i < args.length - 1; i++) {
+    if (mask[i] !== 0) continue;
+    if (args[i] === '.' && args[i + 1] === '{') {
+      structAt = i;
+      break;
     }
   }
-  return null;
+  if (structAt < 0) return null;
+  const bodyStart = structAt + 2;
+  const bodyEnd = findZonBlockEnd(args, bodyStart);
+  if (bodyEnd < 0) return null;
+  const match = /\.root_source_file\s*=\s*b\.path\(\s*"([^"\n]+)"\s*\)/.exec(
+    zonBlankNestedBlocks(args.slice(bodyStart, bodyEnd)),
+  );
+  if (match === null) return null;
+  const root = normalizeZigDepPath(match[1]!);
+  return root === null || root === '' || !root.endsWith('.zig') ? null : root;
 }
 
 /** `const m = b.createModule` / `const m = b.addModule` — not `config.createModule`. */
