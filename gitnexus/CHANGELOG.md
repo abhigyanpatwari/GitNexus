@@ -74,6 +74,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ### Fixed
 
+- Scope resolution: the global unique-name call fallback now emits its edges as `global-name-fallback` at confidence 0.5 (they were published as `import-resolved` @ 0.85, indistinguishable from real resolution), refuses edges the language makes impossible (Go unexported names across packages, non-`pub` Rust items, Swift `private`/`fileprivate`, Dart `_private` across libraries, Ruby class-owned methods without any namespace evidence), and excludes the class from process and community detection. `export *` fan-out and TS/JS/Vue named imports bind module-level declarations only (a class method can no longer win a barrel name); two `export *` sources publishing the same name are refused and recorded as `reexport-ambiguous`. Each run logs and persists a census (`nameFallbackEdges`).
+- Go: `_test.go` files join their package's sibling table, so same-package calls from tests resolve directly instead of falling to the global fallback (on grafana: 4,857 guesses → 7).
+- Node workspaces: nested workspace roots are discovered (gated by the outer scope), package entries are found from `source`/`publishConfig`/vite `lib.entry`/`src/main`/`src/index` when `main`/`exports` point at build output, a package whose `exports` map has no `"."` no longer receives a fabricated root entry, and the workspace scan is deterministic (sorted) and memoised per run.
+
 - **`group sync` stops claiming matching it never did** — the advertised BM25/embedding cascade was config, help text and MCP schema with no matcher behind it; the unread `matching.bm25_threshold`, `matching.embedding_threshold`, `detect.embedding_fallback` and `--skip-embeddings` surfaces are removed (#3020)
 - **Emitted Next.js build output is ignored during ingestion**, and the inert `public/build` entry is deleted (#3018)
 - **NestJS decorator routes are indexed** so `api_impact` and `route_map` stop reporting live endpoints as non-existent (#3017)
