@@ -38,6 +38,7 @@ const workflowDocument = load(workflow) as {
         uses?: string;
         'timeout-minutes'?: unknown;
         with?: Record<string, unknown>;
+        env?: Record<string, string>;
       }>;
     }
   >;
@@ -203,17 +204,14 @@ function runSeedStep(ghImplementation: string): {
 describe('gitnexus skill-evolution workflow contract', () => {
   it('applies gate-passing overlays so the promotion-PR path is reachable', () => {
     const loop = stepRun('Run the propose → benchmark → gate loop');
-    expect(loop).toContain('python -m workflow_bench.evolve');
-    // Without --apply the overlay is never written, git status stays clean,
-    // promoted=false is emitted, and the App-token/PR steps are dead code.
-    expect(loop).toContain('--apply');
+    expect(loop).toContain('./workflow_bench/run-evolution.sh --apply');
+    expect(loop).not.toContain('python -m workflow_bench.evolve');
   });
 
   it('passes the cell concurrency through to the benchmark', () => {
     // The lane is serial unless told otherwise: concurrency only pays off when
     // the runner has the vCPUs for it, and a cell starved of CPU drifts toward
     // its session timeout, which the gate counts as an excluded run.
-    expect(stepRun('Run the propose → benchmark → gate loop')).toContain('--workers "${WORKERS}"');
     expect(evolveJob?.env?.WORKERS).toBe(
       "${{ inputs.workers || vars.GITNEXUS_EVOLUTION_WORKERS || '1' }}",
     );
@@ -346,12 +344,25 @@ exit 1`);
     },
   );
 
+  it('accepts an OpenAI key as an alternative to the Anthropic token', () => {
+    const requireAuth = stepRun('Require the benchmark auth secret');
+    expect(requireAuth).toContain('HAS_ANTHROPIC');
+    expect(requireAuth).toContain('GITNEXUS_BENCH_ANTHROPIC_API_KEY');
+    expect(requireAuth).toContain('GITNEXUS_BENCH_OPENAI_API_KEY');
+    expect(requireAuth).toContain('provider=openai');
+    expect(evolveJob?.env?.PROVIDER).toBe("${{ inputs.provider || 'openai' }}");
+    const loop = findStep('Run the propose → benchmark → gate loop');
+    expect(loop?.env).toMatchObject({
+      GITNEXUS_BENCH_ANTHROPIC_API_KEY:
+        '${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY || secrets.GITNEXUS_BENCH_AUTH_TOKEN }}',
+      GITNEXUS_BENCH_OPENAI_API_KEY: '${{ secrets.GITNEXUS_BENCH_OPENAI_API_KEY }}',
+    });
+  });
+
   it('runs the proposer on its own model, separate from the benchmark arms', () => {
-    const loop = stepRun('Run the propose → benchmark → gate loop');
-    // The benchmark arms match the production model; the proposer/diagnosis
-    // session gets its own (stronger) model — one session per generation.
-    expect(loop).toContain('--model "${MODEL}"');
-    expect(loop).toContain('--proposer-model "${PROPOSER_MODEL}"');
+    expect(evolveJob?.env?.MODEL).toBe("${{ inputs.model || 'gpt-5.6-sol' }}");
+    expect(evolveJob?.env?.PROPOSER_MODEL).toBe("${{ inputs.proposer_model || 'gpt-5.6-sol' }}");
+    expect(evolveJob?.env?.EFFORT).toBe("${{ inputs.effort || 'xhigh' }}");
   });
 
   it('provisions the benchmark task repo at ~/GitNexus before the loop', () => {

@@ -71,6 +71,7 @@ def bench_args(**overrides):
         "claude_bin": "claude",
         "timeout": 5,
         "model": None,
+        "effort": "xhigh",
         "base_url": None,
         "auth_token": None,
         "permission_mode": None,
@@ -165,6 +166,25 @@ def test_run_claude_forwards_the_named_model_to_every_session(monkeypatch, tmp_p
         model="claude-sonnet-4-20250514",
     )
     assert captured[captured.index("--model") + 1] == "claude-sonnet-4-20250514"
+
+
+def test_run_claude_forwards_xhigh_effort_to_every_session(monkeypatch, tmp_path):
+    captured: list[str] = []
+
+    def fake_run(command, **kwargs):
+        captured.extend(command)
+        return fake_cli_result(VALID_REPORT)
+
+    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
+    runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        model="gpt-5.6-sol",
+        effort="xhigh",
+    )
+    assert captured[captured.index("--effort") + 1] == "xhigh"
 
 
 def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp_path):

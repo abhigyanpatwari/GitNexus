@@ -47,6 +47,14 @@ import yaml
 
 from . import runner
 from . import runner_sessions
+from .model_gateway import (
+    ANTHROPIC_API_KEY_ENV,
+    attach_openai_gateway,
+    anthropic_api_key_from_environ,
+    credential_secrets,
+    model_session_environment,
+    openai_api_key_from_environ,
+)
 from .evolution import (
     ARM_SKILLS,
     CANDIDATE_ARMS,
@@ -542,9 +550,12 @@ def run_proposer(
                     claude_bin=sandbox.claude_bin,
                     timeout=args.timeout,
                     model=args.proposer_model,
-                    env=build_sandbox_environment(
+                    effort=args.effort,
+                    env=model_session_environment(
                         auth_token=args.auth_token,
                         base_url=args.base_url,
+                        model=args.proposer_model,
+                        build_sandbox_environment=build_sandbox_environment,
                     ),
                     # No permission_mode: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
                     # forces "default", so requesting dontAsk only warns. Tools
@@ -669,6 +680,8 @@ def runner_argv(
         str(args.workers),
         "--model",
         args.model,
+        "--effort",
+        args.effort,
         "--claude-bin",
         args.claude_bin,
         "--timeout",
@@ -716,7 +729,7 @@ def runner_environment(args: argparse.Namespace) -> dict[str, str]:
         "PYTHONUNBUFFERED": "1",
     }
     if args.auth_token:
-        env["GITNEXUS_BENCH_AUTH_TOKEN"] = args.auth_token
+        env[ANTHROPIC_API_KEY_ENV] = args.auth_token
     return env
 
 
@@ -728,7 +741,7 @@ def redacted_failure(args: argparse.Namespace, text: str) -> str:
     printed copy has to clear the same bar as the uploaded artifact.
     """
 
-    return redact_text(text, [args.auth_token or ""])
+    return redact_text(text, credential_secrets(args))
 
 
 def validate_promotion_for_apply(
@@ -737,6 +750,7 @@ def validate_promotion_for_apply(
     overlay_digest: str,
     benchmark_model: str,
     proposer_model: str | None,
+    effort: str,
     selected_tasks: list[dict[str, Any]],
     target_base_digests: dict[str, str],
     required_candidate_arms: list[str],
@@ -744,7 +758,7 @@ def validate_promotion_for_apply(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Require one complete, current, exact evidence binding before apply."""
-    if promotion.get("schema_version") != 4:
+    if promotion.get("schema_version") != 5:
         raise ValueError("promotion binding uses an unsupported schema")
     sha256_pattern = re.compile(r"[0-9a-f]{64}")
     if not selected_tasks:
@@ -779,6 +793,7 @@ def validate_promotion_for_apply(
     expected_bindings = {
         "benchmark_model": benchmark_model,
         "proposer_model": proposer_model,
+        "effort": effort,
         "candidate_origin": "model-proposer" if proposer_model is not None else "manual-initial-overlay",
         "candidate_overlay_digest": overlay_digest,
         "required_candidate_arms": required_candidate_arms,
@@ -947,6 +962,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-root", type=Path, default=None)
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument(
+        "--effort",
+        choices=("low", "medium", "high", "xhigh", "max"),
+        default="xhigh",
+        help="reasoning effort for proposer and benchmark sessions",
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=runner_sessions.SESSION_TIMEOUT_SECONDS,
@@ -954,9 +975,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--base-url", default=None)
     parser.add_argument(
+        "--anthropic-api-key",
         "--auth-token",
-        default=os.environ.get("GITNEXUS_BENCH_AUTH_TOKEN"),
-        help="explicit API key for bare Claude sessions (prefer GITNEXUS_BENCH_AUTH_TOKEN env)",
+        dest="auth_token",
+        default=anthropic_api_key_from_environ(),
+        help="Anthropic API key for Claude Code sessions (prefer "
+        "GITNEXUS_BENCH_ANTHROPIC_API_KEY). Not a Claude Code OAuth token. "
+        "Legacy --auth-token / GITNEXUS_BENCH_AUTH_TOKEN is still accepted.",
+    )
+    parser.add_argument(
+        "--openai-api-key",
+        default=openai_api_key_from_environ(),
+        help="OpenAI API key; starts a loopback Anthropic-compatible proxy "
+        "(prefer GITNEXUS_BENCH_OPENAI_API_KEY). The key never enters the sandbox.",
     )
     parser.add_argument("--promotion-metric", default="cost_usd")
     parser.add_argument("--promotion-min-runs", type=int, default=3)
@@ -1002,6 +1033,43 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
     selected_tasks = runner.selected_task_bindings(selected_task_rows)
+    try:
+        bwrap_bin = preflight_bubblewrap()
+        require_claude_sandbox_helpers()
+    except SandboxError as exc:
+        parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
+
+    gateway = attach_openai_gateway(args)
+    try:
+        gateway.__enter__()
+    except ValueError as exc:
+        parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
+    try:
+        return _run_generations(
+            args,
+            selected_task_rows=selected_task_rows,
+            skipped_expensive=skipped_expensive,
+            selected_tasks=selected_tasks,
+            requested_arms=requested_arms,
+            initial_overlay=initial_overlay,
+            bwrap_bin=bwrap_bin,
+        )
+    finally:
+        gateway.__exit__(None, None, None)
+
+
+def _run_generations(
+    args: argparse.Namespace,
+    *,
+    selected_task_rows: list[dict[str, Any]],
+    skipped_expensive: list[str],
+    selected_tasks: list[dict[str, Any]],
+    requested_arms: list[str],
+    initial_overlay: Path | None,
+    bwrap_bin: Path,
+) -> int:
     policy_binding = {
         "metric": args.promotion_metric,
         "min_runs": args.promotion_min_runs,
@@ -1010,13 +1078,6 @@ def main() -> int:
         "max_failed_task_regression_pct": MAX_FAILED_TASK_REGRESSION_PCT,
         "min_gated_task_ratio": MIN_GATED_TASK_RATIO,
     }
-    try:
-        bwrap_bin = preflight_bubblewrap()
-        require_claude_sandbox_helpers()
-    except SandboxError as exc:
-        parser.error(str(exc))
-        raise AssertionError("ArgumentParser.error() returned unexpectedly")
-
     out_root = args.out_root or Path("results") / time.strftime("wfevolve-%Y%m%d-%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)
     evidence_dir: Path | None = args.seed_results
@@ -1152,7 +1213,7 @@ def main() -> int:
             echo_stdout=True,
         )
         if not bench.ok:
-            # The sweep runs with GITNEXUS_BENCH_AUTH_TOKEN in its environment,
+            # The sweep runs with GITNEXUS_BENCH_ANTHROPIC_API_KEY in its environment,
             # so its detail/stderr tail is a token-bearing sink like any other.
             detail = redacted_failure(args, str(bench.detail or bench.stderr_tail[-1000:]))
             print(f"[gen {generation}] benchmark run failed ({bench.state}, exit {bench.returncode}): {detail}")
@@ -1167,6 +1228,7 @@ def main() -> int:
                 overlay_digest=overlay_digest,
                 benchmark_model=args.model,
                 proposer_model=generation_proposer_model,
+                effort=args.effort,
                 selected_tasks=selected_tasks,
                 target_base_digests=target_base_digests,
                 required_candidate_arms=candidate_arms,

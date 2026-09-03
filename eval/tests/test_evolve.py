@@ -503,7 +503,7 @@ def test_proposer_session_record_is_redacted_before_upload(monkeypatch, tmp_path
             "pinned-model",
             "--out-root",
             str(tmp_path / "out"),
-            "--auth-token",
+            "--anthropic-api-key",
             literal_token,
         ],
     )
@@ -572,7 +572,7 @@ def test_benchmark_failure_print_is_redacted(monkeypatch, tmp_path, capsys):
             str(tmp_path / "out"),
             "--initial-overlay",
             str(overlay),
-            "--auth-token",
+            "--anthropic-api-key",
             literal_token,
         ],
     )
@@ -583,7 +583,7 @@ def test_benchmark_failure_print_is_redacted(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(evolve, "freeze_overlay", lambda _source, _destination: "d" * 64)
     monkeypatch.setattr(evolve, "committed_destination_base_digests", lambda _overlay: {})
     monkeypatch.setattr(evolve, "destination_base_digests", lambda _overlay: {})
-    # The sweep is launched with GITNEXUS_BENCH_AUTH_TOKEN in its environment,
+    # The sweep is launched with GITNEXUS_BENCH_ANTHROPIC_API_KEY in its environment,
     # so its detail/stderr tail is as token-bearing as any session record.
     monkeypatch.setattr(
         evolve,
@@ -641,6 +641,7 @@ def test_runner_argv_pairs_each_incumbent_with_its_candidate(tmp_path):
     assert str(tmp_path / "bench") in argv
     assert "pinned" in argv
     assert argv[argv.index("--proposer-model") + 1] == "pinned"
+    assert argv[argv.index("--effort") + 1] == "xhigh"
     assert argv[argv.index("--workers") + 1] == "3"
     assert "--include-expensive" in argv
     assert json.loads(argv[argv.index("--task-bindings-json") + 1]) == task_bindings
@@ -830,7 +831,7 @@ def bound_task_fixtures():
 
 
 def promote_decision(**overrides):
-    """A schema 4 decision: a verdict plus the gated evidence base behind it."""
+    """A schema 5 decision: a verdict plus the gated evidence base behind it."""
     decision = {
         "incumbent_arm": "workflow",
         "candidate_arm": "candidate_workflow",
@@ -849,11 +850,12 @@ def promote_decision(**overrides):
 def promotion_fixture(*, decisions=None, expires_delta=timedelta(days=1)):
     now = datetime.now(UTC)
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "generated_at": now.isoformat(),
         "evidence_expires_at": (now + expires_delta).isoformat(),
         "benchmark_model": "bench-model",
         "proposer_model": "proposer-model",
+        "effort": "xhigh",
         "candidate_origin": "model-proposer",
         "candidate_overlay_digest": "digest",
         "target_base_digests": {"path": "base"},
@@ -875,6 +877,7 @@ def validate_fixture(promotion):
         overlay_digest="digest",
         benchmark_model="bench-model",
         proposer_model="proposer-model",
+        effort="xhigh",
         selected_tasks=bound_task_fixtures(),
         target_base_digests={"path": "base"},
         required_candidate_arms=["candidate_workflow"],
@@ -903,8 +906,8 @@ def test_promotion_apply_requires_one_promote_for_every_bound_arm():
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
-        # A schema 3 decision relabeled as schema 4: the verdict without the
-        # gated evidence base schema 4 promotes on.
+        # An older decision relabeled as schema 5: the verdict without the
+        # gated evidence base schema 5 promotes on.
         ({"tasks": None, "ungated_tasks": None}, "no per-task gate evidence"),
         ({"tasks": [{"task": "task-a"}]}, "malformed per-task gate evidence"),
         ({"tasks": [{"task": "task-a", "gated": "yes"}]}, "malformed per-task gate evidence"),
@@ -963,6 +966,7 @@ def test_promotion_apply_rejects_a_gate_with_only_one_of_three_selected_tasks():
             overlay_digest="digest",
             benchmark_model="bench-model",
             proposer_model="proposer-model",
+            effort="xhigh",
             selected_tasks=selected,
             target_base_digests={"path": "base"},
             required_candidate_arms=["candidate_workflow"],
@@ -980,6 +984,7 @@ def test_manual_initial_overlay_has_no_fictitious_proposer_model():
         overlay_digest="digest",
         benchmark_model="bench-model",
         proposer_model=None,
+        effort="xhigh",
         selected_tasks=bound_task_fixtures(),
         target_base_digests={"path": "base"},
         required_candidate_arms=["candidate_workflow"],
@@ -1004,6 +1009,7 @@ def test_promotion_apply_rejects_pre_oracle_schema_and_missing_oracle_bindings()
             overlay_digest="digest",
             benchmark_model="bench-model",
             proposer_model="proposer-model",
+            effort="xhigh",
             selected_tasks=[weak_task],
             target_base_digests={"path": "base"},
             required_candidate_arms=["candidate_workflow"],

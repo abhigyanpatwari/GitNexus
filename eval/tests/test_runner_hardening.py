@@ -418,6 +418,7 @@ def _cell_context(tmp_path, **overrides):
             claude_bin="claude",
             model="pinned-model",
             proposer_model=None,
+            effort="xhigh",
             auth_token=None,
         ),
         "out_dir": tmp_path / "out",

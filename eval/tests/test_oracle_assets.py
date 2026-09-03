@@ -52,6 +52,7 @@ def bench_args() -> argparse.Namespace:
         claude_bin="claude",
         timeout=5,
         model="pinned-model",
+        effort="xhigh",
         base_url=None,
         auth_token=None,
     )

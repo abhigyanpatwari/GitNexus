@@ -355,6 +355,7 @@ def run_claude(
     timeout: int,
     disallowed_tools: list[str] | None = None,
     model: str | None = None,
+    effort: str | None = None,
     env: dict[str, str] | None = None,
     permission_mode: str | None = None,
     expected_skill: str | None = None,
@@ -413,6 +414,8 @@ def run_claude(
         cmd += ["--permission-mode", permission_mode]
     if model:
         cmd += ["--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     for tool in disallowed_tools or []:
         cmd += ["--disallowedTools", tool]
     managed_cmd = [*(command_prefix or []), *cmd]

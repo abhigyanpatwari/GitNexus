@@ -36,7 +36,7 @@ lfg's gate and work's direct-mode triage should encode.
 
 ```bash
 cd eval
-export GITNEXUS_BENCH_AUTH_TOKEN="$ANTHROPIC_API_KEY"
+export GITNEXUS_BENCH_ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 uv run --locked --extra dev python -m workflow_bench.runner \
   --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
   --model claude-sonnet-4-20250514
@@ -120,10 +120,15 @@ digest. Files written beneath the agent's `$HOME` are never trusted as
 evidence.
 
 Bare mode is deliberately non-interactive: it does not consult a stored
-Claude login/keychain or `ANTHROPIC_AUTH_TOKEN`. Supply one explicit API or
-proxy key through `GITNEXUS_BENCH_AUTH_TOKEN` (preferred) or `--auth-token`;
+Claude login/keychain or `ANTHROPIC_AUTH_TOKEN`. Supply an Anthropic API key
+through `GITNEXUS_BENCH_ANTHROPIC_API_KEY` (preferred) or `--anthropic-api-key`;
 the harness maps it to `ANTHROPIC_API_KEY` only for the trusted Claude parent
-and scrubs it from agent-launched tools.
+and scrubs it from agent-launched tools. `GITNEXUS_BENCH_AUTH_TOKEN` and
+`--auth-token` remain as aliases. OpenAI keys are not a drop-in
+replacement: pass `--openai-api-key` / `GITNEXUS_BENCH_OPENAI_API_KEY` with
+`gpt-*` / `o*` / `openai/*` model ids and the harness starts a loopback
+LiteLLM proxy. The OpenAI key stays on that host process; Claude still sees
+only a minted `ANTHROPIC_API_KEY` plus `ANTHROPIC_BASE_URL`.
 
 The trusted Claude CLI still needs outbound access to the explicitly supplied
 model endpoint. This is not a network broker, so the CLI itself retains that
@@ -235,12 +240,17 @@ benchmark, apply — without moving the trust boundary:
 
 ```bash
 cd eval
-uv run --locked --extra dev python -m workflow_bench.evolve \
-  --tasks workflow_bench/tasks.scenarios.yaml \
-  --model claude-sonnet-4-20250514 --generations 2 \
-  --workers 1 \
-  --seed-results results/wfbench-<prior-run>   # optional gen-0 evidence
+./workflow_bench/run-evolution.sh                  # local; no working-tree apply
+./workflow_bench/run-evolution.sh --apply          # CI; same argv the workflow uses
+./workflow_bench/run-evolution.sh --dry-run        # print the evolve command
 ```
+
+The GitHub skill-evolution job calls this script. Do not invoke
+`python -m workflow_bench.evolve` directly for a full loop. Environment knobs
+match the workflow: `MODEL`, `PROPOSER_MODEL`, `GENERATIONS`, `RUNS`,
+`WORKERS`, `PROVIDER`, `EFFORT`, `SEED_RESULTS`, `INCLUDE_EXPENSIVE`. The
+checked-in production defaults are `PROVIDER=openai`, `MODEL=gpt-5.6-sol`,
+`PROPOSER_MODEL=gpt-5.6-sol`, and `EFFORT=xhigh`.
 
 Each generation: a confined **proposer** session reads the incumbent plan/work
 skills, the prior generation's `results.jsonl`
@@ -296,8 +306,26 @@ uv run --locked --with 'litellm[proxy]' litellm --config workflow_bench/free-mod
 # 2. Point the benchmark at it
 uv run --locked --extra dev python -m workflow_bench.runner \
   --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
-  --base-url http://localhost:4000 --auth-token "$LITELLM_MASTER_KEY" --model free-coder
+  --base-url http://localhost:4000 --anthropic-api-key "$LITELLM_MASTER_KEY" --model free-coder
 ```
+
+## OpenAI API keys
+
+Claude Code still speaks Anthropic `/v1/messages`. For a paid OpenAI backend,
+do not point `--anthropic-api-key` at an `sk-...` OpenAI key. Export the OpenAI key
+and use OpenAI model ids; the driver starts the proxy itself:
+
+```bash
+export GITNEXUS_BENCH_OPENAI_API_KEY="$OPENAI_API_KEY"
+PROVIDER=openai ./workflow_bench/run-evolution.sh
+```
+
+The GitHub skill-evolution workflow accepts `GITNEXUS_BENCH_OPENAI_API_KEY` on
+the `gitnexus-evolution` environment. Dispatch with `provider=openai` to force
+that backend even when an Anthropic token is also configured (otherwise `auto`
+keeps using Anthropic whenever that secret exists). Claude default model
+inputs are then rewritten to `gpt-5.6-sol`; every proposer and benchmark
+session receives `--effort xhigh`.
 
 Caveats, honestly:
 

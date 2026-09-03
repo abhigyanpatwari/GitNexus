@@ -1,7 +1,9 @@
 """Unit tests for workflow benchmark aggregation, reporting, task, and CI contracts."""
 
 import json
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -425,3 +427,51 @@ def test_outage_streak_flag_defaults_and_disables():
     base = ["--tasks", "tasks.yaml", "--model", "claude-sonnet-4-20250514"]
     assert build_parser().parse_args(base).outage_streak == 5
     assert build_parser().parse_args([*base, "--outage-streak", "0"]).outage_streak == 0
+
+
+def test_run_evolution_script_is_the_shared_ci_and_local_entrypoint():
+    eval_dir = Path(__file__).resolve().parents[1]
+    script = eval_dir / "workflow_bench" / "run-evolution.sh"
+    workflow = eval_dir.parent / ".github" / "workflows" / "gitnexus-skill-evolution.yml"
+    assert script.is_file()
+    assert script.stat().st_mode & 0o111
+    workflow_text = workflow.read_text()
+    assert "./workflow_bench/run-evolution.sh --apply" in workflow_text
+    assert "python -m workflow_bench.evolve" not in workflow_text
+
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin"),
+        "MODEL": "claude-sonnet-5",
+        "PROPOSER_MODEL": "claude-opus-4-8",
+        "EFFORT": "xhigh",
+        "GENERATIONS": "1",
+        "RUNS": "3",
+        "WORKERS": "2",
+        "PROVIDER": "openai",
+        "INCLUDE_EXPENSIVE": "1",
+        "SEED_RESULTS": "/tmp/seed-bench",
+        "CLAUDE_BIN": "/opt/claude",
+        "OUT_ROOT": "/tmp/wfevolve",
+        "HOME": os.environ.get("HOME", "/tmp"),
+    }
+    printed = subprocess.run(
+        [str(script), "--dry-run", "--apply"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    argv = shlex.split(printed.stdout)
+    assert argv[:7] == ["uv", "run", "--locked", "--extra", "dev", "python", "-m"]
+    assert argv[7:9] == ["workflow_bench.evolve", "--tasks"]
+    assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
+    assert argv[argv.index("--proposer-model") + 1] == "gpt-5.6-sol"
+    assert argv[argv.index("--effort") + 1] == "xhigh"
+    assert argv[argv.index("--workers") + 1] == "2"
+    assert argv[argv.index("--claude-bin") + 1] == "/opt/claude"
+    assert argv[argv.index("--out-root") + 1] == "/tmp/wfevolve"
+    assert argv[argv.index("--seed-results") + 1] == "/tmp/seed-bench"
+    assert "--apply" in argv
+    assert "--include-expensive" in argv
+    assert "claude-sonnet-5" not in argv
+    assert printed.stderr  # rewrite notice goes to stderr

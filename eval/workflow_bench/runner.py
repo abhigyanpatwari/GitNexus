@@ -69,6 +69,13 @@ from .evolution import (
     required_candidate_arms,
     skill_fingerprint,
 )
+from .model_gateway import (
+    attach_openai_gateway,
+    anthropic_api_key_from_environ,
+    credential_secrets,
+    model_session_environment,
+    openai_api_key_from_environ,
+)
 from .oracle_assets import (
     ORACLE_ENV_VAR,
     TaskOracleSnapshot,
@@ -405,9 +412,11 @@ def run_arm(
     oracle_snapshot: TaskOracleSnapshot | None = None,
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
-    env = build_sandbox_environment(
+    env = model_session_environment(
         auth_token=args.auth_token,
         base_url=args.base_url,
+        model=args.model,
+        build_sandbox_environment=build_sandbox_environment,
     )
     # --bare hard-disables the Skill tool and every mcp__* tool — by Claude
     # Code design, not a bug (--allowedTools can't restore what --bare
@@ -420,6 +429,7 @@ def run_arm(
         "claude_bin": sandbox.claude_bin,
         "timeout": args.timeout,
         "model": args.model,
+        "effort": args.effort,
         "env": env,
         "permission_mode": "dontAsk",
         "command_prefix": sandbox.command_prefix_for(
@@ -435,7 +445,7 @@ def run_arm(
         "transcript_wait_seconds": 5,
         "transcript_output_dir": transcript_output_dir,
         "transcript_output_prefix": transcript_output_prefix,
-        "transcript_secrets": tuple(secret for secret in (args.auth_token,) if secret),
+        "transcript_secrets": tuple(credential_secrets(args)),
     }
     if ce_plugin_dir is not None:
         common["plugin_dirs"] = (ce_plugin_dir,)
@@ -931,6 +941,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 "model": args.model,
                 "benchmark_model": args.model,
                 "proposer_model": args.proposer_model,
+                "effort": args.effort,
                 "task_ref": task.get("ref", "HEAD"),
                 "task_base_sha": ctx.task_sha,
                 "sanitized_task_sha": sanitized_head,
@@ -960,7 +971,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         # ManagedProcessError carries up to 1000 raw bytes of stderr_tail, and
         # this line now streams live into the CI log (run_managed echoes the
         # sweep's stdout). Redact it like every other sink this data reaches.
-        detail = redact_text(str(exc), [args.auth_token or ""])
+        detail = redact_text(str(exc), credential_secrets(args))
         print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {detail}")
     finally:
         if worktree is not None and worktree.exists():
@@ -1284,6 +1295,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="named, versioned model passed to every `claude --model` invocation",
     )
     parser.add_argument(
+        "--effort",
+        choices=("low", "medium", "high", "xhigh", "max"),
+        default="xhigh",
+        help="reasoning effort passed to every `claude --effort` invocation",
+    )
+    parser.add_argument(
         "--proposer-model",
         default=None,
         help="model that generated the candidate overlay (recorded for provenance)",
@@ -1295,9 +1312,19 @@ def build_parser() -> argparse.ArgumentParser:
         "proxy (see free-model.litellm.yaml) to run on a free model",
     )
     parser.add_argument(
+        "--anthropic-api-key",
         "--auth-token",
-        default=os.environ.get("GITNEXUS_BENCH_AUTH_TOKEN"),
-        help="ANTHROPIC_API_KEY for the --base-url endpoint (prefer GITNEXUS_BENCH_AUTH_TOKEN env)",
+        dest="auth_token",
+        default=anthropic_api_key_from_environ(),
+        help="Anthropic API key for Claude Code sessions (prefer "
+        "GITNEXUS_BENCH_ANTHROPIC_API_KEY). Not a Claude Code OAuth token. "
+        "Legacy --auth-token / GITNEXUS_BENCH_AUTH_TOKEN is still accepted.",
+    )
+    parser.add_argument(
+        "--openai-api-key",
+        default=openai_api_key_from_environ(),
+        help="OpenAI API key; starts a loopback Anthropic-compatible proxy "
+        "(prefer GITNEXUS_BENCH_OPENAI_API_KEY). The key never enters the sandbox.",
     )
     parser.add_argument(
         "--include-expensive",
@@ -1404,6 +1431,48 @@ def main() -> None:
     except SandboxError as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
+    gateway = attach_openai_gateway(args)
+    try:
+        gateway.__enter__()
+    except ValueError as exc:
+        parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
+    try:
+        _run_sweep(
+            args,
+            parser=parser,
+            tasks=tasks,
+            skipped_expensive=skipped_expensive,
+            oracle_snapshots=oracle_snapshots,
+            expected_task_bindings=expected_task_bindings,
+            ce_plugin_config=ce_plugin_config,
+            bwrap_bin=bwrap_bin,
+            runtime_mounts=runtime_mounts,
+            candidate_arms=candidate_arms,
+            candidate_overlay=candidate_overlay,
+            overlay_digest=overlay_digest,
+            promotion_target_bases=promotion_target_bases,
+        )
+    finally:
+        gateway.__exit__(None, None, None)
+
+
+def _run_sweep(
+    args: argparse.Namespace,
+    *,
+    parser: argparse.ArgumentParser,
+    tasks: list[Any],
+    skipped_expensive: list[str],
+    oracle_snapshots: Any,
+    expected_task_bindings: Any,
+    ce_plugin_config: Any,
+    bwrap_bin: Any,
+    runtime_mounts: Any,
+    candidate_arms: list[str],
+    candidate_overlay: Path | None,
+    overlay_digest: str | None,
+    promotion_target_bases: dict[str, str],
+) -> None:
     out_dir = args.out or Path("results") / time.strftime("wfbench-%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
@@ -1527,7 +1596,7 @@ def main() -> None:
                     # into error_detail before it enters the uploaded
                     # results.jsonl artifact (transcripts are redacted; this
                     # sink was not).
-                    fh.write(redact_text(json.dumps(record), [args.auth_token or ""]) + "\n")
+                    fh.write(redact_text(json.dumps(record), credential_secrets(args)) + "\n")
                 print(cell_progress_line(task["id"], arm, run_idx, record))
 
             outage_streak, outage_tripped = sweep_task_cells(
@@ -1546,6 +1615,7 @@ def main() -> None:
         "",
         f"Benchmark model: `{args.model}`",
         f"Proposer model: `{args.proposer_model}`",
+        f"Reasoning effort: `{args.effort}`",
         f"Selected tasks ({len(selected_ids)}): {', '.join(selected_ids)}",
         (
             f"Skipped expensive tasks ({len(skipped_expensive)}): "
@@ -1561,17 +1631,19 @@ def main() -> None:
     if candidate_arms:
         promotion_generated_at = datetime.now(UTC)
         promotion = {
-            # Schema 4 adds the gated/ungated task contract on top of schema 3's
+            # Schema 5 binds reasoning effort on top of schema 4's
+            # gated/ungated task contract and schema 3's
             # hidden, byte-bound behavioral oracles: a decision now states which
             # tasks supplied quality signal and which were ungated because
             # neither arm resolved them. Schema 3 bindings are rejected outright
             # by the apply path — they cannot express that distinction, so their
             # verdicts are not comparable with these.
-            "schema_version": 4,
+            "schema_version": 5,
             "generated_at": promotion_generated_at.isoformat(),
             "evidence_expires_at": (promotion_generated_at + timedelta(days=EVIDENCE_MAX_AGE_DAYS)).isoformat(),
             "benchmark_model": args.model,
             "proposer_model": args.proposer_model,
+            "effort": args.effort,
             "candidate_origin": ("model-proposer" if args.proposer_model is not None else "manual-initial-overlay"),
             "candidate_overlay": str(candidate_overlay),
             "candidate_overlay_digest": overlay_digest,
