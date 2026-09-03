@@ -857,21 +857,13 @@ describe('parsedfile-store receiverChain sanitation', () => {
       const liveOnly = '1'.repeat(64);
       const rewritten = '2'.repeat(64);
       await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), liveOnly);
-      persistDurableParsedFileShardSync(
-        getDurableParsedFileDir(live),
-        liveOnly,
-        1,
-        0,
-        [makeParsedFile('keep.c')],
-      );
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), liveOnly, 1, 0, [
+        makeParsedFile('keep.c'),
+      ]);
       await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), rewritten);
-      persistDurableParsedFileShardSync(
-        getDurableParsedFileDir(live),
-        rewritten,
-        1,
-        0,
-        [makeParsedFile('old.c')],
-      );
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), rewritten, 1, 0, [
+        makeParsedFile('old.c'),
+      ]);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(live),
         'v-test',
@@ -879,13 +871,9 @@ describe('parsedfile-store receiverChain sanitation', () => {
       );
 
       await prepareDurableParsedFileChunk(getDurableParsedFileDir(staged), rewritten);
-      persistDurableParsedFileShardSync(
-        getDurableParsedFileDir(staged),
-        rewritten,
-        1,
-        0,
-        [makeParsedFile('new.c')],
-      );
+      persistDurableParsedFileShardSync(getDurableParsedFileDir(staged), rewritten, 1, 0, [
+        makeParsedFile('new.c'),
+      ]);
 
       await mergeStagedDurableParsedFileStore(
         live,
