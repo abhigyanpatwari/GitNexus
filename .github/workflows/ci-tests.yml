@@ -369,6 +369,10 @@ jobs:
           fi
           echo "Installed package at: $INSTALLED"
 
+          # The npm package contract includes the built web UI. Validate the
+          # installed artifact, not just the source workflow that produced it.
+          node "$INSTALLED/scripts/assert-web-assets.mjs" "$INSTALLED/web"
+
           # #836 invariant: no node_modules/ or build/ under any vendor/*.
           BAD=$(find "$INSTALLED/vendor" \( -name node_modules -o -name build \) -print 2>/dev/null || true)
           if [ -n "$BAD" ]; then

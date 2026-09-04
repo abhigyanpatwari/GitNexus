@@ -12,6 +12,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runWebBuild } from './build-web.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -116,30 +117,6 @@ if (fs.existsSync(cliEntry)) fs.chmodSync(cliEntry, 0o755);
 // installs mid-flight (#1048 introduced it; the node-floor-compat job
 // died on it). `gitnexus serve` degrades to the built-in landing page
 // when web/ is absent, so the default build staying CLI-only is safe.
-const WEB_ROOT = path.resolve(ROOT, '..', 'gitnexus-web');
-const WEB_DEST = path.join(DIST, '..', 'web');
-const buildWeb = process.argv.includes('--web') || process.env.GITNEXUS_BUILD_WEB === '1';
-
-if (!buildWeb) {
-  console.log('[build] skipping web UI (pass --web or set GITNEXUS_BUILD_WEB=1 to include it)');
-} else if (!fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
-  console.log('[build] skipping web UI (gitnexus-web not found)');
-} else {
-  console.log('[build] building gitnexus-web…');
-  if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
-    // Deliberately untimed: this is a full second install, and killing it
-    // partway through leaves a broken tree and a misleading ETIMEDOUT.
-    // CI should install gitnexus-web itself (cached, its own step) so this
-    // fallback only fires for a local `npm pack` / `npm publish`.
-    console.log('[build] installing gitnexus-web dependencies (no local node_modules)…');
-    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit' });
-  }
-  execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
-
-  // Copy dist → gitnexus/web/ (shipped in the npm package)
-  fs.rmSync(WEB_DEST, { recursive: true, force: true });
-  fs.cpSync(path.join(WEB_ROOT, 'dist'), WEB_DEST, { recursive: true });
-  console.log('[build] copied web UI → gitnexus/web/');
-}
+runWebBuild({ root: ROOT, dist: DIST, timeoutMs: BUILD_TIMEOUT_MS });
 
 console.log(`[build] done — rewrote ${rewritten} files.`);

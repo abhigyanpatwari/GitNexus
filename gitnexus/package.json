@@ -53,7 +53,7 @@
     "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js --web",
+    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
