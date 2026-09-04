@@ -539,6 +539,7 @@ function resolveObjectiveCImportTarget(
   const importIndex = getObjectiveCImportIndex(allFilePaths);
   const target = targetRaw.trim();
   if (target.length === 0) return null;
+  if (target.startsWith('<') && target.endsWith('>')) return null;
   const looksLikeFileImport =
     target.startsWith('.') || target.includes('/') || path.posix.extname(target).length > 0;
   if (!looksLikeFileImport) return null;

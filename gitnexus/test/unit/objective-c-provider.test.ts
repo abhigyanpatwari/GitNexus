@@ -6,8 +6,12 @@ import {
   SupportedLanguages,
 } from 'gitnexus-shared';
 import { getLanguageForFileContent } from '../../src/core/ingestion/languages/index.js';
-import { classifyObjectiveCFileContent } from '../../src/core/ingestion/languages/objective-c.js';
 import {
+  classifyObjectiveCFileContent,
+  objectiveCProvider,
+} from '../../src/core/ingestion/languages/objective-c.js';
+import {
+  buildObjectiveCScopeCaptures,
   buildObjectiveCSemanticGraph,
   collectObjectiveCFacts,
   objcCategoryQualifiedName,
@@ -126,6 +130,23 @@ int (*callback)(int value);
     expect(facts.functions.map((fn) => fn.name)).not.toContain('callback');
   });
 
+  it('extracts C helper functions declared inside an Objective-C implementation', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@implementation Worker
+static int helper(void) { return 1; }
+@end
+`),
+      'Worker.m',
+    );
+
+    expect(facts.functions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'helper', returnType: 'int', parameterTypes: ['void'] }),
+      ]),
+    );
+  });
+
   it('does not treat protocol-qualified parameter types as conformance', () => {
     const facts = collectObjectiveCFacts(
       parseSource(`
@@ -184,6 +205,36 @@ int (*callback)(int value);
     );
   });
 
+  it('resolves a property declared after its caller in a class extension', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@interface LaterOwner
+@end
+@implementation LaterOwner
+- (void)run {
+  [self.helper performWork];
+}
+@end
+@interface LaterOwner (Private)
+@property (nonatomic, strong) Worker *helper;
+@end
+`),
+      'LaterOwner.m',
+    );
+
+    expect(facts.messages).toContainEqual(
+      expect.objectContaining({
+        receiverText: 'self.helper',
+        selector: 'performWork',
+        receiverKind: 'property',
+        receiverType: { kind: 'class', name: 'Worker', raw: 'Worker' },
+      }),
+    );
+    expect(facts.unresolvedMessages).not.toContainEqual(
+      expect.objectContaining({ receiverText: 'self.helper' }),
+    );
+  });
+
   it('resolves extensionless local imports to Objective-C source/header files', () => {
     expect(
       objectiveCScopeResolver.resolveImportTarget(
@@ -204,6 +255,27 @@ int (*callback)(int value);
         'Foundation',
         'src/Caller.m',
         new Set(['src/Foundation.h']),
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps angle-bracket system headers out of local import resolution', () => {
+    const tree = parseSource('#import "Local.h"\n#import <Foundation/Foundation.h>\n');
+    const facts = collectObjectiveCFacts(tree, 'src/Caller.m');
+    const captures = buildObjectiveCScopeCaptures(facts, tree.rootNode).filter(
+      (capture) => capture['@import.source'] !== undefined,
+    );
+    const parsed = captures.map((capture) => objectiveCProvider.interpretImport?.(capture));
+
+    expect(parsed.map((entry) => entry?.targetRaw)).toEqual([
+      './Local.h',
+      '<Foundation/Foundation.h>',
+    ]);
+    expect(
+      objectiveCScopeResolver.resolveImportTarget(
+        parsed[1]?.targetRaw ?? '',
+        'src/Caller.m',
+        new Set(['src/Foundation/Foundation.h']),
       ),
     ).toBeNull();
   });

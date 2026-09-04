@@ -251,6 +251,11 @@ function stripQuotes(raw: string): string {
   return trimmed;
 }
 
+function isSystemHeaderSpelling(raw: string): boolean {
+  const trimmed = raw.trim();
+  return trimmed.startsWith('<') && trimmed.endsWith('>');
+}
+
 function cleanType(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
   const text = raw
@@ -293,6 +298,15 @@ function methodTypeText(node: SyntaxNode): string | undefined {
 
 function methodSelector(node: SyntaxNode): string {
   const children = directChildren(node);
+  const keywordDeclarators = children.filter((child) => child.type === 'keyword_declarator');
+  if (keywordDeclarators.length > 0) {
+    return keywordDeclarators
+      .map((declarator) => directIdentifiers(declarator)[0]?.text)
+      .filter((name): name is string => name !== undefined)
+      .map((name) => `${name}:`)
+      .join('');
+  }
+
   const pieces: string[] = [];
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
@@ -329,7 +343,7 @@ function methodParameterInfo(node: SyntaxNode): {
   const parameterNames: string[] = [];
   const typeBindings = new Map<string, ObjCTypeInfo>();
   for (const child of directNamedChildren(node)) {
-    if (child.type !== 'method_parameter') continue;
+    if (child.type !== 'method_parameter' && child.type !== 'keyword_declarator') continue;
     const named = directNamedChildren(child);
     const typeNode = named.find((n) => n.type === 'method_type');
     const nameNode = [...named].reverse().find((n) => n.type === 'identifier');
@@ -669,6 +683,23 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
   const macroNames = new Set<string>();
   const classNames = new Set<string>();
 
+  const addFunctionFact = (node: SyntaxNode): void => {
+    const info = functionInfo(node);
+    if (info === null) return;
+    const qualifiedName = objcFunctionQualifiedName(info.name);
+    const { startLine, endLine } = range(node);
+    functions.push({
+      name: info.name,
+      qualifiedName,
+      nodeId: graphNodeId('Function', qualifiedName),
+      filePath,
+      startLine,
+      endLine,
+      ...(info.returnType !== undefined ? { returnType: info.returnType } : {}),
+      parameterTypes: info.parameterTypes,
+    });
+  };
+
   walkNamedTree(tree.rootNode, (node) => {
     if (node.type !== 'preproc_def' && node.type !== 'preproc_function_def') return;
     const name = macroName(node);
@@ -694,6 +725,37 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     }
     byName.set(name, typeInfo);
   };
+
+  const collectContainerMemberTypes = (
+    containerNode: Parser.SyntaxNode,
+    container: ObjCContainerFact,
+  ): void => {
+    for (const inner of directNamedChildren(containerNode)) {
+      if (inner.type === 'property_declaration') {
+        const prop = propertyInfo(inner);
+        if (prop === null) continue;
+        addMemberType(container.qualifiedName, prop.name, prop.type);
+        if (container.hostClass !== undefined) {
+          addMemberType(objcClassQualifiedName(container.hostClass), prop.name, prop.type);
+        }
+      } else if (inner.type === 'instance_variables') {
+        walkNamedTree(inner, (ivarNode) => {
+          if (ivarNode.type !== 'instance_variable') return;
+          const ivar = declarationNameAndType(ivarNode);
+          if (ivar === null) return;
+          addMemberType(container.qualifiedName, ivar.name, ivar.type);
+          if (container.hostClass !== undefined) {
+            addMemberType(objcClassQualifiedName(container.hostClass), ivar.name, ivar.type);
+          }
+        });
+      }
+    }
+  };
+
+  for (const child of directNamedChildren(tree.rootNode)) {
+    const container = parseContainer(child, filePath);
+    if (container !== null) collectContainerMemberTypes(child, container);
+  }
 
   for (const child of directNamedChildren(tree.rootNode)) {
     if (child.type === 'preproc_include') {
@@ -827,10 +889,6 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
             startLine,
             endLine,
           });
-          addMemberType(container.qualifiedName, prop.name, prop.type);
-          if (container.hostClass !== undefined) {
-            addMemberType(objcClassQualifiedName(container.hostClass), prop.name, prop.type);
-          }
         } else if (inner.type === 'instance_variables') {
           walkNamedTree(inner, (ivarNode) => {
             if (ivarNode.type !== 'instance_variable') return;
@@ -853,12 +911,15 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
               startLine,
               endLine,
             });
-            addMemberType(container.qualifiedName, ivar.name, ivar.type);
-            if (container.hostClass !== undefined) {
-              addMemberType(objcClassQualifiedName(container.hostClass), ivar.name, ivar.type);
-            }
           });
         } else if (inner.type === 'implementation_definition') {
+          const functionNode = directNamedChildren(inner).find(
+            (node) => node.type === 'function_definition',
+          );
+          if (functionNode !== undefined) {
+            addFunctionFact(functionNode);
+            continue;
+          }
           const methodNode = directNamedChildren(inner).find((n) => n.type === 'method_definition');
           if (methodNode !== undefined) {
             const selector = methodSelector(methodNode);
@@ -941,20 +1002,7 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     }
 
     if (child.type === 'function_definition' || child.type === 'declaration') {
-      const info = functionInfo(child);
-      if (info === null) continue;
-      const qualifiedName = objcFunctionQualifiedName(info.name);
-      const { startLine, endLine } = range(child);
-      functions.push({
-        name: info.name,
-        qualifiedName,
-        nodeId: graphNodeId('Function', qualifiedName),
-        filePath,
-        startLine,
-        endLine,
-        ...(info.returnType !== undefined ? { returnType: info.returnType } : {}),
-        parameterTypes: info.parameterTypes,
-      });
+      addFunctionFact(child);
     }
   }
 
@@ -1359,14 +1407,15 @@ export function buildObjectiveCScopeCaptures(
 
   for (const imp of facts.imports) {
     const anchor = captureAt('@import.statement', imp.raw, imp.startLine, imp.endLine);
+    const sourceText = isSystemHeaderSpelling(imp.raw) ? imp.raw : imp.targetRaw;
     captures.push({
       '@import.statement': anchor,
       '@import.source': {
         ...anchor,
         name: '@import.source',
-        text: imp.targetRaw,
+        text: sourceText,
       },
-      '@import.name': { ...anchor, name: '@import.name', text: imp.targetRaw },
+      '@import.name': { ...anchor, name: '@import.name', text: sourceText },
       '@import.kind': { ...anchor, name: '@import.kind', text: imp.kind },
     });
   }

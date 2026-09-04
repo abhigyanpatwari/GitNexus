@@ -149,11 +149,16 @@ export interface ProviderSemanticNode {
   };
 }
 
+export type ProviderSemanticRelationshipType = Extract<
+  RelationshipType,
+  'DECLARES' | 'DEFINES' | 'HAS_METHOD' | 'HAS_PROPERTY'
+>;
+
 export interface ProviderSemanticRelationship {
   readonly id: string;
   readonly sourceId: string;
   readonly targetId: string;
-  readonly type: RelationshipType;
+  readonly type: ProviderSemanticRelationshipType;
   readonly confidence: number;
   readonly reason: string;
 }

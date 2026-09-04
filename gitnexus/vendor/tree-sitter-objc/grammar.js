@@ -32,6 +32,7 @@ module.exports = grammar(C, {
     [$.extension_expression, $.range_expression],
     [$.abstract_array_declarator, $.array_type_specifier],
     [$._type_definition_type],
+    [$.keyword_declarator, $.method_parameter],
   ]),
 
   inline: ($, original) => original.concat([
@@ -616,6 +617,7 @@ module.exports = grammar(C, {
       '@compatibility_alias',
       field('class', $.identifier),
       field('alias', $.identifier),
+      ';',
     ),
 
     interface_declaration: $ => choice(
@@ -708,7 +710,7 @@ module.exports = grammar(C, {
 
     keyword_declarator: $ => seq(
       optional($.identifier),
-      ';',
+      ':',
       optional($.method_type),
       $.identifier,
     ),

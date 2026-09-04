@@ -13611,6 +13611,10 @@
             "type": "SYMBOL",
             "name": "identifier"
           }
+        },
+        {
+          "type": "STRING",
+          "value": ";"
         }
       ]
     },
@@ -14337,7 +14341,7 @@
         },
         {
           "type": "STRING",
-          "value": ";"
+          "value": ":"
         },
         {
           "type": "CHOICE",
@@ -16331,6 +16335,10 @@
     ],
     [
       "_type_definition_type"
+    ],
+    [
+      "keyword_declarator",
+      "method_parameter"
     ]
   ],
   "precedences": [],
