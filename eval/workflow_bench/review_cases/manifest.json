@@ -1,60 +1,12 @@
 {
   "schema_version": 1,
-  "corpus_version": "2026-09-04",
+  "corpus_version": "2026-09-04.2",
   "cases": [
-    {
-      "id": "review-pr-3124-defect",
-      "pr": "https://github.com/abhigyanpatwari/GitNexus/pull/3124",
-      "base_sha": "9f82ffd6bfe59270c6cdec0e2f3314038f4a7faf",
-      "head_sha": "0b69788790fd14d53868a676b17ce624471359f4",
-      "patch_sha256": "f5d18d76643b391a73d85b600fc36bfd1ee9ad332c34d68d2e2a6c5def939125",
-      "human_verification_commit": "ef3c5b2bdd71ab331d2062ba3e6230be49d48b4a",
-      "label_source": "PR review follow-up commit"
-    },
-    {
-      "id": "review-pr-3153-defect",
-      "pr": "https://github.com/abhigyanpatwari/GitNexus/pull/3153",
-      "base_sha": "3c2b14aff59791be0a000160b35f3c5e8f2997a0",
-      "head_sha": "5eb612cd87171840d6b6bcabda3e43d21180a686",
-      "patch_sha256": "5740d06f64296a7661dc549079f679713609e16c595e84a540266c4054558b0c",
-      "human_verification_commit": "c80a8fd9209a1ed43438f7e7a13517fa66501c07",
-      "label_source": "PR review follow-up commit"
-    },
-    {
-      "id": "review-pr-3109-defect",
-      "pr": "https://github.com/abhigyanpatwari/GitNexus/pull/3109",
-      "base_sha": "4aa6bddd0a78135136d29d8440eb29613097f616",
-      "head_sha": "b9ea906e89b67dc782c3341a53ce40059f2d404f",
-      "patch_sha256": "6ff009e823791a8209cab2aa0249c1d184967688b33d59f1dc40e25c7a4dae48",
-      "human_verification_commit": "3caf3369cc367b3360c316da45bd1366003f8308",
-      "label_source": "PR review follow-up commit"
-    },
-    {
-      "id": "review-pr-3111-defect",
-      "pr": "https://github.com/abhigyanpatwari/GitNexus/pull/3111",
-      "base_sha": "3aa62be717a579d4644364d91fdd50c1b8b5c286",
-      "head_sha": "e50d36a1a64a54c447378de8d8037733c1011d0d",
-      "patch_sha256": "a9d229f19f752267da0940f8c8403a3ae186b580ae3c1b8c2457a1f6042cb9fe",
-      "human_verification_commit": "1ee715f8341ae03f828cdf771cde4a7f9c15142f",
-      "label_source": "PR review follow-up commit"
-    },
-    {
-      "id": "review-pr-3124-clean",
-      "pr": "https://github.com/abhigyanpatwari/GitNexus/pull/3124",
-      "base_sha": "9f82ffd6bfe59270c6cdec0e2f3314038f4a7faf",
-      "head_sha": "ea7cd4ed342070891e4c40d1de0b0d0852bc9f5e",
-      "patch_sha256": "ff1ad95daef7fda9c3f08a9cd39ef6819180418d167b10b7fba50b00a254ecb6",
-      "human_verification_commit": "ea7cd4ed342070891e4c40d1de0b0d0852bc9f5e",
-      "label_source": "merged final PR snapshot"
-    },
-    {
-      "id": "review-pr-3153-clean",
-      "pr": "https://github.com/abhigyanpatwari/GitNexus/pull/3153",
-      "base_sha": "3c2b14aff59791be0a000160b35f3c5e8f2997a0",
-      "head_sha": "6e9e9bf63682619c3e6d1c4e108f091bee1898de",
-      "patch_sha256": "be15a48f909c26617dd1b75c2b5e3e2ded50380342b23849d474d4d2f7e7c0dc",
-      "human_verification_commit": "6e9e9bf63682619c3e6d1c4e108f091bee1898de",
-      "label_source": "merged final PR snapshot"
-    }
+    {"id":"review-pr-2718-defect","pr":"https://github.com/abhigyanpatwari/GitNexus/pull/2718","base_sha":"ff86ccf1e79cd7e4175da437ae8aeaf67b64aaa1","head_sha":"cfd2434c6ca0e303ac40a896db798f30505390d5","patch_sha256":"14ca0d5659fb7aa529c32543f194deabc8e25d592037dad1d70ef8f6ab906391","human_verification_commit":"cebe66b33509021de8d09083c461501cb49a460b","label_source":"exact-head tri-review 4799215165"},
+    {"id":"review-pr-2794-defect","pr":"https://github.com/abhigyanpatwari/GitNexus/pull/2794","base_sha":"911151e2304f298a995fcc69c738ad2c6db9393a","head_sha":"48afb7480778ef2f5e0be455498ace889d03edf9","patch_sha256":"e2271ede4b4d65993abde16012061191a094847aadf0431a2dec908a59b6af93","human_verification_commit":"0015b0d64537c9ac97fda5ed094c99059d596cfc","label_source":"exact-head tri-review 4837878304"},
+    {"id":"review-pr-2108-defect","pr":"https://github.com/abhigyanpatwari/GitNexus/pull/2108","base_sha":"3a4247ec36b5ad86b1123d3bbce8183a643f7434","head_sha":"fdabb8a1fa441b8fc7f3471121a9fa5a9d885376","patch_sha256":"12928510253fe079b179fc4658334b732de8907471ac92a6ed8061fb78aedbf2","human_verification_commit":"40dff64992ac1e72c7c042b2f508dbdc433f74dd","label_source":"exact-head tri-review 4456060714"},
+    {"id":"review-pr-2258-defect","pr":"https://github.com/abhigyanpatwari/GitNexus/pull/2258","base_sha":"78b4077d8acc86f1b0c32e41012174d484e81f12","head_sha":"c93ca8ce73db7e4f0b083226a166dd9841288140","patch_sha256":"8e0eb214bd6151d1060cf2c47df7735fe5c57398e08bee9306b7b702abeca843","human_verification_commit":"00e52fa7fbae21668ae818a41f786d529c4ca390","label_source":"exact-head tri-review 4538570459"},
+    {"id":"review-pr-2258-clean","pr":"https://github.com/abhigyanpatwari/GitNexus/pull/2258","base_sha":"78b4077d8acc86f1b0c32e41012174d484e81f12","head_sha":"00e52fa7fbae21668ae818a41f786d529c4ca390","patch_sha256":"4323ec2ff01f612f18a493e055c70eb4307e9c1859b97f5b60da07b177d3a238","human_verification_commit":"00e52fa7fbae21668ae818a41f786d529c4ca390","label_source":"production-ready tri-review confirmation"},
+    {"id":"review-pr-2773-clean","pr":"https://github.com/abhigyanpatwari/GitNexus/pull/2773","base_sha":"84f584449de02376a8ffc096dceac2e8f732cab5","head_sha":"f584f83bcb93c91752d91144b251f98d39027180","patch_sha256":"1c0327d4d9725428c1b49ab3586abefdbc084147735b120afd43312e8e48dd91","human_verification_commit":"f584f83bcb93c91752d91144b251f98d39027180","label_source":"review fix confirmation 3694979051"}
   ]
 }

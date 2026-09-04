@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "findings": [
+    {"id":"pr2718-multiline-closure-join","severity":"high","path":"gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts","line_start":212,"line_end":212,"category":"correctness"},
+    {"id":"pr2718-constructor-parameter-property-identity","severity":"high","path":"gitnexus/src/core/ingestion/workers/parse-worker.ts","line_start":2310,"line_end":2310,"category":"correctness"},
+    {"id":"pr2718-dart-top-level-closures","severity":"high","path":"gitnexus/src/core/ingestion/languages/dart/query.ts","line_start":109,"line_end":109,"category":"correctness"},
+    {"id":"pr2718-ruby-closure-forms","severity":"high","path":"gitnexus/src/core/ingestion/languages/ruby/query.ts","line_start":106,"line_end":106,"category":"correctness"},
+    {"id":"pr2718-dart-signature-assumption","severity":"medium","path":"gitnexus/src/core/ingestion/utils/ast-helpers.ts","line_start":1283,"line_end":1283,"category":"correctness"},
+    {"id":"pr2718-receiver-qualified-lambda","severity":"low","path":"gitnexus/src/core/ingestion/languages/ruby/query.ts","line_start":104,"line_end":104,"category":"correctness"},
+    {"id":"pr2718-rust-closure-source-coverage","severity":"medium","path":"gitnexus/src/core/ingestion/tree-sitter-queries.ts","line_start":1346,"line_end":1346,"category":"tests"}
+  ]
+}

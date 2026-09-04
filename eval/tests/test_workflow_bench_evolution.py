@@ -295,12 +295,13 @@ def test_review_gate_rejects_added_false_positives_on_clean_controls():
         "review_weighted_f1": 1.0,
         "review_blocker_recall": 1.0,
         "review_clean_control": True,
+        "review_clean_pass": True,
     }
     decision = evaluate_review_candidate(
         {
             "clean": {
                 "review": {**base, "review_false_positives": 0},
-                "candidate_review": {**base, "review_false_positives": 1},
+                "candidate_review": {**base, "review_false_positives": 1, "review_clean_pass": False},
             }
         },
         incumbent_arm="review",

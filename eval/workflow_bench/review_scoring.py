@@ -216,56 +216,63 @@ def score_review(
     tp = len(pairs)
     fp = len(actual) - tp
     fn = len(expected) - tp
-    precision = tp / (tp + fp) if tp + fp else 1.0
-    recall = tp / (tp + fn) if tp + fn else 1.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+    precision = tp / (tp + fp) if tp + fp else None
+    recall = tp / (tp + fn) if tp + fn else None
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if precision is not None and recall is not None and precision + recall
+        else None
+    )
     expected_weight = sum(SEVERITY_WEIGHT[item.severity] for item in expected)
     matched_weight = sum(SEVERITY_WEIGHT[expected[e].severity] for _, e in pairs)
     fp_weight = sum(SEVERITY_WEIGHT[actual[a].severity] for a in range(len(actual)) if a not in matched_actual)
-    weighted_precision = matched_weight / (matched_weight + fp_weight) if matched_weight + fp_weight else 1.0
-    weighted_recall = matched_weight / expected_weight if expected_weight else 1.0
+    weighted_precision = matched_weight / (matched_weight + fp_weight) if matched_weight + fp_weight else None
+    weighted_recall = matched_weight / expected_weight if expected_weight else None
     weighted_f1 = (
         2 * weighted_precision * weighted_recall / (weighted_precision + weighted_recall)
-        if weighted_precision + weighted_recall
-        else 0.0
+        if weighted_precision is not None
+        and weighted_recall is not None
+        and weighted_precision + weighted_recall
+        else None
     )
     blockers = [index for index, item in enumerate(expected) if item.severity in BLOCKING_SEVERITIES]
-    blocker_recall = sum(index in matched_expected for index in blockers) / len(blockers) if blockers else 1.0
+    blocker_recall = sum(index in matched_expected for index in blockers) / len(blockers) if blockers else None
     severity_accuracy = (
-        sum(actual[a].severity == expected[e].severity for a, e in pairs) / tp if tp else (1.0 if not expected else 0.0)
+        sum(actual[a].severity == expected[e].severity for a, e in pairs) / tp if tp else None
     )
     category_accuracy = (
-        sum(actual[a].category == expected[e].category for a, e in pairs) / tp if tp else (1.0 if not expected else 0.0)
+        sum(actual[a].category == expected[e].category for a, e in pairs) / tp if tp else None
     )
-    grounded = sum(
-        bool(item.path and item.line > 0 and item.evidence.strip()) for item in actual
-    ) / len(actual) if actual else 1.0
+    grounded = (
+        sum(bool(item.path and item.line > 0 and item.evidence.strip()) for item in actual) / len(actual)
+        if actual
+        else None
+    )
     correct_verdict = (not expected and verdict == "approve") or (
         bool(expected)
         and verdict == ("request_changes" if any(item.severity in BLOCKING_SEVERITIES for item in expected) else "comment")
     )
+    def rounded(value: float | None) -> float | None:
+        return None if value is None else round(value, 6)
     return {
         "true_positives": tp,
         "false_positives": fp,
         "false_negatives": fn,
-        "precision": round(precision, 6),
-        "recall": round(recall, 6),
-        "f1": round(f1, 6),
-        "weighted_precision": round(weighted_precision, 6),
-        "weighted_recall": round(weighted_recall, 6),
-        "weighted_f1": round(weighted_f1, 6),
-        "blocker_recall": round(blocker_recall, 6),
-        "severity_accuracy": round(severity_accuracy, 6),
-        "category_accuracy": round(category_accuracy, 6),
-        "grounded_evidence": round(grounded, 6),
+        "precision": rounded(precision),
+        "recall": rounded(recall),
+        "f1": rounded(f1),
+        "weighted_precision": rounded(weighted_precision),
+        "weighted_recall": rounded(weighted_recall),
+        "weighted_f1": rounded(weighted_f1),
+        "blocker_recall": rounded(blocker_recall),
+        "severity_accuracy": rounded(severity_accuracy),
+        "category_accuracy": rounded(category_accuracy),
+        "grounded_evidence": rounded(grounded),
         "verdict_correct": correct_verdict,
         "clean_control": not expected,
-        "matched_expected_ids": sorted(expected[index].finding_id for index in matched_expected),
-        "missed_expected_ids": sorted(
-            expected[index].finding_id for index in range(len(expected)) if index not in matched_expected
-        ),
+        "clean_pass": not expected and not actual and verdict == "approve",
         "score_finite": all(
-            math.isfinite(float(value))
+            value is None or math.isfinite(float(value))
             for key, value in {
                 "precision": precision,
                 "recall": recall,

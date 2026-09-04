@@ -184,8 +184,13 @@ def test_clean_control_rewards_an_empty_approval_and_penalizes_noise():
         (),
     )
 
-    assert clean["weighted_f1"] == 1
+    assert clean["weighted_f1"] is None
+    assert clean["precision"] is None
+    assert clean["recall"] is None
+    assert clean["clean_pass"] is True
     assert clean["verdict_correct"] is True
     assert noisy["false_positives"] == 1
     assert noisy["weighted_precision"] == 0
+    assert noisy["recall"] is None
+    assert noisy["clean_pass"] is False
     assert noisy["verdict_correct"] is False

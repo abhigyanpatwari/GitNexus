@@ -528,6 +528,8 @@ def evaluate_review_candidate(
         incumbent_fp = incumbent.get("review_false_positives")
         candidate_fp = candidate.get("review_false_positives")
         clean = bool(incumbent.get("review_clean_control", candidate.get("review_clean_control", False)))
+        incumbent_clean_pass = incumbent.get("review_clean_pass")
+        candidate_clean_pass = candidate.get("review_clean_pass")
         task_rows.append(
             {
                 "task": task_id,
@@ -539,6 +541,8 @@ def evaluate_review_candidate(
                 "incumbent_false_positives": incumbent_fp,
                 "candidate_false_positives": candidate_fp,
                 "clean_control": clean,
+                "incumbent_clean_pass": incumbent_clean_pass,
+                "candidate_clean_pass": candidate_clean_pass,
             }
         )
         if (
@@ -552,21 +556,30 @@ def evaluate_review_candidate(
                 f"{task_id}: needs {min_runs} valid paired runs with zero exclusions "
                 f"(got {incumbent_runs}/{candidate_runs})"
             )
-        values = (incumbent_score, candidate_score, incumbent_blockers, candidate_blockers, incumbent_fp, candidate_fp)
-        if any(value is None for value in values):
+        required_values = (
+            (incumbent_fp, candidate_fp, incumbent_clean_pass, candidate_clean_pass)
+            if clean
+            else (incumbent_score, candidate_score, incumbent_fp, candidate_fp)
+        )
+        if any(value is None for value in required_values):
             insufficient = True
             reasons.append(f"{task_id}: structured review quality metrics are incomplete")
             continue
-        if float(candidate_blockers) < float(incumbent_blockers):
+        if incumbent_blockers is not None and candidate_blockers is not None and float(candidate_blockers) < float(
+            incumbent_blockers
+        ):
             regression = True
             reasons.append(f"{task_id}: blocker recall regressed")
         if clean and float(candidate_fp) > float(incumbent_fp):
             regression = True
             reasons.append(f"{task_id}: false positives increased on a clean control")
-        if float(candidate_score) + 1e-9 < float(incumbent_score):
+        if clean and bool(incumbent_clean_pass) and not bool(candidate_clean_pass):
+            regression = True
+            reasons.append(f"{task_id}: clean-control verdict regressed")
+        if not clean and float(candidate_score) + 1e-9 < float(incumbent_score):
             regression = True
             reasons.append(f"{task_id}: weighted review score regressed")
-        if float(candidate_score) >= float(incumbent_score) + min_improvement:
+        if not clean and float(candidate_score) >= float(incumbent_score) + min_improvement:
             improvement = True
 
     if insufficient:

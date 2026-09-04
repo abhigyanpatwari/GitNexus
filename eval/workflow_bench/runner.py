@@ -1221,10 +1221,12 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     )
     if any("review_weighted_f1" in record for record in valid):
         for metric in review_metrics:
-            values = [record[metric] for record in valid if metric in record]
+            values = [record[metric] for record in valid if record.get(metric) is not None]
             out[metric] = statistics.median(values) if values and len(values) == len(valid) else None
         controls = [record["review_clean_control"] for record in valid if "review_clean_control" in record]
         out["review_clean_control"] = all(controls) if controls and len(controls) == len(valid) else None
+        clean_passes = [record["review_clean_pass"] for record in valid if "review_clean_pass" in record]
+        out["review_clean_pass"] = all(clean_passes) if clean_passes and len(clean_passes) == len(valid) else None
     return out
 
 
@@ -1272,6 +1274,10 @@ def _cost_cell(value: Any) -> str:
     return "n/a" if value is None else f"{value:.4f}"
 
 
+def _review_metric_cell(value: Any) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
+
+
 def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
     """results: {task_id: {arm: aggregate}} → markdown report."""
     lines = [
@@ -1315,7 +1321,7 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
                     f"| {_na(s['cost_usd'])} | {s['duration_s']} | — | — | — |"
                 )
     lines.append("")
-    if any(agg.get("review_weighted_f1") is not None for arms in results.values() for agg in arms.values()):
+    if any("review_clean_control" in agg for arms in results.values() for agg in arms.values()):
         lines.extend(
             [
                 "## Review quality",
@@ -1326,14 +1332,16 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
         )
         for task_id, arms in results.items():
             for arm, agg in arms.items():
-                if agg.get("review_weighted_f1") is None:
+                if "review_clean_control" not in agg:
                     continue
                 lines.append(
                     f"| {task_id} | {arm} | {agg['review_true_positives']:.1f} "
                     f"| {agg['review_false_positives']:.1f} | {agg['review_false_negatives']:.1f} "
-                    f"| {agg['review_precision']:.3f} | {agg['review_recall']:.3f} "
-                    f"| {agg['review_blocker_recall']:.3f} | {agg['review_weighted_f1']:.3f} "
-                    f"| {agg['review_grounded_evidence']:.3f} |"
+                    f"| {_review_metric_cell(agg['review_precision'])} "
+                    f"| {_review_metric_cell(agg['review_recall'])} "
+                    f"| {_review_metric_cell(agg['review_blocker_recall'])} "
+                    f"| {_review_metric_cell(agg['review_weighted_f1'])} "
+                    f"| {_review_metric_cell(agg['review_grounded_evidence'])} |"
                 )
         lines.append("")
     all_aggs = [agg for arms in results.values() for agg in arms.values()]

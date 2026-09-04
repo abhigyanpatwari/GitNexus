@@ -205,6 +205,7 @@ def compact_row(row: dict[str, Any]) -> dict[str, Any]:
                 "grounded_evidence",
                 "verdict_correct",
                 "clean_control",
+                "clean_pass",
             )
         }
         if isinstance(row.get("review_score"), dict)
