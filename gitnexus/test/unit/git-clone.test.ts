@@ -326,6 +326,8 @@ describe('git-clone', () => {
       // chosen because their prefixes don't collide with any block above.
       expect(() => validateGitUrl('https://[2606:4700:4700::1111]/repo.git')).not.toThrow();
       expect(() => validateGitUrl('https://[2001:4860:4860::8888]/repo.git')).not.toThrow();
+      // A public address that merely contains a `ffff` hextet is not IPv4-mapped.
+      expect(() => validateGitUrl('https://[2001:4860:ffff::1]/repo.git')).not.toThrow();
     });
 
     it('blocks CGN range (100.64.0.0/10)', () => {

@@ -22,6 +22,7 @@ const COMMAND_DESCRIPTION_KEYS = {
   list: 'help.command.list.description',
   status: 'help.command.status.description',
   doctor: 'help.command.doctor.description',
+  update: 'help.command.update.description',
   embeddings: 'help.command.embeddings.description',
   'embeddings install': 'help.command.embeddings.install.description',
   clean: 'help.command.clean.description',
