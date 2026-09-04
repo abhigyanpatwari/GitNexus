@@ -544,6 +544,15 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       parsedImport: IGNORES_CONTEXT,
       // See `minimumScans` on the interface: membership probes only.
       minimumScans: 0,
+    SupportedLanguages.Lua,
+    {
+      files: ['lib/models.lua', 'lib/main.lua'],
+      fromFile: 'lib/main.lua',
+      resolutionConfig: undefined,
+      missTarget: (i) => `vendor${i}.ghost`,
+      hitTarget: 'lib.models',
+      parsedImport: IGNORES_CONTEXT,
+      minimumScans: 1,
       minimumParsedFileReads: 0,
     },
   ],

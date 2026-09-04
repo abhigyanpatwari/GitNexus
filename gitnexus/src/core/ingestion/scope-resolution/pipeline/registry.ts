@@ -27,6 +27,7 @@ import { cobolScopeResolver } from '../../languages/cobol/scope-resolver.js';
 import { swiftScopeResolver } from '../../languages/swift/scope-resolver.js';
 import { dartScopeResolver } from '../../languages/dart/scope-resolver.js';
 import { vueScopeResolver } from '../../languages/vue/scope-resolver.js';
+import { luaScopeResolver } from '../../languages/lua/scope-resolver.js';
 import { zigScopeResolver } from '../../languages/zig/scope-resolver.js';
 
 /** Map of `SupportedLanguages` → `ScopeResolver`. The scope-resolution phase
@@ -52,5 +53,6 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.Swift, swiftScopeResolver],
   [SupportedLanguages.Dart, dartScopeResolver],
   [SupportedLanguages.Vue, vueScopeResolver],
+  [SupportedLanguages.Lua, luaScopeResolver],
   [SupportedLanguages.Zig, zigScopeResolver],
 ]);

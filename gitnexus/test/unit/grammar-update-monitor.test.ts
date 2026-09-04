@@ -73,19 +73,31 @@ describe('COMPATIBLE_ABI gate', () => {
 });
 
 describe('GRAMMARS registry', () => {
-  it('covers all five grammars (swift/kotlin npm, dart/proto github, c npm)', () => {
-    expect(Object.keys(mod.GRAMMARS).sort()).toEqual(['c', 'dart', 'kotlin', 'proto', 'swift']);
+  it('covers all six grammars (swift/kotlin/lua/c npm, dart/proto github)', () => {
+    expect(Object.keys(mod.GRAMMARS).sort()).toEqual([
+      'c',
+      'dart',
+      'kotlin',
+      'lua',
+      'proto',
+      'swift',
+    ]);
     expect(mod.GRAMMARS.swift.npm).toBe('tree-sitter-swift');
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
+    expect(mod.GRAMMARS.lua.npm).toBe('tree-sitter-lua');
   });
 
-  it('marks c and kotlin report-only (holds); swift/dart/proto are auto-updatable', () => {
+  it('marks c, kotlin, lua report-only (holds); swift/dart/proto are auto-updatable', () => {
     expect(mod.GRAMMARS.c.npm).toBe('tree-sitter-c');
     expect(mod.GRAMMARS.c.hold).toBeTruthy(); // ABI-pinned: detected/reported, never auto-applied
     // kotlin is pinned to an unreleased fwcd main commit for `fun interface`
     // support (#169); npm latest (0.3.8) lacks it, so the strict-inequality
     // isNewer would auto-revert the pin without this hold.
     expect(mod.GRAMMARS.kotlin.hold).toBeTruthy();
+    // lua ships nan-based bindings incompatible with the pinned tree-sitter
+    // runtime; vendored with a rebuilt Napi binding, so the monitor must not
+    // auto-bump until the runtime upgrades and upstream migrates to Napi.
+    expect(mod.GRAMMARS.lua.hold).toBeTruthy();
     for (const k of ['swift', 'dart', 'proto']) {
       expect(mod.GRAMMARS[k].hold).toBeUndefined();
     }

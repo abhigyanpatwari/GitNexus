@@ -15,7 +15,7 @@ import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
  *
  *   - Required grammars MUST load and parse — an ABI-incompatible native
  *     binding (the #1242-class failure) fails here loudly.
- *   - Optional / vendored grammars (swift/dart/kotlin) must either load OR
+ *   - Optional / vendored grammars (swift/dart/kotlin/lua) must either load OR
  *     cleanly report unavailable — never hard-crash the process.
  *
  * Swift is prebuilt-only (no introspectable parser.c) so the static Python
@@ -113,6 +113,11 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'void main() {}\n',
     rootType: 'program',
   },
+  [SupportedLanguages.Lua]: {
+    language: SupportedLanguages.Lua,
+    snippet: 'local x = 1\n',
+    rootType: 'chunk',
+  },
   [SupportedLanguages.Kotlin]: {
     language: SupportedLanguages.Kotlin,
     snippet: 'fun main() {}\n',
@@ -172,4 +177,55 @@ describe('parser-loader ABI load-smoke (#1922)', () => {
       expect(tree.rootNode.type).toBe(testCase.rootType);
     });
   }
+
+  it('repeatedly creates and parses Lua parsers without stale scanner state', () => {
+    let grammar: unknown;
+    try {
+      grammar = getLanguageGrammar(SupportedLanguages.Lua);
+    } catch (err) {
+      // Lua is a user-skippable vendored grammar. Its dedicated smoke must
+      // have the same unavailable-is-okay behavior as the matrix above.
+      expect(err).toBeInstanceOf(Error);
+      return;
+    }
+
+    const longEquals = '='.repeat(300);
+    for (let i = 0; i < 16; i += 1) {
+      const parser = new Parser();
+      parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
+      const snippet =
+        i % 2 === 0
+          ? 'local x = "lua"\n'
+          : `-- comment\nlocal x = [${longEquals}[lua]${longEquals}]\n`;
+      const tree = parser.parse(snippet);
+      expect(tree.rootNode.type).toBe('chunk');
+      expect(tree.rootNode.hasError).toBe(false);
+    }
+  });
+
+  it('accepts LF and CRLF newlines escaped inside short strings', () => {
+    let grammar: unknown;
+    try {
+      grammar = getLanguageGrammar(SupportedLanguages.Lua);
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      return;
+    }
+
+    const lf = String.fromCharCode(10);
+    const crlf = String.fromCharCode(13, 10);
+    const snippets = [
+      `local value = "line\\${lf}continued"${lf}`,
+      `local value = 'line\\${lf}continued'${lf}`,
+      `local value = "line\\${crlf}continued"${crlf}`,
+      `local value = 'line\\${crlf}continued'${crlf}`,
+    ];
+    for (const snippet of snippets) {
+      const parser = new Parser();
+      parser.setLanguage(grammar as Parameters<Parser['setLanguage']>[0]);
+      const tree = parser.parse(snippet);
+      expect(tree.rootNode.type).toBe('chunk');
+      expect(tree.rootNode.hasError).toBe(false);
+    }
+  });
 });

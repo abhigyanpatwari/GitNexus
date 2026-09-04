@@ -313,6 +313,17 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     },
   ],
   [
+    SupportedLanguages.Lua,
+    {
+      files: ['vendor/ghost.lua', 'lib/main.lua'],
+      fromFile: 'lib/main.lua',
+      resolutionConfig: undefined,
+      external: 'external.ghost',
+      decoy: 'vendor/ghost.lua',
+      reachesDecoy: 'vendor.ghost',
+    },
+  ],
+  [
     SupportedLanguages.Swift,
     {
       files: [
@@ -391,6 +402,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
   [SupportedLanguages.Ruby, '`rails/generators` -> `lib/generators.rb`'],
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
+  [SupportedLanguages.Lua, '`external.ghost` -> `vendor/ghost.lua`'],
   [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
   [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
   [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],

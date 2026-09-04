@@ -88,6 +88,12 @@ describe('TypeScript ESM .js extension resolution', () => {
     expect(result).toBe('src/utils.ts');
   });
 
+  it('does not resolve a JavaScript extensionless import to a Lua file', () => {
+    const ctx = makeCtx(['src/index.js', 'src/utils.lua']);
+    const result = resolve('src/index.js', './utils', SupportedLanguages.JavaScript, ctx);
+    expect(result).toBeNull();
+  });
+
   it('does NOT apply ESM fallback for non-TS/JS languages', () => {
     const ctx = makeCtx(['src/main.py', 'src/utils.ts']);
     const result = resolve('src/main.py', './utils.js', SupportedLanguages.Python, ctx);

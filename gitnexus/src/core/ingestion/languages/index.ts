@@ -25,6 +25,7 @@ import { swiftProvider } from './swift.js';
 import { dartProvider } from './dart.js';
 import { vueProvider } from './vue.js';
 import { cobolProvider } from './cobol.js';
+import { luaProvider } from './lua.js';
 import { zigProvider } from './zig.js';
 
 export const providers = {
@@ -44,6 +45,7 @@ export const providers = {
   [SupportedLanguages.Dart]: dartProvider,
   [SupportedLanguages.Vue]: vueProvider,
   [SupportedLanguages.Cobol]: cobolProvider,
+  [SupportedLanguages.Lua]: luaProvider,
   [SupportedLanguages.Zig]: zigProvider,
 } satisfies Record<SupportedLanguages, LanguageProvider>;
 

@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-lua",
+  "version": "2.1.3",
+  "description": "Lua grammar for tree-sitter (vendored by gitnexus)",
+  "repository": "https://github.com/tree-sitter-grammars/tree-sitter-lua",
+  "license": "MIT",
+  "main": "bindings/node/index.js",
+  "types": "bindings/node/index.d.ts",
+  "_vendoredBy": "gitnexus - runtime package derived from tree-sitter-lua@2.1.3 (tree-sitter-grammars/tree-sitter-lua). HELD at 2.1.3 grammar sources but REBUILT against the bundled tree-sitter@0.21.1 runtime + node-addon-api Napi convention (the same convention as vendor/tree-sitter-c). Upstream's npm package ships a nan/node.h binding that the tree-sitter@0.21.1 runtime rejects with 'Invalid language object' (nan External lacks the LANGUAGE_TYPE_TAG the 0.21.1 setLanguage validates); vendoring with this Napi binding.cc fixes that. Do not bump without verifying ABI against the 0.21.1 runtime. Loaded from vendor/ by absolute path at runtime (vendored-grammars.ts) — NEVER copied to node_modules (#2111). No prebuilds committed yet; build-tree-sitter-grammars.cjs source-builds on a toolchain host (darwin/linux x64+arm64 via clang+python).",
+  "peerDependencies": {
+    "tree-sitter": "^0.21.0"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  }
+}

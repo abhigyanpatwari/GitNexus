@@ -22,6 +22,11 @@
     "proto": {
       "name": "tree-sitter-proto",
       "upstream": { "github": "coder3101/tree-sitter-proto" }
+    },
+    "lua": {
+      "name": "tree-sitter-lua",
+      "upstream": { "npm": "tree-sitter-lua" },
+      "hold": "tree-sitter-lua@2.1.3 ships nan-based node bindings incompatible with the pinned tree-sitter@0.21.1 runtime (setLanguage rejects with 'Invalid language object'); vendored with a Napi binding.cc rebuilt from source. Needs the tree-sitter runtime upgrade (#858) plus an upstream migration to node-addon-api before the monitor can auto-bump"
     }
   }
 }

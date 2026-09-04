@@ -31,6 +31,7 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.Kotlin]: 'matrix',
   [SupportedLanguages.Swift]: 'matrix',
   [SupportedLanguages.Dart]: 'matrix',
+  [SupportedLanguages.Lua]: 'matrix',
   [SupportedLanguages.Vue]: 'matrix',
   [SupportedLanguages.Cobol]: 'matrix',
   [SupportedLanguages.Zig]: 'matrix',
@@ -265,6 +266,21 @@ pub fn main() void {
     const second = first;
     invoke(second);
 }
+`,
+  },
+  {
+    language: SupportedLanguages.Lua,
+    extension: 'lua',
+    caller: 'invoke',
+    target: 'target',
+    source: `
+function target() end
+function invoke(callback) callback() end
+function entry()
+  local first = target
+  local second = first
+  invoke(second)
+end
 `,
   },
 ] as const;
