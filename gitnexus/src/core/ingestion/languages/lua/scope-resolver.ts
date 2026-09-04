@@ -31,6 +31,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { luaProvider } from '../lua.js';
 import { emitLuaHeritageEdges } from './heritage.js';
+import { definitionIdPosition } from '../../scope-resolution/utils/definition-id.js';
 import {
   clearLuaHeritageFacts,
   type LuaCaptureSideChannel,
@@ -58,10 +59,11 @@ function populateLuaOwners(parsed: ParsedFile): void {
         (def) =>
           def.type === 'Method' &&
           def.qualifiedName === pair.method &&
-          // Match the declaration position, not an arbitrary `#<row>:` token.
-          // Callable ids may carry an arity/signature suffix; a loose
-          // substring check can associate a method with the wrong declaration.
-          new RegExp(`#${pair.defRow + 1}:\\d+:Method:`).test(def.nodeId),
+          // `parsed.localDefs` carries scope definition IDs with the
+          // 1-based capture line, while the side-channel row is tree-sitter's
+          // 0-based row. Parse the definition ID instead of relying on a
+          // substring that could be confused with a callable suffix.
+          definitionIdPosition(def.nodeId, def.filePath)?.line === pair.defRow + 1,
       );
       const owner = classes.get(pair.owner);
       if (method !== undefined && owner !== undefined) method.ownerId = owner.nodeId;
