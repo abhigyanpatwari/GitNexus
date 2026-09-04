@@ -5,15 +5,12 @@
  */
 
 import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { composeWin32NpmCommand } from '../core/embeddings/runtime-install.js';
+import { packageVersion } from '../core/package-version.js';
 import { STRICT_UPDATE_VERSION } from '../core/update-cache.js';
 import { refresh, type UpdateState } from '../core/update-check.js';
 import { t } from './i18n/index.js';
-
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json') as { version?: unknown };
 
 export const UPDATE_PACKAGE = 'gitnexus';
 
@@ -30,7 +27,7 @@ export interface UpdateCommandDependencies {
 }
 
 function defaultInstalledVersion(): string {
-  return typeof pkg.version === 'string' ? pkg.version : '';
+  return packageVersion();
 }
 
 export function updateInstallArgs(version: string): string[] {

@@ -7,8 +7,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../../helpers/cli-entry.js';
 import { cleanupTempDirSync } from '../../helpers/test-db.js';
+import { packageVersion } from '../../../src/core/package-version.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '../../..');
+const installedVersion = packageVersion();
 const tempDirs: string[] = [];
 
 function tempHome(): string {
@@ -218,7 +220,9 @@ globalThis.fetch = async () => {
       },
     );
 
-    expect(result.stderr).toContain('GitNexus 99.0.0 is available (you are running 1.6.10).');
+    expect(result.stderr).toContain(
+      `GitNexus 99.0.0 is available (you are running ${installedVersion}).`,
+    );
     expect(result.stdout).not.toContain('99.0.0 is available');
   });
 });
