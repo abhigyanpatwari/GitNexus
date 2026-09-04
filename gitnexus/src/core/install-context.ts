@@ -31,106 +31,120 @@ function findPackageDir(entryPath: string): string | null {
   }
 }
 
+interface EligibilityProbes {
+  realEntry: string;
+  env: NodeJS.ProcessEnv;
+  /** Resolved npm cache dir, when npm_config_cache is set. */
+  realCache: string | null;
+  /** Whether the resolved package directory carries a .git checkout marker. */
+  packageDirHasGit: boolean;
+  /** Resolved npm prefix, when npm_config_prefix is set. */
+  realPrefix: string | null;
+}
+
 /**
- * True only for a persistent npm global or project-local installation.
- *
- * Realpath resolution deliberately makes a linked node_modules entry point at
- * its development checkout, which is therefore ineligible.
+ * Pure classification shared by the async and sync variants. Realpath
+ * resolution deliberately makes a linked node_modules entry point at its
+ * development checkout, which is therefore ineligible.
  */
+function classifyEligibility(probes: EligibilityProbes): boolean {
+  const { realEntry, env, realCache, packageDirHasGit, realPrefix } = probes;
+  const corroboratingPaths = [
+    realEntry,
+    env.npm_execpath,
+    env.npm_config_cache && path.resolve(env.npm_config_cache),
+  ].filter((value): value is string => Boolean(value));
+  if (corroboratingPaths.some(hasEphemeralMarker)) return false;
+
+  if (realCache && isInside(realCache, realEntry)) return false;
+
+  const packageDir = findPackageDir(realEntry);
+  // Published packages do not carry .git. This also rejects unusual installs
+  // copied wholesale from a checkout.
+  if (!packageDir || packageDirHasGit) return false;
+
+  if (realPrefix && isInside(realPrefix, realEntry)) return true;
+
+  // A package rooted at node_modules/gitnexus is a persistent project-local
+  // install after ephemeral/cache layouts have been excluded above.
+  return true;
+}
+
+let memoizedAsync: boolean | undefined;
+let memoizedSync: boolean | undefined;
+
+/** True only for a persistent npm global or project-local installation. */
 export async function updateEligibleInstall(
-  entryPath = process.argv[1] ?? '',
+  entryPath?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
+  const useMemo = entryPath === undefined && env === process.env;
+  if (useMemo && memoizedAsync !== undefined) return memoizedAsync;
+  const result = await classifyAsync(entryPath ?? process.argv[1] ?? '', env);
+  if (useMemo) memoizedAsync = result;
+  return result;
+}
+
+async function classifyAsync(entryPath: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   if (!entryPath) return false;
   try {
     const realEntry = await fs.realpath(entryPath);
-    const corroboratingPaths = [
-      realEntry,
-      env.npm_execpath,
-      env.npm_config_cache && path.resolve(env.npm_config_cache),
-    ].filter((value): value is string => Boolean(value));
-    if (corroboratingPaths.some(hasEphemeralMarker)) return false;
-
-    if (env.npm_config_cache) {
-      const realCache = await fs
-        .realpath(env.npm_config_cache)
-        .catch(() => path.resolve(env.npm_config_cache as string));
-      if (isInside(realCache, realEntry)) return false;
-    }
-
+    const realCache = env.npm_config_cache
+      ? await fs
+          .realpath(env.npm_config_cache)
+          .catch(() => path.resolve(env.npm_config_cache as string))
+      : null;
     const packageDir = findPackageDir(realEntry);
-    if (!packageDir) return false;
-
-    // Published packages do not carry .git. This also rejects unusual installs
-    // copied wholesale from a checkout.
-    if (
-      await fs
-        .access(path.join(packageDir, '.git'))
-        .then(() => true)
-        .catch(() => false)
-    ) {
-      return false;
-    }
-
-    const prefix = env.npm_config_prefix;
-    if (prefix) {
-      const realPrefix = await fs.realpath(prefix).catch(() => path.resolve(prefix));
-      if (isInside(realPrefix, realEntry)) return true;
-    }
-
-    // A package rooted at node_modules/gitnexus is a persistent project-local
-    // install after ephemeral/cache layouts have been excluded above.
-    return true;
+    const packageDirHasGit = packageDir
+      ? await fs
+          .access(path.join(packageDir, '.git'))
+          .then(() => true)
+          .catch(() => false)
+      : false;
+    const realPrefix = env.npm_config_prefix
+      ? await fs.realpath(env.npm_config_prefix).catch(() => path.resolve(env.npm_config_prefix))
+      : null;
+    return classifyEligibility({ realEntry, env, realCache, packageDirHasGit, realPrefix });
   } catch {
     return false;
   }
 }
 
-/**
- * Synchronous entry-point variant for pre-Commander startup checks.
- *
- * It intentionally mirrors updateEligibleInstall: the CLI cannot await
- * filesystem classification before parsing every command.
- */
+/** Synchronous entry-point variant for pre-Commander startup checks. */
 export function updateEligibleInstallSync(
-  entryPath = process.argv[1] ?? '',
+  entryPath?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
+  const useMemo = entryPath === undefined && env === process.env;
+  if (useMemo && memoizedSync !== undefined) return memoizedSync;
+  const result = classifySync(entryPath ?? process.argv[1] ?? '', env);
+  if (useMemo) memoizedSync = result;
+  return result;
+}
+
+function classifySync(entryPath: string, env: NodeJS.ProcessEnv): boolean {
   if (!entryPath) return false;
   try {
     const realEntry = fsSync.realpathSync(entryPath);
-    const corroboratingPaths = [
-      realEntry,
-      env.npm_execpath,
-      env.npm_config_cache && path.resolve(env.npm_config_cache),
-    ].filter((value): value is string => Boolean(value));
-    if (corroboratingPaths.some(hasEphemeralMarker)) return false;
-
+    let realCache: string | null = null;
     if (env.npm_config_cache) {
-      let realCache: string;
       try {
         realCache = fsSync.realpathSync(env.npm_config_cache);
       } catch {
         realCache = path.resolve(env.npm_config_cache);
       }
-      if (isInside(realCache, realEntry)) return false;
     }
-
     const packageDir = findPackageDir(realEntry);
-    if (!packageDir || fsSync.existsSync(path.join(packageDir, '.git'))) return false;
-
-    const prefix = env.npm_config_prefix;
-    if (prefix) {
-      let realPrefix: string;
+    const packageDirHasGit = packageDir ? fsSync.existsSync(path.join(packageDir, '.git')) : false;
+    let realPrefix: string | null = null;
+    if (env.npm_config_prefix) {
       try {
-        realPrefix = fsSync.realpathSync(prefix);
+        realPrefix = fsSync.realpathSync(env.npm_config_prefix);
       } catch {
-        realPrefix = path.resolve(prefix);
+        realPrefix = path.resolve(env.npm_config_prefix);
       }
-      if (isInside(realPrefix, realEntry)) return true;
     }
-
-    return true;
+    return classifyEligibility({ realEntry, env, realCache, packageDirHasGit, realPrefix });
   } catch {
     return false;
   }

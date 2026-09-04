@@ -1,11 +1,13 @@
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App from '../../src/App';
 import i18n, { i18nReady } from '../../src/i18n';
+import {
+  UPDATE_DISMISSED_VERSION_KEY,
+  UPDATE_INFO_REFETCH_MS,
+} from '../../src/config/ui-constants';
 import type { ConnectResult, ServerInfo } from '../../src/services/backend-client';
-
-const UPDATE_DISMISSED_VERSION_KEY = 'gitnexus.updateDismissedVersion';
 
 const appStateConfig = vi.hoisted(() => ({
   initialViewMode: 'onboarding' as 'onboarding' | 'loading' | 'exploring',
@@ -274,5 +276,52 @@ describe('update banner', () => {
     expect(await screen.findByRole('status')).toHaveTextContent(
       'GitNexus 2.0.0 已发布 — 此服务器运行 1.0.0。',
     );
+  });
+
+  it('never commits an older fetch response over a newer one', async () => {
+    const deferred: Array<(value: ServerInfo) => void> = [];
+    backendMocks.fetchServerInfo.mockImplementation(
+      () => new Promise<ServerInfo>((resolve) => deferred.push(resolve)),
+    );
+    render(<App />);
+    await connectBackend();
+
+    // A reconnect refetch starts while the connect fetch is still in flight.
+    const [onConnect, onReconnecting] = backendMocks.connectHeartbeat.mock.calls[0];
+    act(() => onReconnecting());
+    await act(async () => onConnect());
+    expect(deferred).toHaveLength(2);
+
+    // The newer fetch resolves first with 2.1.0; the older fetch resolves late with 2.0.0.
+    await act(async () => deferred[1](updateInfo('2.1.0')));
+    expect(await screen.findByRole('status')).toHaveTextContent('GitNexus 2.1.0 is available');
+
+    await act(async () => deferred[0](updateInfo('2.0.0')));
+    expect(screen.getByRole('status')).toHaveTextContent('GitNexus 2.1.0 is available');
+  });
+
+  it('refetches server info on the slow exploring cadence', async () => {
+    vi.useFakeTimers();
+    try {
+      backendMocks.fetchServerInfo.mockResolvedValue(updateInfo());
+      render(<App />);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Connect test backend' }));
+      });
+      expect(screen.getByRole('status')).toHaveTextContent('GitNexus 2.0.0 is available');
+      expect(backendMocks.fetchServerInfo).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(UPDATE_INFO_REFETCH_MS);
+      });
+      expect(backendMocks.fetchServerInfo).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        vi.advanceTimersByTime(UPDATE_INFO_REFETCH_MS);
+      });
+      expect(backendMocks.fetchServerInfo).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

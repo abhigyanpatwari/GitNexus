@@ -29,15 +29,15 @@
 
 import { installGlobalStdoutSentinel } from '../mcp/stdio-context.js';
 
+import type { UpdateState } from '../core/update-check.js';
+
 interface McpUpdateLogger {
   info(bindings: Record<string, unknown>, message: string): unknown;
 }
 
 interface McpUpdateChecker {
-  evaluate(): Promise<{ updateAvailable: boolean; latestVersion?: string } | null>;
-  armUpdateRefreshScheduler(
-    onState: (state: { updateAvailable: boolean; latestVersion?: string } | null) => void,
-  ): () => void;
+  evaluate(): Promise<UpdateState | null>;
+  armUpdateRefreshScheduler(onState: (state: UpdateState | null) => void): () => void;
 }
 
 type LoadMcpUpdateChecker = () => Promise<McpUpdateChecker>;
@@ -59,12 +59,7 @@ export async function startMcpUpdateNotifier(
     return;
   }
 
-  const announce = (
-    state: {
-      updateAvailable: boolean;
-      latestVersion?: string;
-    } | null,
-  ): void => {
+  const announce = (state: UpdateState | null): void => {
     try {
       if (
         !state?.updateAvailable ||
@@ -96,17 +91,7 @@ export async function startMcpUpdateNotifier(
     return;
   }
 
-  try {
-    process.once('exit', () => {
-      try {
-        stop?.();
-      } catch {}
-    });
-  } catch {
-    try {
-      stop();
-    } catch {}
-  }
+  process.once('exit', () => stop?.());
 }
 
 export const mcpCommand = async (options?: {

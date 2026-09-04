@@ -26,13 +26,9 @@ import {
 import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { updateEligibleInstallSync } from '../core/install-context.js';
-import {
-  isNewerVersion,
-  readValidatedUpdateCacheSync,
-  type ValidatedUpdateCache,
-} from '../core/update-cache.js';
+import { readValidatedUpdateCacheSync, type ValidatedUpdateCache } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
-import { updateNoticeText, updateNotifierOptedOut } from './update-notice.js';
+import { cachedUpdateNoticeLine } from './update-notice.js';
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -213,19 +209,9 @@ export function cachedUpdateDoctorLine(options: {
   installedVersion: string;
   eligible: boolean;
   env: NodeJS.ProcessEnv;
-  now?: number;
   readCache: () => ValidatedUpdateCache | null;
 }): string | null {
-  try {
-    if (!options.eligible || updateNotifierOptedOut(options.env)) return null;
-    const cache = options.readCache();
-    if (!cache?.latestVersion || !isNewerVersion(options.installedVersion, cache.latestVersion)) {
-      return null;
-    }
-    return updateNoticeText(options.installedVersion, cache.latestVersion);
-  } catch {
-    return null;
-  }
+  return cachedUpdateNoticeLine(options);
 }
 
 export const doctorCommand = async () => {

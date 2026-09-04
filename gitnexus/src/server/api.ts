@@ -94,7 +94,7 @@ export interface ServerInfoResponse {
 }
 
 interface ServeUpdateControllerDependencies {
-  evaluate: () => Promise<UpdateState | null>;
+  evaluate: (options?: { refreshIfStale?: boolean }) => Promise<UpdateState | null>;
   armScheduler: (onState: (state: UpdateState | null) => void) => () => void;
 }
 
@@ -124,14 +124,20 @@ export const createServeUpdateController = (
       if (started || stopped) return;
       started = true;
       try {
-        updateState = await dependencies.evaluate();
+        // Cache-only: the scheduler's first cycle owns any stale refresh.
+        updateState = await dependencies.evaluate({ refreshIfStale: false });
       } catch {
         updateState = null;
       }
       if (stopped) return;
       try {
         stopScheduler = dependencies.armScheduler((state) => {
-          updateState = state;
+          if (
+            state?.updateAvailable !== updateState?.updateAvailable ||
+            state?.latestVersion !== updateState?.latestVersion
+          ) {
+            updateState = state;
+          }
         });
       } catch {
         // Update checks are best-effort and never affect HTTP availability.
@@ -2149,8 +2155,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       resolve();
     });
     server.on('error', (err) => reject(err));
-    // `listening` is the successful startup boundary. The controller first
-    // reads stale-while-revalidate state, then arms the shared unref'd timer.
+    // `listening` is the successful startup boundary for notifier work.
     bindServeUpdateControllerLifecycle(server, updateController);
 
     // Graceful shutdown — close Express + LadybugDB cleanly. Pino's default

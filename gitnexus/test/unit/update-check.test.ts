@@ -4,12 +4,8 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { updateEligibleInstall } from '../../src/core/install-context.js';
-import {
-  armUpdateRefreshScheduler,
-  evaluate,
-  isNewerVersion,
-  refresh,
-} from '../../src/core/update-check.js';
+import { isNewerVersion } from '../../src/core/update-cache.js';
+import { armUpdateRefreshScheduler, evaluate, refresh } from '../../src/core/update-check.js';
 import { acquireFileLock } from '../../src/storage/file-lock.js';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;

@@ -3,6 +3,8 @@ import { updateEligibleInstallSync } from '../core/install-context.js';
 import {
   isNewerVersion,
   readValidatedUpdateCacheSync,
+  updateNotifierOptedOut,
+  updateRefreshInProgress,
   type ValidatedUpdateCache,
 } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
@@ -29,19 +31,6 @@ export interface CliUpdateNoticeDependencies {
   spawn: SpawnLike;
 }
 
-export function isTruthyUpdateEnv(value: string | undefined): boolean {
-  if (!value) return false;
-  return !['', '0', 'false', 'no', 'off'].includes(value.toLowerCase());
-}
-
-export function updateNotifierOptedOut(env: NodeJS.ProcessEnv): boolean {
-  return (
-    isTruthyUpdateEnv(env.GITNEXUS_NO_UPDATE_NOTIFIER) ||
-    isTruthyUpdateEnv(env.NO_UPDATE_NOTIFIER) ||
-    isTruthyUpdateEnv(env.CI)
-  );
-}
-
 function excludedInvocation(argv: string[]): boolean {
   const args = argv.slice(2);
   if (args.some((arg) => EXCLUDED_FLAGS.has(arg))) return true;
@@ -51,6 +40,25 @@ function excludedInvocation(argv: string[]): boolean {
 
 export function updateNoticeText(installedVersion: string, latestVersion: string): string {
   return t('update.available', { installedVersion, latestVersion });
+}
+
+/** Shared cache-gated notice line used by the CLI banner and `doctor`. */
+export function cachedUpdateNoticeLine(options: {
+  installedVersion: string;
+  eligible: boolean;
+  env: NodeJS.ProcessEnv;
+  readCache: () => ValidatedUpdateCache | null;
+}): string | null {
+  try {
+    if (!options.eligible || updateNotifierOptedOut(options.env)) return null;
+    const cache = options.readCache();
+    if (!cache?.latestVersion || !isNewerVersion(options.installedVersion, cache.latestVersion)) {
+      return null;
+    }
+    return updateNoticeText(options.installedVersion, cache.latestVersion);
+  } catch {
+    return null;
+  }
 }
 
 export function runCliUpdateNotice(deps: CliUpdateNoticeDependencies): void {
@@ -70,15 +78,19 @@ export function runCliUpdateNotice(deps: CliUpdateNoticeDependencies): void {
     }
 
     if (cache === null || cache.stale) {
-      try {
-        deps
-          .spawn(process.execPath, [deps.argv[1] ?? '', '__update-check'], {
-            detached: true,
-            stdio: 'ignore',
-          })
-          .unref();
-      } catch {
-        // Update refresh is best-effort and must never reach Commander parsing.
+      // Coalesce parallel invocations: when a live process holds the refresh
+      // lock, its refresh covers us, so don't fork another CLI.
+      if (!updateRefreshInProgress(deps.env)) {
+        try {
+          deps
+            .spawn(process.execPath, [deps.argv[1] ?? '', '__update-check'], {
+              detached: true,
+              stdio: 'ignore',
+            })
+            .unref();
+        } catch {
+          // Update refresh is best-effort and must never reach Commander parsing.
+        }
       }
     }
   } catch {

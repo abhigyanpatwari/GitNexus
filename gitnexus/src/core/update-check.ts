@@ -1,5 +1,4 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { createRequire } from 'node:module';
 import { getGlobalDir } from '../storage/global-dir.js';
 import { writeFileAtomic } from '../storage/fs-atomic.js';
@@ -9,11 +8,14 @@ import { updateEligibleInstall } from './install-context.js';
 import { createLogger } from './logger.js';
 import {
   isNewerVersion,
+  isUpdateCacheFresh,
   normalizedUpdateRegistry,
   parseUpdateCache,
-  readValidatedUpdateCacheSync,
   STRICT_UPDATE_VERSION,
   UPDATE_CACHE_TTL_MS,
+  updateCheckCachePath,
+  updateCheckLockPath,
+  updateNotifierOptedOut,
   type UpdateCacheEntry,
 } from './update-cache.js';
 
@@ -25,12 +27,14 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
 const updateLogger = createLogger('update-check');
 
+function defaultInstalledVersion(): string {
+  return typeof pkg.version === 'string' ? pkg.version : '';
+}
+
 export interface UpdateState {
   updateAvailable: boolean;
   latestVersion?: string;
 }
-
-type CacheEntry = UpdateCacheEntry;
 
 export interface UpdateCheckOptions {
   /** Test/adapter override; omitted means classify process.argv[1]. */
@@ -50,18 +54,8 @@ export interface UpdateRefreshSchedulerOptions extends Omit<
   now?: () => number;
 }
 
-function isTruthyEnv(value: string | undefined): boolean {
-  if (!value) return false;
-  const normalized = value.toLowerCase();
-  return !['', '0', 'false', 'no', 'off'].includes(normalized);
-}
-
 function isOptedOut(): boolean {
-  return (
-    isTruthyEnv(process.env.GITNEXUS_NO_UPDATE_NOTIFIER) ||
-    isTruthyEnv(process.env.NO_UPDATE_NOTIFIER) ||
-    isTruthyEnv(process.env.CI)
-  );
+  return updateNotifierOptedOut(process.env);
 }
 
 async function isEligible(override: boolean | undefined): Promise<boolean> {
@@ -69,11 +63,11 @@ async function isEligible(override: boolean | undefined): Promise<boolean> {
 }
 
 function cacheFile(): string {
-  return path.join(getGlobalDir(), 'update-check.json');
+  return updateCheckCachePath();
 }
 
 function lockFile(): string {
-  return path.join(getGlobalDir(), 'update-check.lock');
+  return updateCheckLockPath();
 }
 
 function normalizedRegistry(): { identity: string; packageUrl: string } {
@@ -82,7 +76,7 @@ function normalizedRegistry(): { identity: string; packageUrl: string } {
   return registry;
 }
 
-async function readCache(registry: string): Promise<CacheEntry | null> {
+async function readCache(registry: string): Promise<UpdateCacheEntry | null> {
   try {
     return parseUpdateCache(await fs.readFile(cacheFile(), 'utf8'), registry);
   } catch {
@@ -90,12 +84,7 @@ async function readCache(registry: string): Promise<CacheEntry | null> {
   }
 }
 
-function isFresh(entry: CacheEntry, now: number): boolean {
-  const checkedAt = Date.parse(entry.lastCheckAt);
-  return checkedAt <= now && now - checkedAt < UPDATE_CACHE_TTL_MS;
-}
-
-function stateFrom(entry: CacheEntry, installedVersion: string): UpdateState {
+function stateFrom(entry: UpdateCacheEntry, installedVersion: string): UpdateState {
   return {
     updateAvailable:
       entry.latestVersion !== undefined && isNewerVersion(installedVersion, entry.latestVersion),
@@ -113,14 +102,14 @@ export async function evaluate(options: UpdateCheckOptions = {}): Promise<Update
     const registry = normalizedRegistry();
     const now = options.now ?? Date.now();
     const entry = await readCache(registry.identity);
-    if ((!entry || !isFresh(entry, now)) && options.refreshIfStale !== false) {
+    if (
+      (!entry || !isUpdateCacheFresh(entry.lastCheckAt, now)) &&
+      options.refreshIfStale !== false
+    ) {
       void refresh(options).catch(() => {});
     }
     if (!entry) return null;
-    return stateFrom(
-      entry,
-      options.installedVersion ?? (typeof pkg.version === 'string' ? pkg.version : ''),
-    );
+    return stateFrom(entry, options.installedVersion ?? defaultInstalledVersion());
   } catch {
     return null;
   }
@@ -149,13 +138,7 @@ async function readResponseBody(response: Response): Promise<string> {
     if (bytes > MAX_RESPONSE_BYTES) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
-  const combined = new Uint8Array(bytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(combined);
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function sanitizedHttpUrl(input: string | URL, base?: string): URL {
@@ -198,7 +181,10 @@ async function fetchLatest(packageUrl: string): Promise<string> {
   }
 }
 
-async function publishMonotonically(entry: CacheEntry, attemptStartedAt: number): Promise<void> {
+async function publishMonotonically(
+  entry: UpdateCacheEntry,
+  attemptStartedAt: number,
+): Promise<void> {
   const current = await readCache(entry.registry);
   if (current && Date.parse(current.lastCheckAt) > attemptStartedAt) return;
   await fs.mkdir(getGlobalDir(), { recursive: true });
@@ -230,16 +216,13 @@ export function refresh(options: UpdateCheckOptions = {}): Promise<UpdateState |
         // Negative entries enforce the same TTL on offline/authenticated-only
         // registries as successful checks.
       }
-      const entry: CacheEntry = {
+      const entry: UpdateCacheEntry = {
         lastCheckAt: new Date(attemptStartedAt).toISOString(),
         registry: registry.identity,
         ...(latestVersion === undefined ? {} : { latestVersion }),
       };
       await publishMonotonically(entry, attemptStartedAt);
-      return stateFrom(
-        entry,
-        options.installedVersion ?? (typeof pkg.version === 'string' ? pkg.version : ''),
-      );
+      return stateFrom(entry, options.installedVersion ?? defaultInstalledVersion());
     } catch (error) {
       updateLogger.debug(
         { code: (error as NodeJS.ErrnoException).code },
@@ -269,18 +252,28 @@ export function armUpdateRefreshScheduler(
   const cycle = async (): Promise<void> => {
     if (stopped) return;
     const now = options.now?.() ?? Date.now();
-    let entry: CacheEntry | null = null;
+    let entry: UpdateCacheEntry | null = null;
     try {
       const registry = normalizedRegistry();
       entry = await readCache(registry.identity);
-      if (!entry || !isFresh(entry, now)) {
+      if (!entry || !isUpdateCacheFresh(entry.lastCheckAt, now)) {
         await refresh({ ...options, now });
         entry = await readCache(registry.identity);
       }
     } catch {
       // The public scheduler shares the service's fail-open contract.
     }
-    const state = await evaluate({ ...options, now, refreshIfStale: false });
+    // Derive state from the entry already read above; a full evaluate() here
+    // would re-run guards and re-read the cache on every tick.
+    let state: UpdateState | null = null;
+    try {
+      state =
+        isOptedOut() || !(await isEligible(options.eligible)) || !entry
+          ? null
+          : stateFrom(entry, options.installedVersion ?? defaultInstalledVersion());
+    } catch {
+      state = null;
+    }
     if (!stopped) onState(state);
     if (!stopped) {
       const checkedAt = entry ? Date.parse(entry.lastCheckAt) : Number.NaN;
@@ -299,5 +292,3 @@ export function armUpdateRefreshScheduler(
     if (timer) clearTimeout(timer);
   };
 }
-
-export { isNewerVersion, readValidatedUpdateCacheSync };

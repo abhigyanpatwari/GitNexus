@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -9,9 +12,11 @@ import { cachedUpdateDoctorLine } from '../../src/cli/doctor.js';
 function dependencies(
   overrides: Partial<CliUpdateNoticeDependencies> = {},
 ): CliUpdateNoticeDependencies {
+  // Isolate the refresh-lock probe from the real GITNEXUS_HOME.
+  const gitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'update-notice-test-'));
   return {
     argv: ['/usr/bin/node', '/prefix/lib/node_modules/gitnexus/dist/cli/index.js', 'status'],
-    env: {},
+    env: { GITNEXUS_HOME: gitnexusHome },
     installedVersion: '1.6.10',
     isTTY: true,
     eligible: true,
@@ -77,6 +82,58 @@ describe('CLI cached update notice', () => {
       expect(deps.writeStderr).not.toHaveBeenCalled();
       expect(deps.spawn).toHaveBeenCalledOnce();
     }
+  });
+
+  it('spawns one refresh child when the cache is missing entirely', () => {
+    const unref = vi.fn();
+    const deps = dependencies({
+      readCache: vi.fn(() => null),
+      spawn: vi.fn(() => ({ unref })),
+    });
+
+    runCliUpdateNotice(deps);
+
+    expect(deps.writeStderr).not.toHaveBeenCalled();
+    expect(deps.spawn).toHaveBeenCalledOnce();
+    expect(deps.spawn).toHaveBeenCalledWith(
+      process.execPath,
+      ['/prefix/lib/node_modules/gitnexus/dist/cli/index.js', '__update-check'],
+      { detached: true, stdio: 'ignore' },
+    );
+    expect(unref).toHaveBeenCalledOnce();
+  });
+
+  it('skips the refresh spawn when a live process holds the refresh lock', () => {
+    const deps = dependencies({
+      readCache: vi.fn(() => ({ lastCheckAt: 0, latestVersion: '1.7.0', stale: true })),
+    });
+    const lockPath = path.join(deps.env.GITNEXUS_HOME as string, 'update-check.lock');
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({ pid: process.pid, ownerId: 'test', processStartTime: 'x', hostname: os.hostname() })}\n`,
+    );
+
+    runCliUpdateNotice(deps);
+
+    // The live holder's refresh covers this invocation.
+    expect(deps.spawn).not.toHaveBeenCalled();
+    // Display from the stale-but-valid cache is unaffected.
+    expect(deps.writeStderr).toHaveBeenCalledOnce();
+  });
+
+  it('spawns when the lock owner is dead so the child can reclaim it', () => {
+    const deps = dependencies({
+      readCache: vi.fn(() => null),
+    });
+    const lockPath = path.join(deps.env.GITNEXUS_HOME as string, 'update-check.lock');
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({ pid: 99999999, ownerId: 'stale', processStartTime: 'x', hostname: os.hostname() })}\n`,
+    );
+
+    runCliUpdateNotice(deps);
+
+    expect(deps.spawn).toHaveBeenCalledOnce();
   });
 
   it('does nothing for non-TTY stderr, including no cache read or child spawn', () => {
@@ -183,7 +240,6 @@ describe('doctor cached update line', () => {
         installedVersion: '1.6.10',
         eligible: true,
         env: {},
-        now: 2_000,
         readCache,
       }),
     ).toBe('GitNexus 1.7.0 is available (you are running 1.6.10).');
