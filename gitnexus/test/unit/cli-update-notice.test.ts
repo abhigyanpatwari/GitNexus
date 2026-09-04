@@ -85,7 +85,7 @@ describe('CLI cached update notice', () => {
     expect(deps.spawn).toHaveBeenCalledWith(
       process.execPath,
       ['/prefix/lib/node_modules/gitnexus/dist/cli/index.js', '__update-check'],
-      { detached: true, stdio: 'ignore' },
+      { detached: true, stdio: 'ignore', windowsHide: true },
     );
     expect(unref).toHaveBeenCalledOnce();
   });
@@ -117,7 +117,7 @@ describe('CLI cached update notice', () => {
     expect(deps.spawn).toHaveBeenCalledWith(
       process.execPath,
       ['/prefix/lib/node_modules/gitnexus/dist/cli/index.js', '__update-check'],
-      { detached: true, stdio: 'ignore' },
+      { detached: true, stdio: 'ignore', windowsHide: true },
     );
     expect(unref).toHaveBeenCalledOnce();
   });

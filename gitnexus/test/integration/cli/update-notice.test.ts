@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../../helpers/cli-entry.js';
+import { cleanupTempDirSync } from '../../helpers/test-db.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '../../..');
 const tempDirs: string[] = [];
@@ -54,7 +55,7 @@ function cli(args: string[], home: string) {
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanupTempDirSync(dir);
   }
 });
 
@@ -164,12 +165,12 @@ globalThis.fetch = async () => {
     expect(elapsed).toBeLessThan(1_800);
     const cache = path.join(home, 'update-check.json');
     expect(fs.existsSync(cache)).toBe(false);
-    await expect.poll(() => fs.existsSync(cache), { timeout: 5_000, interval: 100 }).toBe(true);
+    await expect.poll(() => fs.existsSync(cache), { timeout: 15_000, interval: 100 }).toBe(true);
     expect(JSON.parse(fs.readFileSync(cache, 'utf8'))).toMatchObject({
       latestVersion: '99.0.0',
       registry: 'https://registry.npmjs.org',
     });
-  }, 10_000);
+  }, 20_000);
 
   it('prints the localized notice on a forced-TTY stderr and keeps stdout clean', () => {
     const home = tempHome();

@@ -23,7 +23,7 @@ type SpawnResult = { unref(): void };
 type SpawnLike = (
   command: string,
   args: readonly string[],
-  options: { detached: true; stdio: 'ignore' },
+  options: { detached: true; stdio: 'ignore'; windowsHide: true },
 ) => SpawnResult;
 
 export interface CliUpdateNoticeDependencies {
@@ -93,6 +93,7 @@ export function runCliUpdateNotice(deps: CliUpdateNoticeDependencies): void {
             .spawn(process.execPath, [deps.argv[1] ?? '', '__update-check'], {
               detached: true,
               stdio: 'ignore',
+              windowsHide: true,
             })
             .unref();
         } catch {
