@@ -457,6 +457,8 @@ export async function runChunkedParseAndResolve(
   usedWorkerPool: boolean;
   /** Files dispatched to parser workers after parse-cache lookup. */
   reparsedFileCount: number;
+  /** Files restored from parse-cache chunks without parser-worker dispatch. */
+  parseCacheHitFileCount: number;
   /** Worker-produced ParsedFile artifacts aggregated across chunks.
    *  Threaded into scope-resolution as a re-extract cache so the warm-
    *  cache analyze run can skip the dominant `extractParsedFile` cost
@@ -752,6 +754,7 @@ export async function runChunkedParseAndResolve(
       : new Map<string, ReadonlySet<string>>();
   let chunkCacheHits = 0;
   let chunkCacheMisses = 0;
+  let parseCacheHitFileCount = 0;
   let reparsedFileCount = 0;
 
   try {
@@ -1044,6 +1047,7 @@ export async function runChunkedParseAndResolve(
           pendingWorkerChunk = null;
         }
         chunkCacheHits++;
+        parseCacheHitFileCount += chunkFiles.length;
         const chunkWorkerData = mergeChunkResults(graph, symbolTable, cachedRaw, exportedTypeMap);
         if (isDev) {
           logger.info(
@@ -1611,6 +1615,7 @@ export async function runChunkedParseAndResolve(
     // is intentionally measured at dispatch time rather than inferred from
     // the git/hash diff.
     reparsedFileCount,
+    parseCacheHitFileCount,
     // Per-file ParsedFile artifacts produced by workers' calls to
     // `extractParsedFile`. Consumed by scope-resolution as a re-extraction
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
