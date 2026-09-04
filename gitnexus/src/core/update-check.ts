@@ -244,19 +244,26 @@ export function refresh(options: UpdateCheckOptions = {}): Promise<UpdateState |
         throw error;
       }
 
-      let latestVersion: string | undefined;
+      let fetched: string | undefined;
       try {
-        latestVersion = await fetchLatest(registry.packageUrl);
+        fetched = await fetchLatest(registry.packageUrl);
       } catch {
         // Negative entries enforce the same TTL on offline/authenticated-only
-        // registries as successful checks.
+        // registries as successful checks. A known same-identity latestVersion
+        // must survive a later failed refresh so notices do not go silent
+        // for a day; only a first-ever miss stays version-less.
       }
+      const latestVersion = fetched ?? (await readCache(registry.identity))?.latestVersion;
       const entry: UpdateCacheEntry = {
         lastCheckAt: new Date(attemptStartedAt).toISOString(),
         registry: registry.identity,
         ...(latestVersion === undefined ? {} : { latestVersion }),
       };
       await publishMonotonically(entry, attemptStartedAt);
+      // Live fetch failed: keep the on-disk pin for notices, but do not
+      // return it as a confirmed refresh so `gitnexus update` cannot install
+      // from an unconfirmed cache.
+      if (fetched === undefined) return null;
       return stateFrom(entry, installedVersionOf(options));
     } catch (error) {
       updateLogger.debug(

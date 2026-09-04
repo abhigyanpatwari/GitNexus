@@ -156,12 +156,41 @@ describe('update check cache and versions', () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
     vi.stubGlobal('fetch', fetchMock);
 
-    await refresh({ eligible: true, now: NOW });
+    await expect(refresh({ eligible: true, now: NOW })).resolves.toBeNull();
     expect(await readCache(home)).toEqual({
       lastCheckAt: new Date(NOW).toISOString(),
       registry: REGISTRY,
     });
     await evaluate({ eligible: true, installedVersion: '1.6.10', now: NOW + 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves a known latestVersion when a later refresh fails', async () => {
+    const home = await tempHome();
+    await writeCache(home, {
+      lastCheckAt: new Date(NOW - DAY_MS - 1).toISOString(),
+      registry: REGISTRY,
+      latestVersion: '1.7.0',
+    });
+    const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      refresh({ eligible: true, installedVersion: '1.6.10', now: NOW }),
+    ).resolves.toBeNull();
+    expect(await readCache(home)).toEqual({
+      lastCheckAt: new Date(NOW).toISOString(),
+      registry: REGISTRY,
+      latestVersion: '1.7.0',
+    });
+    await expect(
+      evaluate({
+        eligible: true,
+        installedVersion: '1.6.10',
+        now: NOW + 1,
+        refreshIfStale: false,
+      }),
+    ).resolves.toEqual({ updateAvailable: true, latestVersion: '1.7.0' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
