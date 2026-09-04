@@ -22,9 +22,9 @@ runs:
       with:
         node-version: 22
         cache: npm
-        cache-dependency-path: |
-          gitnexus/package-lock.json
-          gitnexus-shared/package-lock.json
+        # Key on the CLI lockfile only. A combined hash with gitnexus-shared
+        # busts the large cached tree whenever the tiny shared lockfile changes.
+        cache-dependency-path: gitnexus/package-lock.json
 
     - name: Build gitnexus-shared
       run: npm ci && npm run build

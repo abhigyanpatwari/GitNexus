@@ -9,9 +9,10 @@ runs:
         # Vite 7 requires Node ^20.19.0 || >=22.12.0 (require(esm) support).
         node-version: 22
         cache: npm
-        cache-dependency-path: |
-          gitnexus-web/package-lock.json
-          gitnexus-shared/package-lock.json
+        # Key on the web lockfile only. Adding gitnexus-shared here changes the
+        # cache hash, forces a cold ~650-package install, and a 10-minute job
+        # cancels before setup-node can save the new cache.
+        cache-dependency-path: gitnexus-web/package-lock.json
 
     - name: Build gitnexus-shared
       run: npm ci && npm run build
@@ -22,3 +23,6 @@ runs:
       run: npm ci
       shell: bash
       working-directory: gitnexus-web
+      env:
+        # Browsers are installed explicitly by e2e. Typecheck only needs types.
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'

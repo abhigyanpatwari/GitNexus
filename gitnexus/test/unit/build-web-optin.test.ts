@@ -18,6 +18,7 @@ interface WorkflowStep {
   run?: unknown;
   uses?: string;
   with?: Record<string, unknown>;
+  env?: Record<string, unknown>;
   'working-directory'?: string;
 }
 
@@ -257,14 +258,12 @@ describe('workflows that need the web UI install it themselves', () => {
 });
 
 describe('setup-gitnexus job budget', () => {
-  it('caches and npm-ci installs gitnexus-shared so a cold typecheck cannot spend 7 minutes on npm install', () => {
+  it('npm-ci installs gitnexus-shared without hashing it into the CLI npm cache key', () => {
     const setupNode = setupGitnexus.runs?.steps?.find((step) =>
       String(step.uses ?? '').startsWith('actions/setup-node@'),
     );
     const shared = setupGitnexus.runs?.steps?.find((step) => step.name === 'Build gitnexus-shared');
-    expect(String(setupNode?.with?.['cache-dependency-path'])).toContain(
-      'gitnexus-shared/package-lock.json',
-    );
+    expect(String(setupNode?.with?.['cache-dependency-path'])).toBe('gitnexus/package-lock.json');
     expect(String(shared?.run)).toContain('npm ci');
     expect(String(shared?.run)).not.toContain('npm install');
     expect(setupGitnexus.inputs?.['lifecycle-scripts']?.default).toBe('true');
@@ -275,17 +274,21 @@ describe('setup-gitnexus job budget', () => {
     ).toBe(true);
   });
 
-  it('setup-gitnexus-web also caches and npm-ci installs gitnexus-shared', () => {
+  it('setup-gitnexus-web keeps the web npm cache key and skips Playwright browsers', () => {
     const setupNode = setupGitnexusWeb.runs?.steps?.find((step) =>
       String(step.uses ?? '').startsWith('actions/setup-node@'),
     );
     const shared = setupGitnexusWeb.runs?.steps?.find(
       (step) => step.name === 'Build gitnexus-shared',
     );
-    expect(String(setupNode?.with?.['cache-dependency-path'])).toContain(
-      'gitnexus-shared/package-lock.json',
+    const webInstall = setupGitnexusWeb.runs?.steps?.find(
+      (step) => step.name === 'Install web dependencies',
+    );
+    expect(String(setupNode?.with?.['cache-dependency-path'])).toBe(
+      'gitnexus-web/package-lock.json',
     );
     expect(String(shared?.run)).toContain('npm ci');
+    expect(webInstall?.env?.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD).toBe('1');
   });
 
   it('quality typecheck skips prepare/postinstall so tsc --noEmit fits in 10 minutes', () => {
@@ -293,5 +296,9 @@ describe('setup-gitnexus job budget', () => {
     const setup = job?.steps?.find((step) => step.uses === './.github/actions/setup-gitnexus');
     expect(job?.['timeout-minutes']).toBe(10);
     expect(setup?.with?.['lifecycle-scripts']).toBe('false');
+  });
+
+  it('quality typecheck-web can finish a cold web install instead of canceling before cache save', () => {
+    expect(qualityJobs['typecheck-web']?.['timeout-minutes']).toBe(15);
   });
 });
