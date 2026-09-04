@@ -80,9 +80,111 @@ import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
 import { isRfc1918PrivateIpv4 } from './private-ip.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
+import { armUpdateRefreshScheduler, evaluate, type UpdateState } from '../core/update-check.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
+
+export interface ServerInfoResponse {
+  version: string;
+  launchContext: 'npx' | 'global' | 'local';
+  nodeVersion: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
+}
+
+interface ServeUpdateControllerDependencies {
+  evaluate: () => Promise<UpdateState | null>;
+  armScheduler: (onState: (state: UpdateState | null) => void) => () => void;
+}
+
+export interface ServeUpdateController {
+  start: () => Promise<void>;
+  stop: () => void;
+  snapshot: () => UpdateState | null;
+}
+
+/**
+ * Own the update state for one `serve` process. The route reads snapshot()
+ * synchronously; all cache and network work stays on the startup/scheduler path.
+ */
+export const createServeUpdateController = (
+  dependencies: ServeUpdateControllerDependencies = {
+    evaluate,
+    armScheduler: armUpdateRefreshScheduler,
+  },
+): ServeUpdateController => {
+  let updateState: UpdateState | null = null;
+  let stopScheduler: (() => void) | undefined;
+  let started = false;
+  let stopped = false;
+
+  return {
+    start: async () => {
+      if (started || stopped) return;
+      started = true;
+      try {
+        updateState = await dependencies.evaluate();
+      } catch {
+        updateState = null;
+      }
+      if (stopped) return;
+      try {
+        stopScheduler = dependencies.armScheduler((state) => {
+          updateState = state;
+        });
+      } catch {
+        // Update checks are best-effort and never affect HTTP availability.
+      }
+    },
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      try {
+        stopScheduler?.();
+      } catch {
+        // Shutdown must continue even if notifier cleanup unexpectedly fails.
+      }
+    },
+    snapshot: () => updateState,
+  };
+};
+
+export const buildServerInfo = (updateState: UpdateState | null): ServerInfoResponse => {
+  const execPath = process.env.npm_execpath ?? '';
+  const argv0 = process.argv[1] ?? '';
+  let launchContext: 'npx' | 'global' | 'local';
+  if (
+    execPath.includes('npx') ||
+    argv0.includes('_npx') ||
+    process.env.npm_config_prefix?.includes('_npx')
+  ) {
+    launchContext = 'npx';
+  } else if (argv0.includes('node_modules')) {
+    launchContext = 'local';
+  } else {
+    launchContext = 'global';
+  }
+
+  return {
+    version: pkg.version,
+    launchContext,
+    nodeVersion: process.version,
+    ...(updateState?.updateAvailable && updateState.latestVersion
+      ? { latestVersion: updateState.latestVersion, updateAvailable: true }
+      : {}),
+  };
+};
+
+export const bindServeUpdateControllerLifecycle = (
+  server: {
+    once(event: 'listening' | 'close', listener: () => void): unknown;
+  },
+  controller: ServeUpdateController,
+): void => {
+  server.once('listening', () => void controller.start());
+  server.once('close', controller.stop);
+};
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -844,6 +946,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = await mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
+  const updateController = createServeUpdateController();
 
   // Backstop: remove any upload staging dirs orphaned by a previous crash.
   void sweepStaleUploads().catch(() => {});
@@ -981,21 +1084,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Server info: version and launch context (npx / global / local dev)
   app.get('/api/info', (_req, res) => {
-    const execPath = process.env.npm_execpath ?? '';
-    const argv0 = process.argv[1] ?? '';
-    let launchContext: 'npx' | 'global' | 'local';
-    if (
-      execPath.includes('npx') ||
-      argv0.includes('_npx') ||
-      process.env.npm_config_prefix?.includes('_npx')
-    ) {
-      launchContext = 'npx';
-    } else if (argv0.includes('node_modules')) {
-      launchContext = 'local';
-    } else {
-      launchContext = 'global';
-    }
-    res.json({ version: pkg.version, launchContext, nodeVersion: process.version });
+    res.json(buildServerInfo(updateController.snapshot()));
   });
 
   // List all registered repos
@@ -2060,12 +2149,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       resolve();
     });
     server.on('error', (err) => reject(err));
+    // `listening` is the successful startup boundary. The controller first
+    // reads stale-while-revalidate state, then arms the shared unref'd timer.
+    bindServeUpdateControllerLifecycle(server, updateController);
 
     // Graceful shutdown — close Express + LadybugDB cleanly. Pino's default
     // destination is `sync: false` (buffered); `flushLoggerSync()` before
     // `process.exit` so records emitted during cleanup reach stderr.
     const shutdown = async () => {
       console.log('\nShutting down...');
+      updateController.stop();
       server.close();
       jobManager.dispose();
       embedJobManager.dispose();
