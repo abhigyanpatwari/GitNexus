@@ -115,9 +115,9 @@ describe('gitnexus build scripts', () => {
 
   it('compiles gitnexus-shared with gitnexus TypeScript, not a separate TypeScript 7 install', () => {
     const src = readFileSync(path.join(REPO_ROOT, 'gitnexus/scripts/build.js'), 'utf8');
-    expect(src).toContain("path.join(ROOT, 'node_modules', '.bin', tscBin)");
-    expect(src).toContain('execFileSync(tscCmd, []');
-    expect(src).not.toContain('execSync(`"${tscCmd}"`');
+    expect(src).toContain("path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc')");
+    expect(src).toContain('execFileSync(process.execPath, [tscJs]');
+    expect(src).not.toMatch(/node_modules['"]?, ['"]\.bin/);
   });
 
   it('builds the web UI from prepack, which is what ships the tarball', () => {

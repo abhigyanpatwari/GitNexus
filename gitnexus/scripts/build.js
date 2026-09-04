@@ -52,20 +52,20 @@ if (!fs.existsSync(SHARED_ROOT)) {
   process.exit(1);
 }
 
-// Use gitnexus's TypeScript. A separate `npm ci` in gitnexus-shared installs
-// TypeScript 7 plus optional per-platform binaries and has taken 7 minutes
-// in CI to add two packages — long enough to cancel typecheck / Windows pack.
-const tscBin = process.platform === 'win32' ? 'tsc.cmd' : 'tsc';
-const tscCmd = path.join(ROOT, 'node_modules', '.bin', tscBin);
-if (!fs.existsSync(tscCmd)) {
+// Use gitnexus's TypeScript JS entry, not the `.bin/tsc` / `tsc.cmd` shim.
+// A separate `npm ci` in gitnexus-shared installs TypeScript 7 plus optional
+// per-platform binaries and has taken 7 minutes in CI. `execFileSync` also
+// cannot launch `.cmd` shims on Windows without a shell.
+const tscJs = path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
+if (!fs.existsSync(tscJs)) {
   console.error(
-    `[build] missing ${tscCmd}. Install gitnexus dependencies first (npm ci in gitnexus/).`,
+    `[build] missing ${tscJs}. Install gitnexus dependencies first (npm ci in gitnexus/).`,
   );
   process.exit(1);
 }
 
 function runTsc(cwd) {
-  execFileSync(tscCmd, [], { cwd, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+  execFileSync(process.execPath, [tscJs], { cwd, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 }
 
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
