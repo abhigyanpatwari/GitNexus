@@ -481,14 +481,32 @@ describe('windowsHide regression', () => {
   /**
    * Count spawn-family invocations. The regex matches ``spawn(``,
    * ``spawnSync(``, ``execFile(``, ``execFileSync(``,
-   * ``execFileAsync(``, ``execSync(`` as function calls — not
-   * destructures (``const { spawn } = ...``), not method calls
-   * (``.exec(``), not bare ``exec()`` (which collides with regex
-   * ``.exec()``; we explicitly drop it).
+   * ``execFileAsync(``, ``execSync(`` and simple local aliases that
+   * point at one of those functions as function calls — not destructures
+   * (``const { spawn } = ...``), not method calls (``.exec(``), not bare
+   * ``exec()`` (which collides with regex ``.exec()``; we explicitly
+   * drop it).
    */
   function countSpawnCalls(codeSource: string): number {
-    const re =
-      /(^|[^a-zA-Z0-9_$.])(spawn|spawnSync|execFile|execFileSync|execFileAsync|execSync)\s*\(/gm;
+    const spawnFunctions = [
+      'spawn',
+      'spawnSync',
+      'execFile',
+      'execFileSync',
+      'execFileAsync',
+      'execSync',
+    ];
+    const spawnNames = new Set(spawnFunctions);
+    const aliasRe = new RegExp(
+      `\\bconst\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*[^;\\n]*\\b(?:${spawnFunctions.join('|')})\\b`,
+      'g',
+    );
+    let aliasMatch: RegExpExecArray | null;
+    while ((aliasMatch = aliasRe.exec(codeSource)) !== null) {
+      spawnNames.add(aliasMatch[1]);
+    }
+
+    const re = new RegExp(`(^|[^a-zA-Z0-9_$.])(${[...spawnNames].join('|')})\\s*\\(`, 'gm');
     let count = 0;
     while (re.exec(codeSource) !== null) {
       count++;

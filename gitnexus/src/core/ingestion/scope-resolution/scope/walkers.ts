@@ -173,9 +173,10 @@ export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): 
  * that collapses to `@scope.class` in the scope-extractor query contract.
  *
  * Semantics widened historically from `'Class' | 'Interface'` to cover
- * C#-shape languages (struct, record, enum, trait). Languages that emit
- * only `'Class'` are unaffected — the extra kinds never appear in their
- * parsed output.
+ * C#-shape languages (struct, record, enum, trait) and Zig tagged unions
+ * (`union(enum)` containers own methods like structs do). Languages that
+ * emit only `'Class'` are unaffected — the extra kinds never appear in
+ * their parsed output.
  */
 export function isClassLike(t: string): boolean {
   return (
@@ -186,7 +187,8 @@ export function isClassLike(t: string): boolean {
     t === 'Struct' ||
     t === 'Record' ||
     t === 'Enum' ||
-    t === 'Trait'
+    t === 'Trait' ||
+    t === 'Union'
   );
 }
 
@@ -210,12 +212,19 @@ export function isClassLike(t: string): boolean {
  * `resolveInheritanceBaseInScope` and `resolveQualifiedInheritanceBase` are
  * (2); receiver typing is (1).
  *
- * NOT YET INCLUDED, deliberately: `Typedef` and `Union`. They belong here
- * conceptually — the `union_item` note on `MEMBER_OWNER_NODE_TYPES` records
- * the same gap, that a union owns fields captured as `Property` yet is not a
- * recognized owner — but neither is wired as a member container today, so
- * adding them would widen a predicate nothing exercises. They join when their
- * containers do, with fixtures.
+ * `Union` IS included, via `isClassLike`: Zig wires `union(enum)` as a member
+ * container (methods dispatched on a union receiver — see the `main → isEnergy`
+ * case in `test/integration/resolvers/zig.test.ts`), so it is a shape. It
+ * lives in `isClassLike` because that is the label set the ownership walkers
+ * consult, NOT because unions inherit: Zig has no inheritance and its scope
+ * resolver supplies no heritage hooks, so a `Union` never has supertypes and
+ * its MRO is just itself. C/C++ unions still do not emit `Union` defs on the
+ * scope side, so nothing changes for them.
+ *
+ * NOT YET INCLUDED, deliberately: `Typedef`. It belongs here conceptually but
+ * is not wired as a member container today, so adding it would widen a
+ * predicate nothing exercises. It joins when its container does, with
+ * fixtures.
  */
 export function isShapeLike(t: string): boolean {
   return isClassLike(t) || t === 'TypeAlias';
@@ -2105,4 +2114,58 @@ export function findExportedDef(
     if (ref.origin === 'local') return ref.def;
   }
   return undefined;
+}
+
+/**
+ * `findExportedDef`, then — when the target file declares no such local — a
+ * name the target file IMPORTED and publishes as its own (a hub module).
+ *
+ * A Zig hub is a file made only of re-exports: `pub const Terminal =
+ * @import("Terminal.zig");`, `pub const Thing = @import("thing.zig").Thing;`.
+ * Its module scope owns NO local binding, so `findExportedDef` answers nothing
+ * for `terminal.Terminal.init()` or `t: stdx.Thing`, and the finalized channel
+ * (`lookupBindingsAt`) is the only place the published names exist — origin
+ * `import` / `namespace` / `reexport`, def already resolved to the declaring
+ * file. Measured on ghostty (788 Zig files) before and after this helper:
+ * CALLS into `src/terminal/` from outside that directory went from 46 to 253;
+ * on tigerbeetle, CALLS into its `stdx` hub from outside went from 837 to 1500.
+ *
+ * Opt-in per provider (`ScopeResolver.namespaceExportsIncludeImportedNames`):
+ * in most languages a module's imports are NOT its exports (a TypeScript
+ * `import { X }` publishes nothing), and the finalized edge cannot say whether
+ * the import was written `pub`. Zig opts in because a hub member a consumer
+ * can name through the hub IS public — a private import cannot be reached
+ * through the hub in code that compiles.
+ *
+ * Class-like defs win over anything else bound under the name (a re-exported
+ * type over a same-named value), and a name the finalized channel binds to
+ * several distinct defs is refused — never guess a namespace member.
+ */
+export function findExportedDefIncludingImportedNames(
+  targetFile: string,
+  memberName: string,
+  index: WorkspaceResolutionIndex,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const local = findExportedDef(targetFile, memberName, index);
+  if (local !== undefined) return local;
+  const moduleScope = index.moduleScopeByFile.get(targetFile);
+  if (moduleScope === undefined) return undefined;
+  let picked: SymbolDefinition | undefined;
+  for (const ref of lookupBindingsAt(moduleScope.id, memberName, scopes)) {
+    if (ref.origin !== 'import' && ref.origin !== 'namespace' && ref.origin !== 'reexport')
+      continue;
+    if (picked === undefined) {
+      picked = ref.def;
+      continue;
+    }
+    if (picked.nodeId === ref.def.nodeId) continue;
+    if (isClassLike(ref.def.type) && !isClassLike(picked.type)) {
+      picked = ref.def;
+      continue;
+    }
+    if (isClassLike(picked.type) && !isClassLike(ref.def.type)) continue;
+    return undefined; // two distinct defs under one published name → refuse
+  }
+  return picked;
 }

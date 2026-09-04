@@ -22,6 +22,7 @@ import type {
   ParameterTypeClass,
   ParsedFile,
   Reference,
+  ReferenceSite,
   ScopeId,
   SymbolDefinition,
 } from 'gitnexus-shared';
@@ -66,6 +67,9 @@ export function emitFreeCallFallback(
     /** When true, `Type(...)` constructor calls link to the Class def
      *  itself rather than its explicit Constructor. Swift opts in. */
     readonly constructorCallTargetsClass?: boolean;
+    /** When true, a constructor-form site's edge gets ` (constructor)`
+     *  appended to its reason. See `ScopeResolver.markConstructionSites`. */
+    readonly markConstructionSites?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
     readonly isCallableVisibleFromCaller?: (ctx: {
       readonly callerParsed: ParsedFile;
@@ -179,6 +183,8 @@ export function emitFreeCallFallback(
   };
 
   for (const parsed of parsedFiles) {
+    type PendingRel = { rel: Parameters<KnowledgeGraph['addRelationship']>[0]; gatedAll: boolean };
+    const pending = new Map<string, PendingRel>();
     const bindingCandidatesByScope =
       options.freeCallsRequireInstanceOwnership === true
         ? new Map<ScopeId, Map<string, readonly CallableBindingCandidate[]>>()
@@ -612,22 +618,55 @@ export function emitFreeCallFallback(
         tgtGraphId,
       );
       const relId = `rel:CALLS:${callerGraphId}->${tgtGraphId}`;
+      // One edge per (caller, callee): `staticGated` is the AND over every site
+      // that collapses into it, so a callee reached from one live site and one
+      // dead site stays live whichever site the walk meets first. Emission is
+      // deferred to the end of this file's sites for that reason.
+      const pendingRel = pending.get(relId);
+      if (pendingRel !== undefined) {
+        if (site.staticGated !== true) pendingRel.gatedAll = false;
+        continue;
+      }
       if (seen.has(relId)) continue;
       seen.add(relId);
-      graph.addRelationship({
-        id: relId,
-        sourceId: callerGraphId,
-        targetId: tgtGraphId,
-        type: 'CALLS',
-        confidence: 0.85,
-        // Match legacy DAG's reason convention so consumers that
-        // assert `reason === 'import-resolved'` keep working.
-        reason: fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
+      pending.set(relId, {
+        gatedAll: site.staticGated === true,
+        rel: {
+          id: relId,
+          sourceId: callerGraphId,
+          targetId: tgtGraphId,
+          type: 'CALLS',
+          confidence: 0.85,
+          // Match legacy DAG's reason convention so consumers that
+          // assert `reason === 'import-resolved'` keep working. The
+          // construction-site marker is opt-in for the same reason.
+          reason: constructionSiteReason(
+            fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
+            site,
+            options.markConstructionSites,
+          ),
+        },
       });
       emitted++;
     }
+    for (const { rel, gatedAll } of pending.values()) {
+      graph.addRelationship(gatedAll ? { ...rel, staticGated: true } : rel);
+    }
   }
   return emitted;
+}
+
+/** `reason` of a free-call edge: the legacy string, plus ` (constructor)` for
+ *  a construction site when the provider opted in
+ *  (`ScopeResolver.markConstructionSites`). */
+export function constructionSiteReason(
+  base: string,
+  site: Pick<ReferenceSite, 'callForm'>,
+  markConstructionSites: boolean | undefined,
+): string {
+  return markConstructionSites === true && site.callForm === 'constructor'
+    ? `${base} (constructor)`
+    : base;
 }
 
 function siteKey(

@@ -1,6 +1,7 @@
 {
   "_what": "Baselines for bench/import-target/measure.mjs cover every import-target resolver registered in SCOPE_RESOLVERS on a shared corpus, plus a configured C# arm for the branch the default call cannot reach. measure.mjs derives its arm inventory from LANG_REGISTRY and --check reconciles the registered languages in both directions. The single PHP arm supplies its production PSR-4 Composer mapping; csharp_csproj supplies csproj configuration. C and C++ also receive their production resolutionConfig header corpus. The timing, shape, fingerprint, context, and retained-heap gates therefore cover each production resolver path without splitting PHP into configured and unconfigured identities.",
   "_rebaselined_2960_kotlin_declared_packages": "Kotlin now resolves only from parsed package facts and local module bindings. This deliberately changes its five fingerprints, removes path-depth sensitivity, adds the context probe, and reduces the 32000-file retained index from 40.82 MiB to 4.31 MiB. External same-name path decoys now remain unresolved.",
+  "_zig_arm_1432": "zig was registered in SCOPE_RESOLVERS by PR #1432 with no arm here, which is the exact hole the inventory arm exists for, and it reported it. The arm passes NO build config: resolveZigImportInternal walks an importer-relative @import path component by component and probes allFiles.has() twice (as spelled, then + '.zig'), so its fingerprints pin that walk alone and do not move when build.zig / build.zig.zon parsing (the bare-name legs, gated by test/unit/zig-import-resolver.test.ts) changes. Same corpus proportions as rust — 979 of 3200 resolve at 400 files — and rust's collide design, a deep tree whose spellings carry thirteen components against the unique arm's three, because component count is the only axis the cost has. Measured on one box: small 1.036 ms, collide 1.700 ms, scaling 1.050, collide scaling 1.011, depth 1.573; budgets take the file's usual ~1.5x on ratios (2.4 depth) and ~4x on absolute ms (4 / 7). Heap reads 16 B at both 8000 and 32000 files — it builds nothing, exactly rust's reading — so it sits in heap_bound_bytes at rust's absolute 1048576 B.",
   "_php_composer_gate_2962": "The canonical PHP arm supplies an authoritative App PSR-4 mapping. A deterministic Vendor0 suffix decoy makes deletion of the external gate change every timing fingerprint, while the heap arm separately pins a mapped miss, the rendered mapping, and the external null result. Three serial samples measured depth ratios 1.058, 1.114, and 1.158; the 1.8 budget is 1.55x the observed maximum. The mapped-miss heap reading peaked at 39607216 retained bytes at 32000 files.",
   "_fingerprint_note": "Per-language sha256 over every distinct fromFile|target -> resolved target. A change here is a BEHAVIOUR change: the resolver returned a different target set, and IMPORTS/CALLS edges moved. Explain it, never re-baseline to make CI green. For the languages these PRs changed, the pre-change implementations produce these same values on this corpus at both 400 and 1600 files \u2014 that is what makes the index hoist a performance change. The tie-break-level proof lives in test/unit/scope-resolution/import-target-index-parity.test.ts (verbatim copies of the pre-change code, diffed) for Kotlin's current declared-package behavior in test/unit/kotlin-module-resolution.test.ts, and for the four resolvers added there in test/unit/scope-resolution/{php,java,cobol}-import-target-parity.test.ts and test/unit/import-resolvers/csharp-csproj-parity.test.ts, and for JavaScript in test/unit/scope-resolution/javascript-import-target-parity.test.ts (a differential over 211200 old-vs-new pairs, PR #2911). The eight languages added last have no per-language parity harness against a pre-change implementation and do NOT need one: nothing about their resolution changed, so there is no before to diff against. Their fingerprints are pure forward guards, minted from the current implementations, and their adapter-boundary index reuse is covered for every registered language at once by test/unit/scope-resolution/import-target-index-reuse.contract.test.ts. NOTE for csharp_csproj: on this corpus the #2902 indexed leg (step 3 of resolveCSharpImportInternal) is reached by 2221 of the 3200 small-arm imports but answers null for every one of them \u2014 the 979 that resolve do so at step 2 \u2014 so this fingerprint pins that legs cost and its null answers, while its positive tie-breaks (unanchored substring, iteration order) are pinned by csharp-csproj-parity.test.ts. NOTE for kotlin, go, csharp and java: twenty fingerprints across these four languages were re-baselined in #2881, the one deliberate behaviour change any language in this file has had. It landed in two steps and the second is the reason the first is not a special case: Kotlin first, then the shared package-dir-index (go, java, csharp) and the csproj namespace index once the same rule was found live there. `getKotlinFileIndex` no longer requires a file's package directory to be the FIRST occurrence of that name in its own path, so the unique arm's `d % 7` nested slice (`mod{d}/src/main/kotlin/com/example/pkg{d}/inner/pkg{d}`) now belongs to package `pkg{d}` and its wildcard imports resolve: resolved 1100 -> 1153 small and deep, 4456 -> 4681 large. The collide arm needed a CORPUS edit alongside it, not just a new number \u2014 its `d % 7` slice deliberately imported `com.example.vendor{d}`, a package that exists nowhere, purely to mirror the unique arm's nested-slice MISS, so leaving it would have left collide at 1100 against small's 1153 and broken the same-workload invariant the arm is built on (that assertion is what caught it). It now uses the same `com.example.models.*` spelling as the rest of the arm, which is why its distinct_outcomes fell (2775 -> 2744, 11087 -> 10961): one shared target instead of one per d. The record-level evidence for the resolver change \u2014 235 of 19968 records moved, 54 null -> resolved, 0 buckets losing a member \u2014 is in bench/kotlin-import-target/baselines.json `_provenance`. The kotlin heap_reading_bytes and heap_ceiling_bytes moved with it, together as `_heap_reading_note` requires: 48073096 -> 48200224 bytes_large (+127128, +0.264%), ceiling still exactly 1.5x. Small, and it is worth saying WHY it is small rather than reading the number as evidence that the change is cheap. `dirChildren` grows by one entry per component-suffix the old rule used to skip, and this arm can only see part of that: the heap corpus is built with HEAP_PAD 8, which prefixes every path with `d0/\u2026/d7/`, so no path can begin with a suffix of its own directory and the leading-segment half of the old rule is structurally invisible here. What moves the reading is the `d % 7` nested slice alone. Read +0.264% as this arm's ceiling on the effect, not as the effect. GO NEEDED A CORPUS EDIT TO BE GATED AT ALL. Its nested slice was `src/pkg{d}/internal/pkg{d}`, repeating only the LAST segment, while a Go query addresses the whole package path `src/pkg{d}` \u2014 so the directory never even ended with the query and the first-occurrence rule was never reached. Every go arm sat unchanged through the resolver fix. `uniqueDir`/`collideDir` now repeat the shape at the granularity Go actually queries (`src/pkg{d}/internal/src/pkg{d}`, `svc{d}/internal/sub/svc{d}/internal`), which is what moved go from 979 to 1153 resolved and bumped `languages.go.heap.path_segments` 13 -> 14. The general lesson: a corpus that carries a shape the QUERY cannot express does not gate that shape. CSHARP AND JAVA HIT THE SAME COLLIDE-ARM TRAP AS KOTLIN. Both collide arms sent their `d % 7` slice to a namespace that exists nowhere (`App.Src{d}.Vendor`, `com.svc{d}.vendor`) purely to MIRROR the unique arm's nested-slice miss; once that miss became a hit, collide sat at 979/1100 against small's 1153 and the same-workload assertion failed. Both now use the same spelling as the rest of their arm. HEAP: no reading here moved for the resolver change. An earlier revision of this branch re-recorded `csharp_csproj` 73703384 -> 73116520 as a -0.79% effect of the step-2 filter; review measured base and branch three times each and got the same 73.10e6 on BOTH sides \u2014 the recorded 73703384 was simply not reproducible on this box, and re-recording it would have dropped that language's derived floor by 0.8% for no reason belonging to this change. Reverted. Everything else sat within +/-0.03%. Note that `_heap_reading_note`'s claim that these readings 'reproduce to the byte across processes on one box' did NOT hold on the box this was measured on: go, dart, ruby, python, php and cpp all wandered by a few hundred to a few thousand bytes between processes with no code change touching them. Treat sub-0.05% movement as jitter, not signal. HEAP, kotlin, second movement: 48200224 -> 42802456 (-11.20%), re-recorded with its ceiling. `getKotlinFileIndex` now compacts each `dirChildren` bucket as it freezes it. `addChild` mints a bucket as `[raw]` and pushes the rest, and V8 grows a backing store by `old + old/2 + 16`, so the second child takes a 1-slot store to 17: 61144 buckets, 52.9% of their slots empty, 88 B each. Same fix and same accounting as the python `byBasename` sentence above. Note what this means for the gate: a memory WIN of this size passes every arm \u2014 it is under the ceiling and over the 0.5x floor \u2014 so it is recorded because the convention says a reading and its ceiling move together, not because anything went red. kotlin now reads 40.82 MiB. The prose in measure.mjs calling it '45.85 MiB, the second-largest reading in this file' is corrected with it \u2014 and was already wrong on the ranking before this change, since csharp_csproj (69.73) and php (47.28) both read higher; kotlin was third. A measurement written into prose is not re-taken, which is the finding `_heap_bound_note` records about this very file. One further corpus edit, made in review and MEASURED rather than assumed: kotlin's collide layout repeated only the `models` leaf (`\u2026/com/example/models/inner/models`) while a Kotlin query addresses the whole dotted path, so a full revert of the Kotlin guards left both collide fingerprints UNMOVED \u2014 the arm was blind to the rule it was re-baselined for. Deepening it to `\u2026/models/inner/com/example/models` makes the revert move both, and those two fingerprints are the only ones that changed for it. The same deepening was applied to the java and kotlin UNIQUE arms and REVERTED: it moved ten more fingerprints, grew java's heap reading 43%, and bought nothing \u2014 progressive stripping lands those queries on the same file with or without the rule, so the control still failed only on go.",
   "_shape_note": "files/imports/resolved/distinct_outcomes AND the fingerprint are asserted exactly, per scale. A fingerprint alone cannot tell a legitimate resolution change from a corpus quietly shrunk below the size at which the timing arms can see anything; conversely the counts alone cannot see a defect confined to one arm, because the arms differ only in path padding and directory layout and both of those are count-neutral by design. Two cross-arm assertions close the remaining hole: the deep and collide arms must resolve exactly what small resolves (they are the same workload), and each of their fingerprints must DIFFER from small's (they are not the same corpus). Without the second, setting DEEP_PAD to 0 \u2014 which deletes the entire depth arm \u2014 moves no asserted number and prints PASS; the same is true of a collideDir that forwards to uniqueDir. THE HEAP ARM IS ASSERTED THE SAME WAY, by the same loop, and was not before: files_small, files_large, path_segments and probe decide WHAT it measures, and every one of them was reported and compared to nothing. Swapping HEAP_PROBE_TARGET.csharp_csproj for a target matching no CSPROJ_CONFIGS rootNamespace skips the whole config loop, so the getFilesInDir and getInsensitive legs never run and the arm the header calls the witness that the read pattern IS the footprint quietly becomes a two-map arm \u2014 73703384 -> 59921216 B, ratio 1.017 -> 1.011, ceiling and floor both still passing and --check still exiting 0. Setting HEAP_SMALL equal to HEAP_LARGE is the same hole from the other side: ratio goes to ~1.0 by construction and bytes_large never moves. bytes_small and bytes_large are deliberately NOT asserted for equality \u2014 heap_ceiling_bytes and the heap_reading_bytes floor bound them with ~50% either way, because heapUsed accounting moves across platforms and Node majors and an exact byte assertion would be a re-baseline per runner. THE CONTEXT ARM IS ASSERTED THE SAME WAY, by the same loop, and more strictly than either: target, with_context and without_context are exact strings with no tolerance at all, because the arm resolves one import over a three-file corpus and has no measurement noise to tolerate. A separate check requires the last two to DIFFER, for the same reason deep.fingerprint must differ from small.fingerprint \u2014 a probe on which both call shapes agree asserts one number twice. Both halves run through resolveOne, so what the arm gates is this bench threading run.ts's fifth argument, not the resolvers' behaviour.",
@@ -26,7 +27,8 @@
     "typescript": 1.8,
     "vue": 1.8,
     "c": 3.8,
-    "cpp": 4
+    "cpp": 4,
+    "zig": 1.8
   },
   "depth_budget": {
     "go": 1.4,
@@ -45,7 +47,8 @@
     "typescript": 2.6,
     "vue": 2.3,
     "c": 3,
-    "cpp": 3
+    "cpp": 3,
+    "zig": 2.4
   },
   "small_ms_ceiling": {
     "go": 7,
@@ -64,7 +67,8 @@
     "typescript": 85,
     "vue": 81,
     "c": 7,
-    "cpp": 7
+    "cpp": 7,
+    "zig": 4
   },
   "collide_ms_ceiling": {
     "go": 28,
@@ -83,7 +87,8 @@
     "typescript": 86,
     "vue": 93,
     "c": 11,
-    "cpp": 12
+    "cpp": 12,
+    "zig": 7
   },
   "heap_ceiling_bytes": {
     "kotlin": 6800000,
@@ -120,7 +125,8 @@
     "rust": 1048576,
     "javascript": 1048576,
     "typescript": 1048576,
-    "vue": 1048576
+    "vue": 1048576,
+    "zig": 1048576
   },
   "heap_floor_fraction": 0.5,
   "heap_ratio_budget": 1.25,
@@ -1013,6 +1019,57 @@
         "depth_ratio": 2.064,
         "scaling_ratio": 1.167,
         "small_ms": 1.626
+      }
+    },
+    "zig": {
+      "small": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2998,
+        "fingerprint": "d2e6e88606d3498ac58f1f099221a278c774d2078c9d8fc92e01085cb38b8f69"
+      },
+      "large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4064,
+        "distinct_outcomes": 11920,
+        "fingerprint": "f5d833f2449f3375349d37621360a817c9fba574bb33ad2b7dbc8ed51fe46462"
+      },
+      "deep": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2998,
+        "fingerprint": "8f1e9e149684d5a7f75b5424a2757162f4f92dd440fcb5839fcc4ab851d67914"
+      },
+      "collide": {
+        "files": 400,
+        "imports": 3200,
+        "resolved": 979,
+        "distinct_outcomes": 2998,
+        "fingerprint": "7d456e9bbf5b53acdc2aaad0a558a8513e969928f1cf687f2d3f8a8b957ff653"
+      },
+      "collide_large": {
+        "files": 1600,
+        "imports": 12800,
+        "resolved": 4064,
+        "distinct_outcomes": 11920,
+        "fingerprint": "91f6ef7a1f5886f284361488a7e908f0bba27124df0683085baf98fa1a52bdc3"
+      },
+      "fingerprint": "f5d833f2449f3375349d37621360a817c9fba574bb33ad2b7dbc8ed51fe46462",
+      "heap": {
+        "files_small": 8000,
+        "files_large": 32000,
+        "path_segments": 11,
+        "probe": "../vendor0/missing.zig"
+      },
+      "_measured": {
+        "collide_ms": 1.7,
+        "collide_scaling_ratio": 1.011,
+        "depth_ratio": 1.573,
+        "scaling_ratio": 1.05,
+        "small_ms": 1.036
       }
     }
   },

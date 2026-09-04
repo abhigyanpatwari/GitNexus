@@ -775,7 +775,7 @@ export async function analyzeOrWatchCommandWithRunnerIdentity(
   options: AnalyzeOptions = {},
 ): Promise<void> {
   if (options.watch) {
-    const { watchCommandWithRunnerIdentity } = await import('./watch.js');
+    const { watchCommandWithRunnerIdentity } = await import('./analyze-watch.js');
     await watchCommandWithRunnerIdentity(runnerIdentityAtBootstrap, inputPath, options);
     return;
   }
@@ -1005,6 +1005,17 @@ const analyzeCommandImpl = async (
     return;
   }
 
+  // An empty value resolves to the repository root, so `--asyncapi-spec ""`
+  // walks the whole tree — defeating the module's own rule that there is no
+  // glob-based auto-discovery, and spending the walk budget on `node_modules`.
+  // The HTTP entry point already rejects exactly this value; two doors onto one
+  // option must not hold different rules.
+  if (options.asyncapiSpec !== undefined && options.asyncapiSpec.trim() === '') {
+    cliError('  --asyncapi-spec must be a non-empty path.\n');
+    process.exitCode = 1;
+    return;
+  }
+
   if (options.embeddingDevice) {
     const allowed = new Set(['auto', 'cpu', 'dml', 'cuda', 'wasm']);
     if (!allowed.has(options.embeddingDevice)) {
@@ -1172,10 +1183,10 @@ const analyzeCommandImpl = async (
     }
   }
 
-  if (options.repairFts && options.force) {
+  if (options.repairFts && (options.force || options.parseCache === false)) {
     cliError(
-      '  Cannot combine `--repair-fts` with `--force`. ' +
-        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+      '  Cannot combine `--repair-fts` with a full rebuild. ' +
+        'Use `--repair-fts` alone for fast FTS-only repair.\n',
     );
     process.exitCode = 1;
     return;
@@ -1333,10 +1344,11 @@ const analyzeCommandImpl = async (
     const skipAgentsMd = skipAll || options.skipAgentsMd;
     const skipSkills = skipAll || options.skipSkills;
     const runOptions = {
-      // Pipeline re-index — OR'd with --skills because skill generation
-      // needs a fresh pipelineResult. Has no bearing on the registry
-      // collision guard (see allowDuplicateName below).
-      force: options.force || options.skills,
+      // Pipeline re-index — OR'd with --skills because skill generation needs
+      // a fresh pipelineResult, and with --no-parse-cache because bypassing
+      // parser output is meaningful only when the pipeline runs.
+      force: options.force || options.skills || options.parseCache === false,
+      useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
       embeddings: embeddingsEnabled,
       embeddingsNodeLimit,
@@ -1374,6 +1386,7 @@ const analyzeCommandImpl = async (
       // forwarded to the routes phase consumer scan.
       fetchWrappers: options.fetchWrappers,
       springActuatorPath: options.springActuator,
+      asyncApiSpecPath: options.asyncapiSpec,
       // The CLI always process.exit()s after this returns (success path at the
       // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
       // so the finalize close skips the native conn/db close — it can double-free

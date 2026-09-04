@@ -913,12 +913,35 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect((await listRegisteredRepos())[0].storagePath).toBe(storagePath);
 
     await expect(
-      registerRepo(tmpRepoA.dbPath, { ...boundMeta, storagePath: `${storagePath}-other` }, { storagePath }),
+      registerRepo(
+        tmpRepoA.dbPath,
+        { ...boundMeta, storagePath: `${storagePath}-other` },
+        { storagePath },
+      ),
     ).rejects.toThrow('metadata storagePath does not match');
 
     await expect(
       registerRepo(tmpRepoA.dbPath, { ...meta, repoPath: tmpRepoA.dbPath }, { storagePath }),
     ).rejects.toThrow('external storage metadata must bind storagePath');
+  });
+
+  it('preserves every concurrent registration', async () => {
+    const repoPaths = Array.from({ length: 12 }, (_, index) =>
+      path.join(tmpRepoA.dbPath, `concurrent-${index}`),
+    );
+    await Promise.all(repoPaths.map((repoPath) => fs.mkdir(repoPath, { recursive: true })));
+
+    await Promise.all(
+      repoPaths.map((repoPath, index) =>
+        registerRepo(repoPath, meta, { name: `concurrent-${index}` }),
+      ),
+    );
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(repoPaths.length);
+    expect(entries.map((entry) => entry.name).sort()).toEqual(
+      repoPaths.map((_, index) => `concurrent-${index}`).sort(),
+    );
   });
 
   it('re-registerRepo on same path without name preserves an existing alias', async () => {
@@ -1375,7 +1398,9 @@ describe('registerRepo branch nesting (#2106)', () => {
     };
     await saveMeta(storagePath, ownedMeta);
     await registerRepo(tmpRepo.dbPath, ownedMeta, { storagePath });
-    const shadowDir = path.dirname(getStoragePaths(tmpRepo.dbPath, 'feature/x', storagePath).metaPath);
+    const shadowDir = path.dirname(
+      getStoragePaths(tmpRepo.dbPath, 'feature/x', storagePath).metaPath,
+    );
     await fs.mkdir(shadowDir, { recursive: true });
 
     await saveMeta(storagePath, { ...ownedMeta, repoPath: tmpHome.dbPath });

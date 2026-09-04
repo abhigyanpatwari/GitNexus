@@ -13,6 +13,9 @@
  *                   vue (embedded-language / SFC complexity),
  *                   cobol (regex-provider path)
  *   - quarantined: (none)
+ *
+ * Added after Ring 1: zig enters as `experimental` (new language
+ * integration; promotion to `production` is a separate governance PR).
  */
 
 import { SupportedLanguages } from '../languages.js';
@@ -43,6 +46,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Dart]: 'production',
     [SupportedLanguages.Vue]: 'experimental',
     [SupportedLanguages.Cobol]: 'experimental',
+    [SupportedLanguages.Zig]: 'experimental',
   };
 
 /** Convenience predicate: is this language gating Ring 4 retirement? */

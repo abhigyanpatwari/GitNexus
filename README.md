@@ -436,7 +436,8 @@ The token may be set in the shell, `.env.local`, or `.env` in the working direct
 <summary><strong>All <code>analyze</code> flags</strong></summary>
 
 ```bash
-gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
+gitnexus analyze --force         # Full graph + FTS rebuild (reuses unchanged parser output)
+gitnexus analyze --no-parse-cache # Full rebuild that re-parses every source file
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
@@ -450,11 +451,18 @@ gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow pa
 gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16,
                                  # auto-sized to the repo). 0 is rejected — there is no sequential mode.
 gitnexus analyze --spring-actuator ./actuator  # Enrich with local Spring Boot Actuator JSON snapshots
+gitnexus analyze --asyncapi-spec ./docs/asyncapi  # Resolve broker addresses from AsyncAPI 3.x documents
 gitnexus analyze --wal-checkpoint-threshold 67108864  # LadybugDB WAL auto-checkpoint threshold in bytes
                                  # (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB)
 ```
 
 `--spring-actuator` is explicitly opt-in and accepts either a JSON bundle keyed by `mappings`, `beans`, `conditions`, `configprops`, and/or `env`, or a directory containing endpoint-named JSON files. It confirms matching static nodes and adds conservative runtime-only routes, beans, and property keys. The configured input is excluded from source scanning; only normalized repository-relative exclusions are retained for future scans, never absolute paths. Env/configprops values, origins, condition messages, and source names are never persisted or printed. Because snapshots are external runtime state, an enabled run always rebuilds; the first later run without the option rebuilds once to remove runtime evidence. The same path can be set as `springActuator` in `.gitnexusrc`.
+
+`--asyncapi-spec` is explicitly opt-in and accepts a directory of AsyncAPI documents or a single document; the path is resolved against the repository root, so a committed `docs/asyncapi` and an absolute cache written by something else both work. Each `operations[]` entry of an **AsyncAPI 3.x** document can contribute a `Destination` node keyed by broker and address, with `action: send` emitting `PUBLISHES_TO` and `action: receive` emitting `CONSUMES_FROM`, so a document and source code that name one address on one broker land on the same node. Edges start at the document, not at a callable — a document states that the service talks to an address, not which method does — and no address a document names is ever attached to an unresolved source site.
+
+An operation must name a protocol, either through its own `bindings` or through the `servers[].protocol` of the servers its channel resolves to (a channel that lists no `servers` resolves to all of them); operations that name none are refused, as are operations whose two readings name different brokers, and channels that inherit a multi-protocol server set without choosing. HTTP and WebSocket documents are refused for destination minting: there the host rather than the address names the place, and an HTTP endpoint is already modelled as a `Route`. A parameterized address — a channel declaring `parameters`, or an address containing `{` — is refused rather than keyed: two services publishing `{env}.orders` share a pattern, not a queue. AsyncAPI **2.x is refused** under its own counted reason and never mapped, because its `publish`/`subscribe` are inverted relative to 3.x `send`/`receive` and a naive mapping would reverse the async graph while leaving it connected. Every refusal is counted, and a configured path that yields nothing is reported rather than passed over in silence.
+
+Like Actuator snapshots, documents are external to git freshness — replacing one moves no commit and dirties no file — so an enabled run always rebuilds, and the first later run without the option rebuilds once to remove document-derived evidence. There is no glob-based auto-discovery, and the option is unsupported with `--watch`.
 
 If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `--worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
 
@@ -467,6 +475,46 @@ gitnexus analyze --embeddings 100000   # custom cap
 ```
 
 If embeddings are skipped on a large repository, the indexed graph likely exceeds the default cap — re-run with `--embeddings 0` or a higher limit.
+
+</details>
+
+<details>
+<summary><strong>Keep remote repositories indexed with <code>gitnexus auto-sync</code></strong></summary>
+
+`gitnexus auto-sync` clones or pulls configured repositories, analyzes new commits, and optionally syncs their group. It runs once immediately, then repeats on the configured interval. It runs in the foreground; use your process manager if it must survive a shell session. `gitnexus watch` is reserved and prints this split; it does not start auto-sync or local file watching.
+
+```bash
+# 1. Create the config once. It never overwrites an existing file.
+gitnexus auto-sync init
+
+# 2. Edit $GITNEXUS_HOME/watch_config.yml, then start it.
+gitnexus auto-sync start              # `gitnexus auto-sync` is equivalent
+gitnexus auto-sync status
+gitnexus auto-sync restart            # Required after config changes
+gitnexus auto-sync stop
+gitnexus auto-sync reset             # Clear failure state; leaves clones and indexes intact
+```
+
+`GITNEXUS_HOME` defaults to `~/.gitnexus`. A minimal configuration:
+
+```yaml
+sync_interval_minutes: 10
+analyze_timeout: 5m
+projects:
+  - local_path: /absolute/path/to/clones
+    branches: [main, master]
+    overwrite_local_changes: false
+    remote_urls:
+      - git@github.com:owner/repo.git
+```
+
+- `sync_interval_minutes` must be at least `5`; `local_path` must be an absolute path. Clones are stored below it as `host/namespace/repo`.
+- Remote URLs must use SSH SCP form and are limited to GitHub, GitLab, or Gitee.
+- `branches` are tried in order. The legacy `branch` field is supported, but do not set both.
+- Analysis runs in an isolated worker; `analyze_timeout` defaults to, and cannot exceed, half of `sync_interval_minutes`. Timeout and `auto-sync stop` request safe cancellation; a worker in native work exits after reaching a JS-visible safe point. Until then, auto-sync reports `cancelling` or `stopping` and retains ownership so another auto-sync cannot take over, for up to 5 seconds — after that the parent stops waiting and leaves the worker to exit on its own rather than killing it mid-write. This behavior is the same on macOS and Windows. `overwrite_local_changes` defaults to `false`, so a dirty local clone is skipped rather than overwritten; setting it to `true` also deletes untracked files in the clone, while keeping ignored paths.
+- Add `group_name` only after creating that group with `gitnexus group create <name>`. Partial clone output is isolated and removed after 14 days.
+
+See the [full auto-sync configuration and runtime reference](gitnexus/README.md#gitnexus-auto-sync) for concurrency, timeouts, failure thresholds, and runtime files.
 
 </details>
 
@@ -614,6 +662,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Objective-C | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 

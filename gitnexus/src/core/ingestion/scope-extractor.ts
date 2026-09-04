@@ -1312,6 +1312,11 @@ function pass5CollectReferences(
     // detection knows what to do with that. Absent for every language without
     // pointer embedding, so their sites stay byte-identical.
     const embeddedAsPointer = match['@reference.embedded-pointer'] !== undefined;
+    // Static-gating marker: the call sits in a branch the language layer proved
+    // dead at index time (Zig `if (CONST_FALSE)`). Recorded on the site and
+    // copied to the CALLS edge; absent everywhere else (see
+    // `ReferenceSite.staticGated`).
+    const staticGated = kind === 'call' && match['@reference.static-gated'] !== undefined;
 
     const site: ReferenceSite = {
       name: nameCap.text,
@@ -1333,6 +1338,7 @@ function pass5CollectReferences(
       ...(receiverChain !== undefined ? { receiverChain } : {}),
       ...(inCalleePosition ? { inCalleePosition: true } : {}),
       ...(embeddedAsPointer ? { embeddedAsPointer: true } : {}),
+      ...(staticGated ? { staticGated: true } : {}),
     };
     referenceSites.push(site);
   }
@@ -1798,6 +1804,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.property-key',
   '@reference.callee-position',
   '@reference.embedded-pointer',
+  '@reference.static-gated',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

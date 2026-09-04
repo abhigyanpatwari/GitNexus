@@ -292,13 +292,57 @@ export function normalizeHttpPath(p: string): string {
 }
 
 /**
- * Consumer-side normalization is more aggressive:
- *   - template literals (`${x}`) → `{param}`
- *   - strip protocol + host if the URL is absolute
- *   - numeric segments → `{param}` (so `/api/orders/42` → `/api/orders/{param}`)
+ * Strip LEADING template interpolations from a consumer url as gateway/host
+ * bindings — the enterprise wrapper shape `` `${serviceClient}/api/v1/x` ``
+ * where `${serviceClient}` selects the gateway service, not a route segment.
+ * This is consumer-path framework semantics (mirrors how an absolute
+ * `https://host/path` url keeps only its path), so it lives here rather than
+ * in any one language plugin:
+ *   - `` `${c}/api/x` ``      → `/api/x`   (clean prefix; `${c}${d}/api/x` → `/api/x`)
+ *   - `` `${c}/api/x/${id}` ``→ `/api/x/${id}` (mid/tail interpolations are left for the `{param}` pass)
+ * Returns null when the stripped remainder is not a single-slash path:
+ *   - remainder without `/` — relative fragment (`${c}api/x`) or scheme/host
+ *     (`${scheme}://${host}/api/x`); whether it is a path depends on
+ *     unverifiable runtime state, so it is dropped rather than guessed at;
+ *   - remainder starting with `//` — protocol-relative (`${proto}//host/api/x`);
+ *     keeping it would later collapse to `/host/api/x`.
+ *
+ * The `?` in a query string cannot leak into the brace matching: `${...}`
+ * spans are matched by braces here (before any `{param}` replacement), and
+ * `normalizeHttpPath` splits on `?` only after the whole `${...}` span —
+ * including any `?` inside it — has been collapsed to `{param}`. So
+ * `` `${c}/api/x?id=${id}` `` reduces to `/api/x` on both orderings.
  */
-function normalizeConsumerPath(url: string): string {
-  const templated = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
+function stripLeadingTemplatePrefix(url: string): string | null {
+  if (!url.startsWith('${')) return url;
+  const rest = url.replace(/^(?:\$\{[^}]*\})+/, '');
+  return rest.startsWith('/') && !rest.startsWith('//') ? rest : null;
+}
+
+/**
+ * Placeholder substituted for `${...}` before WHATWG `URL` parsing so the
+ * parser cannot percent-encode our own `{param}` markers. A genuine encoded
+ * segment like `%7Bfoo%7D` then survives as a literal, instead of being
+ * rewritten into braces and folded into `{param}`.
+ *
+ * Private-use U+E000 cannot appear in a real URL path, so a literal
+ * `__gitnexus_http_param__` segment is not rewritten into `{param}`.
+ */
+const CONSUMER_PARAM_SENTINEL = '\uE000';
+const CONSUMER_PARAM_SENTINEL_ENC = '%ee%80%80';
+
+function restoreConsumerParamSentinel(pathOnly: string): string {
+  return pathOnly
+    .split(CONSUMER_PARAM_SENTINEL)
+    .join('{param}')
+    .replace(new RegExp(CONSUMER_PARAM_SENTINEL_ENC, 'gi'), '{param}');
+}
+
+/** Canonicalize a consumer URL after `stripLeadingTemplatePrefix`. */
+function normalizeConsumerPath(url: string): string | null {
+  const stripped = stripLeadingTemplatePrefix(url.trim());
+  if (stripped === null) return null;
+  const templated = stripped.replace(/\$\{[^}]+\}/g, CONSUMER_PARAM_SENTINEL).trim();
   let pathOnly = templated;
   if (/^https?:\/\//i.test(templated)) {
     try {
@@ -307,6 +351,7 @@ function normalizeConsumerPath(url: string): string {
       pathOnly = templated.replace(/^https?:\/\/[^/]+/i, '');
     }
   }
+  pathOnly = restoreConsumerParamSentinel(pathOnly);
   const normalized = normalizeHttpPath(pathOnly || '/');
   const segments = normalized
     .split('/')
@@ -999,6 +1044,12 @@ export class HttpRouteExtractor implements ContractExtractor {
       for (const d of detections) {
         if (d.role !== 'consumer') continue;
         const pathNorm = normalizeConsumerPath(d.path);
+        // A consumer url that cannot be reduced to a routable path (e.g. a
+        // leading template binding that is neither a clean prefix nor a
+        // remainder that starts with `/`) is dropped here rather than emitted
+        // as a never-matching contract — same treatment the plugins give
+        // static relative urls at scan time.
+        if (pathNorm === null) continue;
         // Resolve the function CONTAINING the fetch/axios call so the consumer
         // contract carries a real symbolUid (was always '' — the gap that left
         // cross-repo trace/impact unable to traverse HTTP links).

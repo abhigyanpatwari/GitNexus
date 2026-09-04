@@ -20,6 +20,7 @@ import {
 import type { AnalyzeOptions } from './analyze-options.js';
 import { ensureHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
+import { t } from './i18n/index.js';
 import {
   WATCH_FULL_REFRESH_PATH,
   WatchRefreshQueue,
@@ -508,4 +509,10 @@ export async function watchCommandWithRunnerIdentity(
     setEnvironment('GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS', baselineEnvironment.workerTimeout);
     setEnvironment('GITNEXUS_VERBOSE', baselineEnvironment.verbose);
   }
+}
+
+/** Reserved CLI verb: never starts either watch product. */
+export async function watchAmbiguousCommand(_action?: string): Promise<void> {
+  process.stderr.write(t('error.watch.ambiguous'));
+  process.exitCode = 1;
 }

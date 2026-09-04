@@ -35,6 +35,7 @@ import {
   springConfigPhase,
   springAutoConfigurationPhase,
   springAopPhase,
+  springDestinationsPhase,
   springAopInheritancePhase,
   pruneLocalSymbolsPhase,
   taintSummariesPhase,
@@ -73,6 +74,20 @@ export interface PipelineOptions {
   springActuatorPath?: string;
   /** Repo-relative Actuator inputs retained only for a cleanup scan. */
   springActuatorScanExclusions?: readonly string[];
+  /**
+   * Explicit local AsyncAPI 3.x document input, read by the `springDestinations`
+   * phase. Accepts a directory of documents or a single document; the path is
+   * resolved against the repository root, so a committed `docs/asyncapi` and an
+   * absolute cache populated out of band are equally natural. Undefined keeps
+   * specification reading completely disabled.
+   *
+   * There is deliberately no glob-based auto-discovery to go with it. Scanning
+   * a repository for anything that parses as a document would make every
+   * existing index grow destination nodes on its next run without an operator
+   * having decided anything — the same reason new contract extractors ship
+   * opt-in rather than on.
+   */
+  asyncApiSpecPath?: string;
   /** Per-advice Spring AOP candidate inspection cap. `0` disables this cap. */
   springAopMaxCandidateInspectionsPerAdvice?: number;
   /** Aggregate Spring AOP candidate inspection cap for one analysis. `0` disables this cap. */
@@ -287,7 +302,8 @@ export interface PipelineOptions {
  * Phase dependency graph:
  *
  *   scan → structure → [springConfig, markdown, cobol] → parse → [routes, tools, orm]
- *     → crossFile → scopeResolution → [springAutoConfiguration, springAop] → pruneLocalSymbols
+ *     → crossFile → scopeResolution → [springAutoConfiguration, springAop,
+ *       springDestinations] → pruneLocalSymbols
  *     → mro → springAopInheritance → di → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
@@ -316,6 +332,11 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(scopeResolutionPhase)
       .register(springAutoConfigurationPhase)
       .register(springAopPhase)
+      // Async messaging overlay. Must follow scopeResolution twice over: the
+      // owner Method/Function nodes have to exist, and each provider's
+      // `applyCaptureSideChannel` has to have restored the messaging facts onto
+      // the main thread. It also reads the Property nodes springConfig emits.
+      .register(springDestinationsPhase)
       .register(pruneLocalSymbolsPhase)
       // M4 (#2084): interprocedural taint fixpoint — the first real opt-in
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
@@ -390,13 +411,19 @@ export const runPipelineFromRepo = async (
   }
 
   // Extract final results for the PipelineResult contract
-  const { totalFiles, usedWorkerPool, reparsedFileCount, unavailableScopeLanguageFiles } =
-    getPhaseOutput<{
-      totalFiles: number;
-      usedWorkerPool: boolean;
-      reparsedFileCount: number;
-      unavailableScopeLanguageFiles: number;
-    }>(results, 'parse');
+  const {
+    totalFiles,
+    usedWorkerPool,
+    reparsedFileCount,
+    parseCacheHitFileCount,
+    unavailableScopeLanguageFiles,
+  } = getPhaseOutput<{
+    totalFiles: number;
+    usedWorkerPool: boolean;
+    reparsedFileCount: number;
+    parseCacheHitFileCount: number;
+    unavailableScopeLanguageFiles: number;
+  }>(results, 'parse');
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
@@ -449,6 +476,7 @@ export const runPipelineFromRepo = async (
     undecidedSatisfaction,
     usedWorkerPool,
     reparsedFileCount,
+    parseCacheHitFileCount,
     scopeExtractionFailures,
     unavailableScopeLanguageFiles,
     pdgEmitManifest,

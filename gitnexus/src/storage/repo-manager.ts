@@ -582,11 +582,9 @@ const REGISTRY_LOCK_TIMEOUT_MS = 5_000;
  * registry-private lock namespace; the handle is kernel-owned on supported
  * platforms and crash-reclaimable by the existing fallback.
  *
- * On timeout the transaction proceeds UNLOCKED rather than throwing: the lock
- * closes a lost-update race that existed unguarded before #2716, so degrading
- * to the old best-effort behaviour is strictly better than failing an
- * `analyze`/`list`/`augment` outright on a wedged lock (a stale pid-reuse
- * ghost on platforms without start-time verification can look live forever).
+ * On timeout the transaction fails closed: continuing unlocked would reintroduce
+ * the lost-update race this lock exists to prevent and can silently discard a
+ * concurrent registration.
  */
 const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
   let lock: IndexLockHandle | null = null;
@@ -600,11 +598,13 @@ const withRegistryLock = async <T>(operation: () => Promise<T>): Promise<T> => {
         logger.info('Waiting for another GitNexus process to finish a registry update…'),
     });
   } catch (err) {
-    if (!(err instanceof IndexLockTimeoutError)) throw err;
-    logger.warn(
-      { timeoutMs: REGISTRY_LOCK_TIMEOUT_MS },
-      'Timed out waiting for the global registry lock; proceeding without it. A concurrent registry write may be lost.',
-    );
+    if (err instanceof IndexLockTimeoutError) {
+      logger.error(
+        { timeoutMs: REGISTRY_LOCK_TIMEOUT_MS },
+        'Timed out waiting for the global registry lock; refusing an unlocked registry transaction.',
+      );
+    }
+    throw err;
   }
   try {
     return await operation();
@@ -788,14 +788,11 @@ export const readRegistryStrict = async (): Promise<RegistryEntry[]> => readRegi
  * Atomic tmp+rename: a crash mid-write can never leave a truncated
  * registry.json that the next load would treat as empty and silently drop
  * every registered repo (#2106 R9). The tmp path must stay per-write — the
- * registry is the one file every gitnexus process on the machine writes, and
- * `withRegistryLock` degrades to unlocked on timeout, so the write cannot rely
- * on the lock to keep two writers off one staging path (#2888).
- *
- * `attempts` is forwarded to the rename retry; best-effort callers pass `1`.
+ * registry is the one file every gitnexus process on the machine writes (#2888).
  */
 const writeRegistry = async (entries: RegistryEntry[], attempts?: number): Promise<void> => {
-  await fs.mkdir(getGlobalDir(), { recursive: true });
+  const dir = getGlobalDir();
+  await fs.mkdir(dir, { recursive: true });
   await writeFileAtomic(
     getGlobalRegistryPath(),
     JSON.stringify(sanitizeEntries(entries), null, 2),
@@ -1684,8 +1681,6 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await withRegistryLock(async () => {
         const fresh = await readRegistry();
-        // attempts: 1 — the catch below discards a failure, so the rename
-        // backoff would only make every other process wait out this lock.
         await writeRegistry(
           fresh.filter((entry) => !prunedPaths.has(entry.path)),
           1,

@@ -20,6 +20,8 @@ export interface AnalyzeOptions {
   /** Watch quiet period in milliseconds. */
   debounce?: string;
   force?: boolean;
+  /** Commander negated flag: false only when --no-parse-cache is passed. */
+  parseCache?: boolean;
   repairFts?: boolean;
   /**
    * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
@@ -129,6 +131,13 @@ export interface AnalyzeOptions {
    * bundle or a directory containing endpoint JSON files. Disabled by default.
    */
   springActuator?: string;
+  /**
+   * Explicit local AsyncAPI 3.x document input. Accepts a directory of
+   * documents or a single document, resolved against the repository root so an
+   * out-of-band cache and a committed directory are equally usable. Disabled by
+   * default.
+   */
+  asyncapiSpec?: string;
   /** OpenAI-compatible embeddings base URL (incl. /v1). Overrides GITNEXUS_EMBEDDING_URL. */
   embeddingBaseUrl?: string;
   /** Embedding model name. Overrides GITNEXUS_EMBEDDING_MODEL. */

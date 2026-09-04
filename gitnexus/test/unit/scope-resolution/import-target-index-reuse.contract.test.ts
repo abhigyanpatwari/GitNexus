@@ -541,6 +541,25 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
       minimumParsedFileReads: 0,
     },
   ],
+  [
+    SupportedLanguages.Zig,
+    {
+      files: ['src/util.zig', 'src/main.zig'],
+      fromFile: 'src/main.zig',
+      resolutionConfig: undefined,
+      // A relative `@import` that names no file: the resolver walks the path
+      // arithmetically from `fromFile` and probes the Set with two `has` calls
+      // (`<candidate>` and `<candidate>.zig`) — membership probes only, no
+      // traversal, the same shape as Rust. Bare names go through the
+      // build.zig.zon `.path` map (a Map lookup) and never touch the Set.
+      missTarget: (i) => `ghost${i}.zig`,
+      hitTarget: 'util.zig',
+      parsedImport: IGNORES_CONTEXT,
+      // See `minimumScans` on the interface: membership probes only.
+      minimumScans: 0,
+      minimumParsedFileReads: 0,
+    },
+  ],
 ]);
 
 /**
