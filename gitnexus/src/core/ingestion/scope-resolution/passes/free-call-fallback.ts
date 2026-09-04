@@ -183,6 +183,8 @@ export function emitFreeCallFallback(
   };
 
   for (const parsed of parsedFiles) {
+    type PendingRel = { rel: Parameters<KnowledgeGraph['addRelationship']>[0]; gatedAll: boolean };
+    const pending = new Map<string, PendingRel>();
     const bindingCandidatesByScope =
       options.freeCallsRequireInstanceOwnership === true
         ? new Map<ScopeId, Map<string, readonly CallableBindingCandidate[]>>()
@@ -616,24 +618,39 @@ export function emitFreeCallFallback(
         tgtGraphId,
       );
       const relId = `rel:CALLS:${callerGraphId}->${tgtGraphId}`;
+      // One edge per (caller, callee): `staticGated` is the AND over every site
+      // that collapses into it, so a callee reached from one live site and one
+      // dead site stays live whichever site the walk meets first. Emission is
+      // deferred to the end of this file's sites for that reason.
+      const pendingRel = pending.get(relId);
+      if (pendingRel !== undefined) {
+        if (site.staticGated !== true) pendingRel.gatedAll = false;
+        continue;
+      }
       if (seen.has(relId)) continue;
       seen.add(relId);
-      graph.addRelationship({
-        id: relId,
-        sourceId: callerGraphId,
-        targetId: tgtGraphId,
-        type: 'CALLS',
-        confidence: 0.85,
-        // Match legacy DAG's reason convention so consumers that
-        // assert `reason === 'import-resolved'` keep working. The
-        // construction-site marker is opt-in for the same reason.
-        reason: constructionSiteReason(
-          fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
-          site,
-          options.markConstructionSites,
-        ),
+      pending.set(relId, {
+        gatedAll: site.staticGated === true,
+        rel: {
+          id: relId,
+          sourceId: callerGraphId,
+          targetId: tgtGraphId,
+          type: 'CALLS',
+          confidence: 0.85,
+          // Match legacy DAG's reason convention so consumers that
+          // assert `reason === 'import-resolved'` keep working. The
+          // construction-site marker is opt-in for the same reason.
+          reason: constructionSiteReason(
+            fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
+            site,
+            options.markConstructionSites,
+          ),
+        },
       });
       emitted++;
+    }
+    for (const { rel, gatedAll } of pending.values()) {
+      graph.addRelationship(gatedAll ? { ...rel, staticGated: true } : rel);
     }
   }
   return emitted;

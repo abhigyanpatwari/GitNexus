@@ -23,6 +23,12 @@ export const DEFAULT_OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
  */
 export const AUTH_TOKEN_STORAGE_KEY = 'gitnexus-auth-token';
 
+/** localStorage key holding the version whose update banner the user dismissed. */
+export const UPDATE_DISMISSED_VERSION_KEY = 'gitnexus.updateDismissedVersion';
+
+/** How often the exploring view re-reads /api/info so server-side update discoveries surface. */
+export const UPDATE_INFO_REFETCH_MS = 5 * 60 * 1000;
+
 /**
  * Default node-count above which the WebUI connects in chat-only mode (skips
  * the full graph download). Grounded in sigma.js/graphology prior art: ~10K

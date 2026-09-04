@@ -104,6 +104,7 @@ export async function resolveWatchOptions(
   const merged = mergeAnalyzeOptions(cli, config);
   const unsupported = [
     ['--force', cli.force],
+    ['--no-parse-cache', cli.parseCache === false],
     ['--repair-fts', cli.repairFts],
     ['--embeddings', cli.embeddings],
     ['--drop-embeddings', cli.dropEmbeddings],

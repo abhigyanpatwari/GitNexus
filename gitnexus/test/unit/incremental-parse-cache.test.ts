@@ -15,6 +15,8 @@ import {
   saveParseCache,
   pruneCache,
   slimParseWorkerResultsForCache,
+  getColdParseRebuildDir,
+  createColdParseRebuildDir,
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
 import { writeV8CacheFile } from '../../src/storage/v8-sidecar.js';
@@ -255,12 +257,15 @@ describe('PARSE_CACHE_VERSION', () => {
   // capture facts change for Kotlin / C++ / C# / TypeScript, and Zig is captured
   // for the first time with rules that moved within the PR — a warm cache from
   // an earlier head of that branch replayed the old facts across `--force`.
-  it('pins SCHEMA_BUMP to 92 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(92);
+  // Moved 92 -> 93 for #3161 (Zig static gating): call captures inside a
+  // comptime-false branch gain the `@reference.static-gated` marker, a
+  // parse-time fact a warm cache from an earlier head would replay without.
+  it('pins SCHEMA_BUMP to 93 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(93);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90, 91,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
@@ -940,6 +945,80 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await rm(path.join(dir, 'parse-cache', `${key}.v8`), { force: true });
       const loaded = await loadParseCacheChunk(cache, key);
       expect(loaded).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('persists cold-rebuild shards under staging without touching the live parse-cache dir', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-stage-'));
+    try {
+      const liveKey = 'a'.repeat(64);
+      const stagedKey = 'b'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[liveKey, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([liveKey]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([liveKey, stagedKey]),
+        storagePath: staging,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, stagedKey, [minimalResult({ fileCount: 99 })]);
+      const liveNames = await readdir(path.join(dir, 'parse-cache'));
+      expect(liveNames).toContain(`${liveKey}.v8`);
+      expect(liveNames).not.toContain(`${stagedKey}.v8`);
+      const stagedNames = await readdir(path.join(staging, 'parse-cache'));
+      expect(stagedNames).toContain(`${stagedKey}.v8`);
+
+      const saved = await saveParseCache(dir, cache);
+      expect(saved.sort()).toEqual([liveKey, stagedKey].sort());
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, liveKey))?.[0]?.fileCount).toBe(1);
+      expect((await loadParseCacheChunk(loaded, stagedKey))?.[0]?.fileCount).toBe(99);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('prefers a staged shard over a same-hash live shard when publishing', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-pref-'));
+    try {
+      const key = 'c'.repeat(64);
+      await saveParseCache(dir, {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[key, [minimalResult({ fileCount: 1 })]]]),
+        usedKeys: new Set([key]),
+      });
+      const staging = getColdParseRebuildDir(dir);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: staging,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
+      await saveParseCache(dir, cache);
+      const loaded = await loadParseCache(dir);
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(7);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('createColdParseRebuildDir returns distinct directories under the same storage root', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-uniq-'));
+    try {
+      const a = await createColdParseRebuildDir(dir);
+      const b = await createColdParseRebuildDir(dir);
+      expect(a).not.toBe(b);
+      expect(a.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
+      expect(b.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

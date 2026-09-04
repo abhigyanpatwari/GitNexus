@@ -137,6 +137,25 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     expect(opts.repairFts).toBe(true);
   });
 
+  it('maps --no-parse-cache to a cold parser run', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { parseCache: false });
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.useParseCache).toBe(false);
+    expect(opts.force).toBe(true);
+  });
+
+  it('reuses parser output by default', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.useParseCache).toBe(true);
+  });
+
   it('rejects combining --repair-fts with --force', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
@@ -144,8 +163,17 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
 
     expect(process.exitCode).toBe(1);
     expect(cliErrorMock).toHaveBeenCalledWith(
-      expect.stringMatching(/cannot combine `--repair-fts` with `--force`/i),
+      expect.stringMatching(/cannot combine `--repair-fts` with a full rebuild/i),
     );
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects combining --repair-fts with --no-parse-cache', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { repairFts: true, parseCache: false });
+
+    expect(process.exitCode).toBe(1);
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 

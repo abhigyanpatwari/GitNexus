@@ -306,4 +306,32 @@ export interface GraphRelationship {
     readonly weight: number;
     readonly note?: string;
   }[];
+  /**
+   * When `true`, the call site this edge was resolved from sits in a
+   * branch that is provably unreachable from the indexed source at
+   * compile time — e.g. a Zig `if (CONST_FALSE)` body, or the `else` of
+   * `if (CONST_TRUE)`, where the condition folds to a comptime-known
+   * boolean.
+   *
+   * This does NOT change what a `CALLS` edge means. `CALLS` still means
+   * "there is a resolved call site from A to B"; it has never meant "B is
+   * reachable from A", and this flag does not make it mean that.
+   * `staticGated` is additional, statically provable path-feasibility
+   * metadata on the edge: an opt-in
+   * analysis layer that a consumer may read (for example to rank or
+   * filter callers in an impact view) and that no core pass acts on.
+   * The edge is emitted, persisted, traversed and counted exactly as it
+   * was before the flag existed.
+   *
+   * Scope: only conditions that fold from constants in the source.
+   * Anything the index cannot know (build mode, target, environment) is
+   * never marked; the index has no production build configuration and
+   * does not claim to.
+   *
+   * Optional and additive: edges from languages that don't compute
+   * static gating leave this `undefined`, which readers treat
+   * identically to `false` (live). Currently set only by the Zig
+   * scope-capture emitter.
+   */
+  staticGated?: boolean;
 }

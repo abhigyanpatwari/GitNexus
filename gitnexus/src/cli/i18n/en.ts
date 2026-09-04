@@ -7,6 +7,16 @@ export const en = {
   'common.storage': 'Storage',
   'common.deleted': 'Deleted: {{target}}',
   'common.error': 'Error: {{message}}',
+  'update.available':
+    'GitNexus {{latestVersion}} is available (you are running {{installedVersion}}).',
+  'update.current':
+    'GitNexus {{installedVersion}} is current or newer than the latest stable version.',
+  'update.installing': 'Installing with {{command}}…',
+  'update.installed': 'Installed gitnexus@{{version}}. Restart long-running mcp/serve processes.',
+  'update.installFailed': 'npm install failed. You can retry: {{command}}',
+  'update.installError': 'Could not run npm: {{message}}',
+  'update.checkFailed':
+    'Could not check for updates (offline, private registry, or the check failed open).',
   'list.title': 'Indexed Repositories ({{count}})',
   'list.indexed': 'Indexed',
   'list.commit': 'Commit',
@@ -165,6 +175,8 @@ export const en = {
   'help.command.status.description': 'Show index status for current repo',
   'help.command.doctor.description':
     'Show runtime platform capabilities and embedding configuration',
+  'help.command.update.description':
+    'Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).',
   'help.command.embeddings.description': 'Manage the on-demand local embedding runtime',
   'help.command.embeddings.install.description':
     'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). Downloads only from your configured npm registry — mirrors and proxies apply.',
@@ -204,7 +216,9 @@ export const en = {
   'help.command.group.contracts.description': 'Inspect Contract Registry',
   'help.option.setup.codingAgent':
     'Configure only these coding agents (comma-separated or repeatable)',
-  'help.option.analyze.force': 'Force full re-index even if up to date',
+  'help.option.analyze.force': 'Force graph and FTS rebuild; unchanged parser output may be reused',
+  'help.option.analyze.noParseCache':
+    'Re-parse every source file instead of replaying cached parser output',
   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
   'help.option.analyze.embeddings':
     'Enable embedding generation for semantic search (off by default). Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',

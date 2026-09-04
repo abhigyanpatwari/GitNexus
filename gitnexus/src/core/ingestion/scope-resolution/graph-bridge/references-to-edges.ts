@@ -185,6 +185,7 @@ export function emitReferencesViaLookup(
         type: edgeType,
         confidence: ref.confidence,
         reason: referenceEdgeReason(ref, options?.markConstructionSites),
+        ...(ref.staticGated === true ? { staticGated: true } : {}),
       });
       emitted++;
     }

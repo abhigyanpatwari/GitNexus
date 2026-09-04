@@ -11,6 +11,13 @@ export const zhCN = {
   'common.storage': '存储',
   'common.deleted': '已删除：{{target}}',
   'common.error': '错误：{{message}}',
+  'update.available': 'GitNexus {{latestVersion}} 已发布（当前运行 {{installedVersion}}）。',
+  'update.current': 'GitNexus {{installedVersion}} 已是最新稳定版或不低于该版本。',
+  'update.installing': '正在执行 {{command}}…',
+  'update.installed': '已安装 gitnexus@{{version}}。请重启仍在运行的 mcp/serve 进程。',
+  'update.installFailed': 'npm 安装失败。可重试：{{command}}',
+  'update.installError': '无法运行 npm：{{message}}',
+  'update.checkFailed': '无法检查更新（离线、私有仓库，或检查失败）。',
   'list.title': '已索引仓库（{{count}}）',
   'list.indexed': '索引时间',
   'list.commit': '提交',
@@ -162,6 +169,8 @@ export const zhCN = {
   'help.command.list.description': '列出所有已索引仓库',
   'help.command.status.description': '显示当前仓库的索引状态',
   'help.command.doctor.description': '显示运行平台能力和嵌入配置',
+  'help.command.update.description':
+    '通过 npm 全局安装最新发布的 GitNexus（`npm i -g gitnexus@<x.y.z>`）。',
   'help.command.embeddings.description': '管理按需安装的本地嵌入运行时',
   'help.command.embeddings.install.description':
     '按需安装本地嵌入组件（@huggingface/transformers + onnxruntime-node）。修复 npm 跳过可选包的安装（例如在 HTTP 代理后，#2370）。仅从你配置的 npm registry 下载 — 镜像和代理均生效。',
@@ -192,7 +201,8 @@ export const zhCN = {
   'help.command.group.query.description': '跨仓库组所有仓库搜索执行流程',
   'help.command.group.contracts.description': '查看 Contract Registry',
   'help.option.setup.codingAgent': '仅配置这些编码代理（逗号分隔或重复传入）',
-  'help.option.analyze.force': '即使已是最新也强制完整重建索引',
+  'help.option.analyze.force': '强制重建图和 FTS；未更改的解析器输出可能被复用',
+  'help.option.analyze.noParseCache': '重新解析每个源文件，不重放缓存的解析器输出',
   'help.option.analyze.repairFts': '修复/重建搜索 FTS 索引，不执行完整重新分析',
   'help.option.analyze.embeddings':
     '启用语义搜索的嵌入生成（默认关闭）。可选 [limit] 覆盖 50,000 节点安全上限；传 0 可完全禁用上限。',

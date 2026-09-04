@@ -191,11 +191,13 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     assert claude_lock["packages"]["node_modules/@anthropic-ai/claude-code"]["integrity"].startswith("sha512-")
     assert "if(p.version!=='2.1.214') process.exit(1)" in workflow
     assert "'2.1.214 (Claude Code)'" in workflow
-    assert containment_steps["Build pinned shared runtime"]["working-directory"] == "gitnexus-shared"
-    assert containment_steps["Build pinned shared runtime"]["run"].splitlines() == [
-        "npm ci",
-        "npm run build",
-    ]
+    # Shared is compiled by gitnexus `npm run build` (scripts/build.js runTsc).
+    # A dedicated npm ci in gitnexus-shared pulls TypeScript 7 and stalls CI.
+    assert "Build pinned shared runtime" not in containment_steps
+    assert not any(
+        step.get("working-directory") == "gitnexus-shared" and "npm ci" in str(step.get("run", ""))
+        for step in containment["steps"]
+    )
     assert containment_steps["Install and build pinned GitNexus runtime"]["working-directory"] == "gitnexus"
     assert containment_steps["Install and build pinned GitNexus runtime"]["run"].splitlines() == [
         "npm ci",

@@ -14,6 +14,8 @@ import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.j
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
+import { writeCommandBanner } from './command-banner.js';
+import { runProcessCliUpdateNotice } from './update-notice.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -75,7 +77,11 @@ program
   .description('Index a repository (full analysis)')
   .option('--watch', 'Keep the index current with serialized incremental refreshes')
   .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
-  .option('-f, --force', 'Force full re-index even if up to date')
+  .option('-f, --force', 'Force graph and FTS rebuild; unchanged parser output may be reused')
+  .option(
+    '--no-parse-cache',
+    'Re-parse every source file instead of replaying cached parser output',
+  )
   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
   .option(
     '--embeddings [limit]',
@@ -296,6 +302,11 @@ program
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
 
 program
+  .command('update')
+  .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
+  .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
+
+program
   .command('embeddings')
   .description('Manage the on-demand local embedding runtime')
   .command('install')
@@ -498,7 +509,17 @@ program
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
+program.command('__update-check', { hidden: true }).action(async () => {
+  const { refresh } = await import('../core/update-check.js');
+  await refresh();
+});
+
 registerGroupCommands(program);
 localizeCliHelp(program);
 
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  writeCommandBanner(actionCommand);
+});
+
+runProcessCliUpdateNotice(typeof pkg.version === 'string' ? pkg.version : '');
 program.parse(process.argv);

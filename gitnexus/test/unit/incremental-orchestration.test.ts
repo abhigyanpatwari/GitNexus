@@ -579,6 +579,28 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('useParseCache:false bypasses the alreadyUpToDate fast path without --force', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const logs: string[] = [];
+      const cold = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, useParseCache: false },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(cold.alreadyUpToDate).toBeUndefined();
+      expect(cold.pipelineResult?.parseCacheHitFileCount ?? 0).toBe(0);
+      expect(cold.pipelineResult?.reparsedFileCount).toBe(7);
+      expect(logs.join('\n')).toContain('Parser cache bypass requested');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('rebuilds for Actuator snapshots and once more when runtime enrichment is disabled', async () => {
     const repo = await setupMiniRepo();
     const runtimeInput = 'runtime-actuator';
@@ -663,12 +685,17 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(steady.alreadyUpToDate).toBe(true);
 
+      const forceLogs: string[] = [];
       const forcedSteady = await runFullAnalysis(
         repo.dbPath,
         { skipAgentsMd: true, force: true },
-        { onProgress: () => {} },
+        { onProgress: () => {}, onLog: (message) => forceLogs.push(message) },
       );
       expect(forcedSteady.alreadyUpToDate).toBeUndefined();
+      expect(forceLogs.join('\n')).toContain(
+        'Rebuilt the graph and FTS while reusing cached parser output',
+      );
+      expect(forceLogs.join('\n')).toContain('increment SCHEMA_BUMP');
       expect(
         await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
       ).toEqual([]);

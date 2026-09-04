@@ -42,6 +42,7 @@ const allHelpCommands = [
   ['list'],
   ['status'],
   ['doctor'],
+  ['update'],
   ['clean'],
   ['remove'],
   ['wiki'],

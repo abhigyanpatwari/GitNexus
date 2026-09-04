@@ -788,8 +788,6 @@ const analyzeCommandImpl = async (
   cliOptions?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<void> => {
-  console.log('\n  GitNexus Analyzer\n');
-
   // ── Resolve the target repo root ──────────────────────────────────
   // Resolved FIRST because `.gitnexusrc` is read from the repo root (not the
   // caller's cwd), and config can set defaults that the validation below
@@ -1184,10 +1182,10 @@ const analyzeCommandImpl = async (
     }
   }
 
-  if (options.repairFts && options.force) {
+  if (options.repairFts && (options.force || options.parseCache === false)) {
     cliError(
-      '  Cannot combine `--repair-fts` with `--force`. ' +
-        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
+      '  Cannot combine `--repair-fts` with a full rebuild. ' +
+        'Use `--repair-fts` alone for fast FTS-only repair.\n',
     );
     process.exitCode = 1;
     return;
@@ -1345,10 +1343,11 @@ const analyzeCommandImpl = async (
     const skipAgentsMd = skipAll || options.skipAgentsMd;
     const skipSkills = skipAll || options.skipSkills;
     const runOptions = {
-      // Pipeline re-index — OR'd with --skills because skill generation
-      // needs a fresh pipelineResult. Has no bearing on the registry
-      // collision guard (see allowDuplicateName below).
-      force: options.force || options.skills,
+      // Pipeline re-index — OR'd with --skills because skill generation needs
+      // a fresh pipelineResult, and with --no-parse-cache because bypassing
+      // parser output is meaningful only when the pipeline runs.
+      force: options.force || options.skills || options.parseCache === false,
+      useParseCache: options.parseCache !== false,
       repairFts: options.repairFts,
       embeddings: embeddingsEnabled,
       embeddingsNodeLimit,

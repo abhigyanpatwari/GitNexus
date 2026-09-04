@@ -19,9 +19,9 @@
  * - Chunk-level invalidation gives a useful speedup floor (98% on a single
  *   1-of-50 invalidated chunk) without touching the worker.
  *
- * Survives `--force` because it's content-addressed: the same bytes always
- * produce the same key. `--force` only matters for the LadybugDB writeback;
- * the cache itself is always safe to reuse.
+ * `--force` still reuses content-addressed shards (it only rebuilds graph/FTS).
+ * `useParseCache: false` reparses every file, writes a staging generation, and
+ * publishes onto this cache only after a successful analysis.
  */
 
 import { createHash } from 'crypto';
@@ -732,7 +732,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // byte-identical graph until `parse-cache/` and `parsedfile-cache/` were
 // deleted by hand. 92 is the next free value above origin/main (91) at merge
 // time. RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
-const SCHEMA_BUMP = 92;
+// v93: Zig call captures inside a comptime-false branch carry
+// `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
+// `staticGated` and the CALLS edge a BOOLEAN column.
+const SCHEMA_BUMP = 93;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
@@ -812,6 +815,27 @@ export const packParseCacheChunks = (
 
 const LEGACY_CACHE_FILENAME = 'parse-cache.json';
 const CACHE_DIRNAME = 'parse-cache';
+/**
+ * Per-run staging root for `useParseCache: false`. Parse-cache shards and the
+ * ParsedFile stores write here so a crash cannot mix a new generation into the
+ * live `.gitnexus/parse-cache` / `parsedfile-cache` trees. `saveParseCache`
+ * publishes onto the live `storagePath` only after a successful analysis.
+ */
+export const COLD_PARSE_REBUILD_DIRNAME = 'parse-rebuild';
+
+/** Deterministic staging path — tests only. Production uses {@link createColdParseRebuildDir}. */
+export const getColdParseRebuildDir = (storagePath: string): string =>
+  path.join(storagePath, COLD_PARSE_REBUILD_DIRNAME);
+
+/**
+ * Unique per analyze process so concurrent `--no-parse-cache` runs on
+ * different branch slots (shared `.gitnexus`, separate index locks) do not
+ * delete each other's staging tree.
+ */
+export const createColdParseRebuildDir = async (storagePath: string): Promise<string> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  return fs.mkdtemp(path.join(storagePath, `${COLD_PARSE_REBUILD_DIRNAME}.`));
+};
 const CACHE_INDEX_FILENAME = 'index.json';
 
 /** Keys on disk always come from `computeChunkHash` — 64-char lowercase hex. */
@@ -848,6 +872,8 @@ export interface ParseCache {
    * When set, chunk payloads are loaded from / flushed to sharded files on
    * demand instead of retaining every chunk in `entries` for the whole run
    * (#1983 — Linux kernel OOM from duplicate in-memory cache + graph).
+   * May be a per-run staging directory (`getColdParseRebuildDir`) while the
+   * live index root is passed separately to `saveParseCache`.
    */
   storagePath?: string;
   /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
@@ -1031,6 +1057,11 @@ export const loadParseCacheChunk = async (
  */
 const createdCacheDirs = new Set<string>();
 
+/** Drop the mkdir memo after the staging tree is wiped so the next persist recreates it. */
+export const forgetCreatedParseCacheDir = (storagePath: string): void => {
+  createdCacheDirs.delete(getCacheDirPath(storagePath));
+};
+
 /**
  * Persist one chunk shard and avoid retaining it in RAM for the rest of the
  * run. Falls back to `cache.entries` when `storagePath` is unset (unit tests).
@@ -1168,8 +1199,18 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
       }
       continue;
     }
-    const existingPath = getCacheChunkPath(storagePath, chunkHash);
-    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
+    // Cold rebuilds persist mid-run under `cache.storagePath` (staging). Prefer
+    // that generation over a same-hash shard still sitting in the live dir so
+    // we never publish a mixed old/new pair. Sibling-branch keys (#2106) that
+    // this run did not rewrite still copy from the live path.
+    const stagedPath =
+      cache.storagePath !== undefined && cache.storagePath !== storagePath
+        ? getCacheChunkPath(cache.storagePath, chunkHash)
+        : undefined;
+    const livePath = getCacheChunkPath(storagePath, chunkHash);
+    const fromStaged = Boolean(stagedPath && cache.onDiskKeys?.has(chunkHash));
+    const sourcePath = fromStaged && stagedPath ? stagedPath : livePath;
+    if (await copyV8CacheIfPresent(sourcePath, chunkPath)) {
       writtenKeys.push(chunkHash);
     }
   }
@@ -1213,10 +1254,12 @@ export const pruneCache = (cache: ParseCache, usedHashes: ReadonlySet<string>): 
   return removed;
 };
 
-const emptyCache = (storagePath?: string): ParseCache => ({
+export const emptyParseCache = (storagePath?: string): ParseCache => ({
   version: PARSE_CACHE_VERSION,
   entries: new Map<string, ParseWorkerResult[]>(),
   usedKeys: new Set<string>(),
   storagePath,
   onDiskKeys: storagePath ? new Set<string>() : undefined,
 });
+
+const emptyCache = emptyParseCache;
