@@ -303,7 +303,7 @@ program
 
 program
   .command('update')
-  .description('Install the latest published GitNexus globally (`npm i -g gitnexus@version`).')
+  .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
   .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
 
 program

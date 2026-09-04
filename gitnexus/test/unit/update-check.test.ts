@@ -131,17 +131,24 @@ describe('update check cache and versions', () => {
 
   it('treats a future timestamp as stale', async () => {
     const home = await tempHome();
+    // Wall-clock-future lastCheckAt is monotonic poison; NOW+1ms is still in
+    // the past on a later wall clock and would not be overwritten.
     await writeCache(home, {
-      lastCheckAt: new Date(NOW + 1).toISOString(),
+      lastCheckAt: new Date(Date.now() + 60_000).toISOString(),
       registry: REGISTRY,
-      latestVersion: '1.7.0',
+      latestVersion: '1.6.0',
     });
     const fetchMock = vi.fn().mockResolvedValue(registryResponse());
     vi.stubGlobal('fetch', fetchMock);
 
     await evaluate({ eligible: true, installedVersion: '1.6.10', now: NOW });
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    await vi.waitFor(async () => expect((await readCache(home)).latestVersion).toBe('1.7.0'));
+    await vi.waitFor(async () =>
+      expect(await readCache(home)).toEqual({
+        lastCheckAt: new Date(NOW).toISOString(),
+        registry: REGISTRY,
+        latestVersion: '1.7.0',
+      }),
+    );
   });
 
   it('writes a negative entry after failure and suppresses retries inside the TTL', async () => {

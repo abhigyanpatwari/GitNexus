@@ -52,17 +52,20 @@ describe('CLI cached update notice', () => {
   it('writes exactly one localized line to stderr for a TTY and keeps stdout untouched', () => {
     const writeStderr = vi.fn();
     const stdoutWrite = vi.spyOn(process.stdout, 'write');
-    const deps = dependencies({ writeStderr });
+    try {
+      const deps = dependencies({ writeStderr });
 
-    runCliUpdateNotice(deps);
+      runCliUpdateNotice(deps);
 
-    expect(writeStderr).toHaveBeenCalledOnce();
-    expect(writeStderr).toHaveBeenCalledWith(
-      'GitNexus 1.7.0 is available (you are running 1.6.10).\n',
-    );
-    expect(stdoutWrite).not.toHaveBeenCalled();
-    expect(deps.spawn).not.toHaveBeenCalled();
-    stdoutWrite.mockRestore();
+      expect(writeStderr).toHaveBeenCalledOnce();
+      expect(writeStderr).toHaveBeenCalledWith(
+        'GitNexus 1.7.0 is available (you are running 1.6.10).\n',
+      );
+      expect(stdoutWrite).not.toHaveBeenCalled();
+      expect(deps.spawn).not.toHaveBeenCalled();
+    } finally {
+      stdoutWrite.mockRestore();
+    }
   });
 
   it('displays stale valid state and starts one detached, ignored, unrefd refresh child', () => {

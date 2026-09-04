@@ -170,7 +170,7 @@ export const zhCN = {
   'help.command.status.description': '显示当前仓库的索引状态',
   'help.command.doctor.description': '显示运行平台能力和嵌入配置',
   'help.command.update.description':
-    '通过 npm 全局安装最新发布的 GitNexus（`npm i -g gitnexus@version`）。',
+    '通过 npm 全局安装最新发布的 GitNexus（`npm i -g gitnexus@<x.y.z>`）。',
   'help.command.embeddings.description': '管理按需安装的本地嵌入运行时',
   'help.command.embeddings.install.description':
     '按需安装本地嵌入组件（@huggingface/transformers + onnxruntime-node）。修复 npm 跳过可选包的安装（例如在 HTTP 代理后，#2370）。仅从你配置的 npm registry 下载 — 镜像和代理均生效。',

@@ -175,7 +175,7 @@ export const en = {
   'help.command.doctor.description':
     'Show runtime platform capabilities and embedding configuration',
   'help.command.update.description':
-    'Install the latest published GitNexus globally (`npm i -g gitnexus@version`).',
+    'Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).',
   'help.command.embeddings.description': 'Manage the on-demand local embedding runtime',
   'help.command.embeddings.install.description':
     'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). Downloads only from your configured npm registry — mirrors and proxies apply.',

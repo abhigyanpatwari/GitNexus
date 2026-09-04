@@ -95,7 +95,7 @@ describe('CLI update notice subprocess behavior', () => {
     const result = cli(['update', '--help'], tempHome());
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toMatch(/npm i -g gitnexus@version/);
+    expect(result.stdout).toMatch(/npm i -g gitnexus@<x\.y\.z>/);
     expect(result.stderr).toBe('');
   });
 
