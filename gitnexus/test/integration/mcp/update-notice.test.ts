@@ -113,6 +113,48 @@ describe('MCP process update notice', () => {
     expect(await protocolSnapshot(true)).toBe(await protocolSnapshot(false));
   });
 
+  it.each(['CI', 'GITNEXUS_NO_UPDATE_NOTIFIER'])(
+    'emits no log and performs no fetch when %s is set',
+    async (name) => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-mcp-update-guard-'));
+      fs.writeFileSync(
+        path.join(home, 'update-check.json'),
+        `${JSON.stringify({
+          lastCheckAt: new Date().toISOString(),
+          registry: 'https://registry.npmjs.org',
+          latestVersion: '99.0.0',
+        })}\n`,
+      );
+      const previousHome = process.env.GITNEXUS_HOME;
+      const previousCi = process.env.CI;
+      const previousOptOut = process.env.GITNEXUS_NO_UPDATE_NOTIFIER;
+      const fetchStub = vi.fn();
+      vi.stubGlobal('fetch', fetchStub);
+      process.env.GITNEXUS_HOME = home;
+      process.env[name] = '1';
+      if (name !== 'CI') delete process.env.CI;
+      const actualChecker = await vi.importActual<
+        typeof import('../../../src/core/update-check.js')
+      >('../../../src/core/update-check.js');
+      const { startMcpUpdateNotifier } = await import('../../../src/cli/mcp.js');
+      const log: FakeLogger = { info: vi.fn() };
+
+      try {
+        await startMcpUpdateNotifier(log, async () => actualChecker);
+        expect(log.info).not.toHaveBeenCalled();
+        expect(fetchStub).not.toHaveBeenCalled();
+      } finally {
+        if (previousHome === undefined) delete process.env.GITNEXUS_HOME;
+        else process.env.GITNEXUS_HOME = previousHome;
+        if (previousCi === undefined) delete process.env.CI;
+        else process.env.CI = previousCi;
+        if (previousOptOut === undefined) delete process.env.GITNEXUS_NO_UPDATE_NOTIFIER;
+        else process.env.GITNEXUS_NO_UPDATE_NOTIFIER = previousOptOut;
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('emits one structured stderr logger event per process per newer version', async () => {
     const { startMcpUpdateNotifier } = await import('../../../src/cli/mcp.js');
     const log: FakeLogger = { info: vi.fn() };

@@ -149,4 +149,58 @@ globalThis.fetch = async () => {
       registry: 'https://registry.npmjs.org',
     });
   }, 10_000);
+
+  it('prints the localized notice on a forced-TTY stderr and keeps stdout clean', () => {
+    const home = tempHome();
+    fs.writeFileSync(
+      path.join(home, 'update-check.json'),
+      `${JSON.stringify({
+        lastCheckAt: new Date().toISOString(),
+        registry: 'https://registry.npmjs.org',
+        latestVersion: '99.0.0',
+      })}\n`,
+    );
+    const project = path.join(home, 'project');
+    const installedPackage = path.join(project, 'node_modules', 'gitnexus');
+    fs.mkdirSync(installedPackage, { recursive: true });
+    fs.cpSync(path.join(repoRoot, 'src'), path.join(installedPackage, 'src'), {
+      recursive: true,
+    });
+    fs.copyFileSync(
+      path.join(repoRoot, 'package.json'),
+      path.join(installedPackage, 'package.json'),
+    );
+    fs.symlinkSync(
+      path.join(repoRoot, 'node_modules'),
+      path.join(installedPackage, 'node_modules'),
+      'dir',
+    );
+
+    const preload = path.join(home, 'force-tty.mjs');
+    fs.writeFileSync(
+      preload,
+      `Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });\n`,
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [path.join(installedPackage, 'src', 'cli', 'index.ts'), 'list'],
+      {
+        cwd: project,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          CI: '',
+          GITNEXUS_HOME: home,
+          GITNEXUS_NO_UPDATE_NOTIFIER: '',
+          NO_UPDATE_NOTIFIER: '',
+          NODE_OPTIONS: `--import ${tsxLoaderUrl()} --import ${pathToFileURL(preload).href}`.trim(),
+        },
+      },
+    );
+
+    expect(result.stderr).toContain('GitNexus 99.0.0 is available (you are running 1.6.10).');
+    expect(result.stdout).not.toContain('99.0.0 is available');
+  });
 });

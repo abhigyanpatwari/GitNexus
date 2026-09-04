@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { getGlobalDir } from '../storage/global-dir.js';
 import { writeFileAtomic } from '../storage/fs-atomic.js';
 import { acquireFileLock, FileLockBusyError } from '../storage/file-lock.js';
-import { validateGitUrl } from '../server/git-clone.js';
+import { validateGitUrl } from './net/url-guard.js';
 import { updateEligibleInstall } from './install-context.js';
 import { createLogger } from './logger.js';
 import {
@@ -25,10 +25,22 @@ const pkg = _require('../../package.json') as { version?: unknown };
 const FETCH_TIMEOUT_MS = 3_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
+/** Backoff when refresh cannot publish (lock-busy or still-stale cache). */
+const LOCK_BUSY_RETRY_MIN_MS = 30_000;
+const LOCK_BUSY_RETRY_JITTER_MS = 30_000;
 const updateLogger = createLogger('update-check');
 
 function defaultInstalledVersion(): string {
   return typeof pkg.version === 'string' ? pkg.version : '';
+}
+
+function nextSchedulerDelay(entry: UpdateCacheEntry | null, now: number): number {
+  if (entry && isUpdateCacheFresh(entry.lastCheckAt, now)) {
+    return Math.max(1, Date.parse(entry.lastCheckAt) + UPDATE_CACHE_TTL_MS - now);
+  }
+  // Missing, future-dated, or still stale after a lock-busy skip: back off
+  // from now instead of deriving 1ms from a past-due timestamp.
+  return LOCK_BUSY_RETRY_MIN_MS + Math.floor(Math.random() * LOCK_BUSY_RETRY_JITTER_MS);
 }
 
 export interface UpdateState {
@@ -186,7 +198,12 @@ async function publishMonotonically(
   attemptStartedAt: number,
 ): Promise<void> {
   const current = await readCache(entry.registry);
-  if (current && Date.parse(current.lastCheckAt) > attemptStartedAt) return;
+  const currentAt = current ? Date.parse(current.lastCheckAt) : Number.NaN;
+  // A later in-the-past write wins. Future-dated entries (wall-clock) are
+  // clock-skew poison and must stay replaceable so a later holder can repair them.
+  if (Number.isFinite(currentAt) && currentAt <= Date.now() && currentAt > attemptStartedAt) {
+    return;
+  }
   await fs.mkdir(getGlobalDir(), { recursive: true });
   await writeFileAtomic(cacheFile(), `${JSON.stringify(entry)}\n`, 1);
 }
@@ -276,12 +293,7 @@ export function armUpdateRefreshScheduler(
     }
     if (!stopped) onState(state);
     if (!stopped) {
-      const checkedAt = entry ? Date.parse(entry.lastCheckAt) : Number.NaN;
-      const delay =
-        Number.isFinite(checkedAt) && checkedAt <= now
-          ? Math.max(1, checkedAt + UPDATE_CACHE_TTL_MS - now)
-          : UPDATE_CACHE_TTL_MS;
-      timer = setTimeout(() => void cycle(), delay);
+      timer = setTimeout(() => void cycle(), nextSchedulerDelay(entry, now));
       timer.unref();
     }
   };

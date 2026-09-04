@@ -166,6 +166,69 @@ describe('update check cache and versions', () => {
     }
   });
 
+  it('returns stale cache state without fetching when refreshIfStale is false', async () => {
+    const home = await tempHome();
+    await writeCache(home, {
+      lastCheckAt: new Date(NOW - DAY_MS - 1).toISOString(),
+      registry: REGISTRY,
+      latestVersion: '1.7.0',
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      evaluate({
+        eligible: true,
+        installedVersion: '1.6.10',
+        now: NOW,
+        refreshIfStale: false,
+      }),
+    ).resolves.toEqual({ updateAvailable: true, latestVersion: '1.7.0' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('replaces a future-dated cache timestamp instead of preserving it', async () => {
+    const home = await tempHome();
+    await writeCache(home, {
+      lastCheckAt: '2099-01-01T00:00:00.000Z',
+      registry: REGISTRY,
+      latestVersion: '9.9.9',
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(registryResponse('1.8.0')));
+
+    await refresh({ eligible: true, installedVersion: '1.6.10', now: NOW });
+
+    expect(await readCache(home)).toEqual({
+      lastCheckAt: new Date(NOW).toISOString(),
+      registry: REGISTRY,
+      latestVersion: '1.8.0',
+    });
+  });
+
+  it('dedupes concurrent refresh() callers onto one fetch', async () => {
+    await tempHome();
+    let resolveFetch!: (response: Response) => void;
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const first = refresh({ eligible: true, installedVersion: '1.6.10', now: NOW });
+    const second = refresh({ eligible: true, installedVersion: '1.6.10', now: NOW });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    resolveFetch(registryResponse('1.8.0'));
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { updateAvailable: true, latestVersion: '1.8.0' },
+      { updateAvailable: true, latestVersion: '1.8.0' },
+    ]);
+    expect(first).toBe(second);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('does not let a late failed attempt overwrite a newer success', async () => {
     const home = await tempHome();
     let rejectFetch!: (error: Error) => void;
@@ -327,6 +390,35 @@ describe('guards and scheduler', () => {
     await vi.waitFor(() => expect(onState).toHaveBeenCalled());
     clearA();
     clearB();
+  });
+
+  it('backs off when refresh is lock-busy instead of spinning at 1ms', async () => {
+    const home = await tempHome();
+    await writeCache(home, {
+      lastCheckAt: new Date(NOW - DAY_MS - 1).toISOString(),
+      registry: REGISTRY,
+      latestVersion: '1.7.0',
+    });
+    const release = await acquireFileLock(path.join(home, 'update-check.lock'));
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+    const onState = vi.fn();
+    try {
+      const clear = armUpdateRefreshScheduler(onState, { eligible: true, now: () => NOW });
+      await vi.waitFor(() => expect(onState).toHaveBeenCalled());
+      const retryDelay = timeoutSpy.mock.calls
+        .map(([, delay]) => delay)
+        .find(
+          (delay): delay is number =>
+            typeof delay === 'number' && delay >= 30_000 && delay <= 60_000,
+        );
+      expect(retryDelay).toBeDefined();
+      expect(fetchMock).not.toHaveBeenCalled();
+      clear();
+    } finally {
+      await release();
+    }
   });
 });
 

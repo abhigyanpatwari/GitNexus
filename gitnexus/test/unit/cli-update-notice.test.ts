@@ -272,4 +272,18 @@ describe('doctor cached update line', () => {
       }),
     ).toBeNull();
   });
+
+  it.each(['v1.7.0', '1.7.0-rc.1'])(
+    'is silent for non-strict latestVersion %s',
+    (latestVersion) => {
+      expect(
+        cachedUpdateDoctorLine({
+          installedVersion: '1.6.10',
+          eligible: true,
+          env: {},
+          readCache: () => ({ lastCheckAt: 0, latestVersion, stale: false }),
+        }),
+      ).toBeNull();
+    },
+  );
 });

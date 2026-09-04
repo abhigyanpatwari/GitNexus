@@ -1,13 +1,25 @@
 import { EventEmitter } from 'node:events';
-import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   bindServeUpdateControllerLifecycle,
   buildServerInfo,
   createServeUpdateController,
-} from '../../src/server/api.js';
+} from '../../src/server/update-controller.js';
+import { evaluate } from '../../src/core/update-check.js';
 import type { UpdateState } from '../../src/core/update-check.js';
 
 const baseKeys = ['version', 'launchContext', 'nodeVersion'];
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+  await Promise.all(tempDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+});
 
 describe('GET /api/info update state', () => {
   it('keeps the existing three fields unchanged when no update is available', () => {
@@ -35,12 +47,70 @@ describe('GET /api/info update state', () => {
     ).toEqual(baseKeys);
   });
 
-  it.each(['GITNEXUS_NO_UPDATE_NOTIFIER', 'NO_UPDATE_NOTIFIER', 'CI', 'ineligible install'])(
-    'omits update fields when evaluation is skipped for %s',
-    () => {
-      expect(Object.keys(buildServerInfo(null))).toEqual(baseKeys);
+  it.each(['GITNEXUS_NO_UPDATE_NOTIFIER', 'NO_UPDATE_NOTIFIER', 'CI'])(
+    'omits update fields after start when %s is set',
+    async (name) => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-serve-update-'));
+      tempDirs.push(home);
+      vi.stubEnv('GITNEXUS_HOME', home);
+      vi.stubEnv('npm_config_registry', 'https://registry.npmjs.org');
+      vi.stubEnv(name, '1');
+      await fs.writeFile(
+        path.join(home, 'update-check.json'),
+        JSON.stringify({
+          lastCheckAt: new Date().toISOString(),
+          registry: 'https://registry.npmjs.org',
+          latestVersion: '9.9.9',
+        }),
+      );
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const evaluateSpy = vi.fn((options?: { refreshIfStale?: boolean }) =>
+        evaluate({ ...options, eligible: true }),
+      );
+      const controller = createServeUpdateController({
+        evaluate: evaluateSpy,
+        armScheduler: vi.fn(() => vi.fn()),
+      });
+
+      await controller.start();
+
+      expect(evaluateSpy).toHaveBeenCalledWith({ refreshIfStale: false });
+      expect(Object.keys(buildServerInfo(controller.snapshot()))).toEqual(baseKeys);
+      expect(fetchMock).not.toHaveBeenCalled();
     },
   );
+
+  it('omits update fields after start for an ineligible install', async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-serve-update-'));
+    tempDirs.push(home);
+    vi.stubEnv('GITNEXUS_HOME', home);
+    vi.stubEnv('npm_config_registry', 'https://registry.npmjs.org');
+    vi.stubEnv('CI', '');
+    await fs.writeFile(
+      path.join(home, 'update-check.json'),
+      JSON.stringify({
+        lastCheckAt: new Date().toISOString(),
+        registry: 'https://registry.npmjs.org',
+        latestVersion: '9.9.9',
+      }),
+    );
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const evaluateSpy = vi.fn((options?: { refreshIfStale?: boolean }) =>
+      evaluate({ ...options, eligible: false }),
+    );
+    const controller = createServeUpdateController({
+      evaluate: evaluateSpy,
+      armScheduler: vi.fn(() => vi.fn()),
+    });
+
+    await controller.start();
+
+    expect(evaluateSpy).toHaveBeenCalledWith({ refreshIfStale: false });
+    expect(Object.keys(buildServerInfo(controller.snapshot()))).toEqual(baseKeys);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 
   it('stays assignable to the web client ServerInfo contract', () => {
     // Mirrors gitnexus-web/src/services/backend-client.ts without creating a
@@ -108,6 +178,7 @@ describe('serve update controller lifecycle', () => {
       latestVersion: '2.1.0',
     });
     expect(evaluate).toHaveBeenCalledTimes(1);
+    expect(evaluate).toHaveBeenCalledWith({ refreshIfStale: false });
   });
 
   it('fails open and still arms the long-lived refresh scheduler', async () => {
