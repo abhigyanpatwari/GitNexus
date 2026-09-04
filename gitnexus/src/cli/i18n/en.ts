@@ -204,7 +204,9 @@ export const en = {
   'help.command.group.contracts.description': 'Inspect Contract Registry',
   'help.option.setup.codingAgent':
     'Configure only these coding agents (comma-separated or repeatable)',
-  'help.option.analyze.force': 'Force full re-index even if up to date',
+  'help.option.analyze.force': 'Force graph and FTS rebuild; unchanged parser output may be reused',
+  'help.option.analyze.noParseCache':
+    'Re-parse every source file instead of replaying cached parser output',
   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
   'help.option.analyze.embeddings':
     'Enable embedding generation for semantic search (off by default). Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',
