@@ -18,7 +18,7 @@ const ROOT = path.resolve(__dirname, '..');
 const SHARED_ROOT = path.resolve(ROOT, '..', 'gitnexus-shared');
 const DIST = path.join(ROOT, 'dist');
 const SHARED_DEST = path.join(DIST, '_shared');
-const DEFAULT_BUILD_TIMEOUT_MS = 300_000;
+const DEFAULT_BUILD_TIMEOUT_MS = 600_000;
 
 function getBuildTimeoutMs() {
   const raw = process.env.GITNEXUS_BUILD_TIMEOUT_MS;
@@ -106,15 +106,33 @@ walk(DIST, ['.js', '.d.ts'], rewriteFile);
 const cliEntry = path.join(DIST, 'cli', 'index.js');
 if (fs.existsSync(cliEntry)) fs.chmodSync(cliEntry, 0o755);
 
-// ── 6. Build & copy web UI ──────────────────────────────────────────
+// ── 6. Build & copy web UI (opt-in) ─────────────────────────────────
+// The web UI is a SEPARATE package with its own ~650-package dependency
+// tree (React, Vite, LangChain, Mermaid). It is only needed inside the
+// published tarball (`files: [... "web"]`), so it is built by `prepack`,
+// not by `prepare`. Building it from `prepare` made every plain
+// `npm ci` in gitnexus/ install and Vite-build a second product — on CI
+// that ran uncached inside an execSync timeout and SIGTERM'd healthy
+// installs mid-flight (#1048 introduced it; the node-floor-compat job
+// died on it). `gitnexus serve` degrades to the built-in landing page
+// when web/ is absent, so the default build staying CLI-only is safe.
 const WEB_ROOT = path.resolve(ROOT, '..', 'gitnexus-web');
 const WEB_DEST = path.join(DIST, '..', 'web');
+const buildWeb = process.argv.includes('--web') || process.env.GITNEXUS_BUILD_WEB === '1';
 
-if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
+if (!buildWeb) {
+  console.log('[build] skipping web UI (pass --web or set GITNEXUS_BUILD_WEB=1 to include it)');
+} else if (!fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
+  console.log('[build] skipping web UI (gitnexus-web not found)');
+} else {
   console.log('[build] building gitnexus-web…');
   if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
-    console.log('[build] installing gitnexus-web dependencies…');
-    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+    // Deliberately untimed: this is a full second install, and killing it
+    // partway through leaves a broken tree and a misleading ETIMEDOUT.
+    // CI should install gitnexus-web itself (cached, its own step) so this
+    // fallback only fires for a local `npm pack` / `npm publish`.
+    console.log('[build] installing gitnexus-web dependencies (no local node_modules)…');
+    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit' });
   }
   execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 
@@ -122,8 +140,6 @@ if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
   fs.rmSync(WEB_DEST, { recursive: true, force: true });
   fs.cpSync(path.join(WEB_ROOT, 'dist'), WEB_DEST, { recursive: true });
   console.log('[build] copied web UI → gitnexus/web/');
-} else {
-  console.log('[build] skipping web UI (gitnexus-web not found)');
 }
 
 console.log(`[build] done — rewrote ${rewritten} files.`);

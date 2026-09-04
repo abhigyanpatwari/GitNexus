@@ -320,6 +320,15 @@ jobs:
         with:
           build: 'true'
 
+      # `npm pack` runs prepack, which builds the web UI into gitnexus/web/
+      # so the tarball matches what `npm publish` ships. Install those deps
+      # here, in their own visible step, rather than letting build.js do it
+      # from inside an execSync.
+      - name: Install gitnexus-web dependencies
+        shell: bash
+        run: npm ci
+        working-directory: gitnexus-web
+
       - name: Pack gitnexus tarball
         shell: bash
         run: npm pack
