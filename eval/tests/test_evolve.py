@@ -17,6 +17,7 @@ from workflow_bench.runner_sessions import PARENT_EVENT_STREAM_SOURCE
 from workflow_bench.evolve import (
     build_parser,
     build_proposer_prompt,
+    executed_benchmark_arms,
     generation_timeout_seconds,
     load_jsonl,
     proposer_evidence_entries,
@@ -871,6 +872,25 @@ def test_runner_argv_pairs_each_incumbent_with_its_candidate(tmp_path):
     assert json.loads(argv[argv.index("--promotion-target-bases-json") + 1]) == target_bases
 
 
+def test_runner_argv_inserts_ce_review_for_review_overlay(tmp_path):
+    args = build_parser().parse_args(
+        ["--tasks", "t.yaml", "--model", "pinned", "--arms", "review"]
+    )
+    overlay = tmp_path / "overlay"
+    skill = overlay / ".claude" / "skills" / "gitnexus-review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("candidate")
+    argv = runner_argv(
+        args,
+        tmp_path / "bench",
+        overlay,
+        task_bindings=[{"id": "task"}],
+        target_base_digests={},
+    )
+    arms = argv[argv.index("--arms") + 1 : argv.index("--promotion-metric")]
+    assert arms == ["ce_review", "review", "candidate_review"]
+
+
 def test_runner_argv_omits_proposer_for_manual_overlay(tmp_path):
     args = build_parser().parse_args(["--tasks", "t.yaml", "--model", "pinned"])
     overlay = tmp_path / "overlay"
@@ -888,6 +908,26 @@ def test_runner_argv_omits_proposer_for_manual_overlay(tmp_path):
     )
 
     assert "--proposer-model" not in argv
+
+
+def test_runner_argv_forwards_explicit_unsafe_backend(tmp_path):
+    args = build_parser().parse_args(
+        ["--tasks", "t.yaml", "--model", "pinned", "--unsafe-no-bwrap"]
+    )
+    overlay = tmp_path / "overlay"
+    skill = overlay / ".claude" / "skills" / "gitnexus-plan" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("candidate")
+
+    argv = runner_argv(
+        args,
+        tmp_path / "bench",
+        overlay,
+        task_bindings=[{"id": "task"}],
+        target_base_digests={},
+    )
+
+    assert "--unsafe-no-bwrap" in argv
 
 
 def test_runner_argv_keeps_task_commit_pinned_when_ref_moves(tmp_path):
@@ -990,6 +1030,59 @@ def test_generation_timeout_budgets_three_task_workflow_pair():
     # The old deadline omitted clone sanitization entirely. Every graph seed
     # and every paired arm cell must now receive the full bounded envelope.
     assert timeout >= 3 * (1 + 3 * paired_arm_cells) * evolve.WORKTREE_PREPARATION_TIMEOUT_SECONDS
+
+
+def test_executed_benchmark_arms_inserts_review_comparator() -> None:
+    assert executed_benchmark_arms(["workflow"]) == ["workflow", "candidate_workflow"]
+    assert executed_benchmark_arms(["review"]) == ["ce_review", "review", "candidate_review"]
+
+
+def test_generation_timeout_budgets_review_pair_plus_ce_comparator() -> None:
+    timeout = generation_timeout_seconds(
+        task_count=6,
+        runs=1,
+        session_timeout=3600,
+        incumbent_arms=["review"],
+    )
+
+    per_task_preparation = (
+        evolve.TASK_BINDING_GIT_PHASES * evolve.GIT_COMMAND_TIMEOUT_SECONDS
+        + 2 * evolve.TASK_SNAPSHOT_TIMEOUT_SECONDS
+        + evolve.WORKTREE_PREPARATION_TIMEOUT_SECONDS
+        + evolve.GRAPH_SOURCE_PREPARATION_TIMEOUT_SECONDS
+        + evolve.GRAPH_BUILD_TIMEOUT_SECONDS
+        + 2 * evolve.GRAPH_QUERY_TIMEOUT_SECONDS
+        + evolve.CLEANUP_TIMEOUT_SECONDS
+    )
+    paired_arm_cells = 3
+    session_slots = 3
+    workspace_snapshot_slots = 3
+    per_task_run = session_slots * (3600 + evolve.SESSION_FINALIZATION_TIMEOUT_SECONDS) + paired_arm_cells * (
+        evolve.WORKTREE_PREPARATION_TIMEOUT_SECONDS
+        + evolve.ARM_ASSET_MATERIALIZATION_PHASES * evolve.TASK_SNAPSHOT_TIMEOUT_SECONDS
+        + evolve.SETUP_TIMEOUT_SECONDS
+        + 2 * 3600
+        + evolve.ARM_EVIDENCE_GIT_PHASES * evolve.GIT_COMMAND_TIMEOUT_SECONDS
+        + evolve.CLEANUP_TIMEOUT_SECONDS
+    )
+    per_task_run += workspace_snapshot_slots * evolve.TASK_SNAPSHOT_TIMEOUT_SECONDS
+    per_task_run += evolve.CANDIDATE_OVERLAY_GIT_PHASES * evolve.GIT_COMMAND_TIMEOUT_SECONDS
+
+    assert timeout == (
+        evolve.PROMOTION_BASE_TIMEOUT_SECONDS
+        + 6 * (per_task_preparation + per_task_run)
+        + evolve.DRIVER_OVERHEAD_SECONDS
+    )
+
+
+def test_generation_timeout_rejects_unknown_arm() -> None:
+    with pytest.raises(ValueError, match="unsupported evolution arm: mystery"):
+        generation_timeout_seconds(
+            task_count=1,
+            runs=1,
+            session_timeout=60,
+            incumbent_arms=["mystery"],
+        )
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Bubblewrap PID namespaces require Linux")

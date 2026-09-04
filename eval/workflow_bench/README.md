@@ -139,6 +139,28 @@ Native benchmark execution is therefore Linux/WSL2-only. Evidence assembly
 and hand-authored overlay preparation can happen elsewhere, but
 `--initial-overlay` does not bypass containment.
 
+For a local diagnostic inside a container that blocks user namespaces, an
+operator may explicitly choose the non-containment host backend:
+
+```bash
+UNSAFE_NO_BWRAP=1 RUNS=1 ./workflow_bench/run-evolution.sh
+```
+
+This mode runs review sessions directly in disposable host worktrees and is
+**not** a security boundary: it does not isolate the network or create a PID
+namespace, and a session that can `chmod` can undo the workspace lock. The
+harness still drops write bits on the clone except `review-output.json` so
+accidental `npm install` / analyze writes cannot invalidate review evidence.
+Sandbox cleanup restores owner write bits before deleting the private TMPDIR,
+because a session that `copytree`s the locked clone would otherwise leave
+non-empty 0555 directories that `rmtree` cannot remove. Historical review
+SHAs that gitignore `.claude/skills/*` are force-added when the harness seeds
+or overlays the evaluated `gitnexus-review` skill.
+Treat model and verifier processes as able to access host files and
+credentials available to the invoking user. It is restricted to the review
+benchmark, forbidden with `--apply` and whenever `CI` is set;
+promotion-capable and CI runs must use Bubblewrap.
+
 ## Prompt and skill evolution loop
 
 Prompts age as models and tool harnesses change. Treat the current skills and

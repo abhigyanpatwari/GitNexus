@@ -7,7 +7,7 @@ tasks:
     repo: ~/GitNexus
     ref: ff86ccf1e79cd7e4175da437ae8aeaf67b64aaa1
     sandbox_copy: [eval/workflow_bench/review_cases/pr-2718-defect.patch]
-    setup: git apply eval/workflow_bench/review_cases/pr-2718-defect.patch && rm -rf eval/workflow_bench
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2718-defect.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2718. Report only actionable defects introduced by the local diff.
     verify: test -s review-output.json
     oracle:
@@ -22,7 +22,7 @@ tasks:
     id: review-pr-2794-defect
     ref: 911151e2304f298a995fcc69c738ad2c6db9393a
     sandbox_copy: [eval/workflow_bench/review_cases/pr-2794-defect.patch]
-    setup: git apply eval/workflow_bench/review_cases/pr-2794-defect.patch && rm -rf eval/workflow_bench
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2794-defect.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2794. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
@@ -33,7 +33,7 @@ tasks:
     id: review-pr-2108-defect
     ref: 3a4247ec36b5ad86b1123d3bbce8183a643f7434
     sandbox_copy: [eval/workflow_bench/review_cases/pr-2108-defect.patch]
-    setup: git apply eval/workflow_bench/review_cases/pr-2108-defect.patch && rm -rf eval/workflow_bench
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2108-defect.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2108. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
@@ -44,7 +44,7 @@ tasks:
     id: review-pr-2258-defect
     ref: 78b4077d8acc86f1b0c32e41012174d484e81f12
     sandbox_copy: [eval/workflow_bench/review_cases/pr-2258-defect.patch]
-    setup: git apply eval/workflow_bench/review_cases/pr-2258-defect.patch && rm -rf eval/workflow_bench
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2258-defect.patch && rm -rf eval/workflow_bench
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
@@ -56,7 +56,7 @@ tasks:
     class: review-clean
     ref: 78b4077d8acc86f1b0c32e41012174d484e81f12
     sandbox_copy: [eval/workflow_bench/review_cases/pr-2258-clean.patch]
-    setup: git apply eval/workflow_bench/review_cases/pr-2258-clean.patch && rm -rf eval/workflow_bench
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2258-clean.patch && rm -rf eval/workflow_bench
     prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
@@ -68,7 +68,7 @@ tasks:
     class: review-clean
     ref: 84f584449de02376a8ffc096dceac2e8f732cab5
     sandbox_copy: [eval/workflow_bench/review_cases/pr-2773-clean.patch]
-    setup: git apply eval/workflow_bench/review_cases/pr-2773-clean.patch && rm -rf eval/workflow_bench
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2773-clean.patch && rm -rf eval/workflow_bench
     prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2773. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json

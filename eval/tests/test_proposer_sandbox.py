@@ -11,6 +11,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
+    SANDBOX_CLAUDE,
     SANDBOX_NODE,
     SANDBOX_NODE_PREFIX,
     SANDBOX_EVIDENCE,
@@ -35,8 +37,11 @@ from workflow_bench.proposer_sandbox import (
     _runtime_mount_args,
     build_claude_settings,
     build_sandbox_environment,
+    _force_rmtree,
+    host_workspace_write_boundary,
     prepare_sandbox,
     preflight_bubblewrap,
+    sandbox_workspace_write_boundary,
     stage_evidence_bundle,
     stage_task_assets,
 )
@@ -78,6 +83,128 @@ def test_environment_is_allowlisted_and_shell_children_are_credential_free(monke
     # Requesting a non-default defaultMode would merely warn, so it must be gone.
     assert settings["permissions"]["allow"] == ["Read", "Grep", "Glob", "Bash"]
     assert "defaultMode" not in settings["permissions"]
+
+
+def test_unsafe_host_session_translates_virtual_paths_and_disables_containment(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    evidence = tmp_path / "evidence"
+    for directory in (clone, evidence):
+        directory.mkdir()
+
+    with prepare_sandbox(
+        clone=clone,
+        backend="host-unsafe",
+        read_only_mounts=(ReadOnlyMount(evidence, "/evidence"),),
+    ) as sandbox:
+        assert sandbox.command_prefix == []
+        assert sandbox.require_pid_namespace is False
+        assert sandbox.host_path("/workspace/review-output.json") == str(clone / "review-output.json")
+        assert sandbox.host_path("/evidence/selected-rows.json") == str(evidence / "selected-rows.json")
+        assert sandbox.host_text("read /evidence and write /workspace/out") == (
+            f"read {evidence} and write {clone}/out"
+        )
+        # Sessions spawn the binary directly, so it must be the host executable
+        # rather than the sandbox-only mount target.
+        assert sandbox.claude_bin != SANDBOX_CLAUDE
+        assert Path(sandbox.claude_bin).exists()
+        assert sandbox.environment()["HOME"] == str(sandbox.home)
+        assert "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB" not in sandbox.environment()
+        assert all(
+            Path(entry).is_dir() for entry in sandbox.environment()["PATH"].split(":")
+        )
+        unsafe_settings = json.loads(sandbox.settings_json)
+        assert unsafe_settings["sandbox"]["enabled"] is False
+        assert unsafe_settings["sandbox"]["failIfUnavailable"] is False
+        assert "disableBypassPermissionsMode" not in unsafe_settings["permissions"]
+
+
+def test_host_workspace_write_boundary_keeps_only_the_review_artifact_writable(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    nested = clone / "src"
+    nested.mkdir(parents=True)
+    source = nested / "source.ts"
+    source.write_text("trusted\n")
+    output = clone / "review-output.json"
+    output.write_text("")
+    original_source_mode = stat.S_IMODE(source.stat().st_mode)
+    original_output_mode = stat.S_IMODE(output.stat().st_mode)
+
+    with host_workspace_write_boundary(clone, writable=(output,)):
+        with pytest.raises(OSError):
+            source.write_text("tampered\n")
+        with pytest.raises(OSError):
+            (clone / "extra.py").write_text("nope\n")
+        output.write_text('{"schema_version":1}\n')
+
+    assert source.read_text() == "trusted\n"
+    assert output.read_text() == '{"schema_version":1}\n'
+    assert not (clone / "extra.py").exists()
+    assert stat.S_IMODE(source.stat().st_mode) == original_source_mode
+    assert stat.S_IMODE(output.stat().st_mode) == original_output_mode
+
+
+def test_sandbox_workspace_write_boundary_is_noop_unless_host_unsafe(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    source = clone / "source.ts"
+    source.write_text("trusted\n")
+    bwrap_sandbox = SimpleNamespace(backend="bwrap", clone=clone)
+    with sandbox_workspace_write_boundary(
+        bwrap_sandbox,
+        read_only_workspace=True,
+        writable=(),
+    ):
+        source.write_text("still writable under bwrap no-op\n")
+    assert source.read_text() == "still writable under bwrap no-op\n"
+
+    output = clone / "review-output.json"
+    output.write_text("")
+    source.write_text("trusted\n")
+    unsafe = SimpleNamespace(backend="host-unsafe", clone=clone)
+    with sandbox_workspace_write_boundary(
+        unsafe,
+        read_only_workspace=True,
+        writable=(output,),
+    ):
+        with pytest.raises(OSError):
+            source.write_text("tampered\n")
+        output.write_text("ok\n")
+    assert source.read_text() == "trusted\n"
+    assert output.read_text() == "ok\n"
+
+
+def test_force_rmtree_deletes_nonempty_directories_copied_from_a_locked_workspace(tmp_path) -> None:
+    locked = tmp_path / "locked"
+    nested = locked / "gitnexus-shared" / "src"
+    nested.mkdir(parents=True)
+    (nested / "index.ts").write_text("export {}\n")
+    os.chmod(nested, 0o555)
+    os.chmod(locked / "gitnexus-shared", 0o555)
+    os.chmod(locked, 0o555)
+
+    copied = tmp_path / "sandbox-tmp" / "tmp.XXXX" / "gitnexus-shared"
+    copied.parent.mkdir(parents=True)
+    shutil.copytree(locked / "gitnexus-shared", copied)
+    assert stat.S_IMODE(copied.stat().st_mode) & 0o222 == 0
+
+    _force_rmtree(copied.parent)
+    assert not copied.parent.exists()
+
+
+def test_host_unsafe_sandbox_cleanup_survives_readonly_tmpdir_copies(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    leftover = None
+    with prepare_sandbox(clone=clone, backend="host-unsafe") as sandbox:
+        leftover = sandbox.private_root
+        copied = sandbox.temp / "tmp.XXXX" / "gitnexus-shared" / "src"
+        copied.mkdir(parents=True)
+        (copied / "index.ts").write_text("export {}\n")
+        os.chmod(copied, 0o555)
+        os.chmod(copied.parent, 0o555)
+        os.chmod(copied.parent.parent, 0o555)
+    assert leftover is not None
+    assert not leftover.exists()
 
 
 @pytest.mark.parametrize(

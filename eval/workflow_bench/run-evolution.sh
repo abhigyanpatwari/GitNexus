@@ -15,6 +15,7 @@
 #   MODEL PROPOSER_MODEL EFFORT GENERATIONS RUNS WORKERS PROVIDER
 #   EVOLUTION_PROFILE CE_PLUGIN_DIR CE_PLUGIN_VERSION
 #   INCLUDE_EXPENSIVE SEED_RESULTS CLAUDE_BIN OUT_ROOT
+#   UNSAFE_NO_BWRAP=1 (local review diagnostics only)
 #   GITNEXUS_BENCH_ANTHROPIC_API_KEY (legacy GITNEXUS_BENCH_AUTH_TOKEN)
 #   GITNEXUS_BENCH_OPENAI_API_KEY
 set -euo pipefail
@@ -181,6 +182,13 @@ fi
 if [[ -n "${SEED_RESULTS}" ]]; then
   cmd+=(--seed-results "${SEED_RESULTS}")
 fi
+if [[ -n "${UNSAFE_NO_BWRAP:-}" && "${UNSAFE_NO_BWRAP}" != "0" && "${UNSAFE_NO_BWRAP}" != "false" ]]; then
+  if [[ -n "${CI:-}" ]]; then
+    echo "UNSAFE_NO_BWRAP is forbidden in CI." >&2
+    exit 1
+  fi
+  cmd+=(--unsafe-no-bwrap)
+fi
 if ((${#passthrough[@]})); then
   cmd+=("${passthrough[@]}")
 fi
@@ -200,13 +208,15 @@ runtime_digest="$(
     sha256sum "${eval_dir}/../gitnexus-shared/package-lock.json"
   } | sha256sum | cut -d' ' -f1
 )"
-SOURCE_SHA="${source_sha}" RUNTIME_DIGEST="${runtime_digest}" \
+unsafe_backend="$([[ -n "${UNSAFE_NO_BWRAP:-}" && "${UNSAFE_NO_BWRAP}" != "0" && "${UNSAFE_NO_BWRAP}" != "false" ]] && echo host-unsafe || echo bwrap)"
+SOURCE_SHA="${source_sha}" RUNTIME_DIGEST="${runtime_digest}" SANDBOX_BACKEND="${unsafe_backend}" \
   node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({
     schema_version: 1,
     source_sha: process.env.SOURCE_SHA,
     runtime_digest: process.env.RUNTIME_DIGEST,
     profile: process.env.EVOLUTION_PROFILE,
-    ce_plugin_version: process.env.CE_PLUGIN_VERSION
+    ce_plugin_version: process.env.CE_PLUGIN_VERSION,
+    sandbox_backend: process.env.SANDBOX_BACKEND
   }, null, 2) + "\n")' "${out_root}/runtime-provenance.json"
 
 export PYTHONUNBUFFERED=1

@@ -24,6 +24,10 @@ MAX_ORACLE_PATH_BYTES = 240
 MAX_ORACLE_COMMAND_BYTES = 8 * 1024
 ORACLE_ENV_VAR = "GITNEXUS_BENCH_ORACLE_ROOT"
 HIDDEN_HARNESS_PATH = PurePosixPath("eval/workflow_bench")
+# Historical PR diffs can still edit this tree. Sanitization deletes it before
+# setup, so `git apply` must skip those hunks or it fails with
+# `error: eval/workflow_bench/<file>: No such file or directory`.
+HIDDEN_HARNESS_APPLY_EXCLUDE = f"{HIDDEN_HARNESS_PATH.as_posix()}/*"
 MAX_CLONE_REFS = 1024
 MAX_CLONE_REF_BYTES = 2 * 1024 * 1024
 
@@ -238,6 +242,36 @@ def _git_checked(
         env=env,
     )
     return result.stdout_tail.strip()
+
+
+def with_hidden_harness_apply_exclude(setup: str) -> str:
+    """Skip hunks for the harness tree sanitization already deleted.
+
+    Review cells copy a historical PR patch back under ``eval/workflow_bench``
+    and then ``git apply`` it. That patch may still mention harness files
+    (``learnings.jsonl`` on review-pr-2718-defect). Those files are gone from
+    the parentless snapshot, and setup deletes the directory again after apply,
+    so the hunks are never model-visible.
+    """
+
+    if "git apply" not in setup:
+        return setup
+    flag = f"--exclude='{HIDDEN_HARNESS_APPLY_EXCLUDE}'"
+    if flag in setup or f'--exclude="{HIDDEN_HARNESS_APPLY_EXCLUDE}"' in setup:
+        return setup
+    return setup.replace("git apply ", f"git apply {flag} ", 1)
+
+
+def review_case_setup_command(patch_name: str) -> str:
+    """Setup that applies one review-case patch and then hides the harness."""
+
+    if not patch_name or "/" in patch_name or "\\" in patch_name or patch_name in {".", ".."}:
+        raise ValueError(f"review patch name must be a single path segment: {patch_name!r}")
+    patch = f"{HIDDEN_HARNESS_PATH.as_posix()}/review_cases/{patch_name}"
+    return (
+        f"git apply --exclude='{HIDDEN_HARNESS_APPLY_EXCLUDE}' {patch} "
+        f"&& rm -rf {HIDDEN_HARNESS_PATH.as_posix()}"
+    )
 
 
 def sanitize_clone_for_hidden_oracles(clone: Path) -> str:

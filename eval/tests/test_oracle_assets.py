@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,12 @@ import pytest
 
 from workflow_bench import oracle_assets, runner
 from workflow_bench.evolution import evaluate_candidate
-from workflow_bench.oracle_assets import capture_task_oracle, staged_task_oracle
+from workflow_bench.oracle_assets import (
+    capture_task_oracle,
+    review_case_setup_command,
+    staged_task_oracle,
+    with_hidden_harness_apply_exclude,
+)
 
 
 def oracle_task(*, command: str = "true", source: str = "oracle.test.ts") -> dict[str, object]:
@@ -147,6 +153,60 @@ def test_clone_sanitization_prunes_harness_checkout_and_recoverable_history(tmp_
     assert git(clone, "for-each-ref", "--format=%(refname)").stdout == ""
     assert git(clone, "show", "-s", "--format=%P", "HEAD").stdout.strip() == ""
     assert git(clone, "status", "--porcelain=v1", "--untracked-files=all").stdout == ""
+
+
+def test_hidden_harness_apply_exclude_is_idempotent() -> None:
+    raw = "git apply eval/workflow_bench/review_cases/pr.patch && rm -rf eval/workflow_bench"
+    once = with_hidden_harness_apply_exclude(raw)
+    assert once == review_case_setup_command("pr.patch")
+    assert with_hidden_harness_apply_exclude(once) == once
+    assert with_hidden_harness_apply_exclude("true") == "true"
+
+
+def test_review_setup_skips_sanitized_harness_hunks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if check and result.returncode != 0:
+            pytest.fail(f"git {' '.join(args)} failed: {result.stderr}")
+        return result
+
+    git("init", "--quiet", "--initial-branch=main")
+    git("config", "user.name", "Review Setup")
+    git("config", "user.email", "review-setup.invalid")
+    (repo / "visible.py").write_text("old\n")
+    hidden = repo / "eval" / "workflow_bench"
+    hidden.mkdir(parents=True)
+    (hidden / "learnings.jsonl").write_text("{}\n")
+    git("add", "--all")
+    git("commit", "--quiet", "-m", "base with harness file")
+    (repo / "visible.py").write_text("new\n")
+    (hidden / "learnings.jsonl").write_text("{}\nextra\n")
+    patch = git("diff").stdout
+    git("checkout", "--", ".")
+    shutil.rmtree(hidden)
+    patch_path = hidden / "review_cases" / "case.patch"
+    patch_path.parent.mkdir(parents=True)
+    patch_path.write_text(patch)
+
+    rejected = git("apply", "--check", str(patch_path.relative_to(repo)), check=False)
+    assert rejected.returncode != 0
+    assert "learnings.jsonl" in rejected.stderr
+
+    setup = with_hidden_harness_apply_exclude(
+        "git apply eval/workflow_bench/review_cases/case.patch && rm -rf eval/workflow_bench"
+    )
+    applied = subprocess.run(["/bin/sh", "-lc", setup], cwd=repo, check=False, capture_output=True, text=True)
+    assert applied.returncode == 0, applied.stderr
+    assert (repo / "visible.py").read_text() == "new\n"
+    assert not hidden.exists()
 
 
 def test_clone_sanitization_prunes_remote_history_when_head_never_had_harness(tmp_path: Path) -> None:

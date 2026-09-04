@@ -27,6 +27,32 @@ def test_prebuilt_graph_and_harness_assets_are_rejected(task):
         sanitized_graph.validate_no_prebuilt_graph_assets(task)
 
 
+def test_review_case_patches_are_allowed_sandbox_copy():
+    sanitized_graph.validate_no_prebuilt_graph_assets(
+        {"sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718-defect.patch"]}
+    )
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        {"sandbox_copy": ["eval/workflow_bench"]},
+        {"sandbox_copy": ["eval/workflow_bench/evolve.py"]},
+        {
+            "sandbox_dependencies": [
+                {
+                    "source": "eval/workflow_bench/review_cases/pr-2718-defect.patch",
+                    "target": "patch",
+                }
+            ]
+        },
+    ],
+)
+def test_non_corpus_harness_paths_stay_rejected(task):
+    with pytest.raises(SandboxError, match="prebuilt graph or harness"):
+        sanitized_graph.validate_no_prebuilt_graph_assets(task)
+
+
 def test_graph_environment_is_offline_deterministic_and_ignores_target_gitignore():
     env = sanitized_graph._graph_environment()
 
@@ -34,6 +60,10 @@ def test_graph_environment_is_offline_deterministic_and_ignores_target_gitignore
     assert env["GITNEXUS_NO_GITIGNORE"] == "1"
     assert env["GITNEXUS_WORKER_POOL_SIZE"] == "1"
     assert env["GITNEXUS_PARSE_CHUNK_CONCURRENCY"] == "1"
+    assert env["GITNEXUS_WORKER_READY_TIMEOUT_MS"] == str(
+        sanitized_graph.GRAPH_WORKER_READY_TIMEOUT_MS
+    )
+    assert int(env["GITNEXUS_WORKER_READY_TIMEOUT_MS"]) >= 60_000
     assert "ANTHROPIC_API_KEY" not in env
 
 

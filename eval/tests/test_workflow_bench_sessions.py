@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from workflow_bench import evolve, runner, runner_sessions, runtime_mounts
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.process_control import ManagedProcessResult
+from workflow_bench.proposer_sandbox import SandboxError
 from workflow_bench.runner import snapshot_plan_docs
 
 
@@ -315,10 +317,18 @@ def test_run_arm_keeps_session_error_kind_over_verify(monkeypatch, tmp_path):
 
 def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, tmp_path):
     read_only = runner.allowed_agent_tools(implementation=False)
+    review_tools = runner.allowed_agent_tools(implementation=False, allow_edit=False)
     implementation = runner.allowed_agent_tools(implementation=True)
     no_mcp = runner.allowed_agent_tools(implementation=True, include_mcp=False)
 
     assert read_only == [*runner.BUILTIN_AGENT_TOOLS, *runner.GITNEXUS_READ_ONLY_TOOLS]
+    assert review_tools == [
+        tool
+        for tool in [*runner.BUILTIN_AGENT_TOOLS, *runner.GITNEXUS_READ_ONLY_TOOLS]
+        if tool != "Edit"
+    ]
+    assert "Write" in review_tools
+    assert "Edit" not in review_tools
     assert implementation == [
         *runner.BUILTIN_AGENT_TOOLS,
         *runner.GITNEXUS_READ_ONLY_TOOLS,
@@ -346,7 +356,7 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
         )
 
     assert captured[0]["allowed_tools"] == read_only  # planning
-    assert captured[1]["allowed_tools"] == read_only  # review
+    assert captured[1]["allowed_tools"] == review_tools  # review
     assert captured[2]["allowed_tools"] == implementation
     assert captured[3]["allowed_tools"] == list(runner.BUILTIN_AGENT_TOOLS)
     assert captured[3]["mcp_config_json"] == '{"mcpServers":{}}'
@@ -414,6 +424,93 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
     assert runtime / "hooks" not in mounted_sources
     assert runtime / "hooks" / "antigravity" not in mounted_sources
     assert f"{runner.SANDBOX_GITNEXUS}/hooks" not in mounted_targets
+
+
+def _install_pinned_runtime(root: Path) -> None:
+    runtime = root / "gitnexus"
+    shared = root / "gitnexus-shared"
+    for directory in (
+        runtime / "dist" / "cli",
+        runtime / "node_modules",
+        runtime / "vendor",
+        runtime / "hooks" / "claude",
+        shared / "dist",
+    ):
+        directory.mkdir(parents=True)
+    (runtime / "dist" / "cli" / "index.js").write_text("")
+    (runtime / "hooks" / "claude" / "resolve-analyze-cmd.cjs").write_text("")
+    (runtime / "package.json").write_text(json.dumps({"version": "9.9.9-test"}))
+    (runtime / "node_modules" / "gitnexus-shared").symlink_to(shared, target_is_directory=True)
+    (shared / "package.json").write_text(json.dumps({"name": "gitnexus-shared"}))
+
+
+def test_runtime_mounts_reuse_primary_checkout_node_modules_from_a_worktree(
+    monkeypatch, tmp_path
+) -> None:
+    primary = tmp_path / "primary"
+    worktree = tmp_path / "worktree"
+    _install_pinned_runtime(primary)
+    (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    _install_pinned_runtime(worktree)
+    shutil.rmtree(worktree / "gitnexus" / "node_modules")
+    (worktree / "gitnexus" / "node_modules").symlink_to(
+        primary / "gitnexus" / "node_modules",
+        target_is_directory=True,
+    )
+    (worktree / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n")
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", worktree)
+
+    mounts = runner.trusted_gitnexus_runtime_mounts()
+    by_target = {mount.target: mount.source for mount in mounts}
+
+    assert by_target[f"{runner.SANDBOX_GITNEXUS}/node_modules"] == (
+        primary / "gitnexus" / "node_modules"
+    )
+    assert by_target[f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"] == (
+        worktree / "gitnexus-shared" / "package.json"
+    )
+    assert by_target[f"{runner.SANDBOX_GITNEXUS}/dist"] == worktree / "gitnexus" / "dist"
+
+
+def test_runtime_mounts_reject_a_node_modules_symlink_outside_the_primary_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    primary = tmp_path / "primary"
+    worktree = tmp_path / "worktree"
+    outsider = tmp_path / "outsider"
+    _install_pinned_runtime(primary)
+    _install_pinned_runtime(outsider)
+    (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    _install_pinned_runtime(worktree)
+    shutil.rmtree(worktree / "gitnexus" / "node_modules")
+    (worktree / "gitnexus" / "node_modules").symlink_to(
+        outsider / "gitnexus" / "node_modules",
+        target_is_directory=True,
+    )
+    (worktree / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n")
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", worktree)
+
+    with pytest.raises(SandboxError, match="primary checkout"):
+        runner.trusted_gitnexus_runtime_mounts()
+
+
+def test_runtime_mounts_reject_a_node_modules_symlink_in_a_regular_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    checkout = tmp_path / "checkout"
+    other = tmp_path / "other"
+    _install_pinned_runtime(checkout)
+    _install_pinned_runtime(other)
+    (checkout / ".git").mkdir()
+    shutil.rmtree(checkout / "gitnexus" / "node_modules")
+    (checkout / "gitnexus" / "node_modules").symlink_to(
+        other / "gitnexus" / "node_modules",
+        target_is_directory=True,
+    )
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", checkout)
+
+    with pytest.raises(SandboxError, match="must be a real directory"):
+        runner.trusted_gitnexus_runtime_mounts()
 
 
 @pytest.mark.skipif(
@@ -659,6 +756,23 @@ def test_skill_invocation_parses_supported_exact_identifier_fields(skill_input):
             "gitnexus-work",
         )
         is True
+    )
+
+
+def test_skill_invocation_accepts_plugin_qualified_identifier():
+    assert (
+        runner_sessions.skill_was_invoked_events(
+            skill_events({"skill": "compound-engineering:ce-code-review"}),
+            "ce-code-review",
+        )
+        is True
+    )
+    assert (
+        runner_sessions.skill_was_invoked_events(
+            skill_events({"skill": "compound-engineering:ce-plan"}),
+            "ce-code-review",
+        )
+        is False
     )
 
 

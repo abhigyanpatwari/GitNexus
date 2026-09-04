@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from workflow_bench.oracle_assets import review_case_setup_command
+
 
 BENCH_ROOT = Path(__file__).parents[1] / "workflow_bench"
 
@@ -26,6 +28,7 @@ def test_review_corpus_is_immutable_and_task_bound():
         task = by_id[case["id"]]
         assert task["ref"] == case["base_sha"]
         assert task["sandbox_copy"] == [f"eval/workflow_bench/review_cases/{patch.name}"]
+        assert task["setup"] == review_case_setup_command(patch.name)
 
 
 def test_hidden_labels_are_not_recoverable_from_visible_task_input():

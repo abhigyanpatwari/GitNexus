@@ -43,6 +43,7 @@ import re
 import secrets
 import stat
 import statistics
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -68,6 +69,7 @@ from .evolution import (
     evaluate_candidate,
     evaluate_review_candidate,
     required_candidate_arms,
+    seed_evaluated_skills,
     skill_fingerprint,
 )
 from .model_gateway import (
@@ -83,6 +85,7 @@ from .oracle_assets import (
     capture_task_oracles,
     sanitize_clone_for_hidden_oracles,
     staged_task_oracle,
+    with_hidden_harness_apply_exclude,
 )
 from .process_control import ManagedProcessError
 from .promotion_apply import committed_destination_base_digests
@@ -98,9 +101,11 @@ from .proposer_sandbox import (
     SandboxSession,
     build_sandbox_environment,
     preflight_bubblewrap,
+    preflight_unsafe_host,
     prepare_sandbox,
     redact_text,
     require_claude_sandbox_helpers,
+    sandbox_workspace_write_boundary,
 )
 from .runner_artifacts import (
     IMPLEMENTATION_ARMS,
@@ -329,7 +334,7 @@ def _run_hidden_oracle(
                         extra_read_only_mounts=(ReadOnlyMount(source=stage_root, target=oracle_mount),),
                     ),
                     env=oracle_env,
-                    require_pid_namespace=True,
+                    require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
                 )
             )
             # Candidate code executes in this process. Never persist its stdout
@@ -423,11 +428,15 @@ def run_arm(
     oracle_snapshot: TaskOracleSnapshot | None = None,
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
+    environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
+    host_text = getattr(sandbox, "host_text", lambda value: value)
+    host_path = getattr(sandbox, "host_path", lambda value: str(value))
+    backend = getattr(sandbox, "backend", "bwrap")
     env = model_session_environment(
         auth_token=args.auth_token,
         base_url=args.base_url,
         model=args.model,
-        build_sandbox_environment=build_sandbox_environment,
+        build_sandbox_environment=environment_builder,
     )
     # --bare hard-disables the Skill tool and every mcp__* tool — by Claude
     # Code design, not a bug (--allowedTools can't restore what --bare
@@ -444,15 +453,17 @@ def run_arm(
         "model": args.model,
         "effort": args.effort,
         "env": env,
-        "permission_mode": "dontAsk",
+        "permission_mode": (
+            "bypassPermissions" if backend == "host-unsafe" else "dontAsk"
+        ),
         "command_prefix": sandbox.command_prefix_for(
             read_only_paths=_evaluated_skill_roots(worktree, arm),
         ),
-        "require_pid_namespace": True,
+        "require_pid_namespace": getattr(sandbox, "require_pid_namespace", True),
         "bare": bare,
         "settings_json": sandbox.settings_json,
         "strict_mcp_config": True,
-        "mcp_config_json": sandbox_mcp_config(),
+        "mcp_config_json": host_text(sandbox_mcp_config()),
         "transcript_projects": sandbox.transcript_projects,
         "transcript_cwd": Path(SANDBOX_WORKSPACE),
         "transcript_wait_seconds": 5,
@@ -461,7 +472,7 @@ def run_arm(
         "transcript_secrets": tuple(credential_secrets(args)),
     }
     if ce_plugin_dir is not None:
-        common["plugin_dirs"] = (ce_plugin_dir,)
+        common["plugin_dirs"] = (host_path(ce_plugin_dir),)
     expected_skills = ARM_EXPECTED_SKILLS.get(arm, ())
     plan_doc: Path | None = None
     if arm in ("workflow", "ce_workflow"):
@@ -538,7 +549,7 @@ def run_arm(
         phase_before = workspace_snapshot(worktree) if enforce_phase_boundary else None
         review_common = {
             **common,
-            "allowed_tools": allowed_agent_tools(implementation=False),
+            "allowed_tools": allowed_agent_tools(implementation=False, allow_edit=False),
             "command_prefix": sandbox.command_prefix_for(
                 read_only_workspace=True,
                 read_only_paths=_evaluated_skill_roots(worktree, arm),
@@ -550,12 +561,17 @@ def run_arm(
                 ),
             ),
         }
-        review_session = run_claude(
-            review_prompt.format(task=task["prompt"]),
-            worktree,
-            expected_skill=expected_skills[0],
-            **review_common,
-        )
+        with sandbox_workspace_write_boundary(
+            sandbox,
+            read_only_workspace=True,
+            writable=(review_output,),
+        ):
+            review_session = run_claude(
+                host_text(review_prompt.format(task=task["prompt"])),
+                worktree,
+                expected_skill=expected_skills[0],
+                **review_common,
+            )
         sessions.append(review_session)
         if review_session["ok"] and phase_before is not None:
             try:
@@ -627,8 +643,8 @@ def run_arm(
                 read_only_workspace=True,
                 unshare_network=True,
             ),
-            env=build_sandbox_environment(),
-            require_pid_namespace=True,
+            env=environment_builder(),
+            require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
         )
     )
     review_score: dict[str, Any] | None = None
@@ -849,6 +865,7 @@ class TaskCellContext:
     runtime_mounts: tuple[ReadOnlyMount, ...]
     candidate_overlay: Path | None
     overlay_digest: str | None
+    sandbox_backend: str = "bwrap"
 
 
 def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
@@ -909,6 +926,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 *oracle_visibility_mounts,
             ],
             preflight=False,
+            backend=ctx.sandbox_backend,
         ) as sandbox:
             # Capture the BASE (pre-overlay) skill digest — identical
             # for the incumbent and candidate arms — then run the
@@ -916,9 +934,22 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             # candidate overlay is applied only afterwards, so setup
             # can never observe candidate prose and both arms share
             # byte-identical pre-overlay state.
+            # Historical review SHAs may predate gitnexus-review. Seed
+            # the current evaluated skill first so fingerprinting and
+            # the model see the same incumbent prose on every case.
+            if execution_arm == "review":
+                seed_evaluated_skills(
+                    HARNESS_ROOT,
+                    worktree,
+                    sandbox=sandbox,
+                    arm=execution_arm,
+                )
             base_skill_digest = skill_fingerprint(worktree, execution_arm)
             if task.get("setup"):
-                setup_command = ["/bin/sh", "-lc", str(task["setup"])]
+                # Sanitization already removed eval/workflow_bench. A historical
+                # PR patch that still edits that tree (gitignored learnings.jsonl)
+                # must skip those hunks or `git apply` fails closed.
+                setup_command = ["/bin/sh", "-lc", with_hidden_harness_apply_exclude(str(task["setup"]))]
                 setup = sandbox.run(
                     setup_command,
                     timeout=600,
@@ -1058,6 +1089,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             "task": task["id"],
             "class": task.get("class", ""),
             "run": run_idx,
+            "sandbox_backend": ctx.sandbox_backend,
             "task_asset_snapshot_digest": (ctx.asset_snapshot.digest if ctx.asset_snapshot is not None else None),
             "task_asset_manifest_digest": (
                 ctx.asset_snapshot.manifest_digest if ctx.asset_snapshot is not None else None
@@ -1498,6 +1530,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--promotion-max-task-regression", type=float, default=20.0)
     parser.add_argument("--task-bindings-json", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--promotion-target-bases-json", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--unsafe-no-bwrap", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -1574,9 +1607,24 @@ def main() -> None:
             parser.error("--promotion-target-bases-json requires --candidate-overlay")
         promotion_target_bases = {}
 
+    if args.unsafe_no_bwrap and os.environ.get("CI"):
+        parser.error("--unsafe-no-bwrap is forbidden when CI is set")
+    if args.unsafe_no_bwrap and args.arms != ["ce_review", "review", "candidate_review"]:
+        parser.error("--unsafe-no-bwrap is restricted to the paired review arms")
     try:
-        bwrap_bin = preflight_bubblewrap()
-        require_claude_sandbox_helpers()
+        if args.unsafe_no_bwrap:
+            bwrap_bin = preflight_unsafe_host()
+            sandbox_backend = "host-unsafe"
+            print(
+                "WARNING: --unsafe-no-bwrap runs sessions directly on the host with no "
+                "containment; model and verifier processes can access the host filesystem, "
+                "network, and credentials.",
+                file=sys.stderr,
+            )
+        else:
+            bwrap_bin = preflight_bubblewrap()
+            sandbox_backend = "bwrap"
+            require_claude_sandbox_helpers()
         runtime_mounts = trusted_gitnexus_runtime_mounts()
     except SandboxError as exc:
         parser.error(str(exc))
@@ -1597,6 +1645,7 @@ def main() -> None:
             expected_task_bindings=expected_task_bindings,
             ce_plugin_config=ce_plugin_config,
             bwrap_bin=bwrap_bin,
+            sandbox_backend=sandbox_backend,
             runtime_mounts=runtime_mounts,
             candidate_arms=candidate_arms,
             candidate_overlay=candidate_overlay,
@@ -1617,6 +1666,7 @@ def _run_sweep(
     expected_task_bindings: Any,
     ce_plugin_config: Any,
     bwrap_bin: Any,
+    sandbox_backend: str,
     runtime_mounts: Any,
     candidate_arms: list[str],
     candidate_overlay: Path | None,
@@ -1691,6 +1741,7 @@ def _run_sweep(
                         cache=task_asset_cache,
                         claude_bin=args.claude_bin,
                         bwrap_bin=bwrap_bin,
+                        sandbox_backend=sandbox_backend,
                         runtime_mounts=runtime_mounts,
                     )
                     graph_snapshots[graph_key] = graph_snapshot
@@ -1724,6 +1775,7 @@ def _run_sweep(
                 ce_plugin_snapshot=ce_plugin_snapshot,
                 trees_dir=Path(trees),
                 bwrap_bin=bwrap_bin,
+                sandbox_backend=sandbox_backend,
                 runtime_mounts=runtime_mounts,
                 candidate_overlay=candidate_overlay,
                 overlay_digest=overlay_digest,

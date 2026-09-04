@@ -10,8 +10,11 @@ import pytest
 import yaml
 
 from workflow_bench.model_gateway import (
+    DEFAULT_GATEWAY_READY_TIMEOUT_S,
+    GATEWAY_READY_TIMEOUT_ENV,
     GATEWAY_REQUEST_TIMEOUT_S,
     OpenAIGateway,
+    gateway_ready_timeout_s,
     anthropic_api_key_from_environ,
     claude_gateway_model_env,
     credential_secrets,
@@ -139,6 +142,49 @@ def test_openai_gateway_never_leaves_proxy_output_on_an_undrained_pipe(tmp_path:
     assert captured["stdout"] is not subprocess.PIPE
     assert getattr(captured["stdout"], "name", "") == str(gateway.log_path)
     assert gateway.log_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_gateway_startup_budget_outlives_a_cold_litellm_import(monkeypatch, tmp_path: Path) -> None:
+    # Importing LiteLLM takes ~17s on a cold container filesystem and the proxy
+    # binds its port only afterwards, so a sub-20s budget fails as "connection
+    # refused" on a proxy that was merely still starting.
+    monkeypatch.delenv(GATEWAY_READY_TIMEOUT_ENV, raising=False)
+    assert DEFAULT_GATEWAY_READY_TIMEOUT_S >= 60
+    assert gateway_ready_timeout_s() == DEFAULT_GATEWAY_READY_TIMEOUT_S
+    assert (
+        OpenAIGateway(
+            openai_api_key="sk-openai-secret",
+            model_names=["gpt-4.1"],
+            work_dir=tmp_path / "gw",
+        ).ready_timeout_s
+        == DEFAULT_GATEWAY_READY_TIMEOUT_S
+    )
+
+    monkeypatch.setenv(GATEWAY_READY_TIMEOUT_ENV, "42.5")
+    assert gateway_ready_timeout_s() == 42.5
+
+    for bad in ("0", "-1", "soon"):
+        monkeypatch.setenv(GATEWAY_READY_TIMEOUT_ENV, bad)
+        with pytest.raises(ValueError, match=GATEWAY_READY_TIMEOUT_ENV):
+            gateway_ready_timeout_s()
+
+
+def test_gateway_readiness_timeout_reports_the_proxy_log_and_the_override(tmp_path: Path) -> None:
+    gateway = OpenAIGateway(
+        openai_api_key="sk-openai-secret",
+        model_names=["gpt-4.1"],
+        work_dir=tmp_path / "gw",
+        ready_timeout_s=0.1,
+    )
+    gateway.work_dir.mkdir(parents=True)
+    gateway.log_path.write_text("ImportError: litellm proxy extras missing")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        gateway._wait_until_ready()
+
+    message = str(excinfo.value)
+    assert "ImportError: litellm proxy extras missing" in message
+    assert GATEWAY_READY_TIMEOUT_ENV in message
 
 
 def test_runner_environment_does_not_forward_the_openai_key() -> None:

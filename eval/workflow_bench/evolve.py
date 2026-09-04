@@ -82,6 +82,7 @@ from .proposer_sandbox import (
     SandboxError,
     build_sandbox_environment,
     preflight_bubblewrap,
+    preflight_unsafe_host,
     pid_namespace_command,
     prepare_sandbox,
     redact_text,
@@ -127,8 +128,8 @@ WORKTREE_PREPARATION_TIMEOUT_SECONDS = (
 # from that commit. Use the overlay boundary rather than the current candidate
 # size so this helper remains conservative before the runner starts.
 PROMOTION_BASE_TIMEOUT_SECONDS = (1 + 3 * MAX_CANDIDATE_FILES) * GIT_COMMAND_TIMEOUT_SECONDS
-ARM_SESSION_COUNTS = {"workflow": 2, "workflow_direct": 1}
-ARM_WORKSPACE_SNAPSHOT_COUNTS = {"workflow": 2, "workflow_direct": 0}
+ARM_SESSION_COUNTS = {"workflow": 2, "workflow_direct": 1, "review": 1}
+ARM_WORKSPACE_SNAPSHOT_COUNTS = {"workflow": 2, "workflow_direct": 0, "review": 1}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -692,6 +693,7 @@ def run_proposer(
     proposal_path: Path,
     evidence_bundle: Path,
     bwrap_bin: Path,
+    sandbox_backend: str = "bwrap",
     progress_label: str | None = None,
 ) -> dict[str, Any]:
     """Run one proposer in confinement and copy only validated outputs out."""
@@ -722,9 +724,13 @@ def run_proposer(
                 bwrap_bin=bwrap_bin,
                 read_only_mounts=[evidence_mount],
                 preflight=False,
+                backend=sandbox_backend,
             ) as sandbox:
+                host_text = getattr(sandbox, "host_text", lambda value: value)
+                environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
+                backend = getattr(sandbox, "backend", "bwrap")
                 record = runner.run_claude(
-                    prompt,
+                    host_text(prompt),
                     clone,
                     claude_bin=sandbox.claude_bin,
                     timeout=args.timeout,
@@ -734,7 +740,7 @@ def run_proposer(
                         auth_token=args.auth_token,
                         base_url=args.base_url,
                         model=args.proposer_model,
-                        build_sandbox_environment=build_sandbox_environment,
+                        build_sandbox_environment=environment_builder,
                     ),
                     # No permission_mode: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
                     # forces "default", so requesting dontAsk only warns. Tools
@@ -743,7 +749,10 @@ def run_proposer(
                     # bare ignores --tools and imposes its own Bash/Edit/Read
                     # ceiling, which would cost the proposer Grep and Glob.
                     command_prefix=sandbox.command_prefix,
-                    require_pid_namespace=True,
+                    require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
+                    permission_mode=(
+                        "bypassPermissions" if backend == "host-unsafe" else None
+                    ),
                     settings_json=sandbox.settings_json,
                     strict_mcp_config=True,
                     mcp_config_json='{"mcpServers":{}}',
@@ -796,6 +805,21 @@ def resolve_incumbent_arms(overlay: Path, explicit_arms: list[str] | None) -> li
     return required
 
 
+def executed_benchmark_arms(incumbent_arms: Sequence[str]) -> list[str]:
+    """Incumbent/candidate pairs plus the review comparator when needed."""
+
+    paired = [arm for incumbent in incumbent_arms for arm in (incumbent, INCUMBENT_ARMS[incumbent])]
+    if "review" in incumbent_arms:
+        paired.insert(0, "ce_review")
+    return paired
+
+
+def _timeout_arm_key(arm: str) -> str:
+    if arm == "ce_review":
+        return "review"
+    return CANDIDATE_ARMS.get(arm, arm)
+
+
 def generation_timeout_seconds(
     *,
     task_count: int,
@@ -808,11 +832,14 @@ def generation_timeout_seconds(
     if task_count < 1 or runs < 1 or session_timeout < 1:
         raise ValueError("task count, runs, and session timeout must be positive")
     try:
-        session_slots = sum(2 * ARM_SESSION_COUNTS[arm] for arm in incumbent_arms)
+        executed = executed_benchmark_arms(incumbent_arms)
+        session_slots = sum(ARM_SESSION_COUNTS[_timeout_arm_key(arm)] for arm in executed)
+        workspace_snapshot_slots = sum(
+            ARM_WORKSPACE_SNAPSHOT_COUNTS[_timeout_arm_key(arm)] for arm in executed
+        )
     except KeyError as exc:
         raise ValueError(f"unsupported evolution arm: {exc.args[0]}") from exc
-    paired_arm_cells = 2 * len(incumbent_arms)
-    workspace_snapshot_slots = sum(2 * ARM_WORKSPACE_SNAPSHOT_COUNTS[arm] for arm in incumbent_arms)
+    paired_arm_cells = len(executed)
     per_task_preparation = (
         TASK_BINDING_GIT_PHASES * GIT_COMMAND_TIMEOUT_SECONDS
         + 2 * TASK_SNAPSHOT_TIMEOUT_SECONDS
@@ -849,9 +876,7 @@ def runner_argv(
     proposer_model: str | None = None,
 ) -> list[str]:
     incumbent_arms = resolve_incumbent_arms(overlay_dir, args.arms)
-    paired_arms = [arm for incumbent in incumbent_arms for arm in (incumbent, INCUMBENT_ARMS[incumbent])]
-    if "review" in incumbent_arms:
-        paired_arms.insert(0, "ce_review")
+    paired_arms = executed_benchmark_arms(incumbent_arms)
     argv = [
         sys.executable,
         "-m",
@@ -897,6 +922,8 @@ def runner_argv(
         argv.append("--include-expensive")
     if args.ce_plugin_dir is not None:
         argv += ["--ce-plugin-dir", str(args.ce_plugin_dir), "--ce-plugin-version", args.ce_plugin_version]
+    if args.unsafe_no_bwrap:
+        argv.append("--unsafe-no-bwrap")
     return argv
 
 
@@ -1186,6 +1213,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ce-plugin-dir", type=Path, default=None)
     parser.add_argument("--ce-plugin-version", default=None)
+    parser.add_argument(
+        "--unsafe-no-bwrap",
+        action="store_true",
+        help="LOCAL DIAGNOSTICS ONLY: use PRoot path translation without filesystem, "
+        "network, or PID isolation; forbidden with --apply and in CI",
+    )
     return parser
 
 
@@ -1196,6 +1229,10 @@ def main() -> int:
         parser.error("--generations must be positive")
     if args.runs < 1 or args.timeout < 1:
         parser.error("--runs and --timeout must be positive")
+    if args.unsafe_no_bwrap and args.apply:
+        parser.error("--unsafe-no-bwrap cannot be combined with --apply")
+    if args.unsafe_no_bwrap and os.environ.get("CI"):
+        parser.error("--unsafe-no-bwrap is forbidden when CI is set")
     try:
         args.model = runner.normalized_model_identifier(args.model)
         args.proposer_model = runner.normalized_model_identifier(
@@ -1213,6 +1250,8 @@ def main() -> int:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
     requested_arms = args.arms or ["workflow", "workflow_direct"]
+    if args.unsafe_no_bwrap and requested_arms != ["review"]:
+        parser.error("--unsafe-no-bwrap is restricted to --arms review")
     if "review" in requested_arms and (
         args.ce_plugin_dir is None
         or not args.ce_plugin_dir.expanduser().is_dir()
@@ -1229,8 +1268,19 @@ def main() -> int:
             parser.error(str(exc))
     selected_tasks = runner.selected_task_bindings(selected_task_rows)
     try:
-        bwrap_bin = preflight_bubblewrap()
-        require_claude_sandbox_helpers()
+        if args.unsafe_no_bwrap:
+            bwrap_bin = preflight_unsafe_host()
+            sandbox_backend = "host-unsafe"
+            print(
+                "WARNING: --unsafe-no-bwrap runs sessions directly on the host with no "
+                "containment; model and verifier processes can access the host filesystem, "
+                "network, and credentials.",
+                file=sys.stderr,
+            )
+        else:
+            bwrap_bin = preflight_bubblewrap()
+            sandbox_backend = "bwrap"
+            require_claude_sandbox_helpers()
     except SandboxError as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
@@ -1250,6 +1300,7 @@ def main() -> int:
             requested_arms=requested_arms,
             initial_overlay=initial_overlay,
             bwrap_bin=bwrap_bin,
+            sandbox_backend=sandbox_backend,
         )
     finally:
         gateway.__exit__(None, None, None)
@@ -1264,6 +1315,7 @@ def _run_generations(
     requested_arms: list[str],
     initial_overlay: Path | None,
     bwrap_bin: Path,
+    sandbox_backend: str,
 ) -> int:
     policy_binding = {
         "metric": args.promotion_metric,
@@ -1344,6 +1396,7 @@ def _run_generations(
                     proposal_path=gen_dir / "proposal.md",
                     evidence_bundle=bundle,
                     bwrap_bin=bwrap_bin,
+                    sandbox_backend=sandbox_backend,
                     progress_label=f"gen {generation} proposer",
                 )
             # Redact any API token echoed into the session record (e.g. an
@@ -1383,18 +1436,21 @@ def _run_generations(
             print(f"[gen {generation}] promotion targets contain uncommitted or drifted bytes")
             return 1
         print(f"[gen {generation}] benchmarking candidate…")
+        benchmark_argv = runner_argv(
+            args,
+            bench_dir,
+            frozen_overlay,
+            task_bindings=selected_tasks,
+            target_base_digests=target_base_digests,
+            proposer_model=generation_proposer_model,
+        )
+        benchmark_command = (
+            benchmark_argv
+            if sandbox_backend == "host-unsafe"
+            else pid_namespace_command(benchmark_argv, bwrap_bin=bwrap_bin)
+        )
         bench = run_managed(
-            pid_namespace_command(
-                runner_argv(
-                    args,
-                    bench_dir,
-                    frozen_overlay,
-                    task_bindings=selected_tasks,
-                    target_base_digests=target_base_digests,
-                    proposer_model=generation_proposer_model,
-                ),
-                bwrap_bin=bwrap_bin,
-            ),
+            benchmark_command,
             timeout=generation_timeout_seconds(
                 task_count=len(selected_task_rows),
                 runs=args.runs,
@@ -1402,7 +1458,7 @@ def _run_generations(
                 incumbent_arms=incumbent_arms,
             ),
             env=runner_environment(args),
-            require_pid_namespace=True,
+            require_pid_namespace=sandbox_backend == "bwrap",
             # The sweep is the multi-hour phase; without this its per-run
             # progress lines only reach the log as a bounded tail, and only
             # when it fails.

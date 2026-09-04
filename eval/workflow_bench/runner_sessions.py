@@ -361,8 +361,13 @@ def sandbox_mcp_config() -> str:
     return json.dumps(config, sort_keys=True, separators=(",", ":"))
 
 
-def allowed_agent_tools(*, implementation: bool, include_mcp: bool = True) -> list[str]:
-    tools = [*BUILTIN_AGENT_TOOLS]
+def allowed_agent_tools(
+    *,
+    implementation: bool,
+    include_mcp: bool = True,
+    allow_edit: bool = True,
+) -> list[str]:
+    tools = [tool for tool in BUILTIN_AGENT_TOOLS if allow_edit or tool != "Edit"]
     if include_mcp:
         tools.extend(GITNEXUS_READ_ONLY_TOOLS)
     if include_mcp and implementation:
@@ -461,7 +466,13 @@ def _persist_parent_event_stream(
 
 
 def _normalized_skill_identifier(value: Any) -> str | None:
-    """Return the exact identifier token accepted by the Skill tool."""
+    """Return the exact identifier token accepted by the Skill tool.
+
+    Plugin skills are requested as ``plugin:skill`` (observed in review
+    evolution: ``compound-engineering:ce-code-review``). Compare on the
+    skill token after the last colon so a successful plugin-qualified
+    invocation still counts as the expected skill.
+    """
 
     if not isinstance(value, str):
         return None
@@ -471,6 +482,8 @@ def _normalized_skill_identifier(value: Any) -> str | None:
     token = stripped.split(maxsplit=1)[0]
     if token.startswith("/"):
         token = token[1:]
+    if ":" in token:
+        token = token.rsplit(":", 1)[-1]
     return token or None
 
 

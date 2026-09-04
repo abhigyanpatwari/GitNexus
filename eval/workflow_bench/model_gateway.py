@@ -42,6 +42,27 @@ _OPENAI_MODEL = re.compile(
 # shorter than that, so both ends of the loopback hop get the same generous
 # budget and the session fails on real errors instead of on the clock.
 GATEWAY_REQUEST_TIMEOUT_S = 1800
+# Importing LiteLLM alone costs ~17s on a cold container filesystem, and the
+# proxy only binds its port after that. A budget tight enough to lose that race
+# reads as "connection refused", which looks like a dead proxy rather than a
+# slow import.
+GATEWAY_READY_TIMEOUT_ENV = "GITNEXUS_BENCH_GATEWAY_READY_TIMEOUT_S"
+DEFAULT_GATEWAY_READY_TIMEOUT_S = 180.0
+
+
+def gateway_ready_timeout_s() -> float:
+    """Startup budget for the loopback proxy, overridable for slow hosts."""
+
+    raw = (os.environ.get(GATEWAY_READY_TIMEOUT_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_GATEWAY_READY_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{GATEWAY_READY_TIMEOUT_ENV} must be a number of seconds, not {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{GATEWAY_READY_TIMEOUT_ENV} must be positive, not {raw!r}")
+    return value
 
 
 def is_openai_model(model: str) -> bool:
@@ -241,12 +262,12 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
         openai_api_key: str,
         model_names: Sequence[str],
         work_dir: Path,
-        ready_timeout_s: float = 20.0,
+        ready_timeout_s: float | None = None,
     ) -> None:
         self.openai_api_key = openai_api_key
         self.model_names = tuple(model_names)
         self.work_dir = work_dir
-        self.ready_timeout_s = ready_timeout_s
+        self.ready_timeout_s = gateway_ready_timeout_s() if ready_timeout_s is None else ready_timeout_s
         self.auth_token = secrets.token_hex(16)
         self.port = _free_loopback_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
@@ -342,7 +363,13 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
             except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
                 last_error = str(exc)
             time.sleep(0.1)
-        raise RuntimeError(f"OpenAI LiteLLM gateway was not ready on {self.base_url}: {last_error}")
+        detail = self.log_tail()
+        raise RuntimeError(
+            f"OpenAI LiteLLM gateway was not ready on {self.base_url} after "
+            f"{self.ready_timeout_s:.0f}s: {last_error}"
+            + (f"; proxy log: {detail}" if detail else "; proxy wrote no output yet")
+            + f" (raise {GATEWAY_READY_TIMEOUT_ENV} if this host is simply slow to import LiteLLM)"
+        )
 
 
 class attach_openai_gateway(AbstractContextManager[argparse.Namespace]):

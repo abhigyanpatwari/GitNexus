@@ -7,6 +7,7 @@ import os
 import secrets
 import stat
 import statistics
+from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -383,6 +384,69 @@ def candidate_overlay_digest(overlay: Path) -> str:
     return digest
 
 
+def _commit_sandbox_paths(
+    sandbox: SandboxSession,
+    relative_paths: Sequence[str],
+    *,
+    message: str,
+    require_change: bool,
+) -> bool:
+    """Stage and commit paths inside the outer sandbox.
+
+    Returns True when a commit was created. ``require_change`` keeps the
+    candidate-overlay contract: a no-op overlay is an error, while an
+    incumbent skill seed may already match the historical tree.
+    """
+
+    mkdir_command = ["/bin/mkdir", "-p", f"{SANDBOX_TMP}/wfbench-empty-hooks"]
+    mkdir_result = sandbox.run(
+        mkdir_command,
+        timeout=60,
+        env=build_sandbox_environment(),
+    )
+    if not mkdir_result.ok:
+        raise ManagedProcessError(mkdir_command, mkdir_result)
+    if not relative_paths:
+        if require_change:
+            raise ValueError("candidate overlay is byte-identical to the incumbent skills")
+        return False
+
+    # Historical review SHAs gitignore `.claude/skills/*` and lack the current
+    # per-skill allowlist. Force-add so a seed or overlay of harness-owned
+    # skill bytes is not rejected as an ignored path.
+    command, added = _sandbox_overlay_git(sandbox, ["add", "-f", "--", *relative_paths])
+    if not added.ok:
+        raise ManagedProcessError(command, added)
+    command, changed = _sandbox_overlay_git(
+        sandbox,
+        ["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--"],
+    )
+    if changed.returncode == 0:
+        if require_change:
+            raise ValueError("candidate overlay is byte-identical to the incumbent skills")
+        return False
+    if changed.returncode != 1:
+        raise ManagedProcessError(command, changed)
+
+    command, committed = _sandbox_overlay_git(
+        sandbox,
+        [
+            "commit",
+            "--quiet",
+            "--no-verify",
+            "-m",
+            message,
+        ],
+        extra_config=(
+            "user.name=workflow-bench",
+            "user.email=workflow-bench@invalid",
+        ),
+    )
+    if not committed.ok:
+        raise ManagedProcessError(command, committed)
+    return True
+
+
 def apply_candidate_overlay(
     overlay: Path,
     worktree: Path,
@@ -401,45 +465,94 @@ def apply_candidate_overlay(
     for relative, content in payload:
         _replace_regular_file(worktree, relative, content)
         relative_paths.append(relative.as_posix())
-
-    mkdir_command = ["/bin/mkdir", "-p", f"{SANDBOX_TMP}/wfbench-empty-hooks"]
-    mkdir_result = sandbox.run(
-        mkdir_command,
-        timeout=60,
-        env=build_sandbox_environment(),
-    )
-    if not mkdir_result.ok:
-        raise ManagedProcessError(mkdir_command, mkdir_result)
-
-    command, added = _sandbox_overlay_git(sandbox, ["add", "--", *relative_paths])
-    if not added.ok:
-        raise ManagedProcessError(command, added)
-    command, changed = _sandbox_overlay_git(
+    _commit_sandbox_paths(
         sandbox,
-        ["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--"],
+        relative_paths,
+        message="benchmark candidate skill overlay",
+        require_change=True,
     )
-    if changed.returncode == 0:
-        raise ValueError("candidate overlay is byte-identical to the incumbent skills")
-    if changed.returncode != 1:
-        raise ManagedProcessError(command, changed)
-
-    command, committed = _sandbox_overlay_git(
-        sandbox,
-        [
-            "commit",
-            "--quiet",
-            "--no-verify",
-            "-m",
-            "benchmark candidate skill overlay",
-        ],
-        extra_config=(
-            "user.name=workflow-bench",
-            "user.email=workflow-bench@invalid",
-        ),
-    )
-    if not committed.ok:
-        raise ManagedProcessError(command, committed)
     return digest
+
+
+def seed_evaluated_skills(
+    source_repo: Path,
+    worktree: Path,
+    *,
+    sandbox: SandboxSession,
+    arm: str,
+) -> None:
+    """Install the current evaluated skill tree into a historical clone.
+
+    Review evolution scores the current (or overlay) ``gitnexus-review`` skill
+    against a historical PR checkout. Older SHAs predate that skill, and
+    using whatever prose happened to exist at the reviewed commit would make
+    the incumbent arm a moving target. Copy the harness checkout's skill
+    bytes and commit them before setup so ``git status`` still shows only
+    the task patch.
+    """
+
+    skill_names = EVALUATED_ARM_SKILLS.get(arm)
+    if not skill_names:
+        return
+
+    source_repo = source_repo.expanduser().absolute()
+    expected_clone = Path(os.path.abspath(worktree.expanduser()))
+    sandbox_clone = Path(os.path.abspath(sandbox.clone.expanduser()))
+    if sandbox_clone != expected_clone:
+        raise ValueError("skill seed sandbox does not bind the requested clone")
+    _require_real_directory(source_repo, label="incumbent skill repository")
+    if source_repo.resolve(strict=True) != source_repo:
+        raise ValueError(f"incumbent skill repository cannot traverse symlinks: {source_repo}")
+
+    relative_paths: list[str] = []
+    total = 0
+    for skill_name in skill_names:
+        _require_directory_chain(
+            source_repo,
+            Path(".claude") / "skills" / skill_name,
+            label="incumbent skill root",
+        )
+        skill_root = source_repo / ".claude" / "skills" / skill_name
+        pending = [skill_root]
+        while pending:
+            directory = pending.pop()
+            try:
+                children = list(os.scandir(directory))
+            except OSError as exc:
+                raise ValueError(f"incumbent skill directory is unreadable: {directory}: {exc}") from exc
+            for item in children:
+                path = Path(item.path)
+                if item.is_symlink():
+                    raise ValueError(
+                        "incumbent skill seed cannot contain symlinks: "
+                        f"{path.relative_to(source_repo)}"
+                    )
+                if item.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                    continue
+                if not item.is_file(follow_symlinks=False):
+                    raise ValueError(
+                        "incumbent skill seed entries must be regular files: "
+                        f"{path.relative_to(source_repo)}"
+                    )
+                total += item.stat(follow_symlinks=False).st_size
+                if total > MAX_SKILL_FINGERPRINT_BYTES:
+                    raise ValueError("incumbent skill seed exceeds the bounded evidence limit")
+                relative = Path(".claude") / "skills" / skill_name / path.relative_to(skill_root)
+                content = _bounded_regular_bytes(
+                    path,
+                    limit=MAX_SKILL_FINGERPRINT_BYTES,
+                    label="incumbent skill file",
+                )
+                _replace_regular_file(worktree, relative, content)
+                relative_paths.append(PurePosixPath(relative.as_posix()).as_posix())
+
+    _commit_sandbox_paths(
+        sandbox,
+        relative_paths,
+        message="benchmark incumbent review skill",
+        require_change=False,
+    )
 
 
 def unexercised_overlay_skills(overlay: Path, candidate_arms: list[str]) -> list[str]:

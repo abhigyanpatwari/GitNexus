@@ -15,6 +15,7 @@ from workflow_bench.evolution import (
     evaluate_candidate,
     evaluate_review_candidate,
     required_candidate_arms,
+    seed_evaluated_skills,
     skill_fingerprint,
     unexercised_overlay_skills,
 )
@@ -387,6 +388,12 @@ def test_apply_candidate_overlay_creates_a_clean_ephemeral_commit(tmp_path):
     ) == candidate_overlay_digest(overlay)
     assert incumbent.read_text() == "candidate\n"
     git_commands = [command for command in sandbox.commands if command[0] == "/usr/bin/git"]
+    assert git_commands[0][-4:] == [
+        "add",
+        "-f",
+        "--",
+        ".claude/skills/gitnexus-work/SKILL.md",
+    ]
     assert [command[-1] for command in git_commands[:2]] == [
         ".claude/skills/gitnexus-work/SKILL.md",
         "--",
@@ -420,6 +427,181 @@ def test_candidate_overlay_rejects_linked_destination_parents(tmp_path):
 
     with pytest.raises(ValueError, match="destination parent"):
         apply_candidate_overlay(overlay, repo, sandbox=sandbox)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="candidate overlays require the Linux outer sandbox")
+def test_apply_candidate_overlay_force_adds_historically_ignored_skill(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    (repo / ".gitignore").write_text(".claude/skills/*\n")
+    (repo / "README").write_text("subject\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "historical checkout that ignores skills",
+        ],
+        check=True,
+    )
+
+    overlay = tmp_path / "candidate"
+    write_overlay_skill(overlay, "gitnexus-review")
+
+    class LocalSandbox:
+        def __init__(self):
+            self.clone = repo
+
+        def run(self, command, **kwargs):
+            if command[0] == "/bin/mkdir":
+                return ManagedProcessResult(
+                    state="exited",
+                    returncode=0,
+                    stdout_tail="",
+                    stderr_tail="",
+                    duration_s=0.0,
+                )
+            translated = [str(repo) if item == "/workspace" else item for item in command]
+            completed = subprocess.run(
+                translated,
+                cwd=repo,
+                env=dict(kwargs["env"]),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return ManagedProcessResult(
+                state="exited",
+                returncode=completed.returncode,
+                stdout_tail=completed.stdout,
+                stderr_tail=completed.stderr,
+                duration_s=0.0,
+            )
+
+    apply_candidate_overlay(overlay, repo, sandbox=LocalSandbox())
+    assert (repo / ".claude" / "skills" / "gitnexus-review" / "SKILL.md").read_text() == (
+        "gitnexus-review candidate\n"
+    )
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="skill seeds require the Linux outer sandbox")
+def test_seed_evaluated_skills_installs_missing_review_skill_and_is_idempotent(tmp_path):
+    repo = tmp_path / "clone"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    # Historical review SHAs ignore the whole skill tree and lack today's
+    # `!.claude/skills/gitnexus-review/` allowlist. Seeding must still commit.
+    (repo / ".gitignore").write_text(".claude/skills/*\n")
+    (repo / "README").write_text("subject\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "historical checkout without review skill",
+        ],
+        check=True,
+    )
+    before = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    source = tmp_path / "harness"
+    skill = source / ".claude" / "skills" / "gitnexus-review" / "SKILL.md"
+    persona = source / ".claude" / "skills" / "gitnexus-review" / "ci-personas" / "lens.md"
+    persona.parent.mkdir(parents=True)
+    skill.write_text("current incumbent review skill\n")
+    persona.write_text("persona\n")
+
+    class LocalSandbox:
+        def __init__(self):
+            self.clone = repo
+
+        def run(self, command, **kwargs):
+            if command[0] == "/bin/mkdir":
+                return ManagedProcessResult(
+                    state="exited",
+                    returncode=0,
+                    stdout_tail="",
+                    stderr_tail="",
+                    duration_s=0.0,
+                )
+            translated = [str(repo) if item == "/workspace" else item for item in command]
+            completed = subprocess.run(
+                translated,
+                cwd=repo,
+                env=dict(kwargs["env"]),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            return ManagedProcessResult(
+                state="exited",
+                returncode=completed.returncode,
+                stdout_tail=completed.stdout,
+                stderr_tail=completed.stderr,
+                duration_s=0.0,
+            )
+
+    sandbox = LocalSandbox()
+    seed_evaluated_skills(source, repo, sandbox=sandbox, arm="review")
+    assert skill_fingerprint(repo, "review") is not None
+    assert (repo / ".claude" / "skills" / "gitnexus-review" / "SKILL.md").read_text() == (
+        "current incumbent review skill\n"
+    )
+    assert (
+        repo / ".claude" / "skills" / "gitnexus-review" / "ci-personas" / "lens.md"
+    ).read_text() == "persona\n"
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""
+    after = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert after != before
+
+    seed_evaluated_skills(source, repo, sandbox=sandbox, arm="review")
+    again = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert again == after
 
 
 @pytest.mark.skipif(os.name == "nt", reason="skill links are rejected by the Linux sandbox harness")
