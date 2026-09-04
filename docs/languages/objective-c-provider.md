@@ -1,12 +1,11 @@
-# Objective-C Provider
+# Objective-C Language Provider
 
 Status: implemented
 
-Implementation note (`dev` branch): the first deterministic provider is wired in and covered by
-focused unit/integration tests. The parser-loader ABI smoke runs in the published multi-OS test
-matrix, and the native prebuild workflow owns Objective-C together with all six vendored grammar
-targets. This status describes the implemented MVP; it does not promise full Objective-C
-runtime dispatch.
+The deterministic provider is covered by focused unit and integration tests. The parser-loader ABI
+smoke runs in the published multi-OS test matrix, and the native prebuild workflow owns
+Objective-C together with all six vendored grammar targets. This status describes the implemented
+MVP; it does not promise full Objective-C runtime dispatch.
 
 ## Goal
 
@@ -89,9 +88,9 @@ The acceptance bar is:
 
 The MVP does not promise exact runtime type inference for `id` or `instancetype`, reflection, swizzling, arbitrary category replacement, dynamic selector construction, or complete impact analysis across every runtime dispatch path. Tool results must surface confidence and unresolved evidence rather than presenting guesses as certain graph facts.
 
-## Current implementation coverage on `dev`
+## Current implementation coverage
 
-Implemented in the branch:
+Implemented capabilities:
 
 - Vendored `tree-sitter-objc` grammar, registered through the existing Tree-sitter loader.
 - `.m` and `.mm` language mapping plus content-based `.h` classification so plain C/C++ headers are not unconditionally claimed.

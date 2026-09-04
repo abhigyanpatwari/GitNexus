@@ -59,10 +59,6 @@ npx gitnexus setup
 
 That's it. `analyze` indexes the codebase, installs agent skills, registers Claude Code hooks, and creates `AGENTS.md` / `CLAUDE.md` context files — all in one command. `setup` writes the MCP config so your AI agent can use the graph.
 
-## ForgeMate Fork Extension
-
-This fork keeps upstream GitNexus behavior as the default. Objective-C semantic indexing is implemented as an MVP on the fork's `objective-c_support` branch; it is not part of upstream `main` or the published upstream package. Its compatibility requirements and acceptance criteria live in [docs/fork/README.md](docs/fork/README.md).
-
 <details>
 <summary><strong>Install problems?</strong> npm 11 crash · slow cold install · no C++ toolchain</summary>
 
@@ -661,6 +657,7 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 | Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Objective-C | ✓      | —              | ✓       | ✓        | ✓                | —                     | —      | —          | —            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
 
