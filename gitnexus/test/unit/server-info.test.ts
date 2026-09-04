@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,10 @@ import {
 import { evaluate } from '../../src/core/update-check.js';
 import type { UpdateState } from '../../src/core/update-check.js';
 
+// Match buildServerInfo — read the version from the same package.json so the
+// test never goes stale on a release bump.
+const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
+  .version;
 const baseKeys = ['version', 'launchContext', 'nodeVersion'];
 const tempDirs: string[] = [];
 
@@ -27,7 +32,7 @@ describe('GET /api/info update state', () => {
 
     expect(Object.keys(response)).toEqual(baseKeys);
     expect(response).toEqual({
-      version: '1.6.10',
+      version: PKG_VERSION,
       launchContext: expect.stringMatching(/^(npx|global|local)$/),
       nodeVersion: process.version,
     });
@@ -35,7 +40,7 @@ describe('GET /api/info update state', () => {
 
   it('adds optional update fields only for an available version', () => {
     expect(buildServerInfo({ updateAvailable: true, latestVersion: '9.8.7' })).toEqual({
-      version: '1.6.10',
+      version: PKG_VERSION,
       launchContext: expect.stringMatching(/^(npx|global|local)$/),
       nodeVersion: process.version,
       latestVersion: '9.8.7',
@@ -43,7 +48,7 @@ describe('GET /api/info update state', () => {
     });
 
     expect(
-      Object.keys(buildServerInfo({ updateAvailable: false, latestVersion: '1.6.10' })),
+      Object.keys(buildServerInfo({ updateAvailable: false, latestVersion: PKG_VERSION })),
     ).toEqual(baseKeys);
   });
 
