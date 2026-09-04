@@ -125,6 +125,11 @@ import {
   type ContentRetention,
   type RepoMeta,
 } from '../storage/repo-manager.js';
+import {
+  ANALYZE_STORAGE_REQUIREMENTS,
+  requireStoragePath,
+  resolveStoragePath,
+} from '../storage/storage-resolver.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
@@ -536,6 +541,8 @@ export function analyzeFailureMayHaveMutatedLiveIndex(error: unknown): boolean {
 export interface AnalyzeResult {
   repoName: string;
   repoPath: string;
+  /** The exact storage slot selected and validated for this analysis. */
+  storagePath: string;
   stats: {
     files?: number;
     nodes?: number;
@@ -1014,11 +1021,16 @@ interface WriteTarget {
  * `--branch` / checked-out mismatch error the pipeline used to throw inline, so
  * that failure still surfaces before any lock is taken.
  */
-async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Promise<WriteTarget> {
+async function resolveWriteTarget(
+  repoPath: string,
+  options: AnalyzeOptions,
+  validatedStoragePath?: string,
+): Promise<WriteTarget> {
   // `storagePath` is ALWAYS the flat `.gitnexus` — content-addressed caches
   // (parse-cache, parsedfile-store) and kuzu-migration cleanup live there and
   // are shared across branches (#2106 KTD7).
-  const { storagePath } = getStoragePaths(repoPath);
+  const storagePath =
+    validatedStoragePath ?? (await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS));
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   // Normalize the auto-detected branch the same way an explicit `--branch` is
@@ -1039,8 +1051,10 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     );
   }
   const branchLabel = options.branch ?? checkedOutBranch;
-  const placement = options.branch ? await resolveBranchPlacement(repoPath, branchLabel) : {};
-  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
+  const placement = options.branch
+    ? await resolveBranchPlacement(repoPath, branchLabel, storagePath)
+    : {};
+  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch, storagePath);
   return {
     storagePath,
     repoHasGit,
@@ -1108,7 +1122,12 @@ export async function runFullAnalysis(
     // checkout) still releases the held lock via `finally` (no leak).
     const MAX_RELOCK = 3;
     for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
-      const fresh = await resolveWriteTarget(repoPath, options);
+      const resolvedStoragePath = resolveStoragePath(repoPath);
+      const fresh = await resolveWriteTarget(
+        repoPath,
+        options,
+        resolvedStoragePath === writeTarget.storagePath ? writeTarget.storagePath : undefined,
+      );
       if (fresh.metaDir === writeTarget.metaDir) {
         writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
         break;
@@ -1179,19 +1198,33 @@ async function runFullAnalysisInner(
     log('Migrating from KuzuDB to LadybugDB — rebuilding index...');
   }
 
-  // Keep gitnexus.json and the legacy meta.json mirror in sync (fresher
-  // indexedAt wins; nothing is deleted). Best-effort: loadMeta has its own
-  // legacy fallback, so a reconciliation failure (read-only mount, full disk)
-  // must never abort the analyze run — a repo that indexed fine read-only
-  // before the rename must keep doing so.
+  // Keep gitnexus.json and the legacy meta.json mirror in sync. Use the
+  // ownership-validated write target rather than resolving storage again from
+  // the registry while holding the index lock. Best-effort: loadMeta has its
+  // own legacy fallback, so a reconciliation failure (read-only mount, full
+  // disk) must never abort the analyze run.
   try {
-    await reconcileMetadataFiles(repoPath);
+    await reconcileMetadataFiles(repoPath, storagePath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
   }
 
   const existingMeta = await loadMeta(metaDir);
+
+  // Claim a fresh, ownership-validated slot before the pipeline writes caches.
+  // A later registry-name collision or pipeline failure can otherwise leave
+  // cache files without metadata, which must be treated as unowned on the next
+  // invocation. This marker deliberately has no DB/freshness receipt, so read
+  // paths still reject it until a successful analyze writes the final metadata.
+  if (!existingMeta && !(await loadMeta(storagePath))) {
+    await saveMeta(storagePath, {
+      repoPath,
+      storagePath,
+      lastCommit: '',
+      indexedAt: new Date().toISOString(),
+    });
+  }
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (
@@ -1321,7 +1354,7 @@ async function runFullAnalysisInner(
             'if that also fails, verify FTS extension availability via `gitnexus doctor`.',
         );
       }
-      await ensureGitNexusIgnored(repoPath);
+      await ensureGitNexusIgnored(repoPath, storagePath);
       // #2767: stamp ONLY capabilities.fts so a long-lived MCP session's
       // ensureInitialized() has an explicit, correctly-scoped signal that FTS
       // changed — indexedAt/lastCommit/runnerIdentity/stats are copied through
@@ -1370,6 +1403,7 @@ async function runFullAnalysisInner(
           name: options.registryName,
           allowDuplicateName: options.allowDuplicateName,
           branch: placement.branch,
+          storagePath,
         });
       }
       return {
@@ -1378,6 +1412,7 @@ async function runFullAnalysisInner(
           getInferredRepoName(repoPath) ??
           path.basename(resolveRepoIdentityRoot(repoPath)),
         repoPath,
+        storagePath,
         stats: existingMeta.stats ?? {},
         ftsRepairedOnly: true,
       };
@@ -1818,6 +1853,7 @@ async function runFullAnalysisInner(
             name: options.registryName,
             allowDuplicateName: options.allowDuplicateName,
             branch: placement.branch,
+            storagePath,
           });
           if (!placement.branch) {
             try {
@@ -1862,7 +1898,7 @@ async function runFullAnalysisInner(
           // date" run must not fail over it; read-only storage — the
           // documented Docker :ro workflow (#1549) — degrades to a warning.
           try {
-            await adoptFlatBranchLabel(repoPath, branchLabel);
+            await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
             await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
           } catch (err) {
             // EACCES/EPERM also arise from ownership problems and transient
@@ -1876,7 +1912,7 @@ async function runFullAnalysisInner(
             );
           }
         }
-        await ensureGitNexusIgnored(repoPath);
+        await ensureGitNexusIgnored(repoPath, storagePath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
           // canonical repo basename (#1259) but leaves arbitrary subdirs
@@ -1886,6 +1922,7 @@ async function runFullAnalysisInner(
             getInferredRepoName(repoPath) ??
             path.basename(resolveRepoIdentityRoot(repoPath)),
           repoPath,
+          storagePath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
           isPrimaryBranch: !placement.branch,
@@ -4087,6 +4124,7 @@ async function runFullAnalysisInner(
       // primary/flat run (placement.branch === undefined) refreshes the
       // top-level fields (#2106).
       branch: placement.branch,
+      storagePath,
     });
 
     // ── #2354: the flat workspace slot has adopted this run's branch ──────
@@ -4101,7 +4139,7 @@ async function runFullAnalysisInner(
     // already-stamped meta label).
     if (!placement.branch && branchLabel) {
       try {
-        await adoptFlatBranchLabel(repoPath, branchLabel);
+        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
       } catch (e) {
         log(
           `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
@@ -4110,7 +4148,7 @@ async function runFullAnalysisInner(
     }
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
-    await ensureGitNexusIgnored(repoPath);
+    await ensureGitNexusIgnored(repoPath, storagePath);
 
     // ── Generate AI context files (best-effort) ───────────────────────
     let aggregatedClusterCount = 0;
@@ -4226,6 +4264,7 @@ async function runFullAnalysisInner(
     return {
       repoName: projectName,
       repoPath,
+      storagePath,
       stats: meta.stats,
       pipelineResult,
       ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),

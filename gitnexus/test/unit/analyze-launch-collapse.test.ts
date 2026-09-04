@@ -42,10 +42,14 @@ vi.mock('child_process', async () => {
 // timer between the worker message and the assertions.
 vi.mock('../../src/storage/repo-manager.js', () => ({
   canonicalizePath: (p: string) => p,
-  getStoragePath: () => H.STORAGE_PATH,
   INDEX_METADATA_FILE: H.METADATA_FILE,
   listRegisteredRepos: async () => [{ path: H.REPO_PATH, storagePath: H.STORAGE_PATH }],
   registryPathEquals: (a: string, b: string) => a === b,
+}));
+
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  ANALYZE_STORAGE_REQUIREMENTS: { allowedStates: ['missing', 'empty', 'owned'] },
+  requireStoragePath: async () => H.STORAGE_PATH,
 }));
 
 vi.mock('node:fs', async () => {
@@ -76,6 +80,7 @@ const completeMessage = (graphWriteCollapsed?: { expected: number; persisted: nu
   const result = {
     repoName: REPO_NAME,
     repoPath: REPO_PATH,
+    storagePath: H.STORAGE_PATH,
     stats: { files: 10, nodes: 100, edges: 500 },
     ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),
   } satisfies Partial<AnalyzeResult> as AnalyzeResult;
@@ -114,7 +119,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     });
 
     const job = jobManager.createJob({ repoPath: REPO_PATH });
-    launch(job, REPO_PATH, {});
+    await launch(job, REPO_PATH, {});
     child.emit('message', msg);
 
     await vi.waitFor(() => expect(calls).toContain('updateJob:terminal'));
@@ -149,7 +154,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     });
   });
 
-  it('forwards the Spring Actuator snapshot path to the worker', () => {
+  it('forwards the Spring Actuator snapshot path to the worker', async () => {
     const launch = createLaunchAnalysisWorker({
       jobManager,
       backend: { init: backendInit },
@@ -159,7 +164,7 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     });
     const job = jobManager.createJob({ repoPath: REPO_PATH });
 
-    launch(job, REPO_PATH, { springActuatorPath: 'runtime/actuator' });
+    await launch(job, REPO_PATH, { springActuatorPath: 'runtime/actuator' });
 
     expect(child.send).toHaveBeenCalledWith(
       expect.objectContaining({

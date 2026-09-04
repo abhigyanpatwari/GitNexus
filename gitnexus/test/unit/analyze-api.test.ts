@@ -638,7 +638,7 @@ describe('POST /api/embed route wiring (#2790)', () => {
     // `stats.embeddings`, and the next CLI run's preserve-or-wipe decision
     // hangs on it.
     expect(region).toContain('const measuredEmbeddings = await countPersistedEmbeddings();');
-    expect(region).toContain('await saveMeta(entry.storagePath, embeddingMeta);');
+    expect(region).toContain('await saveMeta(storagePath, embeddingMeta);');
     // Ordering, without brittle character spans: flush → measure → decide →
     // write. Counting before the flush would describe rows still in the WAL.
     const flushed = region.lastIndexOf('await flushWAL();');

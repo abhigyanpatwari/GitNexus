@@ -6,8 +6,14 @@ import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { statusCommand } from '../../src/cli/status.js';
 import { getStoragePaths, loadMeta } from '../../src/storage/repo-manager.js';
+import {
+  STORAGE_PATH_ENV,
+  STORAGE_ROOT_ENV,
+  storagePathFromRoot,
+} from '../../src/storage/storage-resolver.js';
 
-const savedStoragePath = process.env.GITNEXUS_STORAGE_PATH;
+const savedStoragePath = process.env[STORAGE_PATH_ENV];
+const savedStorageRoot = process.env[STORAGE_ROOT_ENV];
 const savedRetention = process.env.GITNEXUS_CONTENT_RETENTION;
 const savedHome = process.env.GITNEXUS_HOME;
 const temporaryPaths: string[] = [];
@@ -19,8 +25,10 @@ const makeTempDir = async (prefix: string): Promise<string> => {
 };
 
 const restoreEnvironment = () => {
-  if (savedStoragePath === undefined) delete process.env.GITNEXUS_STORAGE_PATH;
-  else process.env.GITNEXUS_STORAGE_PATH = savedStoragePath;
+  if (savedStoragePath === undefined) delete process.env[STORAGE_PATH_ENV];
+  else process.env[STORAGE_PATH_ENV] = savedStoragePath;
+  if (savedStorageRoot === undefined) delete process.env[STORAGE_ROOT_ENV];
+  else process.env[STORAGE_ROOT_ENV] = savedStorageRoot;
   if (savedRetention === undefined) delete process.env.GITNEXUS_CONTENT_RETENTION;
   else process.env.GITNEXUS_CONTENT_RETENTION = savedRetention;
   if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
@@ -84,7 +92,8 @@ const readGraph = async (lbugPath: string) => {
 describe('external storage and content retention', () => {
   it('keeps the full index outside the checkout, rebuilds on retention changes, and remains queryable after checkout removal', async () => {
     const repo = await makeTempDir('gitnexus-run-analyze-retention-repo-');
-    const storage = await makeTempDir('gitnexus-run-analyze-retention-storage-');
+    const storageRoot = await makeTempDir('gitnexus-run-analyze-retention-storage-');
+    const storage = storagePathFromRoot(storageRoot, repo);
     const home = await makeTempDir('gitnexus-run-analyze-retention-home-');
     await fs.mkdir(path.join(repo, 'src'));
     await fs.writeFile(
@@ -92,7 +101,8 @@ describe('external storage and content retention', () => {
       `/** retention fixture documentation */\nexport function retentionFixture(enabled = true) {\n  const payload = '${'fullRetentionPayload '.repeat(20_000)}';\n  if (enabled) return payload;\n  return '';\n}\n`,
     );
     process.env.GITNEXUS_HOME = home;
-    process.env.GITNEXUS_STORAGE_PATH = storage;
+    delete process.env[STORAGE_PATH_ENV];
+    process.env[STORAGE_ROOT_ENV] = storageRoot;
     process.env.GITNEXUS_CONTENT_RETENTION = 'full';
 
     const logs: string[] = [];
@@ -112,7 +122,7 @@ describe('external storage and content retention', () => {
     });
 
     const initialMeta = await loadMeta(storage);
-    const { lbugPath } = getStoragePaths(repo);
+    const { lbugPath } = getStoragePaths(repo, undefined, storage);
     const fullGraph = await readGraph(lbugPath);
     const fullDatabaseSize = await recursiveSize(lbugPath);
     expect(initialMeta).toMatchObject({

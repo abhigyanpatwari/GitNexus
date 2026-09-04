@@ -255,6 +255,7 @@ describe('setupAntigravity', () => {
     // The adapter top-level require()s this; the production install path must
     // co-locate it next to the adapter (symmetric with the Claude install).
     await expect(fs.access(path.join(destDir, 'resolve-analyze-cmd.cjs'))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(destDir, 'registry-query.cjs'))).resolves.toBeUndefined();
   });
 
   it('installs skills under ~/.gemini/antigravity/skills/<name>/SKILL.md', async () => {
@@ -415,6 +416,7 @@ const LOCK_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'hook-lock.cjs');
 const PROBE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'hook-db-lock-probe.cjs');
 const WIN_RM_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'win-rm-list-json.ps1');
 const RESOLVE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'resolve-analyze-cmd.cjs');
+const REGISTRY_QUERY_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'registry-query.cjs');
 
 async function stageAdapter(): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-adapter-'));
@@ -428,6 +430,7 @@ async function stageAdapter(): Promise<string> {
   // The adapter top-level `require('./resolve-analyze-cmd.cjs')`s this helper;
   // without staging it the spawned adapter crashes with MODULE_NOT_FOUND.
   await fs.copyFile(RESOLVE_SRC, path.join(tmp, 'resolve-analyze-cmd.cjs'));
+  await fs.copyFile(REGISTRY_QUERY_SRC, path.join(tmp, 'registry-query.cjs'));
   return path.join(tmp, 'gitnexus-antigravity-hook.cjs');
 }
 
@@ -459,16 +462,28 @@ function expectAdapterLoaded(stderr: string, status: number | null): void {
 describe('gitnexus-antigravity-hook adapter', () => {
   let adapter: string;
   let workdir: string;
+  let registryHome: string;
 
   beforeEach(async () => {
     adapter = await stageAdapter();
     workdir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-work-'));
+    registryHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-registry-'));
+    await fs.writeFile(path.join(registryHome, 'registry.json'), '[]\n', 'utf-8');
   });
 
   afterEach(async () => {
     await fs.rm(path.dirname(adapter), { recursive: true, force: true });
     await fs.rm(workdir, { recursive: true, force: true });
+    await fs.rm(registryHome, { recursive: true, force: true });
   });
+
+  async function registerWorkdir(storagePath: string): Promise<void> {
+    await fs.writeFile(
+      path.join(registryHome, 'registry.json'),
+      JSON.stringify([{ name: 'adapter-test', path: workdir, storagePath }]),
+      'utf-8',
+    );
+  }
 
   it('AfterTool with no .gitnexus/ produces no stdout', async () => {
     const { stdout, stderr, status } = runAdapter(
@@ -541,6 +556,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
       JSON.stringify({ lastCommit: '0000000000000000000000000000000000000000', stats: {} }),
       'utf-8',
     );
+    await registerWorkdir(gnDir);
 
     const input = {
       hook_event_name: 'AfterTool',
@@ -555,6 +571,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
     const { stdout, stderr } = runAdapter(adapter, input, workdir, {
       GITNEXUS_INVOCATION: 'gitnexus',
       GITNEXUS_DEBUG: '',
+      GITNEXUS_HOME: registryHome,
     });
 
     // #1913: by default the hint reaches the agent via additionalContext (stdout
@@ -569,6 +586,7 @@ describe('gitnexus-antigravity-hook adapter', () => {
     const debug = runAdapter(adapter, input, workdir, {
       GITNEXUS_INVOCATION: 'gitnexus',
       GITNEXUS_DEBUG: '1',
+      GITNEXUS_HOME: registryHome,
     });
     expect(debug.stderr).toMatch(/\[GitNexus\] index is stale/);
     expect(debug.stderr).toMatch(/gitnexus analyze/);

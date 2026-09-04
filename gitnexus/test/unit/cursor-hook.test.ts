@@ -6,7 +6,7 @@
  *
  * Covers:
  * - extractPattern: pattern extraction from Grep/Read/Shell tool inputs
- * - findGitNexusDir: .gitnexus directory discovery (shared with Claude hook)
+ * - findRegisteredRepo: registry-backed repository discovery
  * - cwd validation: rejects relative paths
  * - shell injection: verifies no `shell: true` in spawnSync calls
  * - cross-platform: Windows .cmd extension handling
@@ -23,7 +23,7 @@ import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { runHook } from '../utils/hook-test-helpers.js';
+import { runHook as spawnHook } from '../utils/hook-test-helpers.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
 // ─── Path to the Cursor hook + manifest ─────────────────────────────
@@ -82,6 +82,7 @@ let tmpDir: string;
 // deliberately has no .gitnexus so unrelated early-exit tests stay cheap.
 let guardTmpDir: string;
 let guardGitNexusDir: string;
+let hookHome: string;
 
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cursor-hook-test-'));
@@ -93,12 +94,37 @@ beforeAll(() => {
   initGitRepo(guardTmpDir, { name: 'Test', email: 'test@test.com' });
   fs.writeFileSync(path.join(guardTmpDir, 'dummy.txt'), 'hello');
   commitAll(guardTmpDir, 'init');
+
+  hookHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cursor-hook-home-'));
+  fs.writeFileSync(
+    path.join(hookHome, 'registry.json'),
+    JSON.stringify([
+      {
+        name: 'cursor-guard',
+        path: guardTmpDir,
+        storagePath: guardGitNexusDir,
+      },
+    ]),
+  );
 });
 
 afterAll(() => {
+  fs.rmSync(hookHome, { recursive: true, force: true });
   fs.rmSync(tmpDir, { recursive: true, force: true });
   fs.rmSync(guardTmpDir, { recursive: true, force: true });
 });
+
+function runHook(
+  hookPath: string,
+  input: Record<string, any>,
+  cwd?: string,
+  options: { env?: NodeJS.ProcessEnv } = {},
+) {
+  return spawnHook(hookPath, input, cwd, {
+    ...options,
+    env: { ...(options.env ?? process.env), GITNEXUS_HOME: hookHome },
+  });
+}
 
 // ─── Manifest + hook file presence ───────────────────────────────────
 
@@ -208,17 +234,25 @@ describe('Cursor hook source regressions', () => {
     expect(source).toMatch(/'augment',\s*'--',\s*pattern/);
   });
 
-  it('gates on a non-global .gitnexus directory before invoking the CLI', () => {
-    expect(source).toContain('findGitNexusDir');
-    expect(source).toContain('isGlobalRegistryDir');
-  });
-
-  it('isGlobalRegistryDir recognizes gitnexus.json as well as legacy meta.json', () => {
-    expect(source).toContain('gitnexus.json');
+  it('gates on a registry entry before invoking the CLI', () => {
+    expect(source).toContain('findRegisteredRepo');
+    expect(source).toContain('registry-query.cjs');
   });
 
   it('handles linked git worktrees via git rev-parse --git-common-dir', () => {
-    expect(source).toContain('--git-common-dir');
+    const resolver = fs.readFileSync(
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        'gitnexus-cursor-integration',
+        'hooks',
+        'registry-query.cjs',
+      ),
+      'utf-8',
+    );
+    expect(resolver).toContain('--git-common-dir');
   });
 });
 

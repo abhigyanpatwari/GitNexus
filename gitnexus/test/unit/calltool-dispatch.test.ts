@@ -292,6 +292,14 @@ describe('LocalBackend.init', () => {
     await backend.init();
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
+
+  it('does not delete legacy Kuzu files while initializing a read backend', async () => {
+    setupSingleRepo();
+
+    await backend.init();
+
+    expect(cleanupOldKuzuFiles).not.toHaveBeenCalled();
+  });
 });
 
 describe('LocalBackend.disconnect', () => {

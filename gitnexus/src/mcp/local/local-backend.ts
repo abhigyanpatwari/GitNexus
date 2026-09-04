@@ -47,7 +47,6 @@ import {
 import { realpathSync } from 'fs';
 import {
   listRegisteredRepos,
-  cleanupOldKuzuFiles,
   canonicalizePath,
   getStoragePaths,
   loadMeta,
@@ -1602,15 +1601,6 @@ export class LocalBackend {
       const storagePath = entry.storagePath;
       const lbugPath = path.join(storagePath, 'lbug');
 
-      // Clean up any leftover KuzuDB files from before the LadybugDB migration.
-      // If kuzu exists but lbug doesn't, warn so the user knows to re-analyze.
-      const kuzu = await cleanupOldKuzuFiles(storagePath);
-      if (kuzu.found && kuzu.needsReindex) {
-        logger.error(
-          `GitNexus: "${entry.name}" has a stale KuzuDB index. Run: gitnexus analyze ${entry.path}`,
-        );
-      }
-
       const handle: RepoHandle = {
         id,
         name: entry.name,
@@ -1654,7 +1644,7 @@ export class LocalBackend {
     // memory registry snapshot; no disk I/O on this hot path (#2106 R3).
     for (const entry of entries) {
       for (const b of entry.branches ?? []) {
-        liveLbugPaths.add(getStoragePaths(entry.path, b.branch).lbugPath);
+        liveLbugPaths.add(getStoragePaths(entry.path, b.branch, entry.storagePath).lbugPath);
       }
     }
     // initializedRepos is the authoritative set of OPENED pool keys (flat AND
@@ -1906,7 +1896,7 @@ export class LocalBackend {
     const summary =
       handle.branch !== branch ? handle.branches?.find((b) => b.branch === branch) : undefined;
     if (summary) {
-      const { lbugPath } = getStoragePaths(handle.repoPath, branch);
+      const { lbugPath } = getStoragePaths(handle.repoPath, branch, handle.storagePath);
       // The lbug is the artifact the pool opens, so its presence is the
       // serviceability truth — a half-deleted dir can outlive its meta.json
       // while the lbug is gone, and vice versa (#2364 review F1 arm ii).

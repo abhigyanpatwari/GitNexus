@@ -185,10 +185,25 @@ describe('CLI help surface', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('环境变量：');
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_PATH=/absolute/index');
+    expect(result.stdout).toContain('完整外部索引目录');
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_ROOT=/absolute/root');
+    expect(result.stdout).toContain('外部索引根目录');
     expect(result.stdout).toContain('当参数和对应环境变量同时提供时，参数优先。');
     expect(result.stdout).toContain('提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。');
     expect(result.stdout).not.toContain('Environment variables:');
     expect(result.stdout).not.toContain('Flags override the corresponding env vars');
+  });
+
+  it('analyze help documents the external storage root layout', () => {
+    const result = runHelp('analyze');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_PATH=/absolute/index');
+    expect(result.stdout).toContain('Complete external index directory');
+    expect(result.stdout).toContain('GITNEXUS_STORAGE_ROOT=/absolute/root');
+    expect(result.stdout).toContain('External index root');
+    expect(result.stdout).toContain('<repo-basename>-<canonical-path-hash>/');
   });
 
   it('query help keeps advanced search options without importing analyze deps', () => {

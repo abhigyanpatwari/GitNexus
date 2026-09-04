@@ -4,14 +4,20 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   InvalidStoragePathError,
+  STORAGE_PATH_ENV,
+  STORAGE_ROOT_ENV,
+  requireDeletableStoragePath,
+  StorageDeletionError,
   defaultStoragePath,
   ensureStoragePathWritable,
   resolveStoragePath,
+  storagePathFromRoot,
   validateConfiguredStoragePath,
 } from '../../src/storage/storage-resolver.js';
 
 const temporaryPaths: string[] = [];
-const savedStoragePath = process.env.GITNEXUS_STORAGE_PATH;
+const savedStoragePath = process.env[STORAGE_PATH_ENV];
+const savedStorageRoot = process.env[STORAGE_ROOT_ENV];
 const savedHome = process.env.GITNEXUS_HOME;
 
 const makeTempDir = async (prefix: string): Promise<string> => {
@@ -21,8 +27,10 @@ const makeTempDir = async (prefix: string): Promise<string> => {
 };
 
 afterEach(async () => {
-  if (savedStoragePath === undefined) delete process.env.GITNEXUS_STORAGE_PATH;
-  else process.env.GITNEXUS_STORAGE_PATH = savedStoragePath;
+  if (savedStoragePath === undefined) delete process.env[STORAGE_PATH_ENV];
+  else process.env[STORAGE_PATH_ENV] = savedStoragePath;
+  if (savedStorageRoot === undefined) delete process.env[STORAGE_ROOT_ENV];
+  else process.env[STORAGE_ROOT_ENV] = savedStorageRoot;
   if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
   else process.env.GITNEXUS_HOME = savedHome;
   await Promise.all(
@@ -33,32 +41,52 @@ afterEach(async () => {
 describe('storage resolver', () => {
   it('keeps the repository-local default when no override or registration exists', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
-    delete process.env.GITNEXUS_STORAGE_PATH;
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
     process.env.GITNEXUS_HOME = await makeTempDir('gitnexus-storage-resolver-home-');
 
     expect(resolveStoragePath(repo)).toBe(defaultStoragePath(repo));
   });
 
-  it('uses an explicit absolute slot before the registered slot', async () => {
+  it('uses an explicit complete storage path before a root or registered slot', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
     const home = await makeTempDir('gitnexus-storage-resolver-home-');
     const registered = path.join(home, 'registered-index');
     const explicit = path.join(home, 'explicit-index');
+    const root = path.join(home, 'external-root');
     process.env.GITNEXUS_HOME = home;
     await fs.writeFile(
       path.join(home, 'registry.json'),
       JSON.stringify([{ path: repo, storagePath: registered }]),
     );
-    process.env.GITNEXUS_STORAGE_PATH = explicit;
+    process.env[STORAGE_PATH_ENV] = explicit;
+    process.env[STORAGE_ROOT_ENV] = root;
 
     expect(resolveStoragePath(repo)).toBe(explicit);
+  });
+
+  it('derives an isolated slot beneath an explicit storage root before the registered slot', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
+    const home = await makeTempDir('gitnexus-storage-resolver-home-');
+    const registered = path.join(home, 'registered-index');
+    const root = path.join(home, 'external-root');
+    process.env.GITNEXUS_HOME = home;
+    await fs.writeFile(
+      path.join(home, 'registry.json'),
+      JSON.stringify([{ path: repo, storagePath: registered }]),
+    );
+    delete process.env[STORAGE_PATH_ENV];
+    process.env[STORAGE_ROOT_ENV] = root;
+
+    expect(resolveStoragePath(repo)).toBe(storagePathFromRoot(root, repo));
   });
 
   it('uses a registered external slot after the explicit override is absent', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
     const home = await makeTempDir('gitnexus-storage-resolver-home-');
     const registered = path.join(home, 'registered-index');
-    delete process.env.GITNEXUS_STORAGE_PATH;
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
     process.env.GITNEXUS_HOME = home;
     await fs.writeFile(
       path.join(home, 'registry.json'),
@@ -76,7 +104,8 @@ describe('storage resolver', () => {
     const registered = path.join(home, 'registered-index');
     await fs.mkdir(repo);
     await fs.symlink(repo, linkedRepo, process.platform === 'win32' ? 'junction' : 'dir');
-    delete process.env.GITNEXUS_STORAGE_PATH;
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
     process.env.GITNEXUS_HOME = home;
     await fs.writeFile(
       path.join(home, 'registry.json'),
@@ -92,7 +121,8 @@ describe('storage resolver', () => {
       const home = await makeTempDir('gitnexus-storage-resolver-home-');
       const repo = path.join(home, 'removed-repository');
       const registered = path.join(home, 'registered-index');
-      delete process.env.GITNEXUS_STORAGE_PATH;
+      delete process.env[STORAGE_PATH_ENV];
+      delete process.env[STORAGE_ROOT_ENV];
       process.env.GITNEXUS_HOME = home;
       await fs.writeFile(
         path.join(home, 'registry.json'),
@@ -103,17 +133,18 @@ describe('storage resolver', () => {
     },
   );
 
-  it('ignores malformed registry rows and falls back to the local layout', async () => {
+  it('rejects a malformed matching registry row', async () => {
     const repo = await makeTempDir('gitnexus-storage-resolver-repo-');
     const home = await makeTempDir('gitnexus-storage-resolver-home-');
-    delete process.env.GITNEXUS_STORAGE_PATH;
+    delete process.env[STORAGE_PATH_ENV];
+    delete process.env[STORAGE_ROOT_ENV];
     process.env.GITNEXUS_HOME = home;
     await fs.writeFile(
       path.join(home, 'registry.json'),
       JSON.stringify([null, 1, [], { path: repo, storagePath: 1 }]),
     );
 
-    expect(resolveStoragePath(repo)).toBe(defaultStoragePath(repo));
+    expect(() => resolveStoragePath(repo)).toThrow(InvalidStoragePathError);
   });
 
   it.each(['', 'relative/index', `bad\0index`])(
@@ -140,5 +171,47 @@ describe('storage resolver', () => {
     await fs.writeFile(target, 'not a directory');
 
     await expect(ensureStoragePathWritable(target)).rejects.toThrow();
+  });
+
+  it('allows deletion of a missing or empty repository-local slot', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-delete-repo-');
+    const storagePath = defaultStoragePath(repo);
+    await fs.mkdir(storagePath, { recursive: true });
+
+    await expect(requireDeletableStoragePath({ path: repo, storagePath })).resolves.toBe(
+      storagePath,
+    );
+  });
+
+  it('rejects a repository-local slot whose metadata belongs to another repository', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-delete-repo-');
+    const storagePath = defaultStoragePath(repo);
+    await fs.mkdir(storagePath, { recursive: true });
+    await fs.writeFile(
+      path.join(storagePath, 'gitnexus.json'),
+      JSON.stringify({ repoPath: path.join(path.dirname(repo), 'other-repo') }),
+    );
+
+    await expect(requireDeletableStoragePath({ path: repo, storagePath })).rejects.toBeInstanceOf(
+      StorageDeletionError,
+    );
+  });
+
+  it('requires matching metadata before deleting an external slot', async () => {
+    const repo = await makeTempDir('gitnexus-storage-resolver-delete-repo-');
+    const storagePath = await makeTempDir('gitnexus-storage-resolver-delete-storage-');
+    await fs.writeFile(
+      path.join(storagePath, 'gitnexus.json'),
+      JSON.stringify({ repoPath: repo, storagePath }),
+    );
+
+    await expect(requireDeletableStoragePath({ path: repo, storagePath })).resolves.toBe(
+      storagePath,
+    );
+
+    await fs.rm(path.join(storagePath, 'gitnexus.json'));
+    await expect(requireDeletableStoragePath({ path: repo, storagePath })).rejects.toBeInstanceOf(
+      StorageDeletionError,
+    );
   });
 });

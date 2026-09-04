@@ -39,15 +39,14 @@ const { runnerIdentity } = vi.hoisted(() => ({
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
-  findRepo: vi.fn(),
-  getStoragePaths: vi.fn((repoPath: string, branch?: string) => ({
-    storagePath: `${repoPath}/.gitnexus`,
+  getStoragePaths: vi.fn((repoPath: string, branch?: string, resolvedStoragePath?: string) => ({
+    storagePath: resolvedStoragePath ?? `${repoPath}/.gitnexus`,
     lbugPath: branch
-      ? `${repoPath}/.gitnexus/branches/${branch}/lbug`
-      : `${repoPath}/.gitnexus/lbug`,
+      ? `${resolvedStoragePath ?? `${repoPath}/.gitnexus`}/branches/${branch}/lbug`
+      : `${resolvedStoragePath ?? `${repoPath}/.gitnexus`}/lbug`,
     metaPath: branch
-      ? `${repoPath}/.gitnexus/branches/${branch}/meta.json`
-      : `${repoPath}/.gitnexus/meta.json`,
+      ? `${resolvedStoragePath ?? `${repoPath}/.gitnexus`}/branches/${branch}/meta.json`
+      : `${resolvedStoragePath ?? `${repoPath}/.gitnexus`}/meta.json`,
   })),
   loadMeta: vi.fn(),
   hasKuzuIndex: vi.fn().mockResolvedValue(false),
@@ -64,11 +63,26 @@ vi.mock('../../src/core/analyzer-identity.js', () => ({
   ),
 }));
 
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  requireStoragePath: vi.fn().mockResolvedValue('/repo/.gitnexus'),
+  requireRegisteredStoragePath: vi.fn().mockResolvedValue('/repo/.gitnexus'),
+  STATUS_STORAGE_REQUIREMENTS: { allowedStates: ['owned'], requireCodeIndexDB: true },
+  StorageRequirementError: class StorageRequirementError extends Error {
+    inspection: any;
+    requirements: any;
+    constructor(inspection: any, requirements: any) {
+      super('storage requirement failed');
+      this.inspection = inspection;
+      this.requirements = requirements;
+    }
+  },
+}));
+
 vi.mock('../../src/storage/git.js', () => ({
   isGitRepo: vi.fn().mockReturnValue(true),
   getCurrentCommit: vi.fn().mockReturnValue('headsha0'),
   getCurrentBranch: vi.fn().mockReturnValue('main'),
-  getGitRoot: vi.fn((p: string) => p),
+  getGitRoot: vi.fn().mockReturnValue('/repo'),
   isWorkingTreeDirty: vi.fn().mockReturnValue(false),
   listWorkingTreeDirtyPaths: vi.fn().mockReturnValue([]),
 }));
@@ -77,12 +91,17 @@ import { listCommand } from '../../src/cli/list.js';
 import { statusCommand } from '../../src/cli/status.js';
 import {
   listRegisteredRepos,
-  findRepo,
   loadMeta,
   readRegistryStrict,
   resolveRegistryEntry,
 } from '../../src/storage/repo-manager.js';
 import { getCurrentBranch, getCurrentCommit, isWorkingTreeDirty } from '../../src/storage/git.js';
+import {
+  requireRegisteredStoragePath,
+  requireStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageRequirementError,
+} from '../../src/storage/storage-resolver.js';
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 const output = () => logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
@@ -90,6 +109,14 @@ const output = () => logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
 beforeEach(() => {
   vi.clearAllMocks();
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  (loadMeta as any).mockResolvedValue({
+    repoPath: '/repo',
+    lastCommit: 'headsha0',
+    indexedAt: '2026-06-10T12:00:00.000Z',
+    branch: 'main',
+    runnerIdentity,
+    scopeExtractionReceipt: 1 as const,
+  });
 });
 
 describe('list branch rendering (#2106)', () => {
@@ -160,8 +187,51 @@ describe('status branch rendering (#2106)', () => {
     expect(resolveRegistryEntry).not.toHaveBeenCalled();
   });
 
+  it('resolves the Git root before checking the default storage path', async () => {
+    (loadMeta as any).mockResolvedValue(baseRepo.meta);
+
+    await statusCommand({ json: true });
+
+    expect(requireStoragePath).toHaveBeenCalledWith('/repo', STATUS_STORAGE_REQUIREMENTS);
+  });
+
+  it('checks the exact registry storage path for status --repo', async () => {
+    const entry = { path: '/repo', storagePath: '/external/repo-slot' };
+    (readRegistryStrict as any).mockResolvedValue([entry]);
+    (resolveRegistryEntry as any).mockReturnValue(entry);
+    (requireRegisteredStoragePath as any).mockResolvedValue(entry.storagePath);
+    (loadMeta as any).mockResolvedValue({ ...baseRepo.meta, repoPath: entry.path });
+
+    await statusCommand({ repo: 'repo', json: true });
+
+    expect(requireRegisteredStoragePath).toHaveBeenCalledWith(
+      entry,
+      STATUS_STORAGE_REQUIREMENTS,
+    );
+    expect(JSON.parse(output())).toMatchObject({ storagePath: entry.storagePath });
+  });
+
+  it('rejects a foreign registered storage path instead of treating it as an index', async () => {
+    const entry = { path: '/repo', storagePath: '/external/repo-slot' };
+    const inspection = {
+      repoPath: entry.path,
+      storagePath: entry.storagePath,
+      state: 'foreign' as const,
+      hasCodeIndexDB: true,
+    };
+    (readRegistryStrict as any).mockResolvedValue([entry]);
+    (resolveRegistryEntry as any).mockReturnValue(entry);
+    (requireRegisteredStoragePath as any).mockRejectedValue(
+      new StorageRequirementError(inspection, STATUS_STORAGE_REQUIREMENTS),
+    );
+
+    await expect(statusCommand({ repo: 'repo', json: true })).rejects.toBeInstanceOf(
+      StorageRequirementError,
+    );
+  });
+
   it('renders indexed and current typed runner receipts for exact comparison', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any).mockResolvedValue(baseRepo.meta);
     (getCurrentBranch as any).mockReturnValue('main');
     (getCurrentCommit as any).mockReturnValue('headsha0');
 
@@ -172,7 +242,7 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('renders stable machine-readable provenance with --json', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any).mockResolvedValue(baseRepo.meta);
     (getCurrentBranch as any).mockReturnValue('main');
     (getCurrentCommit as any).mockReturnValue('headsha0');
 
@@ -188,7 +258,7 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('reports a dirty working tree as stale in --json even when the commit matches', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any).mockResolvedValue(baseRepo.meta);
     (getCurrentBranch as any).mockReturnValue('main');
     (getCurrentCommit as any).mockReturnValue('headsha0');
     (isWorkingTreeDirty as any).mockReturnValueOnce(true);
@@ -202,7 +272,7 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('reports a dirty working tree as stale in the human output at a matching commit', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any).mockResolvedValue(baseRepo.meta);
     (getCurrentBranch as any).mockReturnValue('main');
     (getCurrentCommit as any).mockReturnValue('headsha0');
     (isWorkingTreeDirty as any).mockReturnValueOnce(true);
@@ -212,20 +282,17 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('never certifies dirty or checkpointed metadata and reports stable incomplete reasons', async () => {
-    (findRepo as any).mockResolvedValue({
-      ...baseRepo,
-      meta: {
-        ...baseRepo.meta,
-        incrementalInProgress: { startedAt: 1, toWriteCount: 2 },
-        embeddingCheckpoint: {
-          at: '2026-07-18T00:00:00.000Z',
-          nodesProcessed: 1,
-          totalNodes: 2,
-          chunksProcessed: 1,
-          model: 'fixture',
-          dimensions: 3,
-          provider: 'local',
-        },
+    (loadMeta as any).mockResolvedValue({
+      ...baseRepo.meta,
+      incrementalInProgress: { startedAt: 1, toWriteCount: 2 },
+      embeddingCheckpoint: {
+        at: '2026-07-18T00:00:00.000Z',
+        nodesProcessed: 1,
+        totalNodes: 2,
+        chunksProcessed: 1,
+        model: 'fixture',
+        dimensions: 3,
+        provider: 'local',
       },
     });
     (getCurrentBranch as any).mockReturnValue('main');
@@ -242,12 +309,9 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('treats an older runner receipt schema as stale at the same commit', async () => {
-    (findRepo as any).mockResolvedValue({
-      ...baseRepo,
-      meta: {
-        ...baseRepo.meta,
-        runnerIdentity: { ...runnerIdentity, schemaVersion: 1 },
-      },
+    (loadMeta as any).mockResolvedValue({
+      ...baseRepo.meta,
+      runnerIdentity: { ...runnerIdentity, schemaVersion: 1 },
     });
     (getCurrentBranch as any).mockReturnValue('main');
     (getCurrentCommit as any).mockReturnValue('headsha0');
@@ -260,7 +324,7 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('shows the current branch and up-to-date on the primary', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any).mockResolvedValue(baseRepo.meta);
     (getCurrentBranch as any).mockReturnValue('main');
     (getCurrentCommit as any).mockReturnValue('headsha0');
 
@@ -271,10 +335,11 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('falls through to the workspace index when the branch has no pinned index (#2354)', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any)
+      .mockResolvedValueOnce(baseRepo.meta)
+      .mockResolvedValueOnce(null); // feature/y has no pinned index
     (getCurrentBranch as any).mockReturnValue('feature/y');
     (getCurrentCommit as any).mockReturnValue('headsha9');
-    (loadMeta as any).mockResolvedValue(null); // feature/y has no pinned index
 
     await statusCommand();
     const out = output();
@@ -286,10 +351,11 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('same-commit branch flip reports up-to-date against the workspace index (#2354)', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any)
+      .mockResolvedValueOnce(baseRepo.meta)
+      .mockResolvedValueOnce(null); // feature/y has no pinned index
     (getCurrentBranch as any).mockReturnValue('feature/y');
     (getCurrentCommit as any).mockReturnValue('headsha0'); // same commit as flat meta
-    (loadMeta as any).mockResolvedValue(null); // feature/y has no pinned index
 
     await statusCommand();
     const out = output();
@@ -298,17 +364,18 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('compares against the branch index when the current branch has one', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any)
+      .mockResolvedValueOnce(baseRepo.meta)
+      .mockResolvedValueOnce({
+        repoPath: '/repo',
+        lastCommit: 'zzzzsha0',
+        indexedAt: '2026-06-10T14:00:00.000Z',
+        branch: 'feature/z',
+        runnerIdentity,
+        scopeExtractionReceipt: 1,
+      });
     (getCurrentBranch as any).mockReturnValue('feature/z');
     (getCurrentCommit as any).mockReturnValue('zzzzsha0');
-    (loadMeta as any).mockResolvedValue({
-      repoPath: '/repo',
-      lastCommit: 'zzzzsha0',
-      indexedAt: '2026-06-10T14:00:00.000Z',
-      branch: 'feature/z',
-      runnerIdentity,
-      scopeExtractionReceipt: 1,
-    });
 
     await statusCommand();
     const out = output();
@@ -317,7 +384,7 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('shows detached HEAD and compares against the flat index', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any).mockResolvedValue(baseRepo.meta);
     (getCurrentBranch as any).mockReturnValue(null); // detached
     (getCurrentCommit as any).mockReturnValue('headsha0');
 
@@ -328,15 +395,16 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('reports stale when the branch index is behind the branch tip', async () => {
-    (findRepo as any).mockResolvedValue(baseRepo);
+    (loadMeta as any)
+      .mockResolvedValueOnce(baseRepo.meta)
+      .mockResolvedValueOnce({
+        repoPath: '/repo',
+        lastCommit: 'oldsha00',
+        indexedAt: '2026-06-10T14:00:00.000Z',
+        branch: 'feature/z',
+      });
     (getCurrentBranch as any).mockReturnValue('feature/z');
     (getCurrentCommit as any).mockReturnValue('newsha99'); // moved past the index
-    (loadMeta as any).mockResolvedValue({
-      repoPath: '/repo',
-      lastCommit: 'oldsha00',
-      indexedAt: '2026-06-10T14:00:00.000Z',
-      branch: 'feature/z',
-    });
 
     await statusCommand();
     const out = output();

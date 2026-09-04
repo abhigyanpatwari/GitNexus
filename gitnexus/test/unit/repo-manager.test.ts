@@ -16,6 +16,9 @@ import {
   resolveBranchPlacement,
   saveMeta,
   loadMeta,
+  hasIndex,
+  loadRepo,
+  findRepo,
   reconcileMetadataFiles,
   AnalysisNotFinalizedError,
   INDEX_METADATA_FILE,
@@ -99,6 +102,61 @@ describe('getStoragePaths', () => {
     expect(path.dirname(branched.metaPath)).toBe(expectedDir);
     expect(path.basename(branched.lbugPath)).toBe('lbug');
     expect(path.basename(branched.metaPath)).toBe('gitnexus.json');
+  });
+});
+
+// ─── Index ownership lookup ─────────────────────────────────────────
+
+describe('index ownership lookup', () => {
+  let workspace: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    workspace = await createTempDir('gitnexus-index-ownership-');
+  });
+
+  afterEach(async () => {
+    await workspace.cleanup();
+  });
+
+  it('does not resolve an indexed parent directory as a child Git repository', async () => {
+    const childRepo = path.join(workspace.dbPath, 'child-repo');
+    const childSource = path.join(childRepo, 'src');
+    const parentStorage = getStoragePaths(workspace.dbPath).storagePath;
+    await fs.mkdir(childSource, { recursive: true });
+    execSync('git init', { cwd: childRepo, stdio: 'ignore' });
+    await saveMeta(parentStorage, {
+      repoPath: workspace.dbPath,
+      storagePath: parentStorage,
+      lastCommit: '',
+      indexedAt: new Date(0).toISOString(),
+    });
+
+    await expect(findRepo(childSource)).resolves.toBeNull();
+  });
+
+  it('rejects foreign metadata, while preserving metadata-only owned slots for clean', async () => {
+    const repoPath = path.join(workspace.dbPath, 'repo');
+    const storagePath = getStoragePaths(repoPath).storagePath;
+    await fs.mkdir(repoPath, { recursive: true });
+    await saveMeta(storagePath, {
+      repoPath: path.join(workspace.dbPath, 'other-repo'),
+      storagePath,
+      lastCommit: '',
+      indexedAt: new Date(0).toISOString(),
+    });
+
+    await expect(loadRepo(repoPath)).resolves.toBeNull();
+    await expect(hasIndex(repoPath)).resolves.toBe(false);
+
+    await saveMeta(storagePath, {
+      repoPath,
+      storagePath,
+      lastCommit: '',
+      indexedAt: new Date(0).toISOString(),
+    });
+
+    await expect(loadRepo(repoPath)).resolves.toMatchObject({ repoPath, storagePath });
+    await expect(hasIndex(repoPath)).resolves.toBe(false);
   });
 });
 
@@ -411,10 +469,7 @@ describe('reconcileMetadataFiles stale-shadow regression', () => {
     indexedAt,
   });
 
-  it('a FRESHER legacy meta.json wins over a stale gitnexus.json (both rewritten)', async () => {
-    // The reproduced PR #2363 bug: an older binary re-analyzes and writes only
-    // meta.json AFTER gitnexus.json exists; the one-shot existence gate then
-    // ignored the fresher state forever (stale lastCommit won, dirty flag lost).
+  it('a valid gitnexus.json wins over a newer legacy meta.json (both rewritten)', async () => {
     await fs.writeFile(
       path.join(storagePath, 'gitnexus.json'),
       JSON.stringify(metaAt('2026-01-01T00:00:00.000Z', 'stale-commit')),
@@ -432,8 +487,8 @@ describe('reconcileMetadataFiles stale-shadow regression', () => {
     const legacy = JSON.parse(
       await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8'),
     ) as RepoMeta;
-    expect(primary.lastCommit).toBe('fresh-commit');
-    expect(legacy.lastCommit).toBe('fresh-commit');
+    expect(primary.lastCommit).toBe('stale-commit');
+    expect(legacy.lastCommit).toBe('stale-commit');
   });
 
   it('bootstraps gitnexus.json from a legacy-only directory (pre-rename repo)', async () => {
@@ -542,6 +597,15 @@ describe('ensureGitNexusIgnored (#1233)', () => {
     await expect(
       fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
     ).resolves.toBe('*\n');
+  });
+
+  it('writes the ignore file to an explicitly selected external storage slot', async () => {
+    const storagePath = path.join(tmpRepo.dbPath, 'central-indexes', 'repo-slot');
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath, storagePath);
+
+    await expect(fs.readFile(path.join(storagePath, '.gitignore'), 'utf-8')).resolves.toBe('*\n');
+    await expect(fs.access(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'))).rejects.toThrow();
   });
 
   it('does not create or modify the repository root .gitignore', async () => {
@@ -839,6 +903,22 @@ describe('registerRepo name override + collision guard (#829)', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].name).toBe('custom-alias');
     expect(entries[0].name).not.toBe(path.basename(tmpRepoA.dbPath));
+  });
+
+  it('uses an explicitly selected storage slot only when metadata binds to it', async () => {
+    const storagePath = path.join(tmpHome.dbPath, 'central', 'repo-slot');
+    const boundMeta = { ...meta, repoPath: tmpRepoA.dbPath, storagePath };
+
+    await registerRepo(tmpRepoA.dbPath, boundMeta, { storagePath });
+    expect((await listRegisteredRepos())[0].storagePath).toBe(storagePath);
+
+    await expect(
+      registerRepo(tmpRepoA.dbPath, { ...boundMeta, storagePath: `${storagePath}-other` }, { storagePath }),
+    ).rejects.toThrow('metadata storagePath does not match');
+
+    await expect(
+      registerRepo(tmpRepoA.dbPath, { ...meta, repoPath: tmpRepoA.dbPath }, { storagePath }),
+    ).rejects.toThrow('external storage metadata must bind storagePath');
   });
 
   it('re-registerRepo on same path without name preserves an existing alias', async () => {
@@ -1243,6 +1323,10 @@ describe('registerRepo branch nesting (#2106)', () => {
     // real directory to remove.
     const { metaPath } = getStoragePaths(tmpRepo.dbPath, 'feature/x');
     await saveMeta(path.dirname(metaPath), metaFor('feature/x', 'bbb2222'));
+    await saveMeta(getStoragePaths(tmpRepo.dbPath).storagePath, {
+      ...metaFor('main', 'aaa1111'),
+      repoPath: tmpRepo.dbPath,
+    });
 
     await adoptFlatBranchLabel(tmpRepo.dbPath, 'feature/x');
 
@@ -1256,6 +1340,10 @@ describe('registerRepo branch nesting (#2106)', () => {
     await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
     await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
     await registerRepo(tmpRepo.dbPath, metaFor('feature/y', 'ccc3333'), { branch: 'feature/y' });
+    await saveMeta(getStoragePaths(tmpRepo.dbPath).storagePath, {
+      ...metaFor('main', 'aaa1111'),
+      repoPath: tmpRepo.dbPath,
+    });
 
     await adoptFlatBranchLabel(tmpRepo.dbPath, 'feature/x');
 
@@ -1276,6 +1364,26 @@ describe('registerRepo branch nesting (#2106)', () => {
 
     expect(await listRegisteredRepos()).toHaveLength(0);
     await expect(fs.access(path.dirname(metaPath))).resolves.toBeUndefined(); // dir survives
+  });
+
+  it('does not delete an explicitly selected external branch slot after ownership changes', async () => {
+    const storagePath = path.join(tmpHome.dbPath, 'central-indexes', 'repo-slot');
+    const ownedMeta = {
+      ...metaFor('main', 'aaa1111'),
+      repoPath: tmpRepo.dbPath,
+      storagePath,
+    };
+    await saveMeta(storagePath, ownedMeta);
+    await registerRepo(tmpRepo.dbPath, ownedMeta, { storagePath });
+    const shadowDir = path.dirname(getStoragePaths(tmpRepo.dbPath, 'feature/x', storagePath).metaPath);
+    await fs.mkdir(shadowDir, { recursive: true });
+
+    await saveMeta(storagePath, { ...ownedMeta, repoPath: tmpHome.dbPath });
+
+    await expect(adoptFlatBranchLabel(tmpRepo.dbPath, 'feature/x', storagePath)).rejects.toThrow(
+      'storage is not owned',
+    );
+    await expect(fs.access(shadowDir)).resolves.toBeUndefined();
   });
 
   // ─── re-read-before-write merge (#2106 R9) ──────────────────────────

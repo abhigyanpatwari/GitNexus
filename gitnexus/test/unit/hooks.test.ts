@@ -6,7 +6,7 @@
  *
  * Covers:
  * - extractPattern: pattern extraction from Grep/Glob/Bash tool inputs
- * - findGitNexusDir: .gitnexus directory discovery
+ * - findRegisteredRepo: registry-backed repository discovery
  * - handlePostToolUse: staleness detection after git mutations
  * - cwd validation: rejects relative paths (defense-in-depth)
  * - shell injection: verifies no shell: true in spawnSync calls
@@ -24,7 +24,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import {
-  runHook,
+  runHook as spawnHook,
   parseHookOutput,
   createHookToolDir,
   createFakeProcRoot,
@@ -140,7 +140,7 @@ function resolveHostGuardForReapingTests(): string | null {
   return hostGuardMemo;
 }
 
-// ─── Test fixtures: temporary .gitnexus directory ───────────────────
+// ─── Test fixtures: temporary indexed repository ────────────────────
 
 function writeSelfTestingGuardWithMarkers(
   guardPath: string,
@@ -172,6 +172,8 @@ process.exit(child.status ?? 0);
 
 let tmpDir: string;
 let gitNexusDir: string;
+let hookHome: string;
+const originalGitNexusHome = process.env.GITNEXUS_HOME;
 
 const HOOK_TEST_IDENTITY: GitIdentity = { name: 'Test', email: 'test@test.com' };
 
@@ -184,9 +186,25 @@ beforeAll(() => {
   initGitRepo(tmpDir, HOOK_TEST_IDENTITY);
   fs.writeFileSync(path.join(tmpDir, 'dummy.txt'), 'hello');
   commitAll(tmpDir, 'init');
+
+  hookHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+  fs.writeFileSync(
+    path.join(hookHome, 'registry.json'),
+    JSON.stringify([
+      {
+        name: 'hook-test',
+        path: tmpDir,
+        storagePath: gitNexusDir,
+      },
+    ]),
+  );
+  process.env.GITNEXUS_HOME = hookHome;
 });
 
 afterAll(() => {
+  if (originalGitNexusHome === undefined) delete process.env.GITNEXUS_HOME;
+  else process.env.GITNEXUS_HOME = originalGitNexusHome;
+  fs.rmSync(hookHome, { recursive: true, force: true });
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -219,14 +237,36 @@ function initRepoWithCommit(dir: string) {
 }
 
 function createGlobalRegistry(homeDir: string, marker: 'both' | 'registry' | 'repos' = 'both') {
-  const registryDir = path.join(homeDir, '.gitnexus');
-  fs.mkdirSync(registryDir, { recursive: true });
+  fs.mkdirSync(homeDir, { recursive: true });
   if (marker === 'both' || marker === 'repos') {
-    fs.mkdirSync(path.join(registryDir, 'repos'), { recursive: true });
+    fs.mkdirSync(path.join(homeDir, 'repos'), { recursive: true });
   }
   if (marker === 'both' || marker === 'registry') {
-    fs.writeFileSync(path.join(registryDir, 'registry.json'), JSON.stringify({ repos: [] }));
+    fs.writeFileSync(path.join(homeDir, 'registry.json'), JSON.stringify({ repos: [] }));
   }
+}
+
+function writeHookRegistry(
+  homeDir: string,
+  entries: Array<{ name: string; path: string; storagePath: string }>,
+) {
+  fs.mkdirSync(homeDir, { recursive: true });
+  fs.writeFileSync(path.join(homeDir, 'registry.json'), JSON.stringify(entries));
+}
+
+function runHook(
+  hookPath: string,
+  input: Record<string, any>,
+  cwd?: string,
+  options: { env?: NodeJS.ProcessEnv; registryHome?: string } = {},
+) {
+  const { env, registryHome = hookHome } = options;
+  if (registryHome === hookHome) {
+    writeHookRegistry(hookHome, [{ name: 'hook-test', path: tmpDir, storagePath: gitNexusDir }]);
+  }
+  return spawnHook(hookPath, input, cwd, {
+    env: { ...(env ?? process.env), GITNEXUS_HOME: registryHome },
+  });
 }
 
 // createHookToolDir / hookEnv live in ../utils/hook-test-helpers so the antigravity
@@ -304,6 +344,10 @@ describe('windowsHide regression', () => {
   // Hook-layer files. Adding a new hook file MUST be reflected here.
   const HOOK_FILES: Array<readonly [string, string]> = [
     ['gitnexus/hooks/claude/gitnexus-hook.cjs', CJS_HOOK],
+    [
+      'gitnexus/hooks/claude/registry-query.cjs',
+      path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs'),
+    ],
     ['gitnexus/hooks/claude/resolve-analyze-cmd.cjs', RESOLVE_CJS],
     ['gitnexus-claude-plugin/hooks/resolve-analyze-cmd.cjs', RESOLVE_PLUGIN_CJS],
     [
@@ -315,6 +359,30 @@ describe('windowsHide regression', () => {
       path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-db-lock-probe.cjs'),
     ],
     ['gitnexus-claude-plugin/hooks/gitnexus-hook.js', PLUGIN_HOOK],
+    [
+      'gitnexus-claude-plugin/hooks/registry-query.cjs',
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        'gitnexus-claude-plugin',
+        'hooks',
+        'registry-query.cjs',
+      ),
+    ],
+    [
+      'gitnexus-cursor-integration/hooks/registry-query.cjs',
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        'gitnexus-cursor-integration',
+        'hooks',
+        'registry-query.cjs',
+      ),
+    ],
     [
       'gitnexus-claude-plugin/hooks/hook-db-lock-probe.cjs',
       path.resolve(
@@ -1111,6 +1179,7 @@ describe.skipIf(process.platform === 'win32')(
         'hook-lock.cjs',
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
+        'registry-query.cjs',
         'win-rm-list-json.ps1',
       ]) {
         fs.copyFileSync(path.join(claudeHooksDir, helper), path.join(stageDir, helper));
@@ -3033,7 +3102,7 @@ describe('PostToolUse staleness detection with gitnexus.json (integration)', () 
       }
     });
 
-    it(`${label}: falls back to meta.json when gitnexus.json is corrupt`, () => {
+    it(`${label}: treats a corrupt gitnexus.json as stale instead of trusting meta.json`, () => {
       const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
       const metaJsonPath = path.join(gitNexusDir, 'meta.json');
       const head = getHeadCommit();
@@ -3049,8 +3118,9 @@ describe('PostToolUse staleness detection with gitnexus.json (integration)', () 
           cwd: tmpDir,
         });
 
-        // meta.json's lastCommit matches HEAD, so a correct fallback stays silent.
-        expect(result.stdout.trim()).toBe('');
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('last indexed: never');
       } finally {
         fs.rmSync(gitnexusJsonPath, { force: true });
         fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
@@ -3104,13 +3174,18 @@ describe('Global registry lookup', () => {
         fs.mkdirSync(repoDir, { recursive: true });
         initRepoWithCommit(repoDir);
 
-        const result = runHook(hookPath, {
-          hook_event_name: 'PostToolUse',
-          tool_name: 'Bash',
-          tool_input: { command: 'git commit -m "test"' },
-          tool_output: { exit_code: 0 },
-          cwd: repoDir,
-        });
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_output: { exit_code: 0 },
+            cwd: repoDir,
+          },
+          repoDir,
+          { registryHome: homeDir },
+        );
 
         expect(result.stdout.trim()).toBe('');
       } finally {
@@ -3126,12 +3201,17 @@ describe('Global registry lookup', () => {
         fs.mkdirSync(repoDir, { recursive: true });
         initRepoWithCommit(repoDir);
 
-        const result = runHook(hookPath, {
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Grep',
-          tool_input: { pattern: 'validateUser' },
-          cwd: repoDir,
-        });
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: repoDir,
+          },
+          repoDir,
+          { registryHome: homeDir },
+        );
 
         expect(result.stdout.trim()).toBe('');
       } finally {
@@ -3143,25 +3223,111 @@ describe('Global registry lookup', () => {
       const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
       const repoDir = path.join(homeDir, 'work', 'indexed-repo');
       try {
-        createGlobalRegistry(homeDir);
-        fs.mkdirSync(path.join(repoDir, '.gitnexus'), { recursive: true });
+        const storagePath = path.join(homeDir, 'indexes', 'indexed-repo');
+        fs.mkdirSync(repoDir, { recursive: true });
+        fs.mkdirSync(storagePath, { recursive: true });
         initRepoWithCommit(repoDir);
         fs.writeFileSync(
-          path.join(repoDir, '.gitnexus', 'meta.json'),
-          JSON.stringify({ lastCommit: 'oldcommit', stats: {} }),
+          path.join(storagePath, 'meta.json'),
+          JSON.stringify({ repoPath: repoDir, storagePath, lastCommit: 'oldcommit', stats: {} }),
         );
+        writeHookRegistry(homeDir, [{ name: 'indexed-repo', path: repoDir, storagePath }]);
 
-        const result = runHook(hookPath, {
-          hook_event_name: 'PostToolUse',
-          tool_name: 'Bash',
-          tool_input: { command: 'git commit -m "test"' },
-          tool_output: { exit_code: 0 },
-          cwd: repoDir,
-        });
+        expect(fs.existsSync(path.join(repoDir, '.gitnexus'))).toBe(false);
+
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_output: { exit_code: 0 },
+            cwd: repoDir,
+          },
+          repoDir,
+          { registryHome: homeDir },
+        );
 
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
         expect(output!.additionalContext).toContain('stale');
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: does not touch foreign external storage from a registry entry`, () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+      const repoDir = path.join(homeDir, 'work', 'indexed-repo');
+      const storagePath = path.join(homeDir, 'indexes', 'foreign-index');
+      try {
+        fs.mkdirSync(repoDir, { recursive: true });
+        fs.mkdirSync(storagePath, { recursive: true });
+        initRepoWithCommit(repoDir);
+        fs.writeFileSync(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({
+            repoPath: path.join(homeDir, 'work', 'other-repo'),
+            storagePath,
+            lastCommit: 'oldcommit',
+            stats: {},
+          }),
+        );
+        writeHookRegistry(homeDir, [{ name: 'indexed-repo', path: repoDir, storagePath }]);
+
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: repoDir,
+          },
+          repoDir,
+          { registryHome: homeDir },
+        );
+
+        expect(result.stdout.trim()).toBe('');
+        expect(fs.existsSync(path.join(storagePath, '.hook-locks'))).toBe(false);
+        expect(fs.existsSync(path.join(storagePath, '.mcp-hint-shown'))).toBe(false);
+      } finally {
+        fs.rmSync(homeDir, { recursive: true, force: true });
+      }
+    });
+
+    it(`${label}: does not touch foreign repository-local storage from a registry entry`, () => {
+      const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-home-'));
+      const repoDir = path.join(homeDir, 'work', 'indexed-repo');
+      const storagePath = path.join(repoDir, '.gitnexus');
+      try {
+        fs.mkdirSync(storagePath, { recursive: true });
+        initRepoWithCommit(repoDir);
+        fs.writeFileSync(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({
+            repoPath: path.join(homeDir, 'work', 'other-repo'),
+            storagePath,
+            lastCommit: 'oldcommit',
+            stats: {},
+          }),
+        );
+        writeHookRegistry(homeDir, [{ name: 'indexed-repo', path: repoDir, storagePath }]);
+
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: repoDir,
+          },
+          repoDir,
+          { registryHome: homeDir },
+        );
+
+        expect(result.stdout.trim()).toBe('');
+        expect(fs.existsSync(path.join(storagePath, '.hook-locks'))).toBe(false);
+        expect(fs.existsSync(path.join(storagePath, '.mcp-hint-shown'))).toBe(false);
       } finally {
         fs.rmSync(homeDir, { recursive: true, force: true });
       }
@@ -3176,13 +3342,18 @@ describe('Global registry lookup', () => {
           fs.mkdirSync(repoDir, { recursive: true });
           initRepoWithCommit(repoDir);
 
-          const result = runHook(hookPath, {
-            hook_event_name: 'PostToolUse',
-            tool_name: 'Bash',
-            tool_input: { command: 'git commit -m "test"' },
-            tool_output: { exit_code: 0 },
-            cwd: repoDir,
-          });
+          const result = runHook(
+            hookPath,
+            {
+              hook_event_name: 'PostToolUse',
+              tool_name: 'Bash',
+              tool_input: { command: 'git commit -m "test"' },
+              tool_output: { exit_code: 0 },
+              cwd: repoDir,
+            },
+            repoDir,
+            { registryHome: homeDir },
+          );
 
           expect(result.stdout.trim()).toBe('');
         } finally {
@@ -3208,6 +3379,7 @@ describe('Linked git worktree resolution', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worktree-'));
       const mainRepo = path.join(root, 'main-repo');
       const worktreePath = path.join(root, 'main-repo-worktrees', 'feat');
+      const registryHome = path.join(root, 'registry-home');
       try {
         fs.mkdirSync(mainRepo, { recursive: true });
         initRepoWithCommit(mainRepo);
@@ -3220,18 +3392,26 @@ describe('Linked git worktree resolution', () => {
         // Create the linked worktree on a new branch.
         fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
         runGit(mainRepo, ['worktree', 'add', '-b', 'feat', worktreePath]);
+        writeHookRegistry(registryHome, [
+          { name: 'main-repo', path: mainRepo, storagePath: path.join(mainRepo, '.gitnexus') },
+        ]);
 
         // Sanity: walking up from the worktree never reaches `.gitnexus`.
         expect(fs.existsSync(path.join(worktreePath, '.gitnexus'))).toBe(false);
         expect(fs.existsSync(path.join(path.dirname(worktreePath), '.gitnexus'))).toBe(false);
 
-        const result = runHook(hookPath, {
-          hook_event_name: 'PostToolUse',
-          tool_name: 'Bash',
-          tool_input: { command: 'git commit -m "test"' },
-          tool_output: { exit_code: 0 },
-          cwd: worktreePath,
-        });
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_output: { exit_code: 0 },
+            cwd: worktreePath,
+          },
+          worktreePath,
+          { registryHome },
+        );
 
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
@@ -3245,6 +3425,7 @@ describe('Linked git worktree resolution', () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worktree-'));
       const mainRepo = path.join(root, 'main-repo');
       const worktreePath = path.join(root, 'main-repo-worktrees', 'feat');
+      const registryHome = path.join(root, 'registry-home');
       try {
         fs.mkdirSync(mainRepo, { recursive: true });
         initRepoWithCommit(mainRepo);
@@ -3252,14 +3433,20 @@ describe('Linked git worktree resolution', () => {
 
         fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
         runGit(mainRepo, ['worktree', 'add', '-b', 'feat', worktreePath]);
+        writeHookRegistry(registryHome, []);
 
-        const result = runHook(hookPath, {
-          hook_event_name: 'PostToolUse',
-          tool_name: 'Bash',
-          tool_input: { command: 'git commit -m "test"' },
-          tool_output: { exit_code: 0 },
-          cwd: worktreePath,
-        });
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'git commit -m "test"' },
+            tool_output: { exit_code: 0 },
+            cwd: worktreePath,
+          },
+          worktreePath,
+          { registryHome },
+        );
 
         expect(result.stdout.trim()).toBe('');
       } finally {
@@ -3384,36 +3571,50 @@ describe('PostToolUse with missing/corrupt meta.json', () => {
 // ─── Drift guard: every shipped hook must know about gitnexus.json ──
 // This repo has hit the "N mirrored copies silently drift" failure mode
 // twice for skills (#2356/#2360/#2362) — this test is the same class of
-// guardrail for the four hook copies.
+// guardrail for the three adapters that read index metadata directly.
 
 describe('Hook metadata-filename drift guard', () => {
-  const ANTIGRAVITY_HOOK = path.resolve(
-    __dirname,
-    '..',
-    '..',
-    'hooks',
-    'antigravity',
-    'gitnexus-antigravity-hook.cjs',
-  );
-  const CURSOR_HOOK = path.resolve(
-    __dirname,
-    '..',
-    '..',
-    '..',
-    'gitnexus-cursor-integration',
-    'hooks',
-    'gitnexus-hook.cjs',
-  );
-
-  for (const [label, hookPath] of [
-    ['CJS (claude)', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-    ['Antigravity', ANTIGRAVITY_HOOK],
-    ['Cursor', CURSOR_HOOK],
+  for (const [label, resolverPath] of [
+    ['CJS (claude)', path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs')],
+    [
+      'Plugin',
+      path.resolve(__dirname, '..', '..', '..', 'gitnexus-claude-plugin', 'hooks', 'registry-query.cjs'),
+    ],
+    // The Antigravity installer copies this canonical helper beside its adapter.
+    ['Antigravity', path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs')],
   ] as const) {
-    it(`${label}: source references gitnexus.json, not only meta.json`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
+    it(`${label}: registry resolver references gitnexus.json, not only meta.json`, () => {
+      const source = fs.readFileSync(resolverPath, 'utf-8');
       expect(source).toContain('gitnexus.json');
     });
   }
+});
+
+describe('Hook registry resolver drift guard', () => {
+  const resolverPaths = [
+    path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs'),
+    path.resolve(
+      __dirname,
+      '..',
+      '..',
+      '..',
+      'gitnexus-claude-plugin',
+      'hooks',
+      'registry-query.cjs',
+    ),
+    path.resolve(
+      __dirname,
+      '..',
+      '..',
+      '..',
+      'gitnexus-cursor-integration',
+      'hooks',
+      'registry-query.cjs',
+    ),
+  ];
+
+  it('keeps all shipped registry-query helpers byte-identical', () => {
+    const [canonical, ...copies] = resolverPaths.map((file) => fs.readFileSync(file, 'utf-8'));
+    for (const copy of copies) expect(copy).toBe(canonical);
+  });
 });

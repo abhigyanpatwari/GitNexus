@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { syncGroup } from '../../../src/core/group/sync.js';
 import { RegistryAmbiguousTargetError } from '../../../src/storage/repo-manager.js';
@@ -49,11 +49,22 @@ const row = (
   indexedAt: string;
   lastCommit: string;
 } => {
-  mkdirSync(path.join(tmpHome, 'repos', clone), { recursive: true });
+  const repoPath = path.join(tmpHome, 'repos', clone);
+  const storagePath = path.join(repoPath, '.gitnexus');
+  mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+  writeFileSync(
+    path.join(storagePath, 'gitnexus.json'),
+    JSON.stringify({
+      repoPath,
+      storagePath,
+      indexedAt: '2026-01-01T00:00:00.000Z',
+      lastCommit: 'abc123',
+    }),
+  );
   return {
     name,
-    path: path.join(tmpHome, 'repos', clone),
-    storagePath: path.join(tmpHome, 'repos', clone, '.gitnexus'),
+    path: repoPath,
+    storagePath,
     indexedAt: '2026-01-01T00:00:00.000Z',
     lastCommit: 'abc123',
   };
@@ -119,6 +130,23 @@ describe('syncGroup registry name identity', () => {
       indexedAt: known.indexedAt,
       lastCommit: known.lastCommit,
     });
+  });
+
+  it('treats a registry member with foreign storage metadata as unreadable', async () => {
+    const known = row(tmpHome.dbPath, 'backend-repo', 'backend');
+    await fs.writeFile(
+      path.join(known.storagePath, 'gitnexus.json'),
+      JSON.stringify({ repoPath: path.join(tmpHome.dbPath, 'repos', 'other') }),
+    );
+    await fs.writeFile(registryPath, JSON.stringify([known]));
+
+    const result = await syncGroup(makeConfig({ 'app/backend': 'backend-repo' }), {
+      skipWrite: true,
+    });
+
+    expect(result.missingRepos).toEqual([]);
+    expect(result.unreadableRepos).toEqual(['app/backend']);
+    expect(initLbugMock).not.toHaveBeenCalled();
   });
 
   it('treats mixed missing and ambiguous names as a terminal ambiguity with no write', async () => {

@@ -20,6 +20,7 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
+const { findRegisteredRepo } = require('./registry-query.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -33,106 +34,8 @@ function readInput() {
   }
 }
 
-/**
- * Find the .gitnexus directory by walking up from startDir.
- * Returns the path to .gitnexus/ or null if not found.
- */
-function isGlobalRegistryDir(candidate) {
-  if (
-    fs.existsSync(path.join(candidate, 'gitnexus.json')) ||
-    fs.existsSync(path.join(candidate, 'meta.json'))
-  ) {
-    return false;
-  }
-  return (
-    fs.existsSync(path.join(candidate, 'registry.json')) ||
-    fs.existsSync(path.join(candidate, 'repos'))
-  );
-}
-
-/**
- * Read the index metadata file, preferring `gitnexus.json` (current format)
- * and falling back to the legacy `meta.json` mirror. Returns `null` if
- * neither exists or parses.
- */
-function readIndexMeta(gitNexusDir) {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'gitnexus.json'), 'utf-8'));
-  } catch {
-    try {
-      return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8'));
-    } catch {
-      return null;
-    }
-  }
-}
-
-/**
- * Walk up from `startDir` looking for a non-registry `.gitnexus/` folder.
- * Returns the path to `.gitnexus/` or null if not found within 5 levels.
- */
-function walkForGitNexusDir(startDir) {
-  let dir = startDir;
-  for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, '.gitnexus');
-    if (fs.existsSync(candidate)) {
-      if (!isGlobalRegistryDir(candidate)) return candidate;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-/**
- * Resolve the canonical (main) worktree root for `cwd`, when `cwd` is inside
- * any git working tree — including a *linked* worktree created via
- * `git worktree add`. Linked worktrees never contain `.gitnexus/`, so the
- * upward walk from cwd alone misses the index. Returns null when `cwd` is
- * not inside a git repo or `git` is not available.
- *
- * Implementation: `git rev-parse --git-common-dir` resolves to the canonical
- * `.git/` directory (or `.git/worktrees/...` parent) that is shared across
- * all linked worktrees. The canonical repo root is its parent directory.
- */
-function findCanonicalRepoRoot(cwd) {
-  try {
-    const result = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
-      encoding: 'utf-8',
-      timeout: 2000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    if (result.error || result.status !== 0) return null;
-    const commonDir = (result.stdout || '').trim();
-    if (!commonDir || !path.isAbsolute(commonDir)) return null;
-    return path.dirname(commonDir);
-  } catch {
-    return null;
-  }
-}
-
-function findGitNexusDir(startDir) {
-  const cwd = startDir || process.cwd();
-
-  // Fast path: the cwd is inside the canonical repo (most common case).
-  const fromCwd = walkForGitNexusDir(cwd);
-  if (fromCwd) return fromCwd;
-
-  // Fallback: cwd may be inside a linked git worktree whose `.gitnexus/`
-  // only lives in the canonical repo root. Resolve the shared git dir
-  // and retry from there.
-  const canonicalRoot = findCanonicalRepoRoot(cwd);
-  if (canonicalRoot && canonicalRoot !== cwd) {
-    return walkForGitNexusDir(canonicalRoot);
-  }
-  return null;
-}
-
-function hasGitNexusServerOwner(gitNexusDir) {
-  return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
+function hasGitNexusServerOwner(lbugPath) {
+  return hasGitNexusDbLockedByGitNexusServer(lbugPath, process.pid);
 }
 
 /**
@@ -374,11 +277,11 @@ function buildMcpQueryHint(pattern) {
  * ponytail: per-repo mtime marker, shared across concurrent sessions on the same
  * repo; add per-session dedup only if that sharing becomes a problem.
  */
-function shouldEmitMcpHint(gitNexusDir) {
+function shouldEmitMcpHint(storagePath) {
   const raw = process.env.GITNEXUS_MCP_HINT_THROTTLE_MS;
   const windowMs = raw === undefined || raw === '' ? 600000 : Number(raw);
   if (!Number.isFinite(windowMs) || windowMs <= 0) return true;
-  const marker = path.join(gitNexusDir, '.mcp-hint-shown');
+  const marker = path.join(storagePath, '.mcp-hint-shown');
   try {
     if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
   } catch {
@@ -398,8 +301,9 @@ function shouldEmitMcpHint(gitNexusDir) {
 function handlePreToolUse(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return;
-  const gitNexusDir = findGitNexusDir(cwd);
-  if (!gitNexusDir) return;
+  const repo = findRegisteredRepo(cwd);
+  if (!repo) return;
+  const storagePath = repo.storagePath;
 
   const toolName = input.tool_name || '';
   const toolInput = input.tool_input || {};
@@ -414,7 +318,7 @@ function handlePreToolUse(input) {
   // as the augment, or concurrent sessions fan out unbounded probe
   // subprocesses. Keep the acquire right after the cheap guards above —
   // moving it earlier would churn slot files on tool calls that never probe.
-  const release = acquireHookSlot(gitNexusDir);
+  const release = acquireHookSlot(storagePath);
   if (!release) {
     // Normal skip path: all per-repo hook slots are held by concurrent
     // sessions. Stay silent for strict hook runners (issue #1913); surface
@@ -427,7 +331,7 @@ function handlePreToolUse(input) {
 
   let result = '';
   try {
-    if (hasGitNexusServerOwner(gitNexusDir)) {
+    if (hasGitNexusServerOwner(repo.lbugPath)) {
       // #2396: the MCP server holds the DB write lock, so a competing CLI
       // `augment` would only contend on it (LadybugDB is single-writer). But the
       // session that triggered this hook has the GitNexus MCP tools live — route
@@ -438,7 +342,7 @@ function handlePreToolUse(input) {
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      if (shouldEmitMcpHint(gitNexusDir)) {
+      if (shouldEmitMcpHint(storagePath)) {
         result = buildMcpQueryHint(pattern);
       }
     } else {
@@ -476,7 +380,7 @@ function sendHookResponse(hookEventName, message) {
  * Instead of spawning a full `gitnexus analyze` synchronously (which blocks
  * the agent for up to 120s and risks KuzuDB corruption on timeout), we do a
  * lightweight staleness check: compare `git rev-parse HEAD` against the
- * lastCommit stored in `.gitnexus/meta.json`. If they differ, notify the
+ * lastCommit stored in the registered index metadata. If they differ, notify the
  * agent so it can decide when to reindex.
  */
 function handlePostToolUse(input) {
@@ -492,8 +396,9 @@ function handlePostToolUse(input) {
 
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return;
-  const gitNexusDir = findGitNexusDir(cwd);
-  if (!gitNexusDir) return;
+  const repo = findRegisteredRepo(cwd);
+  if (!repo) return;
+  const storagePath = repo.storagePath;
 
   // Compare HEAD against last indexed commit — skip if unchanged
   let currentHead = '';
@@ -514,7 +419,7 @@ function handlePostToolUse(input) {
 
   let lastCommit = '';
   let hadEmbeddings = false;
-  const meta = readIndexMeta(gitNexusDir);
+  const meta = repo.metadata;
   if (meta) {
     lastCommit = meta.lastCommit || '';
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;

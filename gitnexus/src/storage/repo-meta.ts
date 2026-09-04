@@ -31,14 +31,11 @@ import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resoluti
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { resolveStoragePath } from './storage-resolver.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
+
+export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
 /** The `.gitnexus` directory name, relative to a repo root. */
-export const GITNEXUS_DIR = '.gitnexus';
-export const INDEX_METADATA_FILE = 'gitnexus.json';
-// Dual-written mirror of INDEX_METADATA_FILE, kept for backward compatibility
-// with consumers that only know the pre-rename filename (see MIGRATION.md).
-export const LEGACY_METADATA_FILE = 'meta.json';
-
 export type ContentRetention = 'full' | 'symbol' | 'none';
 export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
 export const CONTENT_RETENTION_SCHEMA_VERSION = 1;

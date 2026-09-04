@@ -27,7 +27,11 @@ export interface AnalyzeUploadDeps {
   /** Create (or throw on busy) an analysis job for the given upload dir. */
   createJob: (params: { repoPath: string }) => UploadJobRef;
   /** Launch the analyze worker against an already-resolved repo directory. */
-  launch: (job: UploadJobRef, targetPath: string, opts: { registryName: string }) => void;
+  launch: (
+    job: UploadJobRef,
+    targetPath: string,
+    opts: { registryName: string },
+  ) => void | Promise<void>;
   /**
    * Mark a created job failed. The job occupies the single analysis slot from
    * createJob onward, so ANY error before launch must release it — otherwise a
@@ -129,7 +133,7 @@ export function createAnalyzeUploadHandler(deps: AnalyzeUploadDeps) {
         .rm(path.join(finalDir, '.gitnexus'), { recursive: true, force: true })
         .catch(() => {});
 
-      deps.launch(job, finalDir, { registryName: finalName });
+      await deps.launch(job, finalDir, { registryName: finalName });
       launched = true;
 
       res.status(202).json({ jobId: job.id, status: job.status });

@@ -274,7 +274,7 @@ describe('setupClaudeCode', () => {
     });
   });
 
-  it('copies shared hook helpers (incl. resolve-analyze-cmd.cjs) to ~/.claude/hooks/gitnexus/', async () => {
+  it('copies shared hook helpers to ~/.claude/hooks/gitnexus/', async () => {
     setPlatform('linux');
 
     const { setupCommand } = await import('../../src/cli/setup.js');
@@ -293,6 +293,7 @@ describe('setupClaudeCode', () => {
     await expect(
       fs.access(path.join(destHooksDir, 'resolve-analyze-cmd.cjs')),
     ).resolves.toBeUndefined();
+    await expect(fs.access(path.join(destHooksDir, 'registry-query.cjs'))).resolves.toBeUndefined();
   });
 
   it('records errors and returns the failed REQUIRED helpers when copies fail', async () => {
@@ -307,13 +308,15 @@ describe('setupClaudeCode', () => {
         'Claude Code hooks',
         result,
       );
-      expect(result.errors.length).toBe(4);
+      expect(result.errors.length).toBe(5);
       expect(result.errors.some((e) => e.includes('resolve-analyze-cmd.cjs'))).toBe(true);
+      expect(result.errors.some((e) => e.includes('registry-query.cjs'))).toBe(true);
       expect(result.errors.every((e) => e.startsWith('Claude Code hooks:'))).toBe(true);
-      // Only the hard-required .cjs trio gates registration; win-rm is best-effort.
+      // Only the hard-required .cjs helpers gate registration; win-rm is best-effort.
       expect([...failedRequired].sort()).toEqual([
         'hook-db-lock-probe.cjs',
         'hook-lock.cjs',
+        'registry-query.cjs',
         'resolve-analyze-cmd.cjs',
       ]);
       expect(failedRequired).not.toContain('win-rm-list-json.ps1');
@@ -328,8 +331,13 @@ describe('setupClaudeCode', () => {
     const destDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-helpers-dest-'));
     const result = { configured: [] as string[], skipped: [] as string[], errors: [] as string[] };
     try {
-      // Provide the three hard-required .cjs helpers; omit win-rm-list-json.ps1.
-      for (const h of ['hook-lock.cjs', 'hook-db-lock-probe.cjs', 'resolve-analyze-cmd.cjs']) {
+      // Provide all hard-required .cjs helpers; omit win-rm-list-json.ps1.
+      for (const h of [
+        'hook-lock.cjs',
+        'hook-db-lock-probe.cjs',
+        'resolve-analyze-cmd.cjs',
+        'registry-query.cjs',
+      ]) {
         await fs.writeFile(path.join(srcDir, h), '// stub\n', 'utf-8');
       }
       const failedRequired = await copyHookHelpers(srcDir, destDir, 'Claude Code hooks', result);

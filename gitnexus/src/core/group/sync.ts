@@ -16,6 +16,12 @@ import {
   RegistryAmbiguousTargetError,
   type RegistryEntry,
 } from '../../storage/repo-manager.js';
+import {
+  requireRegisteredStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+} from '../../storage/storage-resolver.js';
+import { loadMeta } from '../../storage/repo-meta.js';
+import { LBUG_DIRECTORY } from '../../storage/storage-constants.js';
 import type {
   GroupConfig,
   RepoHandle,
@@ -346,15 +352,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
       const includeEx = new IncludeExtractor();
 
       for (const [groupPath, regName] of Object.entries(config.repos)) {
-        const handle = await resolve(regName, groupPath);
-        if (!handle) {
-          missingRepos.push(groupPath);
-          continue;
-        }
-        resolvedRepoPaths.set(groupPath, handle.repoPath);
-
-        const poolId = handle.id;
-        const lbugPath = path.join(handle.storagePath, 'lbug');
+        let lbugPath = '';
         // Staged per repo, not appended straight to `autoContracts`. Extractors
         // run in sequence and any one of them can throw; appending as we go left
         // a repo whose HTTP extractor succeeded and whose gRPC extractor failed
@@ -363,6 +361,28 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
         // output is now all-or-nothing, which is what that message describes.
         const repoContracts: StoredContract[] = [];
         try {
+          let handle = await resolve(regName, groupPath);
+          if (!handle) {
+            missingRepos.push(groupPath);
+            continue;
+          }
+          resolvedRepoPaths.set(groupPath, handle.repoPath);
+          lbugPath = path.join(handle.storagePath, LBUG_DIRECTORY);
+
+          // Validate the registry-selected slot immediately before it is
+          // opened. A foreign or incomplete external slot is a registered but
+          // unreadable member, so the existing per-member degradation path
+          // remains the user-visible behavior.
+          if (!opts?.resolveRepoHandle) {
+            const storagePath = await requireRegisteredStoragePath(
+              { path: handle.repoPath, storagePath: handle.storagePath },
+              STATUS_STORAGE_REQUIREMENTS,
+            );
+            handle = { ...handle, storagePath };
+          }
+
+          const poolId = handle.id;
+          lbugPath = path.join(handle.storagePath, LBUG_DIRECTORY);
           await initLbug(poolId, lbugPath);
           // No pin here: contract extraction below uses `executor` while this
           // repo is freshly initialized and live, and completes before the next
@@ -444,10 +464,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
             }
           }
 
-          const metaPath = path.join(handle.storagePath, 'meta.json');
           try {
-            const raw = await fs.readFile(metaPath, 'utf-8');
-            const m = JSON.parse(raw) as { indexedAt?: string; lastCommit?: string };
+            const m = await loadMeta(handle.storagePath);
+            if (!m) throw new Error('Index metadata is unavailable.');
             repoSnapshots[groupPath] = {
               indexedAt: m.indexedAt || '',
               lastCommit: m.lastCommit || '',

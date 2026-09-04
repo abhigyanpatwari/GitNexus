@@ -25,6 +25,7 @@ import { IndexLockTimeoutError, type LockRecord } from '../../src/storage/index-
 const baseResult: AnalyzeResult = {
   repoName: 'repo',
   repoPath: '/repo',
+  storagePath: '/repo/.gitnexus',
   stats: {},
   alreadyUpToDate: false,
   ftsRepairedOnly: false,
@@ -77,6 +78,7 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
 
     const completes = send.mock.calls.filter((c) => c[0].type === 'complete');
     expect(completes).toHaveLength(1);
+    expect(okFinalize).toHaveBeenCalledWith('/repo', '/repo/.gitnexus');
   });
 
   it('threads the pre-import runner receipt into runFullAnalysis', async () => {

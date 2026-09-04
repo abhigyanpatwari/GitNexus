@@ -13,7 +13,7 @@ import path from 'node:path';
 const mockRm = vi.fn();
 const mockReadRegistry = vi.fn();
 const mockResolveRegistryEntry = vi.fn();
-const mockAssertSafeStoragePath = vi.fn();
+const mockRequireDeletableStoragePath = vi.fn();
 const mockUnregisterRepo = vi.fn();
 
 vi.mock('fs/promises', () => ({
@@ -25,11 +25,14 @@ vi.mock('fs/promises', () => ({
 vi.mock('../../src/storage/repo-manager.js', () => ({
   readRegistry: mockReadRegistry,
   resolveRegistryEntry: mockResolveRegistryEntry,
-  assertSafeStoragePath: mockAssertSafeStoragePath,
   unregisterRepo: mockUnregisterRepo,
   RegistryNotFoundError: class RegistryNotFoundError extends Error {},
   RegistryAmbiguousTargetError: class RegistryAmbiguousTargetError extends Error {},
-  UnsafeStoragePathError: class UnsafeStoragePathError extends Error {},
+}));
+
+vi.mock('../../src/storage/storage-resolver.js', () => ({
+  requireDeletableStoragePath: mockRequireDeletableStoragePath,
+  StorageDeletionError: class StorageDeletionError extends Error {},
 }));
 
 describe('removeCommand', () => {
@@ -47,7 +50,7 @@ describe('removeCommand', () => {
 
     mockReadRegistry.mockResolvedValue([entry]);
     mockResolveRegistryEntry.mockReturnValue(entry);
-    mockAssertSafeStoragePath.mockReturnValue(undefined);
+    mockRequireDeletableStoragePath.mockResolvedValue(entry.storagePath);
     mockRm.mockResolvedValue(undefined);
     mockUnregisterRepo.mockResolvedValue(undefined);
   });

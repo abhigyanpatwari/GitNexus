@@ -10,12 +10,12 @@ import readline from 'readline';
 import { execSync, execFileSync } from 'child_process';
 import cliProgress from 'cli-progress';
 import { getGitRoot, isGitRepo } from '../storage/git.js';
+import { getStoragePaths, loadCLIConfig, saveCLIConfig } from '../storage/repo-manager.js';
 import {
-  getStoragePaths,
-  loadMeta,
-  loadCLIConfig,
-  saveCLIConfig,
-} from '../storage/repo-manager.js';
+  requireStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageRequirementError,
+} from '../storage/storage-resolver.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import {
   MINIMAX_MODEL_IDS,
@@ -183,15 +183,27 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   }
 
   // ── Check for existing index ────────────────────────────────────────
-  const { storagePath, lbugPath } = getStoragePaths(repoPath);
-  const meta = await loadMeta(storagePath);
-
-  if (!meta) {
-    console.log('  Error: No GitNexus index found.');
+  let storagePath: string;
+  try {
+    storagePath = await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS);
+  } catch (error) {
+    if (!(error instanceof StorageRequirementError)) throw error;
+    const inspection = error.inspection;
+    const isMissingIndex =
+      inspection.state === 'missing' ||
+      inspection.state === 'empty' ||
+      (inspection.state === 'owned' && !inspection.hasCodeIndexDB);
+    if (!isMissingIndex) {
+      console.log(`  Error: ${error.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`  Error: No GitNexus index found at ${error.inspection.storagePath}.`);
     console.log('  Run `gitnexus analyze` first to index this repository.\n');
     process.exitCode = 1;
     return;
   }
+  const { lbugPath } = getStoragePaths(repoPath, undefined, storagePath);
 
   let timeoutSeconds: number | undefined;
   let retries: number | undefined;

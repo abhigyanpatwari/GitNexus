@@ -19,11 +19,15 @@ import {
   loadMeta,
   saveMeta,
   listRegisteredRepos,
-  getStoragePath,
   registryPathEquals,
-  assertSafeStoragePath,
   type RegistryEntry,
 } from '../storage/repo-manager.js';
+import {
+  requireDeletableStoragePath,
+  requireRegisteredStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageDeletionError,
+} from '../storage/storage-resolver.js';
 import {
   executeQuery,
   executePrepared,
@@ -902,11 +906,28 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
    */
   const HOLD_QUEUE_TIMEOUT_SECS = 300; // 5 minutes
 
+  const validateResolvedRepoEntry = async (
+    entry: RegistryEntry | null,
+  ): Promise<RegistryEntry | null> => {
+    if (!entry) return null;
+    await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+    return entry;
+  };
+
   // Helper: resolve a repo by name from the global registry, or default to first.
   // Pass `req` to enable early exit if the client disconnects during the hold-queue wait.
-  const resolveRepo = async (repoName?: string, isRetry = false, req?: any): Promise<any> => {
+  // Deletion passes `validateStorage: false` because it has a separate policy that
+  // intentionally permits a missing/empty local slot to be removed.
+  const resolveRepo = async (
+    repoName?: string,
+    isRetry = false,
+    req?: any,
+    options: { validateStorage?: boolean } = {},
+  ): Promise<any> => {
     const repos = await listRegisteredRepos();
     const found = resolveRegisteredRepoEntry(repos, repoName);
+    const validate = (entry: RegistryEntry | null): Promise<RegistryEntry | null> =>
+      options.validateStorage === false ? Promise.resolve(entry) : validateResolvedRepoEntry(entry);
 
     const normalizedName = repoName ? repoParamBasename(repoName) : undefined;
 
@@ -947,7 +968,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (currentJob.status === 'complete') {
               await backend.init();
               const freshRepos = await listRegisteredRepos();
-              return resolveRegisteredRepoEntry(freshRepos, repoName);
+              return validate(resolveRegisteredRepoEntry(freshRepos, repoName));
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
@@ -968,10 +989,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         );
       }
       await backend.init();
-      return await resolveRepo(repoName, true, req);
+      return await resolveRepo(repoName, true, req, options);
     }
 
-    return found;
+    return validate(found);
   };
 
   // Lightweight healthcheck for Docker/orchestrator probes (#1147).
@@ -1081,20 +1102,25 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         res.status(400).json({ error: 'Missing repo name' });
         return;
       }
-      const entry = await resolveRepo(repoName);
+      const entry = await resolveRepo(repoName, false, undefined, { validateStorage: false });
       if (!entry) {
         res.status(404).json({ error: 'Repository not found' });
         return;
       }
+      let storagePath: string;
       try {
-        await assertSafeStoragePath(entry);
+        storagePath = await requireDeletableStoragePath(entry);
       } catch (err: any) {
+        if (err instanceof StorageDeletionError) {
+          res.status(400).json({ error: err.message });
+          return;
+        }
         res.status(400).json({ error: err.message || 'Unsafe index storage path' });
         return;
       }
 
       // Acquire repo lock — prevents deleting while analyze/embed is in flight
-      const lockKey = entry.storagePath;
+      const lockKey = storagePath;
       const lockErr = acquireRepoLock(lockKey);
       if (lockErr) {
         res.status(409).json({ error: lockErr });
@@ -1108,7 +1134,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {}
 
         // 1. Delete the .gitnexus index/storage directory
-        const storagePath = entry.storagePath;
         await fs.rm(storagePath, { recursive: true, force: true }).catch(() => {});
 
         // 2. Delete the cloned repo dir if it lives under ~/.gitnexus/repos/.
@@ -1656,14 +1681,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               throw new Error('No target path resolved');
             }
 
-            launchAnalysisWorker(job, targetPath, {
+            await launchAnalysisWorker(job, targetPath, {
               force,
               embeddings,
               dropEmbeddings,
               springActuatorPath,
             });
           } catch (err: any) {
-            if (targetPath) releaseRepoLock(getStoragePath(targetPath));
             jobManager.updateJob(job.id, {
               status: 'failed',
               error: err.message || 'Analysis failed',
@@ -1753,15 +1777,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           return;
         }
 
+        // Re-check the exact registered slot immediately before taking the lock.
+        // The query resolver already validates it, but this closes the gap between
+        // lookup and a long-running metadata-writing job.
+        const storagePath = await requireRegisteredStoragePath(
+          entry,
+          STATUS_STORAGE_REQUIREMENTS,
+        );
+
         // Check shared repo lock — prevent concurrent analyze + embed on same repo
-        const repoLockPath = entry.storagePath;
+        const repoLockPath = storagePath;
         const lockErr = acquireRepoLock(repoLockPath);
         if (lockErr) {
           res.status(409).json({ error: lockErr });
           return;
         }
 
-        const job = embedJobManager.createJob({ repoPath: entry.storagePath });
+        const job = embedJobManager.createJob({ repoPath: storagePath });
         embedJobManager.updateJob(job.id, {
           repoName: entry.name,
           status: 'analyzing' as any,
@@ -1785,14 +1817,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           let partialRunError: string | undefined;
           let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
           try {
-            const lbugPath = path.join(entry.storagePath, 'lbug');
+            const lbugPath = path.join(storagePath, 'lbug');
             await withLbugDb(lbugPath, async () => {
               const { runEmbeddingPipeline } =
                 await import('../core/embeddings/embedding-pipeline.js');
               const { resolveEmbeddingIdentity } =
                 await import('../core/embeddings/embedding-identity.js');
               const embeddingIdentity = resolveEmbeddingIdentity();
-              let embeddingMeta = await loadMeta(entry.storagePath);
+              let embeddingMeta = await loadMeta(storagePath);
               if (!embeddingMeta) {
                 throw new Error('Repository metadata is missing; run gitnexus analyze first');
               }
@@ -1832,7 +1864,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 // without a fresh read, a concurrent writer's update (e.g. a
                 // --repair-fts capability stamp) would be silently reverted on
                 // every checkpoint save for the job's whole lifetime.
-                const latestMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+                const latestMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
                 // `stats.embeddings` only moves when the caller MEASURED the
                 // live count (the post-flush `onCheckpoint`). The window-start
                 // callback measures nothing and passes nothing: restating the
@@ -1851,7 +1883,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                   },
                   embeddings,
                 );
-                await saveMeta(entry.storagePath, embeddingMeta);
+                await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+                await saveMeta(storagePath, embeddingMeta);
               };
               /**
                * Count the persisted rows, or report the answer never arrived.
@@ -1945,7 +1978,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // `embeddingCheckpoint` is the marker this run's own mid-run
               // writer saved, which is the only record of the work when the
               // count query could not answer.
-              const finalMeta = (await loadMeta(entry.storagePath)) ?? embeddingMeta;
+              const finalMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
               const finalizeContext: EmbedRunFinalizeContext = {
                 measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
                 onDisk: finalMeta,
@@ -1965,7 +1998,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
                 measuredEmbeddings,
               );
-              await saveMeta(entry.storagePath, embeddingMeta);
+              await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+              await saveMeta(storagePath, embeddingMeta);
             });
 
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
