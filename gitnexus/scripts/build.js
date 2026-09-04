@@ -52,11 +52,11 @@ if (!fs.existsSync(SHARED_ROOT)) {
   process.exit(1);
 }
 
-// Use gitnexus's TypeScript JS entry, not the `.bin/tsc` / `tsc.cmd` shim.
-// A separate `npm ci` in gitnexus-shared installs TypeScript 7 plus optional
-// per-platform binaries and has taken 7 minutes in CI. `execFileSync` also
-// cannot launch `.cmd` shims on Windows without a shell.
-const tscJs = path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc');
+// Launch tsc as `node typescript/lib/tsc.js` on every OS. The `.bin/tsc` /
+// `tsc.cmd` shims are Windows-only wrappers; `execFileSync` cannot spawn a
+// `.cmd` without a shell, and a separate `npm ci` in gitnexus-shared pulls
+// TypeScript 7 optional platform packages (7+ minutes in CI).
+const tscJs = path.join(ROOT, 'node_modules', 'typescript', 'lib', 'tsc.js');
 if (!fs.existsSync(tscJs)) {
   console.error(
     `[build] missing ${tscJs}. Install gitnexus dependencies first (npm ci in gitnexus/).`,
@@ -117,7 +117,9 @@ walk(DIST, ['.js', '.d.ts'], rewriteFile);
 
 // ── 5. Make CLI entry executable ────────────────────────────────────
 const cliEntry = path.join(DIST, 'cli', 'index.js');
-if (fs.existsSync(cliEntry)) fs.chmodSync(cliEntry, 0o755);
+if (process.platform !== 'win32' && fs.existsSync(cliEntry)) {
+  fs.chmodSync(cliEntry, 0o755);
+}
 
 // ── 6. Build & copy web UI (opt-in) ─────────────────────────────────
 // Web UI is a separate package and is only required in the published

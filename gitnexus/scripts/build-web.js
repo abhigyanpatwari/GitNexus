@@ -53,6 +53,9 @@ export function runWebBuild({
     // CI should install gitnexus-web itself (cached, its own step) so this
     // fallback only fires for a local `npm pack` / `npm publish`.
     console.log('[build] installing gitnexus-web dependencies (no local node_modules)…');
+    // String form uses the platform shell (cmd.exe / sh) so `npm` resolves to
+    // npm.cmd on Windows. execFileSync('npm') / execFileSync('npm.cmd')
+    // without a shell fails on Windows.
     exec('npm ci', { cwd: webRoot, stdio: 'inherit' });
   }
   exec('npm run build', { cwd: webRoot, stdio: 'inherit', timeout: timeoutMs });

@@ -115,10 +115,25 @@ describe('gitnexus build scripts', () => {
 
   it('compiles gitnexus-shared with gitnexus TypeScript, not a separate TypeScript 7 install', () => {
     const src = readFileSync(path.join(REPO_ROOT, 'gitnexus/scripts/build.js'), 'utf8');
-    expect(src).toContain("path.join(ROOT, 'node_modules', 'typescript', 'bin', 'tsc')");
+    expect(src).toContain("path.join(ROOT, 'node_modules', 'typescript', 'lib', 'tsc.js')");
     expect(src).toContain('execFileSync(process.execPath, [tscJs]');
     expect(src).not.toMatch(/node_modules['"]?, ['"]\.bin/);
+    expect(src).not.toMatch(/execFileSync\([^)]*tsc\.cmd/);
+    expect(src).not.toContain("typescript', 'bin', 'tsc'");
   });
+
+  it.skipIf(!existsSync(path.join(REPO_ROOT, 'gitnexus/node_modules/typescript/lib/tsc.js')))(
+    'can launch TypeScript via node + lib/tsc.js on this OS',
+    () => {
+      const probe = spawnSync(
+        process.execPath,
+        [path.join(REPO_ROOT, 'gitnexus/node_modules/typescript/lib/tsc.js'), '--version'],
+        { encoding: 'utf8' },
+      );
+      expect(probe.status).toBe(0);
+      expect(probe.stdout).toMatch(/Version \d+/);
+    },
+  );
 
   it('builds the web UI from prepack, which is what ships the tarball', () => {
     expect(PACKAGE_JSON.scripts?.prepack).toContain('scripts/build.js --web');
@@ -268,7 +283,8 @@ describe('workflows that need the web UI install it themselves', () => {
 describe('setup-gitnexus job budget', () => {
   it('does not npm-ci gitnexus-shared (TypeScript 7 optional-platform install stalls CI)', () => {
     const shared = setupGitnexus.runs?.steps?.find((step) => step.name === 'Build gitnexus-shared');
-    expect(String(shared?.run)).toBe('../gitnexus/node_modules/.bin/tsc');
+    expect(String(shared?.run)).toBe('node ../gitnexus/node_modules/typescript/lib/tsc.js');
+    expect(String(shared?.run)).not.toContain('.bin');
     expect(shared?.if).toContain("lifecycle-scripts == 'false'");
     expect(
       setupGitnexus.runs?.steps?.some(
@@ -298,7 +314,8 @@ describe('setup-gitnexus job budget', () => {
     expect(String(setupNode?.with?.['cache-dependency-path'])).toBe(
       'gitnexus-web/package-lock.json',
     );
-    expect(String(shared?.run)).toBe('../gitnexus-web/node_modules/.bin/tsc');
+    expect(String(shared?.run)).toBe('node ../gitnexus-web/node_modules/typescript/lib/tsc.js');
+    expect(String(shared?.run)).not.toContain('.bin');
     expect(String(shared?.run)).not.toContain('npm ci');
     expect(webInstall?.env?.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD).toBe('1');
   });

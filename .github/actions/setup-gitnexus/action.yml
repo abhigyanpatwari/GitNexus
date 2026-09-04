@@ -41,7 +41,9 @@ runs:
 
     - name: Build gitnexus-shared
       if: ${{ inputs.lifecycle-scripts == 'false' }}
-      run: ../gitnexus/node_modules/.bin/tsc
+      # node + lib/tsc.js — same on Windows/macOS/Linux. Do not use .bin/tsc
+      # (tsc.cmd on Windows; execFileSync cannot launch .cmd without a shell).
+      run: node ../gitnexus/node_modules/typescript/lib/tsc.js
       shell: bash
       working-directory: gitnexus-shared
 
