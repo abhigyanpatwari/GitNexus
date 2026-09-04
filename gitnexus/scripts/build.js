@@ -52,17 +52,29 @@ if (!fs.existsSync(SHARED_ROOT)) {
   process.exit(1);
 }
 
+// Use gitnexus's TypeScript. A separate `npm ci` in gitnexus-shared installs
+// TypeScript 7 plus optional per-platform binaries and has taken 7 minutes
+// in CI to add two packages — long enough to cancel typecheck / Windows pack.
+const tscBin = process.platform === 'win32' ? 'tsc.cmd' : 'tsc';
+const tscCmd = path.join(ROOT, 'node_modules', '.bin', tscBin);
+if (!fs.existsSync(tscCmd)) {
+  console.error(
+    `[build] missing ${tscCmd}. Install gitnexus dependencies first (npm ci in gitnexus/).`,
+  );
+  process.exit(1);
+}
+
+function runTsc(cwd) {
+  execSync(`"${tscCmd}"`, { cwd, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+}
+
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
 console.log('[build] compiling gitnexus-shared…');
-const tscCmd =
-  process.platform === 'win32'
-    ? path.join('node_modules', '.bin', 'tsc.cmd')
-    : path.join('node_modules', '.bin', 'tsc');
-execSync(tscCmd, { cwd: SHARED_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+runTsc(SHARED_ROOT);
 
 // ── 2. Build gitnexus ──────────────────────────────────────────────
 console.log('[build] compiling gitnexus…');
-execSync(tscCmd, { cwd: ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+runTsc(ROOT);
 
 // ── 3. Copy shared dist ────────────────────────────────────────────
 console.log('[build] copying shared module into dist/_shared…');

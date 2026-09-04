@@ -396,10 +396,6 @@ jobs:
           # cache-poisoning audit). ~30s slower per release; runs rarely.
           package-manager-cache: false
 
-      - name: Build gitnexus-shared
-        run: npm ci && npm run build
-        working-directory: gitnexus-shared
-
       - name: Install gitnexus dependencies
         run: npm ci
         working-directory: gitnexus

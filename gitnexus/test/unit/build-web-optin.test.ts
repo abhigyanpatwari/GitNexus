@@ -19,6 +19,7 @@ interface WorkflowStep {
   uses?: string;
   with?: Record<string, unknown>;
   env?: Record<string, unknown>;
+  if?: string;
   'working-directory'?: string;
 }
 
@@ -110,6 +111,12 @@ describe('gitnexus build scripts', () => {
     expect(PACKAGE_JSON.scripts?.build).toBe('node scripts/build.js');
     expect(PACKAGE_JSON.scripts?.prepare).toBe('node scripts/build.js');
     expect(PACKAGE_JSON.scripts?.prepare).not.toContain('--web');
+  });
+
+  it('compiles gitnexus-shared with gitnexus TypeScript, not a separate TypeScript 7 install', () => {
+    const src = readFileSync(path.join(REPO_ROOT, 'gitnexus/scripts/build.js'), 'utf8');
+    expect(src).toContain("path.join(ROOT, 'node_modules', '.bin', tscBin)");
+    expect(src).not.toContain('execSync(tscCmd, { cwd: SHARED_ROOT');
   });
 
   it('builds the web UI from prepack, which is what ships the tarball', () => {
@@ -258,14 +265,17 @@ describe('workflows that need the web UI install it themselves', () => {
 });
 
 describe('setup-gitnexus job budget', () => {
-  it('npm-ci installs gitnexus-shared without hashing it into the CLI npm cache key', () => {
-    const setupNode = setupGitnexus.runs?.steps?.find((step) =>
-      String(step.uses ?? '').startsWith('actions/setup-node@'),
-    );
+  it('does not npm-ci gitnexus-shared (TypeScript 7 optional-platform install stalls CI)', () => {
     const shared = setupGitnexus.runs?.steps?.find((step) => step.name === 'Build gitnexus-shared');
-    expect(String(setupNode?.with?.['cache-dependency-path'])).toBe('gitnexus/package-lock.json');
-    expect(String(shared?.run)).toContain('npm ci');
-    expect(String(shared?.run)).not.toContain('npm install');
+    expect(String(shared?.run)).toBe('../gitnexus/node_modules/.bin/tsc');
+    expect(shared?.if).toContain("lifecycle-scripts == 'false'");
+    expect(
+      setupGitnexus.runs?.steps?.some(
+        (step) =>
+          step['working-directory'] === 'gitnexus-shared' &&
+          String(step.run ?? '').includes('npm ci'),
+      ),
+    ).toBe(false);
     expect(setupGitnexus.inputs?.['lifecycle-scripts']?.default).toBe('true');
     expect(
       setupGitnexus.runs?.steps?.some((step) =>
@@ -274,7 +284,7 @@ describe('setup-gitnexus job budget', () => {
     ).toBe(true);
   });
 
-  it('setup-gitnexus-web keeps the web npm cache key and skips Playwright browsers', () => {
+  it('setup-gitnexus-web compiles shared with the web TypeScript and skips Playwright browsers', () => {
     const setupNode = setupGitnexusWeb.runs?.steps?.find((step) =>
       String(step.uses ?? '').startsWith('actions/setup-node@'),
     );
@@ -287,7 +297,8 @@ describe('setup-gitnexus job budget', () => {
     expect(String(setupNode?.with?.['cache-dependency-path'])).toBe(
       'gitnexus-web/package-lock.json',
     );
-    expect(String(shared?.run)).toContain('npm ci');
+    expect(String(shared?.run)).toBe('../gitnexus-web/node_modules/.bin/tsc');
+    expect(String(shared?.run)).not.toContain('npm ci');
     expect(webInstall?.env?.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD).toBe('1');
   });
 

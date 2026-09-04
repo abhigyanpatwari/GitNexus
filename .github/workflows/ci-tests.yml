@@ -436,9 +436,6 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: gitnexus/package-lock.json
-      - name: Build gitnexus-shared
-        run: npm ci && npm run build
-        working-directory: gitnexus-shared
       - name: Install and build gitnexus
         shell: bash
         run: |
@@ -873,11 +870,6 @@ jobs:
             "${canary_runtime}/node_modules/@anthropic-ai/claude-code/package.json"
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
-      - name: Build pinned shared runtime
-        run: |
-          npm ci
-          npm run build
-        working-directory: gitnexus-shared
       - name: Install and build pinned GitNexus runtime
         run: |
           npm ci
