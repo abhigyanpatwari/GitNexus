@@ -23,8 +23,6 @@ export const SYMBOL_NODE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Function',
   'Method',
   'Class',
-  'Protocol',
-  'Category',
   'Interface',
   'CodeElement',
   'Struct',

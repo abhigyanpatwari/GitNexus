@@ -11,7 +11,6 @@ export enum SupportedLanguages {
   Java = 'java',
   C = 'c',
   CPlusPlus = 'cpp',
-  ObjectiveC = 'objective-c',
   CSharp = 'csharp',
   Go = 'go',
   Ruby = 'ruby',

@@ -4,9 +4,9 @@
  *
  * Thin wrapper over `lookupCore`, specialized for class kinds:
  *
- *   - `acceptedKinds` = Class / Protocol / Category / Interface / Enum /
- *     Struct / Union / Trait / TypeAlias / Typedef / Record / Delegate /
- *     Annotation / Template / Namespace.
+ *   - `acceptedKinds` = Class / Interface / Enum / Struct / Union /
+ *     Trait / TypeAlias / Typedef / Record / Delegate / Annotation /
+ *     Template / Namespace.
  *   - `useReceiverTypeBinding` is **false** — classes are resolved by
  *     name through the lexical chain + global qualified fallback, not
  *     via a receiver type.

@@ -363,17 +363,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     },
   ],
   [
-    SupportedLanguages.ObjectiveC,
-    {
-      files: ['Headers/Foundation.h', 'Headers/Widget.h', 'Sources/main.m'],
-      fromFile: 'Sources/main.m',
-      resolutionConfig: undefined,
-      external: 'Foundation',
-      decoy: 'Headers/Foundation.h',
-      reachesDecoy: 'Foundation.h',
-    },
-  ],
-  [
     SupportedLanguages.Zig,
     {
       // `@import("std")` is the standard library, and Zig's resolver answers

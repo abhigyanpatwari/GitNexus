@@ -16,12 +16,6 @@ import {
   JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
   SPRING_CONFIG_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/languages/java/analysis-features.js';
-import { OBJECTIVE_C_PROVIDER_FEATURE } from '../../src/core/ingestion/languages/objective-c/analysis-features.js';
-import {
-  OBJECTIVE_C_GRAMMAR_PACKAGE,
-  OBJECTIVE_C_GRAMMAR_VERSION,
-  OBJECTIVE_C_PROVIDER_VERSION,
-} from '../../src/core/ingestion/languages/objective-c/facts.js';
 import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
 
 const FEATURES = [
@@ -33,7 +27,6 @@ const FEATURES = [
   SPRING_CONFIG_BINDINGS_FEATURE,
   JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
   JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
-  OBJECTIVE_C_PROVIDER_FEATURE,
 ] as const;
 
 describe('analysis feature versions', () => {
@@ -115,32 +108,6 @@ describe('analysis feature versions', () => {
     expect(findAnalysisFeatureMismatches({ ...expected, toString: 1 }, expected)).toEqual([
       'unexpected:toString',
     ]);
-  });
-
-  it('stamps Objective-C provider and grammar versions for semantic rebuilds', () => {
-    const expectedId =
-      `objective-c.provider-${OBJECTIVE_C_PROVIDER_VERSION}.` +
-      `${OBJECTIVE_C_GRAMMAR_PACKAGE}-${OBJECTIVE_C_GRAMMAR_VERSION}`;
-    expect(OBJECTIVE_C_PROVIDER_FEATURE.id).toBe(expectedId);
-
-    const objcFeatures = resolveAnalysisFeatureVersions(FEATURES, [
-      'Sources/SYModuleCaller.m',
-      'Sources/SYModuleCaller.mm',
-      'Headers/SYModuleCaller.h',
-    ]);
-    expect(objcFeatures).toMatchObject({
-      [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version,
-    });
-
-    expect(resolveAnalysisFeatureVersions(FEATURES, ['include/plain.hpp'])).not.toHaveProperty(
-      OBJECTIVE_C_PROVIDER_FEATURE.id,
-    );
-    expect(
-      findAnalysisFeatureMismatches(
-        { [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version - 1 },
-        { [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version },
-      ),
-    ).toEqual([`version:${OBJECTIVE_C_PROVIDER_FEATURE.id}`]);
   });
 
   it('rejects invalid or duplicate descriptors', () => {

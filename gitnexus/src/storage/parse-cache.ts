@@ -250,7 +250,6 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // capture schemas would have shared one PARSE_CACHE_VERSION and the durable
 // ParsedFile store would have replayed pre-fix ParsedFiles verbatim for one of
 // them. Only comparing against origin/main at MERGE time surfaces it.
-// PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 // 45 -> 46 for the JavaScript bare-identifier read captures (A2), which emit
 // `@reference.read.identifier` in value positions (call arguments,
@@ -537,11 +536,6 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // value above every in-flight claim at this merge (main 67, #2891's 59, #1616's
 // stale 2), which is the rule above: above every claim, not above origin/main.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
-//
-// 68 -> 69 for Objective-C semantic graph extraction plus the objective-c
-// ParsedFile side-channel carrying provider facts. A warm v68 cache would replay
-// `.m`/`.mm`/classified `.h` chunks without Class/Protocol/Category/Method
-// nodes, unresolved-message evidence, or post-resolution ObjC call facts.
 //
 // 68 -> 69 added #2969's JS/TS data-route-table decoratorRoutes. A warm v68
 // cache would replay unchanged worker results without those routes. Version 70

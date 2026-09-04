@@ -8,8 +8,6 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Folder: '#6366f1', // Indigo
   File: '#3b82f6', // Blue
   Class: '#f59e0b', // Amber - stands out
-  Protocol: '#ec4899', // Pink - like Interface
-  Category: '#14b8a6', // Teal - like Method
   Function: '#10b981', // Emerald
   Method: '#14b8a6', // Teal
   Variable: '#64748b', // Slate - muted (less important)
@@ -53,8 +51,6 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Folder: 10, // Structural - clearly bigger than files
   File: 6, // Common element - smaller than folders
   Class: 8, // Important code structure
-  Protocol: 7, // Like Interface
-  Category: 3, // Like Method
   Function: 4, // Common code element - small
   Method: 3, // Smaller than function
   Variable: 2, // Tiny - leaf node
@@ -119,8 +115,6 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Folder',
   'File',
   'Class',
-  'Protocol',
-  'Category',
   'Function',
   'Method',
   'Property', // Kotlin/Java fields (HAS_PROPERTY + DEFINES File→Property)

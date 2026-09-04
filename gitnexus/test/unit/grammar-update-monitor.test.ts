@@ -73,15 +73,8 @@ describe('COMPATIBLE_ABI gate', () => {
 });
 
 describe('GRAMMARS registry', () => {
-  it('covers all six grammars, including the vendored Objective-C grammar', () => {
-    expect(Object.keys(mod.GRAMMARS).sort()).toEqual([
-      'c',
-      'dart',
-      'kotlin',
-      'objc',
-      'proto',
-      'swift',
-    ]);
+  it('covers all five grammars (swift/kotlin npm, dart/proto github, c npm)', () => {
+    expect(Object.keys(mod.GRAMMARS).sort()).toEqual(['c', 'dart', 'kotlin', 'proto', 'swift']);
     expect(mod.GRAMMARS.swift.npm).toBe('tree-sitter-swift');
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
   });
@@ -89,8 +82,6 @@ describe('GRAMMARS registry', () => {
   it('marks c and kotlin report-only (holds); swift/dart/proto are auto-updatable', () => {
     expect(mod.GRAMMARS.c.npm).toBe('tree-sitter-c');
     expect(mod.GRAMMARS.c.hold).toBeTruthy(); // ABI-pinned: detected/reported, never auto-applied
-    expect(mod.GRAMMARS.objc.npm).toBe('tree-sitter-objc');
-    expect(mod.GRAMMARS.objc.hold).toBeTruthy();
     // kotlin is pinned to an unreleased fwcd main commit for `fun interface`
     // support (#169); npm latest (0.3.8) lacks it, so the strict-inequality
     // isNewer would auto-revert the pin without this hold.

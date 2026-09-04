@@ -151,50 +151,6 @@ describe('streamAllCSVsToDisk', () => {
     expect(await readAllRelRows(result.relsByPair)).toHaveLength(3);
   });
 
-  it('persists Protocol and Category nodes and their structural relationships', async () => {
-    const graph = buildTestGraph(
-      [
-        {
-          id: 'Protocol:objc:protocol:Runnable',
-          label: 'Protocol',
-          name: 'Runnable',
-          filePath: 'src/Runnable.h',
-        },
-        {
-          id: 'Class:objc:class:Worker',
-          label: 'Class',
-          name: 'Worker',
-          filePath: 'src/Worker.h',
-        },
-        {
-          id: 'Category:objc:category:Worker:Tracing',
-          label: 'Category',
-          name: 'Tracing',
-          filePath: 'src/Worker+Tracing.m',
-        },
-      ],
-      [
-        {
-          sourceId: 'Class:objc:class:Worker',
-          targetId: 'Protocol:objc:protocol:Runnable',
-          type: 'IMPLEMENTS',
-        },
-        {
-          sourceId: 'Category:objc:category:Worker:Tracing',
-          targetId: 'Class:objc:class:Worker',
-          type: 'MEMBER_OF',
-        },
-      ],
-    );
-
-    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
-
-    expect(result.nodeFiles.get('Protocol')?.rows).toBe(1);
-    expect(result.nodeFiles.get('Category')?.rows).toBe(1);
-    expect(result.relsByPair.get('Class|Protocol')?.rows).toBe(1);
-    expect(result.relsByPair.get('Category|Class')?.rows).toBe(1);
-  });
-
   it('CSV content is properly escaped', async () => {
     const graph = buildTestGraph([
       {

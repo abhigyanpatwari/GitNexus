@@ -181,8 +181,6 @@ export function namesAtScope(scopeId: ScopeId, scopes: ScopeResolutionIndexes): 
 export function isClassLike(t: string): boolean {
   return (
     t === 'Class' ||
-    t === 'Protocol' ||
-    t === 'Category' ||
     t === 'Interface' ||
     t === 'Struct' ||
     t === 'Record' ||

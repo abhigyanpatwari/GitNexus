@@ -25,7 +25,7 @@
  * or exit non-zero — a failure for any single grammar must not break the install.
  *
  * Opt-out: GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (strict '1') skips the OPTIONAL
- * grammars only. tree-sitter-c and tree-sitter-objc are REQUIRED (C backstops upstream's 4/6 ARM
+ * grammars only. tree-sitter-c is REQUIRED (it backstops upstream's 4/6 ARM
  * prebuild gap, #2116) and is always built.
  *
  * Usage:
@@ -40,7 +40,6 @@ const { execSync } = require('child_process');
 // grammars ignore the opt-out gate. Insertion order == build order (c first).
 const GRAMMARS = {
   c: { required: true, display: 'C', ext: '.c' },
-  objc: { required: true, display: 'Objective-C', ext: '.m/.mm/.h' },
   dart: { required: false, display: 'Dart', ext: '.dart' },
   proto: { required: false, display: 'Proto', ext: '.proto' },
   swift: { required: false, display: 'Swift', ext: '.swift' },

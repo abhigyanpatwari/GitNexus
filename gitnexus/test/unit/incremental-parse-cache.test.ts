@@ -224,7 +224,6 @@ describe('PARSE_CACHE_VERSION', () => {
   // the pre-fix fan-out. This branch staged 64 above the claims live at the
   // time (61, 62, 63); all three landed and cascaded main to 67, so 68 is the
   // next free value above every claim at merge — the rule, re-applied.
-  // Version 69 also exists on the fork for Objective-C semantic graph facts.
   // Version 69 added #2969's JS/TS data-route-table decoratorRoutes. Version 70
   // adds Spring non-HTTP handler side-channel facts (#2417 / #2891), so it is
   // the next free value after both cache payload changes.

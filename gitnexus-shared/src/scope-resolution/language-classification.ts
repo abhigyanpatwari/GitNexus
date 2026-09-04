@@ -9,8 +9,7 @@
  * Initial classification (locked in Ring 1 #910):
  *   - production: javascript, typescript, python, java, c, cpp, csharp, go,
  *                 ruby, rust, php, kotlin, swift, dart
- *   - experimental: objective-c (fork provider MVP),
- *                   vue (embedded-language / SFC complexity),
+ *   - experimental: vue (embedded-language / SFC complexity),
  *                   cobol (regex-provider path)
  *   - quarantined: (none)
  *
@@ -35,7 +34,6 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Java]: 'production',
     [SupportedLanguages.C]: 'production',
     [SupportedLanguages.CPlusPlus]: 'production',
-    [SupportedLanguages.ObjectiveC]: 'experimental',
     [SupportedLanguages.CSharp]: 'production',
     [SupportedLanguages.Go]: 'production',
     [SupportedLanguages.Ruby]: 'production',

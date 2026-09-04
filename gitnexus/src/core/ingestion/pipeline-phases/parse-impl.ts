@@ -61,13 +61,7 @@ import {
   createParserForLanguage,
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
-import {
-  getLanguageForFileContent,
-  getProvider,
-  getProviderForFile,
-  needsContentLanguageClassification,
-  providers,
-} from '../languages/index.js';
+import { getProvider, getProviderForFile, providers } from '../languages/index.js';
 import { SCOPE_RESOLVERS } from '../scope-resolution/pipeline/registry.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import type Parser from 'tree-sitter';
@@ -480,28 +474,15 @@ export async function runChunkedParseAndResolve(
   const model = createSemanticModel();
   const symbolTable = model.symbols;
 
-  const contentClassifiedPaths = scannedFiles
-    .map((file) => file.path)
-    .filter(needsContentLanguageClassification);
-  const contentClassificationMap =
-    contentClassifiedPaths.length > 0
-      ? await readFileContents(repoPath, contentClassifiedPaths)
-      : new Map<string, string>();
-  const languageForScannedFile = (file: (typeof scannedFiles)[number]) => {
-    const content = contentClassificationMap.get(file.path);
-    return content === undefined
-      ? getLanguageFromFilename(file.path)
-      : getLanguageForFileContent(file.path, content);
-  };
   const parseableScanned = scannedFiles.filter((f) => {
-    const lang = languageForScannedFile(f);
+    const lang = getLanguageFromFilename(f.path);
     return lang && isLanguageAvailable(lang);
   });
 
   // Warn about files skipped due to unavailable parsers
   const skippedByLang = new Map<string, number>();
   for (const f of scannedFiles) {
-    const lang = languageForScannedFile(f);
+    const lang = getLanguageFromFilename(f.path);
     const provider = lang === null ? undefined : getProvider(lang);
     if (lang && provider?.parseStrategy !== 'standalone' && !isLanguageAvailable(lang)) {
       skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);

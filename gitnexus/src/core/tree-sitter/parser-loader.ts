@@ -96,17 +96,6 @@ const SOURCES: Record<string, GrammarSource> = {
     unavailableNote:
       'C++ parsing requires `tree-sitter-cpp`. Check the install and native binding.',
   },
-  [SupportedLanguages.ObjectiveC]: {
-    load: () => requireVendoredGrammar('tree-sitter-objc'),
-    optional: true,
-    severity: 'error',
-    unavailableNote:
-      'Objective-C parsing disabled: vendored `tree-sitter-objc` (under ' +
-      '`gitnexus/vendor/tree-sitter-objc`) could not be loaded. GitNexus ships ' +
-      'prebuilt binaries for supported macOS/Linux runner architectures; this usually ' +
-      'indicates a corrupted install or native ABI mismatch with the bundled ' +
-      'tree-sitter@0.21.1 runtime.',
-  },
   [SupportedLanguages.Go]: {
     load: () => _require('tree-sitter-go'),
     unavailableNote: 'Go parsing requires `tree-sitter-go`. Check the install and native binding.',

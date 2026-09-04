@@ -7,24 +7,11 @@ import {
 } from '../../src/core/embeddings/embedding-pipeline.js';
 import { generateEmbeddingText } from '../../src/core/embeddings/text-generator.js';
 import type { EmbeddableNode, EmbeddingProgress } from '../../src/core/embeddings/types.js';
-import {
-  DEFAULT_EMBEDDING_CONFIG,
-  EMBEDDABLE_LABELS,
-  LABEL_CATEGORY,
-  LABEL_PROTOCOL,
-  LABELS_WITH_EXPORTED,
-} from '../../src/core/embeddings/types.js';
+import { DEFAULT_EMBEDDING_CONFIG, EMBEDDABLE_LABELS } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
 
 const CLASS_CHUNK_SIZE = 90;
 const CLASS_OVERLAP = 10;
-
-describe('embedding schema column contracts', () => {
-  it('does not query Objective-C protocol/category tables for an isExported column', () => {
-    expect(LABELS_WITH_EXPORTED.has(LABEL_PROTOCOL)).toBe(false);
-    expect(LABELS_WITH_EXPORTED.has(LABEL_CATEGORY)).toBe(false);
-  });
-});
 
 // ────────────────────────────────────────────────────────────────────────────
 // resolveEmbeddingInstallPolicy (offline-first, #1153)

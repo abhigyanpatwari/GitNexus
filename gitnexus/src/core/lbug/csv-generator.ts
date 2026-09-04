@@ -579,8 +579,6 @@ export const streamAllCSVsToDisk = async (
     const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
     const constHeader = `${multiLangHeader},convexEndpointFactory`;
     const MULTI_LANG_TYPES = [
-      'Protocol',
-      'Category',
       'Struct',
       'Enum',
       'Macro',

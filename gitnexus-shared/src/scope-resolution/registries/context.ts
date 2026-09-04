@@ -136,8 +136,6 @@ export interface RegistryContext {
 
 export const CLASS_KINDS: readonly NodeLabel[] = Object.freeze([
   'Class',
-  'Protocol',
-  'Category',
   'Interface',
   'Enum',
   'Struct',

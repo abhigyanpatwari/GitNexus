@@ -16,7 +16,7 @@ export interface ManifestExtractResult {
 // #2325 integration test can run the EXACT production query against a real
 // LadybugDB — a hand-copied query string in the test would silently drift
 // from this allowlist. Uses the `labels(n) IN [...]` allowlist form rather
-// than a `MATCH (n:A|B)` disjunction: this 23-label list contains the
+// than a `MATCH (n:A|B)` disjunction: this 21-label list contains the
 // reserved-keyword labels `Macro` and `Union`, and LadybugDB's parser rejects
 // a disjunction that names a reserved keyword (#2325) — which the resolver's
 // try/catch then swallowed. `labels(n) IN` has no such collision.
@@ -25,7 +25,7 @@ export interface ManifestExtractResult {
 // two would widen which nodes resolve as contract symbols and must update the
 // #2325 test, so they are intentionally kept separate for now.
 export const CUSTOM_CONTRACT_RESOLVE_QUERY = `MATCH (n)
-   WHERE labels(n) IN ['Function','Method','Class','Protocol','Category','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
+   WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
      AND n.name = $symbolName
    RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
    ORDER BY n.filePath ASC, n.id ASC

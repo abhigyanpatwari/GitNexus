@@ -33,7 +33,6 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.Dart]: 'matrix',
   [SupportedLanguages.Vue]: 'matrix',
   [SupportedLanguages.Cobol]: 'matrix',
-  [SupportedLanguages.ObjectiveC]: 'dedicated',
   [SupportedLanguages.Zig]: 'matrix',
 } as const satisfies Record<SupportedLanguages, 'matrix' | 'dedicated'>;
 
