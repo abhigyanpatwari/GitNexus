@@ -8,7 +8,7 @@
  *  3. Copy gitnexus-shared/dist → dist/_shared
  *  4. Rewrite bare 'gitnexus-shared' specifiers → relative paths
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,7 +65,7 @@ if (!fs.existsSync(tscCmd)) {
 }
 
 function runTsc(cwd) {
-  execSync(`"${tscCmd}"`, { cwd, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+  execFileSync(tscCmd, [], { cwd, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 }
 
 // ── 1. Build gitnexus-shared ───────────────────────────────────────
