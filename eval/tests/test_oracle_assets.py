@@ -16,6 +16,7 @@ from workflow_bench import oracle_assets, runner
 from workflow_bench.evolution import evaluate_candidate
 from workflow_bench.oracle_assets import (
     capture_task_oracle,
+    require_hidden_harness_absent,
     review_case_setup_command,
     staged_task_oracle,
     with_hidden_harness_apply_exclude,
@@ -153,6 +154,19 @@ def test_clone_sanitization_prunes_harness_checkout_and_recoverable_history(tmp_
     assert git(clone, "for-each-ref", "--format=%(refname)").stdout == ""
     assert git(clone, "show", "-s", "--format=%P", "HEAD").stdout.strip() == ""
     assert git(clone, "status", "--porcelain=v1", "--untracked-files=all").stdout == ""
+
+
+def test_require_hidden_harness_absent_fails_closed_on_leftover_tree(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    hidden = clone / "eval" / "workflow_bench"
+    hidden.mkdir(parents=True)
+    (hidden / "review_cases").mkdir()
+
+    with pytest.raises(ValueError, match="hidden harness visible"):
+        require_hidden_harness_absent(clone)
+
+    shutil.rmtree(hidden)
+    require_hidden_harness_absent(clone)
 
 
 def test_hidden_harness_apply_exclude_is_idempotent() -> None:

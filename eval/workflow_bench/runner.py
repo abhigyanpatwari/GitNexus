@@ -83,6 +83,7 @@ from .oracle_assets import (
     ORACLE_ENV_VAR,
     TaskOracleSnapshot,
     capture_task_oracles,
+    require_hidden_harness_absent,
     sanitize_clone_for_hidden_oracles,
     staged_task_oracle,
     with_hidden_harness_apply_exclude,
@@ -864,7 +865,6 @@ class TaskCellContext:
     asset_snapshot_error: BaseException | None
     args: argparse.Namespace
     out_dir: Path
-    oracle_mask: Path
     ce_plugin_snapshot: CePluginSnapshot | None
     trees_dir: Path
     bwrap_bin: Path
@@ -906,18 +906,6 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             snapshot=ctx.asset_snapshot,
         )
         registry_mount = isolated_gitnexus_registry_mount(worktree, ctx.trees_dir)
-        hidden_harness = worktree / "eval" / "workflow_bench"
-        oracle_visibility_mounts: list[ReadOnlyMount] = []
-        if hidden_harness.exists() or hidden_harness.is_symlink():
-            hidden_metadata = hidden_harness.lstat()
-            if stat.S_ISLNK(hidden_metadata.st_mode) or not stat.S_ISDIR(hidden_metadata.st_mode):
-                raise SandboxError("benchmark harness path must be a real directory before it can be hidden")
-            oracle_visibility_mounts.append(
-                ReadOnlyMount(
-                    source=ctx.oracle_mask,
-                    target=f"{SANDBOX_WORKSPACE}/eval/workflow_bench",
-                )
-            )
         execution_arm = CANDIDATE_ARMS.get(arm, arm)
         ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
         with prepare_sandbox(
@@ -929,7 +917,6 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 *ctx.runtime_mounts,
                 registry_mount,
                 *ce_mounts,
-                *oracle_visibility_mounts,
             ],
             preflight=False,
             backend=ctx.sandbox_backend,
@@ -952,9 +939,13 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 )
             base_skill_digest = skill_fingerprint(worktree, execution_arm)
             if task.get("setup"):
-                # Sanitization already removed eval/workflow_bench. A historical
-                # PR patch that still edits that tree (gitignored learnings.jsonl)
-                # must skip those hunks or `git apply` fails closed.
+                # Sanitization already removed eval/workflow_bench. Review
+                # cells copy the historical PR patch back under that path so
+                # `git apply` can read it. Do not overlay an empty mask on
+                # the same tree first — that hides the patch file and every
+                # cell dies with `can't open patch`. A historical patch that
+                # still edits the harness (gitignored learnings.jsonl) must
+                # skip those hunks or apply fails closed.
                 setup_command = ["/bin/sh", "-lc", with_hidden_harness_apply_exclude(str(task["setup"]))]
                 setup = sandbox.run(
                     setup_command,
@@ -963,6 +954,10 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 )
                 if not setup.ok:
                     raise ManagedProcessError(setup_command, setup)
+            # Setup (or its absence) must leave the staged harness copy gone
+            # before the model session starts. Fail closed rather than hide
+            # the tree with a mask that would also hide the patch from apply.
+            require_hidden_harness_absent(worktree)
             # Tamper-evidence: setup must not have rewritten the base
             # skills, verified before any candidate overlay lands.
             require_skill_fingerprint(
@@ -1716,9 +1711,6 @@ def _run_sweep(
         except (OSError, SandboxError, ValueError) as exc:
             parser.error(str(exc))
             raise AssertionError("ArgumentParser.error() returned unexpectedly")
-        oracle_mask = Path(trees) / ".oracle-mask"
-        oracle_mask.mkdir(mode=0o500)
-        oracle_mask.chmod(0o500)
         graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot] = {}
         graph_snapshot_errors: dict[tuple[str, str], BaseException] = {}
         for task, task_binding, oracle_snapshot in zip(
@@ -1777,7 +1769,6 @@ def _run_sweep(
                 asset_snapshot_error=asset_snapshot_error,
                 args=args,
                 out_dir=out_dir,
-                oracle_mask=oracle_mask,
                 ce_plugin_snapshot=ce_plugin_snapshot,
                 trees_dir=Path(trees),
                 bwrap_bin=bwrap_bin,

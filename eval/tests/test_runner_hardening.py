@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shutil
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import pytest
 
 from workflow_bench import runner, runner_artifacts, runner_sessions
 from workflow_bench.evolution import skill_fingerprint
+from workflow_bench.oracle_assets import review_case_setup_command
 from workflow_bench.process_control import ManagedProcessError, ManagedProcessResult
 from workflow_bench.proposer_sandbox import SandboxError
 
@@ -456,7 +458,6 @@ def _cell_context(tmp_path, **overrides):
             auth_token=None,
         ),
         "out_dir": tmp_path / "out",
-        "oracle_mask": tmp_path / "mask",
         "ce_plugin_snapshot": None,
         "trees_dir": tmp_path / "trees",
         "bwrap_bin": tmp_path / "bwrap",
@@ -605,6 +606,74 @@ def test_run_cell_reports_a_cleanup_failure_over_its_primary_outcome(monkeypatch
     assert record["resolved"] is False
     assert "primary=None" in record["error_detail"]
     assert "clone is busy" in record["error_detail"]
+
+
+def test_run_cell_does_not_mask_the_staged_review_patch_before_setup(monkeypatch, tmp_path):
+    """Review setup applies a patch staged under eval/workflow_bench.
+
+    Overlaying the empty oracle mask on that path is the CI abort:
+    `git apply` dies with `can't open patch`. The staged copy must stay
+    visible to sandboxed setup, then be gone before the model starts.
+    """
+
+    worktree, _ = _stub_cell_dependencies(monkeypatch, tmp_path)
+    patch = worktree / "eval" / "workflow_bench" / "review_cases" / "pr-2718.patch"
+    patch.parent.mkdir(parents=True)
+    patch.write_text("diff --git a/visible.py b/visible.py\n")
+    captured: dict[str, object] = {}
+
+    def fake_prepare(**kwargs):
+        captured["mounts"] = kwargs.get("read_only_mounts", [])
+
+        def run(_command, **_kwargs):
+            leftover = worktree / "eval" / "workflow_bench"
+            if leftover.exists():
+                shutil.rmtree(leftover)
+            return SimpleNamespace(ok=True)
+
+        return nullcontext(SimpleNamespace(run=run))
+
+    monkeypatch.setattr(runner, "prepare_sandbox", fake_prepare)
+    context = _cell_context(
+        tmp_path,
+        task={
+            "id": "review-pr-2718-defect",
+            "class": "review-defect",
+            "prompt": "review the local diff",
+            "setup": review_case_setup_command("pr-2718.patch"),
+        },
+    )
+    record = runner.run_cell(context, 0, "workflow")
+
+    assert record.get("error_kind") is None
+    targets = [getattr(mount, "target", None) for mount in captured["mounts"] if mount is not None]
+    assert not any(target and "eval/workflow_bench" in str(target) for target in targets)
+    assert not (worktree / "eval" / "workflow_bench").exists()
+
+
+def test_run_cell_fails_closed_when_setup_leaves_the_hidden_harness(monkeypatch, tmp_path):
+    worktree, _ = _stub_cell_dependencies(monkeypatch, tmp_path)
+    leftover = worktree / "eval" / "workflow_bench" / "review_cases"
+    leftover.mkdir(parents=True)
+    (leftover / "pr-2718.patch").write_text("diff\n")
+
+    def fake_prepare(**kwargs):
+        return nullcontext(SimpleNamespace(run=lambda *_a, **_k: SimpleNamespace(ok=True)))
+
+    monkeypatch.setattr(runner, "prepare_sandbox", fake_prepare)
+    context = _cell_context(
+        tmp_path,
+        task={
+            "id": "review-pr-2718-defect",
+            "class": "review-defect",
+            "prompt": "review the local diff",
+            "setup": review_case_setup_command("pr-2718.patch"),
+        },
+    )
+    record = runner.run_cell(context, 0, "workflow")
+
+    assert record["error_kind"] == "infra-error"
+    assert "hidden harness visible" in str(record["error_detail"])
 
 
 def test_run_cell_fails_closed_when_a_per_task_snapshot_never_materialized(tmp_path):
