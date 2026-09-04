@@ -9,10 +9,12 @@ runs:
         # Vite 7 requires Node ^20.19.0 || >=22.12.0 (require(esm) support).
         node-version: 22
         cache: npm
-        cache-dependency-path: gitnexus-web/package-lock.json
+        cache-dependency-path: |
+          gitnexus-web/package-lock.json
+          gitnexus-shared/package-lock.json
 
     - name: Build gitnexus-shared
-      run: npm install && npm run build
+      run: npm ci && npm run build
       shell: bash
       working-directory: gitnexus-shared
 

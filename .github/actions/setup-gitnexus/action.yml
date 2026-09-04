@@ -6,6 +6,14 @@ inputs:
     description: Whether to run npm run build after install
     required: false
     default: 'false'
+  lifecycle-scripts:
+    description: >
+      Run npm lifecycle scripts (prepare/postinstall) during gitnexus npm ci.
+      Typecheck-only and pack-only jobs should set this to false: they do not
+      need dist/ or native grammar builds, and those scripts are what blow a
+      10-minute job after a cold gitnexus-shared install.
+    required: false
+    default: 'true'
 
 runs:
   using: composite
@@ -14,15 +22,24 @@ runs:
       with:
         node-version: 22
         cache: npm
-        cache-dependency-path: gitnexus/package-lock.json
+        cache-dependency-path: |
+          gitnexus/package-lock.json
+          gitnexus-shared/package-lock.json
 
     - name: Build gitnexus-shared
-      run: npm install && npm run build
+      run: npm ci && npm run build
       shell: bash
       working-directory: gitnexus-shared
 
     - name: Install dependencies
+      if: ${{ inputs.lifecycle-scripts != 'false' }}
       run: npm ci
+      shell: bash
+      working-directory: gitnexus
+
+    - name: Install dependencies
+      if: ${{ inputs.lifecycle-scripts == 'false' }}
+      run: npm ci --ignore-scripts
       shell: bash
       working-directory: gitnexus
 

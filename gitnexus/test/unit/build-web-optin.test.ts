@@ -21,15 +21,33 @@ interface WorkflowStep {
   'working-directory'?: string;
 }
 
-function jobs(workflowPath: string): Record<string, { steps?: WorkflowStep[] }> {
+interface WorkflowJob {
+  'timeout-minutes'?: number;
+  steps?: WorkflowStep[];
+}
+
+function jobs(workflowPath: string): Record<string, WorkflowJob> {
   const doc = load(readFileSync(path.join(REPO_ROOT, workflowPath), 'utf8')) as {
-    jobs?: Record<string, { steps?: WorkflowStep[] }>;
+    jobs?: Record<string, WorkflowJob>;
   };
   return doc.jobs ?? {};
 }
 
+function compositeAction(actionPath: string): {
+  inputs?: Record<string, { default?: string }>;
+  runs?: { steps?: WorkflowStep[] };
+} {
+  return load(readFileSync(path.join(REPO_ROOT, actionPath), 'utf8')) as {
+    inputs?: Record<string, { default?: string }>;
+    runs?: { steps?: WorkflowStep[] };
+  };
+}
+
 const ciJobs = jobs('.github/workflows/ci-tests.yml');
 const publishJobs = jobs('.github/workflows/publish.yml');
+const qualityJobs = jobs('.github/workflows/ci-quality.yml');
+const setupGitnexus = compositeAction('.github/actions/setup-gitnexus/action.yml');
+const setupGitnexusWeb = compositeAction('.github/actions/setup-gitnexus-web/action.yml');
 
 function stepIndex(steps: WorkflowStep[], predicate: (step: WorkflowStep) => boolean): number {
   return steps.findIndex(predicate);
@@ -227,5 +245,53 @@ describe('workflows that need the web UI install it themselves', () => {
     const steps = ciJobs['node-floor-compat']?.steps ?? [];
     expect(steps.length).toBeGreaterThan(0);
     expect(steps.filter(installsWeb)).toHaveLength(0);
+  });
+
+  it('packaged install smoke skips a pre-pack CLI build and keeps a 20-minute budget', () => {
+    const job = ciJobs['packaged-install-smoke'];
+    const setup = job?.steps?.find((step) => step.uses === './.github/actions/setup-gitnexus');
+    expect(job?.['timeout-minutes']).toBe(20);
+    expect(setup?.with?.['lifecycle-scripts']).toBe('false');
+    expect(setup?.with?.build).toBeUndefined();
+  });
+});
+
+describe('setup-gitnexus job budget', () => {
+  it('caches and npm-ci installs gitnexus-shared so a cold typecheck cannot spend 7 minutes on npm install', () => {
+    const setupNode = setupGitnexus.runs?.steps?.find((step) =>
+      String(step.uses ?? '').startsWith('actions/setup-node@'),
+    );
+    const shared = setupGitnexus.runs?.steps?.find((step) => step.name === 'Build gitnexus-shared');
+    expect(String(setupNode?.with?.['cache-dependency-path'])).toContain(
+      'gitnexus-shared/package-lock.json',
+    );
+    expect(String(shared?.run)).toContain('npm ci');
+    expect(String(shared?.run)).not.toContain('npm install');
+    expect(setupGitnexus.inputs?.['lifecycle-scripts']?.default).toBe('true');
+    expect(
+      setupGitnexus.runs?.steps?.some((step) =>
+        String(step.run ?? '').includes('--ignore-scripts'),
+      ),
+    ).toBe(true);
+  });
+
+  it('setup-gitnexus-web also caches and npm-ci installs gitnexus-shared', () => {
+    const setupNode = setupGitnexusWeb.runs?.steps?.find((step) =>
+      String(step.uses ?? '').startsWith('actions/setup-node@'),
+    );
+    const shared = setupGitnexusWeb.runs?.steps?.find(
+      (step) => step.name === 'Build gitnexus-shared',
+    );
+    expect(String(setupNode?.with?.['cache-dependency-path'])).toContain(
+      'gitnexus-shared/package-lock.json',
+    );
+    expect(String(shared?.run)).toContain('npm ci');
+  });
+
+  it('quality typecheck skips prepare/postinstall so tsc --noEmit fits in 10 minutes', () => {
+    const job = qualityJobs.typecheck;
+    const setup = job?.steps?.find((step) => step.uses === './.github/actions/setup-gitnexus');
+    expect(job?.['timeout-minutes']).toBe(10);
+    expect(setup?.with?.['lifecycle-scripts']).toBe('false');
   });
 });

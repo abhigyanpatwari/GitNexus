@@ -307,7 +307,9 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows pack + web install regularly exceeds 15 minutes when setup also
+    # runs prepare/postinstall/build before prepack compiles the same tree again.
+    timeout-minutes: 20
     steps:
       # persist-credentials: false — this job runs npm pack + npm install -g
       # from a tarball and never pushes back; the token in .git/config would
@@ -316,9 +318,11 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      # Skip prepare/postinstall/build here. `npm pack` runs prepack, which
+      # compiles CLI + web into the tarball this job actually installs.
       - uses: ./.github/actions/setup-gitnexus
         with:
-          build: 'true'
+          lifecycle-scripts: 'false'
 
       # `npm pack` runs prepack, which builds the web UI into gitnexus/web/
       # so the tarball matches what `npm publish` ships. Install those deps
@@ -431,7 +435,9 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: gitnexus/package-lock.json
+          cache-dependency-path: |
+            gitnexus/package-lock.json
+            gitnexus-shared/package-lock.json
       - name: Build gitnexus-shared
         run: npm ci && npm run build
         working-directory: gitnexus-shared
