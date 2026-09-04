@@ -9,7 +9,8 @@ export const en = {
   'common.error': 'Error: {{message}}',
   'update.available':
     'GitNexus {{latestVersion}} is available (you are running {{installedVersion}}).',
-  'update.current': 'GitNexus {{installedVersion}} is the latest stable version.',
+  'update.current':
+    'GitNexus {{installedVersion}} is current or newer than the latest stable version.',
   'update.installing': 'Installing with {{command}}…',
   'update.installed': 'Installed gitnexus@{{version}}. Restart long-running mcp/serve processes.',
   'update.installFailed': 'npm install failed. You can retry: {{command}}',

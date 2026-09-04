@@ -63,7 +63,31 @@ describe('gitnexus update', () => {
     });
 
     expect(runInstall).not.toHaveBeenCalled();
-    expect(writeStdout).toHaveBeenCalledWith('GitNexus 1.7.0 is the latest stable version.');
+    expect(writeStdout).toHaveBeenCalledWith(
+      'GitNexus 1.7.0 is current or newer than the latest stable version.',
+    );
+    expect(writeStdout).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not install when newer than the registry latest', async () => {
+    setCliLanguage('en');
+    const runInstall = vi.fn();
+    const writeStdout = vi.fn();
+
+    await updateCommand({
+      installedVersion: '1.7.0',
+      refresh: vi.fn().mockResolvedValue({
+        updateAvailable: false,
+        latestVersion: '1.6.10',
+      }),
+      runInstall,
+      writeStdout,
+    });
+
+    expect(runInstall).not.toHaveBeenCalled();
+    expect(writeStdout).toHaveBeenCalledWith(
+      'GitNexus 1.7.0 is current or newer than the latest stable version.',
+    );
     expect(writeStdout).toHaveBeenCalledTimes(1);
   });
 

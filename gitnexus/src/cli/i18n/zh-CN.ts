@@ -12,7 +12,7 @@ export const zhCN = {
   'common.deleted': '已删除：{{target}}',
   'common.error': '错误：{{message}}',
   'update.available': 'GitNexus {{latestVersion}} 已发布（当前运行 {{installedVersion}}）。',
-  'update.current': 'GitNexus {{installedVersion}} 已是最新稳定版。',
+  'update.current': 'GitNexus {{installedVersion}} 已是最新稳定版或不低于该版本。',
   'update.installing': '正在执行 {{command}}…',
   'update.installed': '已安装 gitnexus@{{version}}。请重启仍在运行的 mcp/serve 进程。',
   'update.installFailed': 'npm 安装失败。可重试：{{command}}',
