@@ -14,16 +14,20 @@ import { buildGraphFromConnectResult } from './lib/apply-connect-result';
 import {
   connectToServer,
   fetchRepos,
+  fetchServerInfo,
   normalizeServerUrl,
   connectHeartbeat,
   BackendError,
   type ConnectResult,
   type BackendRepo,
+  type ServerInfo,
 } from './services/backend-client';
 import { ERROR_RESET_DELAY_MS } from './config/ui-constants';
 import { parseSkipGraphParam } from './lib/graph-load-decision';
 import { formatBackendError } from './i18n/error-messages';
 import { useTranslation } from 'react-i18next';
+
+const UPDATE_DISMISSED_VERSION_KEY = 'gitnexus.updateDismissedVersion';
 
 /**
  * Restore-param preference for the auto-connect effect: `repo` carries the
@@ -65,6 +69,36 @@ const AppContent = () => {
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
   const [serverDisconnected, setServerDisconnected] = useState(false);
+  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
+  const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(UPDATE_DISMISSED_VERSION_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const wasDisconnectedRef = useRef(false);
+
+  const refreshServerInfo = useCallback(async (): Promise<void> => {
+    setServerInfo(null);
+    try {
+      setServerInfo(await fetchServerInfo());
+    } catch {
+      // Update state is informational; unavailable server info must not affect the app.
+      setServerInfo(null);
+    }
+  }, []);
+
+  const dismissUpdate = useCallback(() => {
+    const latestVersion = serverInfo?.latestVersion;
+    if (!latestVersion) return;
+    setDismissedUpdateVersion(latestVersion);
+    try {
+      localStorage.setItem(UPDATE_DISMISSED_VERSION_KEY, latestVersion);
+    } catch {
+      // The in-memory dismissal still applies when storage is unavailable.
+    }
+  }, [serverInfo?.latestVersion]);
 
   const handleServerConnect = useCallback(
     async (result: ConnectResult): Promise<void> => {
@@ -202,6 +236,7 @@ const AppContent = () => {
         // anyway" button) and then awaits agent init, leaving a window where
         // loadGraphAnyway would silently no-op on a still-null serverBaseUrl.
         setServerBaseUrl(baseUrl);
+        void refreshServerInfo();
         await handleServerConnect(result);
         setProgress(null);
         fetchRepos()
@@ -221,7 +256,14 @@ const AppContent = () => {
           setProgress(null);
         }, ERROR_RESET_DELAY_MS);
       });
-  }, [handleServerConnect, setProgress, setViewMode, setServerBaseUrl, setAvailableRepos]);
+  }, [
+    handleServerConnect,
+    refreshServerInfo,
+    setProgress,
+    setViewMode,
+    setServerBaseUrl,
+    setAvailableRepos,
+  ]);
 
   const handleFocusNode = useCallback((nodeId: string) => {
     graphCanvasRef.current?.focusNode(nodeId);
@@ -242,12 +284,21 @@ const AppContent = () => {
     if (viewMode !== 'exploring') return;
 
     const cleanup = connectHeartbeat(
-      () => setServerDisconnected(false),
-      () => setServerDisconnected(true),
+      () => {
+        setServerDisconnected(false);
+        if (wasDisconnectedRef.current) {
+          wasDisconnectedRef.current = false;
+          void refreshServerInfo();
+        }
+      },
+      () => {
+        wasDisconnectedRef.current = true;
+        setServerDisconnected(true);
+      },
     );
 
     return cleanup;
-  }, [viewMode]);
+  }, [viewMode, refreshServerInfo]);
 
   // Render based on view mode
   if (viewMode === 'onboarding') {
@@ -257,6 +308,7 @@ const AppContent = () => {
           // Refresh repo list before transitioning so it's ready in the header
           const repos = await fetchRepos().catch(() => [] as BackendRepo[]);
           setAvailableRepos(repos);
+          void refreshServerInfo();
           await handleServerConnect(result);
           setProgress(null);
           if (serverUrl) {
@@ -348,6 +400,32 @@ const AppContent = () => {
           {t('errors:backend.reconnecting')}
         </div>
       )}
+
+      {!serverDisconnected &&
+        serverInfo?.updateAvailable === true &&
+        !!serverInfo.latestVersion &&
+        dismissedUpdateVersion !== serverInfo.latestVersion && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="fixed bottom-12 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-accent/30 bg-surface/95 px-4 py-2 text-sm text-text-primary shadow-lg backdrop-blur"
+          >
+            <span>
+              {t('common:updateBanner', {
+                latest: serverInfo.latestVersion,
+                installed: serverInfo.version,
+              })}
+            </span>
+            <button
+              type="button"
+              onClick={dismissUpdate}
+              aria-label={t('common:updateBannerDismiss')}
+              className="rounded px-2 py-1 text-text-secondary hover:bg-white/10 hover:text-text-primary focus-visible:ring-2 focus-visible:ring-accent focus-visible:outline-none"
+            >
+              {t('common:actions.dismiss')}
+            </button>
+          </div>
+        )}
 
       {/* Settings Panel (modal) */}
       <SettingsPanel
