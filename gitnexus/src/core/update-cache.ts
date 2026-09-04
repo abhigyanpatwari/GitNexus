@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getGlobalDir } from '../storage/global-dir.js';
-import { isProcessAlive } from '../utils/process-identity.js';
+import { isProcessAlive, readProcessStartTime } from '../utils/process-identity.js';
 
 export const UPDATE_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 export const STRICT_UPDATE_VERSION = /^\d+\.\d+\.\d+$/;
@@ -81,7 +81,9 @@ function buildUpdateRegistry(rawRegistry: string): { identity: string; packageUr
 
   const pathname = parsed.pathname === '/' ? '' : parsed.pathname;
   const identity = `${parsed.protocol}//${parsed.host}${pathname}`;
-  const packagePath = `${pathname}/gitnexus`.replace(/\/{2,}/g, '/');
+  // `/<pkg>/latest` is the small dist-tag document. The full packument at
+  // `/<pkg>` is multi-megabyte on this package and cannot fit the fetch cap.
+  const packagePath = `${pathname}/gitnexus/latest`.replace(/\/{2,}/g, '/');
   return { identity, packageUrl: `${parsed.protocol}//${parsed.host}${packagePath}` };
 }
 
@@ -104,10 +106,19 @@ export function updateRefreshInProgress(env: NodeJS.ProcessEnv = process.env): b
     const owner = JSON.parse(fs.readFileSync(updateCheckLockPath(env), 'utf8')) as {
       pid?: unknown;
       hostname?: unknown;
+      processStartTime?: unknown;
     };
     if (typeof owner.pid !== 'number' || owner.pid <= 0) return false;
     if (owner.hostname !== os.hostname()) return false;
-    return isProcessAlive(owner.pid);
+    if (!isProcessAlive(owner.pid)) return false;
+    // Same rule as acquireFileLock: a live PID with a different start time is
+    // reuse, not the lock owner. Unreadable start time stays conservative
+    // (treat as in progress) so we don't spawn a racing child.
+    if (typeof owner.processStartTime === 'string' && owner.processStartTime) {
+      const currentStartTime = readProcessStartTime(owner.pid);
+      if (currentStartTime && currentStartTime !== owner.processStartTime) return false;
+    }
+    return true;
   } catch {
     return false;
   }

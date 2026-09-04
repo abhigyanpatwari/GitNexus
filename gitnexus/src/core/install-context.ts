@@ -2,7 +2,8 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 
-const EPHEMERAL_SEGMENTS = new Set(['_npx', '_cacache', 'dlx']);
+const EPHEMERAL_SEGMENTS = new Set(['_npx', '_cacache']);
+const EPHEMERAL_DLX_OWNERS = new Set(['pnpm', 'yarn']);
 
 function isInside(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);
@@ -13,6 +14,11 @@ function hasEphemeralMarker(candidate: string): boolean {
   const normalized = candidate.replaceAll('\\', '/').toLowerCase();
   const segments = normalized.split('/').filter(Boolean);
   if (segments.some((segment) => EPHEMERAL_SEGMENTS.has(segment))) return true;
+  // `dlx` is only ephemeral next to a package-manager owner (pnpm dlx / yarn
+  // dlx). A project directory that happens to be named `dlx` is a normal install.
+  if (segments.includes('dlx') && segments.some((segment) => EPHEMERAL_DLX_OWNERS.has(segment))) {
+    return true;
+  }
   return normalized.includes('/.bun/install/cache/') || normalized.includes('/bun/install/cache/');
 }
 

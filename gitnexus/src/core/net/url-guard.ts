@@ -116,8 +116,9 @@ function assertNotPrivateIPv6(ip: string): void {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 
-  // Also catch the expanded form: 0:0:0:0:0:ffff:
-  if (lower.includes(':ffff:')) {
+  // Expanded IPv4-mapped form only (0:0:0:0:0:ffff:…). A public address that
+  // merely contains a `ffff` hextet is not mapped.
+  if (lower.startsWith('0:0:0:0:0:ffff:')) {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
 

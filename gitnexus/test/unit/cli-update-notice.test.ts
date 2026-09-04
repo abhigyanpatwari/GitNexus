@@ -1,19 +1,24 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   runCliUpdateNotice,
   type CliUpdateNoticeDependencies,
 } from '../../src/cli/update-notice.js';
 import { cachedUpdateDoctorLine } from '../../src/cli/doctor.js';
+import { setCliLanguage } from '../../src/cli/i18n/index.js';
+import { readProcessStartTime } from '../../src/utils/process-identity.js';
+
+const tempHomes: string[] = [];
 
 function dependencies(
   overrides: Partial<CliUpdateNoticeDependencies> = {},
 ): CliUpdateNoticeDependencies {
   // Isolate the refresh-lock probe from the real GITNEXUS_HOME.
   const gitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'update-notice-test-'));
+  tempHomes.push(gitnexusHome);
   return {
     argv: ['/usr/bin/node', '/prefix/lib/node_modules/gitnexus/dist/cli/index.js', 'status'],
     env: { GITNEXUS_HOME: gitnexusHome },
@@ -33,6 +38,17 @@ function dependencies(
 }
 
 describe('CLI cached update notice', () => {
+  beforeEach(() => {
+    setCliLanguage('en');
+  });
+
+  afterEach(() => {
+    setCliLanguage(null);
+    for (const dir of tempHomes.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('writes exactly one localized line to stderr for a TTY and keeps stdout untouched', () => {
     const writeStderr = vi.fn();
     const stdoutWrite = vi.spyOn(process.stdout, 'write');
@@ -110,7 +126,7 @@ describe('CLI cached update notice', () => {
     const lockPath = path.join(deps.env.GITNEXUS_HOME as string, 'update-check.lock');
     fs.writeFileSync(
       lockPath,
-      `${JSON.stringify({ pid: process.pid, ownerId: 'test', processStartTime: 'x', hostname: os.hostname() })}\n`,
+      `${JSON.stringify({ pid: process.pid, ownerId: 'test', processStartTime: readProcessStartTime(process.pid), hostname: os.hostname() })}\n`,
     );
 
     runCliUpdateNotice(deps);
@@ -118,6 +134,22 @@ describe('CLI cached update notice', () => {
     // The live holder's refresh covers this invocation.
     expect(deps.spawn).not.toHaveBeenCalled();
     // Display from the stale-but-valid cache is unaffected.
+    expect(deps.writeStderr).toHaveBeenCalledOnce();
+  });
+
+  it('spawns when a live PID is reuse with a different process start time', () => {
+    const deps = dependencies({
+      readCache: vi.fn(() => ({ lastCheckAt: 0, latestVersion: '1.7.0', stale: true })),
+    });
+    const lockPath = path.join(deps.env.GITNEXUS_HOME as string, 'update-check.lock');
+    fs.writeFileSync(
+      lockPath,
+      `${JSON.stringify({ pid: process.pid, ownerId: 'reused', processStartTime: 'not-this-process', hostname: os.hostname() })}\n`,
+    );
+
+    runCliUpdateNotice(deps);
+
+    expect(deps.spawn).toHaveBeenCalledOnce();
     expect(deps.writeStderr).toHaveBeenCalledOnce();
   });
 
@@ -228,6 +260,14 @@ describe('CLI cached update notice', () => {
 });
 
 describe('doctor cached update line', () => {
+  beforeEach(() => {
+    setCliLanguage('en');
+  });
+
+  afterEach(() => {
+    setCliLanguage(null);
+  });
+
   it('shows installed and latest versions from cache without triggering refresh', () => {
     const readCache = vi.fn(() => ({
       lastCheckAt: 0,

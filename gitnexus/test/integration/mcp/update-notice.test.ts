@@ -202,6 +202,13 @@ describe('MCP process update notice', () => {
     ).resolves.toBeUndefined();
 
     await expect(
+      startMcpUpdateNotifier({ info: vi.fn() }, async () => ({
+        evaluate: vi.fn().mockRejectedValue(new Error('evaluation failed')),
+        armUpdateRefreshScheduler: vi.fn(() => () => {}),
+      })),
+    ).resolves.toBeUndefined();
+
+    await expect(
       startMcpUpdateNotifier(
         {
           info: vi.fn(() => {
@@ -209,12 +216,22 @@ describe('MCP process update notice', () => {
           }),
         },
         async () => ({
-          evaluate: vi.fn().mockRejectedValue(new Error('evaluation failed')),
-          armUpdateRefreshScheduler: vi.fn(() => {
-            throw new Error('scheduler failed');
+          evaluate: vi.fn().mockResolvedValue({
+            updateAvailable: true,
+            latestVersion: '12.0.0',
           }),
+          armUpdateRefreshScheduler: vi.fn(() => () => {}),
         }),
       ),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      startMcpUpdateNotifier({ info: vi.fn() }, async () => ({
+        evaluate: vi.fn().mockResolvedValue(null),
+        armUpdateRefreshScheduler: vi.fn(() => {
+          throw new Error('scheduler failed');
+        }),
+      })),
     ).resolves.toBeUndefined();
   });
 

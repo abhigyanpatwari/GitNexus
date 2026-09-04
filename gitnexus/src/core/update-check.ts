@@ -183,9 +183,12 @@ async function fetchLatest(packageUrl: string): Promise<string> {
       throw new Error(`Registry returned ${response.status}`);
     }
     const parsed = JSON.parse(await readResponseBody(response)) as {
+      version?: unknown;
       'dist-tags'?: { latest?: unknown };
     };
-    const latest = parsed['dist-tags']?.latest;
+    const latest =
+      (typeof parsed.version === 'string' ? parsed.version : undefined) ??
+      (typeof parsed['dist-tags']?.latest === 'string' ? parsed['dist-tags'].latest : undefined);
     if (typeof latest !== 'string' || !STRICT_UPDATE_VERSION.test(latest)) {
       throw new Error('Registry latest version is invalid');
     }

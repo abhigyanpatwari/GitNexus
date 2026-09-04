@@ -37,7 +37,7 @@ async function readCache(home: string): Promise<Record<string, unknown>> {
 }
 
 function registryResponse(version = '1.7.0'): Response {
-  return new Response(JSON.stringify({ 'dist-tags': { latest: version } }), {
+  return new Response(JSON.stringify({ version }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
@@ -45,6 +45,10 @@ function registryResponse(version = '1.7.0'): Response {
 
 beforeEach(() => {
   vi.stubEnv('npm_config_registry', REGISTRY);
+  // GitHub Actions sets CI=true; the checker treats that as a hard opt-out.
+  vi.stubEnv('CI', '');
+  vi.stubEnv('GITNEXUS_NO_UPDATE_NOTIFIER', '');
+  vi.stubEnv('NO_UPDATE_NOTIFIER', '');
 });
 
 afterEach(async () => {
@@ -137,6 +141,7 @@ describe('update check cache and versions', () => {
 
     await evaluate({ eligible: true, installedVersion: '1.6.10', now: NOW });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await vi.waitFor(async () => expect((await readCache(home)).latestVersion).toBe('1.7.0'));
   });
 
   it('writes a negative entry after failure and suppresses retries inside the TTL', async () => {
@@ -296,7 +301,7 @@ describe('hardened registry request', () => {
     await refresh({ eligible: true, now: NOW });
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://registry.example.test/custom/gitnexus');
+    expect(url).toBe('https://registry.example.test/custom/gitnexus/latest');
     expect(url).not.toContain('user');
     expect(new Headers(init.headers).has('authorization')).toBe(false);
   });
@@ -442,6 +447,9 @@ describe('updateEligibleInstall', () => {
 
     const local = await entry('project/node_modules/gitnexus/dist/cli/index.js');
     expect(await updateEligibleInstall(local.entry, {})).toBe(true);
+
+    const namedDlx = await entry('dlx/project/node_modules/gitnexus/dist/cli/index.js');
+    expect(await updateEligibleInstall(namedDlx.entry, {})).toBe(true);
 
     for (const relative of [
       'cache/_npx/123/node_modules/gitnexus/dist/cli/index.js',

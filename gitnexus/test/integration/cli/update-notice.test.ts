@@ -29,18 +29,26 @@ function seededCache(home: string): string {
   return file;
 }
 
+function localeEnv(home: string): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GITNEXUS_HOME: home,
+    CI: '',
+    GITNEXUS_NO_UPDATE_NOTIFIER: '',
+    NO_UPDATE_NOTIFIER: '',
+    GITNEXUS_LANG: 'en',
+    LC_ALL: '',
+    LC_MESSAGES: '',
+    LANG: 'C',
+  };
+}
+
 function cli(args: string[], home: string) {
   return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      GITNEXUS_HOME: home,
-      CI: '',
-      GITNEXUS_NO_UPDATE_NOTIFIER: '',
-      NO_UPDATE_NOTIFIER: '',
-    },
+    env: localeEnv(home),
   });
 }
 
@@ -51,18 +59,19 @@ afterEach(() => {
 });
 
 describe('CLI update notice subprocess behavior', () => {
-  it('keeps non-TTY stdout byte-clean and neither emits nor spawns a refresh child', async () => {
+  it('keeps non-TTY stdout byte-clean and neither emits nor spawns a refresh child', () => {
     const home = tempHome();
     const cache = seededCache(home);
     const before = fs.readFileSync(cache, 'utf8');
 
-    const result = cli(['--version'], home);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // `list` is a normal command (not --version/--help, which skip the notifier).
+    const result = cli(['list'], home);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe('1.6.10\n');
-    expect(result.stderr).toBe('');
+    expect(result.stderr).not.toContain('is available');
+    expect(result.stdout).not.toContain('99.0.0 is available');
     expect(fs.readFileSync(cache, 'utf8')).toBe(before);
+    expect(fs.existsSync(path.join(home, 'update-check.lock'))).toBe(false);
   });
 
   it('keeps help output unchanged and hides the internal refresh command', () => {
@@ -105,7 +114,7 @@ describe('CLI update notice subprocess behavior', () => {
       `Object.defineProperty(process.stderr, 'isTTY', { value: true, configurable: true });
 globalThis.fetch = async () => {
   await new Promise((resolve) => setTimeout(resolve, 750));
-  return new Response(JSON.stringify({ 'dist-tags': { latest: '99.0.0' } }), {
+  return new Response(JSON.stringify({ version: '99.0.0' }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
@@ -122,11 +131,7 @@ globalThis.fetch = async () => {
           cwd: project,
           stdio: 'ignore',
           env: {
-            ...process.env,
-            CI: '',
-            GITNEXUS_HOME: home,
-            GITNEXUS_NO_UPDATE_NOTIFIER: '',
-            NO_UPDATE_NOTIFIER: '',
+            ...localeEnv(home),
             NODE_OPTIONS:
               `--import ${tsxLoaderUrl()} --import ${pathToFileURL(preload).href}`.trim(),
           },
@@ -190,11 +195,7 @@ globalThis.fetch = async () => {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
         env: {
-          ...process.env,
-          CI: '',
-          GITNEXUS_HOME: home,
-          GITNEXUS_NO_UPDATE_NOTIFIER: '',
-          NO_UPDATE_NOTIFIER: '',
+          ...localeEnv(home),
           NODE_OPTIONS: `--import ${tsxLoaderUrl()} --import ${pathToFileURL(preload).href}`.trim(),
         },
       },
