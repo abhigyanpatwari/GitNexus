@@ -254,13 +254,30 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
         allow_primary_worktree_symlink=True,
     )
     primary = _primary_checkout_root(HARNESS_ROOT)
-    if primary is not None and node_modules.source == (primary / "gitnexus" / "node_modules"):
-        # Reused primary node_modules still symlink to that checkout's shared
-        # package. Mount the same tree or the sandbox inner link is a host path.
-        shared = _validated_runtime_root(
-            primary / "gitnexus-shared",
-            label="primary GitNexus shared runtime",
-        )
+    if primary is not None:
+        try:
+            primary_shared = _validated_runtime_root(
+                primary / "gitnexus-shared",
+                label="primary GitNexus shared runtime",
+            )
+        except SandboxError:
+            primary_shared = None
+        else:
+            reuse_primary_shared = node_modules.source == (primary / "gitnexus" / "node_modules")
+            if not reuse_primary_shared:
+                linked_shared = node_modules.source / "gitnexus-shared"
+                try:
+                    reuse_primary_shared = (
+                        linked_shared.is_symlink()
+                        and linked_shared.resolve(strict=True) == primary_shared
+                    )
+                except OSError:
+                    reuse_primary_shared = False
+            if reuse_primary_shared:
+                # Reused primary node_modules (or its inner gitnexus-shared
+                # link) still points at that checkout. Mount the same tree or
+                # the sandbox inner link is a host path.
+                shared = primary_shared
     mounts = (
         _validated_runtime_component(
             runtime,

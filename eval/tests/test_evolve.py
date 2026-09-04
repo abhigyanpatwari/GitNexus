@@ -576,6 +576,7 @@ def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(m
     transcript_projects.mkdir()
     captured: dict[str, object] = {}
     sanitized: list[Path] = []
+    events: list[str] = []
 
     def fake_make_worktree(_repo, _ref, destination):
         clone = destination / "clone"
@@ -583,6 +584,7 @@ def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(m
         return clone
 
     def fake_sanitize(clone):
+        events.append("sanitize")
         sanitized.append(clone)
         return "0" * 40
 
@@ -597,6 +599,7 @@ def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(m
 
     @contextmanager
     def fake_prepare_sandbox(**_kwargs):
+        events.append("prepare")
         yield FakeSandbox()
 
     def fake_run_claude(*_args, **kwargs):
@@ -622,6 +625,7 @@ def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(m
     assert record["ok"] is False
     # Sanitization has to happen on the clone the session actually runs in,
     # and before the sandbox is prepared around it.
+    assert events[:2] == ["sanitize", "prepare"]
     assert [clone.name for clone in sanitized] == ["clone"]
     # Not --bare: bare ignores --tools and would cost the proposer Grep/Glob.
     assert captured.get("bare", False) is False

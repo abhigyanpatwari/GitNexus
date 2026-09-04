@@ -897,13 +897,15 @@ def _drop_host_workspace_write_bits(
         if stat.S_ISLNK(metadata.st_mode):
             continue
         if stat.S_ISDIR(metadata.st_mode):
+            if current in allowed:
+                # Match bwrap: a writable directory bind keeps its children writable.
+                continue
             try:
                 children = [Path(entry.path) for entry in os.scandir(current)]
             except OSError as exc:
                 raise SandboxError(f"host workspace lock directory is unreadable: {current}: {exc}") from exc
             pending.extend(children)
-            if current not in allowed:
-                os.chmod(current, 0o500)
+            os.chmod(current, 0o500)
             continue
         if current in allowed:
             os.chmod(current, stat.S_IMODE(metadata.st_mode) | 0o222)

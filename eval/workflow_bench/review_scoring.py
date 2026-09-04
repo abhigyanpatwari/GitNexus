@@ -191,6 +191,69 @@ def _match_score(actual: ReviewFinding, expected: ExpectedFinding) -> tuple[int,
     return category, severity, -distance
 
 
+def _greedy_pairs(
+    candidates: list[tuple[tuple[int, int, int, int, str, str, int], int, int]],
+) -> list[tuple[int, int]]:
+    matched_actual: set[int] = set()
+    matched_expected: set[int] = set()
+    pairs: list[tuple[int, int]] = []
+    for _score, actual_index, expected_index in candidates:
+        if actual_index in matched_actual or expected_index in matched_expected:
+            continue
+        matched_actual.add(actual_index)
+        matched_expected.add(expected_index)
+        pairs.append((actual_index, expected_index))
+    return pairs
+
+
+def _assign_pairs(
+    candidates: list[tuple[tuple[int, int, int, int, str, str, int], int, int]],
+) -> list[tuple[int, int]]:
+    """Maximum-cardinality assignment; remaining ties follow candidate rank."""
+
+    if not candidates:
+        return []
+    actual_ids = sorted({actual_index for _score, actual_index, _expected_index in candidates})
+    expected_ids = sorted({expected_index for _score, _actual_index, expected_index in candidates})
+    if len(actual_ids) > 16 or len(expected_ids) > 16:
+        return _greedy_pairs(candidates)
+
+    actual_pos = {actual_index: index for index, actual_index in enumerate(actual_ids)}
+    expected_pos = {expected_index: index for index, expected_index in enumerate(expected_ids)}
+    edges: dict[int, list[tuple[tuple[int, int, int, int, str, str, int], int]]] = {}
+    for score, actual_index, expected_index in candidates:
+        edges.setdefault(actual_pos[actual_index], []).append((score, expected_pos[expected_index]))
+
+    memo: dict[tuple[int, int], tuple[int, tuple, tuple[tuple[int, int], ...]]] = {}
+
+    def search(index: int, mask: int) -> tuple[int, tuple, tuple[tuple[int, int], ...]]:
+        key = (index, mask)
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
+        if index == len(actual_ids):
+            empty: tuple[int, tuple, tuple[tuple[int, int], ...]] = (0, (), ())
+            memo[key] = empty
+            return empty
+        best = search(index + 1, mask)
+        for score, expected_pos_index in edges.get(index, ()):
+            bit = 1 << expected_pos_index
+            if mask & bit:
+                continue
+            card, scores, pairs = search(index + 1, mask | bit)
+            candidate = (
+                card + 1,
+                (score, *scores),
+                ((actual_ids[index], expected_ids[expected_pos_index]), *pairs),
+            )
+            if candidate[0] > best[0] or (candidate[0] == best[0] and candidate[1] > best[1]):
+                best = candidate
+        memo[key] = best
+        return best
+
+    return list(search(0, 0)[2])
+
+
 def score_review(
     verdict: str,
     actual: Sequence[ReviewFinding],
@@ -212,15 +275,9 @@ def score_review(
                     )
                 )
     candidates.sort(reverse=True)
-    matched_actual: set[int] = set()
-    matched_expected: set[int] = set()
-    pairs: list[tuple[int, int]] = []
-    for _score, actual_index, expected_index in candidates:
-        if actual_index in matched_actual or expected_index in matched_expected:
-            continue
-        matched_actual.add(actual_index)
-        matched_expected.add(expected_index)
-        pairs.append((actual_index, expected_index))
+    pairs = _assign_pairs(candidates)
+    matched_actual = {actual_index for actual_index, _expected_index in pairs}
+    matched_expected = {expected_index for _actual_index, expected_index in pairs}
 
     tp = len(pairs)
     fp = len(actual) - tp

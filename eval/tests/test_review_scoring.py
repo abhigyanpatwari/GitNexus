@@ -200,6 +200,45 @@ def test_score_review_is_independent_of_finding_list_order():
     assert forward["weighted_f1"] == reverse["weighted_f1"]
 
 
+def test_score_review_prefers_maximum_cardinality_over_greedy_category_match():
+    expected_labels = (
+        expected(finding_id="broad", line_start=1, line_end=10, category="a"),
+        expected(finding_id="tight", line_start=1, line_end=1, category="b"),
+    )
+    actual = (
+        ReviewFinding(
+            finding_id="actual-1",
+            severity="high",
+            path="src/api.ts",
+            line=1,
+            end_line=1,
+            category="a",
+            scenario="s",
+            evidence="e",
+            recommendation="r",
+            blocking=True,
+        ),
+        ReviewFinding(
+            finding_id="actual-2",
+            severity="high",
+            path="src/api.ts",
+            line=10,
+            end_line=10,
+            category="b",
+            scenario="s",
+            evidence="e",
+            recommendation="r",
+            blocking=True,
+        ),
+    )
+
+    score = score_review("request_changes", actual, expected_labels)
+
+    assert score["true_positives"] == 2
+    assert score["false_positives"] == 0
+    assert score["false_negatives"] == 0
+
+
 def test_clean_control_rewards_an_empty_approval_and_penalizes_noise():
     clean = score_review("approve", (), ())
     noisy = score_review(

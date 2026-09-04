@@ -300,6 +300,18 @@ def test_phase_workspace_ignores_claude_sandbox_bootstrap_noise(tmp_path):
     runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
 
 
+def test_phase_workspace_records_a_root_scripts_symlink(tmp_path):
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    target = tmp_path / "helper.py"
+    target.write_text("planted\n")
+    (tmp_path / "scripts").symlink_to(target)
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    with pytest.raises(ValueError, match="unauthorized workspace path"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
 def test_phase_workspace_still_rejects_writes_under_scripts(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()

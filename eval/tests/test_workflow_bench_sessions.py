@@ -472,6 +472,31 @@ def test_runtime_mounts_reuse_primary_checkout_node_modules_from_a_worktree(
     assert by_target[f"{runner.SANDBOX_GITNEXUS}/dist"] == worktree / "gitnexus" / "dist"
 
 
+def test_runtime_mounts_reuse_primary_shared_when_only_the_inner_link_points_there(
+    monkeypatch, tmp_path
+) -> None:
+    primary = tmp_path / "primary"
+    worktree = tmp_path / "worktree"
+    _install_pinned_runtime(primary)
+    (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    _install_pinned_runtime(worktree)
+    linked = worktree / "gitnexus" / "node_modules" / "gitnexus-shared"
+    linked.unlink()
+    linked.symlink_to(primary / "gitnexus-shared", target_is_directory=True)
+    (worktree / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n")
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", worktree)
+
+    mounts = runner.trusted_gitnexus_runtime_mounts()
+    by_target = {mount.target: mount.source for mount in mounts}
+
+    assert by_target[f"{runner.SANDBOX_GITNEXUS}/node_modules"] == (
+        worktree / "gitnexus" / "node_modules"
+    )
+    assert by_target[f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"] == (
+        primary / "gitnexus-shared" / "package.json"
+    )
+
+
 def test_runtime_mounts_reject_a_node_modules_symlink_outside_the_primary_checkout(
     monkeypatch, tmp_path
 ) -> None:

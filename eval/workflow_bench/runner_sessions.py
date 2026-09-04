@@ -71,9 +71,9 @@ def _tool_preview(value: Any, secrets: Sequence[str]) -> str:
     """Render one bounded, redacted, single-line tool payload preview."""
 
     try:
-        raw = json.dumps(value, ensure_ascii=True, separators=(",", ":"), default=str)
+        raw = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
     except (TypeError, ValueError):
-        raw = json.dumps(str(value), ensure_ascii=True)
+        raw = json.dumps(str(value), ensure_ascii=False)
     redacted = redact_text(raw, secrets)
     if len(redacted) <= MAX_TOOL_PREVIEW_CHARS:
         return redacted

@@ -233,6 +233,26 @@ def test_progress_sanitizes_a_hostile_tool_name() -> None:
     assert len(_drain_lines(stream)) == 1
 
 
+def test_progress_redacts_non_ascii_secrets_before_json_escaping() -> None:
+    stream = io.StringIO()
+    secret = "tokén-密码"
+    progress = SessionProgress("flow", stream=stream, heartbeat_s=3600, secrets=(secret,))
+    event = {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "Grep", "input": {"token": secret}},
+            ]
+        },
+    }
+    _observe(progress, (json.dumps(event, ensure_ascii=False) + "\n").encode())
+
+    output = stream.getvalue()
+    assert secret not in output
+    assert json.dumps(secret)[1:-1] not in output
+    assert "[REDACTED]" in output
+
+
 def test_cell_failure_detail_line_explains_why_a_cell_failed() -> None:
     from workflow_bench.runner import cell_failure_detail_line
 

@@ -143,6 +143,25 @@ def test_host_workspace_write_boundary_keeps_only_the_review_artifact_writable(t
     assert stat.S_IMODE(output.stat().st_mode) == original_output_mode
 
 
+def test_host_workspace_write_boundary_keeps_files_under_an_allowed_directory(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    artifacts = clone / "artifacts"
+    artifacts.mkdir(parents=True)
+    existing = artifacts / "review-output.json"
+    existing.write_text("{}\n")
+    (clone / "src").mkdir()
+    locked = clone / "src" / "source.ts"
+    locked.write_text("trusted\n")
+
+    with host_workspace_write_boundary(clone, writable=(artifacts,)):
+        existing.write_text('{"schema_version":1}\n')
+        with pytest.raises(OSError):
+            locked.write_text("tampered\n")
+
+    assert existing.read_text() == '{"schema_version":1}\n'
+    assert locked.read_text() == "trusted\n"
+
+
 def test_host_workspace_write_boundary_rejects_a_symlinked_writable_artifact(tmp_path) -> None:
     clone = tmp_path / "clone"
     clone.mkdir()

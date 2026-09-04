@@ -122,14 +122,20 @@ class VerificationResult:
         yield self.output
 
 
-def _is_bootstrap_noise(relative: PurePosixPath, *, is_dir: bool = False) -> bool:
+def _is_bootstrap_noise(
+    relative: PurePosixPath,
+    *,
+    is_dir: bool = False,
+    is_file: bool = False,
+) -> bool:
     """Report whether a walked entry is harness noise rather than workspace change."""
 
     parts = relative.parts
     if parts[0] == ".git" or parts[0] in WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE:
         return True
     if (
-        not is_dir
+        is_file
+        and not is_dir
         and len(parts) == 1
         and parts[0] in WORKSPACE_SNAPSHOT_ROOT_FILE_NOISE
     ):
@@ -161,7 +167,11 @@ def workspace_snapshot(worktree: Path) -> dict[str, str]:
             raise ValueError(f"workspace snapshot directory is unreadable: {directory}: {exc}") from exc
         for entry in children:
             relative = relative_dir / entry.name
-            if _is_bootstrap_noise(relative, is_dir=entry.is_dir(follow_symlinks=False)):
+            if _is_bootstrap_noise(
+                relative,
+                is_dir=entry.is_dir(follow_symlinks=False),
+                is_file=entry.is_file(follow_symlinks=False),
+            ):
                 continue
             entry_count += 1
             path_bytes += len(relative.as_posix().encode())
