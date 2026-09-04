@@ -1,11 +1,11 @@
 import fs from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { getGlobalDir } from '../storage/global-dir.js';
 import { writeFileAtomic } from '../storage/fs-atomic.js';
 import { acquireFileLock, FileLockBusyError } from '../storage/file-lock.js';
 import { validateGitUrl } from './net/url-guard.js';
 import { updateEligibleInstall } from './install-context.js';
 import { createLogger } from './logger.js';
+import { packageVersion } from './package-version.js';
 import {
   isNewerVersion,
   isUpdateCacheFresh,
@@ -19,9 +19,6 @@ import {
   type UpdateCacheEntry,
 } from './update-cache.js';
 
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json') as { version?: unknown };
-
 const FETCH_TIMEOUT_MS = 3_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_REDIRECTS = 5;
@@ -31,7 +28,7 @@ const LOCK_BUSY_RETRY_JITTER_MS = 30_000;
 const updateLogger = createLogger('update-check');
 
 function defaultInstalledVersion(): string {
-  return typeof pkg.version === 'string' ? pkg.version : '';
+  return packageVersion();
 }
 
 function nextSchedulerDelay(entry: UpdateCacheEntry | null, now: number): number {
