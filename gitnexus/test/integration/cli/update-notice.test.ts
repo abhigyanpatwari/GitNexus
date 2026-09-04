@@ -9,6 +9,8 @@ import { CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../../helpers/cli-entry.js';
 import { cleanupTempDirSync } from '../../helpers/test-db.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '../../..');
+const installedVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'))
+  .version as string;
 const tempDirs: string[] = [];
 
 function tempHome(): string {
@@ -218,7 +220,9 @@ globalThis.fetch = async () => {
       },
     );
 
-    expect(result.stderr).toContain('GitNexus 99.0.0 is available (you are running 1.6.10).');
+    expect(result.stderr).toContain(
+      `GitNexus 99.0.0 is available (you are running ${installedVersion}).`,
+    );
     expect(result.stdout).not.toContain('99.0.0 is available');
   });
 });
