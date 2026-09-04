@@ -413,6 +413,10 @@ def isolated_gitnexus_registry_mount(worktree: Path, parent: Path) -> ReadOnlyMo
     return ReadOnlyMount(source=registry, target=SANDBOX_GITNEXUS_REGISTRY)
 
 
+def _unchanged(value: Any) -> Any:
+    return value
+
+
 def run_arm(
     arm: str,
     task: dict[str, Any],
@@ -429,7 +433,7 @@ def run_arm(
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
     environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
-    host_text = getattr(sandbox, "host_text", lambda value: value)
+    host_text = getattr(sandbox, "host_text", _unchanged)
     host_path = getattr(sandbox, "host_path", lambda value: str(value))
     backend = getattr(sandbox, "backend", "bwrap")
     env = model_session_environment(
@@ -711,7 +715,9 @@ CHURN_FIELDS = ("diff_files", "diff_insertions", "diff_deletions")
 # Rows where the session (or the harness) died carry no measured evidence and
 # must not skew efficiency medians or resolve denominators. verify-failed and
 # skill-not-invoked rows DO count: those sessions ran and spent real tokens.
-EXCLUDED_ERROR_KINDS = frozenset({"session-error", "infra-error", "evidence-unverified", "cleanup-failure"})
+EXCLUDED_ERROR_KINDS = frozenset(
+    {"session-error", "infra-error", "evidence-unverified", "cleanup-failure", "review-evidence-invalid"}
+)
 
 # A sustained upstream outage shows up as a run of session/infra/cleanup
 # failures. (cleanup-failure overwrites the primary error_kind, so a

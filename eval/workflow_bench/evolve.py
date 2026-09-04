@@ -1288,7 +1288,7 @@ def main() -> int:
     gateway = attach_openai_gateway(args)
     try:
         gateway.__enter__()
-    except ValueError as exc:
+    except (RuntimeError, ValueError) as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
     try:

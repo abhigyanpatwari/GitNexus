@@ -60,10 +60,12 @@ WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE = frozenset(
         "package-lock.json",
         "package.json",
         "pnpm-lock.yaml",
-        "scripts",
         "yarn.lock",
     }
 )
+# Claude Code may drop a workspace-root `scripts` *file* during bootstrap.
+# Only that exact entry is noise — a `scripts/` directory is real workspace.
+WORKSPACE_SNAPSHOT_ROOT_FILE_NOISE = frozenset({"scripts"})
 
 # The set above is matched at the workspace ROOT only, because most of its
 # entries (package.json, node_modules, the .env family) are also legitimate
@@ -120,11 +122,17 @@ class VerificationResult:
         yield self.output
 
 
-def _is_bootstrap_noise(relative: PurePosixPath) -> bool:
+def _is_bootstrap_noise(relative: PurePosixPath, *, is_dir: bool = False) -> bool:
     """Report whether a walked entry is harness noise rather than workspace change."""
 
     parts = relative.parts
     if parts[0] == ".git" or parts[0] in WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE:
+        return True
+    if (
+        not is_dir
+        and len(parts) == 1
+        and parts[0] in WORKSPACE_SNAPSHOT_ROOT_FILE_NOISE
+    ):
         return True
     return len(parts) >= 2 and parts[-2] == CLAUDE_BOOTSTRAP_DIR and parts[-1] in CLAUDE_BOOTSTRAP_ENTRIES
 
@@ -153,7 +161,7 @@ def workspace_snapshot(worktree: Path) -> dict[str, str]:
             raise ValueError(f"workspace snapshot directory is unreadable: {directory}: {exc}") from exc
         for entry in children:
             relative = relative_dir / entry.name
-            if _is_bootstrap_noise(relative):
+            if _is_bootstrap_noise(relative, is_dir=entry.is_dir(follow_symlinks=False)):
                 continue
             entry_count += 1
             path_bytes += len(relative.as_posix().encode())

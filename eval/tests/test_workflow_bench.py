@@ -322,6 +322,36 @@ def test_aggregate_excludes_unverified_transcript_evidence():
     assert agg["excluded_runs"] == 1
 
 
+def test_aggregate_excludes_invalid_review_artifacts_from_quality_metrics():
+    scored = record(
+        cost_usd=1.0,
+        review_weighted_f1=0.8,
+        review_true_positives=2,
+        review_false_positives=0,
+        review_false_negatives=1,
+        review_precision=1.0,
+        review_recall=0.67,
+        review_f1=0.8,
+        review_weighted_precision=0.8,
+        review_weighted_recall=0.8,
+        review_blocker_recall=1.0,
+        review_severity_accuracy=1.0,
+        review_category_accuracy=1.0,
+        review_grounded_evidence=1.0,
+        review_clean_control=False,
+    )
+    agg = aggregate(
+        [
+            scored,
+            record(cost_usd=2.0, resolved=False, error_kind="review-evidence-invalid"),
+        ]
+    )
+    assert agg["valid_runs"] == 1
+    assert agg["excluded_runs"] == 1
+    assert agg["review_weighted_f1"] == 0.8
+    assert agg["review_true_positives"] == 2
+
+
 def test_render_report_surfaces_excluded_and_unverified_runs():
     results = {
         "t": {

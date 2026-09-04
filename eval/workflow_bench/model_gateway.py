@@ -400,7 +400,11 @@ class attach_openai_gateway(AbstractContextManager[argparse.Namespace]):
             model_names=models,
             work_dir=self._work_dir,
         )
-        started = self._gateway.__enter__()
+        try:
+            started = self._gateway.__enter__()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
         self.args.base_url = started.base_url
         self.args.auth_token = started.auth_token
         return self.args
@@ -415,5 +419,7 @@ class attach_openai_gateway(AbstractContextManager[argparse.Namespace]):
                     child.unlink(missing_ok=True)
                 self._work_dir.rmdir()
             except OSError:
+                # Best-effort: a leftover empty work dir must not hide the
+                # original gateway error or block process teardown.
                 pass
             self._work_dir = None

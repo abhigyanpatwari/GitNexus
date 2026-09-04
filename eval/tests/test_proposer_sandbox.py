@@ -143,6 +143,18 @@ def test_host_workspace_write_boundary_keeps_only_the_review_artifact_writable(t
     assert stat.S_IMODE(output.stat().st_mode) == original_output_mode
 
 
+def test_host_workspace_write_boundary_rejects_a_symlinked_writable_artifact(tmp_path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    target = tmp_path / "outside.json"
+    target.write_text("{}\n")
+    output = clone / "review-output.json"
+    output.symlink_to(target)
+    with pytest.raises(SandboxError, match="non-symlink"):
+        with host_workspace_write_boundary(clone, writable=(output,)):
+            pass
+
+
 def test_sandbox_workspace_write_boundary_is_noop_unless_host_unsafe(tmp_path) -> None:
     clone = tmp_path / "clone"
     clone.mkdir()
@@ -178,9 +190,9 @@ def test_force_rmtree_deletes_nonempty_directories_copied_from_a_locked_workspac
     nested = locked / "gitnexus-shared" / "src"
     nested.mkdir(parents=True)
     (nested / "index.ts").write_text("export {}\n")
-    os.chmod(nested, 0o555)
-    os.chmod(locked / "gitnexus-shared", 0o555)
-    os.chmod(locked, 0o555)
+    os.chmod(nested, 0o500)
+    os.chmod(locked / "gitnexus-shared", 0o500)
+    os.chmod(locked, 0o500)
 
     copied = tmp_path / "sandbox-tmp" / "tmp.XXXX" / "gitnexus-shared"
     copied.parent.mkdir(parents=True)
@@ -200,9 +212,9 @@ def test_host_unsafe_sandbox_cleanup_survives_readonly_tmpdir_copies(tmp_path) -
         copied = sandbox.temp / "tmp.XXXX" / "gitnexus-shared" / "src"
         copied.mkdir(parents=True)
         (copied / "index.ts").write_text("export {}\n")
-        os.chmod(copied, 0o555)
-        os.chmod(copied.parent, 0o555)
-        os.chmod(copied.parent.parent, 0o555)
+        os.chmod(copied, 0o500)
+        os.chmod(copied.parent, 0o500)
+        os.chmod(copied.parent.parent, 0o500)
     assert leftover is not None
     assert not leftover.exists()
 

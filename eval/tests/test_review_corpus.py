@@ -23,7 +23,10 @@ def test_review_corpus_is_immutable_and_task_bound():
     for case in manifest["cases"]:
         assert len(case["base_sha"]) == len(case["head_sha"]) == 40
         assert len(case["human_verification_commit"]) == 40
-        patch = BENCH_ROOT / "review_cases" / f"{case['id'].removeprefix('review-')}.patch"
+        patch = BENCH_ROOT / "review_cases" / case["patch"]
+        assert case["patch"]
+        assert "defect" not in case["patch"]
+        assert "clean" not in case["patch"]
         assert hashlib.sha256(patch.read_bytes()).hexdigest() == case["patch_sha256"]
         task = by_id[case["id"]]
         assert task["ref"] == case["base_sha"]
@@ -45,6 +48,8 @@ def test_hidden_labels_are_not_recoverable_from_visible_task_input():
             sort_keys=True,
         )
         assert "review-labels.json" not in visible
+        assert "-defect" not in visible
+        assert "-clean" not in visible
         for oracle_file in task["oracle"]["files"]:
             assert oracle_file["source"] not in visible
             assert oracle_file["target"] == "review-labels.json"

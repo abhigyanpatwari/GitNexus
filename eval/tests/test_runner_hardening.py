@@ -300,6 +300,18 @@ def test_phase_workspace_ignores_claude_sandbox_bootstrap_noise(tmp_path):
     runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
 
 
+def test_phase_workspace_still_rejects_writes_under_scripts(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    (scripts / "helper.py").write_text("planted\n")
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    with pytest.raises(ValueError, match="unauthorized workspace path"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
 def test_phase_workspace_still_rejects_a_genuinely_unauthorized_change(tmp_path):
     # The bootstrap-noise exclusion must stay narrow: an actual source-file
     # edit outside the allowed artifact still has to be caught.

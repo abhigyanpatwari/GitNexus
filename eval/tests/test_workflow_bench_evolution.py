@@ -19,7 +19,7 @@ from workflow_bench.evolution import (
     skill_fingerprint,
     unexercised_overlay_skills,
 )
-from workflow_bench.promotion_apply import MIRROR_SKILL_ROOTS
+from workflow_bench.promotion_apply import mirror_targets
 from workflow_bench.process_control import ManagedProcessResult
 from workflow_bench.runner import aggregate, build_parser
 
@@ -311,6 +311,17 @@ def test_review_gate_rejects_added_false_positives_on_clean_controls():
     )
     assert decision["decision"] == "keep_incumbent"
     assert any("clean control" in reason for reason in decision["reasons"])
+
+
+def test_review_gate_treats_an_empty_corpus_as_insufficient_evidence():
+    decision = evaluate_review_candidate(
+        {},
+        incumbent_arm="review",
+        candidate_arm="candidate_review",
+        model="pinned-model",
+    )
+    assert decision["decision"] == "insufficient_evidence"
+    assert any("no paired review task results" in reason for reason in decision["reasons"])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="candidate overlays require the Linux outer sandbox")
@@ -1010,7 +1021,12 @@ def test_a_promoted_skill_is_visible_to_git_status_in_every_shipped_tree(skill):
     of benchmark spend.
     """
     repo_root = Path(__file__).resolve().parents[2]
-    targets = [f".claude/skills/{skill}"] + [f"{root}/{skill}" for root in MIRROR_SKILL_ROOTS]
+    from pathlib import PurePosixPath
+
+    targets = [
+        str(path.parent)
+        for path in mirror_targets(PurePosixPath(".claude/skills") / skill / "SKILL.md")
+    ]
     ignored = [
         target
         for target in targets

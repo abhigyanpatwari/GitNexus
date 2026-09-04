@@ -29,7 +29,7 @@ def test_prebuilt_graph_and_harness_assets_are_rejected(task):
 
 def test_review_case_patches_are_allowed_sandbox_copy():
     sanitized_graph.validate_no_prebuilt_graph_assets(
-        {"sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718-defect.patch"]}
+        {"sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718.patch"]}
     )
 
 
@@ -41,7 +41,7 @@ def test_review_case_patches_are_allowed_sandbox_copy():
         {
             "sandbox_dependencies": [
                 {
-                    "source": "eval/workflow_bench/review_cases/pr-2718-defect.patch",
+                    "source": "eval/workflow_bench/review_cases/pr-2718.patch",
                     "target": "patch",
                 }
             ]

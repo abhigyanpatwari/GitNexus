@@ -1251,7 +1251,7 @@ def test_promotion_apply_requires_one_promote_for_every_bound_arm():
         ),
     ],
 )
-def test_promotion_apply_binds_the_schema_4_gate_evidence(overrides, match):
+def test_promotion_apply_binds_the_schema_5_gate_evidence(overrides, match):
     decision = promote_decision()
     for field, value in overrides.items():
         if value is None:

@@ -467,7 +467,7 @@ def test_runtime_mounts_reuse_primary_checkout_node_modules_from_a_worktree(
         primary / "gitnexus" / "node_modules"
     )
     assert by_target[f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"] == (
-        worktree / "gitnexus-shared" / "package.json"
+        primary / "gitnexus-shared" / "package.json"
     )
     assert by_target[f"{runner.SANDBOX_GITNEXUS}/dist"] == worktree / "gitnexus" / "dist"
 

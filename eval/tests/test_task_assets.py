@@ -452,18 +452,18 @@ def test_review_case_sandbox_copy_is_read_from_the_harness_not_the_task_repo(
     repo.mkdir()
     (repo / "eval" / "workflow_bench").mkdir(parents=True)
     harness = tmp_path / "harness"
-    patch = harness / "eval" / "workflow_bench" / "review_cases" / "pr-2718-defect.patch"
+    patch = harness / "eval" / "workflow_bench" / "review_cases" / "pr-2718.patch"
     patch.parent.mkdir(parents=True)
     patch.write_bytes(b"diff --git a/a b/a\n")
     monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", harness)
 
     task = {
-        "sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718-defect.patch"],
+        "sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718.patch"],
         "sandbox_dependencies": [],
     }
     with TaskAssetCache(tmp_path / "cache") as cache:
         snapshot = cache.prepare(task, repo=repo, resolved_sha=SHA)
-        copied = snapshot.root / "sandbox-copy" / "eval" / "workflow_bench" / "review_cases" / "pr-2718-defect.patch"
+        copied = snapshot.root / "sandbox-copy" / "eval" / "workflow_bench" / "review_cases" / "pr-2718.patch"
         assert copied.read_bytes() == b"diff --git a/a b/a\n"
 
 
@@ -471,7 +471,7 @@ def test_review_case_sandbox_copy_does_not_fall_back_to_the_task_repo(
     monkeypatch, tmp_path: Path
 ) -> None:
     repo = tmp_path / "task-repo"
-    planted = repo / "eval" / "workflow_bench" / "review_cases" / "pr-2718-defect.patch"
+    planted = repo / "eval" / "workflow_bench" / "review_cases" / "pr-2718.patch"
     planted.parent.mkdir(parents=True)
     planted.write_bytes(b"from-task-repo")
     harness = tmp_path / "harness"
@@ -479,7 +479,7 @@ def test_review_case_sandbox_copy_does_not_fall_back_to_the_task_repo(
     monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", harness)
 
     task = {
-        "sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718-defect.patch"],
+        "sandbox_copy": ["eval/workflow_bench/review_cases/pr-2718.patch"],
         "sandbox_dependencies": [],
     }
     with TaskAssetCache(tmp_path / "cache") as cache:

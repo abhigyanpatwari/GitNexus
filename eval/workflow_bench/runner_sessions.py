@@ -150,11 +150,13 @@ class SessionProgress:
         self._tools = 0
         self._pending_tools: dict[str, str] = {}
         self._last_activity = "starting"
+        self._pending_messages: list[str] = []
         self._timer: threading.Thread | None = None
         self._done = threading.Event()
 
     def __enter__(self) -> SessionProgress:
         self._say(f"started (heartbeat every {self.heartbeat_s:g}s)")
+        self._emit_pending()
         self._timer = threading.Thread(target=self._heartbeat, daemon=True)
         self._timer.start()
         return self
@@ -164,29 +166,39 @@ class SessionProgress:
         timer, self._timer = self._timer, None
         if timer is not None:
             timer.join(timeout=2)
+        self._emit_pending()
 
     def _elapsed(self) -> str:
         seconds = int(time.monotonic() - self._started)
         return f"{seconds // 60}m{seconds % 60:02d}s"
 
     def _say(self, message: str) -> None:
-        try:
-            print(f"[{self.label} {self._elapsed()}] {message}", file=self._stream, flush=True)
-        except (OSError, ValueError):
-            return
+        # Queue only: the stdout drain thread calls observe() and must not
+        # block on a full log pipe (process_control.stdout_observer contract).
+        self._pending_messages.append(f"[{self.label} {self._elapsed()}] {message}")
         self._last_spoke = time.monotonic()
+
+    def _emit_pending(self) -> None:
+        with self._lock:
+            messages = list(self._pending_messages)
+            self._pending_messages.clear()
+        for message in messages:
+            try:
+                print(message, file=self._stream, flush=True)
+            except (OSError, ValueError):
+                return
 
     def _heartbeat(self) -> None:
         tick = min(1.0, max(self.heartbeat_s / 2, 0.01))
         while not self._done.wait(tick):
             with self._lock:
                 quiet = time.monotonic() - self._last_spoke
-                if quiet < self.heartbeat_s:
-                    continue
-                self._say(
-                    f"still running · {self._events} events · {self._turns} turns · "
-                    f"{self._tools} tool calls · last: {self._last_activity}"
-                )
+                if quiet >= self.heartbeat_s:
+                    self._say(
+                        f"still running · {self._events} events · {self._turns} turns · "
+                        f"{self._tools} tool calls · last: {self._last_activity}"
+                    )
+            self._emit_pending()
 
     def observe(self, chunk: bytes) -> None:
         """Consume one stdout chunk. Never raises; never blocks on I/O."""

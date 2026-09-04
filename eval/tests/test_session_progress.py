@@ -18,6 +18,11 @@ def _drain_lines(stream: io.StringIO) -> list[str]:
     return [line for line in stream.getvalue().splitlines() if line.strip()]
 
 
+def _observe(progress: SessionProgress, chunk: bytes) -> None:
+    progress.observe(chunk)
+    progress._emit_pending()
+
+
 def test_progress_reports_bounded_redacted_tool_io_but_never_model_prose() -> None:
     stream = io.StringIO()
     progress = SessionProgress(
@@ -62,7 +67,7 @@ def test_progress_reports_bounded_redacted_tool_io_but_never_model_prose() -> No
         {"type": "result", "num_turns": 1, "is_error": False, "total_cost_usd": 1.5},
     ]
     for event in events:
-        progress.observe((json.dumps(event) + "\n").encode())
+        _observe(progress, (json.dumps(event) + "\n").encode())
 
     output = stream.getvalue()
     assert "SECRET-REASONING-abc123" not in output
@@ -119,7 +124,7 @@ def test_progress_reports_errors_and_mcp_io_but_skips_other_tool_payloads() -> N
         },
     ]
     for event in events:
-        progress.observe((json.dumps(event) + "\n").encode())
+        _observe(progress, (json.dumps(event) + "\n").encode())
 
     output = stream.getvalue()
     assert 'tool mcp__gitnexus__query input={"search_query":"call resolution"}' in output
@@ -165,7 +170,7 @@ def test_progress_distinguishes_mcp_semantic_errors_from_transport_success() -> 
         },
     ]
     for event in events:
-        progress.observe((json.dumps(event) + "\n").encode())
+        _observe(progress, (json.dumps(event) + "\n").encode())
 
     assert "tool mcp__gitnexus__impact result=semantic-error" in stream.getvalue()
 
@@ -181,7 +186,7 @@ def test_progress_calls_out_api_retries_because_that_is_the_stuck_signature() ->
         "retry_delay_ms": 34199.87,
         "error": "unknown",
     }
-    progress.observe((json.dumps(event) + "\n").encode())
+    _observe(progress, (json.dumps(event) + "\n").encode())
 
     line = _drain_lines(stream)[-1]
     assert "API retry 7/10 in 34s" in line
@@ -205,10 +210,10 @@ def test_progress_survives_partial_chunks_garbage_and_unbounded_lines() -> None:
         {"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash"}]}}
     ).encode()
     # An event split across reads, non-JSON noise, and a huge newline-free run.
-    progress.observe(payload[:10])
-    progress.observe(payload[10:] + b"\nnot json at all\n")
-    progress.observe(b"x" * (4 * 1024 * 1024))
-    progress.observe(b'\n{"type":"result","num_turns":2,"is_error":true}\n')
+    _observe(progress, payload[:10])
+    _observe(progress, payload[10:] + b"\nnot json at all\n")
+    _observe(progress, b"x" * (4 * 1024 * 1024))
+    _observe(progress, b'\n{"type":"result","num_turns":2,"is_error":true}\n')
 
     output = stream.getvalue()
     assert "turn 1 · Bash" in output
@@ -222,7 +227,7 @@ def test_progress_sanitizes_a_hostile_tool_name() -> None:
         "type": "assistant",
         "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash\nFAKE-LOG-LINE injected"}]},
     }
-    progress.observe((json.dumps(event) + "\n").encode())
+    _observe(progress, (json.dumps(event) + "\n").encode())
 
     assert "FAKE-LOG-LINE" not in stream.getvalue()
     assert len(_drain_lines(stream)) == 1

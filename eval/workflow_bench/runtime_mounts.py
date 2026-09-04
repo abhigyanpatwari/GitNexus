@@ -246,6 +246,21 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
         HARNESS_ROOT / "gitnexus-shared",
         label="pinned GitNexus shared runtime",
     )
+    node_modules = _validated_runtime_component(
+        runtime,
+        "node_modules",
+        f"{SANDBOX_GITNEXUS}/node_modules",
+        directory=True,
+        allow_primary_worktree_symlink=True,
+    )
+    primary = _primary_checkout_root(HARNESS_ROOT)
+    if primary is not None and node_modules.source == (primary / "gitnexus" / "node_modules"):
+        # Reused primary node_modules still symlink to that checkout's shared
+        # package. Mount the same tree or the sandbox inner link is a host path.
+        shared = _validated_runtime_root(
+            primary / "gitnexus-shared",
+            label="primary GitNexus shared runtime",
+        )
     mounts = (
         _validated_runtime_component(
             runtime,
@@ -259,13 +274,7 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
             f"{SANDBOX_GITNEXUS}/package.json",
             directory=False,
         ),
-        _validated_runtime_component(
-            runtime,
-            "node_modules",
-            f"{SANDBOX_GITNEXUS}/node_modules",
-            directory=True,
-            allow_primary_worktree_symlink=True,
-        ),
+        node_modules,
         _validated_runtime_component(
             runtime,
             "vendor",
@@ -305,7 +314,6 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
 
     linked_shared = mounts[2].source / "gitnexus-shared"
     allowed_shared = {shared}
-    primary = _primary_checkout_root(HARNESS_ROOT)
     if primary is not None:
         try:
             allowed_shared.add(
@@ -315,6 +323,7 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
                 )
             )
         except SandboxError:
+            # Primary checkout may be absent or unreadable on a standalone eval tree.
             pass
     if not linked_shared.is_symlink() or linked_shared.resolve(strict=True) not in allowed_shared:
         raise SandboxError("pinned GitNexus runtime has an unexpected gitnexus-shared dependency")

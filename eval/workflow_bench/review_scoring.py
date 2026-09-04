@@ -196,12 +196,21 @@ def score_review(
     actual: Sequence[ReviewFinding],
     expected: Sequence[ExpectedFinding],
 ) -> dict[str, Any]:
-    candidates: list[tuple[tuple[int, int, int], int, int]] = []
+    candidates: list[tuple[tuple[int, int, int, int, str, str, int], int, int]] = []
     for actual_index, finding in enumerate(actual):
         for expected_index, label in enumerate(expected):
             score = _match_score(finding, label)
             if score is not None:
-                candidates.append((score, actual_index, expected_index))
+                # Content keys, not list indices: JSON finding order must not
+                # change which pairs a greedy match commits.
+                expected_span = label.line_end - label.line_start
+                candidates.append(
+                    (
+                        (*score, -expected_span, finding.path, finding.category, finding.line),
+                        actual_index,
+                        expected_index,
+                    )
+                )
     candidates.sort(reverse=True)
     matched_actual: set[int] = set()
     matched_expected: set[int] = set()

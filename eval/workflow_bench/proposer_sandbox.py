@@ -876,9 +876,13 @@ def _drop_host_workspace_write_bits(
     for raw in writable:
         path = raw.expanduser().absolute()
         try:
+            metadata = path.lstat()
+            resolved = path.resolve(strict=True)
             path.relative_to(root)
-        except ValueError as exc:
+        except (OSError, ValueError) as exc:
             raise SandboxError(f"writable host path escapes the workspace: {raw}") from exc
+        if stat.S_ISLNK(metadata.st_mode) or resolved != path:
+            raise SandboxError(f"writable host path must be real and non-symlink: {raw}")
         allowed.add(path)
 
     records: list[tuple[Path, int]] = []
@@ -899,7 +903,7 @@ def _drop_host_workspace_write_bits(
                 raise SandboxError(f"host workspace lock directory is unreadable: {current}: {exc}") from exc
             pending.extend(children)
             if current not in allowed:
-                os.chmod(current, 0o555)
+                os.chmod(current, 0o500)
             continue
         if current in allowed:
             os.chmod(current, stat.S_IMODE(metadata.st_mode) | 0o222)
@@ -929,6 +933,7 @@ def _force_rmtree(path: Path) -> None:
                 follow_symlinks=False,
             )
         except OSError:
+            # Directory may already be gone or refuse chmod; rmtree still tries.
             pass
         for name in filenames:
             child = os.path.join(dirpath, name)
@@ -941,6 +946,7 @@ def _force_rmtree(path: Path) -> None:
             try:
                 os.chmod(child, stat.S_IMODE(metadata.st_mode) | 0o200, follow_symlinks=False)
             except OSError:
+                # File vanished or is immutable; skip and let rmtree report.
                 pass
     shutil.rmtree(root)
 

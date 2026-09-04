@@ -163,6 +163,43 @@ def test_score_review_matches_by_path_and_overlapping_range():
     assert score["verdict_correct"] is True
 
 
+def test_score_review_is_independent_of_finding_list_order():
+    expected_labels = (
+        expected(finding_id="broad", line_start=1, line_end=10, category="a"),
+        expected(finding_id="tight", line_start=5, line_end=5, category="b"),
+    )
+    first = ReviewFinding(
+        finding_id="a",
+        severity="high",
+        path="src/api.ts",
+        line=5,
+        end_line=5,
+        category="a",
+        scenario="s",
+        evidence="e",
+        recommendation="r",
+        blocking=True,
+    )
+    second = ReviewFinding(
+        finding_id="b",
+        severity="high",
+        path="src/api.ts",
+        line=1,
+        end_line=1,
+        category="b",
+        scenario="s",
+        evidence="e",
+        recommendation="r",
+        blocking=True,
+    )
+    forward = score_review("request_changes", (first, second), expected_labels)
+    reverse = score_review("request_changes", (second, first), expected_labels)
+    assert forward["true_positives"] == reverse["true_positives"]
+    assert forward["false_positives"] == reverse["false_positives"]
+    assert forward["false_negatives"] == reverse["false_negatives"]
+    assert forward["weighted_f1"] == reverse["weighted_f1"]
+
+
 def test_clean_control_rewards_an_empty_approval_and_penalizes_noise():
     clean = score_review("approve", (), ())
     noisy = score_review(

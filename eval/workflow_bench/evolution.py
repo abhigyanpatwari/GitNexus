@@ -695,6 +695,9 @@ def evaluate_review_candidate(
         if not clean and float(candidate_score) >= float(incumbent_score) + min_improvement:
             improvement = True
 
+    if not task_rows:
+        insufficient = True
+        reasons.append("no paired review task results were found")
     if insufficient:
         decision = "insufficient_evidence"
     elif regression:
@@ -798,6 +801,7 @@ def evaluate_candidate(
         fully_measured = (
             incumbent_runs >= min_runs
             and candidate_runs >= min_runs
+            and incumbent_runs == candidate_runs
             and not incumbent_excluded
             and not candidate_excluded
         )
