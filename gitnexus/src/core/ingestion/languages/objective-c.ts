@@ -11,6 +11,7 @@ import type { ImportResolverFn } from '../import-resolvers/types.js';
 import { getLanguageGrammar } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { assertCloneable } from '../workers/clone-safety.js';
+import { preprocessObjectiveCMacroMarkers } from './objective-c/macro-marker-preprocess.js';
 import {
   buildObjectiveCSemanticGraph,
   buildObjectiveCScopeCaptures,
@@ -99,7 +100,13 @@ export function classifyObjectiveCFileContent(filePath: string, sourceText: stri
 function parseObjectiveCSource(sourceText: string): Parser.Tree {
   const parser = new Parser();
   parser.setLanguage(getLanguageGrammar(SupportedLanguages.ObjectiveC));
-  return parseSourceSafe(parser, sourceText, undefined, undefined, 'Objective-C source');
+  return parseSourceSafe(
+    parser,
+    preprocessObjectiveCMacroMarkers(sourceText),
+    undefined,
+    undefined,
+    'Objective-C source',
+  );
 }
 
 function treeFromCachedOrSource(cachedTree: unknown, sourceText: string): Parser.Tree {
@@ -157,6 +164,7 @@ export const objectiveCProvider = defineLanguage({
   importResolver: noImportResolution,
   classifyFileContent: classifyObjectiveCFileContent,
   shouldClassifyFileContent: isHeaderPath,
+  preprocessSource: preprocessObjectiveCMacroMarkers,
   importsExecuteWhereWritten: false,
 
   emitScopeCaptures: (sourceText, filePath, cachedTree): readonly CaptureMatch[] => {

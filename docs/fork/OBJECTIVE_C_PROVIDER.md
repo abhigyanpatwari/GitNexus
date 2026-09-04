@@ -96,12 +96,13 @@ Implemented in the branch:
 - Vendored `tree-sitter-objc` grammar, registered through the existing Tree-sitter loader.
 - `.m` and `.mm` language mapping plus content-based `.h` classification so plain C/C++ headers are not unconditionally claimed.
 - LanguageProvider extraction for classes, protocols, categories, extensions, methods, properties, ivars, C functions, imports, unresolved message evidence, stable Objective-C qualified names, and provider/grammar metadata.
+- Length-preserving preprocessing of bare, file-scope all-caps macro markers before Tree-sitter parsing. This recovers declarations after wrappers such as `RCT_EXTERN_C_BEGIN` / `RCT_EXTERN_C_END` without expanding macros or adding framework-specific rules.
 - ScopeResolver edges for imports, inheritance, protocol conformance, category host membership, implementation evidence, and conservative static message sends.
 - Persisted query/context support for Objective-C class and method nodes, including implementation evidence via `DECLARES`.
 - Regression tests for grammar loading, `.h` classification, stable identities, conservative calls, metadata feature mismatch, persisted query/context behavior, and incremental-vs-force parity for Objective-C fixture edits.
 
 Known limits of this MVP:
 
-- The first version does not perform full Objective-C runtime dispatch, swizzling, dynamic selector construction, macro expansion, or `id` flow inference.
+- The first version does not perform full Objective-C runtime dispatch, swizzling, dynamic selector construction, macro expansion, or `id` flow inference. Bare file-scope marker macros are elided only to preserve parser recovery; their expansion semantics are not interpreted.
 - Protocol receiver handling records the protocol method and candidate implementation evidence, but candidate implementations are not emitted as certain call edges.
 - Objective-C++ `.mm` files are parsed with the Objective-C grammar path for this MVP; deep C++ semantic extraction inside Objective-C++ bodies remains outside this provider.

@@ -735,7 +735,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v93: Zig call captures inside a comptime-false branch carry
 // `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
 // `staticGated` and the CALLS edge a BOOLEAN column.
-const SCHEMA_BUMP = 93;
+// v94: Objective-C now elides bare, file-scope macro markers before parsing.
+// A warm v93 cache can retain error-recovered trees and provider facts that
+// omit Objective-C declarations following markers such as RCT_EXTERN_C_END.
+const SCHEMA_BUMP = 94;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

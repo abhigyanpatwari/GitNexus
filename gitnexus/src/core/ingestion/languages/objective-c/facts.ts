@@ -10,7 +10,7 @@ import type {
 } from '../../language-provider.js';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.0';
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.1';
 export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
 export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 

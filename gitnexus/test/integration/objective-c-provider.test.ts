@@ -8,6 +8,7 @@ import type { GraphNode, RelationshipType } from 'gitnexus-shared';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { classifyObjectiveCFileContent } from '../../src/core/ingestion/languages/objective-c.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
 
 const FIXTURE_DIR = path.resolve(
@@ -210,6 +211,25 @@ describe('Objective-C provider integration', () => {
       return typeof reason === 'string' ? rel.reason === reason : reason.test(rel.reason);
     });
   }
+
+  it('classifies a macro-wrapped Objective-C header by declarations after the marker', () => {
+    expect(
+      classifyObjectiveCFileContent(
+        'RCTBridgeModule.h',
+        [
+          'RCT_EXTERN_C_BEGIN',
+          'typedef struct RCTMethodInfo {',
+          '  const char *const jsName;',
+          '} RCTMethodInfo;',
+          'RCT_EXTERN_C_END',
+          '@protocol RCTBridgeModule <NSObject>',
+          '- (void)run;',
+          '@end',
+          '',
+        ].join('\n'),
+      ),
+    ).toBe(true);
+  });
 
   it('indexes Objective-C semantic nodes beyond File nodes', () => {
     expectNode('objc:protocol:SYModuleRunnable', 'Protocol');

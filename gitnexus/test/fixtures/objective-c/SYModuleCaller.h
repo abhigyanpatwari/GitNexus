@@ -1,5 +1,14 @@
 #import <Foundation/Foundation.h>
 
+#define RCT_EXTERN_C_BEGIN
+#define RCT_EXTERN_C_END
+
+RCT_EXTERN_C_BEGIN
+typedef struct SYModuleMethodInfo {
+  const char *const name;
+} SYModuleMethodInfo;
+RCT_EXTERN_C_END
+
 int SYModuleSupportAdd(int a, int b);
 
 @protocol SYModuleRunnable <NSObject>
