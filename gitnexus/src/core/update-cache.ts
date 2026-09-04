@@ -46,8 +46,8 @@ export function isNewerVersion(installedVersion: string, latestVersion: string):
   if (!STRICT_UPDATE_VERSION.test(installedVersion) || !STRICT_UPDATE_VERSION.test(latestVersion)) {
     return false;
   }
-  const installed = installedVersion.split('.').map(Number);
-  const latest = latestVersion.split('.').map(Number);
+  const installed = installedVersion.split('.').map(BigInt);
+  const latest = latestVersion.split('.').map(BigInt);
   for (let index = 0; index < 3; index += 1) {
     if (latest[index] !== installed[index]) return latest[index] > installed[index];
   }

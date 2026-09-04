@@ -247,10 +247,15 @@ describe('update check cache and versions', () => {
       ),
     );
 
-    const pending = refresh({ eligible: true, now: NOW });
+    // Relative to the real clock: publishMonotonically only preserves a newer
+    // on-disk timestamp when it is not in the future (`currentAt <= Date.now()`).
+    const wall = Date.now();
+    const olderAttempt = wall - 10_000;
+    const newerSuccess = wall - 1;
+    const pending = refresh({ eligible: true, now: olderAttempt });
     await vi.waitFor(() => expect(rejectFetch).toBeTypeOf('function'));
     await writeCache(home, {
-      lastCheckAt: new Date(NOW + 1_000).toISOString(),
+      lastCheckAt: new Date(newerSuccess).toISOString(),
       registry: REGISTRY,
       latestVersion: '1.8.0',
     });
@@ -258,7 +263,7 @@ describe('update check cache and versions', () => {
     await pending;
 
     expect(await readCache(home)).toEqual({
-      lastCheckAt: new Date(NOW + 1_000).toISOString(),
+      lastCheckAt: new Date(newerSuccess).toISOString(),
       registry: REGISTRY,
       latestVersion: '1.8.0',
     });
@@ -288,6 +293,7 @@ describe('update check cache and versions', () => {
     expect(isNewerVersion('1.7.0', '1.6.10')).toBe(false);
     expect(isNewerVersion('1.6.10', '1.6.9')).toBe(false);
     expect(isNewerVersion('1.6.10', '1.7.0')).toBe(true);
+    expect(isNewerVersion('1.0.9007199254740992', '1.0.9007199254740993')).toBe(true);
   });
 });
 

@@ -249,6 +249,8 @@ describe('MCP process update notice', () => {
       const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-mcp-update-'));
       const previousHome = process.env.GITNEXUS_HOME;
       const previousCi = process.env.CI;
+      const previousGitnexusOptOut = process.env.GITNEXUS_NO_UPDATE_NOTIFIER;
+      const previousNoUpdate = process.env.NO_UPDATE_NOTIFIER;
       let releaseFetch: ((response: Response) => void) | undefined;
       const fetchStub = vi.fn(() =>
         registryBehavior === 'hang'
@@ -260,6 +262,8 @@ describe('MCP process update notice', () => {
       vi.stubGlobal('fetch', fetchStub);
       process.env.GITNEXUS_HOME = home;
       delete process.env.CI;
+      delete process.env.GITNEXUS_NO_UPDATE_NOTIFIER;
+      delete process.env.NO_UPDATE_NOTIFIER;
       const actualChecker = await vi.importActual<
         typeof import('../../../src/core/update-check.js')
       >('../../../src/core/update-check.js');
@@ -322,6 +326,10 @@ describe('MCP process update notice', () => {
         else process.env.GITNEXUS_HOME = previousHome;
         if (previousCi === undefined) delete process.env.CI;
         else process.env.CI = previousCi;
+        if (previousGitnexusOptOut === undefined) delete process.env.GITNEXUS_NO_UPDATE_NOTIFIER;
+        else process.env.GITNEXUS_NO_UPDATE_NOTIFIER = previousGitnexusOptOut;
+        if (previousNoUpdate === undefined) delete process.env.NO_UPDATE_NOTIFIER;
+        else process.env.NO_UPDATE_NOTIFIER = previousNoUpdate;
         fs.rmSync(home, { recursive: true, force: true });
       }
     },

@@ -200,6 +200,8 @@ const SPAWN_CLI = [
   'test/integration/analyze-heap-oom-e2e.test.ts',
   'test/integration/group/group-cli.test.ts',
   'test/integration/cli/tool-no-index-stderr.test.ts',
+  // Real CLI spawn + directory symlinks for the update-notice parent/child path.
+  'test/integration/cli/update-notice.test.ts',
   'test/integration/setup-skills.test.ts',
   'test/integration/setup-antigravity.test.ts',
   'test/integration/antigravity-hook-e2e.test.ts',
