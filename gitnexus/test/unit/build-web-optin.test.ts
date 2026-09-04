@@ -301,4 +301,17 @@ describe('setup-gitnexus job budget', () => {
   it('quality typecheck-web can finish a cold web install instead of canceling before cache save', () => {
     expect(qualityJobs['typecheck-web']?.['timeout-minutes']).toBe(15);
   });
+
+  it('quality format matches lint budget and skips husky during npm ci', () => {
+    const formatCi = qualityJobs.format?.steps?.find((step) =>
+      String(step.run ?? '').includes('npm ci'),
+    );
+    const lintCi = qualityJobs.lint?.steps?.find((step) =>
+      String(step.run ?? '').includes('npm ci'),
+    );
+    expect(qualityJobs.format?.['timeout-minutes']).toBe(10);
+    expect(qualityJobs.lint?.['timeout-minutes']).toBe(10);
+    expect(String(formatCi?.run)).toContain('--ignore-scripts');
+    expect(String(lintCi?.run)).toContain('--ignore-scripts');
+  });
 });
