@@ -264,6 +264,7 @@ gitnexus wiki --provider grok    # Local Grok Build CLI (uses `grok login`, no A
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
                                   # Allow an exact LAN/self-hosted HTTP LLM host; env: GITNEXUS_ALLOW_INSECURE_CONNECTION
 gitnexus doctor                  # Show runtime platform capabilities and embedding configuration
+gitnexus update                  # Install the latest published GitNexus (`npm i -g gitnexus@<x.y.z>`)
 
 # Direct graph queries — the same tools the MCP server exposes, no MCP daemon needed
 gitnexus query "<concept>"                                    # Process-grouped hybrid search
@@ -491,6 +492,40 @@ bigger cycle) and `N` increments per published rc. Example sequence:
 `1.6.2-rc.1`, `1.6.2-rc.2`, …, then once `1.6.2` ships stable,
 `1.6.3-rc.1`. See the [Releases page](https://github.com/abhigyanpatwari/GitNexus/releases)
 for the full list; stable `latest` is unaffected.
+
+## Update notifications
+
+GitNexus checks the npm registry's `latest` dist-tag at most once every 24
+hours per installation and tells you when a newer stable version exists. The
+result is cached under `$GITNEXUS_HOME` (`~/.gitnexus` by default), so the
+check never runs on the command's hot path and never blocks output. Where the
+notice appears:
+
+- **CLI** — one line on stderr when you run a command interactively (never on
+  stdout, so `gitnexus query … | jq` and other piped output stay clean), a
+  line in `gitnexus doctor` when an update is known. Automatic notices never
+  install. `gitnexus update` checks even when notices are opted out, then
+  runs `npm i -g gitnexus@<x.y.z>` (same idea as `claude update` /
+  `codex update`).
+- **MCP server** — one structured log record on the server's stderr per
+  process per version (visible in your host's MCP log panel). Tool results,
+  resources, prompts, and server instructions never carry update text.
+- **Web UI** — a dismissible banner when the server reports a newer version;
+  dismissal persists per version.
+
+The check is skipped entirely (no network request, no output) when `CI` is
+truthy, when the install is not an npm global/local install (npx cache, dev
+checkout, Docker image — the Docker CLI image sets the opt-out itself), or
+when opted out:
+
+| Variable | Effect |
+| --- | --- |
+| `GITNEXUS_NO_UPDATE_NOTIFIER` | Truthy (`1`, `true`, …) disables the update check on every surface. |
+| `NO_UPDATE_NOTIFIER` | Cross-tool convention; honored the same way. |
+| `npm_config_registry` | The check reads the `latest` dist-tag from this registry instead of `https://registry.npmjs.org`. Credentials are never sent, and registries that require authentication are not supported (the check silently skips). |
+
+Eval harnesses running a global install can set `GITNEXUS_NO_UPDATE_NOTIFIER`
+for a quiet registry.
 
 ## Troubleshooting
 

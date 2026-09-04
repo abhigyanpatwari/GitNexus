@@ -3,6 +3,8 @@
     "name": "GitNexus",
     "nexusAI": "Nexus AI"
   },
+  "updateBanner": "GitNexus {{latest}} is available — this server runs {{installed}}.",
+  "updateBannerDismiss": "Dismiss update notification",
   "actions": {
     "cancel": "Cancel",
     "dismiss": "Dismiss",
