@@ -13,12 +13,7 @@ export function shouldPreserveWebOutput(env = process.env) {
   );
 }
 
-/**
- * Build and copy the web UI when explicitly requested.
- *
- * The injected fs/exec implementations make lifecycle behavior executable in
- * unit tests without compiling either package.
- */
+/** Build and copy the web UI when `--web` / GITNEXUS_BUILD_WEB=1 is set. */
 export function runWebBuild({
   root,
   dist,

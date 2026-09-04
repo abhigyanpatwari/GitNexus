@@ -108,15 +108,11 @@ const cliEntry = path.join(DIST, 'cli', 'index.js');
 if (fs.existsSync(cliEntry)) fs.chmodSync(cliEntry, 0o755);
 
 // ── 6. Build & copy web UI (opt-in) ─────────────────────────────────
-// The web UI is a SEPARATE package with its own ~650-package dependency
-// tree (React, Vite, LangChain, Mermaid). It is only needed inside the
-// published tarball (`files: [... "web"]`), so it is built by `prepack`,
-// not by `prepare`. Building it from `prepare` made every plain
-// `npm ci` in gitnexus/ install and Vite-build a second product — on CI
-// that ran uncached inside an execSync timeout and SIGTERM'd healthy
-// installs mid-flight (#1048 introduced it; the node-floor-compat job
-// died on it). `gitnexus serve` degrades to the built-in landing page
-// when web/ is absent, so the default build staying CLI-only is safe.
+// Web UI is a separate package and is only required in the published
+// tarball, so it is built by `prepack --web`, not by `prepare`. Serve
+// falls back to the landing page when web/ is absent. CLI-only builds
+// delete stale web/ except during npm pack/publish prepare, which must
+// keep the prepack output.
 runWebBuild({ root: ROOT, dist: DIST, timeoutMs: BUILD_TIMEOUT_MS });
 
 console.log(`[build] done — rewrote ${rewritten} files.`);

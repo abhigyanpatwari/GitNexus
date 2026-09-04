@@ -6,17 +6,7 @@ import { load } from 'js-yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runWebBuild, shouldBuildWeb, shouldPreserveWebOutput } from '../../scripts/build-web.js';
 
-/**
- * `scripts/build.js` must not build the web UI on the default path.
- *
- * gitnexus-web is a separate ~650-package tree (React, Vite, LangChain,
- * Mermaid). While `prepare` built it, every `npm ci` in gitnexus/ installed
- * and Vite-built a second product — uncached on CI, inside an execSync
- * timeout that SIGTERM'd healthy installs (`spawnSync /bin/sh ETIMEDOUT`,
- * killing the node-floor-compat job, which only import-links the CLI dist).
- * The web UI is only needed inside the published tarball, so it belongs to
- * prepack. Jobs that pack or publish install those deps in their own step.
- */
+/** Default prepare/build stay CLI-only; the web UI ships only via prepack --web. */
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const PACKAGE_JSON = JSON.parse(
   readFileSync(path.join(REPO_ROOT, 'gitnexus/package.json'), 'utf8'),
@@ -47,6 +37,26 @@ function stepIndex(steps: WorkflowStep[], predicate: (step: WorkflowStep) => boo
 
 const installsWeb = (step: WorkflowStep) =>
   step['working-directory'] === 'gitnexus-web' && String(step.run ?? '').includes('npm ci');
+
+function runWeb(
+  fixture: ReturnType<typeof buildFixture>,
+  overrides: {
+    timeoutMs?: number;
+    argv?: string[];
+    env?: NodeJS.Dict<string>;
+    exec?: (...args: unknown[]) => unknown;
+  } = {},
+) {
+  return runWebBuild({
+    root: fixture.root,
+    dist: fixture.dist,
+    timeoutMs: 600_000,
+    argv: ['node', 'build.js'],
+    env: {},
+    exec: vi.fn(),
+    ...overrides,
+  });
+}
 
 function buildFixture({ withWeb = true, withNodeModules = true } = {}) {
   const workspace = mkdtempSync(path.join(os.tmpdir(), 'gitnexus-build-web-'));
@@ -102,14 +112,7 @@ describe('gitnexus build scripts', () => {
     writeFileSync(path.join(fixture.webDest, 'index.html'), 'stale');
 
     const exec = vi.fn();
-    const result = runWebBuild({
-      root: fixture.root,
-      dist: fixture.dist,
-      timeoutMs: 600_000,
-      argv: ['node', 'build.js'],
-      env: {},
-      exec,
-    });
+    const result = runWeb(fixture, { exec });
 
     expect(result.status).toBe('skipped');
     expect(exec).not.toHaveBeenCalled();
@@ -128,13 +131,8 @@ describe('gitnexus build scripts', () => {
           npm_command: npmCommand,
         }),
       ).toBe(true);
-      runWebBuild({
-        root: fixture.root,
-        dist: fixture.dist,
-        timeoutMs: 600_000,
-        argv: ['node', 'build.js'],
+      runWeb(fixture, {
         env: { npm_lifecycle_event: 'prepare', npm_command: npmCommand },
-        exec: vi.fn(),
       });
 
       expect(readFileSync(path.join(fixture.webDest, 'index.html'), 'utf8')).toBe(npmCommand);
@@ -143,28 +141,17 @@ describe('gitnexus build scripts', () => {
 
   it('fails closed when an explicit web build has no web package', () => {
     const fixture = buildFixture({ withWeb: false });
-    expect(() =>
-      runWebBuild({
-        root: fixture.root,
-        dist: fixture.dist,
-        timeoutMs: 600_000,
-        argv: ['node', 'build.js', '--web'],
-        env: {},
-        exec: vi.fn(),
-      }),
-    ).toThrow('web UI requested, but gitnexus-web was not found');
+    expect(() => runWeb(fixture, { argv: ['node', 'build.js', '--web'] })).toThrow(
+      'web UI requested, but gitnexus-web was not found',
+    );
   });
 
   it('builds and copies the web UI with an untimed fallback install', () => {
     const fixture = buildFixture({ withNodeModules: false });
     const exec = vi.fn();
-
-    const result = runWebBuild({
-      root: fixture.root,
-      dist: fixture.dist,
+    const result = runWeb(fixture, {
       timeoutMs: 123_456,
       argv: ['node', 'build.js', '--web'],
-      env: {},
       exec,
     });
 
@@ -195,6 +182,16 @@ describe('gitnexus build scripts', () => {
     });
     expect(invalid.status).toBe(1);
     expect(invalid.stderr).toContain('references missing assets');
+
+    const missingIndex = spawnSync(
+      process.execPath,
+      [checker, path.join(fixture.webRoot, 'none')],
+      {
+        encoding: 'utf8',
+      },
+    );
+    expect(missingIndex.status).toBe(1);
+    expect(missingIndex.stderr).toContain('missing');
   });
 });
 

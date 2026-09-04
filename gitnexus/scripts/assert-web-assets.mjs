@@ -5,12 +5,16 @@ import path from 'node:path';
 const webDir = path.resolve(process.argv[2] ?? 'web');
 const indexPath = path.join(webDir, 'index.html');
 
-if (!fs.existsSync(indexPath)) {
-  console.error(`[web-assets] missing ${indexPath}`);
-  process.exit(1);
+let html;
+try {
+  html = fs.readFileSync(indexPath, 'utf8');
+} catch (err) {
+  if (err?.code === 'ENOENT') {
+    console.error(`[web-assets] missing ${indexPath}`);
+    process.exit(1);
+  }
+  throw err;
 }
-
-const html = fs.readFileSync(indexPath, 'utf8');
 const localRefs = [...html.matchAll(/(?:src|href)=["']([^"'#]+)["']/g)]
   .map((match) => match[1])
   .filter((ref) => !/^(?:[a-z]+:|\/\/|data:)/i.test(ref))
