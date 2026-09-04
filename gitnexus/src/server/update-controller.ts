@@ -1,8 +1,5 @@
-import { createRequire } from 'node:module';
+import { packageVersion } from '../core/package-version.js';
 import { armUpdateRefreshScheduler, evaluate, type UpdateState } from '../core/update-check.js';
-
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json');
 
 export interface ServerInfoResponse {
   version: string;
@@ -92,7 +89,7 @@ export const buildServerInfo = (updateState: UpdateState | null): ServerInfoResp
   }
 
   return {
-    version: pkg.version,
+    version: packageVersion(),
     launchContext,
     nodeVersion: process.version,
     ...(updateState?.updateAvailable && updateState.latestVersion

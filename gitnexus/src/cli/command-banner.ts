@@ -4,11 +4,8 @@
  * pipe/JSON-safe (`gitnexus query … | jq`, `status --json`).
  */
 
-import { createRequire } from 'node:module';
 import type { Command } from 'commander';
-
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json') as { version?: unknown };
+import { packageVersion } from '../core/package-version.js';
 
 const SKIP_COMMAND_BANNER = new Set(['__update-check', 'help']);
 
@@ -18,7 +15,7 @@ const SPECIAL_TITLES: Record<string, string> = {
 };
 
 export function installedCliVersion(): string {
-  return typeof pkg.version === 'string' ? pkg.version : '';
+  return packageVersion();
 }
 
 export function commandDisplayName(name: string): string {
