@@ -18,6 +18,7 @@ import { isBladeTemplateFilename } from 'gitnexus-shared';
 import { nextjsFileToRouteURL, normalizeFetchURL } from '../route-extractors/nextjs.js';
 import { expoFileToRouteURL } from '../route-extractors/expo.js';
 import { phpFileToRouteURL } from '../route-extractors/php.js';
+import { extractAxumRoutes } from '../route-extractors/axum.js';
 import {
   extractResponseShapes,
   extractPHPResponseShapes,
@@ -332,6 +333,20 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         source: dr.source ?? `decorator-${dr.decoratorName}`,
         method,
       });
+    }
+
+    const rustRouteCandidates = allPaths.filter((p) => p.endsWith('.rs'));
+    if (rustRouteCandidates.length > 0) {
+      const rustContents = await readFileContents(ctx.repoPath, rustRouteCandidates);
+      for (const [filePath, content] of rustContents) {
+        if (!content.includes('.route(')) continue;
+        for (const route of extractAxumRoutes(content)) {
+          addRoute(ensureSlash(route.routePath), {
+            filePath,
+            source: 'rust-axum-route',
+          });
+        }
+      }
     }
 
     let handlerContents: Map<string, string> | undefined;
