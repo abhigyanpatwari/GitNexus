@@ -320,8 +320,6 @@ export interface ExtractedAssignment {
   propertyName: string;
   /** Resolved type name of the receiver if available from TypeEnv */
   receiverTypeName?: string;
-  /** 1-indexed line number of the assignment site (used for per-site dedup) */
-  line?: number;
 }
 
 export interface ExtractedFetchCall {
@@ -413,10 +411,16 @@ export interface ExtractedToolDef {
 
 export interface ExtractedORMQuery {
   filePath: string;
-  orm: 'prisma' | 'supabase';
+  orm: 'prisma' | 'supabase' | 'mybatis';
   model: string;
   method: string;
   lineNumber: number;
+  /** For mybatis: the mapper method id (e.g. "selectByPrimaryKey") */
+  mapperId?: string;
+  /** For mybatis: the SQL operation type (select/insert/update/delete) */
+  sqlOp?: 'select' | 'insert' | 'update' | 'delete';
+  /** For mybatis: simple class name from namespace (e.g. "UPayMapper") */
+  mapperClassName?: string;
 }
 
 /** Constructor bindings keyed by filePath for cross-file type resolution */
@@ -1817,7 +1821,6 @@ const processFileGroup = (
             sourceId: srcId,
             receiverText,
             propertyName,
-            line: captureMap['assignment'].startPosition.row + 1,
             ...(receiverTypeName ? { receiverTypeName } : {}),
           });
         }
