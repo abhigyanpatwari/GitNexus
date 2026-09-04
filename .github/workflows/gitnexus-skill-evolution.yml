@@ -261,6 +261,18 @@ jobs:
           enable-cache: true
           cache-dependency-glob: eval/uv.lock
 
+      - name: Fetch pinned Compound Engineering review comparator
+        env:
+          CE_COMMIT: 3ad9b51bceecf0158e590c882034d0398dbb9c5c
+        run: |
+          set -euo pipefail
+          destination="${RUNNER_TEMP}/compound-engineering-plugin"
+          rm -rf "${destination}"
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/EveryInc/compound-engineering-plugin.git "${destination}"
+          git -C "${destination}" checkout --detach "${CE_COMMIT}"
+          test "$(git -C "${destination}" rev-parse HEAD)" = "${CE_COMMIT}"
+
       - name: Install sandbox runtime and pinned Claude CLI
         run: |
           set -euo pipefail
@@ -320,7 +332,7 @@ jobs:
       - name: Point the benchmark task repo at the checkout
         run: |
           set -euo pipefail
-          # tasks.scenarios.yaml addresses the target repo as ~/GitNexus (the
+          # tasks.review.scenarios.yaml addresses the target repo as ~/GitNexus (the
           # developer-local convention). On the runner the repo is the checkout
           # at ${GITHUB_WORKSPACE}; link it so runner_tasks.py can resolve the
           # task `repo` path. The benchmark only clones the repo (copy-on-write)
@@ -330,11 +342,8 @@ jobs:
             exit 1
           fi
           ln -sfn "${GITHUB_WORKSPACE}" "${HOME}/GitNexus"
-          # Every task in tasks.scenarios.yaml names `ref: main`, and resolving
-          # it is the first thing task binding does. actions/checkout only
-          # creates a local ref for the ref it checked out, so `main^{commit}`
-          # resolves on a main run and fails on any other — a no-op here when
-          # main is already what was checked out.
+          # The review corpus pins historical object ids. Fetch main so those
+          # objects are present even when actions/checkout selected another ref.
           git -C "${GITHUB_WORKSPACE}" fetch --no-tags --quiet \
             "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
             '+refs/heads/main:refs/heads/main'
@@ -459,6 +468,9 @@ jobs:
           # 29907431284 emitted every line at the same timestamp, 14h45m in).
           PYTHONUNBUFFERED: '1'
           SEED_RESULTS: ${{ steps.seed.outputs.seed }}
+          EVOLUTION_PROFILE: review
+          CE_PLUGIN_DIR: ${{ runner.temp }}/compound-engineering-plugin
+          CE_PLUGIN_VERSION: 3.24.0
         run: |
           set -euo pipefail
           ./workflow_bench/run-evolution.sh --apply
@@ -495,7 +507,7 @@ jobs:
           while IFS= read -r line; do
             path="${line:3}"
             case "${path}" in
-              .claude/skills/*|gitnexus/skills/*|gitnexus-claude-plugin/skills/*) ;;
+              .claude/skills/gitnexus-review/*|gitnexus/skills/gitnexus-review/*|gitnexus-claude-plugin/skills/gitnexus-review/*|gitnexus-cursor-integration/skills/gitnexus-review/*) ;;
               *)
                 echo "::error::Promotion touched a path outside the skill trees: ${path}"
                 exit 1

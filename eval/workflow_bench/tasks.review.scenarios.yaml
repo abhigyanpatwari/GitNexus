@@ -1,0 +1,130 @@
+# Read-only differential review corpus. Each case checks out an immutable
+# historical base, applies the visible PR patch, and then freezes the checkout.
+# Hidden labels are captured before sanitization and never enter a model mount.
+
+tasks:
+  - id: review-pr-3124-defect
+    class: review-defect
+    repo: ~/GitNexus
+    ref: 9f82ffd6bfe59270c6cdec0e2f3314038f4a7faf
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-3124-defect.patch]
+    setup: >-
+      git apply eval/workflow_bench/review_cases/pr-3124-defect.patch &&
+      rm -rf eval/workflow_bench
+    prompt: >-
+      Review the historical pre-feedback snapshot of
+      https://github.com/abhigyanpatwari/GitNexus/pull/3124.
+      Report only actionable defects introduced by the local diff.
+    verify: test -s review-output.json
+    oracle:
+      command: test -s review-output.json
+      files:
+        - source: review-pr-3124-defect.labels.json
+          target: review-labels.json
+    sandbox_dependencies: &review_dependencies
+      - source: node_modules
+        target: node_modules
+      - source: gitnexus/node_modules
+        target: gitnexus/node_modules
+      - source: gitnexus-shared/node_modules
+        target: gitnexus-shared/node_modules
+
+  - id: review-pr-3153-defect
+    class: review-defect
+    repo: ~/GitNexus
+    ref: 3c2b14aff59791be0a000160b35f3c5e8f2997a0
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-3153-defect.patch]
+    setup: >-
+      git apply eval/workflow_bench/review_cases/pr-3153-defect.patch &&
+      rm -rf eval/workflow_bench
+    prompt: >-
+      Review the historical pre-feedback snapshot of
+      https://github.com/abhigyanpatwari/GitNexus/pull/3153.
+      Report only actionable defects introduced by the local diff.
+    verify: test -s review-output.json
+    oracle:
+      command: test -s review-output.json
+      files:
+        - source: review-pr-3153-defect.labels.json
+          target: review-labels.json
+    sandbox_dependencies: *review_dependencies
+
+  - id: review-pr-3109-defect
+    class: review-defect
+    repo: ~/GitNexus
+    ref: 4aa6bddd0a78135136d29d8440eb29613097f616
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-3109-defect.patch]
+    setup: >-
+      git apply eval/workflow_bench/review_cases/pr-3109-defect.patch &&
+      rm -rf eval/workflow_bench
+    prompt: >-
+      Review the historical pre-feedback snapshot of
+      https://github.com/abhigyanpatwari/GitNexus/pull/3109.
+      Report only actionable defects introduced by the local diff.
+    verify: test -s review-output.json
+    oracle:
+      command: test -s review-output.json
+      files:
+        - source: review-pr-3109-defect.labels.json
+          target: review-labels.json
+    sandbox_dependencies: *review_dependencies
+
+  - id: review-pr-3111-defect
+    class: review-defect
+    repo: ~/GitNexus
+    ref: 3aa62be717a579d4644364d91fdd50c1b8b5c286
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-3111-defect.patch]
+    setup: >-
+      git apply eval/workflow_bench/review_cases/pr-3111-defect.patch &&
+      rm -rf eval/workflow_bench
+    prompt: >-
+      Review the historical pre-feedback snapshot of
+      https://github.com/abhigyanpatwari/GitNexus/pull/3111.
+      Report only actionable defects introduced by the local diff.
+    verify: test -s review-output.json
+    oracle:
+      command: test -s review-output.json
+      files:
+        - source: review-pr-3111-defect.labels.json
+          target: review-labels.json
+    sandbox_dependencies: *review_dependencies
+
+  - id: review-pr-3124-clean
+    class: review-clean
+    repo: ~/GitNexus
+    ref: 9f82ffd6bfe59270c6cdec0e2f3314038f4a7faf
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-3124-clean.patch]
+    setup: >-
+      git apply eval/workflow_bench/review_cases/pr-3124-clean.patch &&
+      rm -rf eval/workflow_bench
+    prompt: >-
+      Review this historical snapshot of
+      https://github.com/abhigyanpatwari/GitNexus/pull/3124.
+      Report only actionable defects introduced by the local diff.
+    verify: test -s review-output.json
+    oracle:
+      command: test -s review-output.json
+      files:
+        - source: review-pr-3124-clean.labels.json
+          target: review-labels.json
+    sandbox_dependencies: *review_dependencies
+
+  - id: review-pr-3153-clean
+    class: review-clean
+    repo: ~/GitNexus
+    ref: 3c2b14aff59791be0a000160b35f3c5e8f2997a0
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-3153-clean.patch]
+    setup: >-
+      git apply eval/workflow_bench/review_cases/pr-3153-clean.patch &&
+      rm -rf eval/workflow_bench
+    prompt: >-
+      Review this historical snapshot of
+      https://github.com/abhigyanpatwari/GitNexus/pull/3153.
+      Report only actionable defects introduced by the local diff.
+    verify: test -s review-output.json
+    oracle:
+      command: test -s review-output.json
+      files:
+        - source: review-pr-3153-clean.labels.json
+          target: review-labels.json
+    sandbox_dependencies: *review_dependencies

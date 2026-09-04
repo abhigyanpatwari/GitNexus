@@ -382,12 +382,36 @@ exit 1`);
     expect(evolveJob?.env?.EFFORT).toBe("${{ inputs.effort || 'xhigh' }}");
   });
 
+  it('runs only the read-only review profile with a pinned external comparator', () => {
+    const loop = findStep('Run the propose → benchmark → gate loop');
+    expect(loop?.env).toMatchObject({
+      EVOLUTION_PROFILE: 'review',
+      CE_PLUGIN_DIR: '${{ runner.temp }}/compound-engineering-plugin',
+      CE_PLUGIN_VERSION: '3.24.0',
+    });
+    const comparatorStep = findStep('Fetch pinned Compound Engineering review comparator');
+    const comparator = String(comparatorStep?.run);
+    expect(comparatorStep?.env).toMatchObject({
+      CE_COMMIT: '3ad9b51bceecf0158e590c882034d0398dbb9c5c',
+    });
+    expect(comparator).toContain('checkout --detach');
+    expect(comparator).not.toContain('main');
+  });
+
   it('provisions the benchmark task repo at ~/GitNexus before the loop', () => {
     const provision = stepRun('Point the benchmark task repo at the checkout');
     expect(provision).toContain('[[ -e "${HOME}/GitNexus" && ! -L "${HOME}/GitNexus" ]]');
     expect(provision).toContain('ln -sfn');
     expect(provision).toContain('${GITHUB_WORKSPACE}');
     expect(provision).toContain('${HOME}/GitNexus');
+  });
+
+  it('bounds promotion to gitnexus-review and all shipped mirrors', () => {
+    const containment = stepRun('Detect and bound the applied promotion');
+    expect(containment).toContain('.claude/skills/gitnexus-review/*');
+    expect(containment).toContain('gitnexus/skills/gitnexus-review/*');
+    expect(containment).toContain('gitnexus-claude-plugin/skills/gitnexus-review/*');
+    expect(containment).toContain('gitnexus-cursor-integration/skills/gitnexus-review/*');
   });
 
   it('installs node_modules for the monorepo root, gitnexus-shared, and gitnexus', () => {

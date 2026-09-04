@@ -1,0 +1,608 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 251f410c1..05be52af2 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -121,7 +121,8 @@ This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 rela
+ - **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
+ - MUST warn on HIGH/CRITICAL `risk` pre-edit; never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
+ - **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
+-- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.
++- Explore with `query({search_query: "concept"})` for process-grouped flows.
++- Use `context({name: "symbolName"})` for callers, callees, and flows.
+ - For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+ - For control/data dependence, `pdg_query({mode: "controls", target: "fileOrSymbol"})` answers "under what condition does X run?" (CDG, incl. guard clauses) and `pdg_query({mode: "flows", target, variable})` traces "where does variable Y flow?" (REACHING_DEF). `--pdg` layer.
+ 
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 069163232..10681d819 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -72,7 +72,8 @@ This project is indexed by GitNexus as **GitNexus** (248612 symbols, 565510 rela
+ - **MUST analyze graph changes before committing.** Use `detect_changes({scope: "all"})` (MCP) or `node .gitnexus/run.cjs detect-changes --scope all --repo .` (CLI fallback). `partial: true` or `truncated: true` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: `detect_changes({scope: "compare", base_ref: "main"})` or `node .gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .`.
+ - MUST warn on HIGH/CRITICAL `risk` pre-edit; never use `riskSharedAxes` to waive a HIGH/CRITICAL `risk` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
+ - **MUST treat `risk: UNKNOWN` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). `impact` pairs `UNKNOWN` with a `riskNote` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
+-- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.
++- Explore with `query({search_query: "concept"})` for process-grouped flows.
++- Use `context({name: "symbolName"})` for callers, callees, and flows.
+ - For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
+ - For control/data dependence, `pdg_query({mode: "controls", target: "fileOrSymbol"})` answers "under what condition does X run?" (CDG, incl. guard clauses) and `pdg_query({mode: "flows", target, variable})` traces "where does variable Y flow?" (REACHING_DEF). `--pdg` layer.
+ 
+diff --git a/gitnexus/README.md b/gitnexus/README.md
+index 6826534c1..76fabd91e 100644
+--- a/gitnexus/README.md
++++ b/gitnexus/README.md
+@@ -240,7 +240,7 @@ gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS
+ gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
+ gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
+ gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
+-gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
++gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits (does not skip skills; use --skip-skills)
+ gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
+ gitnexus analyze --skip-git      # Index folders that are not Git repositories
+ gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16)
+diff --git a/gitnexus/package-lock.json b/gitnexus/package-lock.json
+index 1ea3049e6..bff5aac80 100644
+--- a/gitnexus/package-lock.json
++++ b/gitnexus/package-lock.json
+@@ -14,7 +14,7 @@
+         "@modelcontextprotocol/sdk": "^1.0.0",
+         "@scarf/scarf": "^1.4.0",
+         "busboy": "^1.6.0",
+-        "chokidar": "^5.0.0",
++        "chokidar": "^4.0.3",
+         "cli-progress": "^3.12.0",
+         "commander": "^15.0.0",
+         "cors": "^2.8.5",
+@@ -33,6 +33,7 @@
+         "node-addon-api": "^8.0.0",
+         "node-gyp-build": "^4.8.0",
+         "onnxruntime-common": "^1.26.0",
++        "onnxruntime-node": "1.29.0",
+         "pandemonium": "^2.4.0",
+         "pino": "^10.3.1",
+         "pino-pretty": "^13.1.3",
+@@ -1888,9 +1889,9 @@
+       "license": "MIT"
+     },
+     "node_modules/@types/node": {
+-      "version": "26.3.0",
+-      "resolved": "https://registry.npmjs.org/@types/node/-/node-26.3.0.tgz",
+-      "integrity": "sha512-L3fgrnchriRC2ExBflb8j4uZZURHZfQsmQeyVzhjcHW4kkwVyo8/0h1B2MVzMTrYUJYu6G7EWs14hW/L9putqw==",
++      "version": "26.2.0",
++      "resolved": "https://registry.npmjs.org/@types/node/-/node-26.2.0.tgz",
++      "integrity": "sha512-5IviulTZeRNp2vAJ514cc/HUlY5nZ9fCbq9DMyC52BrhFZACo3nI0R7qBxhQmo/d27NFe96ur/b7Wwxklda+kg==",
+       "devOptional": true,
+       "license": "MIT",
+       "dependencies": {
+@@ -2408,15 +2409,15 @@
+       }
+     },
+     "node_modules/chokidar": {
+-      "version": "5.0.0",
+-      "resolved": "https://registry.npmjs.org/chokidar/-/chokidar-5.0.0.tgz",
+-      "integrity": "sha512-TQMmc3w+5AxjpL8iIiwebF73dRDF4fBIieAqGn9RGCWaEVwQ6Fb2cGe31Yns0RRIzii5goJ1Y7xbMwo1TxMplw==",
++      "version": "4.0.3",
++      "resolved": "https://registry.npmjs.org/chokidar/-/chokidar-4.0.3.tgz",
++      "integrity": "sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==",
+       "license": "MIT",
+       "dependencies": {
+-        "readdirp": "^5.0.0"
++        "readdirp": "^4.0.1"
+       },
+       "engines": {
+-        "node": ">= 20.19.0"
++        "node": ">= 14.16.0"
+       },
+       "funding": {
+         "url": "https://paulmillr.com/funding/"
+@@ -4719,12 +4720,12 @@
+       }
+     },
+     "node_modules/readdirp": {
+-      "version": "5.1.1",
+-      "resolved": "https://registry.npmjs.org/readdirp/-/readdirp-5.1.1.tgz",
+-      "integrity": "sha512-Kko+Y5XQ6fM+Ce3dq3m9YGxnacYZYl9cA1wZjaF3Vbry2L3i1qVg8+CAgNPsXRArPMUMCaOR7oa9Nqntc43JKA==",
++      "version": "4.1.2",
++      "resolved": "https://registry.npmjs.org/readdirp/-/readdirp-4.1.2.tgz",
++      "integrity": "sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==",
+       "license": "MIT",
+       "engines": {
+-        "node": ">= 20.19.0"
++        "node": ">= 14.18.0"
+       },
+       "funding": {
+         "type": "individual",
+diff --git a/gitnexus/package.json b/gitnexus/package.json
+index 1e15ad9b4..19a9c752f 100644
+--- a/gitnexus/package.json
++++ b/gitnexus/package.json
+@@ -60,7 +60,7 @@
+     "@modelcontextprotocol/sdk": "^1.0.0",
+     "@scarf/scarf": "^1.4.0",
+     "busboy": "^1.6.0",
+-    "chokidar": "^5.0.0",
++    "chokidar": "^4.0.3",
+     "cli-progress": "^3.12.0",
+     "commander": "^15.0.0",
+     "cors": "^2.8.5",
+diff --git a/gitnexus/src/cli/ai-context.ts b/gitnexus/src/cli/ai-context.ts
+index ca02f2b08..bcd6af84e 100644
+--- a/gitnexus/src/cli/ai-context.ts
++++ b/gitnexus/src/cli/ai-context.ts
+@@ -231,7 +231,8 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
+ - **MUST analyze graph changes before committing.** Use \`detect_changes({scope: "all"})\` (MCP) or \`${runner} detect-changes --scope all --repo .\` (CLI fallback). \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. For regression review: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\` or \`${runner} detect-changes --scope compare --base-ref ${JSON.stringify(markdownSafeBranch(defaultBranch))} --repo .\`.
+ - MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
+ - **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
+-- **MUST use \`query({search_query: "concept"})\` for concepts/flows, \`context({name: "symbolName"})\` for a named symbol, or \`impact\` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/\`UNKNOWN\`/literals.${
++- Explore with \`query({search_query: "concept"})\` for process-grouped flows.
++- Use \`context({name: "symbolName"})\` for callers, callees, and flows.${
+     hasSpringActuator
+       ? '\n- Spring Actuator runtime evidence is enabled. A Route is authoritative only when `runtimeConfirmed === true`; `runtimeSource` is provenance and may also describe conflicts. Snapshot values are never persisted.'
+       : ''
+@@ -440,6 +441,28 @@ export async function shouldMirrorSkillsToAgents(repoPath: string): Promise<bool
+   }
+ }
+ 
++const SKILL_PRESERVE_HINT =
++  'delete the file to refresh from the bundled template, or pass --skip-skills to skip skill install';
++
++async function readUtf8IfPresent(filePath: string): Promise<string | null> {
++  try {
++    return await fs.readFile(filePath, 'utf-8');
++  } catch {
++    return null;
++  }
++}
++
++/** Write bundled skill bytes unless an existing file already differs (#3080). */
++async function writeSkillUnlessDivergent(filePath: string, content: string): Promise<void> {
++  const existing = await readUtf8IfPresent(filePath);
++  if (existing !== null && existing !== content) {
++    logger.warn(`Preserved customized skill ${filePath}; ${SKILL_PRESERVE_HINT}.`);
++    return;
++  }
++  await fs.mkdir(path.dirname(filePath), { recursive: true });
++  await fs.writeFile(filePath, content, 'utf-8');
++}
++
+ /**
+  * Install GitNexus skills as direct children of .claude/skills/
+  * Works natively with Claude Code, Cursor, and GitHub Copilot.
+@@ -460,9 +483,6 @@ async function installSkills(
+     const skillPath = path.join(skillDir, 'SKILL.md');
+ 
+     try {
+-      // Create skill directory
+-      await fs.mkdir(skillDir, { recursive: true });
+-
+       // Try to read from package skills directory
+       const packageSkillPath = path.join(__dirname, '..', '..', 'skills', `${skill.name}.md`);
+       let skillContent: string;
+@@ -484,14 +504,13 @@ Use GitNexus tools to accomplish this task.
+ `;
+       }
+ 
+-      await fs.writeFile(skillPath, skillContent, 'utf-8');
++      await writeSkillUnlessDivergent(skillPath, skillContent);
+ 
+       // Mirror to .agents/skills/ for agents that read repo-local skills
+       if (agentsMirror) {
+         try {
+-          const agentsSkillDir = path.join(repoPath, '.agents', 'skills', skill.name);
+-          await fs.mkdir(agentsSkillDir, { recursive: true });
+-          await fs.writeFile(path.join(agentsSkillDir, 'SKILL.md'), skillContent, 'utf-8');
++          const agentsSkillPath = path.join(repoPath, '.agents', 'skills', skill.name, 'SKILL.md');
++          await writeSkillUnlessDivergent(agentsSkillPath, skillContent);
+         } catch (err) {
+           logger.warn({ err }, `Warning: Could not mirror skill ${skill.name} to .agents/skills:`);
+         }
+@@ -502,8 +521,16 @@ Use GitNexus tools to accomplish this task.
+       // Previous releases installed these known standard skills one level too
+       // deep. Remove only the child owned by this installer; unknown siblings
+       // under the legacy grouping directory may be user-authored and survive.
++      // Skip rm when nested SKILL.md exists and differs from the bundle (#3080).
+       try {
+-        await fs.rm(path.join(legacySkillsDir, skill.name), { recursive: true, force: true });
++        const legacyDir = path.join(legacySkillsDir, skill.name);
++        const nestedSkill = path.join(legacyDir, 'SKILL.md');
++        const nestedExisting = await readUtf8IfPresent(nestedSkill);
++        if (nestedExisting !== null && nestedExisting !== skillContent) {
++          logger.warn(`Preserved customized skill ${nestedSkill}; ${SKILL_PRESERVE_HINT}.`);
++        } else {
++          await fs.rm(legacyDir, { recursive: true, force: true });
++        }
+       } catch (err) {
+         logger.warn({ err }, `Warning: Could not remove legacy skill ${skill.name}:`);
+       }
+diff --git a/gitnexus/src/cli/i18n/en.ts b/gitnexus/src/cli/i18n/en.ts
+index f5654d1bf..17e5cce07 100644
+--- a/gitnexus/src/cli/i18n/en.ts
++++ b/gitnexus/src/cli/i18n/en.ts
+@@ -201,7 +201,7 @@ export const en = {
+   'help.option.analyze.skills':
+     'Generate repo-specific skill files from detected communities (no-op when --index-only is also set).',
+   'help.option.analyze.skipAgentsMd':
+-    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md',
++    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip .claude/skills or .agents/skills; use --skip-skills for those.',
+   'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',
+   'help.option.analyze.selfCommit':
+     'Auto-commit AGENTS.md/CLAUDE.md changes after analyze (opt-in, off by default). Scoped to only those two files (never `git add -A`); no-ops if neither exists, neither changed, or the repo has no git identity configured.',
+diff --git a/gitnexus/src/cli/i18n/zh-CN.ts b/gitnexus/src/cli/i18n/zh-CN.ts
+index 4aff202b6..03494edcc 100644
+--- a/gitnexus/src/cli/i18n/zh-CN.ts
++++ b/gitnexus/src/cli/i18n/zh-CN.ts
+@@ -188,7 +188,8 @@ export const zhCN = {
+     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
+   'help.option.analyze.skills':
+     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
+-  'help.option.analyze.skipAgentsMd': '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块',
++  'help.option.analyze.skipAgentsMd':
++    '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块。不会跳过 .claude/skills 或 .agents/skills；如需跳过技能安装请使用 --skip-skills。',
+   'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',
+   'help.option.analyze.selfCommit':
+     '在 analyze 后自动提交 AGENTS.md/CLAUDE.md 的变更（默认关闭，需显式开启）。仅限这两个文件（绝不使用 `git add -A`）；若两者均不存在、均未变更，或仓库未配置 git 身份，则不执行任何操作。',
+diff --git a/gitnexus/src/cli/index.ts b/gitnexus/src/cli/index.ts
+index 216cc87dd..5ac2b6336 100644
+--- a/gitnexus/src/cli/index.ts
++++ b/gitnexus/src/cli/index.ts
+@@ -76,7 +76,10 @@ program
+     'Generate repo-specific skill files from detected communities ' +
+       '(no-op when --index-only is also set).',
+   )
+-  .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
++  .option(
++    '--skip-agents-md',
++    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip .claude/skills or .agents/skills; use --skip-skills for those.',
++  )
+   .option(
+     '--pdg',
+     'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
+diff --git a/gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts b/gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts
+index 4c21bd90c..ac1925565 100644
+--- a/gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts
++++ b/gitnexus/test/integration/spring-actuator-kotlin-runtime-pipeline.test.ts
+@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
+ import type { GraphNode } from 'gitnexus-shared';
+ import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
+ 
+-const SECRET_ENV_VALUE = 'KOTLIN_ACTUATOR_ENV_CANARY_2418';
++const SECRET = 'KOTLIN_ACTUATOR_SECRET_2418';
+ 
+ function writeFixture(root: string, relativePath: string, content: string): void {
+   const target = path.join(root, relativePath);
+@@ -240,11 +240,9 @@ class KotlinProperties {
+     contexts: {
+       application: {
+         positiveMatches: {
+-          'com.example.KotlinConfig#billingService': [{ message: SECRET_ENV_VALUE }],
+-          'com.example.KotlinController$Companion#companionHandler': [
+-            { message: SECRET_ENV_VALUE },
+-          ],
+-          'com.example.NamedHolder$Factory#namedHandler': [{ message: SECRET_ENV_VALUE }],
++          'com.example.KotlinConfig#billingService': [{ message: SECRET }],
++          'com.example.KotlinController$Companion#companionHandler': [{ message: SECRET }],
++          'com.example.NamedHolder$Factory#namedHandler': [{ message: SECRET }],
+         },
+         negativeMatches: {},
+       },
+@@ -256,7 +254,7 @@ class KotlinProperties {
+         beans: {
+           kotlin: {
+             prefix: 'app.kotlin',
+-            inputs: { url: { value: SECRET_ENV_VALUE, origin: SECRET_ENV_VALUE } },
++            inputs: { url: { value: SECRET, origin: SECRET } },
+           },
+         },
+       },
+@@ -265,10 +263,10 @@ class KotlinProperties {
+   writeJson(repo, 'actuator/env.json', {
+     propertySources: [
+       {
+-        name: SECRET_ENV_VALUE,
++        name: SECRET,
+         properties: {
+-          'app.kotlin.url': { value: SECRET_ENV_VALUE, origin: SECRET_ENV_VALUE },
+-          'app.kotlin.password': { value: SECRET_ENV_VALUE, origin: SECRET_ENV_VALUE },
++          'app.kotlin.url': { value: SECRET, origin: SECRET },
++          'app.kotlin.password': { value: SECRET, origin: SECRET },
+         },
+       },
+     ],
+@@ -382,7 +380,7 @@ describe('Spring Boot Actuator Kotlin runtime enrichment', () => {
+       'Spring Actuator env runtime-confirmed',
+     );
+ 
+-    expect(JSON.stringify([...result.graph.iterNodes()])).not.toContain(SECRET_ENV_VALUE);
++    expect(JSON.stringify([...result.graph.iterNodes()])).not.toContain(SECRET);
+     expect(nodes.some((node) => String(node.properties.filePath).includes('/actuator/'))).toBe(
+       false,
+     );
+diff --git a/gitnexus/test/unit/ai-context-read-path-must.test.ts b/gitnexus/test/unit/ai-context-read-path-must.test.ts
+deleted file mode 100644
+index 20c39d145..000000000
+--- a/gitnexus/test/unit/ai-context-read-path-must.test.ts
++++ /dev/null
+@@ -1,48 +0,0 @@
+-import { describe, it, expect } from 'vitest';
+-import { generateGitNexusContent } from '../../src/cli/ai-context.js';
+-
+-// Regression guard for #3076. The Explore/Use Always-Do lines were advisory, so
+-// read-only sessions had no MUST to call query/context/impact. The replacement
+-// bullet is not hasPdg-gated (unlike pdg_query) and is not nested in an
+-// edit/commit/rename-only sentence.
+-describe('generateGitNexusContent emits a read-path MUST (#3076)', () => {
+-  const stats = { nodes: 50, edges: 100, processes: 5 };
+-  const mustBullet =
+-    '- **MUST use `query({search_query: "concept"})` for concepts/flows, `context({name: "symbolName"})` for a named symbol, or `impact` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/`UNKNOWN`/literals.';
+-
+-  function alwaysDoSection(content: string): string {
+-    return content.slice(content.indexOf('## Always Do'), content.indexOf('## Never Do'));
+-  }
+-
+-  function assertNoAdvisoryExploreUse(content: string): void {
+-    expect(content).not.toMatch(/Explore\s+with/);
+-    expect(content).not.toMatch(/Use\s+`context\(\{name:/);
+-    expect(alwaysDoSection(content)).not.toMatch(/^- [^\n]*Explore/m);
+-  }
+-
+-  it.each([true, false])(
+-    'renders the MUST and drops Explore/Use bullets when hasPdg=%s',
+-    (hasPdg) => {
+-      const content = generateGitNexusContent('ReadPathProject', stats, { hasPdg });
+-      expect(alwaysDoSection(content)).toContain(`\n${mustBullet}\n`);
+-      assertNoAdvisoryExploreUse(content);
+-      if (hasPdg) {
+-        expect(content).toContain('pdg_query');
+-      }
+-    },
+-  );
+-
+-  it('keeps the MUST beside the Spring Actuator Always-Do line', () => {
+-    const content = generateGitNexusContent('SpringProject', stats, { hasSpringActuator: true });
+-    expect(alwaysDoSection(content)).toContain(
+-      `${mustBullet}\n- Spring Actuator runtime evidence is enabled`,
+-    );
+-    assertNoAdvisoryExploreUse(content);
+-  });
+-
+-  it('keeps pdg_query gated on hasPdg while the read-path MUST stays always-emitted', () => {
+-    const withoutPdg = generateGitNexusContent('PlainProject', stats);
+-    expect(alwaysDoSection(withoutPdg)).toContain(`\n${mustBullet}\n`);
+-    expect(withoutPdg).not.toContain('pdg_query');
+-  });
+-});
+diff --git a/gitnexus/test/unit/ai-context.test.ts b/gitnexus/test/unit/ai-context.test.ts
+index 8e1a08e7c..e711f3ea0 100644
+--- a/gitnexus/test/unit/ai-context.test.ts
++++ b/gitnexus/test/unit/ai-context.test.ts
+@@ -8,6 +8,7 @@ import {
+   refreshBaseRefLine,
+   markdownSafeBranch,
+ } from '../../src/cli/ai-context.js';
++import { _captureLogger } from '../../src/core/logger.js';
+ 
+ describe('generateAIContextFiles', () => {
+   let tmpDir: string;
+@@ -497,7 +498,11 @@ Old content here.
+       await expect(
+         fs.access(path.join(dir, '.claude', 'skills', 'gitnexus-exploring', 'SKILL.md')),
+       ).resolves.toBeUndefined();
+-      await expect(fs.access(legacyKnown)).rejects.toThrow();
++      // Divergent nested SKILL.md is preserved (#3080); only byte-identical
++      // leftovers are still removed.
++      await expect(fs.readFile(path.join(legacyKnown, 'SKILL.md'), 'utf-8')).resolves.toBe(
++        'legacy',
++      );
+       await expect(fs.readFile(path.join(legacyUnknown, 'SKILL.md'), 'utf-8')).resolves.toBe(
+         'custom nested',
+       );
+@@ -538,6 +543,137 @@ Old content here.
+     }
+   });
+ 
++  it('skipSkills does not remove nested leftover standard skills (#3080 / AE4)', async () => {
++    const skipDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-skip-nested-'));
++    const skipStorage = path.join(skipDir, '.gitnexus');
++    const nested = path.join(skipDir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
++    await fs.mkdir(nested, { recursive: true });
++    await fs.mkdir(skipStorage, { recursive: true });
++    await fs.writeFile(path.join(nested, 'SKILL.md'), 'CUSTOM-NESTED', 'utf-8');
++    try {
++      await generateAIContextFiles(skipDir, skipStorage, 'TestProject', { nodes: 1 }, undefined, {
++        skipAgentsMd: true,
++        skipSkills: true,
++      });
++      await expect(fs.readFile(path.join(nested, 'SKILL.md'), 'utf-8')).resolves.toBe(
++        'CUSTOM-NESTED',
++      );
++    } finally {
++      await fs.rm(skipDir, { recursive: true, force: true });
++    }
++  });
++
++  it('preserves customized flat SKILL.md under skipAgentsMd (#3080 / AE1)', async () => {
++    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-flat-'));
++    const storage = path.join(dir, '.gitnexus');
++    const cliSkill = path.join(dir, '.claude', 'skills', 'gitnexus-cli', 'SKILL.md');
++    await fs.mkdir(path.dirname(cliSkill), { recursive: true });
++    await fs.mkdir(storage, { recursive: true });
++    await fs.writeFile(cliSkill, 'CUSTOM-COMMITTED-SKILL-3080-cli\n', 'utf-8');
++    const cap = _captureLogger();
++    try {
++      const result = await generateAIContextFiles(
++        dir,
++        storage,
++        'TestProject',
++        { nodes: 1 },
++        undefined,
++        { skipAgentsMd: true },
++      );
++      expect(result.files).toContain('AGENTS.md (skipped via --skip-agents-md)');
++      expect(result.files.some((f) => f.includes('skipped via --skip-skills'))).toBe(false);
++      await expect(fs.readFile(cliSkill, 'utf-8')).resolves.toBe(
++        'CUSTOM-COMMITTED-SKILL-3080-cli\n',
++      );
++      const msgs = cap.records().map((r) => r.msg ?? '');
++      expect(msgs.some((m) => m.includes(cliSkill) && m.includes('--skip-skills'))).toBe(true);
++    } finally {
++      cap.restore();
++      await fs.rm(dir, { recursive: true, force: true });
++    }
++  });
++
++  it('creates a missing standard skill from the bundle (#3080 / AE2)', async () => {
++    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-missing-'));
++    const storage = path.join(dir, '.gitnexus');
++    await fs.mkdir(storage, { recursive: true });
++    try {
++      await generateAIContextFiles(dir, storage, 'TestProject', { nodes: 1 }, undefined, {
++        skipAgentsMd: true,
++      });
++      const created = await fs.readFile(
++        path.join(dir, '.claude', 'skills', 'gitnexus-debugging', 'SKILL.md'),
++        'utf-8',
++      );
++      const bundled = await fs.readFile(
++        path.join(__dirname, '../../skills/gitnexus-debugging.md'),
++        'utf-8',
++      );
++      expect(created).toBe(bundled);
++    } finally {
++      await fs.rm(dir, { recursive: true, force: true });
++    }
++  });
++
++  it('rewrites a SKILL.md that already matches the current bundle (R2)', async () => {
++    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-ident-'));
++    const storage = path.join(dir, '.gitnexus');
++    const dest = path.join(dir, '.claude', 'skills', 'gitnexus-cli', 'SKILL.md');
++    const bundled = await fs.readFile(path.join(__dirname, '../../skills/gitnexus-cli.md'), 'utf-8');
++    await fs.mkdir(path.dirname(dest), { recursive: true });
++    await fs.mkdir(storage, { recursive: true });
++    await fs.writeFile(dest, bundled, 'utf-8');
++    try {
++      await generateAIContextFiles(dir, storage, 'TestProject', { nodes: 1 }, undefined, {
++        skipAgentsMd: true,
++      });
++      await expect(fs.readFile(dest, 'utf-8')).resolves.toBe(bundled);
++    } finally {
++      await fs.rm(dir, { recursive: true, force: true });
++    }
++  });
++
++  it('removes nested leftover when SKILL.md matches the bundle', async () => {
++    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-nested-ident-'));
++    const storage = path.join(dir, '.gitnexus');
++    const nested = path.join(dir, '.claude', 'skills', 'gitnexus', 'gitnexus-cli');
++    const bundled = await fs.readFile(path.join(__dirname, '../../skills/gitnexus-cli.md'), 'utf-8');
++    await fs.mkdir(nested, { recursive: true });
++    await fs.mkdir(storage, { recursive: true });
++    await fs.writeFile(path.join(nested, 'SKILL.md'), bundled, 'utf-8');
++    try {
++      await generateAIContextFiles(dir, storage, 'TestProject', { nodes: 1 }, undefined, {
++        skipAgentsMd: true,
++      });
++      await expect(fs.access(nested)).rejects.toThrow();
++    } finally {
++      await fs.rm(dir, { recursive: true, force: true });
++    }
++  });
++
++  it('preserves a divergent .agents mirror while writing a missing .claude copy', async () => {
++    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-3080-agents-'));
++    const storage = path.join(dir, '.gitnexus');
++    const agentsSkill = path.join(dir, '.agents', 'skills', 'gitnexus-cli', 'SKILL.md');
++    await fs.mkdir(path.dirname(agentsSkill), { recursive: true });
++    await fs.mkdir(storage, { recursive: true });
++    await fs.writeFile(agentsSkill, 'CUSTOM-AGENTS-MIRROR\n', 'utf-8');
++    try {
++      await generateAIContextFiles(dir, storage, 'TestProject', { nodes: 1 }, undefined, {
++        skipAgentsMd: true,
++      });
++      await expect(fs.readFile(agentsSkill, 'utf-8')).resolves.toBe('CUSTOM-AGENTS-MIRROR\n');
++      const claudeCopy = await fs.readFile(
++        path.join(dir, '.claude', 'skills', 'gitnexus-cli', 'SKILL.md'),
++        'utf-8',
++      );
++      expect(claudeCopy).not.toBe('CUSTOM-AGENTS-MIRROR\n');
++      expect(claudeCopy.length).toBeGreaterThan(0);
++    } finally {
++      await fs.rm(dir, { recursive: true, force: true });
++    }
++  });
++
+   it('mirrors standard skills to .agents/skills/ when .agents/ exists', async () => {
+     // Some agents prefer repo-local .agents/skills over the global
+     // ~/.agents/skills install. When the repo contains an .agents/ directory,
+diff --git a/gitnexus/test/unit/shipped-skills-sync.test.ts b/gitnexus/test/unit/shipped-skills-sync.test.ts
+index 936f4c2af..984037e4c 100644
+--- a/gitnexus/test/unit/shipped-skills-sync.test.ts
++++ b/gitnexus/test/unit/shipped-skills-sync.test.ts
+@@ -330,10 +330,6 @@ function extractManagedBlock(file: string): string {
+   return match![1];
+ }
+ 
+-function alwaysDoSection(block: string): string {
+-  return block.slice(block.indexOf('## Always Do'), block.indexOf('## Never Do'));
+-}
+-
+ // The `risk: UNKNOWN` Always-Do bullet and its Never-Do clause were hand-added
+ // INSIDE the machine-managed region instead of living in the template, so a
+ // real analyze run silently deleted them on regeneration — twice (#2856's
+@@ -361,33 +357,18 @@ describe('root AGENTS.md / CLAUDE.md managed block keeps the risk: UNKNOWN polic
+     for (const fragment of REQUIRED_FRAGMENTS) expect(block).toContain(fragment);
+   });
+ 
+-  it.each(['AGENTS.md', 'CLAUDE.md'])(
+-    '%s Always-Do pins the read-path MUST as its own bullet (#3076)',
+-    (file) => {
+-      const alwaysDo = alwaysDoSection(extractManagedBlock(file));
+-      expect(alwaysDo).toMatch(/^- \*\*MUST use `query\(\{search_query: "concept"\}\)`/m);
+-      expect(alwaysDo).toContain('Graph first');
+-      expect(alwaysDo).toContain('text search only for empty/');
+-      expect(alwaysDo).not.toMatch(/Explore\s+with/);
+-      expect(alwaysDo).not.toMatch(/Use\s+`context\(\{name:/);
+-      expect(alwaysDo).not.toMatch(/^- [^\n]*Explore/m);
+-    },
+-  );
+-
+   it.each(['AGENTS.md', 'CLAUDE.md'])(
+     "%s managed block's Always Do / Never Do bullet counts do not drop below the known floor",
+     (file) => {
+       const block = extractManagedBlock(file);
+-      const alwaysDo = alwaysDoSection(block);
+-      const neverDoSection = block.slice(block.indexOf('## Never Do'));
+-      const ungated = (alwaysDo.match(/^- .+/gm) ?? []).filter(
+-        (line) => !line.includes('pdg_query'),
++      const alwaysDoSection = block.slice(
++        block.indexOf('## Always Do'),
++        block.indexOf('## Never Do'),
+       );
+-      // Six Always-Do bullets are not hasPdg-gated after #3076. pdg_query is
+-      // extra when the committed block was generated with --pdg. Counting
+-      // ungated bullets (not total >= 6) fails if the read-path MUST leaves
+-      // Always-Do while pdg_query keeps the old slack.
+-      expect(ungated).toHaveLength(6);
++      const neverDoSection = block.slice(block.indexOf('## Never Do'));
++      // 7 Always-Do bullets are unconditional; an 8th (pdg_query) only
++      // appears when the index was built with --pdg, so the floor is 7, not 8.
++      expect((alwaysDoSection.match(/^- /gm) || []).length).toBeGreaterThanOrEqual(7);
+       // Never Do never varies with hasPdg — exactly 4 today, so 4 is the floor.
+       expect((neverDoSection.match(/^- NEVER /gm) || []).length).toBeGreaterThanOrEqual(4);
+     },
+diff --git a/gitnexus/test/unit/skip-git-cli.test.ts b/gitnexus/test/unit/skip-git-cli.test.ts
+index 9163e8692..ef7ec0b72 100644
+--- a/gitnexus/test/unit/skip-git-cli.test.ts
++++ b/gitnexus/test/unit/skip-git-cli.test.ts
+@@ -42,8 +42,10 @@ describe('--skip-git CLI flag', () => {
+     });
+ 
+     expect(helpOutput).toContain('--skip-git');
+-    expect(helpOutput).toContain('--skip-agents-md');
+-    expect(helpOutput).toContain('--skip-skills');
++    const helpFlat = helpOutput.replace(/\s+/g, ' ');
++    expect(helpFlat).toContain('--skip-agents-md');
++    expect(helpFlat).toContain('Does not skip .claude/skills');
++    expect(helpFlat).toContain('--skip-skills');
+     expect(helpOutput).toContain('directly under .claude/skills/');
+     expect(helpOutput).toContain('.agents/skills/');
+     expect(helpOutput).toContain('.claude/skills/gitnexus-area-*');

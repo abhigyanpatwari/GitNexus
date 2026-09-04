@@ -1,4 +1,4 @@
-# Workflow benchmark — observe the token savings
+# Skill benchmark — evolve review quality, measure workflow cost
 
 Measures whether the `gitnexus-plan` → `gitnexus-work` engineering workflow
 actually saves tokens versus a baseline agent on the same tasks, using real
@@ -16,8 +16,9 @@ report.
 | `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay | Paired with `workflow_direct` on the same task/ref/model |
 | `ce_workflow` | `ce-plan` on the task, then `ce-work` on the produced plan | External comparator: the explicitly supplied, pinned compound-engineering plugin's plan→work family |
 | `ce_workflow_direct` | one `ce-work` direct-mode session | External comparator paired with `workflow_direct` |
-| `review` | one `gitnexus-review` session over local uncommitted changes | The task's `setup` applies the diff under review; the review is written to `review-output.md` so `verify` can gate on it |
-| `ce_review` | one `ce-code-review` session over the same changes | External comparator paired with `review` |
+| `review` | one `gitnexus-review` session over an immutable historical PR snapshot | Emits strict `review-output.json`; hidden human labels score quality after the session |
+| `candidate_review` | the same review with a `gitnexus-review` candidate overlay | Paired with `review` on the same case/ref/model/runtime |
+| `ce_review` | one pinned `ce-code-review` session over the same changes | External comparator paired with both review arms |
 | `baseline` | one session with the identical task text | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools |
 | `baseline_nomcp` | like baseline, graph tools also disallowed | Separates the workflow-discipline question from the GitNexus-tools question (off by default) |
 
@@ -252,9 +253,13 @@ match the workflow: `MODEL`, `PROPOSER_MODEL`, `GENERATIONS`, `RUNS`,
 checked-in production defaults are `PROVIDER=openai`, `MODEL=gpt-5.6-sol`,
 `PROPOSER_MODEL=gpt-5.6-sol`, and `EFFORT=xhigh`.
 
-Each generation: a confined **proposer** session reads the incumbent plan/work
-skills, the prior generation's `results.jsonl`
-loser rows, their session transcripts and patches, the rejected
+The scheduled/default profile is read-only review evolution. Set
+`EVOLUTION_PROFILE=implementation` explicitly to run the legacy plan/work
+benchmark. Review mode requires `CE_PLUGIN_DIR` and `CE_PLUGIN_VERSION`.
+
+Each review generation: a confined **proposer** session reads only the incumbent
+`gitnexus-review` skill, normalized CE/incumbent/candidate result rows, bounded
+review artifacts and session transcripts, and the rejected
 `proposal.md` when available (including a workflow seed from a prior run), and
 the learning queue,
 then writes ONE bounded candidate overlay plus a reviewer-facing
@@ -264,12 +269,16 @@ letting it read `eval/workflow_bench` would hand it the task prompts and the
 hidden oracles it is about to be graded against, and a proposal could win the
 gate by encoding the expected behavior into a skill rather than by being a
 better skill. The overlay is re-validated by `candidate_overlay_files`
-(same boundary: Markdown under the plan/work trees, nothing else), frozen,
+(same boundary: Markdown under `gitnexus-review`, including exercised
+`ci-personas/`, nothing else), frozen,
 and exercised only by its exact required pairs. Task refs are resolved once
 before generation zero and the immutable task bindings are forwarded to every
 generated runner invocation, so a moving branch cannot change later evidence.
-The deterministic gate then decides. Promotion application rejects older
-pre-oracle evidence schemas. `promote` stops the loop; with `--apply`
+The deterministic quality-first gate rejects blocker-recall regressions,
+new false positives on clean controls, and any weighted-score regression.
+Repeated evidence (`RUNS>=3`) is required for promotion; `RUNS=1` is
+diagnostic-only. CE is the external comparator. Cost and latency are
+tiebreakers and never compensate for quality loss. `promote` stops the loop; with `--apply`
 the authorized frozen bytes
 are transactionally applied to the canonical
 `.claude/skills/` trees and their shipped mirrors as an ordinary
@@ -279,13 +288,12 @@ generation's trajectories to the next proposer. `--initial-overlay` skips
 the generation-0 proposer to benchmark a hand-written candidate;
 `--proposer-model` upgrades only the diagnosis session.
 
-**Learning queue.** Live plan/work skill runs never self-edit (see each
+**Learning queue.** Live skill runs never self-edit (see each
 skill's "Skill feedback" section) — instead they may append one-line JSON notes to
 `workflow_bench/learnings.jsonl` (gitignored, machine-local like the
 transcripts they complement). The proposer reads the queue as hints, not
 ground truth: a learning only reaches a shipped skill by surviving the same
-paired benchmark as any other candidate. Legacy review/LFG rows are ignored;
-those skills do not yet have honest candidate lanes or promotion gates.
+paired benchmark as any other candidate.
 
 For ad-hoc use, run the driver on the existing re-evaluation triggers
 (model/harness change or 90-day staleness). The repository workflow runs a

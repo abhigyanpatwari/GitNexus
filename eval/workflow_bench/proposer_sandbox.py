@@ -129,6 +129,7 @@ class SandboxSession:
         unshare_network: bool = False,
         read_only_paths: Sequence[Path] = (),
         extra_read_only_mounts: Sequence[ReadOnlyMount] = (),
+        extra_writable_mounts: Sequence[ReadOnlyMount] = (),
     ) -> list[str]:
         """Build a stricter command boundary from this session's fixed roots.
 
@@ -179,6 +180,25 @@ class SandboxSession:
                 raise SandboxError(f"extra read-only mount target must be absolute: {mount.target}")
             additional.append(ReadOnlyMount(source=source, target=target.as_posix()))
 
+        writable: list[ReadOnlyMount] = []
+        for mount in extra_writable_mounts:
+            source = mount.source.expanduser().absolute()
+            try:
+                metadata = source.lstat()
+                resolved = source.resolve(strict=True)
+            except OSError as exc:
+                raise SandboxError(f"writable artifact mount is unavailable: {source}") from exc
+            if (
+                resolved != source
+                or stat.S_ISLNK(metadata.st_mode)
+                or not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode))
+            ):
+                raise SandboxError(f"writable artifact mount must be real and non-symlink: {source}")
+            target = PurePosixPath(mount.target)
+            if not target.is_absolute() or ".." in target.parts:
+                raise SandboxError(f"writable artifact mount target must be absolute: {mount.target}")
+            writable.append(ReadOnlyMount(source=source, target=target.as_posix()))
+
         return _sandbox_command_prefix(
             bwrap=self.bwrap_bin,
             clone=clone,
@@ -186,6 +206,7 @@ class SandboxSession:
             temp=self.temp,
             claude_bin=self.claude_host_bin,
             mounts=(*self.read_only_mounts, *additional),
+            writable_mounts=writable,
             read_only_workspace=read_only_workspace,
             unshare_network=unshare_network,
         )
@@ -702,6 +723,7 @@ def _sandbox_command_prefix(
     temp: Path,
     claude_bin: Path,
     mounts: Sequence[ReadOnlyMount],
+    writable_mounts: Sequence[ReadOnlyMount] = (),
     read_only_workspace: bool = False,
     unshare_network: bool = False,
 ) -> list[str]:
@@ -750,6 +772,8 @@ def _sandbox_command_prefix(
         # not carry it, and overlaying them would fail with EROFS.
         if PurePosixPath(mount.target).name == DEPENDENCY_MOUNT_BASENAME and (mount.source / VITE_TEMP_DIR).is_dir():
             args += ["--tmpfs", f"{mount.target}/{VITE_TEMP_DIR}"]
+    for mount in writable_mounts:
+        args += ["--bind", str(mount.source), mount.target]
     args += ["--chdir", SANDBOX_WORKSPACE, "--"]
     return args
 

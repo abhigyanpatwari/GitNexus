@@ -452,6 +452,8 @@ def test_run_evolution_script_is_the_shared_ci_and_local_entrypoint():
         "SEED_RESULTS": "/tmp/seed-bench",
         "CLAUDE_BIN": "/opt/claude",
         "OUT_ROOT": "/tmp/wfevolve",
+        "CE_PLUGIN_DIR": "/tmp/ce-plugin",
+        "CE_PLUGIN_VERSION": "3.24.0",
         "HOME": os.environ.get("HOME", "/tmp"),
     }
     printed = subprocess.run(
@@ -463,7 +465,10 @@ def test_run_evolution_script_is_the_shared_ci_and_local_entrypoint():
     )
     argv = shlex.split(printed.stdout)
     assert argv[:7] == ["uv", "run", "--locked", "--extra", "dev", "python", "-m"]
-    assert argv[7:9] == ["workflow_bench.evolve", "--tasks"]
+    assert argv[7] == "workflow_bench.evolve"
+    assert argv[argv.index("--tasks") + 1] == "workflow_bench/tasks.review.scenarios.yaml"
+    assert argv[argv.index("--arms") + 1] == "review"
+    assert argv[argv.index("--ce-plugin-version") + 1] == "3.24.0"
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
     assert argv[argv.index("--proposer-model") + 1] == "gpt-5.6-sol"
     assert argv[argv.index("--effort") + 1] == "xhigh"

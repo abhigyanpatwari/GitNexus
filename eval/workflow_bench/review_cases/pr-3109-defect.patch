@@ -1,0 +1,723 @@
+diff --git a/SECURITY.md b/SECURITY.md
+index 89368a1ea..6199e8b69 100644
+--- a/SECURITY.md
++++ b/SECURITY.md
+@@ -65,6 +65,10 @@ The `render.yaml` Blueprint (see the README's **Deploy to Render**) puts `gitnex
+ 
+ Do not hand the URL out as a public demo. A token holder has read access to everything the deploy has indexed.
+ 
++### `/api/grep` regex semantics and residual ReDoS exposure
++
++`GET /api/grep` executes caller-supplied patterns as real regular expressions (with an optional path-substring `fileFilter` and `caseSensitive` flag) to honor the web chat's grep tool contract; `literal=1` restores the older escaped-substring mode that was accidentally ReDoS-immune. Mitigations: a 200-character pattern cap, line-by-line matching, a max-200 result cap, and a 5-second wall-clock budget enforced between files and between lines (a timed-out scan returns partial results with `timedOut: true`; the web grep tool surfaces that flag so an agent does not treat a cut-off scan as exhaustive). **What these do not cover:** a single catastrophically backtracking pattern (e.g. `(a+)+$`) blocks the Node event loop synchronously inside one `regex.test()` call — the budget cannot interrupt it, and during that window the whole server is unresponsive (measured: a 35-character line exceeds 120s). Exposure is accepted because loopback-bound local serves see only trusted input, hosted deploys gate the route behind the edge token, and agent-generated patterns are length-capped; a proper worker-thread sandbox with `terminate()` (or an optional `re2` dependency) is the known follow-up. If you expose `serve` beyond loopback to parties you do not fully trust, prefer keeping literal mode for untrusted callers.
++
+ ## Automated Scans Running in CI
+ 
+ This repository runs the following scans automatically. Findings appear under the repository's **Security → Code scanning** tab.
+diff --git a/gitnexus-web/src/core/llm/tools.ts b/gitnexus-web/src/core/llm/tools.ts
+index 407018678..aeb753e7f 100644
+--- a/gitnexus-web/src/core/llm/tools.ts
++++ b/gitnexus-web/src/core/llm/tools.ts
+@@ -14,7 +14,7 @@
+ import { tool } from '@langchain/core/tools';
+ import { z } from 'zod';
+ import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
+-import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
++import type { EnrichedSearchResult, GrepResponse } from '../../services/backend-client';
+ 
+ /**
+  * Tool names registered by createGraphRAGTools — kept in sync with each tool's `name`
+@@ -44,7 +44,11 @@ export interface GraphRAGBackend {
+     query: string,
+     opts?: { limit?: number; mode?: 'hybrid' | 'semantic' | 'bm25'; enrich?: boolean },
+   ) => Promise<EnrichedSearchResult[]>;
+-  grep: (pattern: string, limit?: number) => Promise<GrepResult[]>;
++  grep: (
++    pattern: string,
++    limit?: number,
++    opts?: { fileFilter?: string; caseSensitive?: boolean },
++  ) => Promise<GrepResponse>;
+   readFile: (filePath: string) => Promise<string>;
+ }
+ 
+@@ -375,20 +379,22 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
+         }
+ 
+         const limit = maxResults ?? 100;
+-        const fullPattern = fileFilter
+-          ? `(?=.*${fileFilter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}).*${pattern}`
+-          : pattern;
+-
+-        const results = await backendGrep(fullPattern, limit);
++        const { results, timedOut } = await backendGrep(pattern, limit, {
++          fileFilter: fileFilter ?? undefined,
++          caseSensitive,
++        });
++        const timeoutMsg = timedOut
++          ? '\n\n(Scan timed out after a few seconds — results may be incomplete)'
++          : '';
+ 
+         if (results.length === 0) {
+-          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}`;
++          return `No matches for "${pattern}"${fileFilter ? ` in files matching "${fileFilter}"` : ''}${timeoutMsg}`;
+         }
+ 
+         const formatted = results.map((r) => `${r.filePath}:${r.line}: ${r.text}`).join('\n');
+         const truncatedMsg = results.length >= limit ? `\n\n(Showing first ${limit} results)` : '';
+ 
+-        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}`;
++        return `Found ${results.length} matches:\n\n${formatted}${truncatedMsg}${timeoutMsg}`;
+       } catch (error) {
+         return `Grep error: ${error instanceof Error ? error.message : String(error)}`;
+       }
+@@ -396,16 +402,20 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
+     {
+       name: 'grep',
+       description:
+-        'Search for exact text patterns across all files using regex. Use for finding specific strings, error messages, TODOs, variable names, etc.',
++        'Search file contents with a regular expression (server executes it as a real regex — alternation like "sign|Sign" works). Matches are case-insensitive unless caseSensitive is set. fileFilter keeps only files whose path contains the substring. Each call caps at maxResults matches (default 100) and the server stops after a few seconds (the tool will say so if the scan was incomplete), so prefer precise patterns over catch-alls.',
+       schema: z.object({
+         pattern: z
+           .string()
+-          .describe('Regex pattern to search for (e.g., "TODO", "console\\.log", "API_KEY")'),
++          .describe(
++            'Regex pattern to search for (e.g., "TODO|FIXME", "console\\.log", "signOrder")',
++          ),
+         fileFilter: z
+           .string()
+           .optional()
+           .nullable()
+-          .describe('Only search files containing this string (e.g., ".ts", "src/api")'),
++          .describe(
++            'Only search files whose path contains this substring (e.g., ".ts", "src/api", "Controller.java")',
++          ),
+         caseSensitive: z
+           .boolean()
+           .optional()
+@@ -1219,7 +1229,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
+           const targetFileName = (targetFilePath || target).split('/').pop() || target;
+           const baseName = targetFileName.replace(/\.[^/.]+$/, '');
+           try {
+-            const hints = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
++            const { results: hints } = await backendGrep(`\\b${escapeRegex(baseName)}\\b`, 15);
+             const filtered = hints.filter((h) => h.filePath !== targetFilePath);
+ 
+             if (filtered.length > 0) {
+diff --git a/gitnexus-web/src/hooks/useAppState.tsx b/gitnexus-web/src/hooks/useAppState.tsx
+index d698b87d5..8aa183d35 100644
+--- a/gitnexus-web/src/hooks/useAppState.tsx
++++ b/gitnexus-web/src/hooks/useAppState.tsx
+@@ -671,7 +671,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
+         const backend = {
+           executeQuery,
+           search: (query: string, opts?: any) => backendSearch(query, { ...opts, repo }),
+-          grep: (pattern: string, limit?: number) => backendGrep(pattern, repo, limit),
++          grep: (
++            pattern: string,
++            limit?: number,
++            opts?: { fileFilter?: string; caseSensitive?: boolean },
++          ) => backendGrep(pattern, repo, limit, opts),
+           readFile: (filePath: string) =>
+             backendReadFile(filePath, { repo }).then((r) => r.content),
+         };
+diff --git a/gitnexus-web/src/services/backend-client.ts b/gitnexus-web/src/services/backend-client.ts
+index 52f8c65c9..54ff9b82f 100644
+--- a/gitnexus-web/src/services/backend-client.ts
++++ b/gitnexus-web/src/services/backend-client.ts
+@@ -64,6 +64,12 @@ export interface GrepResult {
+   text: string;
+ }
+ 
++/** Full `/api/grep` payload — `timedOut` means the 5s budget cut the scan short. */
++export interface GrepResponse {
++  results: GrepResult[];
++  timedOut?: boolean;
++}
++
+ export interface JobProgress {
+   phase: string;
+   percent: number;
+@@ -869,23 +875,37 @@ export const search = async (
+   return (body.results ?? []) as EnrichedSearchResult[];
+ };
+ 
+-/** Grep across file contents in the indexed repo. */
++/** Options for {@link grep} beyond pattern/repo/limit. */
++export interface GrepOptions {
++  /** Only search files whose path contains this substring (case-insensitive). */
++  fileFilter?: string;
++  /** Case-sensitive matching (default: insensitive). */
++  caseSensitive?: boolean;
++}
++
++/** Grep across file contents in the indexed repo. Regex semantics server-side. */
+ export const grep = async (
+   pattern: string,
+   repo?: string,
+   limit?: number,
+-): Promise<GrepResult[]> => {
++  opts?: GrepOptions,
++): Promise<GrepResponse> => {
+   const params = [
+     `pattern=${encodeURIComponent(pattern)}`,
+     repoParam(repo),
+     limit ? `limit=${limit}` : '',
++    opts?.fileFilter ? `fileFilter=${encodeURIComponent(opts.fileFilter)}` : '',
++    opts?.caseSensitive ? 'caseSensitive=1' : '',
+   ]
+     .filter(Boolean)
+     .join('&');
+   const response = await fetchWithTimeout(`${_backendUrl}/api/grep?${params}`);
+   await assertOk(response);
+-  const body = await response.json();
+-  return (body.results ?? []) as GrepResult[];
++  const body = (await response.json()) as { results?: GrepResult[]; timedOut?: unknown };
++  return {
++    results: (body.results ?? []) as GrepResult[],
++    ...(body.timedOut === true ? { timedOut: true as const } : {}),
++  };
+ };
+ 
+ /** Result from reading a file, optionally with line range. */
+diff --git a/gitnexus-web/test/unit/agent-prompt.test.ts b/gitnexus-web/test/unit/agent-prompt.test.ts
+index c2cb1392f..4751b6be5 100644
+--- a/gitnexus-web/test/unit/agent-prompt.test.ts
++++ b/gitnexus-web/test/unit/agent-prompt.test.ts
+@@ -43,7 +43,7 @@ const FORBIDDEN_TOOL_NAMES = [
+ const stubBackend: GraphRAGBackend = {
+   executeQuery: async () => [],
+   search: async () => [],
+-  grep: async () => [],
++  grep: async () => ({ results: [] }),
+   readFile: async () => '',
+ };
+ 
+diff --git a/gitnexus-web/test/unit/backend-client-grep.test.ts b/gitnexus-web/test/unit/backend-client-grep.test.ts
+new file mode 100644
+index 000000000..e5b6189e2
+--- /dev/null
++++ b/gitnexus-web/test/unit/backend-client-grep.test.ts
+@@ -0,0 +1,76 @@
++/**
++ * `/api/grep` client: query params and `timedOut` must reach callers.
++ * Dropping `timedOut` made a 5s partial scan look like a complete miss.
++ */
++import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
++import { __resetBreakerRegistry__ } from 'gitnexus-shared/test-helpers';
++import { grep, setBackendUrl } from '../../src/services/backend-client';
++
++const BASE = 'http://grep-client.test:4747';
++
++describe('backend-client grep', () => {
++  beforeEach(() => {
++    __resetBreakerRegistry__();
++    setBackendUrl(BASE);
++  });
++
++  afterEach(() => {
++    vi.unstubAllGlobals();
++  });
++
++  it('forwards fileFilter and caseSensitive and returns timedOut', async () => {
++    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
++      const url = String(input);
++      expect(url).toContain('/api/grep?');
++      expect(url).toContain(`pattern=${encodeURIComponent('sign|Sign')}`);
++      expect(url).toContain(`fileFilter=${encodeURIComponent('src/api')}`);
++      expect(url).toContain('caseSensitive=1');
++      expect(url).toContain('limit=12');
++      return new Response(
++        JSON.stringify({
++          results: [{ filePath: 'src/api.ts', line: 3, text: 'signOrder()' }],
++          timedOut: true,
++        }),
++        { status: 200, headers: { 'Content-Type': 'application/json' } },
++      );
++    });
++    vi.stubGlobal('fetch', fetchMock);
++
++    const body = await grep('sign|Sign', '/repo', 12, {
++      fileFilter: 'src/api',
++      caseSensitive: true,
++    });
++    expect(body.results).toEqual([{ filePath: 'src/api.ts', line: 3, text: 'signOrder()' }]);
++    expect(body.timedOut).toBe(true);
++  });
++
++  it('omits timedOut when the server completed the scan', async () => {
++    vi.stubGlobal(
++      'fetch',
++      vi.fn(async () => {
++        return new Response(JSON.stringify({ results: [] }), {
++          status: 200,
++          headers: { 'Content-Type': 'application/json' },
++        });
++      }),
++    );
++
++    const body = await grep('TODO');
++    expect(body).toEqual({ results: [] });
++  });
++
++  it('does not send fileFilter when it is null or empty', async () => {
++    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
++      const url = String(input);
++      expect(url).not.toContain('fileFilter=');
++      return new Response(JSON.stringify({ results: [] }), {
++        status: 200,
++        headers: { 'Content-Type': 'application/json' },
++      });
++    });
++    vi.stubGlobal('fetch', fetchMock);
++
++    await grep('x', undefined, undefined, { fileFilter: '' });
++    expect(fetchMock).toHaveBeenCalled();
++  });
++});
+diff --git a/gitnexus-web/test/unit/grep-tool.test.ts b/gitnexus-web/test/unit/grep-tool.test.ts
+new file mode 100644
+index 000000000..2a904ec1a
+--- /dev/null
++++ b/gitnexus-web/test/unit/grep-tool.test.ts
+@@ -0,0 +1,36 @@
++import { describe, expect, it, vi } from 'vitest';
++import { createGraphRAGTools, type GraphRAGBackend } from '../../src/core/llm/tools';
++
++const noOpBackend: GraphRAGBackend = {
++  executeQuery: async () => [],
++  search: async () => [],
++  grep: async () => ({ results: [] }),
++  readFile: async () => '',
++};
++
++function grepTool(backend: GraphRAGBackend) {
++  return createGraphRAGTools(backend).find((candidate) => candidate.name === 'grep')!;
++}
++
++describe('grep tool timeout contract', () => {
++  it('says the scan was incomplete when the server sets timedOut with no hits', async () => {
++    const grep = vi.fn(async () => ({ results: [] as const, timedOut: true as const }));
++    const output = await grepTool({ ...noOpBackend, grep }).invoke({ pattern: 'signOrder' });
++    expect(output).toContain('No matches for "signOrder"');
++    expect(output).toContain('results may be incomplete');
++  });
++
++  it('still warns when a timed-out scan returned some hits below the limit', async () => {
++    const grep = vi.fn(async () => ({
++      results: [{ filePath: 'a.ts', line: 1, text: 'signOrder()' }],
++      timedOut: true as const,
++    }));
++    const output = await grepTool({ ...noOpBackend, grep }).invoke({
++      pattern: 'signOrder',
++      maxResults: 100,
++    });
++    expect(output).toContain('Found 1 matches');
++    expect(output).toContain('results may be incomplete');
++    expect(output).not.toContain('Showing first');
++  });
++});
+diff --git a/gitnexus-web/test/unit/impact-tool.test.ts b/gitnexus-web/test/unit/impact-tool.test.ts
+index f04817ed1..9162a50eb 100644
+--- a/gitnexus-web/test/unit/impact-tool.test.ts
++++ b/gitnexus-web/test/unit/impact-tool.test.ts
+@@ -4,7 +4,7 @@ import { createGraphRAGTools, type GraphRAGBackend } from '../../src/core/llm/to
+ const noOpBackend: GraphRAGBackend = {
+   executeQuery: async () => [],
+   search: async () => [],
+-  grep: async () => [],
++  grep: async () => ({ results: [] }),
+   readFile: async () => '',
+ };
+ 
+diff --git a/gitnexus/src/server/api.ts b/gitnexus/src/server/api.ts
+index fc2e7d943..0716911e6 100644
+--- a/gitnexus/src/server/api.ts
++++ b/gitnexus/src/server/api.ts
+@@ -54,7 +54,8 @@ import {
+   persistedEmbeddingCountOrUndefined,
+   type PersistedEmbeddingCount,
+ } from '../core/embedding-count.js';
+-import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
++import { assertString, BadRequestError, createRouteLimiter } from './validation.js';
++import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
+ import {
+   extractRepoName,
+   getCloneDir,
+@@ -1337,45 +1338,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') =>
+         res.status(404).json({ error: 'Repository not found' });
+         return;
+       }
+-      // Type-confusion guard (CodeQL js/type-confusion-through-parameter-tampering):
+-      // req.query.pattern is `string | string[] | ParsedQs` — without an explicit
+-      // type check, the `.length` guard below counts array elements instead of
+-      // characters, allowing arbitrarily long patterns through.
+-      const rawPattern = req.query.pattern;
+-      if (rawPattern === undefined) {
+-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
+-        return;
+-      }
+-      const pattern = assertString(rawPattern, 'pattern');
+-      if (pattern.length === 0) {
+-        res.status(400).json({ error: 'Missing "pattern" query parameter' });
+-        return;
+-      }
+-
+-      // Length cap: applies to both literal and regex modes as a defense-in-depth
+-      // bound against pathological input.
+-      if (pattern.length > 200) {
+-        res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
+-        return;
+-      }
+-
+-      // Treat user input as a literal substring in all cases to prevent
+-      // regex-injection/ReDoS via attacker-controlled regex syntax.
+-      const effectivePattern = escapeRegExp(pattern);
+-
+-      // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
+-      let regex: RegExp;
+-      try {
+-        regex = new RegExp(effectivePattern, 'gim');
+-      } catch {
+-        res.status(400).json({ error: 'Invalid regex pattern' });
+-        return;
+-      }
+-
+-      const parsedLimit = Number(req.query.limit ?? 50);
+-      const limit = Number.isFinite(parsedLimit)
+-        ? Math.max(1, Math.min(200, Math.trunc(parsedLimit)))
+-        : 50;
++      // Pattern parsing (regex construction, fileFilter, case flag, limit
++      // clamping) lives in grep-params.ts so the contract is unit-testable
++      // without this module's native imports. BadRequestError thrown there is
++      // mapped to 400 by statusFromError in the catch below — including the
++      // CodeQL js/type-confusion-through-parameter-tampering guard for
++      // array-form query params. ReDoS caveat: the wall-clock budget below
++      // is checked BETWEEN files only — a single catastrophically
++      // backtracking regex.test() blocks the event loop synchronously and
++      // cannot be interrupted (see grep-params.ts and SECURITY.md for the
++      // accepted-risk rationale; literal=1 restores full immunity).
++      const { regex, fileFilter, limit } = parseGrepQuery(req.query as Record<string, unknown>);
++      const deadline = Date.now() + GREP_TIME_BUDGET_MS;
+ 
+       const results: { filePath: string; line: number; text: string }[] = [];
+       const repoRoot = path.resolve(entry.path);
+@@ -1389,10 +1363,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') =>
+         { readOnly: true },
+       );
+ 
+-      // Search files on disk one at a time (constant memory)
++      // Search files on disk one at a time (constant memory); the wall-clock
++      // budget stops the scan between files on large repos and reports
++      // timedOut so callers can distinguish truncation from a full scan.
++      // It is NOT a per-test circuit breaker — see the caveat above.
++      let timedOut = false;
+       for (const row of fileRows) {
+         if (results.length >= limit) break;
++        if (Date.now() > deadline) {
++          timedOut = true;
++          break;
++        }
+         const filePath: string = row.filePath || '';
++        if (fileFilter && !filePath.toLowerCase().includes(fileFilter)) continue;
+         const fullPath = path.resolve(repoRoot, filePath);
+ 
+         // Path traversal guard
+@@ -1409,14 +1392,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') =>
+         const lines = content.split('\n');
+         for (let i = 0; i < lines.length; i++) {
+           if (results.length >= limit) break;
++          if (Date.now() > deadline) {
++            timedOut = true;
++            break;
++          }
+           if (regex.test(lines[i])) {
+             results.push({ filePath, line: i + 1, text: lines[i].trim().slice(0, 200) });
+           }
+-          regex.lastIndex = 0;
+         }
++        if (timedOut) break;
+       }
+ 
+-      res.json({ results });
++      res.json({ results, ...(timedOut ? { timedOut: true } : {}) });
+     } catch (err: any) {
+       res.status(statusFromError(err)).json({ error: err.message || 'Grep failed' });
+     }
+diff --git a/gitnexus/src/server/grep-params.ts b/gitnexus/src/server/grep-params.ts
+new file mode 100644
+index 000000000..97ec02092
+--- /dev/null
++++ b/gitnexus/src/server/grep-params.ts
+@@ -0,0 +1,106 @@
++/**
++ * Query-parameter parsing for GET /api/grep.
++ *
++ * Extracted from api.ts so the contract is unit-testable without pulling
++ * Express + the LadybugDB native adapter into the test run (same rationale
++ * as the #2790 helper extraction).
++ *
++ * Contract fix (Patch 12): the grep tool schema in gitnexus-web has always
++ * promised regex search with an optional path-substring filter and
++ * case-sensitivity control, but the handler used to escapeRegExp() every
++ * pattern into a literal substring — an agent asking for "sign|Sign" got
++ * zero hits and concluded the code didn't exist, and the schema's own
++ * example ("console\.log") could never match. This restores the promised
++ * semantics. The literal-only era was accidentally ReDoS-immune; that
++ * immunity is knowingly traded back for the promised contract, with the
++ * bounded mitigations below. IMPORTANT — what these mitigations do NOT
++ * cover: a single catastrophic-backtracking regex.test() blocks the Node
++ * event loop synchronously and the wall-clock budget (checked between
++ * files, never inside a test) cannot interrupt it; a pattern like
++ * (a+)+$ against a 35-char line measurably exceeds 120s. During that
++ * window the whole server (all routes + SSE) is unresponsive. Accepted
++ * because: local serve binds loopback by default, hosted deploys gate
++ * /api/grep behind the edge token (see SECURITY.md), the pattern cap
++ * bounds construction cost, line-by-line matching bounds per-test input
++ * length, and the result cap bounds total work. The proper fix — running
++ * the scan in a worker_threads worker with terminate() on timeout, or an
++ * optional re2 dependency — is deliberately out of scope here.
++ *   - pattern length cap (200 chars, unchanged from the literal-only era)
++ *   - line-by-line matching (each regex.test call sees one source line)
++ *   - a wall-clock budget the handler enforces between files
++ *   - result cap unchanged (limit, max 200)
++ *   - literal=1 opt-out restores the old escaped-substring immunity
++ */
++import { assertString, escapeRegExp, BadRequestError } from './validation.js';
++
++/** Hard cap on pattern length — unchanged from the literal-only era. */
++export const GREP_PATTERN_MAX_LENGTH = 200;
++
++/** Wall-clock budget for one /api/grep call, enforced between files. */
++export const GREP_TIME_BUDGET_MS = 5_000;
++
++export const GREP_DEFAULT_LIMIT = 50;
++export const GREP_MAX_LIMIT = 200;
++
++export interface ParsedGrepQuery {
++  regex: RegExp;
++  /** Lowercased path substring; '' disables path filtering. */
++  fileFilter: string;
++  limit: number;
++}
++
++const isFlagTrue = (value: unknown, name: string): boolean => {
++  const s = assertString(value ?? '', name).toLowerCase();
++  return s === '1' || s === 'true';
++};
++
++/**
++ * Parse /api/grep query parameters into a ready-to-use regex + filters.
++ * Throws BadRequestError (mapped to HTTP 400 by statusFromError) on
++ * missing/over-long patterns or invalid regex syntax.
++ */
++export function parseGrepQuery(query: Record<string, unknown>): ParsedGrepQuery {
++  const pattern = assertString(query.pattern, 'pattern');
++  if (pattern.length === 0) {
++    throw new BadRequestError('Missing "pattern" query parameter');
++  }
++  if (pattern.length > GREP_PATTERN_MAX_LENGTH) {
++    throw new BadRequestError(`Pattern too long (max ${GREP_PATTERN_MAX_LENGTH} characters)`);
++  }
++
++  // Regex semantics by default — what the tool schema always promised.
++  // literal=1 opts back into the escaped-substring behaviour of the
++  // literal-only era for callers that want it verbatim.
++  const effectivePattern = isFlagTrue(query.literal, 'literal') ? escapeRegExp(pattern) : pattern;
++  const caseSensitive = isFlagTrue(query.caseSensitive, 'caseSensitive');
++
++  let regex: RegExp;
++  try {
++    // Deliberately no 'g' flag: the handler tests line-by-line and a
++    // stateful lastIndex across lines would skip matches (the old handler
++    // had to reset it manually). No 'm' either: each test receives a
++    // single line, so ^/$ already anchor at string boundaries — 'm'
++    // would be a no-op.
++    //
++    // CodeQL js/regular-expression-injection — `effectivePattern` is the
++    // caller-supplied query unless `literal=1` escaped it. Intentional:
++    // the web grep tool contract is real regex. Residual ReDoS (one
++    // blocking `regex.test`) is documented in SECURITY.md; loopback
++    // default + hosted edge token bound who can send a pattern.
++    // lgtm[js/regular-expression-injection]
++    // codeql[js/regular-expression-injection]
++    regex = new RegExp(effectivePattern, caseSensitive ? '' : 'i');
++  } catch {
++    throw new BadRequestError('Invalid regex pattern');
++  }
++
++  // Path-substring filter, case-insensitive ("Controller.java", "src/api").
++  const fileFilter = assertString(query.fileFilter ?? '', 'fileFilter').toLowerCase();
++
++  const parsedLimit = Number(query.limit ?? GREP_DEFAULT_LIMIT);
++  const limit = Number.isFinite(parsedLimit)
++    ? Math.max(1, Math.min(GREP_MAX_LIMIT, Math.trunc(parsedLimit)))
++    : GREP_DEFAULT_LIMIT;
++
++  return { regex, fileFilter, limit };
++}
+diff --git a/gitnexus/test/unit/grep-params.test.ts b/gitnexus/test/unit/grep-params.test.ts
+new file mode 100644
+index 000000000..5e5c0c72e
+--- /dev/null
++++ b/gitnexus/test/unit/grep-params.test.ts
+@@ -0,0 +1,161 @@
++/**
++ * Unit Tests: /api/grep query parsing (gitnexus/src/server/grep-params.ts)
++ *
++ * Patch 12 contract fix — the grep tool schema promised regex +
++ * fileFilter + caseSensitive, but the handler escaped every pattern into
++ * a literal substring. These tests pin the restored semantics:
++ *   - regex is real regex (alternation, classes, quantifiers work)
++ *   - literal=1 keeps the old escaped-substring behaviour opt-in
++ *   - fileFilter normalizes to a lowercase path substring
++ *   - caseSensitive=1 drops the 'i' flag
++ *   - malformed input throws BadRequestError (→ 400 via statusFromError)
++ */
++import { describe, it, expect } from 'vitest';
++import fs from 'node:fs/promises';
++import path from 'node:path';
++import { fileURLToPath } from 'node:url';
++import {
++  parseGrepQuery,
++  GREP_PATTERN_MAX_LENGTH,
++  GREP_DEFAULT_LIMIT,
++  GREP_MAX_LIMIT,
++} from '../../src/server/grep-params.js';
++import { BadRequestError } from '../../src/server/validation.js';
++
++describe('parseGrepQuery — regex semantics (restored contract)', () => {
++  it('honours alternation, the case the agent was burned by', () => {
++    const { regex } = parseGrepQuery({ pattern: 'sign|Sign' });
++    expect(regex.test('signOrder(order)')).toBe(true);
++    expect(regex.test('SignOffOrderAfterDecorator')).toBe(true);
++    expect(regex.test('assign a value')).toBe(true); // substring semantics, like grep
++    expect(regex.test('unrelated line')).toBe(false);
++  });
++
++  it('supports the schema example "console\\.log" against real code lines', () => {
++    const { regex } = parseGrepQuery({ pattern: 'console\\.log' });
++    expect(regex.test('console.log("hi")')).toBe(true);
++    expect(regex.test('consolexlog("hi")')).toBe(false);
++  });
++
++  it('is case-insensitive by default', () => {
++    const { regex } = parseGrepQuery({ pattern: 'todo' });
++    expect(regex.test('TODO: fix me')).toBe(true);
++  });
++
++  it('caseSensitive=1 drops the i flag', () => {
++    const { regex } = parseGrepQuery({ pattern: 'todo', caseSensitive: '1' });
++    expect(regex.test('TODO: fix me')).toBe(false);
++    expect(regex.test('todo: fix me')).toBe(true);
++  });
++
++  it('caseSensitive=true is accepted alongside the bare flag form', () => {
++    const { regex } = parseGrepQuery({ pattern: 'todo', caseSensitive: 'true' });
++    expect(regex.test('TODO')).toBe(false);
++  });
++
++  it('literal=1 restores the old escaped-substring behaviour', () => {
++    const literal = parseGrepQuery({ pattern: 'a.b', literal: '1' });
++    expect(literal.regex.test('a.b')).toBe(true);
++    expect(literal.regex.test('axb')).toBe(false);
++
++    const regexMode = parseGrepQuery({ pattern: 'a.b' });
++    expect(regexMode.regex.test('axb')).toBe(true);
++  });
++
++  it('matches CJK identifiers/comments (the primary consumer is a Chinese-codebase team)', () => {
++    const { regex } = parseGrepQuery({ pattern: '签署|signOrder' });
++    expect(regex.test('public void signOrder() { // 医嘱签署')).toBe(true);
++    expect(regex.test('// 签署接口')).toBe(true);
++    expect(regex.test('// 撤销接口')).toBe(false);
++  });
++
++  it('anchors ^/$ at line boundaries — the handler tests one line at a time, so "m" semantics are irrelevant', () => {
++    const { regex } = parseGrepQuery({ pattern: '^import .*$' });
++    expect(regex.test('import path from "path";')).toBe(true);
++    expect(regex.test('  import path from "path";')).toBe(false);
++  });
++});
++
++describe('parseGrepQuery — fileFilter', () => {
++  it('normalizes to a lowercase path substring', () => {
++    const { fileFilter } = parseGrepQuery({ pattern: 'x', fileFilter: 'Controller.JAVA' });
++    expect(fileFilter).toBe('controller.java');
++  });
++
++  it('empty / missing fileFilter disables path filtering', () => {
++    expect(parseGrepQuery({ pattern: 'x' }).fileFilter).toBe('');
++    expect(parseGrepQuery({ pattern: 'x', fileFilter: '' }).fileFilter).toBe('');
++  });
++
++  it('array-form fileFilter is type-confusion-rejected, not partially read', () => {
++    expect(() => parseGrepQuery({ pattern: 'x', fileFilter: ['a', 'b'] })).toThrow(BadRequestError);
++  });
++});
++
++describe('parseGrepQuery — limit clamping', () => {
++  it('clamps above the max', () => {
++    expect(parseGrepQuery({ pattern: 'x', limit: '5000' }).limit).toBe(GREP_MAX_LIMIT);
++  });
++
++  it('clamps below 1', () => {
++    expect(parseGrepQuery({ pattern: 'x', limit: '-5' }).limit).toBe(1);
++  });
++
++  it('falls back to the default on non-numeric input', () => {
++    expect(parseGrepQuery({ pattern: 'x', limit: 'abc' }).limit).toBe(GREP_DEFAULT_LIMIT);
++  });
++
++  it('defaults when absent', () => {
++    expect(parseGrepQuery({ pattern: 'x' }).limit).toBe(GREP_DEFAULT_LIMIT);
++  });
++});
++
++describe('parseGrepQuery — error paths (→ 400 via statusFromError)', () => {
++  it('rejects a missing pattern', () => {
++    expect(() => parseGrepQuery({})).toThrow(BadRequestError);
++    expect(() => parseGrepQuery({ pattern: '' })).toThrow(BadRequestError);
++  });
++
++  it('rejects array-form patterns (type-confusion guard unchanged)', () => {
++    try {
++      parseGrepQuery({ pattern: ['a', 'b'] });
++      expect.unreachable();
++    } catch (err) {
++      expect(err).toBeInstanceOf(BadRequestError);
++      expect((err as BadRequestError).status).toBe(400);
++      expect((err as Error).message).toContain('pattern');
++    }
++  });
++
++  it('rejects over-long patterns at the same 200-char cap', () => {
++    const long = 'a'.repeat(GREP_PATTERN_MAX_LENGTH + 1);
++    expect(() => parseGrepQuery({ pattern: long })).toThrow(/max 200 characters/);
++    expect(() => parseGrepQuery({ pattern: 'a'.repeat(GREP_PATTERN_MAX_LENGTH) })).not.toThrow();
++  });
++
++  it('rejects syntactically invalid regex', () => {
++    expect(() => parseGrepQuery({ pattern: '((' })).toThrow(/Invalid regex/);
++  });
++});
++
++describe('/api/grep handler wiring (source-level, api-readonly-wiring.test.ts style)', () => {
++  const readSource = async () => fs.readFile(SRC_PATH, 'utf-8');
++  const SRC_PATH = path.join(
++    path.dirname(fileURLToPath(import.meta.url)),
++    '../../src/server/api.ts',
++  );
++
++  it('threaded through: parseGrepQuery call, deadline, fileFilter filter, timedOut flag', async () => {
++    const source = await readSource();
++    const grepSection = source.match(/app\.get\('\/api\/grep'[\s\S]*?\n  \}\);/);
++    expect(grepSection).not.toBeNull();
++    const section = grepSection![0];
++    expect(section).toContain('parseGrepQuery(');
++    expect(section).toContain('GREP_TIME_BUDGET_MS');
++    expect(section).toMatch(/Date\.now\(\) > deadline/);
++    expect(section).toMatch(/filePath\.toLowerCase\(\)\.includes\(fileFilter\)/);
++    expect(section).toContain('timedOut: true');
++    expect(section).toContain('if (timedOut) break');
++    expect(section).toContain('readOnly: true'); // unchanged read-only DB open
++  });
++});

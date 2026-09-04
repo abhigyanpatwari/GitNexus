@@ -635,6 +635,50 @@ finally:
     assert not (clone / "oracle-leak.txt").exists()
 
 
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_read_only_review_workspace_exposes_only_one_writable_artifact(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    source = clone / "source.ts"
+    source.write_text("trusted\n")
+    output = clone / "review-output.json"
+    output.write_text("")
+    script = """
+from pathlib import Path
+try:
+    Path('/workspace/source.ts').write_text('tampered')
+except OSError:
+    pass
+else:
+    raise SystemExit('review source remained writable')
+Path('/workspace/review-output.json').write_text('{"schema_version":1}')
+"""
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        result = run_managed(
+            [
+                *sandbox.command_prefix_for(
+                    read_only_workspace=True,
+                    extra_writable_mounts=(
+                        ReadOnlyMount(source=output, target="/workspace/review-output.json"),
+                    ),
+                ),
+                "/usr/bin/python3",
+                "-c",
+                script,
+            ],
+            timeout=10,
+            env=sandbox.environment(),
+            require_pid_namespace=True,
+        )
+
+    assert result.ok, result.stderr_tail
+    assert source.read_text() == "trusted\n"
+    assert output.read_text() == '{"schema_version":1}'
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
 @pytest.mark.parametrize("operation", ["stage", "sandbox"])
 def test_clone_root_symlink_is_rejected_before_host_access(tmp_path: Path, operation: str) -> None:

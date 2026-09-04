@@ -13,6 +13,7 @@ from workflow_bench.evolution import (
     apply_candidate_overlay,
     candidate_overlay_digest,
     evaluate_candidate,
+    evaluate_review_candidate,
     required_candidate_arms,
     skill_fingerprint,
     unexercised_overlay_skills,
@@ -187,8 +188,7 @@ def test_candidate_overlay_is_skill_only_and_content_addressed(tmp_path):
     review_skill = review_overlay / ".claude" / "skills" / "gitnexus-review" / "SKILL.md"
     review_skill.parent.mkdir(parents=True)
     review_skill.write_text("review candidate\n")
-    with pytest.raises(ValueError, match="plan,work"):
-        candidate_overlay_digest(review_overlay)
+    assert candidate_overlay_digest(review_overlay)
 
     invalid = tmp_path / "invalid"
     source = invalid / "gitnexus" / "src" / "cli" / "index.ts"
@@ -239,6 +239,76 @@ def test_required_candidate_arms_are_minimal_for_touched_skills(tmp_path):
         "candidate_workflow",
         "candidate_workflow_direct",
     ]
+
+    review = tmp_path / "review"
+    write_overlay_skill(review, "gitnexus-review")
+    assert required_candidate_arms(review) == ["candidate_review"]
+
+
+def test_review_gate_is_quality_first_and_requires_repeated_evidence():
+    def arm(score, blocker=1.0, false_positives=0, runs=3):
+        return {
+            "runs": runs,
+            "valid_runs": runs,
+            "excluded_runs": 0,
+            "class": "review-defect",
+            "review_weighted_f1": score,
+            "review_blocker_recall": blocker,
+            "review_false_positives": false_positives,
+            "review_clean_control": False,
+        }
+
+    decision = evaluate_review_candidate(
+        {
+            "case-a": {
+                "review": arm(0.6),
+                "candidate_review": arm(0.8),
+            }
+        },
+        incumbent_arm="review",
+        candidate_arm="candidate_review",
+        model="pinned-model",
+    )
+    assert decision["decision"] == "promote"
+
+    regression = evaluate_review_candidate(
+        {
+            "case-a": {
+                "review": arm(0.6, blocker=1.0),
+                "candidate_review": arm(0.8, blocker=0.0),
+            }
+        },
+        incumbent_arm="review",
+        candidate_arm="candidate_review",
+        model="pinned-model",
+    )
+    assert regression["decision"] == "keep_incumbent"
+    assert any("blocker recall" in reason for reason in regression["reasons"])
+
+
+def test_review_gate_rejects_added_false_positives_on_clean_controls():
+    base = {
+        "runs": 3,
+        "valid_runs": 3,
+        "excluded_runs": 0,
+        "class": "review-clean",
+        "review_weighted_f1": 1.0,
+        "review_blocker_recall": 1.0,
+        "review_clean_control": True,
+    }
+    decision = evaluate_review_candidate(
+        {
+            "clean": {
+                "review": {**base, "review_false_positives": 0},
+                "candidate_review": {**base, "review_false_positives": 1},
+            }
+        },
+        incumbent_arm="review",
+        candidate_arm="candidate_review",
+        model="pinned-model",
+    )
+    assert decision["decision"] == "keep_incumbent"
+    assert any("clean control" in reason for reason in decision["reasons"])
 
 
 @pytest.mark.skipif(os.name == "nt", reason="candidate overlays require the Linux outer sandbox")

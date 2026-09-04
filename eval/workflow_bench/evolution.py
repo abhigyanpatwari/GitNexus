@@ -21,9 +21,11 @@ from .proposer_sandbox import (
 CANDIDATE_ARMS = {
     "candidate_workflow": "workflow",
     "candidate_workflow_direct": "workflow_direct",
+    "candidate_review": "review",
 }
 CANDIDATE_SKILLS = {
     "gitnexus-plan",
+    "gitnexus-review",
     "gitnexus-work",
 }
 # Skills each incumbent arm actually loads in its sessions. An overlay that
@@ -32,6 +34,7 @@ CANDIDATE_SKILLS = {
 ARM_SKILLS = {
     "workflow": ("gitnexus-plan", "gitnexus-work"),
     "workflow_direct": ("gitnexus-work",),
+    "review": ("gitnexus-review",),
 }
 # Repo-local prompts whose bytes are evidence for each executed arm. Keep this
 # distinct from ``ARM_SKILLS``: that mapping defines which skills a promotable
@@ -338,7 +341,7 @@ def candidate_overlay_files(overlay: Path) -> list[Path]:
         ):
             raise ValueError(
                 "candidate overlays may only contain Markdown files under "
-                ".claude/skills/gitnexus-{plan,work}: "
+                ".claude/skills/gitnexus-{plan,review,work}: "
                 f"{relative}"
             )
     return entries
@@ -358,6 +361,8 @@ def required_candidate_arms(overlay: Path) -> list[str]:
         required.append("candidate_workflow")
     if "gitnexus-work" in touched:
         required.append("candidate_workflow_direct")
+    if "gitnexus-review" in touched:
+        required.append("candidate_review")
     return required
 
 
@@ -486,6 +491,103 @@ def skill_fingerprint(worktree: Path, arm: str) -> str | None:
             raise ValueError("skill fingerprint input exceeds the bounded evidence limit")
         files.append(path)
     return fingerprint_files(worktree, files)
+
+
+def evaluate_review_candidate(
+    results: dict[str, dict[str, dict[str, Any]]],
+    *,
+    incumbent_arm: str,
+    candidate_arm: str,
+    model: str | None,
+    min_runs: int = 3,
+    min_improvement: float = 0.01,
+) -> dict[str, Any]:
+    """Quality-first promotion gate for paired read-only review arms."""
+
+    reasons: list[str] = []
+    task_rows: list[dict[str, Any]] = []
+    insufficient = not model
+    regression = False
+    improvement = False
+    if not model:
+        reasons.append("a named --model is required so review evidence cannot drift")
+
+    for task_id, arms in sorted(results.items()):
+        if incumbent_arm not in arms or candidate_arm not in arms:
+            insufficient = True
+            reasons.append(f"{task_id}: both {incumbent_arm} and {candidate_arm} are required")
+            continue
+        incumbent = arms[incumbent_arm]
+        candidate = arms[candidate_arm]
+        incumbent_runs = int(incumbent.get("valid_runs", 0))
+        candidate_runs = int(candidate.get("valid_runs", 0))
+        incumbent_score = incumbent.get("review_weighted_f1")
+        candidate_score = candidate.get("review_weighted_f1")
+        incumbent_blockers = incumbent.get("review_blocker_recall")
+        candidate_blockers = candidate.get("review_blocker_recall")
+        incumbent_fp = incumbent.get("review_false_positives")
+        candidate_fp = candidate.get("review_false_positives")
+        clean = bool(incumbent.get("review_clean_control", candidate.get("review_clean_control", False)))
+        task_rows.append(
+            {
+                "task": task_id,
+                "class": incumbent.get("class", ""),
+                "incumbent_weighted_f1": incumbent_score,
+                "candidate_weighted_f1": candidate_score,
+                "incumbent_blocker_recall": incumbent_blockers,
+                "candidate_blocker_recall": candidate_blockers,
+                "incumbent_false_positives": incumbent_fp,
+                "candidate_false_positives": candidate_fp,
+                "clean_control": clean,
+            }
+        )
+        if (
+            incumbent_runs < min_runs
+            or candidate_runs < min_runs
+            or incumbent.get("excluded_runs")
+            or candidate.get("excluded_runs")
+        ):
+            insufficient = True
+            reasons.append(
+                f"{task_id}: needs {min_runs} valid paired runs with zero exclusions "
+                f"(got {incumbent_runs}/{candidate_runs})"
+            )
+        values = (incumbent_score, candidate_score, incumbent_blockers, candidate_blockers, incumbent_fp, candidate_fp)
+        if any(value is None for value in values):
+            insufficient = True
+            reasons.append(f"{task_id}: structured review quality metrics are incomplete")
+            continue
+        if float(candidate_blockers) < float(incumbent_blockers):
+            regression = True
+            reasons.append(f"{task_id}: blocker recall regressed")
+        if clean and float(candidate_fp) > float(incumbent_fp):
+            regression = True
+            reasons.append(f"{task_id}: false positives increased on a clean control")
+        if float(candidate_score) + 1e-9 < float(incumbent_score):
+            regression = True
+            reasons.append(f"{task_id}: weighted review score regressed")
+        if float(candidate_score) >= float(incumbent_score) + min_improvement:
+            improvement = True
+
+    if insufficient:
+        decision = "insufficient_evidence"
+    elif regression:
+        decision = "keep_incumbent"
+    elif not improvement:
+        decision = "keep_incumbent"
+        reasons.append("candidate did not improve weighted review quality on any corpus case")
+    else:
+        decision = "promote"
+        reasons.append("candidate improved weighted review quality without blocker or clean-control regression")
+    return {
+        "candidate_arm": candidate_arm,
+        "incumbent_arm": incumbent_arm,
+        "decision": decision,
+        "metric": "review_weighted_f1",
+        "model": model,
+        "task_results": task_rows,
+        "reasons": reasons,
+    }
 
 
 def evaluate_candidate(

@@ -697,6 +697,12 @@ def run_claude(
         or str(subtype).startswith("error")
         or not well_formed
     )
+    tool_use_counts: dict[str, int] = {}
+    for event in events:
+        for block in _event_content(event):
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                name = _safe_tool_name(block.get("name"))
+                tool_use_counts[name] = tool_use_counts.get(name, 0) + 1
     record = {
         "ok": not session_error,
         "error_kind": "session-error" if session_error else None,
@@ -725,6 +731,10 @@ def run_claude(
         "cost_usd": measured_cost(data.get("total_cost_usd")),
         "duration_s": round(data.get("duration_ms", wall_s * 1000) / 1000, 1),
         "transcript_missing": False,
+        "tool_use_counts": tool_use_counts,
+        "gitnexus_tool_uses": sum(
+            count for name, count in tool_use_counts.items() if name.startswith("mcp__gitnexus")
+        ),
         **{field: usage.get(field, 0) for field in USAGE_FIELDS},
     }
     needs_evidence = expected_skill is not None or transcript_output_dir is not None
@@ -814,4 +824,10 @@ def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     total["evidence_diagnostics"] = [
         diagnostic for session in sessions for diagnostic in session.get("evidence_diagnostics", [])
     ]
+    total["gitnexus_tool_uses"] = sum(session.get("gitnexus_tool_uses", 0) for session in sessions)
+    tool_use_counts: dict[str, int] = {}
+    for session in sessions:
+        for name, count in session.get("tool_use_counts", {}).items():
+            tool_use_counts[name] = tool_use_counts.get(name, 0) + int(count)
+    total["tool_use_counts"] = tool_use_counts
     return total

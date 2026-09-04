@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "findings": [
+    {
+      "id": "pr3153-programmatic-cache-bypass-still-returns-up-to-date",
+      "severity": "high",
+      "path": "gitnexus/src/core/run-analyze.ts",
+      "line_start": 1738,
+      "line_end": 1760,
+      "category": "correctness"
+    }
+  ]
+}

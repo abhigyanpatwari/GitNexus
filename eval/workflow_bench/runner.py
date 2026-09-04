@@ -66,6 +66,7 @@ from .evolution import (
     apply_candidate_overlay,
     candidate_overlay_digest,
     evaluate_candidate,
+    evaluate_review_candidate,
     required_candidate_arms,
     skill_fingerprint,
 )
@@ -85,6 +86,7 @@ from .oracle_assets import (
 )
 from .process_control import ManagedProcessError
 from .promotion_apply import committed_destination_base_digests
+from .review_scoring import REVIEW_OUTPUT, expected_findings, parse_review_output, score_review
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -212,22 +214,31 @@ CE_WORK_DIRECT_PROMPT = (
     "separate planning pass — execute directly with the skill's execution "
     "discipline." + HEADLESS_VERIFY
 )
-# Review cell: the task's `setup` applies the diff under review as local
-# changes; both arms review the same working tree and write to the same file
-# so `verify` can gate on a produced review.
+# Review cell: setup applies a historical PR diff, then the model sees a
+# read-only checkout. Both arms emit the same strict artifact so quality can be
+# scored deterministically against labels that remain hidden until it exits.
+REVIEW_OUTPUT_CONTRACT = """
+Write /workspace/review-output.json as UTF-8 JSON with exactly this shape:
+{{"schema_version":1,"verdict":"approve|comment|request_changes","findings":[{{
+"id":"unique stable id","severity":"critical|high|medium|low",
+"path":"repository-relative changed file","line":1,"end_line":1,
+"category":"correctness|security|compatibility|performance|tests|other",
+"scenario":"specific failure scenario","evidence":"concrete code/graph evidence",
+"recommendation":"bounded fix","blocking":true}}]}}
+Use an empty findings list with verdict approve when there are no actionable
+defects. Do not emit Markdown and do not edit any other file.
+"""
 REVIEW_PROMPT = (
     "Use the gitnexus-review skill to review the local uncommitted changes "
     "in this repository. {task}\n"
     "Headless run: proceed without asking; do not post to GitHub or anywhere "
-    "external; write the complete review to review-output.md in the "
-    "repository root."
+    "external." + REVIEW_OUTPUT_CONTRACT
 )
 CE_REVIEW_PROMPT = (
     "Use the ce-code-review skill (compound-engineering plugin) to review "
     "the local uncommitted changes in this repository. {task}\n"
     "Headless run: proceed without asking; do not post to GitHub or anywhere "
-    "external; write the complete review to review-output.md in the "
-    "repository root."
+    "external." + REVIEW_OUTPUT_CONTRACT
 )
 
 
@@ -522,12 +533,28 @@ def run_arm(
         sessions.append(work_session)
     elif arm in ("review", "ce_review"):
         review_prompt = REVIEW_PROMPT if arm == "review" else CE_REVIEW_PROMPT
+        review_output = worktree / REVIEW_OUTPUT
+        review_output.write_text("")
         phase_before = workspace_snapshot(worktree) if enforce_phase_boundary else None
+        review_common = {
+            **common,
+            "allowed_tools": allowed_agent_tools(implementation=False),
+            "command_prefix": sandbox.command_prefix_for(
+                read_only_workspace=True,
+                read_only_paths=_evaluated_skill_roots(worktree, arm),
+                extra_writable_mounts=(
+                    ReadOnlyMount(
+                        source=review_output,
+                        target=f"{SANDBOX_WORKSPACE}/{REVIEW_OUTPUT}",
+                    ),
+                ),
+            ),
+        }
         review_session = run_claude(
             review_prompt.format(task=task["prompt"]),
             worktree,
             expected_skill=expected_skills[0],
-            **{**common, "allowed_tools": allowed_agent_tools(implementation=False)},
+            **review_common,
         )
         sessions.append(review_session)
         if review_session["ok"] and phase_before is not None:
@@ -535,7 +562,7 @@ def run_arm(
                 enforce_phase_workspace(
                     worktree,
                     phase_before,
-                    allowed_artifact=worktree / "review-output.md",
+                    allowed_artifact=worktree / REVIEW_OUTPUT,
                 )
                 require_skill_fingerprint(
                     worktree,
@@ -604,8 +631,29 @@ def run_arm(
             require_pid_namespace=True,
         )
     )
+    review_score: dict[str, Any] | None = None
+    if arm in ("review", "ce_review"):
+        try:
+            verdict, findings = parse_review_output(worktree / REVIEW_OUTPUT)
+            labels = expected_findings(oracle_snapshot) if oracle_snapshot is not None else ()
+            review_score = score_review(verdict, findings, labels)
+        except (OSError, ValueError) as exc:
+            record["ok"] = False
+            record["error_kind"] = record["error_kind"] or "review-evidence-invalid"
+            record["error_detail"] = str(exc)
+        record["review_score"] = review_score
+        if review_score is not None:
+            record.update({f"review_{key}": value for key, value in review_score.items()})
     if oracle_snapshot is None:
         oracle_passed, oracle_output = False, "hidden oracle snapshot unavailable"
+    elif arm in ("review", "ce_review"):
+        oracle_passed = bool(
+            review_score
+            and review_score["false_positives"] == 0
+            and review_score["false_negatives"] == 0
+            and review_score["verdict_correct"]
+        )
+        oracle_output = "hidden review labels matched" if oracle_passed else "hidden review labels not fully matched"
     else:
         oracle_passed, oracle_output = _run_hidden_oracle(
             oracle_snapshot,
@@ -921,6 +969,12 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ctx.ce_plugin_snapshot),
                 oracle_snapshot=ctx.oracle_snapshot,
             )
+            if execution_arm in ("review", "ce_review"):
+                review_source = worktree / REVIEW_OUTPUT
+                if review_source.is_file() and not review_source.is_symlink():
+                    review_artifact = ctx.out_dir / f"{task['id']}-{arm}-run{run_idx}.review.json"
+                    review_artifact.write_bytes(_bounded_regular_bytes(review_source, limit=256 * 1024))
+                    record["review_artifact"] = review_artifact.name
             _prepare_untracked_for_diff(sandbox)
             after_work_digest = (
                 implementation_diff_digest(
@@ -1078,8 +1132,11 @@ def cell_progress_line(task_id: str, arm: str, run_idx: int, record: dict[str, A
     measured = record.get("error_kind") not in {"infra-error", "cleanup-failure"}
     cost_usd = record.get("cost_usd") if measured else None
     duration_s = record.get("duration_s") if measured else None
+    quality = record.get("review_weighted_f1")
+    quality_text = "n/a" if quality is None else f"{quality:.3f}"
     return (
         f"[{task_id}][{arm}][run {run_idx}] resolved={record['resolved']} "
+        f"quality={quality_text} "
         f"in={record['input_tokens']} out={record['output_tokens']} "
         f"cost={'n/a' if cost_usd is None else f'${cost_usd}'} "
         f"took={'n/a' if duration_s is None else f'{duration_s}s'} "
@@ -1147,6 +1204,27 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         if kind:
             error_kinds[kind] = error_kinds.get(kind, 0) + 1
     out["error_kinds"] = error_kinds
+    review_metrics = (
+        "review_true_positives",
+        "review_false_positives",
+        "review_false_negatives",
+        "review_precision",
+        "review_recall",
+        "review_f1",
+        "review_weighted_precision",
+        "review_weighted_recall",
+        "review_weighted_f1",
+        "review_blocker_recall",
+        "review_severity_accuracy",
+        "review_category_accuracy",
+        "review_grounded_evidence",
+    )
+    if any("review_weighted_f1" in record for record in valid):
+        for metric in review_metrics:
+            values = [record[metric] for record in valid if metric in record]
+            out[metric] = statistics.median(values) if values and len(values) == len(valid) else None
+        controls = [record["review_clean_control"] for record in valid if "review_clean_control" in record]
+        out["review_clean_control"] = all(controls) if controls and len(controls) == len(valid) else None
     return out
 
 
@@ -1237,6 +1315,27 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
                     f"| {_na(s['cost_usd'])} | {s['duration_s']} | — | — | — |"
                 )
     lines.append("")
+    if any(agg.get("review_weighted_f1") is not None for arms in results.values() for agg in arms.values()):
+        lines.extend(
+            [
+                "## Review quality",
+                "",
+                "| case | arm | TP | FP | FN | precision | recall | blocker recall | weighted F1 | grounding |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for task_id, arms in results.items():
+            for arm, agg in arms.items():
+                if agg.get("review_weighted_f1") is None:
+                    continue
+                lines.append(
+                    f"| {task_id} | {arm} | {agg['review_true_positives']:.1f} "
+                    f"| {agg['review_false_positives']:.1f} | {agg['review_false_negatives']:.1f} "
+                    f"| {agg['review_precision']:.3f} | {agg['review_recall']:.3f} "
+                    f"| {agg['review_blocker_recall']:.3f} | {agg['review_weighted_f1']:.3f} "
+                    f"| {agg['review_grounded_evidence']:.3f} |"
+                )
+        lines.append("")
     all_aggs = [agg for arms in results.values() for agg in arms.values()]
     excluded_total = sum(agg.get("excluded_runs", 0) for agg in all_aggs)
     if excluded_total:
@@ -1302,6 +1401,7 @@ def build_parser() -> argparse.ArgumentParser:
             "candidate_workflow",
             "workflow_direct",
             "candidate_workflow_direct",
+            "candidate_review",
             "ce_workflow",
             "ce_workflow_direct",
             "review",
@@ -1375,7 +1475,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-overlay",
         type=Path,
         default=None,
-        help="directory mirroring .claude/skills/gitnexus-{plan,work}; applied only to candidate_* arms",
+        help="directory mirroring one promotable .claude/skills/gitnexus-* tree; applied only to candidate_* arms",
     )
     parser.add_argument(
         "--promotion-metric",
@@ -1448,6 +1548,8 @@ def main() -> None:
     if candidate_overlay is not None:
         required_candidates = required_candidate_arms(candidate_overlay)
         required_arms = [arm for candidate in required_candidates for arm in (CANDIDATE_ARMS[candidate], candidate)]
+        if required_candidates == ["candidate_review"]:
+            required_arms.insert(0, "ce_review")
         if args.arms != required_arms:
             parser.error("candidate overlay requires exactly these paired arms: " + " ".join(required_arms))
         try:
@@ -1706,22 +1808,35 @@ def _run_sweep(
                 "max_age_days": EVIDENCE_MAX_AGE_DAYS,
             },
             "decisions": [
-                evaluate_candidate(
-                    results,
-                    incumbent_arm=CANDIDATE_ARMS[candidate_arm],
-                    candidate_arm=candidate_arm,
-                    model=args.model,
-                    metric=args.promotion_metric,
-                    min_runs=args.promotion_min_runs,
-                    min_improvement_pct=args.promotion_min_improvement,
-                    max_task_regression_pct=args.promotion_max_task_regression,
+                (
+                    evaluate_review_candidate(
+                        results,
+                        incumbent_arm=CANDIDATE_ARMS[candidate_arm],
+                        candidate_arm=candidate_arm,
+                        model=args.model,
+                        min_runs=args.promotion_min_runs,
+                    )
+                    if candidate_arm == "candidate_review"
+                    else evaluate_candidate(
+                        results,
+                        incumbent_arm=CANDIDATE_ARMS[candidate_arm],
+                        candidate_arm=candidate_arm,
+                        model=args.model,
+                        metric=args.promotion_metric,
+                        min_runs=args.promotion_min_runs,
+                        min_improvement_pct=args.promotion_min_improvement,
+                        max_task_regression_pct=args.promotion_max_task_regression,
+                    )
                 )
                 for candidate_arm in candidate_arms
             ],
         }
         (out_dir / "promotion.json").write_text(json.dumps(promotion, indent=2) + "\n")
     print(f"\n{report}\n\nWritten to {out_dir}/")
-    broken_incumbents = broken_incumbent_arms(results, set(CANDIDATE_ARMS.values()))
+    # A reviewer may legitimately match none of a difficult hidden corpus;
+    # unlike an implementation arm, zero exact resolutions is quality signal,
+    # not proof that the harness failed.
+    broken_incumbents = broken_incumbent_arms(results, set(CANDIDATE_ARMS.values()) - {"review"})
     if broken_incumbents:
         # Fail loudly rather than let a broken environment read as a quiet
         # "no promotion, incumbent stands."

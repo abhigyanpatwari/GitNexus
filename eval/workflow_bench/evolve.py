@@ -190,6 +190,25 @@ def compact_row(row: dict[str, Any]) -> dict[str, Any]:
         "churn": f"{row.get('diff_files', 0)}f/+{row.get('diff_insertions', 0)}/−{row.get('diff_deletions', 0)}",
         "session_ids": row.get("session_ids", []),
         "patch_file": f"{row.get('task')}-{row.get('arm')}-run{row.get('run')}.patch",
+        "review_artifact": row.get("review_artifact"),
+        "review_score": {
+            key: row.get("review_score", {}).get(key)
+            for key in (
+                "true_positives",
+                "false_positives",
+                "false_negatives",
+                "precision",
+                "recall",
+                "weighted_f1",
+                "blocker_recall",
+                "severity_accuracy",
+                "grounded_evidence",
+                "verdict_correct",
+                "clean_control",
+            )
+        }
+        if isinstance(row.get("review_score"), dict)
+        else None,
         "verify_tail": str(row.get("verify_output", ""))[-VERIFY_TAIL_CHARS:],
     }
 
@@ -225,6 +244,7 @@ def build_proposer_prompt(
     prior_proposal: bool = False,
 ) -> str:
     skills = exercised_skills(incumbent_arms)
+    review_only = skills == ["gitnexus-review"]
     evidence_block = (
         f"{len(evidence)} selected row(s) in /evidence/selected-rows.json"
         if evidence
@@ -241,6 +261,21 @@ def build_proposer_prompt(
         "re-propose it; either address why it lost or diagnose something else."
         if prior_proposal
         else ""
+    )
+    objective = (
+        "Diagnose ONE recurring false negative, false positive, severity, grounding, or cost "
+        "pattern that the review skill text itself causes, and write ONE bounded prompt change "
+        "that improves review quality. Quality is primary; cost is only a tiebreaker."
+        if review_only
+        else "Diagnose ONE recurring failure or cost pattern that the skill text itself causes, "
+        "and write ONE bounded prompt change that addresses it."
+    )
+    protected_rules = (
+        "- Preserve the review skill's read-only contract and evidence-grounded finding standard.\n"
+        "- Never optimize for finding count: missed blockers and false positives are both regressions."
+        if review_only
+        else "- Never weaken the skills' hard gates: impact-before-edit,\n"
+        "  detect_changes-before-commit, foreground verification."
     )
     return f"""You are improving the GitNexus engineering skill family from benchmark
 evidence. You are inside a throwaway clone of the GitNexus repo — the
@@ -263,10 +298,7 @@ Selected-run index (unresolved first, then expensive resolved):
 
 ## Your job
 
-Diagnose ONE recurring failure or cost pattern that the skill text itself
-causes, and write ONE bounded prompt change that addresses it. Touch several
-files only when they carry the same single change (e.g. the plan and work
-halves of one handoff rule).
+{objective} Touch several files only when they carry the same single change.
 
 Rules — the harness re-validates most of these, so a violation wastes the run:
 
@@ -283,8 +315,7 @@ Rules — the harness re-validates most of these, so a violation wastes the run:
 - Preserve invocation literals that repo tests pin verbatim (e.g. the exact
   string `node .gitnexus/run.cjs analyze`); see
   gitnexus/test/unit/skills-steering.test.ts before rewording any command.
-- Never weaken the skills' hard gates: impact-before-edit,
-  detect_changes-before-commit, foreground verification.
+{protected_rules}
 - Keep the edit small — a rule added, sharpened, or deleted; a budget
   adjusted; a phase reordered. A sprawling rewrite loses in human review even
   if it wins the gate.
@@ -561,6 +592,12 @@ def proposer_evidence_entries(
             staged_patch = f"patch-{index}.diff"
             entries[staged_patch] = _bounded_regular_text(patch, artifact_limit)
             staged["patch_file"] = staged_patch
+        review_name = staged.pop("review_artifact", None)
+        if review_name:
+            review = _results_artifact_path(results_root, str(review_name), transcript=False)
+            staged_review = f"review-{index}.json"
+            entries[staged_review] = _bounded_regular_text(review, artifact_limit)
+            staged["review_artifact"] = staged_review
         transcript_files: list[str] = []
         for session_index, artifact in enumerate(artifacts):
             staged_transcript = f"transcript-{index}-{session_index}.jsonl"
@@ -812,6 +849,8 @@ def runner_argv(
 ) -> list[str]:
     incumbent_arms = resolve_incumbent_arms(overlay_dir, args.arms)
     paired_arms = [arm for incumbent in incumbent_arms for arm in (incumbent, INCUMBENT_ARMS[incumbent])]
+    if "review" in incumbent_arms:
+        paired_arms.insert(0, "ce_review")
     argv = [
         sys.executable,
         "-m",
@@ -855,6 +894,8 @@ def runner_argv(
         argv += ["--base-url", args.base_url]
     if args.include_expensive:
         argv.append("--include-expensive")
+    if args.ce_plugin_dir is not None:
+        argv += ["--ce-plugin-dir", str(args.ce_plugin_dir), "--ce-plugin-version", args.ce_plugin_version]
     return argv
 
 
@@ -1142,6 +1183,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="include tasks marked expensive: true (excluded by default)",
     )
+    parser.add_argument("--ce-plugin-dir", type=Path, default=None)
+    parser.add_argument("--ce-plugin-version", default=None)
     return parser
 
 
@@ -1168,7 +1211,14 @@ def main() -> int:
     except (OSError, ValueError, yaml.YAMLError) as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
-    requested_arms = args.arms or list(INCUMBENT_ARMS)
+    requested_arms = args.arms or ["workflow", "workflow_direct"]
+    if "review" in requested_arms and (
+        args.ce_plugin_dir is None
+        or not args.ce_plugin_dir.expanduser().is_dir()
+        or not isinstance(args.ce_plugin_version, str)
+        or not args.ce_plugin_version.strip()
+    ):
+        parser.error("review evolution requires --ce-plugin-dir and an exact --ce-plugin-version")
     initial_overlay: Path | None = None
     if args.initial_overlay is not None:
         initial_overlay = args.initial_overlay.expanduser().absolute()

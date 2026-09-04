@@ -1125,7 +1125,9 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     expected_skill_digest = "expected-skill-fingerprint"
 
     def adversarial_review(prompt, *args, **kwargs):
-        (tmp_path / "review-output.md").write_text("review findings")
+        (tmp_path / "review-output.json").write_text(
+            '{"schema_version":1,"verdict":"approve","findings":[]}'
+        )
         if attack == "workspace":
             source.write_text("review silently changed source")
         return session_record()

@@ -52,6 +52,16 @@ def test_mirror_targets_cover_canonical_and_shipped_copies():
     ]
 
 
+def test_review_mirror_targets_include_cursor_distribution():
+    targets = mirror_targets(PurePosixPath(".claude/skills/gitnexus-review/SKILL.md"))
+    assert targets == [
+        PurePosixPath(".claude/skills/gitnexus-review/SKILL.md"),
+        PurePosixPath("gitnexus/skills/gitnexus-review/SKILL.md"),
+        PurePosixPath("gitnexus-claude-plugin/skills/gitnexus-review/SKILL.md"),
+        PurePosixPath("gitnexus-cursor-integration/skills/gitnexus-review/SKILL.md"),
+    ]
+
+
 def test_apply_promoted_overlay_writes_all_mirrors(tmp_path):
     overlay = tmp_path / "overlay"
     skill_md = overlay / ".claude" / "skills" / "gitnexus-plan" / "SKILL.md"
@@ -492,14 +502,7 @@ def test_committed_destination_bases_ignore_and_reject_live_target_edits(tmp_pat
     assert dirty.read_text() == "user edit"
 
 
-def test_mirror_roots_cover_every_candidate_skill_and_omit_none_that_ships_to_cursor():
-    # promotion_apply.mirror_targets writes canonical + MIRROR_SKILL_ROOTS, which
-    # today omits the Cursor tree. That is only safe because no candidate skill is
-    # cursor-shipped. If a future edit adds a cursor-shipped skill (e.g.
-    # gitnexus-review) to CANDIDATE_SKILLS, apply_promoted_overlay would rewrite
-    # the other trees and silently skip Cursor — the PR #2488 asymmetric-sync bug
-    # class. Pin the invariant to the filesystem, the source of truth the TS drift
-    # guard already enforces.
+def test_mirror_roots_cover_every_candidate_skill_including_cursor_review():
     repo_root = Path(__file__).resolve().parents[2]
     cursor_root = repo_root / "gitnexus-cursor-integration" / "skills"
     for skill in sorted(CANDIDATE_SKILLS):
@@ -507,10 +510,9 @@ def test_mirror_roots_cover_every_candidate_skill_and_omit_none_that_ships_to_cu
         assert canonical.is_dir(), f"candidate skill {skill} has no canonical .claude/skills dir"
         for target in mirror_targets(PurePosixPath(".claude", "skills", skill, "SKILL.md")):
             assert (repo_root / target).is_file(), f"candidate skill mirror missing on disk: {target}"
-        assert not (cursor_root / skill).exists(), (
-            f"candidate skill {skill} ships to Cursor, but MIRROR_SKILL_ROOTS does not cover "
-            "gitnexus-cursor-integration/skills — promotion would sync it asymmetrically"
-        )
+        if (cursor_root / skill).exists():
+            expected = PurePosixPath("gitnexus-cursor-integration/skills", skill, "SKILL.md")
+            assert expected in mirror_targets(PurePosixPath(".claude", "skills", skill, "SKILL.md"))
 
 
 def test_committed_destination_bases_reject_overlay_adding_uncommitted_target(tmp_path):

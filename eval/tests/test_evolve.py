@@ -8,6 +8,7 @@ import sys
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -102,9 +103,9 @@ def test_read_learnings_keeps_the_most_recent_entries(tmp_path):
     ]
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     assert read_learnings(path, cap=3) == [
-        {"skill": "gitnexus-work", "n": 7},
         {"skill": "gitnexus-work", "n": 8},
         {"skill": "gitnexus-work", "n": 9},
+        {"skill": "gitnexus-review", "n": 10},
     ]
 
 

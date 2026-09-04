@@ -1,0 +1,1038 @@
+diff --git a/GUARDRAILS.md b/GUARDRAILS.md
+index f34cf79d5..354be789c 100644
+--- a/GUARDRAILS.md
++++ b/GUARDRAILS.md
+@@ -37,7 +37,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
+ ### Index seems corrupt or "incremental" is misbehaving
+ 
+ - **Trigger:** `analyze` produces unexpected results, or `incrementalInProgress` is set in the index metadata (`.gitnexus/gitnexus.json` / legacy `meta.json`), or the index is in a half-state after a crash.
+-- **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. A dirty-flag recovery rebuild parks the interrupted run's sidecars beside the DB as `lbug.wal.dirty-recovery` / `lbug.shadow.dirty-recovery` for post-mortem debugging — harmless, and removable with `npx gitnexus clean --lbug-sidecars`. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
++- **Do:** `npx gitnexus analyze --force` to rebuild the graph and FTS indexes. This may reuse unchanged parser output; when debugging parser/capture changes, use `npx gitnexus analyze --no-parse-cache` to rebuild that output too. The dirty-flag check forces the graph rebuild automatically when a previous incremental run didn't complete cleanly. A dirty-flag recovery rebuild parks the interrupted run's sidecars beside the DB as `lbug.wal.dirty-recovery` / `lbug.shadow.dirty-recovery` for post-mortem debugging — harmless, and removable with `npx gitnexus clean --lbug-sidecars`. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
+ - **Why:** Incremental writeback is selective DB row replacement; if the on-disk state is inconsistent for any reason, a full rebuild is the cheapest path back to a known-good index.
+ 
+ ### Embeddings vanished after analyze
+diff --git a/README.md b/README.md
+index 8b25f8e09..f2714bf89 100644
+--- a/README.md
++++ b/README.md
+@@ -436,7 +436,8 @@ The token may be set in the shell, `.env.local`, or `.env` in the working direct
+ <summary><strong>All <code>analyze</code> flags</strong></summary>
+ 
+ ```bash
+-gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
++gitnexus analyze --force         # Full graph + FTS rebuild (reuses unchanged parser output)
++gitnexus analyze --no-parse-cache # Full rebuild that re-parses every source file
+ gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
+ gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
+ gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
+diff --git a/gitnexus/README.md b/gitnexus/README.md
+index f50871b71..c871a853d 100644
+--- a/gitnexus/README.md
++++ b/gitnexus/README.md
+@@ -236,7 +236,8 @@ gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks
+ gitnexus analyze [path]          # Index a repository (or update stale index)
+ gitnexus analyze [path] --watch  # Watch local files and serialize incremental refreshes
+ gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
+-gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
++gitnexus analyze --force         # Rebuild graph + FTS; may reuse unchanged parser output
++gitnexus analyze --no-parse-cache # Re-parse every source file, then rebuild graph + FTS
+ gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
+ gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
+ gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
+diff --git a/gitnexus/src/cli/analyze-options.ts b/gitnexus/src/cli/analyze-options.ts
+index 646fe8494..36f8925c5 100644
+--- a/gitnexus/src/cli/analyze-options.ts
++++ b/gitnexus/src/cli/analyze-options.ts
+@@ -20,6 +20,8 @@ export interface AnalyzeOptions {
+   /** Watch quiet period in milliseconds. */
+   debounce?: string;
+   force?: boolean;
++  /** Commander negated flag: false only when --no-parse-cache is passed. */
++  parseCache?: boolean;
+   repairFts?: boolean;
+   /**
+    * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
+diff --git a/gitnexus/src/cli/analyze-watch.ts b/gitnexus/src/cli/analyze-watch.ts
+index 172a3a090..189728963 100644
+--- a/gitnexus/src/cli/analyze-watch.ts
++++ b/gitnexus/src/cli/analyze-watch.ts
+@@ -104,6 +104,7 @@ export async function resolveWatchOptions(
+   const merged = mergeAnalyzeOptions(cli, config);
+   const unsupported = [
+     ['--force', cli.force],
++    ['--no-parse-cache', cli.parseCache === false],
+     ['--repair-fts', cli.repairFts],
+     ['--embeddings', cli.embeddings],
+     ['--drop-embeddings', cli.dropEmbeddings],
+diff --git a/gitnexus/src/cli/analyze.ts b/gitnexus/src/cli/analyze.ts
+index f2a06059e..52930c54a 100644
+--- a/gitnexus/src/cli/analyze.ts
++++ b/gitnexus/src/cli/analyze.ts
+@@ -1184,10 +1184,10 @@ const analyzeCommandImpl = async (
+     }
+   }
+ 
+-  if (options.repairFts && options.force) {
++  if (options.repairFts && (options.force || options.parseCache === false)) {
+     cliError(
+-      '  Cannot combine `--repair-fts` with `--force`. ' +
+-        'Use `--repair-fts` for fast FTS-only repair, or `--force` for a full rebuild.\n',
++      '  Cannot combine `--repair-fts` with a full rebuild. ' +
++        'Use `--repair-fts` alone for fast FTS-only repair.\n',
+     );
+     process.exitCode = 1;
+     return;
+@@ -1345,10 +1345,11 @@ const analyzeCommandImpl = async (
+     const skipAgentsMd = skipAll || options.skipAgentsMd;
+     const skipSkills = skipAll || options.skipSkills;
+     const runOptions = {
+-      // Pipeline re-index — OR'd with --skills because skill generation
+-      // needs a fresh pipelineResult. Has no bearing on the registry
+-      // collision guard (see allowDuplicateName below).
+-      force: options.force || options.skills,
++      // Pipeline re-index — OR'd with --skills because skill generation needs
++      // a fresh pipelineResult, and with --no-parse-cache because bypassing
++      // parser output is meaningful only when the pipeline runs.
++      force: options.force || options.skills || options.parseCache === false,
++      useParseCache: options.parseCache !== false,
+       repairFts: options.repairFts,
+       embeddings: embeddingsEnabled,
+       embeddingsNodeLimit,
+diff --git a/gitnexus/src/cli/help-i18n.ts b/gitnexus/src/cli/help-i18n.ts
+index 283e99832..01a44a206 100644
+--- a/gitnexus/src/cli/help-i18n.ts
++++ b/gitnexus/src/cli/help-i18n.ts
+@@ -53,6 +53,7 @@ const OPTION_DESCRIPTION_KEYS = {
+   '|-V, --version': 'help.option.version',
+   'setup|-c, --coding-agent <agents>': 'help.option.setup.codingAgent',
+   'analyze|-f, --force': 'help.option.analyze.force',
++  'analyze|--no-parse-cache': 'help.option.analyze.noParseCache',
+   'analyze|--repair-fts': 'help.option.analyze.repairFts',
+   'analyze|--embeddings [limit]': 'help.option.analyze.embeddings',
+   'analyze|--drop-embeddings': 'help.option.analyze.dropEmbeddings',
+diff --git a/gitnexus/src/cli/i18n/en.ts b/gitnexus/src/cli/i18n/en.ts
+index 58904c48f..73c2b7362 100644
+--- a/gitnexus/src/cli/i18n/en.ts
++++ b/gitnexus/src/cli/i18n/en.ts
+@@ -204,7 +204,9 @@ export const en = {
+   'help.command.group.contracts.description': 'Inspect Contract Registry',
+   'help.option.setup.codingAgent':
+     'Configure only these coding agents (comma-separated or repeatable)',
+-  'help.option.analyze.force': 'Force full re-index even if up to date',
++  'help.option.analyze.force': 'Force graph and FTS rebuild; unchanged parser output may be reused',
++  'help.option.analyze.noParseCache':
++    'Re-parse every source file instead of replaying cached parser output',
+   'help.option.analyze.repairFts': 'Repair/rebuild search FTS indexes without full re-analysis',
+   'help.option.analyze.embeddings':
+     'Enable embedding generation for semantic search (off by default). Optional [limit] overrides the 50,000-node safety cap; pass 0 to disable the cap entirely.',
+diff --git a/gitnexus/src/cli/i18n/zh-CN.ts b/gitnexus/src/cli/i18n/zh-CN.ts
+index de9249cc4..e18d0d3de 100644
+--- a/gitnexus/src/cli/i18n/zh-CN.ts
++++ b/gitnexus/src/cli/i18n/zh-CN.ts
+@@ -192,7 +192,8 @@ export const zhCN = {
+   'help.command.group.query.description': '跨仓库组所有仓库搜索执行流程',
+   'help.command.group.contracts.description': '查看 Contract Registry',
+   'help.option.setup.codingAgent': '仅配置这些编码代理（逗号分隔或重复传入）',
+-  'help.option.analyze.force': '即使已是最新也强制完整重建索引',
++  'help.option.analyze.force': '强制重建图和 FTS；未更改的解析器输出可能被复用',
++  'help.option.analyze.noParseCache': '重新解析每个源文件，不重放缓存的解析器输出',
+   'help.option.analyze.repairFts': '修复/重建搜索 FTS 索引，不执行完整重新分析',
+   'help.option.analyze.embeddings':
+     '启用语义搜索的嵌入生成（默认关闭）。可选 [limit] 覆盖 50,000 节点安全上限；传 0 可完全禁用上限。',
+diff --git a/gitnexus/src/cli/index.ts b/gitnexus/src/cli/index.ts
+index 6851044c0..ee575e47d 100644
+--- a/gitnexus/src/cli/index.ts
++++ b/gitnexus/src/cli/index.ts
+@@ -75,7 +75,11 @@ program
+   .description('Index a repository (full analysis)')
+   .option('--watch', 'Keep the index current with serialized incremental refreshes')
+   .option('--debounce <ms>', 'Watch quiet period before refreshing (default: 300 milliseconds)')
+-  .option('-f, --force', 'Force full re-index even if up to date')
++  .option('-f, --force', 'Force graph and FTS rebuild; unchanged parser output may be reused')
++  .option(
++    '--no-parse-cache',
++    'Re-parse every source file instead of replaying cached parser output',
++  )
+   .option('--repair-fts', 'Repair/rebuild search FTS indexes without full re-analysis')
+   .option(
+     '--embeddings [limit]',
+diff --git a/gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts b/gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts
+index f9cbbd47b..b69c09eb7 100644
+--- a/gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts
++++ b/gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts
+@@ -457,6 +457,8 @@ export async function runChunkedParseAndResolve(
+   usedWorkerPool: boolean;
+   /** Files dispatched to parser workers after parse-cache lookup. */
+   reparsedFileCount: number;
++  /** Files restored from parse-cache chunks without parser-worker dispatch. */
++  parseCacheHitFileCount: number;
+   /** Worker-produced ParsedFile artifacts aggregated across chunks.
+    *  Threaded into scope-resolution as a re-extract cache so the warm-
+    *  cache analyze run can skip the dominant `extractParsedFile` cost
+@@ -752,6 +754,7 @@ export async function runChunkedParseAndResolve(
+       : new Map<string, ReadonlySet<string>>();
+   let chunkCacheHits = 0;
+   let chunkCacheMisses = 0;
++  let parseCacheHitFileCount = 0;
+   let reparsedFileCount = 0;
+ 
+   try {
+@@ -1044,6 +1047,7 @@ export async function runChunkedParseAndResolve(
+           pendingWorkerChunk = null;
+         }
+         chunkCacheHits++;
++        parseCacheHitFileCount += chunkFiles.length;
+         const chunkWorkerData = mergeChunkResults(graph, symbolTable, cachedRaw, exportedTypeMap);
+         if (isDev) {
+           logger.info(
+@@ -1611,6 +1615,7 @@ export async function runChunkedParseAndResolve(
+     // is intentionally measured at dispatch time rather than inferred from
+     // the git/hash diff.
+     reparsedFileCount,
++    parseCacheHitFileCount,
+     // Per-file ParsedFile artifacts produced by workers' calls to
+     // `extractParsedFile`. Consumed by scope-resolution as a re-extraction
+     // cache: when the file's ParsedFile is here, scope-resolution skips its own
+diff --git a/gitnexus/src/core/ingestion/pipeline.ts b/gitnexus/src/core/ingestion/pipeline.ts
+index ac1b120e8..8ee94e265 100644
+--- a/gitnexus/src/core/ingestion/pipeline.ts
++++ b/gitnexus/src/core/ingestion/pipeline.ts
+@@ -411,13 +411,19 @@ export const runPipelineFromRepo = async (
+   }
+ 
+   // Extract final results for the PipelineResult contract
+-  const { totalFiles, usedWorkerPool, reparsedFileCount, unavailableScopeLanguageFiles } =
+-    getPhaseOutput<{
+-      totalFiles: number;
+-      usedWorkerPool: boolean;
+-      reparsedFileCount: number;
+-      unavailableScopeLanguageFiles: number;
+-    }>(results, 'parse');
++  const {
++    totalFiles,
++    usedWorkerPool,
++    reparsedFileCount,
++    parseCacheHitFileCount,
++    unavailableScopeLanguageFiles,
++  } = getPhaseOutput<{
++    totalFiles: number;
++    usedWorkerPool: boolean;
++    reparsedFileCount: number;
++    parseCacheHitFileCount: number;
++    unavailableScopeLanguageFiles: number;
++  }>(results, 'parse');
+ 
+   let communityResult: CommunitiesOutput['communityResult'] | undefined;
+   let processResult: ProcessesOutput['processResult'] | undefined;
+@@ -470,6 +476,7 @@ export const runPipelineFromRepo = async (
+     undecidedSatisfaction,
+     usedWorkerPool,
+     reparsedFileCount,
++    parseCacheHitFileCount,
+     scopeExtractionFailures,
+     unavailableScopeLanguageFiles,
+     pdgEmitManifest,
+diff --git a/gitnexus/src/core/run-analyze.ts b/gitnexus/src/core/run-analyze.ts
+index 2dfd80b93..8b70ef10e 100644
+--- a/gitnexus/src/core/run-analyze.ts
++++ b/gitnexus/src/core/run-analyze.ts
+@@ -157,11 +157,11 @@ import {
+   saveParseCache,
+   pruneCache,
+   PARSE_CACHE_VERSION,
++  createColdParseRebuildDir,
++  emptyParseCache,
++  forgetCreatedParseCacheDir,
+ } from '../storage/parse-cache.js';
+-import {
+-  getDurableParsedFileDir,
+-  pruneAndSaveDurableParsedFileStore,
+-} from '../storage/parsedfile-store.js';
++import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
+ import {
+   getCurrentCommit,
+   getCurrentBranch,
+@@ -332,12 +332,19 @@ export interface AnalyzeCallbacks {
+ 
+ export interface AnalyzeOptions {
+   /**
+-   * Force a full re-index of the pipeline. Callers may OR this with
+-   * other flags that imply re-analysis (e.g. `--skills`), so the value
+-   * here is the PIPELINE-force signal, NOT the registry-collision
+-   * bypass. See `allowDuplicateName` below.
++   * Rebuild the graph and FTS. Parser output is still reused from the
++   * content-addressed parse cache unless `useParseCache` is false.
++   * Callers may OR this with other flags that imply re-analysis
++   * (e.g. `--skills`), so the value here is the PIPELINE-force signal,
++   * NOT the registry-collision bypass. See `allowDuplicateName` below.
+    */
+   force?: boolean;
++  /**
++   * Reuse content-addressed parser output. Defaults to true. When false,
++   * analysis reparses every file and publishes a new parse-cache generation
++   * only after a successful run (live shards stay untouched if the run fails).
++   */
++  useParseCache?: boolean;
+   /** Repair only search indexes without re-running full parsing/indexing. */
+   repairFts?: boolean;
+   /** Emit per-index FTS create logs. */
+@@ -1029,6 +1036,18 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
+   };
+ }
+ 
++async function removeColdParseRebuildDir(
++  dir: string | undefined,
++  ignoreErrors: boolean,
++): Promise<void> {
++  if (!dir) return;
++  try {
++    await fs.rm(dir, { recursive: true, force: true });
++  } catch (err) {
++    if (!ignoreErrors) throw err;
++  }
++}
++
+ /**
+  * Run the full analysis under an exclusive, index-directory-scoped write lock
+  * (#2658). A second concurrent `analyze` on the same slot waits here for the
+@@ -1132,6 +1151,7 @@ async function runFullAnalysisInner(
+   // does not own the flat slot. See resolveWriteTarget for the full contract.
+   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
+     writeTarget;
++  let coldParseRebuildDir: string | undefined;
+ 
+   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
+   // (e.g. the embeddings-cache open) falls back to the default until the hint is
+@@ -1742,6 +1762,13 @@ async function runFullAnalysisInner(
+     options = { ...options, force: true };
+   }
+ 
++  // Programmatic `useParseCache: false` must set force or the up-to-date
++  // guard returns before the empty-cache construction below.
++  if (options.useParseCache === false && !options.force) {
++    log('Parser cache bypass requested; forcing a full rebuild so unchanged files are re-parsed.');
++    options = { ...options, force: true };
++  }
++
+   // ── Early-return: already up to date ──────────────────────────────
+   if (
+     existingMeta &&
+@@ -1964,11 +1991,18 @@ async function runFullAnalysisInner(
+   }
+ 
+   // ── Load incremental parse cache ──────────────────────────────────
+-  // Content-addressed: safe to reuse across `--force` runs (chunks whose
+-  // file contents haven't changed produce identical worker output).
+-  // Loaded into a single ParseCache object that the pipeline mutates
+-  // in-place (cache hits leave entries unchanged; misses add new ones).
+-  const parseCache = await loadParseCache(storagePath);
++  // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
++  // stages a new generation under a run-unique parse-rebuild.* dir and publishes
++  // after success. Unique because index locks are per branch slot while this
++  // cache root is shared across branches.
++  if (options.useParseCache === false) {
++    coldParseRebuildDir = await createColdParseRebuildDir(storagePath);
++    forgetCreatedParseCacheDir(coldParseRebuildDir);
++  }
++  const parseCache =
++    options.useParseCache === false
++      ? emptyParseCache(coldParseRebuildDir)
++      : await loadParseCache(storagePath);
+ 
+   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
+   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
+@@ -2006,53 +2040,69 @@ async function runFullAnalysisInner(
+     !schemaFingerprintMismatch(existingMeta.schemaFingerprint);
+ 
+   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
+-  const pipelineResult = await runPipelineFromRepo(
+-    repoPath,
+-    (p) => {
+-      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+-      const scaled = Math.round(p.percent * 0.6);
+-      const message = p.detail
+-        ? `${p.message || phaseLabel} (${p.detail})`
+-        : p.message || phaseLabel;
+-      progress(p.phase, scaled, message);
+-    },
+-    {
+-      parseCache,
+-      workerPoolSize: options.workerPoolSize,
+-      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+-      // build gate (workerData.pdg) and the scope-resolution emit gate.
+-      pdg: options.pdg === true,
+-      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+-      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
+-      pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+-      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+-      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+-      pdgMaxTaintHops: options.pdgMaxTaintHops,
+-      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+-      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+-      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+-      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+-      // (force === true) so the incremental writeback never reads back an
+-      // offloaded BasicBlock layer. Memory-only; byte-identical output.
+-      streamPdgEmit: resolveStreamPdgEmit(options),
+-      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+-      // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
+-      // toggle above, for the same incremental-writeback reason.
+-      streamGraphEmit: streamGraphEmitActive,
+-      // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
+-      // path this helper mkdtempSyncs a real directory, so evaluating it
+-      // unconditionally would leak one temp dir per analyze even with the flag
+-      // off. The PDG sibling resolves inside its guard for the same reason.
+-      graphEmitCsvDir: streamGraphEmitActive
+-        ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
+-        : undefined,
+-      fetchWrappers: options.fetchWrappers,
+-      skipDerivedGraphPhases,
+-      springActuatorPath: options.springActuatorPath,
+-      asyncApiSpecPath: options.asyncApiSpecPath,
+-      springActuatorScanExclusions,
+-    },
+-  );
++  let pipelineResult;
++  try {
++    pipelineResult = await runPipelineFromRepo(
++      repoPath,
++      (p) => {
++        const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
++        const scaled = Math.round(p.percent * 0.6);
++        const message = p.detail
++          ? `${p.message || phaseLabel} (${p.detail})`
++          : p.message || phaseLabel;
++        progress(p.phase, scaled, message);
++      },
++      {
++        parseCache,
++        workerPoolSize: options.workerPoolSize,
++        // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
++        // build gate (workerData.pdg) and the scope-resolution emit gate.
++        pdg: options.pdg === true,
++        pdgMaxFunctionLines: options.pdgMaxFunctionLines,
++        pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
++        pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
++        pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
++        pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
++        pdgMaxTaintHops: options.pdgMaxTaintHops,
++        pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
++        pdgMaxInterprocHops: options.pdgMaxInterprocHops,
++        pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
++        // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
++        // (force === true) so the incremental writeback never reads back an
++        // offloaded BasicBlock layer. Memory-only; byte-identical output.
++        streamPdgEmit: resolveStreamPdgEmit(options),
++        pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
++        // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
++        // toggle above, for the same incremental-writeback reason.
++        streamGraphEmit: streamGraphEmitActive,
++        // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
++        // path this helper mkdtempSyncs a real directory, so evaluating it
++        // unconditionally would leak one temp dir per analyze even with the flag
++        // off. The PDG sibling resolves inside its guard for the same reason.
++        graphEmitCsvDir: streamGraphEmitActive
++          ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
++          : undefined,
++        fetchWrappers: options.fetchWrappers,
++        skipDerivedGraphPhases,
++        springActuatorPath: options.springActuatorPath,
++        asyncApiSpecPath: options.asyncApiSpecPath,
++        springActuatorScanExclusions,
++      },
++    );
++  } catch (err) {
++    await removeColdParseRebuildDir(coldParseRebuildDir, true);
++    throw err;
++  }
++
++  if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
++    log(
++      `Rebuilt the graph and FTS while reusing cached parser output for ` +
++        `${pipelineResult.parseCacheHitFileCount} file(s) ` +
++        `(parse cache ${PARSE_CACHE_VERSION}). ` +
++        `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
++        `src/storage/parse-cache.ts to invalidate parser output.`,
++    );
++  }
+ 
+   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
+   progress('lbug', 60, 'Loading into LadybugDB...');
+@@ -3994,51 +4044,8 @@ async function runFullAnalysisInner(
+     // meta.indexedAt = T_new while lbugPath still resolves to the pre-swap
+     // inode (which latched the reader on the stale index permanently). The meta
+     // object is fully computed at this point; only its write is deferred.
+-
+-    // Persist the incremental parse cache for the next run. Wraps in
+-    // try/catch so a cache-write failure never breaks an otherwise
+-    // successful indexing run. Prune stale chunk-hash entries first so
+-    // the cache file size stays bounded across runs (chunks whose
+-    // composition no longer matches anything in the current scan are
+-    // dead weight; the parse phase populates `usedKeys` as it processes
+-    // chunks).
+-    try {
+-      // #2106 R6: the parse cache + durable store are shared across branches.
+-      // Before pruning to this run's keys, fold in the OTHER branches' recorded
+-      // chunk keys so a branch switch doesn't evict their still-live shards.
+-      // Adding to usedKeys makes them survive pruneCache AND land in the saved
+-      // index (saveParseCache builds the index from usedKeys). Excludes this
+-      // run's own meta dir, so a single-branch repo folds in nothing → prune
+-      // set byte-identical to today.
+-      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+-      if (complete) {
+-        for (const k of siblingKeys) parseCache.usedKeys.add(k);
+-      } else {
+-        // Fail-safe toward retention: a sibling meta was unreadable, so keep
+-        // everything currently loaded rather than evict on incomplete info.
+-        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
+-        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+-      }
+-      const pruned = pruneCache(parseCache, parseCache.usedKeys);
+-      if (pruned > 0) {
+-        log(`Parse cache: pruned ${pruned} stale chunk entries`);
+-      }
+-      const savedKeys = await saveParseCache(storagePath, parseCache);
+-      // Prune the durable ParsedFile store to EXACTLY the parse cache's
+-      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
+-      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
+-      // and its durable shards exist. A quarantined chunk (in usedKeys but with
+-      // no parse-cache shard) drops its durable subdir here and re-dispatches
+-      // next run. Same try/catch — a durable-store write failure must never
+-      // break an otherwise successful run (next run treats it as a miss).
+-      await pruneAndSaveDurableParsedFileStore(
+-        getDurableParsedFileDir(storagePath),
+-        PARSE_CACHE_VERSION,
+-        new Set(savedKeys),
+-      );
+-    } catch (e) {
+-      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
+-    }
++    // Parse-cache publish waits until after that swap + saveMeta so a failed
++    // registerRepo / close / swap cannot replace live shards (#3153).
+ 
+     // Forward the --name alias and the registry-collision bypass bit.
+     // `allowDuplicateName` is its own concern — independent from the
+@@ -4061,8 +4068,8 @@ async function runFullAnalysisInner(
+     // ── #2354: the flat workspace slot has adopted this run's branch ──────
+     // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
+     // (unreachable once the flat slot serves it) and align the registry's
+-    // top-level branch label. Best-effort like the parse-cache save above
+-    // (#2364 review F5): the index is complete and registered, and a failure
++    // top-level branch label. Best-effort (#2364 review F5): the index is
++    // complete and registered, and a failure
+     // here leaves only a stale registry label / undeleted shadowed dir —
+     // never wrong routing, because the flat meta this run already stamped is
+     // what applyBranchScope trusts. Retried by the next content-changing run
+@@ -4190,8 +4197,55 @@ async function runFullAnalysisInner(
+     // live and the next run recovers via the full-rebuild path.
+     await saveMeta(metaDir, meta);
+ 
++    // Persist the incremental parse cache only after a successful graph
++    // publish (#3153). try/catch so a cache-write failure never breaks an
++    // otherwise successful indexing run. Prune stale chunk-hash entries first
++    // so the cache file size stays bounded across runs (chunks whose
++    // composition no longer matches anything in the current scan are dead
++    // weight; the parse phase populates `usedKeys` as it processes chunks).
++    try {
++      // #2106 R6: the parse cache + durable store are shared across branches.
++      // Before pruning to this run's keys, fold in the OTHER branches' recorded
++      // chunk keys so a branch switch doesn't evict their still-live shards.
++      // Adding to usedKeys makes them survive pruneCache AND land in the saved
++      // index (saveParseCache builds the index from usedKeys). Excludes this
++      // run's own meta dir, so a single-branch repo folds in nothing → prune
++      // set byte-identical to today.
++      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
++      if (complete) {
++        for (const k of siblingKeys) parseCache.usedKeys.add(k);
++      } else {
++        // Fail-safe toward retention: a sibling meta was unreadable, so keep
++        // everything currently loaded rather than evict on incomplete info.
++        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
++        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
++      }
++      const pruned = pruneCache(parseCache, parseCache.usedKeys);
++      if (pruned > 0) {
++        log(`Parse cache: pruned ${pruned} stale chunk entries`);
++      }
++      const savedKeys = await saveParseCache(storagePath, parseCache);
++      // Prune the durable ParsedFile store to EXACTLY the parse cache's
++      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
++      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
++      // and its durable shards exist. A quarantined chunk (in usedKeys but with
++      // no parse-cache shard) drops its durable subdir here and re-dispatches
++      // next run. Same try/catch — a durable-store write failure must never
++      // break an otherwise successful run (next run treats it as a miss).
++      await mergeStagedDurableParsedFileStore(
++        storagePath,
++        parseCache.storagePath ?? storagePath,
++        PARSE_CACHE_VERSION,
++        new Set(savedKeys),
++      );
++    } catch (e) {
++      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
++    }
++
+     progress('done', 100, 'Done');
+ 
++    await removeColdParseRebuildDir(coldParseRebuildDir, true);
++
+     return {
+       repoName: projectName,
+       repoPath,
+@@ -4245,6 +4299,7 @@ async function runFullAnalysisInner(
+         /* swallow — orphan reclamation must never mask the real failure */
+       }
+     }
++    await removeColdParseRebuildDir(coldParseRebuildDir, true);
+     if (liveIndexMutationStarted) {
+       // Preserve the original error identity/prototype: callers distinguish
+       // IndexLockTimeoutError and other domain failures with `instanceof`.
+diff --git a/gitnexus/src/storage/parse-cache.ts b/gitnexus/src/storage/parse-cache.ts
+index 7b5cdc25c..743b810b4 100644
+--- a/gitnexus/src/storage/parse-cache.ts
++++ b/gitnexus/src/storage/parse-cache.ts
+@@ -19,9 +19,9 @@
+  * - Chunk-level invalidation gives a useful speedup floor (98% on a single
+  *   1-of-50 invalidated chunk) without touching the worker.
+  *
+- * Survives `--force` because it's content-addressed: the same bytes always
+- * produce the same key. `--force` only matters for the LadybugDB writeback;
+- * the cache itself is always safe to reuse.
++ * `--force` still reuses content-addressed shards (it only rebuilds graph/FTS).
++ * `useParseCache: false` reparses every file, writes a staging generation, and
++ * publishes onto this cache only after a successful analysis.
+  */
+ 
+ import { createHash } from 'crypto';
+@@ -815,6 +815,27 @@ export const packParseCacheChunks = (
+ 
+ const LEGACY_CACHE_FILENAME = 'parse-cache.json';
+ const CACHE_DIRNAME = 'parse-cache';
++/**
++ * Per-run staging root for `useParseCache: false`. Parse-cache shards and the
++ * ParsedFile stores write here so a crash cannot mix a new generation into the
++ * live `.gitnexus/parse-cache` / `parsedfile-cache` trees. `saveParseCache`
++ * publishes onto the live `storagePath` only after a successful analysis.
++ */
++export const COLD_PARSE_REBUILD_DIRNAME = 'parse-rebuild';
++
++/** Deterministic staging path — tests only. Production uses {@link createColdParseRebuildDir}. */
++export const getColdParseRebuildDir = (storagePath: string): string =>
++  path.join(storagePath, COLD_PARSE_REBUILD_DIRNAME);
++
++/**
++ * Unique per analyze process so concurrent `--no-parse-cache` runs on
++ * different branch slots (shared `.gitnexus`, separate index locks) do not
++ * delete each other's staging tree.
++ */
++export const createColdParseRebuildDir = async (storagePath: string): Promise<string> => {
++  await fs.mkdir(storagePath, { recursive: true });
++  return fs.mkdtemp(path.join(storagePath, `${COLD_PARSE_REBUILD_DIRNAME}.`));
++};
+ const CACHE_INDEX_FILENAME = 'index.json';
+ 
+ /** Keys on disk always come from `computeChunkHash` — 64-char lowercase hex. */
+@@ -851,6 +872,8 @@ export interface ParseCache {
+    * When set, chunk payloads are loaded from / flushed to sharded files on
+    * demand instead of retaining every chunk in `entries` for the whole run
+    * (#1983 — Linux kernel OOM from duplicate in-memory cache + graph).
++   * May be a per-run staging directory (`getColdParseRebuildDir`) while the
++   * live index root is passed separately to `saveParseCache`.
+    */
+   storagePath?: string;
+   /** Index of chunk hashes known to exist under `storagePath/parse-cache/`. */
+@@ -1034,6 +1057,11 @@ export const loadParseCacheChunk = async (
+  */
+ const createdCacheDirs = new Set<string>();
+ 
++/** Drop the mkdir memo after the staging tree is wiped so the next persist recreates it. */
++export const forgetCreatedParseCacheDir = (storagePath: string): void => {
++  createdCacheDirs.delete(getCacheDirPath(storagePath));
++};
++
+ /**
+  * Persist one chunk shard and avoid retaining it in RAM for the rest of the
+  * run. Falls back to `cache.entries` when `storagePath` is unset (unit tests).
+@@ -1171,8 +1199,18 @@ export const saveParseCache = async (storagePath: string, cache: ParseCache): Pr
+       }
+       continue;
+     }
+-    const existingPath = getCacheChunkPath(storagePath, chunkHash);
+-    if (await copyV8CacheIfPresent(existingPath, chunkPath)) {
++    // Cold rebuilds persist mid-run under `cache.storagePath` (staging). Prefer
++    // that generation over a same-hash shard still sitting in the live dir so
++    // we never publish a mixed old/new pair. Sibling-branch keys (#2106) that
++    // this run did not rewrite still copy from the live path.
++    const stagedPath =
++      cache.storagePath !== undefined && cache.storagePath !== storagePath
++        ? getCacheChunkPath(cache.storagePath, chunkHash)
++        : undefined;
++    const livePath = getCacheChunkPath(storagePath, chunkHash);
++    const fromStaged = Boolean(stagedPath && cache.onDiskKeys?.has(chunkHash));
++    const sourcePath = fromStaged && stagedPath ? stagedPath : livePath;
++    if (await copyV8CacheIfPresent(sourcePath, chunkPath)) {
+       writtenKeys.push(chunkHash);
+     }
+   }
+@@ -1216,10 +1254,12 @@ export const pruneCache = (cache: ParseCache, usedHashes: ReadonlySet<string>):
+   return removed;
+ };
+ 
+-const emptyCache = (storagePath?: string): ParseCache => ({
++export const emptyParseCache = (storagePath?: string): ParseCache => ({
+   version: PARSE_CACHE_VERSION,
+   entries: new Map<string, ParseWorkerResult[]>(),
+   usedKeys: new Set<string>(),
+   storagePath,
+   onDiskKeys: storagePath ? new Set<string>() : undefined,
+ });
++
++const emptyCache = emptyParseCache;
+diff --git a/gitnexus/src/storage/parsedfile-store.ts b/gitnexus/src/storage/parsedfile-store.ts
+index 51e2a9a54..dce10b03d 100644
+--- a/gitnexus/src/storage/parsedfile-store.ts
++++ b/gitnexus/src/storage/parsedfile-store.ts
+@@ -722,3 +722,74 @@ export const pruneAndSaveDurableParsedFileStore = async (
+   await fs.writeFile(tmp, JSON.stringify(idx), 'utf-8');
+   await fs.rename(tmp, path.join(durableDir, DURABLE_INDEX_FILENAME));
+ };
++
++/**
++ * Overlay this run's staged durable ParsedFile chunks onto the live store,
++ * then prune the live tree to `keepKeys`. Live chunks this run did not rewrite
++ * (other branches, unused hashes) stay until prune. No-op overlay when the
++ * staged dir is missing.
++ */
++export const mergeStagedDurableParsedFileStore = async (
++  liveStoragePath: string,
++  stagedStoragePath: string,
++  version: string,
++  keepKeys: ReadonlySet<string>,
++): Promise<void> => {
++  const liveDir = getDurableParsedFileDir(liveStoragePath);
++  if (stagedStoragePath === liveStoragePath) {
++    await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
++    return;
++  }
++  const stagedDir = getDurableParsedFileDir(stagedStoragePath);
++  await fs.mkdir(liveDir, { recursive: true });
++  let stagedEntries: string[] = [];
++  try {
++    stagedEntries = await fs.readdir(stagedDir);
++  } catch {
++    await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
++    return;
++  }
++  for (const name of stagedEntries) {
++    if (name === DURABLE_INDEX_FILENAME) continue;
++    const from = path.join(stagedDir, name);
++    const to = path.join(liveDir, name);
++    await replaceDurableChunkDir(from, to);
++  }
++  await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
++};
++
++/** Move `from` onto `to` without deleting `to` until the new tree is in place. */
++const replaceDurableChunkDir = async (from: string, to: string): Promise<void> => {
++  try {
++    await fs.rename(from, to);
++    return;
++  } catch {
++    /* dest exists, or the rename is cross-device */
++  }
++  const backup = `${to}.replacing`;
++  await fs.rm(backup, { recursive: true, force: true });
++  let backedUp = false;
++  try {
++    await fs.rename(to, backup);
++    backedUp = true;
++  } catch {
++    /* dest was missing */
++  }
++  try {
++    try {
++      await fs.rename(from, to);
++    } catch {
++      await fs.cp(from, to, { recursive: true });
++      await fs.rm(from, { recursive: true, force: true });
++    }
++  } catch (err) {
++    if (backedUp) {
++      await fs.rm(to, { recursive: true, force: true }).catch(() => {});
++      await fs.rename(backup, to).catch(() => {});
++    }
++    throw err;
++  }
++  if (backedUp) {
++    await fs.rm(backup, { recursive: true, force: true });
++  }
++};
+diff --git a/gitnexus/src/types/pipeline.ts b/gitnexus/src/types/pipeline.ts
+index 960517416..d665a7acf 100644
+--- a/gitnexus/src/types/pipeline.ts
++++ b/gitnexus/src/types/pipeline.ts
+@@ -54,6 +54,8 @@ export interface PipelineResult {
+   usedWorkerPool: boolean;
+   /** Files actually dispatched to parser workers after parse-cache lookup. */
+   reparsedFileCount: number;
++  /** Files restored from parse-cache chunks without parser-worker dispatch. */
++  parseCacheHitFileCount?: number;
+   /** Files omitted from scope-resolution while the rest of analysis continued. */
+   scopeExtractionFailures: readonly string[];
+   /** Files scope resolution could not inspect because their parser was unavailable. */
+diff --git a/gitnexus/test/unit/analyze-no-stats-bridge.test.ts b/gitnexus/test/unit/analyze-no-stats-bridge.test.ts
+index 93cac4d8a..bab7eb100 100644
+--- a/gitnexus/test/unit/analyze-no-stats-bridge.test.ts
++++ b/gitnexus/test/unit/analyze-no-stats-bridge.test.ts
+@@ -137,6 +137,25 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)',
+     expect(opts.repairFts).toBe(true);
+   });
+ 
++  it('maps --no-parse-cache to a cold parser run', async () => {
++    const { analyzeCommand } = await import('../../src/cli/analyze.js');
++
++    await analyzeCommand(undefined, { parseCache: false });
++
++    const opts = runFullAnalysisMock.mock.calls[0][1];
++    expect(opts.useParseCache).toBe(false);
++    expect(opts.force).toBe(true);
++  });
++
++  it('reuses parser output by default', async () => {
++    const { analyzeCommand } = await import('../../src/cli/analyze.js');
++
++    await analyzeCommand(undefined, {});
++
++    const opts = runFullAnalysisMock.mock.calls[0][1];
++    expect(opts.useParseCache).toBe(true);
++  });
++
+   it('rejects combining --repair-fts with --force', async () => {
+     const { analyzeCommand } = await import('../../src/cli/analyze.js');
+ 
+@@ -144,11 +163,20 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)',
+ 
+     expect(process.exitCode).toBe(1);
+     expect(cliErrorMock).toHaveBeenCalledWith(
+-      expect.stringMatching(/cannot combine `--repair-fts` with `--force`/i),
++      expect.stringMatching(/cannot combine `--repair-fts` with a full rebuild/i),
+     );
+     expect(runFullAnalysisMock).not.toHaveBeenCalled();
+   });
+ 
++  it('rejects combining --repair-fts with --no-parse-cache', async () => {
++    const { analyzeCommand } = await import('../../src/cli/analyze.js');
++
++    await analyzeCommand(undefined, { repairFts: true, parseCache: false });
++
++    expect(process.exitCode).toBe(1);
++    expect(runFullAnalysisMock).not.toHaveBeenCalled();
++  });
++
+   it('passes stats:false as noStats to generateAIContextFiles on the --skills regeneration path (#1477)', async () => {
+     runFullAnalysisMock.mockResolvedValueOnce({
+       repoName: 'repo',
+diff --git a/gitnexus/test/unit/incremental-orchestration.test.ts b/gitnexus/test/unit/incremental-orchestration.test.ts
+index 547f6417d..df24e963d 100644
+--- a/gitnexus/test/unit/incremental-orchestration.test.ts
++++ b/gitnexus/test/unit/incremental-orchestration.test.ts
+@@ -579,6 +579,28 @@ describe('runFullAnalysis — incremental orchestration', () => {
+     }
+   }, 300_000);
+ 
++  it('useParseCache:false bypasses the alreadyUpToDate fast path without --force', async () => {
++    const repo = await setupMiniRepo();
++    try {
++      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
++      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
++
++      const logs: string[] = [];
++      const cold = await runFullAnalysis(
++        repo.dbPath,
++        { skipAgentsMd: true, useParseCache: false },
++        { onProgress: () => {}, onLog: (message) => logs.push(message) },
++      );
++
++      expect(cold.alreadyUpToDate).toBeUndefined();
++      expect(cold.pipelineResult?.parseCacheHitFileCount ?? 0).toBe(0);
++      expect(cold.pipelineResult?.reparsedFileCount).toBe(7);
++      expect(logs.join('\n')).toContain('Parser cache bypass requested');
++    } finally {
++      await repo.cleanup();
++    }
++  }, 300_000);
++
+   it('rebuilds for Actuator snapshots and once more when runtime enrichment is disabled', async () => {
+     const repo = await setupMiniRepo();
+     const runtimeInput = 'runtime-actuator';
+@@ -663,12 +685,17 @@ describe('runFullAnalysis — incremental orchestration', () => {
+       );
+       expect(steady.alreadyUpToDate).toBe(true);
+ 
++      const forceLogs: string[] = [];
+       const forcedSteady = await runFullAnalysis(
+         repo.dbPath,
+         { skipAgentsMd: true, force: true },
+-        { onProgress: () => {} },
++        { onProgress: () => {}, onLog: (message) => forceLogs.push(message) },
+       );
+       expect(forcedSteady.alreadyUpToDate).toBeUndefined();
++      expect(forceLogs.join('\n')).toContain(
++        'Rebuilt the graph and FTS while reusing cached parser output',
++      );
++      expect(forceLogs.join('\n')).toContain('increment SCHEMA_BUMP');
+       expect(
+         await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
+       ).toEqual([]);
+diff --git a/gitnexus/test/unit/incremental-parse-cache.test.ts b/gitnexus/test/unit/incremental-parse-cache.test.ts
+index 948dc27e0..f6627e94a 100644
+--- a/gitnexus/test/unit/incremental-parse-cache.test.ts
++++ b/gitnexus/test/unit/incremental-parse-cache.test.ts
+@@ -15,6 +15,8 @@ import {
+   saveParseCache,
+   pruneCache,
+   slimParseWorkerResultsForCache,
++  getColdParseRebuildDir,
++  createColdParseRebuildDir,
+   type ParseCache,
+ } from '../../src/storage/parse-cache.js';
+ import { writeV8CacheFile } from '../../src/storage/v8-sidecar.js';
+@@ -947,4 +949,78 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
+       await rm(dir, { recursive: true, force: true });
+     }
+   });
++
++  it('persists cold-rebuild shards under staging without touching the live parse-cache dir', async () => {
++    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-stage-'));
++    try {
++      const liveKey = 'a'.repeat(64);
++      const stagedKey = 'b'.repeat(64);
++      await saveParseCache(dir, {
++        version: PARSE_CACHE_VERSION,
++        entries: new Map([[liveKey, [minimalResult({ fileCount: 1 })]]]),
++        usedKeys: new Set([liveKey]),
++      });
++      const staging = getColdParseRebuildDir(dir);
++      const cache: ParseCache = {
++        version: PARSE_CACHE_VERSION,
++        entries: new Map(),
++        usedKeys: new Set([liveKey, stagedKey]),
++        storagePath: staging,
++        onDiskKeys: new Set(),
++      };
++      await persistParseCacheChunk(cache, stagedKey, [minimalResult({ fileCount: 99 })]);
++      const liveNames = await readdir(path.join(dir, 'parse-cache'));
++      expect(liveNames).toContain(`${liveKey}.v8`);
++      expect(liveNames).not.toContain(`${stagedKey}.v8`);
++      const stagedNames = await readdir(path.join(staging, 'parse-cache'));
++      expect(stagedNames).toContain(`${stagedKey}.v8`);
++
++      const saved = await saveParseCache(dir, cache);
++      expect(saved.sort()).toEqual([liveKey, stagedKey].sort());
++      const loaded = await loadParseCache(dir);
++      expect((await loadParseCacheChunk(loaded, liveKey))?.[0]?.fileCount).toBe(1);
++      expect((await loadParseCacheChunk(loaded, stagedKey))?.[0]?.fileCount).toBe(99);
++    } finally {
++      await rm(dir, { recursive: true, force: true });
++    }
++  });
++
++  it('prefers a staged shard over a same-hash live shard when publishing', async () => {
++    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-pref-'));
++    try {
++      const key = 'c'.repeat(64);
++      await saveParseCache(dir, {
++        version: PARSE_CACHE_VERSION,
++        entries: new Map([[key, [minimalResult({ fileCount: 1 })]]]),
++        usedKeys: new Set([key]),
++      });
++      const staging = getColdParseRebuildDir(dir);
++      const cache: ParseCache = {
++        version: PARSE_CACHE_VERSION,
++        entries: new Map(),
++        usedKeys: new Set([key]),
++        storagePath: staging,
++        onDiskKeys: new Set(),
++      };
++      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 7 })]);
++      await saveParseCache(dir, cache);
++      const loaded = await loadParseCache(dir);
++      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(7);
++    } finally {
++      await rm(dir, { recursive: true, force: true });
++    }
++  });
++
++  it('createColdParseRebuildDir returns distinct directories under the same storage root', async () => {
++    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-uniq-'));
++    try {
++      const a = await createColdParseRebuildDir(dir);
++      const b = await createColdParseRebuildDir(dir);
++      expect(a).not.toBe(b);
++      expect(a.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
++      expect(b.startsWith(path.join(dir, 'parse-rebuild.'))).toBe(true);
++    } finally {
++      await rm(dir, { recursive: true, force: true });
++    }
++  });
+ });
+diff --git a/gitnexus/test/unit/parsedfile-store.test.ts b/gitnexus/test/unit/parsedfile-store.test.ts
+index 39fd4c9fe..85a96e3da 100644
+--- a/gitnexus/test/unit/parsedfile-store.test.ts
++++ b/gitnexus/test/unit/parsedfile-store.test.ts
+@@ -15,6 +15,9 @@ import {
+   getParsedFileStoreDir,
+   getDurableParsedFileDir,
+   parsedFileLoadGc,
++  prepareDurableParsedFileChunk,
++  pruneAndSaveDurableParsedFileStore,
++  mergeStagedDurableParsedFileStore,
+ } from '../../src/storage/parsedfile-store.js';
+ 
+ /**
+@@ -846,4 +849,45 @@ describe('parsedfile-store receiverChain sanitation', () => {
+       await rm(dir, { recursive: true, force: true });
+     }
+   });
++
++  it('overlays staged durable chunks onto the live store without dropping live-only keys', async () => {
++    const live = await mkdtemp(path.join(tmpdir(), 'pf-live-'));
++    const staged = await mkdtemp(path.join(tmpdir(), 'pf-stg-'));
++    try {
++      const liveOnly = '1'.repeat(64);
++      const rewritten = '2'.repeat(64);
++      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), liveOnly);
++      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), liveOnly, 1, 0, [
++        makeParsedFile('keep.c'),
++      ]);
++      await prepareDurableParsedFileChunk(getDurableParsedFileDir(live), rewritten);
++      persistDurableParsedFileShardSync(getDurableParsedFileDir(live), rewritten, 1, 0, [
++        makeParsedFile('old.c'),
++      ]);
++      await pruneAndSaveDurableParsedFileStore(
++        getDurableParsedFileDir(live),
++        'v-test',
++        new Set([liveOnly, rewritten]),
++      );
++
++      await prepareDurableParsedFileChunk(getDurableParsedFileDir(staged), rewritten);
++      persistDurableParsedFileShardSync(getDurableParsedFileDir(staged), rewritten, 1, 0, [
++        makeParsedFile('new.c'),
++      ]);
++
++      await mergeStagedDurableParsedFileStore(
++        live,
++        staged,
++        'v-test',
++        new Set([liveOnly, rewritten]),
++      );
++
++      expect(await durableChunkHasShards(live, liveOnly, new Set(['keep.c']))).toBe(true);
++      expect(await durableChunkHasShards(live, rewritten, new Set(['new.c']))).toBe(true);
++      expect(await durableChunkHasShards(live, rewritten, new Set(['old.c']))).toBe(false);
++    } finally {
++      await rm(live, { recursive: true, force: true });
++      await rm(staged, { recursive: true, force: true });
++    }
++  });
+ });

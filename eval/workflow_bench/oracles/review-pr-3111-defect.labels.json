@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "findings": [
+    {
+      "id": "pr3111-mid-path-template-truncated",
+      "severity": "high",
+      "path": "gitnexus/src/core/group/extractors/http-patterns/node.ts",
+      "line_start": 241,
+      "line_end": 275,
+      "category": "correctness"
+    },
+    {
+      "id": "pr3111-dynamic-method-defaulted-to-get",
+      "severity": "high",
+      "path": "gitnexus/src/core/group/extractors/http-patterns/node.ts",
+      "line_start": 810,
+      "line_end": 830,
+      "category": "correctness"
+    },
+    {
+      "id": "pr3111-encoded-brace-literal-collides-with-param",
+      "severity": "medium",
+      "path": "gitnexus/src/core/group/extractors/http-route-extractor.ts",
+      "line_start": 330,
+      "line_end": 365,
+      "category": "correctness"
+    }
+  ]
+}

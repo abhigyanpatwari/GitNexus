@@ -13,6 +13,7 @@
 #
 # Environment (same names the workflow already sets):
 #   MODEL PROPOSER_MODEL EFFORT GENERATIONS RUNS WORKERS PROVIDER
+#   EVOLUTION_PROFILE CE_PLUGIN_DIR CE_PLUGIN_VERSION
 #   INCLUDE_EXPENSIVE SEED_RESULTS CLAUDE_BIN OUT_ROOT
 #   GITNEXUS_BENCH_ANTHROPIC_API_KEY (legacy GITNEXUS_BENCH_AUTH_TOKEN)
 #   GITNEXUS_BENCH_OPENAI_API_KEY
@@ -63,6 +64,9 @@ WORKERS="${WORKERS:-1}"
 PROVIDER="${PROVIDER:-openai}"
 INCLUDE_EXPENSIVE="${INCLUDE_EXPENSIVE:-}"
 SEED_RESULTS="${SEED_RESULTS:-}"
+EVOLUTION_PROFILE="${EVOLUTION_PROFILE:-review}"
+CE_PLUGIN_DIR="${CE_PLUGIN_DIR:-}"
+CE_PLUGIN_VERSION="${CE_PLUGIN_VERSION:-}"
 anthropic_key="${GITNEXUS_BENCH_ANTHROPIC_API_KEY:-${GITNEXUS_BENCH_AUTH_TOKEN:-}}"
 openai_key="${GITNEXUS_BENCH_OPENAI_API_KEY:-}"
 
@@ -138,7 +142,6 @@ fi
 
 cmd=(
   uv run --locked --extra dev python -m workflow_bench.evolve
-  --tasks workflow_bench/tasks.scenarios.yaml
   --model "${MODEL}"
   --proposer-model "${PROPOSER_MODEL}"
   --effort "${EFFORT}"
@@ -148,6 +151,27 @@ cmd=(
   --claude-bin "${claude_bin}"
   --out-root "${out_root}"
 )
+case "${EVOLUTION_PROFILE}" in
+  review)
+    [[ -n "${CE_PLUGIN_DIR}" && -n "${CE_PLUGIN_VERSION}" ]] || {
+      echo "review profile requires CE_PLUGIN_DIR and CE_PLUGIN_VERSION" >&2
+      exit 1
+    }
+    cmd+=(
+      --tasks workflow_bench/tasks.review.scenarios.yaml
+      --arms review
+      --ce-plugin-dir "${CE_PLUGIN_DIR}"
+      --ce-plugin-version "${CE_PLUGIN_VERSION}"
+    )
+    ;;
+  implementation)
+    cmd+=(--tasks workflow_bench/tasks.scenarios.yaml)
+    ;;
+  *)
+    echo "Unknown EVOLUTION_PROFILE '${EVOLUTION_PROFILE}' (expected review or implementation)." >&2
+    exit 1
+    ;;
+esac
 if ((apply)); then
   cmd+=(--apply)
 fi
@@ -166,6 +190,24 @@ if ((dry_run)); then
   printf '\n'
   exit 0
 fi
+
+mkdir -p "${out_root}"
+source_sha="$(git -C "${eval_dir}/.." rev-parse HEAD)"
+runtime_digest="$(
+  {
+    sha256sum "${eval_dir}/../gitnexus/dist/cli/index.js"
+    sha256sum "${eval_dir}/../gitnexus/package-lock.json"
+    sha256sum "${eval_dir}/../gitnexus-shared/package-lock.json"
+  } | sha256sum | cut -d' ' -f1
+)"
+SOURCE_SHA="${source_sha}" RUNTIME_DIGEST="${runtime_digest}" \
+  node -e 'require("fs").writeFileSync(process.argv[1], JSON.stringify({
+    schema_version: 1,
+    source_sha: process.env.SOURCE_SHA,
+    runtime_digest: process.env.RUNTIME_DIGEST,
+    profile: process.env.EVOLUTION_PROFILE,
+    ce_plugin_version: process.env.CE_PLUGIN_VERSION
+  }, null, 2) + "\n")' "${out_root}/runtime-provenance.json"
 
 export PYTHONUNBUFFERED=1
 cd "${eval_dir}"
