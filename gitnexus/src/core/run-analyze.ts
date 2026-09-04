@@ -157,11 +157,11 @@ import {
   saveParseCache,
   pruneCache,
   PARSE_CACHE_VERSION,
+  createColdParseRebuildDir,
+  emptyParseCache,
+  forgetCreatedParseCacheDir,
 } from '../storage/parse-cache.js';
-import {
-  getDurableParsedFileDir,
-  pruneAndSaveDurableParsedFileStore,
-} from '../storage/parsedfile-store.js';
+import { mergeStagedDurableParsedFileStore } from '../storage/parsedfile-store.js';
 import {
   getCurrentCommit,
   getCurrentBranch,
@@ -332,12 +332,19 @@ export interface AnalyzeCallbacks {
 
 export interface AnalyzeOptions {
   /**
-   * Force a full re-index of the pipeline. Callers may OR this with
-   * other flags that imply re-analysis (e.g. `--skills`), so the value
-   * here is the PIPELINE-force signal, NOT the registry-collision
-   * bypass. See `allowDuplicateName` below.
+   * Rebuild the graph and FTS. Parser output is still reused from the
+   * content-addressed parse cache unless `useParseCache` is false.
+   * Callers may OR this with other flags that imply re-analysis
+   * (e.g. `--skills`), so the value here is the PIPELINE-force signal,
+   * NOT the registry-collision bypass. See `allowDuplicateName` below.
    */
   force?: boolean;
+  /**
+   * Reuse content-addressed parser output. Defaults to true. When false,
+   * analysis reparses every file and publishes a new parse-cache generation
+   * only after a successful run (live shards stay untouched if the run fails).
+   */
+  useParseCache?: boolean;
   /** Repair only search indexes without re-running full parsing/indexing. */
   repairFts?: boolean;
   /** Emit per-index FTS create logs. */
@@ -1029,6 +1036,18 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
   };
 }
 
+async function removeColdParseRebuildDir(
+  dir: string | undefined,
+  ignoreErrors: boolean,
+): Promise<void> {
+  if (!dir) return;
+  try {
+    await fs.rm(dir, { recursive: true, force: true });
+  } catch (err) {
+    if (!ignoreErrors) throw err;
+  }
+}
+
 /**
  * Run the full analysis under an exclusive, index-directory-scoped write lock
  * (#2658). A second concurrent `analyze` on the same slot waits here for the
@@ -1132,6 +1151,7 @@ async function runFullAnalysisInner(
   // does not own the flat slot. See resolveWriteTarget for the full contract.
   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
     writeTarget;
+  let coldParseRebuildDir: string | undefined;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
   // (e.g. the embeddings-cache open) falls back to the default until the hint is
@@ -1742,6 +1762,13 @@ async function runFullAnalysisInner(
     options = { ...options, force: true };
   }
 
+  // Programmatic `useParseCache: false` must set force or the up-to-date
+  // guard returns before the empty-cache construction below.
+  if (options.useParseCache === false && !options.force) {
+    log('Parser cache bypass requested; forcing a full rebuild so unchanged files are re-parsed.');
+    options = { ...options, force: true };
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1964,11 +1991,18 @@ async function runFullAnalysisInner(
   }
 
   // ── Load incremental parse cache ──────────────────────────────────
-  // Content-addressed: safe to reuse across `--force` runs (chunks whose
-  // file contents haven't changed produce identical worker output).
-  // Loaded into a single ParseCache object that the pipeline mutates
-  // in-place (cache hits leave entries unchanged; misses add new ones).
-  const parseCache = await loadParseCache(storagePath);
+  // Content-addressed: `--force` reuses parser shards; `useParseCache: false`
+  // stages a new generation under a run-unique parse-rebuild.* dir and publishes
+  // after success. Unique because index locks are per branch slot while this
+  // cache root is shared across branches.
+  if (options.useParseCache === false) {
+    coldParseRebuildDir = await createColdParseRebuildDir(storagePath);
+    forgetCreatedParseCacheDir(coldParseRebuildDir);
+  }
+  const parseCache =
+    options.useParseCache === false
+      ? emptyParseCache(coldParseRebuildDir)
+      : await loadParseCache(storagePath);
 
   // Streamed structural emit (#2680). Resolved ONCE, so the pipeline flag and
   // the CSV-dir resolution below cannot disagree — and resolved HERE, not at
@@ -2006,53 +2040,69 @@ async function runFullAnalysisInner(
     !schemaFingerprintMismatch(existingMeta.schemaFingerprint);
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(
-    repoPath,
-    (p) => {
-      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-      const scaled = Math.round(p.percent * 0.6);
-      const message = p.detail
-        ? `${p.message || phaseLabel} (${p.detail})`
-        : p.message || phaseLabel;
-      progress(p.phase, scaled, message);
-    },
-    {
-      parseCache,
-      workerPoolSize: options.workerPoolSize,
-      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
-      // build gate (workerData.pdg) and the scope-resolution emit gate.
-      pdg: options.pdg === true,
-      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
-      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
-      pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
-      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
-      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
-      pdgMaxTaintHops: options.pdgMaxTaintHops,
-      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
-      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
-      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
-      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
-      // (force === true) so the incremental writeback never reads back an
-      // offloaded BasicBlock layer. Memory-only; byte-identical output.
-      streamPdgEmit: resolveStreamPdgEmit(options),
-      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
-      // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
-      // toggle above, for the same incremental-writeback reason.
-      streamGraphEmit: streamGraphEmitActive,
-      // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
-      // path this helper mkdtempSyncs a real directory, so evaluating it
-      // unconditionally would leak one temp dir per analyze even with the flag
-      // off. The PDG sibling resolves inside its guard for the same reason.
-      graphEmitCsvDir: streamGraphEmitActive
-        ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
-        : undefined,
-      fetchWrappers: options.fetchWrappers,
-      skipDerivedGraphPhases,
-      springActuatorPath: options.springActuatorPath,
-      asyncApiSpecPath: options.asyncApiSpecPath,
-      springActuatorScanExclusions,
-    },
-  );
+  let pipelineResult;
+  try {
+    pipelineResult = await runPipelineFromRepo(
+      repoPath,
+      (p) => {
+        const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+        const scaled = Math.round(p.percent * 0.6);
+        const message = p.detail
+          ? `${p.message || phaseLabel} (${p.detail})`
+          : p.message || phaseLabel;
+        progress(p.phase, scaled, message);
+      },
+      {
+        parseCache,
+        workerPoolSize: options.workerPoolSize,
+        // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+        // build gate (workerData.pdg) and the scope-resolution emit gate.
+        pdg: options.pdg === true,
+        pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+        pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
+        pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+        pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+        pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+        pdgMaxTaintHops: options.pdgMaxTaintHops,
+        pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+        pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+        pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+        // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+        // (force === true) so the incremental writeback never reads back an
+        // offloaded BasicBlock layer. Memory-only; byte-identical output.
+        streamPdgEmit: resolveStreamPdgEmit(options),
+        pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+        // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
+        // toggle above, for the same incremental-writeback reason.
+        streamGraphEmit: streamGraphEmitActive,
+        // Resolved ONLY when streaming is active: on a Windows non-ASCII storage
+        // path this helper mkdtempSyncs a real directory, so evaluating it
+        // unconditionally would leak one temp dir per analyze even with the flag
+        // off. The PDG sibling resolves inside its guard for the same reason.
+        graphEmitCsvDir: streamGraphEmitActive
+          ? resolveNativeSafeStorageDir(storagePath, 'graph-csv')
+          : undefined,
+        fetchWrappers: options.fetchWrappers,
+        skipDerivedGraphPhases,
+        springActuatorPath: options.springActuatorPath,
+        asyncApiSpecPath: options.asyncApiSpecPath,
+        springActuatorScanExclusions,
+      },
+    );
+  } catch (err) {
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
+    throw err;
+  }
+
+  if (options.force && (pipelineResult.parseCacheHitFileCount ?? 0) > 0) {
+    log(
+      `Rebuilt the graph and FTS while reusing cached parser output for ` +
+        `${pipelineResult.parseCacheHitFileCount} file(s) ` +
+        `(parse cache ${PARSE_CACHE_VERSION}). ` +
+        `For same-version capture/query development changes, increment SCHEMA_BUMP in ` +
+        `src/storage/parse-cache.ts to invalidate parser output.`,
+    );
+  }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
@@ -3994,51 +4044,8 @@ async function runFullAnalysisInner(
     // meta.indexedAt = T_new while lbugPath still resolves to the pre-swap
     // inode (which latched the reader on the stale index permanently). The meta
     // object is fully computed at this point; only its write is deferred.
-
-    // Persist the incremental parse cache for the next run. Wraps in
-    // try/catch so a cache-write failure never breaks an otherwise
-    // successful indexing run. Prune stale chunk-hash entries first so
-    // the cache file size stays bounded across runs (chunks whose
-    // composition no longer matches anything in the current scan are
-    // dead weight; the parse phase populates `usedKeys` as it processes
-    // chunks).
-    try {
-      // #2106 R6: the parse cache + durable store are shared across branches.
-      // Before pruning to this run's keys, fold in the OTHER branches' recorded
-      // chunk keys so a branch switch doesn't evict their still-live shards.
-      // Adding to usedKeys makes them survive pruneCache AND land in the saved
-      // index (saveParseCache builds the index from usedKeys). Excludes this
-      // run's own meta dir, so a single-branch repo folds in nothing → prune
-      // set byte-identical to today.
-      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
-      if (complete) {
-        for (const k of siblingKeys) parseCache.usedKeys.add(k);
-      } else {
-        // Fail-safe toward retention: a sibling meta was unreadable, so keep
-        // everything currently loaded rather than evict on incomplete info.
-        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
-        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
-      }
-      const pruned = pruneCache(parseCache, parseCache.usedKeys);
-      if (pruned > 0) {
-        log(`Parse cache: pruned ${pruned} stale chunk entries`);
-      }
-      const savedKeys = await saveParseCache(storagePath, parseCache);
-      // Prune the durable ParsedFile store to EXACTLY the parse cache's
-      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
-      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
-      // and its durable shards exist. A quarantined chunk (in usedKeys but with
-      // no parse-cache shard) drops its durable subdir here and re-dispatches
-      // next run. Same try/catch — a durable-store write failure must never
-      // break an otherwise successful run (next run treats it as a miss).
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storagePath),
-        PARSE_CACHE_VERSION,
-        new Set(savedKeys),
-      );
-    } catch (e) {
-      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
-    }
+    // Parse-cache publish waits until after that swap + saveMeta so a failed
+    // registerRepo / close / swap cannot replace live shards (#3153).
 
     // Forward the --name alias and the registry-collision bypass bit.
     // `allowDuplicateName` is its own concern — independent from the
@@ -4061,8 +4068,8 @@ async function runFullAnalysisInner(
     // ── #2354: the flat workspace slot has adopted this run's branch ──────
     // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
     // (unreachable once the flat slot serves it) and align the registry's
-    // top-level branch label. Best-effort like the parse-cache save above
-    // (#2364 review F5): the index is complete and registered, and a failure
+    // top-level branch label. Best-effort (#2364 review F5): the index is
+    // complete and registered, and a failure
     // here leaves only a stale registry label / undeleted shadowed dir —
     // never wrong routing, because the flat meta this run already stamped is
     // what applyBranchScope trusts. Retried by the next content-changing run
@@ -4190,7 +4197,54 @@ async function runFullAnalysisInner(
     // live and the next run recovers via the full-rebuild path.
     await saveMeta(metaDir, meta);
 
+    // Persist the incremental parse cache only after a successful graph
+    // publish (#3153). try/catch so a cache-write failure never breaks an
+    // otherwise successful indexing run. Prune stale chunk-hash entries first
+    // so the cache file size stays bounded across runs (chunks whose
+    // composition no longer matches anything in the current scan are dead
+    // weight; the parse phase populates `usedKeys` as it processes chunks).
+    try {
+      // #2106 R6: the parse cache + durable store are shared across branches.
+      // Before pruning to this run's keys, fold in the OTHER branches' recorded
+      // chunk keys so a branch switch doesn't evict their still-live shards.
+      // Adding to usedKeys makes them survive pruneCache AND land in the saved
+      // index (saveParseCache builds the index from usedKeys). Excludes this
+      // run's own meta dir, so a single-branch repo folds in nothing → prune
+      // set byte-identical to today.
+      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+      if (complete) {
+        for (const k of siblingKeys) parseCache.usedKeys.add(k);
+      } else {
+        // Fail-safe toward retention: a sibling meta was unreadable, so keep
+        // everything currently loaded rather than evict on incomplete info.
+        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
+        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+      }
+      const pruned = pruneCache(parseCache, parseCache.usedKeys);
+      if (pruned > 0) {
+        log(`Parse cache: pruned ${pruned} stale chunk entries`);
+      }
+      const savedKeys = await saveParseCache(storagePath, parseCache);
+      // Prune the durable ParsedFile store to EXACTLY the parse cache's
+      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
+      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
+      // and its durable shards exist. A quarantined chunk (in usedKeys but with
+      // no parse-cache shard) drops its durable subdir here and re-dispatches
+      // next run. Same try/catch — a durable-store write failure must never
+      // break an otherwise successful run (next run treats it as a miss).
+      await mergeStagedDurableParsedFileStore(
+        storagePath,
+        parseCache.storagePath ?? storagePath,
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
+    } catch (e) {
+      log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
+    }
+
     progress('done', 100, 'Done');
+
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
 
     return {
       repoName: projectName,
@@ -4245,6 +4299,7 @@ async function runFullAnalysisInner(
         /* swallow — orphan reclamation must never mask the real failure */
       }
     }
+    await removeColdParseRebuildDir(coldParseRebuildDir, true);
     if (liveIndexMutationStarted) {
       // Preserve the original error identity/prototype: callers distinguish
       // IndexLockTimeoutError and other domain failures with `instanceof`.

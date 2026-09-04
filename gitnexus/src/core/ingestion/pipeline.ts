@@ -411,13 +411,19 @@ export const runPipelineFromRepo = async (
   }
 
   // Extract final results for the PipelineResult contract
-  const { totalFiles, usedWorkerPool, reparsedFileCount, unavailableScopeLanguageFiles } =
-    getPhaseOutput<{
-      totalFiles: number;
-      usedWorkerPool: boolean;
-      reparsedFileCount: number;
-      unavailableScopeLanguageFiles: number;
-    }>(results, 'parse');
+  const {
+    totalFiles,
+    usedWorkerPool,
+    reparsedFileCount,
+    parseCacheHitFileCount,
+    unavailableScopeLanguageFiles,
+  } = getPhaseOutput<{
+    totalFiles: number;
+    usedWorkerPool: boolean;
+    reparsedFileCount: number;
+    parseCacheHitFileCount: number;
+    unavailableScopeLanguageFiles: number;
+  }>(results, 'parse');
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
@@ -470,6 +476,7 @@ export const runPipelineFromRepo = async (
     undecidedSatisfaction,
     usedWorkerPool,
     reparsedFileCount,
+    parseCacheHitFileCount,
     scopeExtractionFailures,
     unavailableScopeLanguageFiles,
     pdgEmitManifest,

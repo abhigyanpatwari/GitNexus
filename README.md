@@ -436,7 +436,8 @@ The token may be set in the shell, `.env.local`, or `.env` in the working direct
 <summary><strong>All <code>analyze</code> flags</strong></summary>
 
 ```bash
-gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
+gitnexus analyze --force         # Full graph + FTS rebuild (reuses unchanged parser output)
+gitnexus analyze --no-parse-cache # Full rebuild that re-parses every source file
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)

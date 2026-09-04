@@ -20,6 +20,8 @@ export interface AnalyzeOptions {
   /** Watch quiet period in milliseconds. */
   debounce?: string;
   force?: boolean;
+  /** Commander negated flag: false only when --no-parse-cache is passed. */
+  parseCache?: boolean;
   repairFts?: boolean;
   /**
    * Embedding generation toggle. Commander parses `--embeddings [limit]` as:
