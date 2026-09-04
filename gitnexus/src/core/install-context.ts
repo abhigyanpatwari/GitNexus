@@ -42,6 +42,7 @@ interface EligibilityProbes {
   env: NodeJS.ProcessEnv;
   /** Resolved npm cache dir, when npm_config_cache is set. */
   realCache: string | null;
+  packageDir: string | null;
   /** Whether the resolved package directory carries a .git checkout marker. */
   packageDirHasGit: boolean;
   /** Resolved npm prefix, when npm_config_prefix is set. */
@@ -54,7 +55,7 @@ interface EligibilityProbes {
  * development checkout, which is therefore ineligible.
  */
 function classifyEligibility(probes: EligibilityProbes): boolean {
-  const { realEntry, env, realCache, packageDirHasGit, realPrefix } = probes;
+  const { realEntry, env, realCache, packageDir, packageDirHasGit, realPrefix } = probes;
   const corroboratingPaths = [
     realEntry,
     env.npm_execpath,
@@ -64,7 +65,6 @@ function classifyEligibility(probes: EligibilityProbes): boolean {
 
   if (realCache && isInside(realCache, realEntry)) return false;
 
-  const packageDir = findPackageDir(realEntry);
   // Published packages do not carry .git. This also rejects unusual installs
   // copied wholesale from a checkout.
   if (!packageDir || packageDirHasGit) return false;
@@ -76,8 +76,7 @@ function classifyEligibility(probes: EligibilityProbes): boolean {
   return true;
 }
 
-let memoizedAsync: boolean | undefined;
-let memoizedSync: boolean | undefined;
+let memoizedEligible: boolean | undefined;
 
 /** True only for a persistent npm global or project-local installation. */
 export async function updateEligibleInstall(
@@ -85,9 +84,9 @@ export async function updateEligibleInstall(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<boolean> {
   const useMemo = entryPath === undefined && env === process.env;
-  if (useMemo && memoizedAsync !== undefined) return memoizedAsync;
+  if (useMemo && memoizedEligible !== undefined) return memoizedEligible;
   const result = await classifyAsync(entryPath ?? process.argv[1] ?? '', env);
-  if (useMemo) memoizedAsync = result;
+  if (useMemo) memoizedEligible = result;
   return result;
 }
 
@@ -110,7 +109,14 @@ async function classifyAsync(entryPath: string, env: NodeJS.ProcessEnv): Promise
     const realPrefix = env.npm_config_prefix
       ? await fs.realpath(env.npm_config_prefix).catch(() => path.resolve(env.npm_config_prefix))
       : null;
-    return classifyEligibility({ realEntry, env, realCache, packageDirHasGit, realPrefix });
+    return classifyEligibility({
+      realEntry,
+      env,
+      realCache,
+      packageDir,
+      packageDirHasGit,
+      realPrefix,
+    });
   } catch {
     return false;
   }
@@ -122,9 +128,9 @@ export function updateEligibleInstallSync(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const useMemo = entryPath === undefined && env === process.env;
-  if (useMemo && memoizedSync !== undefined) return memoizedSync;
+  if (useMemo && memoizedEligible !== undefined) return memoizedEligible;
   const result = classifySync(entryPath ?? process.argv[1] ?? '', env);
-  if (useMemo) memoizedSync = result;
+  if (useMemo) memoizedEligible = result;
   return result;
 }
 
@@ -150,7 +156,14 @@ function classifySync(entryPath: string, env: NodeJS.ProcessEnv): boolean {
         realPrefix = path.resolve(env.npm_config_prefix);
       }
     }
-    return classifyEligibility({ realEntry, env, realCache, packageDirHasGit, realPrefix });
+    return classifyEligibility({
+      realEntry,
+      env,
+      realCache,
+      packageDir,
+      packageDirHasGit,
+      realPrefix,
+    });
   } catch {
     return false;
   }

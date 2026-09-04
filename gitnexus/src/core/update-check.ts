@@ -57,6 +57,8 @@ export interface UpdateCheckOptions {
   now?: number;
   /** Cache-only consumers can suppress stale-while-revalidate. */
   refreshIfStale?: boolean;
+  /** Explicit `gitnexus update`: check even when CI/opt-out env is set. */
+  ignoreOptOut?: boolean;
 }
 
 export interface UpdateRefreshSchedulerOptions extends Omit<
@@ -104,13 +106,26 @@ function stateFrom(entry: UpdateCacheEntry, installedVersion: string): UpdateSta
   };
 }
 
+function installedVersionOf(options: { installedVersion?: string }): string {
+  return options.installedVersion ?? defaultInstalledVersion();
+}
+
+async function isNotifierActive(
+  options: {
+    eligible?: boolean;
+    ignoreOptOut?: boolean;
+  } = {},
+): Promise<boolean> {
+  return (options.ignoreOptOut === true || !isOptedOut()) && (await isEligible(options.eligible));
+}
+
 /**
  * Read update state cache-first. Every invalid/missing/stale cache starts one
  * catch-isolated refresh unless the caller explicitly requests cache-only.
  */
 export async function evaluate(options: UpdateCheckOptions = {}): Promise<UpdateState | null> {
   try {
-    if (isOptedOut() || !(await isEligible(options.eligible))) return null;
+    if (!(await isNotifierActive(options))) return null;
     const registry = normalizedRegistry();
     const now = options.now ?? Date.now();
     const entry = await readCache(registry.identity);
@@ -121,7 +136,7 @@ export async function evaluate(options: UpdateCheckOptions = {}): Promise<Update
       void refresh(options).catch(() => {});
     }
     if (!entry) return null;
-    return stateFrom(entry, options.installedVersion ?? defaultInstalledVersion());
+    return stateFrom(entry, installedVersionOf(options));
   } catch {
     return null;
   }
@@ -219,7 +234,7 @@ export function refresh(options: UpdateCheckOptions = {}): Promise<UpdateState |
   const run = async (): Promise<UpdateState | null> => {
     let release: (() => Promise<void>) | undefined;
     try {
-      if (isOptedOut() || !(await isEligible(options.eligible))) return null;
+      if (!(await isNotifierActive(options))) return null;
       const registry = normalizedRegistry();
       const attemptStartedAt = options.now ?? Date.now();
       try {
@@ -242,7 +257,7 @@ export function refresh(options: UpdateCheckOptions = {}): Promise<UpdateState |
         ...(latestVersion === undefined ? {} : { latestVersion }),
       };
       await publishMonotonically(entry, attemptStartedAt);
-      return stateFrom(entry, options.installedVersion ?? defaultInstalledVersion());
+      return stateFrom(entry, installedVersionOf(options));
     } catch (error) {
       updateLogger.debug(
         { code: (error as NodeJS.ErrnoException).code },
@@ -288,9 +303,9 @@ export function armUpdateRefreshScheduler(
     let state: UpdateState | null = null;
     try {
       state =
-        isOptedOut() || !(await isEligible(options.eligible)) || !entry
+        !entry || !(await isNotifierActive(options))
           ? null
-          : stateFrom(entry, options.installedVersion ?? defaultInstalledVersion());
+          : stateFrom(entry, installedVersionOf(options));
     } catch {
       state = null;
     }

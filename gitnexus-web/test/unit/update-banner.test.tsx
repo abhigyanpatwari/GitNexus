@@ -324,4 +324,26 @@ describe('update banner', () => {
       vi.useRealTimers();
     }
   });
+
+  it('does not poll server info while the exploring session is disconnected', async () => {
+    vi.useFakeTimers();
+    try {
+      backendMocks.fetchServerInfo.mockResolvedValue(updateInfo());
+      render(<App />);
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Connect test backend' }));
+      });
+      expect(backendMocks.fetchServerInfo).toHaveBeenCalledTimes(1);
+
+      const [, onReconnecting] = backendMocks.connectHeartbeat.mock.calls[0];
+      act(() => onReconnecting());
+
+      await act(async () => {
+        vi.advanceTimersByTime(UPDATE_INFO_REFETCH_MS * 2);
+      });
+      expect(backendMocks.fetchServerInfo).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -224,6 +224,7 @@ describe('CLI cached update notice', () => {
     ['mcp'],
     ['serve'],
     ['eval-server'],
+    ['update'],
     ['__update-check'],
   ])('excludes command identity %j from display and refresh', (...args) => {
     const deps = dependencies({ argv: ['/usr/bin/node', '/entry.js', ...args] });

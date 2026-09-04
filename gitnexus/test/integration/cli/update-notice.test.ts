@@ -79,7 +79,23 @@ describe('CLI update notice subprocess behavior', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Usage: gitnexus [options] [command]');
+    expect(result.stdout).toContain('update');
     expect(result.stdout).not.toContain('__update-check');
+    expect(result.stderr).toBe('');
+  });
+
+  it('prints a versioned command banner on stderr for a normal command', () => {
+    const result = cli(['list'], tempHome());
+
+    expect(result.stderr).toMatch(/GitNexus List \([^)]+\)/);
+    expect(result.stdout).not.toMatch(/GitNexus List \(/);
+  });
+
+  it('documents that gitnexus update installs via npm i -g', () => {
+    const result = cli(['update', '--help'], tempHome());
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/npm i -g gitnexus@version/);
     expect(result.stderr).toBe('');
   });
 

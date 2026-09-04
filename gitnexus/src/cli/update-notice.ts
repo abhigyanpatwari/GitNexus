@@ -9,7 +9,14 @@ import {
 } from '../core/update-cache.js';
 import { t } from './i18n/index.js';
 
-const EXCLUDED_COMMANDS = new Set(['augment', 'mcp', 'serve', 'eval-server', '__update-check']);
+const EXCLUDED_COMMANDS = new Set([
+  'augment',
+  'mcp',
+  'serve',
+  'eval-server',
+  'update',
+  '__update-check',
+]);
 const EXCLUDED_FLAGS = new Set(['--help', '-h', '--version', '-V']);
 
 type SpawnResult = { unref(): void };

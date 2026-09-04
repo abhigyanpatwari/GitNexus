@@ -296,10 +296,10 @@ const AppContent = () => {
   // While exploring, re-read server info on a slow cadence so an update the
   // server discovers after page load surfaces without a manual reload.
   useEffect(() => {
-    if (viewMode !== 'exploring') return;
+    if (viewMode !== 'exploring' || serverDisconnected) return;
     const interval = setInterval(() => void refreshServerInfo(), UPDATE_INFO_REFETCH_MS);
     return () => clearInterval(interval);
-  }, [viewMode, refreshServerInfo]);
+  }, [viewMode, serverDisconnected, refreshServerInfo]);
 
   // ── Server heartbeat: detect when server goes down while exploring ────────
   // Uses SSE (EventSource) for instant detection — no polling delay.

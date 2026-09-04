@@ -355,6 +355,23 @@ describe('guards and scheduler', () => {
     },
   );
 
+  it('ignoreOptOut still fetches when CI/opt-out env is set', async () => {
+    await tempHome();
+    vi.stubEnv('CI', 'true');
+    const fetchMock = vi.fn().mockResolvedValue(registryResponse());
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      refresh({
+        eligible: true,
+        ignoreOptOut: true,
+        installedVersion: '1.6.10',
+        now: NOW,
+      }),
+    ).resolves.toEqual({ updateAvailable: true, latestVersion: '1.7.0' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('an ineligible install skips network', async () => {
     await tempHome();
     const fetchMock = vi.fn();

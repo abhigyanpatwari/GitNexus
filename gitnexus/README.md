@@ -264,6 +264,7 @@ gitnexus wiki --provider grok    # Local Grok Build CLI (uses `grok login`, no A
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
                                   # Allow an exact LAN/self-hosted HTTP LLM host; env: GITNEXUS_ALLOW_INSECURE_CONNECTION
 gitnexus doctor                  # Show runtime platform capabilities and embedding configuration
+gitnexus update                  # Install the latest published GitNexus (`npm i -g gitnexus@version`)
 
 # Direct graph queries — the same tools the MCP server exposes, no MCP daemon needed
 gitnexus query "<concept>"                                    # Process-grouped hybrid search
@@ -501,8 +502,11 @@ check never runs on the command's hot path and never blocks output. Where the
 notice appears:
 
 - **CLI** — one line on stderr when you run a command interactively (never on
-  stdout, so `gitnexus query … | jq` and other piped output stay clean), and a
-  line in `gitnexus doctor` when an update is known.
+  stdout, so `gitnexus query … | jq` and other piped output stay clean), a
+  line in `gitnexus doctor` when an update is known. Automatic notices never
+  install. `gitnexus update` checks even when notices are opted out, then
+  runs `npm i -g gitnexus@version` (same idea as `claude update` /
+  `codex update`).
 - **MCP server** — one structured log record on the server's stderr per
   process per version (visible in your host's MCP log panel). Tool results,
   resources, prompts, and server instructions never carry update text.
