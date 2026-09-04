@@ -25,7 +25,14 @@ import {
 } from '../core/lbug/lbug-config.js';
 import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
+import { updateEligibleInstallSync } from '../core/install-context.js';
+import {
+  isNewerVersion,
+  readValidatedUpdateCacheSync,
+  type ValidatedUpdateCache,
+} from '../core/update-cache.js';
 import { t } from './i18n/index.js';
+import { updateNoticeText, updateNotifierOptedOut } from './update-notice.js';
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -202,6 +209,25 @@ function nativeStatusText(check: NativeCheckResult): string {
   }
 }
 
+export function cachedUpdateDoctorLine(options: {
+  installedVersion: string;
+  eligible: boolean;
+  env: NodeJS.ProcessEnv;
+  now?: number;
+  readCache: () => ValidatedUpdateCache | null;
+}): string | null {
+  try {
+    if (!options.eligible || updateNotifierOptedOut(options.env)) return null;
+    const cache = options.readCache();
+    if (!cache?.latestVersion || !isNewerVersion(options.installedVersion, cache.latestVersion)) {
+      return null;
+    }
+    return updateNoticeText(options.installedVersion, cache.latestVersion);
+  } catch {
+    return null;
+  }
+}
+
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
   const capabilities = getRuntimeCapabilities();
@@ -212,6 +238,13 @@ export const doctorCommand = async () => {
   console.log(`  ${label('doctor.labels.os', 10)}${fingerprint.platform}/${fingerprint.arch}`);
   console.log(`  ${label('doctor.labels.node', 10)}${fingerprint.node}`);
   console.log(`  ${label('doctor.labels.gitnexus', 10)}${fingerprint.gitnexus}`);
+  const updateLine = cachedUpdateDoctorLine({
+    installedVersion: fingerprint.gitnexus,
+    eligible: updateEligibleInstallSync(),
+    env: process.env,
+    readCache: () => readValidatedUpdateCacheSync(),
+  });
+  if (updateLine) console.log(`  ${updateLine}`);
   console.log(`  ${label('doctor.labels.ladybugdb', 10)}${fingerprint.ladybugdb ?? 'unknown'}`);
   // OS page size next to the LadybugDB version because the two interact:
   // @ladybugdb/core < 0.18.0 assumed 4 KiB pages in its buffer manager and

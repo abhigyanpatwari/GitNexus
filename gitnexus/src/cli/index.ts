@@ -14,6 +14,7 @@ import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.j
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
+import { runProcessCliUpdateNotice } from './update-notice.js';
 
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
@@ -502,7 +503,13 @@ program
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
+program.command('__update-check', { hidden: true }).action(async () => {
+  const { refresh } = await import('../core/update-check.js');
+  await refresh();
+});
+
 registerGroupCommands(program);
 localizeCliHelp(program);
 
+runProcessCliUpdateNotice(typeof pkg.version === 'string' ? pkg.version : '');
 program.parse(process.argv);

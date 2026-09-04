@@ -7,6 +7,8 @@ export const en = {
   'common.storage': 'Storage',
   'common.deleted': 'Deleted: {{target}}',
   'common.error': 'Error: {{message}}',
+  'update.available':
+    'GitNexus {{latestVersion}} is available (you are running {{installedVersion}}).',
   'list.title': 'Indexed Repositories ({{count}})',
   'list.indexed': 'Indexed',
   'list.commit': 'Commit',

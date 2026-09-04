@@ -11,6 +11,7 @@ export const zhCN = {
   'common.storage': '存储',
   'common.deleted': '已删除：{{target}}',
   'common.error': '错误：{{message}}',
+  'update.available': 'GitNexus {{latestVersion}} 已发布（当前运行 {{installedVersion}}）。',
   'list.title': '已索引仓库（{{count}}）',
   'list.indexed': '索引时间',
   'list.commit': '提交',
