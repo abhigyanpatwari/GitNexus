@@ -4,7 +4,7 @@
 // Removing it from here improves MCP server startup time significantly.
 
 import { Command } from 'commander';
-import { createRequire } from 'node:module';
+import { packageVersion } from '../core/package-version.js';
 import {
   createAnalyzerLbugLazyAction,
   createLazyAction,
@@ -17,15 +17,13 @@ import { t } from './i18n/index.js';
 import { writeCommandBanner } from './command-banner.js';
 import { runProcessCliUpdateNotice } from './update-notice.js';
 
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json');
 const program = new Command();
 
 function collectCodingAgents(value: string, previous: string[] | undefined): string[] {
   return [...(previous ?? []), ...value.split(',')];
 }
 
-program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
+program.name('gitnexus').description('GitNexus local CLI and MCP server').version(packageVersion());
 
 program
   .command('setup')
@@ -521,5 +519,5 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   writeCommandBanner(actionCommand);
 });
 
-runProcessCliUpdateNotice(typeof pkg.version === 'string' ? pkg.version : '');
+runProcessCliUpdateNotice(packageVersion());
 program.parse(process.argv);

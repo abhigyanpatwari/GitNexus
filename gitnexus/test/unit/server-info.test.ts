@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events';
-import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,13 +8,11 @@ import {
   buildServerInfo,
   createServeUpdateController,
 } from '../../src/server/update-controller.js';
+import { packageVersion } from '../../src/core/package-version.js';
 import { evaluate } from '../../src/core/update-check.js';
 import type { UpdateState } from '../../src/core/update-check.js';
 
-// Match buildServerInfo — read the version from the same package.json so the
-// test never goes stale on a release bump.
-const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version;
+const PKG_VERSION = packageVersion();
 const baseKeys = ['version', 'launchContext', 'nodeVersion'];
 const tempDirs: string[] = [];
 

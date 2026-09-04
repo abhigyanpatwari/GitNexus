@@ -7,10 +7,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../../helpers/cli-entry.js';
 import { cleanupTempDirSync } from '../../helpers/test-db.js';
+import { packageVersion } from '../../../src/core/package-version.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '../../..');
-const installedVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'))
-  .version as string;
+const installedVersion = packageVersion();
 const tempDirs: string[] = [];
 
 function tempHome(): string {
