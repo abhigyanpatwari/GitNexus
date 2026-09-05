@@ -2,11 +2,10 @@
  * `resolveImportTarget` adapter for the Swift `ScopeResolver`.
  *
  * Swift's `import ModuleName` brings in a whole SPM target / framework
- * module. The scope-resolution contract passes only `allFilePaths` (no
- * `SwiftPackageConfig`), so we resolve a module name to the `.swift`
- * files under a directory segment named after the module — the SPM
- * convention `Sources/<Module>/*.swift` (and the common
- * `<Module>/*.swift` layout). This needs no manifest parsing.
+ * module. When `SwiftPackageConfig` is available, imports resolve only
+ * against declared target names and their mapped source directories.
+ * Without config (for example an Xcode-only repository), resolution falls
+ * back to a directory segment named after the module.
  *
  * Same-module (intra-target) visibility — the bulk of Swift cross-file
  * resolution, which needs NO `import` statement — is handled separately
@@ -32,12 +31,20 @@ export interface SwiftResolveContext {
   /** `ReadonlySet` so the orchestrator's stable run-level set flows
    *  straight through to the memoized index key. */
   readonly allFilePaths: ReadonlySet<string>;
+  /** Declared SPM target name -> repo-relative source directory. `null`
+   *  means no package config is available, so directory fallback stays on. */
+  readonly targets?: ReadonlyMap<string, string> | null;
 }
 
 interface SwiftModuleIndex {
   /** Module (directory-segment) name → original-case `.swift` files
    *  whose path contains a `/<module>/` directory segment. */
   readonly byModule: Map<string, string[]>;
+}
+
+interface SwiftDirectoryIndex {
+  /** Repo-relative directory -> `.swift` files anywhere under that subtree. */
+  readonly byDirectory: Map<string, string[]>;
 }
 
 const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): SwiftModuleIndex => {
@@ -65,6 +72,29 @@ const getSwiftModuleIndex = perFileSet((allFilePaths: ReadonlySet<string>): Swif
   return { byModule };
 });
 
+const getSwiftDirectoryIndex = perFileSet(
+  (allFilePaths: ReadonlySet<string>): SwiftDirectoryIndex => {
+    const byDirectory = new Map<string, string[]>();
+    for (const raw of allFilePaths) {
+      const norm = raw.replace(/\\/g, '/');
+      if (!norm.endsWith('.swift')) continue;
+      const segments = norm.split('/');
+      for (let i = 0; i < segments.length - 1; i++) {
+        if (segments[i] === '') continue;
+        const directory = segments.slice(0, i + 1).join('/');
+        let bucket = byDirectory.get(directory);
+        if (bucket === undefined) {
+          bucket = [];
+          byDirectory.set(directory, bucket);
+        }
+        bucket.push(raw);
+      }
+    }
+
+    return { byDirectory };
+  },
+);
+
 export function resolveSwiftImportTarget(
   parsedImport: ParsedImport,
   workspaceIndex: WorkspaceIndex,
@@ -87,8 +117,17 @@ export function resolveSwiftImportTarget(
   const moduleName = targetRaw.split('.')[0];
   if (moduleName === '') return null;
 
-  const index = getSwiftModuleIndex(ctx.allFilePaths);
-  const files = index.byModule.get(moduleName);
+  const targetDir = ctx.targets?.get(moduleName);
+  if (ctx.targets !== undefined && ctx.targets !== null && targetDir === undefined) return null;
+
+  const normalizedTargetDir = targetDir
+    ?.replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .replace(/\/+$/, '');
+  const files =
+    normalizedTargetDir === undefined
+      ? getSwiftModuleIndex(ctx.allFilePaths).byModule.get(moduleName)
+      : getSwiftDirectoryIndex(ctx.allFilePaths).byDirectory.get(normalizedTargetDir);
   if (files === undefined || files.length === 0) return null; // external framework
 
   // Exclude the importer itself (a file under `Foo/` importing `Foo`).

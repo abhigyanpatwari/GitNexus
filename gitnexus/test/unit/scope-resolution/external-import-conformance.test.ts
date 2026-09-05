@@ -321,10 +321,19 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
         'Sources/App/main.swift',
       ],
       fromFile: 'Sources/App/main.swift',
-      resolutionConfig: undefined,
+      resolutionConfig: {
+        targets: new Map([
+          ['Foundation', 'Sources/Foundation'],
+          ['App', 'Sources/App'],
+        ]),
+        declaredTargets: new Map([
+          ['LocalFoundation', 'Sources/Foundation'],
+          ['App', 'Sources/App'],
+        ]),
+      },
       external: 'Foundation',
       decoy: 'Sources/Foundation/Thing.swift',
-      reachesDecoy: 'Models',
+      reachesDecoy: 'LocalFoundation',
     },
   ],
   [
@@ -391,7 +400,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
   [SupportedLanguages.Ruby, '`rails/generators` -> `lib/generators.rb`'],
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
-  [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
   [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],
   [SupportedLanguages.CPlusPlus, '`cstdio.h` -> `src/cstdio.h`'],
   [SupportedLanguages.Cobol, '`EXTERNAL` -> `vendor/EXTERNAL.cpy`'],

@@ -3,6 +3,7 @@ import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
 import path from 'path';
 import type { CsharpStructureLineScanner } from './languages/csharp/namespace-siblings.js';
+import { parseSwiftPackageTargets } from './languages/swift/package-manifest.js';
 
 import { isDev } from './utils/env.js';
 
@@ -175,8 +176,16 @@ export function csharpScanToEvidence(scan: CSharpProjectScan): CSharpNamespaceEv
 
 /** Swift Package Manager module config */
 export interface SwiftPackageConfig {
-  /** Map of target name -> source directory path (e.g., "SiuperModel" -> "Package/Sources/SiuperModel") */
+  /**
+   * Inferred target name -> source directory path. This preserves the
+   * directory-based grouping used for same-module visibility.
+   */
   targets: Map<string, string>;
+  /**
+   * Target declarations read from Package.swift. `undefined` means no
+   * readable manifest was found, so import resolution must fail open.
+   */
+  declaredTargets?: Map<string, string>;
 }
 
 /** Zig package config parsed from build.zig.zon and the root build.zig */
@@ -582,31 +591,52 @@ async function collectDeclaredNamespaces(
 }
 
 export async function loadSwiftPackageConfig(repoRoot: string): Promise<SwiftPackageConfig | null> {
-  // Swift imports are module-name based (e.g., `import SiuperModel`)
-  // SPM convention: Sources/<TargetName>/ or Package/Sources/<TargetName>/
-  // We scan for these directories to build a target map
+  // Keep the existing directory map for same-module grouping. Explicit import
+  // resolution uses the separately parsed manifest declarations below.
   const targets = new Map<string, string>();
-
   const sourceDirs = ['Sources', 'Package/Sources', 'src'];
   for (const sourceDir of sourceDirs) {
     try {
-      const fullPath = path.join(repoRoot, sourceDir);
-      const entries = await fs.readdir(fullPath, { withFileTypes: true });
+      const entries = await fs.readdir(path.join(repoRoot, sourceDir), { withFileTypes: true });
       for (const entry of entries) {
-        if (entry.isDirectory()) {
-          targets.set(entry.name, sourceDir + '/' + entry.name);
-        }
+        if (entry.isDirectory()) targets.set(entry.name, `${sourceDir}/${entry.name}`);
       }
     } catch {
-      // Directory doesn't exist
+      // Directory doesn't exist.
     }
   }
 
-  if (targets.size > 0) {
-    if (isDev) {
-      logger.info(`📦 Loaded ${targets.size} Swift package targets`);
+  const declaredTargets = new Map<string, string>();
+  let foundManifest = false;
+  const manifests = [
+    { file: 'Package.swift', baseDir: '' },
+    { file: 'Package/Package.swift', baseDir: 'Package' },
+  ];
+  for (const { file, baseDir } of manifests) {
+    try {
+      const source = await fs.readFile(path.join(repoRoot, file), 'utf-8');
+      foundManifest = true;
+      for (const target of parseSwiftPackageTargets(source)) {
+        const targetPath = path.posix.normalize(
+          baseDir === '' ? target.path : `${baseDir}/${target.path}`,
+        );
+        if (path.posix.isAbsolute(targetPath) || targetPath.startsWith('../')) continue;
+        declaredTargets.set(target.name, targetPath);
+      }
+    } catch {
+      // Missing or unreadable manifest. With no declaration map, import
+      // resolution keeps the directory fallback for Xcode-only repositories.
     }
-    return { targets };
+  }
+
+  if (targets.size > 0 || foundManifest) {
+    if (isDev) {
+      logger.info(`📦 Loaded ${declaredTargets.size} declared Swift package targets`);
+    }
+    return {
+      targets,
+      ...(foundManifest ? { declaredTargets } : {}),
+    };
   }
   return null;
 }
