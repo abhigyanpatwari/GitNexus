@@ -104,6 +104,51 @@ describe('@declaration.is-exported (TypeScript emitter)', () => {
   });
 });
 
+describe('@declaration.is-exported — Opus review follow-ups', () => {
+  it('a re-export FROM another module never marks a same-named local exported', () => {
+    const v = verdicts(
+      emitTsScopeCaptures,
+      "export { alpha } from './other';\nexport { beta as gamma } from './o';\nexport type { T } from './t';\nfunction alpha() {}\nfunction beta() {}\nfunction gamma() {}\ntype T = number;\nexport const keep = 1;\n",
+      'test.ts',
+    );
+    expect(v.alpha).not.toBe('true');
+    expect(v.beta).not.toBe('true');
+    expect(v.gamma).not.toBe('true');
+    expect(v.T).not.toBe('true');
+    expect(v.alpha).toBe('false');
+    expect(v.keep).toBe('true');
+  });
+
+  it('exports inside a namespace or ambient module body are not file-level exports', () => {
+    const v = verdicts(
+      emitTsScopeCaptures,
+      "export namespace NS { export function f() {} }\ndeclare module 'x' { export function q(): void; }\nexport function top() {}\n",
+      'test.ts',
+    );
+    expect(v.NS).toBe('true');
+    expect(v.f).not.toBe('true');
+    expect(v.q).not.toBe('true');
+    expect(v.top).toBe('true');
+  });
+
+  it('a comment or string mentioning module.exports does not silence the ESM verdicts', () => {
+    const v = verdicts(
+      emitTsScopeCaptures,
+      "// legacy: module.exports = api\nconst note = 'exports.x = 1';\nexport function a() {}\nfunction b() {}\n",
+      'test.ts',
+    );
+    expect(v.a).toBe('true');
+    expect(v.b).toBe('false');
+    // ...while a real alias of the export object still does.
+    const cjs = verdicts(
+      emitJsScopeCaptures,
+      'const m = module.exports;\nfunction b() {}\nm.b = b;\n',
+      'x.js',
+    );
+    expect(cjs.b).toBeUndefined();
+  });
+});
+
 describe('@declaration.is-exported (JavaScript emitter)', () => {
   it('marks ESM declarations', () => {
     const v = verdicts(emitJsScopeCaptures, ESM, 'test.js');

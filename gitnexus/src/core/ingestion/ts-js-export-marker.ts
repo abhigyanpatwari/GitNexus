@@ -44,8 +44,33 @@ export interface EsmExportEvidence {
   readonly commonJs: boolean;
 }
 
-const CJS_EXPORT_ASSIGNMENT = /^\s*(module\.exports\b|exports\s*[.[]|this\.[A-Za-z_$][\w$]*\s*=)/;
-const CJS_SURFACE = /\bmodule\.exports\b|\bexports\s*[.[=]/;
+const CJS_EXPORT_ASSIGNMENT = /^\s*(this\.[A-Za-z_$][\w$]*\s*=)/;
+
+/**
+ * Does the file touch a CommonJS export object anywhere — `module.exports` or
+ * `exports.x` / `exports[x]` — as an actual expression? Read from AST nodes,
+ * not source text, so a comment or string mentioning `module.exports` does not
+ * disable the file's verdicts.
+ */
+function hasCommonJsExportSurface(root: SyntaxNode): boolean {
+  for (const member of root.descendantsOfType('member_expression')) {
+    const object = member.childForFieldName('object');
+    if (object === null) continue;
+    if (object.type === 'identifier' && object.text === 'exports') return true;
+    if (
+      object.type === 'identifier' &&
+      object.text === 'module' &&
+      member.childForFieldName('property')?.text === 'exports'
+    ) {
+      return true;
+    }
+  }
+  for (const sub of root.descendantsOfType('subscript_expression')) {
+    const object = sub.childForFieldName('object');
+    if (object?.type === 'identifier' && object.text === 'exports') return true;
+  }
+  return false;
+}
 
 /** Node types below which a declaration is nested, not module-level. */
 const NESTING_BOUNDARIES: ReadonlySet<string> = new Set([
@@ -60,7 +85,12 @@ const NESTING_BOUNDARIES: ReadonlySet<string> = new Set([
   'generator_function',
   'generator_function_declaration',
   'method_definition',
+  // `export namespace NS { export function f() {} }` / `declare module 'x' {
+  // export function q(): void }`: an `export` inside these bodies is an export
+  // of the namespace/ambient module, not of the file.
   'internal_module',
+  'module',
+  'ambient_declaration',
 ]);
 
 /**
@@ -75,11 +105,14 @@ export function collectEsmExportEvidence(
   const namedLocals = new Set<string>();
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
   // = …`, an alias (`const m = module.exports; m.x = …`), an `exports.x` — means
-  // "not under `export`" says nothing. Text-level on purpose: the alias forms
-  // are open-ended and a missed one would mark a real export private.
-  let commonJs = CJS_SURFACE.test(root.text);
+  // "not under `export`" says nothing.
+  let commonJs = hasCommonJsExportSurface(root);
   for (const stmt of root.namedChildren) {
     if (stmt.type === 'export_statement') {
+      // `export { a } from './x'` / `export type { T } from './t'` re-export
+      // ANOTHER module's names: they say nothing about a local `a`, and adding
+      // them here marked a private local of the same name exported.
+      if (stmt.childForFieldName('source') !== null) continue;
       for (const child of stmt.namedChildren) {
         if (child.type === 'export_clause') {
           for (const spec of child.namedChildren) {
@@ -128,8 +161,16 @@ export function esmExportVerdict(
   // declaration itself (a `method_definition`, a `function_declaration`) must
   // not count as its own nesting boundary.
   let current: SyntaxNode | null = nameNode.parent;
+  // An `export` keyword is only a FILE-level export when the walk reaches the
+  // program without crossing a nesting boundary — one inside a namespace or
+  // ambient-module body is that container's export (see NESTING_BOUNDARIES).
+  let underExport = false;
   while (current !== null && current.type !== 'program') {
-    if (current.type === 'export_statement') return true;
+    if (current.type === 'export_statement') {
+      underExport = true;
+      current = current.parent;
+      continue;
+    }
     if (current.type === 'object') {
       // `module.exports = { alpha() {} }`: the literal's own members are the
       // module's exports. Any other object literal is a nesting boundary.
@@ -141,6 +182,7 @@ export function esmExportVerdict(
     }
     current = current.parent;
   }
+  if (underExport) return true;
   if (evidence.commonJs) return undefined;
   return evidence.namedLocals.has(nameNode.text);
 }
