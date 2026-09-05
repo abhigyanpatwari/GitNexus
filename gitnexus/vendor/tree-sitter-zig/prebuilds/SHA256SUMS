@@ -1,6 +1,6 @@
-0a62f5b40e0ad58cbf89dc33eb5b0f8bcf38e3a0185682b480beb4ce1022807a  ./darwin-arm64/tree-sitter-zig.node
-c1e58fd2a3c70ae4bb226c5ab66e9b91201a2bd7d617df680aa42faadf1186a3  ./darwin-x64/tree-sitter-zig.node
+7b39dfd4c76805fa8681d9d1b08cb8d605f950b4fb1ca6e02b05039940f4b309  ./darwin-arm64/tree-sitter-zig.node
+077d355b07a846c1c6cc530376c5e5410f6d26c540a667d1ea1a15d01dbe6ad2  ./darwin-x64/tree-sitter-zig.node
 9e77bd9cf21e71b741f71401081c958214f3b01fd73a6cfb5025ac1058ea0664  ./linux-arm64/tree-sitter-zig.node
 1e12ccf46b093e5d878e18688b8284a29a4ceb742ef1cbf398ac17d15d5ea44f  ./linux-x64/tree-sitter-zig.node
-550d75623560f0eff05d1d11ae8a1345e412f97b0f246f3774291669045eb1b7  ./win32-arm64/tree-sitter-zig.node
-8ca1862a0118dd4e0e491862bc126d67e333f69a4dcffa043525796f888886ff  ./win32-x64/tree-sitter-zig.node
+a85ee6312ae06fbd3d0b36ea7fb48741d32554afb69aa5087b34aecb582f383e  ./win32-arm64/tree-sitter-zig.node
+f71dd3b05c35f8e66f943949c6145e7e6ec774cca25df8e3d8bc0f3417bb7acc  ./win32-x64/tree-sitter-zig.node
