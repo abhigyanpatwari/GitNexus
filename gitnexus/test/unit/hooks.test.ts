@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import fs from 'fs';
 import path from 'path';
@@ -35,6 +36,14 @@ import { commitAll, initGitRepo, type GitIdentity } from '../helpers/temp-git-re
 // ─── Paths to both hook variants ────────────────────────────────────
 
 const CJS_HOOK = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'gitnexus-hook.cjs');
+const CJS_REGISTRY_QUERY = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'hooks',
+  'claude',
+  'registry-query.cjs',
+);
 const CJS_HOOK_LOCK = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'hook-lock.cjs');
 const RESOLVE_CJS = path.resolve(
   __dirname,
@@ -248,10 +257,27 @@ function createGlobalRegistry(homeDir: string, marker: 'both' | 'registry' | 're
 
 function writeHookRegistry(
   homeDir: string,
-  entries: Array<{ name: string; path: string; storagePath: string }>,
+  entries: Array<{
+    name: string;
+    path: string;
+    storagePath?: string;
+    branches?: Array<{ branch: string; indexedAt?: string; lastCommit?: string }>;
+  }>,
 ) {
   fs.mkdirSync(homeDir, { recursive: true });
   fs.writeFileSync(path.join(homeDir, 'registry.json'), JSON.stringify(entries));
+}
+
+function findRegisteredRepoForTest(cwd: string) {
+  return (
+    createRequire(import.meta.url)(CJS_REGISTRY_QUERY) as {
+      findRegisteredRepo: (path: string) => {
+        path: string;
+        storagePath: string;
+        lbugPath: string;
+      } | null;
+    }
+  ).findRegisteredRepo(cwd);
 }
 
 function runHook(
@@ -3382,6 +3408,104 @@ describe('Global registry lookup', () => {
   }
 });
 
+describe('Hook registry resolver compatibility', () => {
+  const withRegistryHome = (homeDir: string, action: () => void) => {
+    const previous = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = homeDir;
+    try {
+      action();
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = previous;
+    }
+  };
+
+  it('resolves a registered non-Git directory from a nested working directory', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'non-git-repo');
+    const nestedDir = path.join(repoDir, 'src', 'nested');
+    const storagePath = path.join(homeDir, 'indexes', 'non-git-repo');
+    try {
+      fs.mkdirSync(nestedDir, { recursive: true });
+      fs.mkdirSync(storagePath, { recursive: true });
+      fs.writeFileSync(
+        path.join(storagePath, 'gitnexus.json'),
+        JSON.stringify({ repoPath: repoDir, storagePath, lastCommit: 'oldcommit', stats: {} }),
+      );
+      writeHookRegistry(homeDir, [{ name: 'non-git-repo', path: repoDir, storagePath }]);
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(nestedDir)).toMatchObject({
+          path: repoDir,
+          storagePath,
+          lbugPath: path.join(storagePath, 'lbug'),
+        });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('derives the repository-local slot for a legacy registry row without storagePath', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'legacy-repo');
+    const storagePath = path.join(repoDir, '.gitnexus');
+    try {
+      fs.mkdirSync(storagePath, { recursive: true });
+      initRepoWithCommit(repoDir);
+      fs.writeFileSync(
+        path.join(storagePath, 'gitnexus.json'),
+        JSON.stringify({ repoPath: repoDir, lastCommit: 'oldcommit', stats: {} }),
+      );
+      writeHookRegistry(homeDir, [{ name: 'legacy-repo', path: repoDir }]);
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
+          path: repoDir,
+          storagePath,
+          lbugPath: path.join(storagePath, 'lbug'),
+        });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the pinned branch database for the checked-out indexed branch', () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
+    const repoDir = path.join(homeDir, 'branch-repo');
+    const storagePath = path.join(homeDir, 'indexes', 'branch-repo');
+    const branch = 'feature/x';
+    const branchSlug = `feature_x-${createHash('sha256').update(branch).digest('hex').slice(0, 8)}`;
+    try {
+      fs.mkdirSync(repoDir, { recursive: true });
+      fs.mkdirSync(storagePath, { recursive: true });
+      initRepoWithCommit(repoDir);
+      runGit(repoDir, ['checkout', '-b', branch]);
+      fs.writeFileSync(
+        path.join(storagePath, 'gitnexus.json'),
+        JSON.stringify({ repoPath: repoDir, storagePath, lastCommit: 'oldcommit', stats: {} }),
+      );
+      writeHookRegistry(homeDir, [
+        {
+          name: 'branch-repo',
+          path: repoDir,
+          storagePath,
+          branches: [{ branch }],
+        },
+      ]);
+
+      withRegistryHome(homeDir, () => {
+        expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
+          lbugPath: path.join(storagePath, 'branches', branchSlug, 'lbug'),
+        });
+      });
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // ─── Integration: linked-worktree resolution (#1224) ───────────────
 
 describe('Linked git worktree resolution', () => {
@@ -3596,7 +3720,15 @@ describe('Hook metadata-filename drift guard', () => {
     ['CJS (claude)', path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs')],
     [
       'Plugin',
-      path.resolve(__dirname, '..', '..', '..', 'gitnexus-claude-plugin', 'hooks', 'registry-query.cjs'),
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        '..',
+        'gitnexus-claude-plugin',
+        'hooks',
+        'registry-query.cjs',
+      ),
     ],
     // The Antigravity installer copies this canonical helper beside its adapter.
     ['Antigravity', path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'registry-query.cjs')],

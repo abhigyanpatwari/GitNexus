@@ -420,7 +420,6 @@ function handlePostToolUse(input) {
   if (!path.isAbsolute(cwd)) return;
   const repo = findRegisteredRepo(cwd);
   if (!repo) return;
-  const storagePath = repo.storagePath;
 
   // Compare HEAD against last indexed commit — skip if unchanged
   let currentHead = '';

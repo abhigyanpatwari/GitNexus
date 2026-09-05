@@ -62,10 +62,12 @@ export const cleanCommand = async (options?: {
     const { lbugPath } = getStoragePaths(repo.repoPath, summary.branch, storagePath);
     const branchDir = path.dirname(lbugPath);
     // Safety guard: the target MUST live under the validated
-    // `<repo>/.gitnexus/branches/` directory before any destructive fs.rm.
+    // storage slot's `branches/` directory before any destructive fs.rm.
     const branchesRoot = path.join(storagePath, 'branches') + path.sep;
     if (!branchDir.startsWith(branchesRoot)) {
-      logger.error(`Refusing to clean branch index outside .gitnexus/branches: ${branchDir}`);
+      logger.error(
+        `Refusing to clean branch index outside the validated storage slot: ${branchDir}`,
+      );
       return;
     }
     if (!options.force) {

@@ -145,6 +145,7 @@ describe('canonicalizePath vs the `\\\\?\\` long-path prefix (#2667)', () => {
 // Pinned here because "complete the fix by stripping here too" is the tempting
 // follow-up refactor, and it would widen what the recursive delete accepts.
 describe('assertSafeStoragePath vs the `\\\\?\\` prefix (#2667)', () => {
+  const itOnWindows = process.platform === 'win32' ? it : it.skip;
   const base: Omit<RegistryEntry, 'storagePath'> = {
     name: 'repo',
     path: '\\\\?\\D:\\Projects\\repo',
@@ -152,13 +153,13 @@ describe('assertSafeStoragePath vs the `\\\\?\\` prefix (#2667)', () => {
     lastCommit: 'deadbee',
   };
 
-  it('accepts an entry whose path and storagePath share the prefix', async () => {
+  itOnWindows('accepts an entry whose path and storagePath share the prefix', async () => {
     await expect(
       assertSafeStoragePath({ ...base, storagePath: '\\\\?\\D:\\Projects\\repo\\.gitnexus' }),
     ).resolves.toBeUndefined();
   });
 
-  it('rejects a mixed-form entry instead of deleting through it', async () => {
+  itOnWindows('rejects a mixed-form entry instead of deleting through it', async () => {
     await expect(
       assertSafeStoragePath({ ...base, storagePath: 'D:\\Projects\\repo\\.gitnexus' }),
     ).rejects.toThrow();

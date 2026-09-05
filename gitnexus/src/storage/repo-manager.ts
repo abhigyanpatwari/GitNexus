@@ -955,7 +955,10 @@ const registerRepoUnlocked = async (
     }
     if (
       meta.storagePath === undefined &&
-      !registryPathEquals(canonicalizePath(storagePath), canonicalizePath(defaultStoragePath(resolved)))
+      !registryPathEquals(
+        canonicalizePath(storagePath),
+        canonicalizePath(defaultStoragePath(resolved)),
+      )
     ) {
       throw new Error(
         `Refusing to register ${resolved}: external storage metadata must bind storagePath to the selected directory.`,
@@ -1628,7 +1631,12 @@ export const listRegisteredRepos = async (opts?: {
   // storagePath is intentional here: GITNEXUS_STORAGE_PATH must not redirect
   // validation of an explicitly registered repository to another slot.
   const valid: RegistryEntry[] = [];
-  const prunedPaths = new Set<string>();
+  // Keep the exact inspected registry slot, not just the repository path.
+  // A concurrent analyze may re-register the same checkout into another
+  // external slot while this read-only validation walk is in flight.
+  const prunedSlots = new Set<string>();
+  const registrySlotKey = (entry: RegistryEntry): string =>
+    `${canonicalizePath(entry.path)}\0${canonicalizePath(entry.storagePath)}`;
   for (const entry of entries) {
     const inspection = await inspectRegisteredStorage(entry);
     const meetsRequirements =
@@ -1645,7 +1653,7 @@ export const listRegisteredRepos = async (opts?: {
       // A missing/empty directory or a registry slot with no ownership
       // metadata is not a usable index. Removing only the registry row is
       // safe; the storage directory itself is never deleted here.
-      prunedPaths.add(entry.path);
+      prunedSlots.add(registrySlotKey(entry));
     } else if (isTransientStorageInspection(inspection)) {
       // Not provably absent or invalid. Keep the old safety behavior for
       // EIO/EAGAIN/EBUSY/EACCES-style filesystem failures.
@@ -1668,15 +1676,15 @@ export const listRegisteredRepos = async (opts?: {
   // only then. The validation walk above is read-only and can touch several
   // files per entry, so holding the global lock across it would serialize
   // every `gitnexus augment` behind unrelated registry work for no benefit.
-  // Re-read inside the lock and drop only the provably-absent paths from that
-  // fresh snapshot, so a concurrent registration in the validation window
-  // survives.
-  if (prunedPaths.size > 0) {
+  // Re-read inside the lock and drop only the same provably-absent storage
+  // slots from that fresh snapshot, so a concurrent re-registration of the
+  // same repository path into another slot survives.
+  if (prunedSlots.size > 0) {
     try {
       await withRegistryLock(async () => {
         const fresh = await readRegistry();
         await writeRegistry(
-          fresh.filter((entry) => !prunedPaths.has(entry.path)),
+          fresh.filter((entry) => !prunedSlots.has(registrySlotKey(entry))),
           1,
         );
       });
@@ -1686,7 +1694,7 @@ export const listRegisteredRepos = async (opts?: {
       // — this runs on MCP startup (LocalBackend.init → refreshRepos), where
       // nothing catches and a rejection reads as "Server disconnected".
       logger.warn(
-        { err, prunedCount: prunedPaths.size },
+        { err, prunedCount: prunedSlots.size },
         'Could not persist the pruned global registry; continuing with the in-memory pruned view.',
       );
     }

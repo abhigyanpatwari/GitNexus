@@ -878,6 +878,13 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       await fs.mkdir(storagePath, { recursive: true });
       // A pre-existing "previous index" that must survive the aborted rebuild.
       await createPlaceholderGraphStore(lbugPath);
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        storagePath,
+        lastCommit: 'previous-index',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
       const before = await fs.readFile(lbugPath);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -1665,8 +1672,10 @@ describe('runFullAnalysis Phase 5 embedding gate (#2790)', () => {
     expect(error).toMatchObject({
       message: expect.stringMatching(/--drop-embeddings/),
     });
-    // The index really was not registered: no finalize meta was written.
-    expect(meta).toBeNull();
+    // A pre-pipeline ownership marker is expected, but no finalized receipt
+    // may claim that the failed index is usable.
+    expect(meta).toMatchObject({ lastCommit: '' });
+    expect(meta?.stats).toBeUndefined();
   });
 
   // State 3 — "cannot ask" is not "wrote nothing".

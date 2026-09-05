@@ -129,19 +129,17 @@ export const statusCommand = async (options: StatusOptions = {}) => {
       entry = resolveRegistryEntry(await readRegistryStrict(), options.repo);
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);
-      if (options.json) {
-        console.log(
-          JSON.stringify({ schemaVersion: 1, repository: options.repo, error: 'not-indexed' }),
-        );
-      } else if (
-        err instanceof RegistryNotFoundError ||
-        err instanceof RegistryAmbiguousTargetError
-      ) {
-        console.log(error);
-      } else {
-        throw err;
+      if (err instanceof RegistryNotFoundError || err instanceof RegistryAmbiguousTargetError) {
+        if (options.json) {
+          console.log(
+            JSON.stringify({ schemaVersion: 1, repository: options.repo, error: 'not-indexed' }),
+          );
+        } else {
+          console.log(error);
+        }
+        return;
       }
-      return;
+      throw err;
     }
 
     let storagePath: string;

@@ -179,11 +179,11 @@ describe('status branch rendering (#2106)', () => {
     },
   };
 
-  it('uses the strict registry reader for status --repo', async () => {
+  it.each([false, true])('uses the strict registry reader for status --repo%s', async (json) => {
     const corrupt = new Error('registry is corrupt: entry 0 is malformed');
     vi.mocked(readRegistryStrict).mockRejectedValueOnce(corrupt);
 
-    await expect(statusCommand({ repo: 'demo' })).rejects.toBe(corrupt);
+    await expect(statusCommand({ repo: 'demo', json })).rejects.toBe(corrupt);
     expect(resolveRegistryEntry).not.toHaveBeenCalled();
   });
 
@@ -204,10 +204,7 @@ describe('status branch rendering (#2106)', () => {
 
     await statusCommand({ repo: 'repo', json: true });
 
-    expect(requireRegisteredStoragePath).toHaveBeenCalledWith(
-      entry,
-      STATUS_STORAGE_REQUIREMENTS,
-    );
+    expect(requireRegisteredStoragePath).toHaveBeenCalledWith(entry, STATUS_STORAGE_REQUIREMENTS);
     expect(JSON.parse(output())).toMatchObject({ storagePath: entry.storagePath });
   });
 
@@ -335,9 +332,7 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('falls through to the workspace index when the branch has no pinned index (#2354)', async () => {
-    (loadMeta as any)
-      .mockResolvedValueOnce(baseRepo.meta)
-      .mockResolvedValueOnce(null); // feature/y has no pinned index
+    (loadMeta as any).mockResolvedValueOnce(baseRepo.meta).mockResolvedValueOnce(null); // feature/y has no pinned index
     (getCurrentBranch as any).mockReturnValue('feature/y');
     (getCurrentCommit as any).mockReturnValue('headsha9');
 
@@ -351,9 +346,7 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('same-commit branch flip reports up-to-date against the workspace index (#2354)', async () => {
-    (loadMeta as any)
-      .mockResolvedValueOnce(baseRepo.meta)
-      .mockResolvedValueOnce(null); // feature/y has no pinned index
+    (loadMeta as any).mockResolvedValueOnce(baseRepo.meta).mockResolvedValueOnce(null); // feature/y has no pinned index
     (getCurrentBranch as any).mockReturnValue('feature/y');
     (getCurrentCommit as any).mockReturnValue('headsha0'); // same commit as flat meta
 
@@ -364,16 +357,14 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('compares against the branch index when the current branch has one', async () => {
-    (loadMeta as any)
-      .mockResolvedValueOnce(baseRepo.meta)
-      .mockResolvedValueOnce({
-        repoPath: '/repo',
-        lastCommit: 'zzzzsha0',
-        indexedAt: '2026-06-10T14:00:00.000Z',
-        branch: 'feature/z',
-        runnerIdentity,
-        scopeExtractionReceipt: 1,
-      });
+    (loadMeta as any).mockResolvedValueOnce(baseRepo.meta).mockResolvedValueOnce({
+      repoPath: '/repo',
+      lastCommit: 'zzzzsha0',
+      indexedAt: '2026-06-10T14:00:00.000Z',
+      branch: 'feature/z',
+      runnerIdentity,
+      scopeExtractionReceipt: 1,
+    });
     (getCurrentBranch as any).mockReturnValue('feature/z');
     (getCurrentCommit as any).mockReturnValue('zzzzsha0');
 
@@ -395,14 +386,12 @@ describe('status branch rendering (#2106)', () => {
   });
 
   it('reports stale when the branch index is behind the branch tip', async () => {
-    (loadMeta as any)
-      .mockResolvedValueOnce(baseRepo.meta)
-      .mockResolvedValueOnce({
-        repoPath: '/repo',
-        lastCommit: 'oldsha00',
-        indexedAt: '2026-06-10T14:00:00.000Z',
-        branch: 'feature/z',
-      });
+    (loadMeta as any).mockResolvedValueOnce(baseRepo.meta).mockResolvedValueOnce({
+      repoPath: '/repo',
+      lastCommit: 'oldsha00',
+      indexedAt: '2026-06-10T14:00:00.000Z',
+      branch: 'feature/z',
+    });
     (getCurrentBranch as any).mockReturnValue('feature/z');
     (getCurrentCommit as any).mockReturnValue('newsha99'); // moved past the index
 

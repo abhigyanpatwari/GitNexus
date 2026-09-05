@@ -572,8 +572,9 @@ export interface RepoMeta {
 }
 
 /**
- * Get the .gitnexus storage path for a repository.
- * Used for local metadata and caches that are not committed.
+ * Resolve the configured storage path for a repository.
+ * This can be its repository-local `.gitnexus` directory, an external slot,
+ * or a previously registered storage path.
  */
 export const getStoragePath = (repoPath: string): string => {
   return resolveStoragePath(repoPath);

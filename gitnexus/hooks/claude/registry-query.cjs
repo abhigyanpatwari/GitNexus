@@ -1,6 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { createHash } = require('crypto');
 const { spawnSync } = require('child_process');
 
 // Hooks are copied into editor-specific directories and run without the
@@ -9,6 +10,7 @@ const GITNEXUS_DIR = '.gitnexus';
 const INDEX_METADATA_FILE = 'gitnexus.json';
 const LEGACY_METADATA_FILE = 'meta.json';
 const LBUG_DIRECTORY = 'lbug';
+const BRANCHES_DIRECTORY = 'branches';
 
 function canonicalize(value) {
   if (typeof value !== 'string' || !value || !path.isAbsolute(value)) return null;
@@ -79,7 +81,38 @@ function isOwnedStorage(repoPath, storagePath, repositoryLocal, metadata) {
   );
 }
 
+function ancestorPaths(cwd) {
+  const paths = [];
+  let current = canonicalize(cwd);
+  while (current) {
+    paths.push(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return paths;
+}
+
+function currentGitBranch(cwd) {
+  try {
+    const result = spawnSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
+      encoding: 'utf-8',
+      timeout: 2000,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) return null;
+    const branch = String(result.stdout || '').trim();
+    return branch || null;
+  } catch {
+    return null;
+  }
+}
+
 function registryPathsForCwd(cwd) {
+  const fallbackPaths = ancestorPaths(cwd);
+  if (fallbackPaths.length === 0) return { repoPaths: [], branch: null };
   try {
     const result = spawnSync(
       'git',
@@ -92,7 +125,7 @@ function registryPathsForCwd(cwd) {
         windowsHide: true,
       },
     );
-    if (result.error || result.status !== 0) return [];
+    if (result.error || result.status !== 0) return { repoPaths: fallbackPaths, branch: null };
 
     const [worktreeRoot, commonDir] = String(result.stdout || '')
       .split(/\r?\n/)
@@ -100,14 +133,23 @@ function registryPathsForCwd(cwd) {
       .filter(Boolean);
     const roots = [worktreeRoot];
     if (commonDir) roots.push(path.dirname(commonDir));
-    return roots.map(canonicalize).filter(Boolean);
+    return {
+      repoPaths: roots.map(canonicalize).filter(Boolean),
+      branch: currentGitBranch(cwd),
+    };
   } catch {
-    return [];
+    return { repoPaths: fallbackPaths, branch: null };
   }
 }
 
+function branchSlug(rawRef) {
+  const safe = rawRef.replace(/^-+/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+  const hash = createHash('sha256').update(rawRef).digest('hex').slice(0, 8);
+  return `${safe}-${hash}`;
+}
+
 function findRegisteredRepo(cwd) {
-  const repoPaths = registryPathsForCwd(cwd);
+  const { repoPaths, branch } = registryPathsForCwd(cwd);
   if (repoPaths.length === 0) return null;
 
   const home = process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
@@ -121,22 +163,37 @@ function findRegisteredRepo(cwd) {
 
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-    if (typeof entry.path !== 'string' || typeof entry.storagePath !== 'string') continue;
+    if (typeof entry.path !== 'string') continue;
     if (!path.isAbsolute(entry.path)) continue;
-    if (!path.isAbsolute(entry.storagePath)) continue;
+    if (
+      entry.storagePath !== undefined &&
+      (typeof entry.storagePath !== 'string' ||
+        !entry.storagePath ||
+        !path.isAbsolute(entry.storagePath))
+    ) {
+      continue;
+    }
     const registeredPath = canonicalize(entry.path);
     if (registeredPath && repoPaths.some((repoPath) => samePath(repoPath, registeredPath))) {
-      const storagePath = path.resolve(entry.storagePath);
+      // Registry rows written before configurable storage have no storagePath.
+      // Match the CLI's read-boundary compatibility rule for those rows only.
+      const storagePath = path.resolve(entry.storagePath ?? path.join(entry.path, GITNEXUS_DIR));
       const repositoryLocal = samePath(
         canonicalize(path.join(entry.path, GITNEXUS_DIR)),
         canonicalize(storagePath),
       );
       const metadata = readIndexMetadata(storagePath);
       if (!isOwnedStorage(entry.path, storagePath, repositoryLocal, metadata)) continue;
+      const branchIsIndexed =
+        branch &&
+        Array.isArray(entry.branches) &&
+        entry.branches.some((summary) => summary && summary.branch === branch);
       return {
         path: entry.path,
         storagePath,
-        lbugPath: path.join(storagePath, LBUG_DIRECTORY),
+        lbugPath: branchIsIndexed
+          ? path.join(storagePath, BRANCHES_DIRECTORY, branchSlug(branch), LBUG_DIRECTORY)
+          : path.join(storagePath, LBUG_DIRECTORY),
         metadata,
       };
     }
