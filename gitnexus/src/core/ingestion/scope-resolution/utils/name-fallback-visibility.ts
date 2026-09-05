@@ -21,8 +21,10 @@ export function directoryOf(filePath: string): string {
 /**
  * Split a module path into segments, accepting the three separators languages
  * spell module nesting with: `/` (Go, Node), `::` (Rust, C++) and `.` (JVM,
- * Python). Empty segments are dropped, so a leading `./` or `crate::` prefix
- * contributes nothing.
+ * Python). Empty segments and `.` are dropped, so a leading `./` contributes
+ * nothing. Named root prefixes are NOT stripped here — `crate::a` yields
+ * `['crate', 'a']`; a language whose paths carry one (Rust's `crate::` /
+ * `super::`) removes it before calling, see `rustUsePathOf`.
  *
  * `.` is only treated as a separator when the path contains no `/`: a Node
  * specifier like `./util/parse.js` must not split on the extension dot.

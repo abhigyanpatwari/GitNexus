@@ -503,8 +503,24 @@ function resolveDefGraphIdUncached(
     if (qualifiedHit !== undefined) return qualifiedHit;
   }
   const simpleName = qn.lastIndexOf('.') === -1 ? qn : qn.slice(qn.lastIndexOf('.') + 1);
+  // FAIL CLOSED before the label-agnostic simple key when a FUNCTION-LOCAL
+  // callable of this name exists in the file. The guards above cover a def
+  // that is itself a callable; a NON-callable def (`export const selected =
+  // factory()`, a `Variable` with no graph node of its own) used to fall
+  // through here and alias onto `wrapper.selected`, the function-local one
+  // (#3182 review). Whatever the def's label, a bare name matching a local
+  // callable is the aliasing this key cannot tell apart, and a missing edge
+  // is the correct failure direction.
+  for (const localLabel of LOCAL_CALLABLE_LABELS) {
+    if (nodeLookup.get(localNameKey(filePath, localLabel, simpleName)) !== undefined) {
+      return undefined;
+    }
+  }
   return nodeLookup.get(simpleKey(filePath, simpleName));
 }
+
+/** Labels the structure phase registers function-local declarations under. */
+const LOCAL_CALLABLE_LABELS: readonly NodeLabel[] = ['Function', 'Method'];
 
 /** Derive the simple (unqualified) name of a def from its `qualifiedName`. */
 export function simpleQualifiedName(def: SymbolDefinition): string | undefined {

@@ -29,15 +29,34 @@ function isGoTestFile(filePath: string): boolean {
 }
 
 /**
- * `foo_test` → `foo`; a package name that is not an external-test name → itself.
- * Known miss (never a wrong edge): a package genuinely NAMED `foo_test` has its
- * internal `_test.go` files keyed as external tests of `foo`, so they see no
- * unexported siblings. Disambiguating needs the directory's non-test clause.
+ * The package a `_test.go` file's clause belongs to, given the package names
+ * the directory's NON-test files declare.
+ *
+ * `package foo_test` is the external-test convention ONLY when the directory's
+ * real package is `foo`; the `_test` suffix is otherwise a legal identifier
+ * (`package foo_test` in a directory whose non-test files also say `foo_test`).
+ * Stripping it unconditionally keyed such a package's own internal tests as
+ * external tests of a non-existent `foo`, so they saw no sibling at all — a
+ * resolution miss on every same-package call. Strip only when the stripped
+ * name is what the non-test siblings declare; with no non-test sibling to ask
+ * (a test-only directory) the convention is assumed, as before.
  */
-function internalPackageOf(pkgName: string): string {
-  return pkgName.endsWith('_test') && pkgName.length > '_test'.length
-    ? pkgName.slice(0, -'_test'.length)
-    : pkgName;
+function testFilePackageOf(
+  declared: string,
+  nonTestPackagesInDir: ReadonlySet<string> | undefined,
+): { readonly pkg: string; readonly external: boolean } {
+  if (!declared.endsWith('_test') || declared.length <= '_test'.length) {
+    return { pkg: declared, external: false };
+  }
+  const stripped = declared.slice(0, -'_test'.length);
+  if (nonTestPackagesInDir !== undefined && nonTestPackagesInDir.has(declared)) {
+    return { pkg: declared, external: false };
+  }
+  if (nonTestPackagesInDir === undefined || nonTestPackagesInDir.has(stripped)) {
+    return { pkg: stripped, external: true };
+  }
+  // Neither name is declared by a non-test sibling: keep the clause as written.
+  return { pkg: declared, external: false };
 }
 
 export function populateGoPackageSiblings(
@@ -64,16 +83,31 @@ export function populateGoPackageSiblings(
     readonly external: boolean;
   }
   const filesByPackage = new Map<string, SiblingFile[]>();
+  // Same derivation as `populateGoWorkspaceOwners` — one shared resolver, so
+  // the two passes cannot disagree about a file's package (#2837). The
+  // no-clause case is reported there; warning twice for one fact would be
+  // noise.
+  const declaredByFile = new Map<string, string>();
+  const nonTestPackagesByDir = new Map<string, Set<string>>();
   for (const parsed of parsedFiles) {
-    // Same derivation as `populateGoWorkspaceOwners` — one shared resolver, so
-    // the two passes cannot disagree about a file's package (#2837). The
-    // no-clause case is reported there; warning twice for one fact would be
-    // noise.
     const declared = inferGoPackageName(ctx.fileContents.get(parsed.filePath) ?? '');
     if (declared === null) continue;
+    declaredByFile.set(parsed.filePath, declared);
+    if (isGoTestFile(parsed.filePath)) continue;
+    const dir = goPackageDir(parsed.filePath);
+    const names = nonTestPackagesByDir.get(dir) ?? new Set<string>();
+    names.add(declared);
+    nonTestPackagesByDir.set(dir, names);
+  }
+  for (const parsed of parsedFiles) {
+    const declared = declaredByFile.get(parsed.filePath);
+    if (declared === undefined) continue;
     const isTest = isGoTestFile(parsed.filePath);
-    const external = isTest && declared !== internalPackageOf(declared);
-    const key = `${goPackageDir(parsed.filePath)}\0${isTest ? internalPackageOf(declared) : declared}`;
+    const dir = goPackageDir(parsed.filePath);
+    const { pkg, external } = isTest
+      ? testFilePackageOf(declared, nonTestPackagesByDir.get(dir))
+      : { pkg: declared, external: false };
+    const key = `${dir}\0${pkg}`;
     const list = filesByPackage.get(key) ?? [];
     list.push({ filePath: parsed.filePath, defs: [...parsed.localDefs], isTest, external });
     filesByPackage.set(key, list);

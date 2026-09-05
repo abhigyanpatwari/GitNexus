@@ -18,14 +18,16 @@ async function run(name: string, extra: Record<string, string>, remove: string[]
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `gn-c2b-${name}-`));
   const files: Record<string, string> = { ...base, ...extra };
   for (const r of remove) delete files[r];
-  writeFixtureRepo(dir, files);
-  const result = await runPipelineFromRepo(dir, () => {});
-  const targets = getRelationships(result, 'CALLS')
-    .filter((e) => e.sourceFilePath.includes('packages/app/src/main'))
-    .map((e) => e.target)
-    .sort();
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  return targets;
+  try {
+    writeFixtureRepo(dir, files);
+    const result = await runPipelineFromRepo(dir, () => {});
+    return getRelationships(result, 'CALLS')
+      .filter((e) => e.sourceFilePath.includes('packages/app/src/main'))
+      .map((e) => e.target)
+      .sort();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
 }
 describe('C2 probe 2', () => {
   it('E: impl is a .tsx file with plain function exports', async () => {

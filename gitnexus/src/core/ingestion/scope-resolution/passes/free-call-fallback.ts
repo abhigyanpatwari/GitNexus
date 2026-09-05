@@ -201,7 +201,17 @@ export function emitFreeCallFallback(
   };
 
   for (const parsed of parsedFiles) {
-    type PendingRel = { rel: Parameters<KnowledgeGraph['addRelationship']>[0]; gatedAll: boolean };
+    type PendingRel = {
+      rel: Parameters<KnowledgeGraph['addRelationship']>[0];
+      gatedAll: boolean;
+      /**
+       * The confidence/reason a PRECISELY resolved site (a real binding, not a
+       * unique-name guess) proved for this edge; `undefined` while every site
+       * collapsed into it so far was a guess. Decided at flush, not by the
+       * first site the walk met.
+       */
+      precise: { confidence: number; reason: string } | undefined;
+    };
     const pending = new Map<string, PendingRel>();
     const bindingCandidatesByScope =
       options.freeCallsRequireInstanceOwnership === true
@@ -686,44 +696,62 @@ export function emitFreeCallFallback(
       // that collapses into it, so a callee reached from one live site and one
       // dead site stays live whichever site the walk meets first. Emission is
       // deferred to the end of this file's sites for that reason.
+      const preciseHere = fnDefFromGlobalNameFallback
+        ? undefined
+        : {
+            confidence: 0.85,
+            // Match legacy DAG's reason convention so consumers that
+            // assert `reason === 'import-resolved'` keep working. The
+            // construction-site marker is opt-in for the same reason.
+            reason: constructionSiteReason(
+              fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
+              site,
+              options.markConstructionSites,
+            ),
+          };
       const pendingRel = pending.get(relId);
       if (pendingRel !== undefined) {
         if (site.staticGated !== true) pendingRel.gatedAll = false;
+        // The edge's label is decided at flush time from EVERY site that
+        // collapsed into it, not from whichever the walk met first. One site
+        // resolved through a real binding PROVES the dependency; a guessed
+        // site for the same pair is then redundant evidence, not a taint.
+        if (pendingRel.precise === undefined) pendingRel.precise = preciseHere;
         continue;
       }
       if (seen.has(relId)) continue;
       seen.add(relId);
       pending.set(relId, {
         gatedAll: site.staticGated === true,
+        precise: preciseHere,
         rel: {
           id: relId,
           sourceId: callerGraphId,
           targetId: tgtGraphId,
           type: 'CALLS',
-          // A name guess is not an import resolution and must not be spelled like
-          // one. It used to be emitted at 0.85 / `'import-resolved'`, which made
-          // it indistinguishable from an edge a real import produced — so every
-          // consumer that wanted to discount guesses had no field to do it with.
-          // 0.5 is the deliberate "coin flip" value, and the reason is what the
-          // process/community walks and the MCP tools actually key on, because
-          // 0.5 sits exactly ON their thresholds (see graph/edge-reasons.ts).
-          confidence: fnDefFromGlobalNameFallback ? 0.5 : 0.85,
-          reason: fnDefFromGlobalNameFallback
-            ? GLOBAL_NAME_FALLBACK_REASON
-            : // Match legacy DAG's reason convention so consumers that
-              // assert `reason === 'import-resolved'` keep working. The
-              // construction-site marker is opt-in for the same reason.
-              constructionSiteReason(
-                fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
-                site,
-                options.markConstructionSites,
-              ),
+          // Guess values as placeholders; decided at flush from `precise`.
+          confidence: 0.5,
+          reason: GLOBAL_NAME_FALLBACK_REASON,
         },
       });
       emitted++;
     }
-    for (const { rel, gatedAll } of pending.values()) {
-      graph.addRelationship(gatedAll ? { ...rel, staticGated: true } : rel);
+    for (const { rel, gatedAll, precise } of pending.values()) {
+      // A name guess is not an import resolution and must not be spelled like
+      // one. It used to be emitted at 0.85 / `'import-resolved'`, which made
+      // it indistinguishable from an edge a real import produced — so every
+      // consumer that wanted to discount guesses had no field to do it with.
+      // 0.5 is the deliberate "coin flip" value, and the reason is what the
+      // process/community walks and the MCP tools actually key on, because
+      // 0.5 sits exactly ON their thresholds (see graph/edge-reasons.ts).
+      // An edge is a guess only when EVERY site that collapsed into it was one;
+      // a single precisely resolved site proves it, whatever order the walk
+      // met the sites in. Independent of `gatedAll`.
+      const labeled =
+        precise !== undefined
+          ? { ...rel, confidence: precise.confidence, reason: precise.reason }
+          : rel;
+      graph.addRelationship(gatedAll ? { ...labeled, staticGated: true } : labeled);
     }
   }
   return emitted;

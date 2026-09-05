@@ -168,6 +168,35 @@ describe('Go: isGlobalNameFallbackPlausible', () => {
     ).toBe(true);
   });
 
+  it("REFUSES an exported helper declared in another package's `_test.go`, module root included", () => {
+    // A `_test.go` file is compiled only into its own package's test binary;
+    // no other package can see it. The module-root exception used to run first
+    // and accept `root_helper_test.go`'s exports for every subdirectory caller.
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('internal/svc/caller.go', [namedImport('github.com/org/mod')]),
+        candidate: mkCandidate('helpers_test.go', 'ExportedTestHelper'),
+      }),
+    ).toBe(false);
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('internal/svc/caller.go', [
+          namedImport('github.com/org/mod/internal/models'),
+        ]),
+        candidate: mkCandidate('internal/models/fixtures_test.go', 'NewFixture'),
+      }),
+    ).toBe(false);
+    // ...even from another package's own test file.
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('internal/svc/caller_test.go', [
+          namedImport('github.com/org/mod/internal/models'),
+        ]),
+        candidate: mkCandidate('internal/models/fixtures_test.go', 'NewFixture'),
+      }),
+    ).toBe(false);
+  });
+
   it('does not refuse an exported identifier in the module ROOT package', () => {
     // The root package is imported by the module path alone, which the
     // repo-relative layout cannot align against — undecidable, so allowed.
@@ -187,15 +216,16 @@ describe('Go: isGlobalNameFallbackPlausible', () => {
 });
 
 describe('Dart: isGlobalNameFallbackPlausible', () => {
-  it('REFUSES a library-private name from another directory', () => {
-    // No `part` layout can span directories in practice, so a `_` name across
-    // one is impossible, not merely unproven.
+  it('does NOT refuse a library-private name from another directory — a `part` URI may cross it', () => {
+    // `part '../shared/gen.dart';` is legal Dart, and `part` directives are not
+    // extracted yet, so "different directory" is undecidable, not impossible.
+    // The edge stays a labeled guess rather than being deleted.
     expect(
       dartIsGlobalNameFallbackPlausible({
         callerParsed: mkCaller('lib/widgets/b.dart'),
         candidate: mkCandidate('lib/models/a.dart', '_privateHelper'),
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('allows a library-private name in a SIBLING file (possible `part`)', () => {
@@ -318,6 +348,40 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
         site: BARE_SITE,
         callerParsed: mkCaller('src/main.rs', [namedImport('crate::user::User', 'User')]),
         candidate: mkCandidate('src/user.rs', 'User.new'),
+      }),
+    ).toBe(true);
+  });
+
+  it('REFUSES when the only `use` of the module names a DIFFERENT item', () => {
+    // `use crate::a::other;` brings `other` into scope, not `helper`. The
+    // parent-path match used to accept every item of `a` on its strength.
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller('src/b.rs', [namedImport('crate::a::other', 'other')]),
+        candidate: mkCandidate('src/a.rs', 'unique_helper_xyz'),
+      }),
+    ).toBe(false);
+  });
+
+  it('allows a glob `use` of the module — every item is in scope', () => {
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller('src/b.rs', [{ kind: 'wildcard', targetRaw: 'crate::a' }]),
+        candidate: mkCandidate('src/a.rs', 'unique_helper_xyz'),
+      }),
+    ).toBe(true);
+  });
+
+  it('allows a `use` that names the candidate itself, with the item on the path', () => {
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller('src/b.rs', [
+          namedImport('crate::a::unique_helper_xyz', 'unique_helper_xyz'),
+        ]),
+        candidate: mkCandidate('src/a.rs', 'unique_helper_xyz'),
       }),
     ).toBe(true);
   });
@@ -523,6 +587,68 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         callerParsed: mkCaller('app/b.rb', [], [site]),
         candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
         parsedFileOf: ownerFile('def:Billing', 'Class'),
+      }),
+    ).toBe(true);
+  });
+
+  it('REFUSES when the caller only mentions a LONGER constant containing the name as a substring', () => {
+    // `BillingService.build` is not a mention of `Billing`; `includes()` said it was.
+    const site = {
+      name: 'build',
+      rawQualifiedName: 'BillingService.build',
+    } as unknown as ParsedFile['referenceSites'][number];
+    expect(
+      rubyIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('app/b.rb', [], [site]),
+        candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
+        parsedFileOf: ownerFile('def:Billing', 'Class'),
+      }),
+    ).toBe(false);
+  });
+
+  it('allows a qualified mention whose SEGMENT is the constant (`Acme::Billing.new`)', () => {
+    const site = {
+      name: 'new',
+      rawQualifiedName: 'Acme::Billing.new',
+    } as unknown as ParsedFile['referenceSites'][number];
+    expect(
+      rubyIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('app/b.rb', [], [site]),
+        candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
+        parsedFileOf: ownerFile('def:Billing', 'Class'),
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps the LABELED guess when the caller file rebinds `self` (`instance_eval` DSL blocks) (magyargergo)', () => {
+    // `service.instance_eval do unique_helper_xyz() end` dispatches the bare
+    // call on `service`, so the class never being named here proves nothing.
+    const src =
+      'def caller(service)\n  service.instance_eval do\n    unique_helper_xyz()\n  end\nend\n';
+    expect(
+      rubyIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('app/b.rb'),
+        candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
+        parsedFileOf: ownerFile('def:Billing', 'Class'),
+        sourceTextOf: () => src,
+      }),
+    ).toBe(true);
+    // ...and still REFUSES when the source has no such block.
+    expect(
+      rubyIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('app/b.rb'),
+        candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
+        parsedFileOf: ownerFile('def:Billing', 'Class'),
+        sourceTextOf: () => 'def caller\n  unique_helper_xyz()\nend\n',
+      }),
+    ).toBe(false);
+    // A missing source text is an unanswered question, not a refusal.
+    expect(
+      rubyIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('app/b.rb'),
+        candidate: mkCandidate('app/a.rb', 'Billing.unique_helper_xyz', 'def:Billing'),
+        parsedFileOf: ownerFile('def:Billing', 'Class'),
+        sourceTextOf: () => undefined,
       }),
     ).toBe(true);
   });

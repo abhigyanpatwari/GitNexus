@@ -1000,19 +1000,28 @@ function namedReexportCandidates(
  * property. The wildcard closure loop tolerates the wider set because nobody
  * imports a property by name; a refusal cannot afford the same tolerance.
  *
- * `Variable` is excluded too. `SymbolDefinition` carries no export marker, and
- * the typical top-level `const` in a barrel's sources is module-private
- * (`const category = ['Axis']` in fourteen option-builder files) — the closure
- * would never be asked for it, so refusing it protects nothing and would refuse
- * a real exported constant of the same name. Residual risk, accepted: a
- * non-exported `function`/`class` sharing its name with an exported one behind
- * the same barrel is counted as a collision and the export is refused — a
- * missing edge, never a wrong one. `ownerId` is only set for class members, so
+ * Export evidence, when the language supplies it (`SymbolDefinition.isExported`,
+ * tri-state), settles the rest: a def marked `false` is module-private and is
+ * neither a provider here nor published by the closure
+ * (`indexTopLevelExportsByName`), so a private `function foo` beside an exported
+ * one no longer refuses the export — and, the half that matters more, cannot be
+ * the first-listed winner the closure binds either. A def marked `true` counts
+ * whatever its label, `Variable` included: the closure publishes a `Variable`,
+ * so two sources each exporting `const alpha` are a real collision and must be
+ * refused rather than first-wins.
+ *
+ * Without evidence (`isExported` undefined — most languages) `Variable` is
+ * excluded from the COLLISION set only: the typical top-level `const` in a
+ * barrel's sources is module-private (`const category = ['Axis']` in fourteen
+ * option-builder files), so counting it would refuse a real exported constant
+ * of the same name for nothing. Residual risk, accepted, for that evidence-free
+ * case: a non-exported `function`/`class` sharing its name with an exported one
+ * behind the same barrel is counted as a collision and the export is refused —
+ * a missing edge, never a wrong one. `ownerId` is only set for class members, so
  * a callable nested in an object literal (`showIf: (cfg) => …` across fourteen
- * option-builder files) still counts as a provider; `SymbolDefinition` carries
- * neither a scope nor an export marker to do better with. Measured after both
- * exclusions: grafana@871af0720 refuses 52 names (from 2,640 before them),
- * discourse@3f71fa15c 5.
+ * option-builder files) still counts as a provider when unmarked. Measured
+ * before the export marker existed: grafana@871af0720 refuses 52 names (from
+ * 2,640 before the member exclusion), discourse@3f71fa15c 5.
  */
 
 /** Labels that are never a module export, whatever their owner. */
@@ -1023,7 +1032,8 @@ const NON_EXPORTABLE_MEMBER_LABELS: readonly string[] = [
   'Parameter',
   'Field',
 ];
-const NON_EXPORTABLE_LABELS: ReadonlySet<string> = new Set([
+/** Labels excluded from the collision set when no export evidence is present. */
+const UNMARKED_NON_COLLIDING_LABELS: ReadonlySet<string> = new Set([
   ...NON_EXPORTABLE_MEMBER_LABELS,
   'Variable',
 ]);
@@ -1034,9 +1044,34 @@ const NON_EXPORTABLE_LABELS: ReadonlySet<string> = new Set([
  */
 const MEMBER_LABELS: ReadonlySet<string> = new Set(NON_EXPORTABLE_MEMBER_LABELS);
 
-/** A declaration `export *` could publish: top-level and of an exportable kind. */
+/**
+ * A declaration `export *` could publish, for COLLISION purposes: top-level, of
+ * an exportable kind, and not marked module-private. With export evidence the
+ * label rule yields to the marker (an exported `Variable` collides; a private
+ * `function` does not); without it `Variable` is left out — see the header.
+ */
 function isWildcardPublishable(def: SymbolDefinition): boolean {
-  return def.ownerId === undefined && !NON_EXPORTABLE_LABELS.has(def.type);
+  // Explicit evidence wins over the label: a CommonJS `module.exports = {
+  // alpha() {} }` member is labeled Method and IS the module's export.
+  if (def.isExported === true) return true;
+  if (def.isExported === false) return false;
+  if (def.ownerId !== undefined) return false;
+  return !UNMARKED_NON_COLLIDING_LABELS.has(def.type);
+}
+
+/**
+ * Can a declaration of the barrel's OWN shadow a name its `export *` sources
+ * collide on? Only a module-level binding can — ECMAScript's explicit-export
+ * precedence is about the module's own exports. A class MEMBER named `clash`
+ * (`export class Unrelated { clash() {} }`) is not such a binding and must not
+ * switch the collision check off; it did, and a confident edge to one source's
+ * `clash` was emitted where the import should have been refused.
+ */
+function canShadowWildcard(def: SymbolDefinition): boolean {
+  if (def.isExported === true) return true;
+  if (def.isExported === false) return false;
+  if (def.ownerId !== undefined) return false;
+  return !MEMBER_LABELS.has(def.type);
 }
 function collectAmbiguousWildcards(
   file: FinalizeFile,
@@ -1045,6 +1080,7 @@ function collectAmbiguousWildcards(
 ): ReadonlyMap<string, readonly string[]> {
   const shadowed = new Set<string>();
   for (const def of file.localDefs) {
+    if (!canShadowWildcard(def)) continue;
     const name = deriveSimpleName(def);
     if (name !== null) shadowed.add(name);
   }
@@ -1354,10 +1390,17 @@ function indexExportsByName(
 }
 
 /**
- * `indexExportsByName` restricted to declarations `export *` can publish:
+ * `indexExportsByName` restricted to declarations a module publishes by name:
  * members (by LABEL — `ownerId` is stamped by a later reconcile pass and is not
- * reliable while the closure is built) are skipped; `Variable` stays, since a
- * barrel legitimately republishes a `const`. Same memoization contract.
+ * reliable while the closure is built) are skipped unless the language marked
+ * them exported (a CommonJS `module.exports = { alpha() {} }` member), and so
+ * is any def the language marked module-private (`isExported === false`) — a
+ * function nested inside another function carries the Function label and used
+ * to displace the real exported value of the same name here; a barrel cannot
+ * republish what its source never exported, and binding it would put a private
+ * `function foo` in front of the exported one another source provides.
+ * `Variable` stays, since a barrel legitimately republishes a `const`. Same
+ * memoization contract.
  */
 const TOP_LEVEL_EXPORTS_BY_NAME = new WeakMap<
   readonly SymbolDefinition[],
@@ -1371,7 +1414,11 @@ function indexTopLevelExportsByName(
   if (cached !== undefined) return cached;
   const index = new Map<string, SymbolDefinition>();
   for (const d of defs) {
-    if (MEMBER_LABELS.has(d.type)) continue;
+    // Evidence over label, both ways: a marked-private def (a function nested
+    // in another function carries the Function label too) is skipped, and a
+    // marked-exported member (`module.exports = { alpha() {} }`) is admitted.
+    if (d.isExported === false) continue;
+    if (d.isExported !== true && MEMBER_LABELS.has(d.type)) continue;
     const name = deriveSimpleName(d);
     if (name === null) continue;
     const existing = index.get(name);

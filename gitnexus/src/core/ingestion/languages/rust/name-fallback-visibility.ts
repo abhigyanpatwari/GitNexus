@@ -82,14 +82,41 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
   // than refuse on an unanswered question.
   if (candidateModule === '') return true;
 
+  const candidateName = rustSimpleNameOf(ctx.candidate);
   for (const imp of ctx.callerParsed.parsedImports) {
     const usePath = rustUsePathOf(imp.targetRaw);
+    // The `use` path itself names the candidate's module (`use crate::a;`, a
+    // glob `use crate::a::*`, or a decomposed form whose source is the module):
+    // the module was brought into scope. Tolerant on purpose — see the header
+    // of `modulePathReaches` on which direction is the safe one.
     if (modulePathReaches(usePath, candidateModule)) return true;
-    // A `use` names an ITEM as often as a module (`use crate::user::User`), and
-    // whether `targetRaw` includes that final name varies by import form. Try
-    // the parent path too, or a module-only match would be missed.
+    if (imp.kind === 'wildcard') continue;
+    // Otherwise the path names ONE item inside a module (`use crate::a::other`).
+    // Its PARENT is the candidate's module only if that item IS the candidate:
+    // importing `other` says nothing about a `helper` in `a`, and the bare
+    // parent-path match used to accept every item of `a` on its strength.
+    // Matched on the ORIGINAL name (`importedName`): an alias renames the local
+    // handle, so the edge it authorizes is the one written under the alias.
+    if (importedNameOf(imp) !== candidateName) continue;
     const parent = usePath.slice(0, Math.max(0, usePath.lastIndexOf('::')));
     if (parent !== '' && modulePathReaches(parent, candidateModule)) return true;
   }
   return false;
+}
+
+/** The identifier a `use` binds, as written at its source (`importedName`). */
+function importedNameOf(imp: ParsedFile['parsedImports'][number]): string | undefined {
+  return 'importedName' in imp ? imp.importedName : undefined;
+}
+
+/**
+ * The identifier a Rust declaration contributes to its module: the FIRST
+ * segment of `qualifiedName` after any module prefix — `User` for `User.new`
+ * (an associated function is reached through its type, so it is the type the
+ * `use` must name), the bare name for a free function.
+ */
+function rustSimpleNameOf(candidate: SymbolDefinition): string {
+  const qualified = candidate.qualifiedName ?? '';
+  const segments = qualified.split(/::|\./).filter((s) => s !== '');
+  return segments[0] ?? '';
 }

@@ -107,14 +107,35 @@ function ownerLabelOf(
   return owner?.type;
 }
 
+/**
+ * Calls that rebind `self` for the duration of a block: inside
+ * `service.instance_eval do … end` a bare `helper()` is dispatched on
+ * `service`, so it legitimately reaches a class-owned method the caller file
+ * never names. Detected on the caller's SOURCE TEXT, not the call site — the
+ * site does not know which block encloses it — so any file that uses one of
+ * these forms keeps its class-owned guesses LABELED rather than refused. Coarse
+ * in the safe direction: it loses refusals in that file, never an edge.
+ */
+const SELF_REBINDING_CALL =
+  /\b(?:instance_eval|instance_exec|class_eval|class_exec|module_eval|module_exec)\b/;
+
 export function rubyIsGlobalNameFallbackPlausible(ctx: {
   readonly callerParsed: ParsedFile;
   readonly candidate: SymbolDefinition;
   readonly parsedFileOf?: (filePath: string) => ParsedFile | undefined;
+  readonly sourceTextOf?: (filePath: string) => string | undefined;
 }): boolean {
   if (ctx.candidate.filePath === ctx.callerParsed.filePath) return true;
   // Top-level method — the autoload shape the fallback exists for.
   if (ctx.candidate.ownerId === undefined) return true;
+  // A self-rebinding block anywhere in the caller makes "the class is never
+  // named here" no proof of impossibility (see `SELF_REBINDING_CALL`). The
+  // pipeline always supplies the source; a missing text is an unanswered
+  // question and keeps the labeled edge as well.
+  if (ctx.sourceTextOf !== undefined) {
+    const text = ctx.sourceTextOf(ctx.callerParsed.filePath);
+    if (text === undefined || SELF_REBINDING_CALL.test(text)) return true;
+  }
   // Only a CLASS body makes a bare cross-file call impossible without naming
   // it (see the header). A module owner, or an owner we cannot type, is not a
   // refusal.
@@ -148,11 +169,16 @@ export function rubyIsGlobalNameFallbackPlausible(ctx: {
     }
   }
   // A bare mention of the constant anywhere in the caller (`Billing::Invoice`,
-  // `Invoice.new`) is enough to make the namespace present in this file.
+  // `Invoice.new`) is enough to make the namespace present in this file. The
+  // qualified spelling is matched SEGMENT-wise on `::` / `.`: `InvoiceService`
+  // is not a mention of `Invoice`, and a substring test made it one.
   for (const site of ctx.callerParsed.referenceSites) {
     for (const constant of constants) {
       if (site.name === constant) return true;
-      if (site.rawQualifiedName !== undefined && site.rawQualifiedName.includes(constant)) {
+      if (
+        site.rawQualifiedName !== undefined &&
+        site.rawQualifiedName.split(/::|\./).some((segment) => segment === constant)
+      ) {
         return true;
       }
     }

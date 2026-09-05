@@ -471,8 +471,14 @@ export async function loadNodeWorkspacePackages(
   const key = path.resolve(repoRoot);
   const cached = workspacePackagesMemo.get(key);
   if (cached !== undefined) return cached;
-  const pending = loadNodeWorkspacePackagesUncached(repoRoot).catch((err: unknown) => {
-    workspacePackagesMemo.delete(key);
+  const pending: Promise<NodeWorkspacePackages | null> = loadNodeWorkspacePackagesUncached(
+    repoRoot,
+  ).catch((err: unknown) => {
+    // Evict only OUR entry. If this load was invalidated while in flight and a
+    // newer load has since been installed under the same key, deleting by key
+    // alone would evict that one, and every later caller would start another
+    // full scan instead of joining it.
+    if (workspacePackagesMemo.get(key) === pending) workspacePackagesMemo.delete(key);
     throw err;
   });
   workspacePackagesMemo.set(key, pending);
@@ -726,9 +732,16 @@ async function discoverSourceEntries(
   }
   for (const cfg of ['vite.config.ts', 'vite.config.mts', 'vite.config.js', 'vite.config.mjs']) {
     try {
-      const text = await fs.readFile(path.join(dir, cfg), 'utf-8');
-      const match = /lib\s*:\s*\{[^}]*?entry\s*:\s*['"]([^'"]+)['"]/s.exec(text);
-      if (match !== null) candidates.push(rebase(match[1]!));
+      const text = stripJsComments(await fs.readFile(path.join(dir, cfg), 'utf-8'));
+      // EVERY `lib: { entry: '…' }` in the live text is a candidate, not the
+      // first: a stale `lib` object left in the file (or a second one under a
+      // conditional) is a competing claim, and two claims are an ambiguity the
+      // `existing.length > 1` rule below refuses. Comments are stripped first —
+      // a commented-out `// old lib: { entry: 'src/wrong.ts' }` used to be the
+      // first match and became the package's entry.
+      for (const match of text.matchAll(/lib\s*:\s*\{[^}]*?entry\s*:\s*['"]([^'"]+)['"]/gs)) {
+        push(candidates, rebase(match[1]!));
+      }
     } catch {
       /* no such config */
     }
@@ -745,6 +758,41 @@ async function discoverSourceEntries(
   }
   if (existing.length > 1) return { entries: [], ambiguous: existing };
   return { entries: existing, ambiguous: [] };
+}
+
+/**
+ * Remove line (`//`) and block comments from JS/TS config text before a regex
+ * reads it. String contents are preserved (a `//` inside quotes is not a
+ * comment), so `entry: 'src/index.ts'` survives, as does a comment opener
+ * written inside a string.
+ */
+export function stripJsComments(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i]!;
+    const next = text[i + 1];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      let j = i + 1;
+      while (j < text.length && text[j] !== quote) {
+        if (text[j] === '\\') j++;
+        j++;
+      }
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (ch === '/' && next === '/') {
+      const end = text.indexOf('\n', i);
+      i = end === -1 ? text.length : end;
+    } else if (ch === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? text.length : end + 2;
+    } else {
+      out += ch;
+      i++;
+    }
+  }
+  return out;
 }
 
 /** A repo-relative stem exists as a source file (with any TS/JS extension). */

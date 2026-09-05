@@ -21,6 +21,7 @@ import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/no
 import {
   logNameFallbackSummary,
   summarizeNameFallback,
+  countCallsByLanguage,
 } from './ingestion/scope-resolution/name-fallback-summary.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import {
@@ -3872,7 +3873,10 @@ async function runFullAnalysisInner(
     // Census of name-guessed CALLS edges (labeled `global-name-fallback`), refused
     // impossibles and ambiguous `export *` names — the honesty readout for this
     // run's resolution. Logged, and persisted below as `nameFallbackEdges`.
-    const nameFallbackSummary = summarizeNameFallback(resolutionOutcomes);
+    const nameFallbackSummary = summarizeNameFallback(
+      resolutionOutcomes,
+      countCallsByLanguage(pipelineResult.resolvedCalleeNamesByCaller, pipelineResult.graph),
+    );
     logNameFallbackSummary(nameFallbackSummary);
 
     // Annotated so the capabilities stamp below is compile-checked against

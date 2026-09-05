@@ -7,18 +7,23 @@
  * imported by any spelling. So a `_`-prefixed candidate in another file is an
  * impossible call, not an unlikely one.
  *
- * "Library" is approximated by "the same DIRECTORY". The exact boundary is
- * `part` / `part of` — one library spanning several files, with `_` names
- * shared between them — and the extractor does not surface `part` directives
- * yet (nothing in `languages/dart/` reads them). Refusing on "same file" would
- * therefore delete real edges on Flutter's dominant generated-code idiom:
- * `factory Foo.fromJson(j) => _$FooFromJson(j)` calls into `foo.g.dart`, a
- * `part` of the same library that sits beside it. Parts are, in practice,
- * always siblings of their library file, so a same-directory `_` candidate is
- * treated as plausible (and stays a LABELED edge); only a `_` candidate in
- * another directory is refused, which no `part` layout can make legal. A caller
- * that names the candidate's file in a directive is also accepted, for the day
- * the extractor surfaces `part` as an import target.
+ * The exact boundary is `part` / `part of` — one library spanning several
+ * files, with `_` names shared between them — and the extractor does not
+ * surface `part` directives yet (the Dart query captures only `library_import`;
+ * nothing in `languages/dart/` reads `part`). Without them a cross-file `_`
+ * candidate is UNDECIDABLE, not impossible: refusing on "different file" would
+ * delete real edges on Flutter's dominant generated-code idiom (`factory
+ * Foo.fromJson(j) => _$FooFromJson(j)` calls into `foo.g.dart`, a `part` beside
+ * it), and refusing on "different directory" is wrong too — a `part` URI is a
+ * relative URI and legally traverses directories (`part '../shared/gen.dart';`).
+ * An earlier version refused the cross-directory case as "no `part` layout can
+ * make this legal"; that claim was false, so the hook now REFUSES NOTHING and
+ * every cross-file `_` candidate stays a LABELED edge (0.5 /
+ * `global-name-fallback`), which is the honest answer until `part` is
+ * extracted. A caller that names the candidate's file in a directive is
+ * recognized already, for the day the extractor surfaces `part` as an import
+ * target; at that point "not the same library" becomes decidable and the
+ * refusal can return.
  *
  * Public names are left to the labeled-edge path. Dart does require an import
  * for a cross-library public name, but the fallback exists partly to recover
@@ -29,7 +34,6 @@
 
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import {
-  directoryOf,
   modulePathReaches,
   stripExtension,
 } from '../../scope-resolution/utils/name-fallback-visibility.js';
@@ -63,8 +67,11 @@ export function dartIsGlobalNameFallbackPlausible(ctx: {
 }): boolean {
   if (ctx.candidate.filePath === ctx.callerParsed.filePath) return true;
   if (!isPrivateDartName(ctx.candidate)) return true;
-  // Sibling files may be `part`s of one library (see the header) — undecidable
-  // without `part` extraction, so allowed rather than refused.
-  if (directoryOf(ctx.candidate.filePath) === directoryOf(ctx.callerParsed.filePath)) return true;
-  return sharesLibrary(ctx.callerParsed, ctx.candidate.filePath);
+  // A directive naming the candidate's file is positive evidence of one library.
+  if (sharesLibrary(ctx.callerParsed, ctx.candidate.filePath)) return true;
+  // Any other file may be a `part` of the caller's library — a sibling or, via
+  // a relative `part` URI, a file in another directory. Undecidable without
+  // `part` extraction (see the header), so allowed as a labeled guess, never
+  // refused.
+  return true;
 }

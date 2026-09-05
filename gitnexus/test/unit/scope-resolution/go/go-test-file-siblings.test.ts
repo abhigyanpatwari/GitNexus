@@ -144,4 +144,30 @@ describe('Go _test.go package siblings', () => {
     expect(see('m:foo', 'setup')).toEqual([]);
     expect(see('m:bar', 'setup')).toEqual([]);
   });
+
+  it('a package genuinely NAMED `foo_test` keeps its internal tests in their declared package', () => {
+    // `package foo_test` is the external-test convention only when the
+    // directory's real package is `foo`. Here the non-test files themselves say
+    // `foo_test`, so its `_test.go` files are INTERNAL tests of that package
+    // and must see unexported siblings; stripping `_test` blindly keyed them
+    // as external tests of a non-existent `foo` and published nothing.
+    const impl = def('impl', 'pkg/foo_test/impl.go', 'unexportedHelper');
+    const fixture = def('fixture', 'pkg/foo_test/impl_test.go', 'newFixture');
+    const { see } = setup([
+      { path: 'pkg/foo_test/impl.go', scope: 'm:impl', pkg: 'foo_test', defs: [impl] },
+      { path: 'pkg/foo_test/impl_test.go', scope: 'm:impl-test', pkg: 'foo_test', defs: [fixture] },
+    ]);
+    expect(see('m:impl-test', 'unexportedHelper')).toEqual(['impl']);
+    // Non-test files still never see test-only declarations.
+    expect(see('m:impl', 'newFixture')).toEqual([]);
+  });
+
+  it('`package foo_test` beside `package foo` is still the external-test convention', () => {
+    const { see } = setup([
+      { path: 'pkg/a/a.go', scope: 'm:a', pkg: 'a', defs: [helper, exported] },
+      { path: 'pkg/a/a_test.go', scope: 'm:a-ext', pkg: 'a_test', defs: [testOnly] },
+    ]);
+    expect(see('m:a-ext', 'setUpHelper')).toEqual([]);
+    expect(see('m:a-ext', 'NewThing')).toEqual([]);
+  });
 });

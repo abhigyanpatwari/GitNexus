@@ -33,7 +33,13 @@ import {
 } from '../../scope-resolution/utils/name-fallback-visibility.js';
 import { inferGoPackageName } from './package-clause.js';
 
-/** `foo_test` → `foo`; mirrors `package-siblings.ts`. */
+/**
+ * `foo_test` → `foo`. `package-siblings.ts` refines this with the directory's
+ * non-test package clauses (a package genuinely NAMED `foo_test` keeps its
+ * name there); this hook sees one file at a time and cannot, so such a
+ * package's internal tests are classified external here. Refuse-only tier, so
+ * the cost is a missed same-package guess, never a wrong edge.
+ */
 function internalPackageOf(pkgName: string): string {
   return pkgName.endsWith('_test') && pkgName.length > '_test'.length
     ? pkgName.slice(0, -'_test'.length)
@@ -100,6 +106,13 @@ export function goIsGlobalNameFallbackPlausible(ctx: {
     if (cand.external === true && caller.external === false) return false;
     return true;
   }
+
+  // Different directory, so a different package — and a `_test.go` file's
+  // declarations are compiled only into ITS OWN package's test binary. No other
+  // package, test or not, can see them, exported or not. Decidable from the
+  // path alone, so it comes before every exception below (the module-root
+  // exception in particular used to accept a root `helper_test.go` export).
+  if (classifyGoFile(ctx.candidate.filePath, ctx.sourceTextOf).isTest) return false;
 
   const simpleName = goSimpleName(ctx.candidate);
   // No identifier to read the case of — an unanswered question, not a refusal.

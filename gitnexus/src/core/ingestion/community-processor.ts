@@ -313,7 +313,7 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
   const connectedNodes = new Set<string>();
   const nodeDegree = new Map<string, number>();
 
-  // Field-wise scan (#2680): this walks every edge and reads only these four,
+  // Field-wise scan (#2680): this walks every edge and reads only these five,
   // so taking objects would allocate one per edge for nothing.
   knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
     if (!isClusteringRelationship(type) || sourceId === targetId) return;
