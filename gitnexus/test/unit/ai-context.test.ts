@@ -1716,4 +1716,33 @@ Indexed as **${name}**${counts}. Lean block.
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('preserves the existing stats-line prefix when updating a keep marker', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-prefix-'));
+    const storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    try {
+      const original = `# Guide
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+indexed by GitNexus as **OldName** (10 symbols, 20 relationships, 3 execution flows). Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), original, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'Repo$1Name', {
+        nodes: 55,
+        edges: 66,
+        processes: 7,
+      });
+
+      expect(result.files).toContain('CLAUDE.md (updated)');
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toContain(
+        'indexed by GitNexus as **Repo$1Name** (55 symbols, 66 relationships, 7 execution flows). Custom.',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
 });
