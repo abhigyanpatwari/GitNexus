@@ -20,7 +20,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { StructureOutput } from './structure.js';
 import type { BindingAccumulator } from '../binding-accumulator.js';
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, SupportedLanguages } from 'gitnexus-shared';
 import type {
   ExtractedFetchCall,
   ExtractedRoute,
@@ -83,6 +83,12 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /**
+   * Content-derived language decisions for files such as `.h` whose extension
+   * is ambiguous. Scope resolution reuses this result rather than rereading
+   * source solely to classify it.
+   */
+  readonly contentLanguageByPath: ReadonlyMap<string, SupportedLanguages | null>;
   /**
    * Repo-wide string constants harvested by the providers that declare
    * `extractModuleConstants`, keyed by file path and already through each

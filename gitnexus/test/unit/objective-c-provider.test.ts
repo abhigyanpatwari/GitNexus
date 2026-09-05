@@ -16,6 +16,7 @@ import {
   collectObjectiveCFacts,
   objcCategoryQualifiedName,
   objcClassQualifiedName,
+  objcFunctionQualifiedName,
   objcMethodQualifiedName,
 } from '../../src/core/ingestion/languages/objective-c/facts.js';
 import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
@@ -92,7 +93,7 @@ describe('Objective-C provider', () => {
     expect(getSyntaxLanguageFromFilename('SYModuleCaller.m')).toBe('objectivec');
   });
 
-  it('classifies Objective-C headers by content without stealing plain C headers', () => {
+  it('classifies Objective-C headers only from explicit Objective-C syntax', () => {
     expect(
       classifyObjectiveCFileContent(
         'SYModuleCaller.h',
@@ -106,8 +107,14 @@ describe('Objective-C provider', () => {
       getLanguageForFileContent('plain.h', '#ifndef PLAIN_H\nint add(int a, int b);\n#endif\n'),
     ).toBe(SupportedLanguages.CPlusPlus);
     expect(
+      getLanguageForFileContent(
+        'core-foundation-cpp.h',
+        '#import <CoreFoundation/CoreFoundation.h>\nclass Widget { int value; };\n',
+      ),
+    ).toBe(SupportedLanguages.CPlusPlus);
+    expect(
       classifyObjectiveCFileContent('framework.h', '#import <Foundation/Foundation.h>\n'),
-    ).toBe(true);
+    ).toBe(false);
     expect(classifyObjectiveCFileContent('plain-cpp.h', 'class Widget { int value; };\n')).toBe(
       false,
     );
@@ -120,12 +127,13 @@ describe('Objective-C provider', () => {
 int add(int value);
 int *returnsPointer(int value);
 int (*callback)(int value);
+int first(void), second(void);
 `),
       'functions.h',
     );
 
     expect(facts.functions.map((fn) => fn.name)).toEqual(
-      expect.arrayContaining(['add', 'returnsPointer']),
+      expect.arrayContaining(['add', 'returnsPointer', 'first', 'second']),
     );
     expect(facts.functions.map((fn) => fn.name)).not.toContain('callback');
   });
@@ -142,8 +150,131 @@ static int helper(void) { return 1; }
 
     expect(facts.functions).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: 'helper', returnType: 'int', parameterTypes: ['void'] }),
+        expect.objectContaining({
+          name: 'helper',
+          linkage: 'internal',
+          qualifiedName: objcFunctionQualifiedName('helper', 'internal', 'Worker.m'),
+          returnType: 'int',
+          parameterTypes: ['void'],
+        }),
       ]),
+    );
+  });
+
+  it('keeps internal C function identities file-local while preserving external identities', () => {
+    const first = collectObjectiveCFacts(
+      parseSource('static int helper(void) { return 1; }\nint shared(void);'),
+      'First.m',
+    );
+    const second = collectObjectiveCFacts(
+      parseSource('static int helper(void) { return 2; }\nint shared(void);'),
+      'Second.m',
+    );
+
+    const firstStatic = first.functions.find((fn) => fn.name === 'helper');
+    const secondStatic = second.functions.find((fn) => fn.name === 'helper');
+    const firstExternal = first.functions.find((fn) => fn.name === 'shared');
+    const secondExternal = second.functions.find((fn) => fn.name === 'shared');
+
+    expect(firstStatic?.qualifiedName).toBe(
+      objcFunctionQualifiedName('helper', 'internal', 'First.m'),
+    );
+    expect(secondStatic?.qualifiedName).toBe(
+      objcFunctionQualifiedName('helper', 'internal', 'Second.m'),
+    );
+    expect(firstStatic?.qualifiedName).not.toBe(secondStatic?.qualifiedName);
+    expect(firstExternal?.qualifiedName).toBe(objcFunctionQualifiedName('shared'));
+    expect(secondExternal?.qualifiedName).toBe(firstExternal?.qualifiedName);
+  });
+
+  it('collects guarded headers and protocol members in optional and required sections', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+#ifndef WORKER_H
+#define WORKER_H
+#import "Dep.h"
+@interface Worker
+- (void)run;
+@end
+#endif
+
+@protocol P
+@optional
+- (void)ping;
+@property Helper *optionalHelper;
+@required
+- (void)pong;
+@end
+`),
+      'Worker.h',
+    );
+
+    expect(facts.imports).toContainEqual(expect.objectContaining({ targetRaw: 'Dep.h' }));
+    expect(facts.containers).toContainEqual(
+      expect.objectContaining({ kind: 'class', name: 'Worker' }),
+    );
+    expect(facts.methods.map((method) => `${method.ownerName}:${method.selector}`)).toEqual(
+      expect.arrayContaining(['Worker:run', 'P:ping', 'P:pong']),
+    );
+    expect(facts.members).toContainEqual(
+      expect.objectContaining({ name: 'optionalHelper', declaredType: 'Helper' }),
+    );
+  });
+
+  it('uses lexical bindings at each message position and keeps bare id bindings dynamic', () => {
+    const facts = collectObjectiveCFacts(
+      parseSource(`
+@protocol P
+- (void)ping;
+@end
+@interface First
+- (void)ping;
+@end
+@interface Second
+- (void)ping;
+@end
+@interface A
++ (void)ping;
+@end
+@interface Worker
+- (void)run:(First *)value;
+@end
+@implementation Worker
+- (void)run:(First *)value {
+  id<P> worker;
+  id A;
+  [value ping];
+  { Second *value = nil; [value ping]; }
+  [value ping];
+  [worker ping];
+  [A ping];
+}
+@end
+`),
+      'Worker.m',
+    );
+
+    const valueMessages = facts.messages.filter(
+      (message) => message.receiverText === 'value' && message.selector === 'ping',
+    );
+    expect(valueMessages.map((message) => message.receiverType?.name)).toEqual([
+      'First',
+      'Second',
+      'First',
+    ]);
+    expect(facts.messages).toContainEqual(
+      expect.objectContaining({
+        receiverText: 'worker',
+        receiverKind: 'local',
+        receiverType: { kind: 'protocol', name: 'P', raw: 'id<P>' },
+      }),
+    );
+    expect(facts.messages).toContainEqual(
+      expect.objectContaining({
+        receiverText: 'A',
+        receiverKind: 'dynamic',
+        receiverType: { kind: 'dynamic', raw: 'id' },
+      }),
     );
   });
 

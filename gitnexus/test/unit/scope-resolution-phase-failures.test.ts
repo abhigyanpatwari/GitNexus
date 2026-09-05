@@ -21,6 +21,7 @@ import type {
   PhaseResult,
   PipelineContext,
 } from '../../src/core/ingestion/pipeline-phases/types.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 const phaseResult = <T>(phaseName: string, output: T): PhaseResult<T> => ({
   phaseName,
@@ -78,6 +79,7 @@ describe('scopeResolutionPhase failure reconciliation', () => {
     const parse = {
       model: createSemanticModel(),
       parsedFiles: [],
+      contentLanguageByPath: new Map(),
       scopeExtractionFailures: ['broken.py'],
     } as unknown as ParseOutput;
     const deps = new Map<string, PhaseResult<unknown>>([
@@ -90,5 +92,66 @@ describe('scopeResolutionPhase failure reconciliation', () => {
 
     expect(runScopeResolutionMock).toHaveBeenCalledOnce();
     expect(output.scopeExtractionFailures).toEqual(['broken.py']);
+  });
+
+  it('uses the parse phase content classification for ambiguous headers', async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scope-phase-header-language-'));
+    fs.writeFileSync(
+      path.join(repoDir, 'ObjectiveC.h'),
+      '@interface ObjectiveC : NSObject\n@end\n',
+    );
+
+    runScopeResolutionMock.mockReturnValue({
+      filesProcessed: 1,
+      filesSkipped: 0,
+      scopeExtractionFailedPaths: [],
+      importsEmitted: 0,
+      resolve: { unresolved: 0 },
+      referenceEdgesEmitted: 0,
+      referenceSkipped: 0,
+      propertyDispatchSkippedKeys: 0,
+      importedValueRefEdges: 0,
+      uniqueNamePropertyEdges: 0,
+      uniqueNamePropertyNarrowed: 0,
+      uniqueNamePropertyAmbiguous: 0,
+      uniqueNamePropertyAmbiguousNames: [],
+      uniqueNamePropertyCrossLanguage: 0,
+      uniqueNamePropertyCrossLanguageNames: [],
+      resolutionOutcomes: [],
+      undecidedSatisfaction: [],
+      functionSummaries: [],
+      callSummaries: [],
+    });
+
+    const ctx: PipelineContext = {
+      repoPath: repoDir,
+      graph: createKnowledgeGraph(),
+      onProgress: () => {},
+      pipelineStart: Date.now(),
+    };
+    const structure: StructureOutput = {
+      scannedFiles: [{ path: 'ObjectiveC.h', size: 37 }],
+      allPaths: ['ObjectiveC.h'],
+      allPathSet: new Set(['ObjectiveC.h']),
+      totalFiles: 1,
+    };
+    const parse = {
+      model: createSemanticModel(),
+      parsedFiles: [],
+      contentLanguageByPath: new Map([['ObjectiveC.h', SupportedLanguages.ObjectiveC]]),
+      scopeExtractionFailures: [],
+    } as unknown as ParseOutput;
+    const deps = new Map<string, PhaseResult<unknown>>([
+      ['structure', phaseResult('structure', structure)],
+      ['parse', phaseResult('parse', parse)],
+      ['crossFile', phaseResult('crossFile', {})],
+    ]);
+
+    await scopeResolutionPhase.execute(ctx, deps);
+
+    expect(runScopeResolutionMock).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ language: SupportedLanguages.ObjectiveC }),
+    );
   });
 });

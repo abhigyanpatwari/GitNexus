@@ -10,11 +10,15 @@ import {
   applyObjectiveCCaptureSideChannel,
   objcClassQualifiedName,
   objcProtocolQualifiedName,
+  objcUnresolvedMessageQualifiedName,
   objectiveCFactsFromParsedFiles,
   type ObjCContainerFact,
   type ObjCFileFacts,
+  type ObjCMemberFact,
   type ObjCMessageFact,
   type ObjCMethodFact,
+  type ObjCTypeInfo,
+  parseObjCType,
 } from './facts.js';
 
 interface ObjCWorkspaceFacts {
@@ -24,7 +28,9 @@ interface ObjCWorkspaceFacts {
   readonly categoriesByHost: ReadonlyMap<string, readonly ObjCContainerFact[]>;
   readonly methodsByDispatchOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
   readonly methodsByExactOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
+  readonly memberTypesByOwner: ReadonlyMap<string, ReadonlyMap<string, ObjCTypeInfo>>;
   readonly classProtocols: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly protocolParents: ReadonlyMap<string, ReadonlySet<string>>;
   readonly superclassByClass: ReadonlyMap<string, string>;
 }
 
@@ -60,8 +66,9 @@ export const objectiveCScopeResolver: ScopeResolver = {
 
     for (const fact of facts) {
       emitObjectiveCHeritageEdges(graph, fact, workspace);
-      emitObjectiveCCategoryEdges(graph, fact);
+      emitObjectiveCCategoryEdges(graph, fact, workspace);
       emitObjectiveCImplementationEvidence(graph, fact);
+      emitObjectiveCUnresolvedMessageEvidence(graph, fact);
       emitObjectiveCMessageEdges(graph, fact, workspace);
     }
   },
@@ -109,7 +116,9 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
   const categoriesByHost = new Map<string, ObjCContainerFact[]>();
   const methodsByExactOwner = new Map<string, ObjCMethodFact[]>();
   const methodsByDispatchOwner = new Map<string, ObjCMethodFact[]>();
+  const memberTypesByOwner = new Map<string, Map<string, ObjCTypeInfo>>();
   const classProtocols = new Map<string, Set<string>>();
+  const protocolParents = new Map<string, Set<string>>();
   const superclassByClass = new Map<string, string>();
 
   for (const fileFact of facts) {
@@ -133,6 +142,14 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
         }
       } else if (container.kind === 'protocol') {
         protocolsByName.set(container.name, container);
+        if (container.protocols.length > 0) {
+          let parents = protocolParents.get(container.name);
+          if (parents === undefined) {
+            parents = new Set();
+            protocolParents.set(container.name, parents);
+          }
+          for (const protocol of container.protocols) parents.add(protocol);
+        }
       } else if (container.hostClass !== undefined) {
         let categories = categoriesByHost.get(container.hostClass);
         if (categories === undefined) {
@@ -158,6 +175,13 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
         appendMap(methodsByDispatchOwner, objcClassQualifiedName(method.hostClass), method);
       }
     }
+
+    for (const member of fileFact.members) {
+      addMemberType(memberTypesByOwner, member.ownerQualifiedName, member);
+      if (member.hostClass !== undefined) {
+        addMemberType(memberTypesByOwner, objcClassQualifiedName(member.hostClass), member);
+      }
+    }
   }
 
   return {
@@ -167,9 +191,26 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
     categoriesByHost,
     methodsByDispatchOwner,
     methodsByExactOwner,
+    memberTypesByOwner,
     classProtocols,
+    protocolParents,
     superclassByClass,
   };
+}
+
+function addMemberType(
+  memberTypesByOwner: Map<string, Map<string, ObjCTypeInfo>>,
+  ownerQualifiedName: string,
+  member: ObjCMemberFact,
+): void {
+  const type = parseObjCType(member.declaredType);
+  if (type === undefined) return;
+  let types = memberTypesByOwner.get(ownerQualifiedName);
+  if (types === undefined) {
+    types = new Map();
+    memberTypesByOwner.set(ownerQualifiedName, types);
+  }
+  types.set(member.name, type);
 }
 
 function mergeContainerFacts(
@@ -237,15 +278,45 @@ function emitObjectiveCHeritageEdges(
   }
 }
 
-function emitObjectiveCCategoryEdges(graph: KnowledgeGraph, facts: ObjCFileFacts): void {
+function emitObjectiveCCategoryEdges(
+  graph: KnowledgeGraph,
+  facts: ObjCFileFacts,
+  workspace: ObjCWorkspaceFacts,
+): void {
   for (const container of facts.containers) {
     if (container.hostClass === undefined) continue;
+    if (!workspace.classByName.has(container.hostClass)) continue;
     addRelationship(
       graph,
       'MEMBER_OF',
       graphNodeId('Category', container.qualifiedName),
       graphNodeId('Class', objcClassQualifiedName(container.hostClass)),
       'objc: category host class',
+    );
+  }
+}
+
+function emitObjectiveCUnresolvedMessageEvidence(
+  graph: KnowledgeGraph,
+  facts: ObjCFileFacts,
+): void {
+  for (const unresolved of facts.unresolvedMessages) {
+    const evidenceId = graphNodeId(
+      'CodeElement',
+      objcUnresolvedMessageQualifiedName(
+        facts.filePath,
+        unresolved.startLine,
+        unresolved.startCol,
+        unresolved.selector,
+      ),
+    );
+    addRelationship(
+      graph,
+      'USES',
+      unresolved.sourceMethodId,
+      evidenceId,
+      `objc-message: unresolved: ${unresolved.reason}`,
+      0.5,
     );
   }
 }
@@ -369,7 +440,7 @@ function resolveMessageTargets(
   message: ObjCMessageFact,
   workspace: ObjCWorkspaceFacts,
 ): MessageTargets {
-  if (message.receiverKind === 'dynamic' || message.receiverKind === 'unknown') {
+  if (message.receiverKind === 'dynamic') {
     return { kind: 'none', methods: [] };
   }
 
@@ -386,12 +457,7 @@ function resolveMessageTargets(
     const className = owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
     const methods =
       owner?.kind === 'protocol'
-        ? findExactOwnerMethods(
-            workspace,
-            owner.qualifiedName,
-            message.sourceMethodKind,
-            message.selector,
-          )
+        ? findProtocolMethods(workspace, owner.name, message.sourceMethodKind, message.selector)
         : findDispatchMethods(workspace, className, message.sourceMethodKind, message.selector);
     return { kind: 'direct', methods };
   }
@@ -413,7 +479,13 @@ function resolveMessageTargets(
         };
   }
 
-  const receiverType = message.receiverType;
+  const receiverType = message.receiverType ?? resolveMemberReceiverType(message, workspace);
+  if (receiverType?.kind === 'dynamic' || receiverType?.kind === 'class-object') {
+    return { kind: 'none', methods: [] };
+  }
+  if (message.receiverKind === 'unknown' && receiverType === undefined) {
+    return { kind: 'none', methods: [] };
+  }
   if (receiverType?.kind === 'class' && receiverType.name !== undefined) {
     return {
       kind: 'direct',
@@ -422,8 +494,7 @@ function resolveMessageTargets(
   }
 
   if (receiverType?.kind === 'protocol' && receiverType.name !== undefined) {
-    const protocolQn = objcProtocolQualifiedName(receiverType.name);
-    const methods = findExactOwnerMethods(workspace, protocolQn, '-', message.selector);
+    const methods = findProtocolMethods(workspace, receiverType.name, '-', message.selector);
     const candidates = findProtocolImplementationCandidates(
       workspace,
       receiverType.name,
@@ -438,6 +509,19 @@ function resolveMessageTargets(
   }
 
   return { kind: 'none', methods: [] };
+}
+
+function resolveMemberReceiverType(
+  message: ObjCMessageFact,
+  workspace: ObjCWorkspaceFacts,
+): ObjCTypeInfo | undefined {
+  if (message.receiverMemberName === undefined) return undefined;
+  const owner = workspace.containersByQualifiedName.get(message.sourceOwnerQualifiedName);
+  const ownerQualifiedName =
+    owner?.hostClass !== undefined
+      ? objcClassQualifiedName(owner.hostClass)
+      : message.sourceOwnerQualifiedName;
+  return workspace.memberTypesByOwner.get(ownerQualifiedName)?.get(message.receiverMemberName);
 }
 
 function findDispatchMethods(
@@ -471,6 +555,56 @@ function findExactOwnerMethods(
   );
 }
 
+function findProtocolMethods(
+  workspace: ObjCWorkspaceFacts,
+  protocolName: string,
+  methodKind: '-' | '+',
+  selector: string,
+): readonly ObjCMethodFact[] {
+  for (const name of protocolHierarchy(workspace, protocolName)) {
+    const methods = findExactOwnerMethods(
+      workspace,
+      objcProtocolQualifiedName(name),
+      methodKind,
+      selector,
+    );
+    if (methods.length > 0) return uniqueMethods(methods);
+  }
+  return [];
+}
+
+function protocolHierarchy(workspace: ObjCWorkspaceFacts, protocolName: string): readonly string[] {
+  const seen = new Set<string>();
+  const pending = [protocolName];
+  const hierarchy: string[] = [];
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (current === undefined || seen.has(current)) continue;
+    seen.add(current);
+    hierarchy.push(current);
+    const parents = workspace.protocolParents.get(current);
+    if (parents === undefined) continue;
+    pending.push(...[...parents].sort());
+  }
+  return hierarchy;
+}
+
+function uniqueMethods(methods: readonly ObjCMethodFact[]): readonly ObjCMethodFact[] {
+  return [...new Map(methods.map((method) => [method.nodeId, method])).values()].sort(
+    (left, right) => left.qualifiedName.localeCompare(right.qualifiedName),
+  );
+}
+
+function classConformsToProtocol(
+  workspace: ObjCWorkspaceFacts,
+  directProtocols: ReadonlySet<string>,
+  protocolName: string,
+): boolean {
+  return [...directProtocols].some((directProtocol) =>
+    protocolHierarchy(workspace, directProtocol).includes(protocolName),
+  );
+}
+
 function findProtocolImplementationCandidates(
   workspace: ObjCWorkspaceFacts,
   protocolName: string,
@@ -478,10 +612,10 @@ function findProtocolImplementationCandidates(
 ): readonly ObjCMethodFact[] {
   const out: ObjCMethodFact[] = [];
   for (const [className, protocols] of workspace.classProtocols) {
-    if (!protocols.has(protocolName)) continue;
+    if (!classConformsToProtocol(workspace, protocols, protocolName)) continue;
     out.push(...findDispatchMethods(workspace, className, '-', selector));
   }
-  return out;
+  return uniqueMethods(out);
 }
 
 function emitProtocolMessageEvidence(
@@ -498,18 +632,13 @@ function emitProtocolMessageEvidence(
     id: nodeId,
     label: 'CodeElement',
     properties: {
-      name: `[${message.receiverText} ${message.selector}] candidates`,
+      name: `[${message.receiverText} ${message.selector}] protocol ${protocolName} candidates`,
       qualifiedName,
       filePath: facts.filePath,
       startLine: message.startLine,
       endLine: message.startLine,
       language: SupportedLanguages.ObjectiveC,
       isExported: false,
-      objectiveCKind: 'protocol-candidate-implementations',
-      protocolName,
-      selector: message.selector,
-      sourceMethod: message.sourceMethodQualifiedName,
-      candidateImplementations: candidates.map((candidate) => candidate.qualifiedName).sort(),
     },
   };
   graph.addNode(node);
@@ -518,7 +647,7 @@ function emitProtocolMessageEvidence(
     'DEFINES',
     graphNodeId('File', facts.filePath),
     nodeId,
-    'objc: protocol receiver candidate evidence',
+    `objc: protocol receiver candidate evidence: ${protocolName} ${message.selector}`,
     1,
   );
   addRelationship(
@@ -526,9 +655,20 @@ function emitProtocolMessageEvidence(
     'USES',
     message.sourceMethodId,
     nodeId,
-    'objc-message: protocol receiver candidates',
+    `objc-message: protocol receiver candidates: ${protocolName} ${message.selector}`,
     0.7,
   );
+  for (const candidate of candidates) {
+    if (graph.getNode(candidate.nodeId) === undefined) continue;
+    addRelationship(
+      graph,
+      'USES',
+      nodeId,
+      candidate.nodeId,
+      `objc-protocol-candidate: ${protocolName} ${message.selector}`,
+      0.5,
+    );
+  }
 }
 
 function resolveObjectiveCImportTarget(

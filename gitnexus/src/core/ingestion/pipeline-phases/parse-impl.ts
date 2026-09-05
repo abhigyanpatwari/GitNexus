@@ -62,12 +62,12 @@ import {
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import {
-  getLanguageForFileContent,
   getProvider,
   getProviderForFile,
   needsContentLanguageClassification,
   providers,
 } from '../languages/index.js';
+import { classifyContentLanguages } from '../content-language-classification.js';
 import { SCOPE_RESOLVERS } from '../scope-resolution/pipeline/registry.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../route-extractors/data-route-table.js';
 import type Parser from 'tree-sitter';
@@ -470,6 +470,14 @@ export async function runChunkedParseAndResolve(
    *  cache analyze run can skip the dominant `extractParsedFile` cost
    *  (otherwise ~58s on a 1000-file repo). */
   parsedFiles: import('gitnexus-shared').ParsedFile[];
+  /**
+   * Content-derived language decisions for extension-ambiguous files.
+   *
+   * The source text used to classify these paths is released before parsing
+   * begins. Scope resolution consumes this snapshot instead of reading the
+   * same files again just to repeat classification.
+   */
+  contentLanguageByPath: ReadonlyMap<string, SupportedLanguages | null>;
   /** Repo-wide harvested constants, already prepared per provider. See
    *  `ParseOutput.moduleConstants` for why this leaves the parse phase. */
   moduleConstants: ReadonlyMap<string, ModuleConstants>;
@@ -483,15 +491,14 @@ export async function runChunkedParseAndResolve(
   const contentClassifiedPaths = scannedFiles
     .map((file) => file.path)
     .filter(needsContentLanguageClassification);
-  const contentClassificationMap =
+  const contentLanguageByPath =
     contentClassifiedPaths.length > 0
-      ? await readFileContents(repoPath, contentClassifiedPaths)
-      : new Map<string, string>();
+      ? await classifyContentLanguages(repoPath, contentClassifiedPaths)
+      : new Map<string, SupportedLanguages | null>();
   const languageForScannedFile = (file: (typeof scannedFiles)[number]) => {
-    const content = contentClassificationMap.get(file.path);
-    return content === undefined
-      ? getLanguageFromFilename(file.path)
-      : getLanguageForFileContent(file.path, content);
+    return contentLanguageByPath.has(file.path)
+      ? (contentLanguageByPath.get(file.path) ?? null)
+      : getLanguageFromFilename(file.path);
   };
   const parseableScanned = scannedFiles.filter((f) => {
     const lang = languageForScannedFile(f);
@@ -1640,6 +1647,7 @@ export async function runChunkedParseAndResolve(
     // cache: when the file's ParsedFile is here, scope-resolution skips its own
     // `extractParsedFile` call.
     parsedFiles: allParsedFiles,
+    contentLanguageByPath,
     // Repo-wide, file-path-keyed constants, already through each provider's
     // `prepareRouteConstants` hook. Empty when no provider harvests constants
     // for the languages in this repo.

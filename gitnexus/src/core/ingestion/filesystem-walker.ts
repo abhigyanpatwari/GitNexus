@@ -19,7 +19,7 @@ export interface FilePath {
   path: string;
 }
 
-const READ_CONCURRENCY = 32;
+export const READ_CONCURRENCY = 32;
 const ANALYZE_PROGRESS_ACTIVE_ENV = 'GITNEXUS_ANALYZE_PROGRESS_ACTIVE';
 
 const DECLARATION_COMPANION_SUFFIXES = [

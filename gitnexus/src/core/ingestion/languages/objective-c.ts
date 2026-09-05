@@ -53,16 +53,6 @@ const OBJECTIVE_C_HEADER_NODE_TYPES = new Set([
   'protocol_declaration',
 ]);
 
-const OBJECTIVE_C_FRAMEWORK_NAMES = [
-  'AppKit',
-  'Foundation',
-  'UIKit',
-  'CoreData',
-  'CoreFoundation',
-  'QuartzCore',
-  'Swift',
-];
-
 function hasObjectiveCHeaderSyntax(sourceText: string): boolean {
   try {
     const tree = parseObjectiveCSource(sourceText);
@@ -71,15 +61,6 @@ function hasObjectiveCHeaderSyntax(sourceText: string): boolean {
       const node = stack.pop();
       if (node === undefined) continue;
       if (OBJECTIVE_C_HEADER_NODE_TYPES.has(node.type)) return true;
-      if (node.type === 'preproc_include' && node.text.trimStart().startsWith('#import')) {
-        const pathNode = node.namedChildren[0];
-        if (
-          pathNode !== undefined &&
-          OBJECTIVE_C_FRAMEWORK_NAMES.some((name) => pathNode.text.includes(name))
-        ) {
-          return true;
-        }
-      }
       for (let i = node.namedChildCount - 1; i >= 0; i--) {
         const child = node.namedChild(i);
         if (child !== null) stack.push(child);

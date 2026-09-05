@@ -116,6 +116,33 @@ async function readPersistedObjectiveCSurface(repoRoot: string): Promise<Record<
       uid: 'Method:objc:method:objc:class:SYModuleCaller:-:runTask:completion:',
       repo: repoRoot,
     });
+    const runProtocolContext = await backend.callTool('context', {
+      uid: 'Method:objc:method:objc:class:SYModuleCaller:-:runProtocol:',
+      repo: repoRoot,
+    });
+    const candidateEvidenceId = (
+      (
+        (runProtocolContext as Record<string, unknown>).outgoing as
+          | Record<string, unknown[]>
+          | undefined
+      )?.uses ?? []
+    )
+      .map((entry) => (entry as Record<string, unknown>).uid)
+      .find(
+        (uid): uid is string =>
+          typeof uid === 'string' && uid.startsWith('CodeElement:objc:protocol-candidates:'),
+      );
+    if (candidateEvidenceId === undefined) {
+      throw new Error('Persisted protocol candidate evidence was not reachable from context');
+    }
+    const candidateEvidenceContext = await backend.callTool('context', {
+      uid: candidateEvidenceId,
+      repo: repoRoot,
+    });
+    const categoryContext = await backend.callTool('context', {
+      uid: 'Category:objc:category:SYModuleCaller:Tracing',
+      repo: repoRoot,
+    });
     const queryResult = (await backend.callTool('query', {
       search_query: 'SYModuleCaller',
       repo: repoRoot,
@@ -135,12 +162,34 @@ async function readPersistedObjectiveCSurface(repoRoot: string): Promise<Record<
         'RETURN category.id AS category, host.id AS host',
       repo: repoRoot,
     });
+    const protocolCandidateResult = await backend.callTool('cypher', {
+      query:
+        'MATCH (source:Method)-[sourceRel:CodeRelation]->(e:CodeElement)-[candidateRel:CodeRelation]->(candidate:Method) ' +
+        "WHERE sourceRel.type = 'USES' AND candidateRel.type = 'USES' " +
+        "AND e.id STARTS WITH 'CodeElement:objc:protocol-candidates:' " +
+        'RETURN source.id AS sourceId, candidate.id AS candidateId, candidateRel.reason AS reason ' +
+        'ORDER BY sourceId, candidateId',
+      repo: repoRoot,
+    });
+    const unresolvedReasonResult = await backend.callTool('cypher', {
+      query:
+        'MATCH (source:Method)-[r:CodeRelation]->(e:CodeElement) ' +
+        "WHERE r.type = 'USES' AND e.id STARTS WITH 'CodeElement:objc:unresolved:' " +
+        'RETURN source.id AS sourceId, e.name AS evidence, r.reason AS reason ' +
+        'ORDER BY sourceId, evidence',
+      repo: repoRoot,
+    });
     return {
       classContext: normalizeContext(classContext),
       runTaskContext: normalizeContext(runTaskContext),
+      runProtocolContext: normalizeContext(runProtocolContext),
+      candidateEvidenceContext: normalizeContext(candidateEvidenceContext),
+      categoryContext: normalizeContext(categoryContext),
       queryDefinitions: normalizeRows(queryResult.definitions),
       protocolAndCategoryResult,
       categoryHostResult,
+      protocolCandidateResult,
+      unresolvedReasonResult,
     };
   } finally {
     await backend.disconnect();
@@ -244,7 +293,7 @@ describe('Objective-C provider integration', () => {
     expectNode('objc:property:objc:class:SYModuleCaller:helper', 'Property');
     expectNode('objc:ivar:objc:class:SYModuleCaller:_base', 'Variable');
     expectNode('objc:function:SYModuleSupportAdd', 'Function');
-    expectNode('objc:function:SYModuleCompute', 'Function');
+    expectNode('objc:function:static:SYModuleCaller.m:SYModuleCompute', 'Function');
   });
 
   it('emits imports, inheritance, protocol, and category host relationships', () => {
@@ -354,6 +403,15 @@ describe('Objective-C provider integration', () => {
       hasRelationship('CALLS', runTask.id, unresolved.id),
       'dynamic id receiver must not become a certain CALLS edge',
     ).toBe(false);
+    expect(
+      hasRelationship(
+        'USES',
+        runTask.id,
+        unresolved.id,
+        'objc-message: unresolved: id receiver is dynamic',
+      ),
+    ).toBe(true);
+    expect(unresolved.properties.name).toContain('unresolved: id receiver is dynamic');
 
     const macroUnresolved = result.graph.nodes.find(
       (node) =>
@@ -361,16 +419,226 @@ describe('Objective-C provider integration', () => {
         node.properties.objectiveCKind === 'unresolved-message' &&
         node.properties.receiver === 'SY_OBJC_RECEIVER(self)',
     );
-    expect(macroUnresolved?.properties.reason).toBe('macro receiver SY_OBJC_RECEIVER is dynamic');
+    expect(macroUnresolved?.properties.name).toContain(
+      'unresolved: macro receiver SY_OBJC_RECEIVER is dynamic',
+    );
 
     const candidates = result.graph.nodes.find(
       (node) =>
         node.label === 'CodeElement' &&
-        node.properties.objectiveCKind === 'protocol-candidate-implementations',
+        String(node.properties.qualifiedName).startsWith('objc:protocol-candidates:'),
     );
-    expect(candidates?.properties.candidateImplementations).toEqual(
-      expect.arrayContaining(['objc:method:objc:class:SYModuleCaller:-:runTask:completion:']),
-    );
+    expect(candidates).toBeDefined();
+    if (candidates === undefined) throw new Error('Missing protocol candidate evidence');
+    expect(
+      hasRelationship(
+        'USES',
+        runProtocol.id,
+        candidates.id,
+        'objc-message: protocol receiver candidates: SYModuleRunnable runTask:completion:',
+      ),
+    ).toBe(true);
+    expect(
+      hasRelationship(
+        'USES',
+        candidates.id,
+        runTask.id,
+        'objc-protocol-candidate: SYModuleRunnable runTask:completion:',
+      ),
+    ).toBe(true);
+    expect(
+      hasRelationship('CALLS', runProtocol.id, runTask.id),
+      'candidate implementations must not become certain CALLS edges',
+    ).toBe(false);
+  });
+
+  it('resolves header member types across files and keeps static C helpers distinct', async () => {
+    const crossFileRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-objc-cross-file-'));
+    try {
+      fs.writeFileSync(
+        path.join(crossFileRepo, 'Helper.h'),
+        '@interface Helper\n- (void)ping;\n@end\n',
+      );
+      fs.writeFileSync(
+        path.join(crossFileRepo, 'Worker.h'),
+        '#import "Helper.h"\n@interface Worker { Helper *_helper; }\n@property Helper *helper;\n- (void)run;\n@end\n',
+      );
+      fs.writeFileSync(
+        path.join(crossFileRepo, 'Worker.m'),
+        '#import "Worker.h"\n@implementation Worker\n- (void)run { [self.helper ping]; [_helper ping]; }\n@end\n',
+      );
+      fs.writeFileSync(
+        path.join(crossFileRepo, 'First.m'),
+        'static int helper(void) { return 1; }\n',
+      );
+      fs.writeFileSync(
+        path.join(crossFileRepo, 'Second.m'),
+        'static int helper(void) { return 2; }\n',
+      );
+
+      const crossFileResult = await runPipelineFromRepo(crossFileRepo, () => undefined, {
+        workerPoolSize: 1,
+      });
+      const run = crossFileResult.graph.nodes.find(
+        (node) =>
+          node.label === 'Method' &&
+          node.properties.qualifiedName === 'objc:method:objc:class:Worker:-:run',
+      );
+      const ping = crossFileResult.graph.nodes.find(
+        (node) =>
+          node.label === 'Method' &&
+          node.properties.qualifiedName === 'objc:method:objc:class:Helper:-:ping',
+      );
+      expect(run).toBeDefined();
+      expect(ping).toBeDefined();
+      if (run === undefined || ping === undefined) {
+        throw new Error('Missing cross-file Objective-C method nodes');
+      }
+
+      const memberCalls = crossFileResult.graph.relationships.filter(
+        (relationship) =>
+          relationship.type === 'CALLS' &&
+          relationship.sourceId === run.id &&
+          relationship.targetId === ping.id,
+      );
+      expect(memberCalls).toHaveLength(2);
+
+      const staticHelpers = crossFileResult.graph.nodes.filter(
+        (node) => node.label === 'Function' && node.properties.name === 'helper',
+      );
+      expect(staticHelpers.map((node) => node.properties.filePath).sort()).toEqual([
+        'First.m',
+        'Second.m',
+      ]);
+      expect(new Set(staticHelpers.map((node) => node.properties.qualifiedName)).size).toBe(2);
+    } finally {
+      fs.rmSync(crossFileRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves inherited protocol members and candidates without looping on protocol cycles', async () => {
+    const protocolRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-objc-protocols-'));
+    try {
+      fs.writeFileSync(
+        path.join(protocolRepo, 'Protocols.h'),
+        '@protocol Parent\n' +
+          '- (void)ping;\n' +
+          '@end\n' +
+          '@protocol Child <Parent>\n' +
+          '@end\n' +
+          '@protocol CycleA <CycleB>\n' +
+          '- (void)cycleA;\n' +
+          '@end\n' +
+          '@protocol CycleB <CycleA>\n' +
+          '- (void)cycleB;\n' +
+          '@end\n' +
+          '@interface ConcreteWorker <Child>\n' +
+          '- (void)ping;\n' +
+          '@end\n' +
+          '@interface Caller\n' +
+          '- (void)run:(id<Child>)worker;\n' +
+          '- (void)runCycle:(id<CycleA>)worker;\n' +
+          '@end\n',
+      );
+      fs.writeFileSync(
+        path.join(protocolRepo, 'Protocols.m'),
+        '#import "Protocols.h"\n' +
+          '@implementation ConcreteWorker\n' +
+          '- (void)ping {}\n' +
+          '@end\n' +
+          '@implementation Caller\n' +
+          '- (void)run:(id<Child>)worker { [worker ping]; }\n' +
+          '- (void)runCycle:(id<CycleA>)worker { [worker cycleB]; }\n' +
+          '@end\n',
+      );
+
+      const protocolResult = await runPipelineFromRepo(protocolRepo, () => undefined, {
+        workerPoolSize: 1,
+      });
+      const node = (qualifiedName: string): GraphNode => {
+        const found = protocolResult.graph.nodes.find(
+          (item) => item.properties.qualifiedName === qualifiedName,
+        );
+        if (found === undefined) throw new Error(`Missing protocol fixture node ${qualifiedName}`);
+        return found;
+      };
+      const has = (type: RelationshipType, sourceId: string, targetId: string): boolean =>
+        protocolResult.graph.relationships.some(
+          (relationship) =>
+            relationship.type === type &&
+            relationship.sourceId === sourceId &&
+            relationship.targetId === targetId,
+        );
+
+      const caller = node('objc:method:objc:class:Caller:-:run:');
+      const parentMethod = node('objc:method:objc:protocol:Parent:-:ping');
+      const workerMethod = node('objc:method:objc:class:ConcreteWorker:-:ping');
+      const cycleCaller = node('objc:method:objc:class:Caller:-:runCycle:');
+      const cycleMethod = node('objc:method:objc:protocol:CycleB:-:cycleB');
+      const candidateEvidence = protocolResult.graph.nodes.find(
+        (item) =>
+          item.label === 'CodeElement' &&
+          String(item.properties.qualifiedName).startsWith('objc:protocol-candidates:'),
+      );
+
+      expect(has('CALLS', caller.id, parentMethod.id)).toBe(true);
+      expect(has('CALLS', caller.id, workerMethod.id)).toBe(false);
+      expect(candidateEvidence).toBeDefined();
+      if (candidateEvidence === undefined)
+        throw new Error('Missing inherited protocol candidate evidence');
+      expect(has('USES', candidateEvidence.id, workerMethod.id)).toBe(true);
+      expect(has('CALLS', cycleCaller.id, cycleMethod.id)).toBe(true);
+    } finally {
+      fs.rmSync(protocolRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('emits category membership only when the host class exists locally', async () => {
+    const categoryRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-objc-category-host-'));
+    try {
+      fs.writeFileSync(
+        path.join(categoryRepo, 'Categories.m'),
+        '@interface LocalHost\n@end\n' +
+          '@interface LocalHost (Tracing)\n@end\n' +
+          '@interface UIView (Tracing)\n@end\n',
+      );
+
+      const categoryResult = await runPipelineFromRepo(categoryRepo, () => undefined, {
+        workerPoolSize: 1,
+      });
+      const localHost = categoryResult.graph.nodes.find(
+        (node) => node.properties.qualifiedName === 'objc:class:LocalHost',
+      );
+      const localCategory = categoryResult.graph.nodes.find(
+        (node) => node.properties.qualifiedName === 'objc:category:LocalHost:Tracing',
+      );
+      const sdkCategory = categoryResult.graph.nodes.find(
+        (node) => node.properties.qualifiedName === 'objc:category:UIView:Tracing',
+      );
+      expect(localHost).toBeDefined();
+      expect(localCategory).toBeDefined();
+      expect(sdkCategory).toBeDefined();
+      if (localHost === undefined || localCategory === undefined || sdkCategory === undefined) {
+        throw new Error('Missing category host fixture nodes');
+      }
+
+      expect(
+        categoryResult.graph.relationships.some(
+          (relationship) =>
+            relationship.type === 'MEMBER_OF' &&
+            relationship.sourceId === localCategory.id &&
+            relationship.targetId === localHost.id,
+        ),
+      ).toBe(true);
+      expect(
+        categoryResult.graph.relationships.some(
+          (relationship) =>
+            relationship.type === 'MEMBER_OF' && relationship.sourceId === sdkCategory.id,
+        ),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(categoryRepo, { recursive: true, force: true });
+    }
   });
 });
 
@@ -384,6 +652,8 @@ describe('Objective-C provider persisted index behavior', () => {
 
       await analyzeObjectiveCRepo(repoRoot);
       const initialSurface = await readPersistedObjectiveCSurface(repoRoot);
+      const reopenedInitialSurface = await readPersistedObjectiveCSurface(repoRoot);
+      expect(reopenedInitialSurface).toEqual(initialSurface);
       expect(initialSurface).toMatchObject({
         classContext: {
           status: 'found',
@@ -407,6 +677,36 @@ describe('Objective-C provider persisted index behavior', () => {
                 filePath: 'SYModuleCaller.m',
               }),
             ]),
+            member_of: expect.arrayContaining([
+              expect.objectContaining({
+                uid: 'Category:objc:category:SYModuleCaller:Tracing',
+              }),
+            ]),
+          },
+        },
+        categoryContext: {
+          outgoing: {
+            member_of: expect.arrayContaining([
+              expect.objectContaining({ uid: 'Class:objc:class:SYModuleCaller' }),
+            ]),
+          },
+        },
+        runProtocolContext: {
+          outgoing: {
+            uses: expect.arrayContaining([
+              expect.objectContaining({
+                uid: expect.stringContaining('CodeElement:objc:protocol-candidates:'),
+              }),
+            ]),
+          },
+        },
+        candidateEvidenceContext: {
+          outgoing: {
+            uses: expect.arrayContaining([
+              expect.objectContaining({
+                uid: 'Method:objc:method:objc:class:SYModuleCaller:-:runTask:completion:',
+              }),
+            ]),
           },
         },
         queryDefinitions: expect.arrayContaining([
@@ -420,6 +720,14 @@ describe('Objective-C provider persisted index behavior', () => {
         }),
         categoryHostResult: expect.objectContaining({
           markdown: expect.stringContaining('Category:objc:category:SYModuleCaller:Tracing'),
+        }),
+        protocolCandidateResult: expect.objectContaining({
+          markdown: expect.stringContaining(
+            'objc-protocol-candidate: SYModuleRunnable runTask:completion:',
+          ),
+        }),
+        unresolvedReasonResult: expect.objectContaining({
+          markdown: expect.stringContaining('objc-message: unresolved: id receiver is dynamic'),
         }),
       });
 

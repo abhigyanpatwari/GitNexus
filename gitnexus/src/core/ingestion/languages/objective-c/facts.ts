@@ -10,7 +10,7 @@ import type {
 } from '../../language-provider.js';
 import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 
-export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.1';
+export const OBJECTIVE_C_PROVIDER_VERSION = '0.1.4';
 export const OBJECTIVE_C_GRAMMAR_PACKAGE = 'tree-sitter-objc';
 export const OBJECTIVE_C_GRAMMAR_VERSION = '3.0.2';
 
@@ -76,6 +76,7 @@ export interface ObjCMemberFact {
 
 export interface ObjCFunctionFact {
   readonly name: string;
+  readonly linkage: 'external' | 'internal';
   readonly qualifiedName: string;
   readonly nodeId: string;
   readonly filePath: string;
@@ -107,6 +108,8 @@ export interface ObjCMessageFact {
     | 'dynamic'
     | 'unknown';
   readonly receiverType?: ObjCTypeInfo;
+  /** Member name retained when its type must be resolved across files. */
+  readonly receiverMemberName?: string;
   readonly sourceMethodQualifiedName: string;
   readonly sourceMethodId: string;
   readonly sourceOwnerQualifiedName: string;
@@ -122,6 +125,7 @@ export interface ObjCUnresolvedMessageFact {
   readonly receiverText: string;
   readonly reason: string;
   readonly sourceMethodQualifiedName: string;
+  readonly sourceMethodId: string;
   readonly filePath: string;
   readonly startLine: number;
   readonly startCol: number;
@@ -204,7 +208,20 @@ export const objcPropertyQualifiedName = (ownerQualifiedName: string, name: stri
   `objc:property:${ownerQualifiedName}:${name}`;
 export const objcIvarQualifiedName = (ownerQualifiedName: string, name: string): string =>
   `objc:ivar:${ownerQualifiedName}:${name}`;
-export const objcFunctionQualifiedName = (name: string): string => `objc:function:${name}`;
+export const objcFunctionQualifiedName = (
+  name: string,
+  linkage: 'external' | 'internal' = 'external',
+  filePath?: string,
+): string =>
+  linkage === 'internal' && filePath !== undefined
+    ? `objc:function:static:${filePath}:${name}`
+    : `objc:function:${name}`;
+export const objcUnresolvedMessageQualifiedName = (
+  filePath: string,
+  startLine: number,
+  startCol: number,
+  selector: string,
+): string => `objc:unresolved:${filePath}:${startLine}:${startCol}:${selector}`;
 
 const graphNodeId = (label: NodeLabel, qualifiedName: string): string =>
   generateId(label, qualifiedName);
@@ -238,6 +255,41 @@ function directChildren(node: SyntaxNode): SyntaxNode[] {
 
 function directIdentifiers(node: SyntaxNode): SyntaxNode[] {
   return directNamedChildren(node).filter((child) => child.type === 'identifier');
+}
+
+function logicalTopLevelNodes(root: SyntaxNode): SyntaxNode[] {
+  const nodes: SyntaxNode[] = [];
+  const visit = (node: SyntaxNode): void => {
+    for (const child of directNamedChildren(node)) {
+      if (
+        child.type === 'preproc_if' ||
+        child.type === 'preproc_ifdef' ||
+        child.type === 'preproc_else' ||
+        child.type === 'preproc_elif'
+      ) {
+        visit(child);
+      } else {
+        nodes.push(child);
+      }
+    }
+  };
+  visit(root);
+  return nodes;
+}
+
+function containerMemberNodes(containerNode: SyntaxNode): SyntaxNode[] {
+  const members: SyntaxNode[] = [];
+  const visit = (node: SyntaxNode): void => {
+    for (const child of directNamedChildren(node)) {
+      if (child.type === 'qualified_protocol_interface_declaration') {
+        visit(child);
+      } else {
+        members.push(child);
+      }
+    }
+  };
+  visit(containerNode);
+  return members;
 }
 
 function stripQuotes(raw: string): string {
@@ -395,6 +447,7 @@ function declaratorName(node: SyntaxNode): string | undefined {
 
   for (const child of directNamedChildren(node)) {
     if (
+      child.type === 'identifier' ||
       child.type === 'init_declarator' ||
       child.type === 'pointer_declarator' ||
       child.type === 'array_declarator' ||
@@ -425,23 +478,24 @@ function firstTypeNode(node: SyntaxNode): SyntaxNode | undefined {
   return undefined;
 }
 
-function functionInfo(node: SyntaxNode): {
+function functionInfos(node: SyntaxNode): Array<{
   name: string;
+  linkage: 'external' | 'internal';
   returnType?: string;
   parameterTypes: string[];
-} | null {
-  let declarator: SyntaxNode | undefined;
-  walkNamedTree(node, (child) => {
-    if (declarator === undefined && child.type === 'function_declarator') declarator = child;
-  });
-  if (declarator === undefined) return null;
-  // `int (*callback)(int)` is a function pointer declaration, not a callable
-  // definition. A pointer return (`int *func(void)`) remains a C function.
-  if (declarator.childForFieldName('declarator')?.type === 'parenthesized_declarator') {
-    return null;
-  }
-  const name = declaratorName(declarator);
-  if (name === undefined) return null;
+}> {
+  const declarators: SyntaxNode[] = [];
+  const collect = (current: SyntaxNode): void => {
+    for (const child of directNamedChildren(current)) {
+      if (child.type === 'function_declarator') {
+        declarators.push(child);
+        continue;
+      }
+      collect(child);
+    }
+  };
+  collect(node);
+
   const returnType = cleanType(
     directNamedChildren(node).find(
       (child) =>
@@ -450,19 +504,34 @@ function functionInfo(node: SyntaxNode): {
         child.type === 'typedefed_specifier',
     )?.text,
   );
-  const parameterTypes: string[] = [];
-  walkNamedTree(declarator, (child) => {
-    if (child.type !== 'parameter_declaration') return;
-    const typeNode = directNamedChildren(child).find(
-      (n) =>
-        n.type === 'type_identifier' ||
-        n.type === 'primitive_type' ||
-        n.type === 'typedefed_specifier',
-    );
-    const typeText = cleanType(typeNode?.text);
-    if (typeText !== undefined) parameterTypes.push(typeText);
+  const linkage = directNamedChildren(node).some(
+    (child) => child.type === 'storage_class_specifier' && child.text === 'static',
+  )
+    ? 'internal'
+    : 'external';
+
+  return declarators.flatMap((declarator) => {
+    // `int (*callback)(int)` is a function pointer declaration, not a callable
+    // definition. A pointer return (`int *func(void)`) remains a C function.
+    if (declarator.childForFieldName('declarator')?.type === 'parenthesized_declarator') {
+      return [];
+    }
+    const name = declaratorName(declarator);
+    if (name === undefined) return [];
+    const parameterTypes: string[] = [];
+    walkNamedTree(declarator, (child) => {
+      if (child.type !== 'parameter_declaration') return;
+      const typeNode = directNamedChildren(child).find(
+        (n) =>
+          n.type === 'type_identifier' ||
+          n.type === 'primitive_type' ||
+          n.type === 'typedefed_specifier',
+      );
+      const typeText = cleanType(typeNode?.text);
+      if (typeText !== undefined) parameterTypes.push(typeText);
+    });
+    return [{ name, linkage, returnType, parameterTypes }];
   });
-  return { name, returnType, parameterTypes };
 }
 
 function directProtocolNames(node: SyntaxNode): string[] {
@@ -555,16 +624,75 @@ function parseContainer(node: SyntaxNode, filePath: string): ObjCContainerFact |
   };
 }
 
-function collectLocalTypes(methodNode: SyntaxNode): Map<string, ObjCTypeInfo> {
-  const locals = new Map<string, ObjCTypeInfo>();
-  walkNamedTree(methodNode, (node) => {
-    if (node.type !== 'declaration' && node.type !== 'parameter_declaration') return;
+interface ObjCBinding {
+  readonly name: string;
+  readonly type: ObjCTypeInfo;
+  readonly declarationIndex: number;
+  readonly scopeStartIndex: number;
+  readonly scopeEndIndex: number;
+}
+
+function enclosingCompoundScope(node: SyntaxNode, methodBody: SyntaxNode): SyntaxNode {
+  let current = node.parent;
+  while (current !== null && current !== methodBody) {
+    if (current.type === 'compound_statement') return current;
+    current = current.parent;
+  }
+  return methodBody;
+}
+
+function collectMethodBindings(
+  methodNode: SyntaxNode,
+  parameterTypes: ReadonlyMap<string, ObjCTypeInfo>,
+): ObjCBinding[] {
+  const methodBody = directNamedChildren(methodNode).find(
+    (child) => child.type === 'compound_statement',
+  );
+  if (methodBody === undefined) return [];
+
+  const bindings: ObjCBinding[] = [...parameterTypes].map(([name, type]) => ({
+    name,
+    type,
+    declarationIndex: methodBody.startIndex,
+    scopeStartIndex: methodBody.startIndex,
+    scopeEndIndex: methodBody.endIndex,
+  }));
+  walkNamedTree(methodBody, (node) => {
+    if (node.type !== 'declaration') return;
     const info = declarationNameAndType(node);
     if (info === null) return;
-    const typeInfo = parseObjCType(info.type);
-    if (typeInfo !== undefined) locals.set(info.name, typeInfo);
+    const type = parseObjCType(info.type);
+    if (type === undefined) return;
+    const scope = enclosingCompoundScope(node, methodBody);
+    bindings.push({
+      name: info.name,
+      type,
+      declarationIndex: node.endIndex,
+      scopeStartIndex: scope.startIndex,
+      scopeEndIndex: scope.endIndex,
+    });
   });
-  return locals;
+  return bindings;
+}
+
+function bindingAt(
+  bindings: readonly ObjCBinding[],
+  name: string,
+  sourceIndex: number,
+): ObjCTypeInfo | undefined {
+  const matches = bindings.filter(
+    (binding) =>
+      binding.name === name &&
+      binding.declarationIndex <= sourceIndex &&
+      binding.scopeStartIndex <= sourceIndex &&
+      sourceIndex <= binding.scopeEndIndex,
+  );
+  matches.sort((left, right) => {
+    const leftScope = left.scopeEndIndex - left.scopeStartIndex;
+    const rightScope = right.scopeEndIndex - right.scopeStartIndex;
+    return leftScope - rightScope || right.declarationIndex - left.declarationIndex;
+  });
+  return matches[0]?.type;
 }
 
 function isReflectionSelector(selector: string, receiverText: string): boolean {
@@ -593,13 +721,14 @@ function classifyReceiver(
   receiver: SyntaxNode,
   selector: string,
   method: ObjCMethodFact,
-  methodTypes: ReadonlyMap<string, ObjCTypeInfo>,
+  methodBindings: readonly ObjCBinding[],
   membersByOwner: ReadonlyMap<string, Map<string, ObjCTypeInfo>>,
   macroNames: ReadonlySet<string>,
   classNames: ReadonlySet<string>,
 ): {
   kind: ObjCMessageFact['receiverKind'];
   type?: ObjCTypeInfo;
+  memberName?: string;
   unresolvedReason?: string;
 } {
   const text = receiver.text;
@@ -625,7 +754,7 @@ function classifyReceiver(
   if (receiver.type === 'identifier') {
     if (text === 'self') return { kind: 'self' };
     if (text === 'super') return { kind: 'super' };
-    const bound = methodTypes.get(text);
+    const bound = bindingAt(methodBindings, text, receiver.startIndex);
     if (bound !== undefined) {
       if (bound.kind === 'dynamic' || bound.kind === 'class-object') {
         return {
@@ -645,7 +774,7 @@ function classifyReceiver(
     if (classNames.has(text) || isPascalCaseLike(text)) {
       return { kind: 'class', type: { kind: 'class', name: text, raw: text } };
     }
-    return { kind: 'unknown', unresolvedReason: 'receiver type is unknown' };
+    return { kind: 'unknown', memberName: text };
   }
 
   if (receiver.type === 'field_expression') {
@@ -659,16 +788,70 @@ function classifyReceiver(
           : method.ownerQualifiedName;
       const memberType = membersByOwner.get(hostOwner)?.get(field.text);
       if (memberType !== undefined) return { kind: 'property', type: memberType };
-      return {
-        kind: 'property',
-        unresolvedReason: `property ${field.text} has no static type`,
-      };
+      return { kind: 'property', memberName: field.text };
     }
   }
   return {
     kind: 'unknown',
     unresolvedReason: 'receiver expression is not statically typed',
   };
+}
+
+function collectMethodMessages(
+  methodNode: SyntaxNode,
+  method: ObjCMethodFact,
+  parameterTypes: ReadonlyMap<string, ObjCTypeInfo>,
+  membersByOwner: ReadonlyMap<string, Map<string, ObjCTypeInfo>>,
+  macroNames: ReadonlySet<string>,
+  classNames: ReadonlySet<string>,
+  messages: ObjCMessageFact[],
+  unresolvedMessages: ObjCUnresolvedMessageFact[],
+): void {
+  const methodBindings = collectMethodBindings(methodNode, parameterTypes);
+  walkNamedTree(methodNode, (messageNode) => {
+    if (messageNode.type !== 'message_expression') return;
+    const receiver = messageReceiver(messageNode);
+    if (receiver === null) return;
+    const selector = messageSelector(messageNode);
+    if (selector.length === 0) return;
+    const classified = classifyReceiver(
+      receiver,
+      selector,
+      method,
+      methodBindings,
+      membersByOwner,
+      macroNames,
+      classNames,
+    );
+    const fact: ObjCMessageFact = {
+      selector,
+      receiverText: receiver.text,
+      receiverKind: classified.kind,
+      ...(classified.type !== undefined ? { receiverType: classified.type } : {}),
+      ...(classified.memberName !== undefined ? { receiverMemberName: classified.memberName } : {}),
+      sourceMethodQualifiedName: method.qualifiedName,
+      sourceMethodId: method.nodeId,
+      sourceOwnerQualifiedName: method.ownerQualifiedName,
+      sourceOwnerName: method.ownerName,
+      sourceMethodKind: method.methodKind,
+      filePath: method.filePath,
+      startLine: messageNode.startPosition.row,
+      startCol: messageNode.startPosition.column,
+    };
+    if (classified.unresolvedReason !== undefined) {
+      unresolvedMessages.push({
+        selector,
+        receiverText: receiver.text,
+        reason: classified.unresolvedReason,
+        sourceMethodQualifiedName: method.qualifiedName,
+        sourceMethodId: method.nodeId,
+        filePath: method.filePath,
+        startLine: messageNode.startPosition.row,
+        startCol: messageNode.startPosition.column,
+      });
+    }
+    messages.push(fact);
+  });
 }
 
 export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): ObjCFileFacts {
@@ -684,20 +867,21 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
   const classNames = new Set<string>();
 
   const addFunctionFact = (node: SyntaxNode): void => {
-    const info = functionInfo(node);
-    if (info === null) return;
-    const qualifiedName = objcFunctionQualifiedName(info.name);
-    const { startLine, endLine } = range(node);
-    functions.push({
-      name: info.name,
-      qualifiedName,
-      nodeId: graphNodeId('Function', qualifiedName),
-      filePath,
-      startLine,
-      endLine,
-      ...(info.returnType !== undefined ? { returnType: info.returnType } : {}),
-      parameterTypes: info.parameterTypes,
-    });
+    for (const info of functionInfos(node)) {
+      const qualifiedName = objcFunctionQualifiedName(info.name, info.linkage, filePath);
+      const { startLine, endLine } = range(node);
+      functions.push({
+        name: info.name,
+        linkage: info.linkage,
+        qualifiedName,
+        nodeId: graphNodeId('Function', qualifiedName),
+        filePath,
+        startLine,
+        endLine,
+        ...(info.returnType !== undefined ? { returnType: info.returnType } : {}),
+        parameterTypes: info.parameterTypes,
+      });
+    }
   };
 
   walkNamedTree(tree.rootNode, (node) => {
@@ -730,7 +914,7 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     containerNode: Parser.SyntaxNode,
     container: ObjCContainerFact,
   ): void => {
-    for (const inner of directNamedChildren(containerNode)) {
+    for (const inner of containerMemberNodes(containerNode)) {
       if (inner.type === 'property_declaration') {
         const prop = propertyInfo(inner);
         if (prop === null) continue;
@@ -752,12 +936,13 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     }
   };
 
-  for (const child of directNamedChildren(tree.rootNode)) {
+  const topLevelNodes = logicalTopLevelNodes(tree.rootNode);
+  for (const child of topLevelNodes) {
     const container = parseContainer(child, filePath);
     if (container !== null) collectContainerMemberTypes(child, container);
   }
 
-  for (const child of directNamedChildren(tree.rootNode)) {
+  for (const child of topLevelNodes) {
     if (child.type === 'preproc_include') {
       const rawNode = directNamedChildren(child).find(
         (n) => n.type === 'string_literal' || n.type === 'system_lib_string',
@@ -796,7 +981,7 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
     const container = parseContainer(child, filePath);
     if (container !== null) {
       containers.push(container);
-      for (const inner of directNamedChildren(child)) {
+      for (const inner of containerMemberNodes(child)) {
         if (inner.type === 'method_declaration' || inner.type === 'method_definition') {
           const selector = methodSelector(inner);
           const { parameterTypes, parameterNames, typeBindings } = methodParameterInfo(inner);
@@ -823,52 +1008,16 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
           };
           methods.push(method);
 
-          const methodTypes = new Map<string, ObjCTypeInfo>([
-            ...typeBindings,
-            ...collectLocalTypes(inner),
-          ]);
-          walkNamedTree(inner, (messageNode) => {
-            if (messageNode.type !== 'message_expression') return;
-            const receiver = messageReceiver(messageNode);
-            if (receiver === null) return;
-            const messageSel = messageSelector(messageNode);
-            if (messageSel.length === 0) return;
-            const classified = classifyReceiver(
-              receiver,
-              messageSel,
-              method,
-              methodTypes,
-              membersByOwner,
-              macroNames,
-              classNames,
-            );
-            const fact: ObjCMessageFact = {
-              selector: messageSel,
-              receiverText: receiver.text,
-              receiverKind: classified.kind,
-              ...(classified.type !== undefined ? { receiverType: classified.type } : {}),
-              sourceMethodQualifiedName: method.qualifiedName,
-              sourceMethodId: method.nodeId,
-              sourceOwnerQualifiedName: method.ownerQualifiedName,
-              sourceOwnerName: method.ownerName,
-              sourceMethodKind: method.methodKind,
-              filePath,
-              startLine: messageNode.startPosition.row,
-              startCol: messageNode.startPosition.column,
-            };
-            if (classified.unresolvedReason !== undefined) {
-              unresolvedMessages.push({
-                selector: messageSel,
-                receiverText: receiver.text,
-                reason: classified.unresolvedReason,
-                sourceMethodQualifiedName: method.qualifiedName,
-                filePath,
-                startLine: messageNode.startPosition.row,
-                startCol: messageNode.startPosition.column,
-              });
-            }
-            messages.push(fact);
-          });
+          collectMethodMessages(
+            inner,
+            method,
+            typeBindings,
+            membersByOwner,
+            macroNames,
+            classNames,
+            messages,
+            unresolvedMessages,
+          );
         } else if (inner.type === 'property_declaration') {
           const prop = propertyInfo(inner);
           if (prop === null) continue;
@@ -949,52 +1098,16 @@ export function collectObjectiveCFacts(tree: Parser.Tree, filePath: string): Obj
               parameterNames,
             };
             methods.push(method);
-            const methodTypes = new Map<string, ObjCTypeInfo>([
-              ...typeBindings,
-              ...collectLocalTypes(methodNode),
-            ]);
-            walkNamedTree(methodNode, (messageNode) => {
-              if (messageNode.type !== 'message_expression') return;
-              const receiver = messageReceiver(messageNode);
-              if (receiver === null) return;
-              const messageSel = messageSelector(messageNode);
-              if (messageSel.length === 0) return;
-              const classified = classifyReceiver(
-                receiver,
-                messageSel,
-                method,
-                methodTypes,
-                membersByOwner,
-                macroNames,
-                classNames,
-              );
-              const fact: ObjCMessageFact = {
-                selector: messageSel,
-                receiverText: receiver.text,
-                receiverKind: classified.kind,
-                ...(classified.type !== undefined ? { receiverType: classified.type } : {}),
-                sourceMethodQualifiedName: method.qualifiedName,
-                sourceMethodId: method.nodeId,
-                sourceOwnerQualifiedName: method.ownerQualifiedName,
-                sourceOwnerName: method.ownerName,
-                sourceMethodKind: method.methodKind,
-                filePath,
-                startLine: messageNode.startPosition.row,
-                startCol: messageNode.startPosition.column,
-              };
-              if (classified.unresolvedReason !== undefined) {
-                unresolvedMessages.push({
-                  selector: messageSel,
-                  receiverText: receiver.text,
-                  reason: classified.unresolvedReason,
-                  sourceMethodQualifiedName: method.qualifiedName,
-                  filePath,
-                  startLine: messageNode.startPosition.row,
-                  startCol: messageNode.startPosition.column,
-                });
-              }
-              messages.push(fact);
-            });
+            collectMethodMessages(
+              methodNode,
+              method,
+              typeBindings,
+              membersByOwner,
+              macroNames,
+              classNames,
+              messages,
+              unresolvedMessages,
+            );
           }
         }
       }
@@ -1300,6 +1413,7 @@ export function buildObjectiveCSemanticGraph(facts: ObjCFileFacts): ProviderSema
         {
           parameterCount: fn.parameterTypes.length,
           parameterTypes: [...fn.parameterTypes],
+          linkage: fn.linkage,
           ...(fn.returnType !== undefined ? { returnType: fn.returnType } : {}),
         },
       ),
@@ -1348,13 +1462,18 @@ export function buildObjectiveCSemanticGraph(facts: ObjCFileFacts): ProviderSema
   }
 
   for (const unresolved of facts.unresolvedMessages) {
-    const qn = `objc:unresolved:${facts.filePath}:${unresolved.startLine}:${unresolved.startCol}:${unresolved.selector}`;
+    const qn = objcUnresolvedMessageQualifiedName(
+      facts.filePath,
+      unresolved.startLine,
+      unresolved.startCol,
+      unresolved.selector,
+    );
     const id = graphNodeId('CodeElement', qn);
     nodes.push(
       semanticNode(
         'CodeElement',
         id,
-        `[${unresolved.receiverText} ${unresolved.selector}]`,
+        `[${unresolved.receiverText} ${unresolved.selector}] unresolved: ${unresolved.reason}`,
         qn,
         facts.filePath,
         unresolved.startLine,
@@ -1364,12 +1483,12 @@ export function buildObjectiveCSemanticGraph(facts: ObjCFileFacts): ProviderSema
           selector: unresolved.selector,
           receiver: unresolved.receiverText,
           resolution: 'unresolved',
-          reason: unresolved.reason,
-          sourceMethod: unresolved.sourceMethodQualifiedName,
         },
       ),
     );
-    relationships.push(relationship('DEFINES', fileId, id, 'objc-unresolved-message'));
+    relationships.push(
+      relationship('DEFINES', fileId, id, `objc-unresolved-message: ${unresolved.reason}`),
+    );
     symbols.push({
       filePath: facts.filePath,
       name: `[${unresolved.receiverText} ${unresolved.selector}]`,

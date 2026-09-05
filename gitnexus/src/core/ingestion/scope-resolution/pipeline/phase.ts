@@ -34,10 +34,6 @@ import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { isLanguageAvailable } from '../../../tree-sitter/parser-loader.js';
 import { buildGraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { SCOPE_RESOLVERS } from './registry.js';
-import {
-  getLanguageForFileContent,
-  needsContentLanguageClassification,
-} from '../../languages/index.js';
 import { isDev, isSemanticModelValidatorEnabled } from '../../utils/env.js';
 import { logHeapProbe } from '../../utils/heap-probe.js';
 import {
@@ -181,7 +177,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     logHeapProbe('scopeResolution-enter');
     const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const { model, parsedFiles: workerParsedFiles } = parseOutput;
+    const { model, parsedFiles: workerParsedFiles, contentLanguageByPath } = parseOutput;
     const scopeExtractionFailures = new Set(parseOutput.scopeExtractionFailures);
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
@@ -251,13 +247,6 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let totalScopeFiles = 0;
     let totalScopeLangs = 0;
     const allScannedPaths = new Set(scannedFiles.map((f) => f.path));
-    const contentClassifiedPaths = scannedFiles
-      .map((f) => f.path)
-      .filter(needsContentLanguageClassification);
-    const contentClassificationMap =
-      contentClassifiedPaths.length > 0
-        ? await readFileContents(ctx.repoPath, contentClassifiedPaths)
-        : new Map<string, string>();
     // Partition scanned files by language ONCE (O(F)). The previous code
     // re-filtered all scannedFiles per language for the precount AND again in the
     // per-language loop below — O(languages × files), ~2.3M getLanguageFromFilename
@@ -268,11 +257,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       (typeof scannedFiles)[number][]
     >();
     for (const f of scannedFiles) {
-      const classifiedContent = contentClassificationMap.get(f.path);
-      const fileLang =
-        classifiedContent !== undefined
-          ? getLanguageForFileContent(f.path, classifiedContent)
-          : getLanguageFromFilename(f.path);
+      const fileLang = contentLanguageByPath.has(f.path)
+        ? (contentLanguageByPath.get(f.path) ?? null)
+        : getLanguageFromFilename(f.path);
       if (fileLang === null) continue;
       // Tree-sitter providers require an available grammar. Standalone regex
       // providers deliberately have none and re-extract on the main thread.
