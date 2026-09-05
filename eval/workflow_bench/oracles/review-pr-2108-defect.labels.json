@@ -1,11 +1,53 @@
 {
   "schema_version": 1,
   "findings": [
-    {"id":"pr2108-leakage-classified-as-plateau","severity":"medium","path":"gitnexus/scripts/bench/fts-evict-reload-rss.mjs","line_start":364,"line_end":364,"category":"correctness"},
-    {"id":"pr2108-batch-failure-silently-demotes-symbols","severity":"medium","path":"gitnexus/src/mcp/local/local-backend.ts","line_start":1134,"line_end":1178,"category":"correctness"},
-    {"id":"pr2108-build-only-env-leaks-to-runtime","severity":"low","path":"Dockerfile.cli","line_start":88,"line_end":88,"category":"other"},
-    {"id":"pr2108-native-benchmark-bypasses-production-open","severity":"medium","path":"gitnexus/scripts/bench/fts-evict-reload-rss.mjs","line_start":122,"line_end":186,"category":"tests"},
-    {"id":"pr2108-unpinned-build-extension","severity":"medium","path":"Dockerfile.cli","line_start":86,"line_end":89,"category":"security"},
-    {"id":"pr2108-verify-flag-parsed-as-extension","severity":"low","path":"gitnexus/scripts/install-duckdb-extension.mjs","line_start":59,"line_end":59,"category":"correctness"}
+    {
+      "id": "pr2108-leakage-classified-as-plateau",
+      "severity": "medium",
+      "path": "gitnexus/scripts/bench/fts-evict-reload-rss.mjs",
+      "line_start": 364,
+      "line_end": 364,
+      "category": "correctness"
+    },
+    {
+      "id": "pr2108-batch-failure-silently-demotes-symbols",
+      "severity": "medium",
+      "path": "gitnexus/src/mcp/local/local-backend.ts",
+      "line_start": 1134,
+      "line_end": 1178,
+      "category": "correctness"
+    },
+    {
+      "id": "pr2108-build-only-env-leaks-to-runtime",
+      "severity": "low",
+      "path": "Dockerfile.cli",
+      "line_start": 88,
+      "line_end": 88,
+      "category": "other"
+    },
+    {
+      "id": "pr2108-native-benchmark-bypasses-production-open",
+      "severity": "medium",
+      "path": "gitnexus/scripts/bench/fts-evict-reload-rss.mjs",
+      "line_start": 122,
+      "line_end": 186,
+      "category": "tests"
+    },
+    {
+      "id": "pr2108-unpinned-build-extension",
+      "severity": "medium",
+      "path": "Dockerfile.cli",
+      "line_start": 86,
+      "line_end": 89,
+      "category": "security"
+    },
+    {
+      "id": "pr2108-verify-flag-parsed-as-extension",
+      "severity": "low",
+      "path": "gitnexus/scripts/install-duckdb-extension.mjs",
+      "line_start": 59,
+      "line_end": 59,
+      "category": "correctness"
+    }
   ]
 }

@@ -45,9 +45,11 @@ import stat
 import statistics
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from functools import partial
+from contextvars import copy_context
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,15 +61,11 @@ from .evolution import (
     CANDIDATE_ARMS,
     EVIDENCE_MAX_AGE_DAYS,
     EVALUATED_ARM_SKILLS,
-    MAIN_LOOP_ONLY_METRICS,
-    MAIN_LOOP_ONLY_WARNING,
-    MAX_FAILED_TASK_REGRESSION_PCT,
-    MIN_GATED_TASK_RATIO,
     PROMOTION_METRICS,
     apply_candidate_overlay,
     candidate_overlay_digest,
-    evaluate_candidate,
-    evaluate_review_candidate,
+    promotion_policy,
+    promotion_evidence,
     required_candidate_arms,
     seed_evaluated_skills,
     skill_fingerprint,
@@ -88,7 +86,7 @@ from .oracle_assets import (
     staged_task_oracle,
     with_hidden_harness_apply_exclude,
 )
-from .process_control import ManagedProcessError
+from .process_control import cancellation_scope, ManagedProcessError
 from .promotion_apply import committed_destination_base_digests
 from .review_scoring import REVIEW_OUTPUT, expected_findings, parse_review_output, score_review
 from .proposer_sandbox import (
@@ -104,6 +102,7 @@ from .proposer_sandbox import (
     preflight_bubblewrap,
     preflight_unsafe_host,
     prepare_sandbox,
+    prepare_review_workspace,
     redact_text,
     require_claude_sandbox_helpers,
     sandbox_workspace_write_boundary,
@@ -549,8 +548,7 @@ def run_arm(
         sessions.append(work_session)
     elif arm in ("review", "ce_review"):
         review_prompt = REVIEW_PROMPT if arm == "review" else CE_REVIEW_PROMPT
-        review_output = worktree / REVIEW_OUTPUT
-        review_output.write_text("")
+        review_output = prepare_review_workspace(sandbox, REVIEW_OUTPUT)
         phase_before = workspace_snapshot(worktree) if enforce_phase_boundary else None
         review_common = {
             **common,
@@ -663,6 +661,7 @@ def run_arm(
             record["error_kind"] = record["error_kind"] or "review-evidence-invalid"
             record["error_detail"] = str(exc)
         record["review_score"] = review_score
+        record["review_evidence_valid"] = review_score is not None
         if review_score is not None:
             record.update({f"review_{key}": value for key, value in review_score.items()})
     if oracle_snapshot is None:
@@ -717,14 +716,14 @@ CHURN_FIELDS = ("diff_files", "diff_insertions", "diff_deletions")
 # must not skew efficiency medians or resolve denominators. verify-failed and
 # skill-not-invoked rows DO count: those sessions ran and spent real tokens.
 EXCLUDED_ERROR_KINDS = frozenset(
-    {"session-error", "infra-error", "evidence-unverified", "cleanup-failure", "review-evidence-invalid"}
+    {"session-error", "infra-error", "evidence-unverified", "cleanup-failure", "review-evidence-invalid", "cancelled"}
 )
 
 # A sustained upstream outage shows up as a run of session/infra/cleanup
 # failures. (cleanup-failure overwrites the primary error_kind, so a
 # session-error whose worktree cleanup also failed still counts.) A task's own
 # resolved=False is real signal, not an outage, so it never trips the breaker.
-SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure"})
+SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure", "review-evidence-invalid"})
 DEFAULT_OUTAGE_STREAK = 5
 
 # A cell is a full clone plus a sandboxed agent session, so the ceiling is the
@@ -745,36 +744,32 @@ def _run_wave(
     *,
     workers: int,
     run: Callable[[int, str], dict[str, Any]],
-) -> list[dict[str, Any] | BaseException]:
-    """Run one wave on a pool and settle every future, in submission order.
-
-    The pool is owned explicitly rather than through ``with``: the context
-    manager exits through ``shutdown(wait=True)``, so a Ctrl-C would be handed
-    back to the operator only once the wave it was meant to abandon had
-    finished anyway. Here the interrupt cancels whatever has not started and
-    abandons — never joins — whatever has.
-
-    Every future is read even after one of them failed. An exception a cell did
-    not expect stays parked inside its Future until something asks for it, so
-    skipping the reads would turn a harness bug into a silently missing run
-    rather than a crash. Failures are returned rather than raised so the caller
-    can persist the rows of the cells that did complete first.
-    """
+    cancel_event: threading.Event,
+) -> tuple[list[dict[str, Any] | BaseException], BaseException | None]:
+    """Cancel active subprocesses, join workers, and retain settled outcomes."""
     pool = ThreadPoolExecutor(max_workers=workers)
+    futures = []
+    interruption = None
     try:
-        futures = [pool.submit(run, run_idx, arm) for run_idx, arm in wave]
+        for run_idx, arm in wave:
+            futures.append(pool.submit(copy_context().run, run, run_idx, arm))
         wait(futures)
-    except BaseException:
-        pool.shutdown(wait=False, cancel_futures=True)
-        raise
-    # Nothing left to wait for — every future is done — so this only retires
-    # the wave's threads instead of leaking one pool's worth per wave.
-    pool.shutdown(wait=True)
+    except BaseException as exc:
+        interruption = exc
+        cancel_event.set()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=interruption is not None)
     outcomes: list[dict[str, Any] | BaseException] = []
     for future in futures:
-        error = future.exception()
-        outcomes.append(error if error is not None else future.result())
-    return outcomes
+        if future.cancelled():
+            outcomes.append({"resolved": False, "error_kind": "cancelled"})
+        else:
+            error = future.exception()
+            outcomes.append(error if error is not None else future.result())
+    # Submission itself can be interrupted. Preserve positional evidence for
+    # cells that never started without masking the original interruption.
+    outcomes.extend({"resolved": False, "error_kind": "cancelled"} for _ in wave[len(futures) :])
+    return outcomes, interruption
 
 
 def sweep_task_cells(
@@ -786,6 +781,7 @@ def sweep_task_cells(
     on_record: Callable[[int, str, dict[str, Any]], None],
     outage_streak: int,
     outage_limit: int,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
     """Run one task's cells in waves of ``workers``; return (streak, tripped).
 
@@ -796,47 +792,57 @@ def sweep_task_cells(
     starts only if the breaker held, so the breaker overruns its limit by at
     most ``workers - 1`` cells: the ones already in flight when it tripped.
 
-    ``workers == 1`` runs the cell directly instead of through a pool of one.
-    That is not an optimisation — an async KeyboardInterrupt is delivered only
-    to the main thread, so a cell on a worker thread is outside the reach of
-    the ownership cleanup that kills its sandboxed process tree.
+    The serial default executes directly; parallel workers copy the run
+    context so every owned subprocess observes the same cancellation signal.
     """
-    if workers < 1:
-        raise ValueError("workers must be positive")
-    for wave_start in range(0, len(cells), workers):
-        wave = list(cells[wave_start : wave_start + workers])
-        for run_idx, arm in wave:
-            on_start(run_idx, arm)
-        if workers == 1:
-            records = [run(run_idx, arm) for run_idx, arm in wave]
-        else:
-            outcomes = _run_wave(wave, workers=workers, run=run)
-            failure = next((outcome for outcome in outcomes if isinstance(outcome, BaseException)), None)
-            if failure is not None:
-                # The siblings of the failing cell have already completed and
-                # spent their budget. Persist their rows, in submission order,
-                # before the harness bug takes the process down — otherwise a
-                # crash in one cell silently erases the evidence of the others.
-                for (run_idx, arm), outcome in zip(wave, outcomes, strict=True):
-                    if not isinstance(outcome, BaseException):
-                        on_record(run_idx, arm, outcome)
-                raise failure
-            records = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
-        for (run_idx, arm), record in zip(wave, records, strict=True):
-            # Every future in this wave has already completed and incurred its
-            # cost. Persist all of them in canonical submission order even if
-            # an earlier row trips the breaker; only later waves are skipped.
-            on_record(run_idx, arm, record)
-        for record in records:
-            outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
-            if outage_limit and outage_streak >= outage_limit:
-                print(
-                    f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
-                    "failures — aborting the remaining sweep; report and promotion are written "
-                    "from partial evidence and the run exits non-zero."
-                )
+    with cancellation_scope(cancel_event) as cancel_event:
+        if workers < 1:
+            raise ValueError("workers must be positive")
+        for wave_start in range(0, len(cells), workers):
+            if cancel_event.is_set():
                 return outage_streak, True
-    return outage_streak, False
+            wave = list(cells[wave_start : wave_start + workers])
+            for run_idx, arm in wave:
+                on_start(run_idx, arm)
+            if workers == 1:
+                records = [run(run_idx, arm) for run_idx, arm in wave]
+            else:
+                outcomes, interruption = _run_wave(wave, workers=workers, run=run, cancel_event=cancel_event)
+                failure = interruption or next(
+                    (outcome for outcome in outcomes if isinstance(outcome, BaseException)), None
+                )
+                if failure is not None:
+                    # The siblings of the failing cell have already completed and
+                    # spent their budget. Persist their rows, in submission order,
+                    # before the harness bug takes the process down — otherwise a
+                    # crash in one cell silently erases the evidence of the others.
+                    for (run_idx, arm), outcome in zip(wave, outcomes, strict=True):
+                        if not isinstance(outcome, BaseException):
+                            on_record(run_idx, arm, outcome)
+                    raise failure
+                records = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
+            for (run_idx, arm), record in zip(wave, records, strict=True):
+                # Every future in this wave has already completed and incurred its
+                # cost. Persist all of them in canonical submission order even if
+                # an earlier row trips the breaker; only later waves are skipped.
+                on_record(run_idx, arm, record)
+            if cancel_event.is_set():
+                return outage_streak, True
+            for record in records:
+                kind = (
+                    "review-evidence-invalid"
+                    if record.get("review_evidence_valid") is False
+                    else record.get("error_kind")
+                )
+                outage_streak = systemic_outage_streak(kind, outage_streak)
+                if outage_limit and outage_streak >= outage_limit:
+                    print(
+                        f"[systemic-outage] {outage_streak} consecutive unusable-evidence "
+                        "failures — aborting the remaining sweep; report and promotion are written "
+                        "from partial evidence and the run exits non-zero."
+                    )
+                    return outage_streak, True
+        return outage_streak, False
 
 
 @dataclass(frozen=True)
@@ -1063,6 +1069,8 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         # sweep — record the run as infra-error and move on so
         # report.md/promotion.json still get written.
         record = infra_error_record(exc)
+        if isinstance(exc, ManagedProcessError) and exc.result.state == "cancelled":
+            record["error_kind"] = "cancelled"
         record["arm"] = arm
         # ManagedProcessError carries up to 1000 raw bytes of stderr_tail, and
         # this line now streams live into the CI log (run_managed echoes the
@@ -1215,7 +1223,11 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     Session/infra-error rows are excluded from the medians (they measured
     nothing); ``valid_runs``/``excluded_runs`` make the exclusion visible.
     """
-    valid = [r for r in records if r.get("error_kind") not in EXCLUDED_ERROR_KINDS]
+    valid = [
+        r
+        for r in records
+        if r.get("error_kind") not in EXCLUDED_ERROR_KINDS and r.get("review_evidence_valid") is not False
+    ]
     metrics = (*USAGE_FIELDS, "duration_s", "num_turns", *CHURN_FIELDS)
     out: dict[str, Any] = {m: statistics.median(r.get(m, 0) for r in (valid or [{}])) for m in metrics}
     # cost_usd can be None (unmeasured) on an otherwise-valid run; a single
@@ -1255,7 +1267,14 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     if any("review_weighted_f1" in record for record in valid):
         for metric in review_metrics:
             values = [record[metric] for record in valid if record.get(metric) is not None]
-            out[metric] = statistics.median(values) if values and len(values) == len(valid) else None
+            reducer = min if metric == "review_blocker_recall" else statistics.median
+            out[metric] = reducer(values) if values and len(values) == len(valid) else None
+        verdicts = [record.get("review_verdict_correct") for record in valid]
+        out["review_verdict_correct"] = (
+            all(value is True for value in verdicts)
+            if verdicts and all(isinstance(value, bool) for value in verdicts)
+            else None
+        )
         controls = [record["review_clean_control"] for record in valid if "review_clean_control" in record]
         out["review_clean_control"] = all(controls) if controls and len(controls) == len(valid) else None
         clean_passes = [record["review_clean_pass"] for record in valid if "review_clean_pass" in record]
@@ -1637,22 +1656,24 @@ def main() -> None:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
     try:
-        _run_sweep(
-            args,
-            parser=parser,
-            tasks=tasks,
-            skipped_expensive=skipped_expensive,
-            oracle_snapshots=oracle_snapshots,
-            expected_task_bindings=expected_task_bindings,
-            ce_plugin_config=ce_plugin_config,
-            bwrap_bin=bwrap_bin,
-            sandbox_backend=sandbox_backend,
-            runtime_mounts=runtime_mounts,
-            candidate_arms=candidate_arms,
-            candidate_overlay=candidate_overlay,
-            overlay_digest=overlay_digest,
-            promotion_target_bases=promotion_target_bases,
-        )
+        with cancellation_scope(handle_signals=True) as cancel_event:
+            _run_sweep(
+                args,
+                cancel_event=cancel_event,
+                parser=parser,
+                tasks=tasks,
+                skipped_expensive=skipped_expensive,
+                oracle_snapshots=oracle_snapshots,
+                expected_task_bindings=expected_task_bindings,
+                ce_plugin_config=ce_plugin_config,
+                bwrap_bin=bwrap_bin,
+                sandbox_backend=sandbox_backend,
+                runtime_mounts=runtime_mounts,
+                candidate_arms=candidate_arms,
+                candidate_overlay=candidate_overlay,
+                overlay_digest=overlay_digest,
+                promotion_target_bases=promotion_target_bases,
+            )
     finally:
         gateway.__exit__(None, None, None)
 
@@ -1673,7 +1694,9 @@ def _run_sweep(
     candidate_overlay: Path | None,
     overlay_digest: str | None,
     promotion_target_bases: dict[str, str],
+    cancel_event: threading.Event | None = None,
 ) -> None:
+    cancel_event = cancel_event or threading.Event()
     out_dir = args.out or Path("results") / time.strftime("wfbench-%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
@@ -1719,7 +1742,7 @@ def _run_sweep(
             oracle_snapshots,
             strict=True,
         ):
-            if outage_tripped:
+            if outage_tripped or cancel_event.is_set():
                 break
             repo = Path(task_binding["repo_identity"])
             task_sha = task_binding["resolved_sha"]
@@ -1809,6 +1832,7 @@ def _run_sweep(
                 on_record=keep,
                 outage_streak=outage_streak,
                 outage_limit=args.outage_streak,
+                cancel_event=cancel_event,
             )
             results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
 
@@ -1828,19 +1852,15 @@ def _run_sweep(
         selection_report.append(
             f"Compound Engineering plugin: `{ce_plugin_snapshot.version}` (`{ce_plugin_snapshot.manifest_digest}`)"
         )
+    if cancel_event.is_set():
+        selection_report.append("Sweep cancelled: partial evidence; promotion is disabled.")
+    elif outage_tripped:
+        selection_report.append("Sweep aborted: partial evidence; promotion is disabled.")
     report = render_report(results) + "\n\n" + "\n".join(selection_report) + "\n"
     (out_dir / "report.md").write_text(report)
     if candidate_arms:
         promotion_generated_at = datetime.now(UTC)
         promotion = {
-            # Schema 5 binds reasoning effort on top of schema 4's
-            # gated/ungated task contract and schema 3's
-            # hidden, byte-bound behavioral oracles: a decision now states which
-            # tasks supplied quality signal and which were ungated because
-            # neither arm resolved them. Schema 3 bindings are rejected outright
-            # by the apply path — they cannot express that distinction, so their
-            # verdicts are not comparable with these.
-            "schema_version": 5,
             "generated_at": promotion_generated_at.isoformat(),
             "evidence_expires_at": (promotion_generated_at + timedelta(days=EVIDENCE_MAX_AGE_DAYS)).isoformat(),
             "benchmark_model": args.model,
@@ -1853,40 +1873,18 @@ def _run_sweep(
             "required_candidate_arms": candidate_arms,
             "selected_tasks": task_bindings,
             "ce_plugin": ce_plugin_snapshot.provenance if ce_plugin_snapshot is not None else None,
-            "policy": {
-                "metric": args.promotion_metric,
-                "metric_warning": (MAIN_LOOP_ONLY_WARNING if args.promotion_metric in MAIN_LOOP_ONLY_METRICS else None),
-                "min_runs": args.promotion_min_runs,
-                "min_improvement_pct": args.promotion_min_improvement,
-                "max_task_regression_pct": args.promotion_max_task_regression,
-                "max_failed_task_regression_pct": MAX_FAILED_TASK_REGRESSION_PCT,
-                "min_gated_task_ratio": MIN_GATED_TASK_RATIO,
-                "quality_rule": "no per-task resolution-rate regression",
-                "max_age_days": EVIDENCE_MAX_AGE_DAYS,
-            },
-            "decisions": [
-                (
-                    evaluate_review_candidate(
-                        results,
-                        incumbent_arm=CANDIDATE_ARMS[candidate_arm],
-                        candidate_arm=candidate_arm,
-                        model=args.model,
-                        min_runs=args.promotion_min_runs,
-                    )
-                    if candidate_arm == "candidate_review"
-                    else evaluate_candidate(
-                        results,
-                        incumbent_arm=CANDIDATE_ARMS[candidate_arm],
-                        candidate_arm=candidate_arm,
-                        model=args.model,
-                        metric=args.promotion_metric,
-                        min_runs=args.promotion_min_runs,
-                        min_improvement_pct=args.promotion_min_improvement,
-                        max_task_regression_pct=args.promotion_max_task_regression,
-                    )
-                )
-                for candidate_arm in candidate_arms
-            ],
+            **promotion_evidence(
+                results,
+                model=args.model,
+                complete=not outage_tripped and not cancel_event.is_set(),
+                policy=promotion_policy(
+                    candidate_arms,
+                    metric=args.promotion_metric,
+                    min_runs=args.promotion_min_runs,
+                    min_improvement_pct=args.promotion_min_improvement,
+                    max_task_regression_pct=args.promotion_max_task_regression,
+                ),
+            ),
         }
         (out_dir / "promotion.json").write_text(json.dumps(promotion, indent=2) + "\n")
     print(f"\n{report}\n\nWritten to {out_dir}/")
@@ -1904,6 +1902,8 @@ def _run_sweep(
             "in results.jsonl. Exiting non-zero rather than reporting a quiet no-promotion."
         )
         raise SystemExit(1)
+    if cancel_event.is_set():
+        raise SystemExit(130)
     if outage_tripped:
         # Non-zero exit so a driver (evolve.py) treats the partial benchmark as a
         # failed run and halts instead of proposing from outage-truncated evidence.

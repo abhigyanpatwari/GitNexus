@@ -257,6 +257,7 @@ def test_review_gate_is_quality_first_and_requires_repeated_evidence():
             "review_blocker_recall": blocker,
             "review_false_positives": false_positives,
             "review_clean_control": False,
+            "review_verdict_correct": True,
         }
 
     decision = evaluate_review_candidate(
@@ -297,6 +298,7 @@ def test_review_gate_rejects_added_false_positives_on_clean_controls():
         "review_blocker_recall": 1.0,
         "review_clean_control": True,
         "review_clean_pass": True,
+        "review_verdict_correct": True,
     }
     decision = evaluate_review_candidate(
         {
@@ -311,6 +313,32 @@ def test_review_gate_rejects_added_false_positives_on_clean_controls():
     )
     assert decision["decision"] == "keep_incumbent"
     assert any("clean control" in reason for reason in decision["reasons"])
+
+
+@pytest.mark.parametrize("wrong_verdict,bad_blocker", [(True, False), (False, True), (False, False)])
+def test_review_gate_preserves_every_repeat_safeguard(wrong_verdict, bad_blocker):
+    from workflow_bench.runner import aggregate
+
+    def row(score, verdict=True, blocker=1.0):
+        return {
+            "resolved": True,
+            "review_weighted_f1": score,
+            "review_blocker_recall": blocker,
+            "review_false_positives": 0,
+            "review_verdict_correct": verdict,
+            "review_clean_control": False,
+            "review_clean_pass": False,
+        }
+
+    incumbent = aggregate([row(0.5) for _ in range(3)])
+    candidate = aggregate([row(0.8), row(0.8), row(0.8, not wrong_verdict, 0.0 if bad_blocker else 1.0)])
+    decision = evaluate_review_candidate(
+        {"case": {"review": incumbent, "candidate_review": candidate}},
+        incumbent_arm="review",
+        candidate_arm="candidate_review",
+        model="pinned-model",
+    )
+    assert decision["decision"] == ("keep_incumbent" if wrong_verdict or bad_blocker else "promote")
 
 
 def test_review_gate_treats_an_empty_corpus_as_insufficient_evidence():

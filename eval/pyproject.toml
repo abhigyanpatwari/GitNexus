@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "mini-swe-agent>=2.0.0",
-    "litellm[proxy]!=1.82.7,!=1.82.8,>=1.83.7",
+    "litellm[proxy]!=1.82.7,!=1.82.8,>=1.99.0",
+    "cryptography>=50.0.0",
     "datasets>=3.0.0",
     "typer>=0.12.0",
     "rich>=13.0.0",

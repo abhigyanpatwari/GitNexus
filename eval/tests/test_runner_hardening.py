@@ -303,9 +303,9 @@ def test_phase_workspace_ignores_claude_sandbox_bootstrap_noise(tmp_path):
 
 
 def test_phase_workspace_records_a_root_scripts_symlink(tmp_path):
-    before = runner_artifacts.workspace_snapshot(tmp_path)
     target = tmp_path / "helper.py"
     target.write_text("planted\n")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
     (tmp_path / "scripts").symlink_to(target)
     artifact = tmp_path / "review-output.md"
     artifact.write_text("new review")
@@ -717,6 +717,52 @@ def _row(error_kind=None):
 CELLS = [(run_idx, arm) for run_idx in range(3) for arm in ("workflow", "candidate_workflow")]
 
 
+@pytest.mark.parametrize("workers", [1, 3, 8])
+@pytest.mark.parametrize("primary", ["review-evidence-invalid", "skill-not-invoked", "session-error"])
+def test_unusable_review_evidence_stops_a_54_cell_sweep(workers, primary):
+    cells = [(i, "review") for i in range(54)]
+    result = _sweep(
+        cells,
+        workers=workers,
+        run=lambda *_: {
+            "resolved": False,
+            "error_kind": primary,
+            "review_evidence_valid": False,
+        },
+    )
+    assert result.tripped
+    assert 5 <= len(result.started) <= 5 + workers - 1
+    assert result.kept == result.started
+
+
+def test_measured_review_miss_resets_the_outage_streak():
+    result = _sweep(
+        CELLS,
+        workers=1,
+        streak=4,
+        run=lambda *_: {
+            "resolved": False,
+            "error_kind": "oracle-failed",
+            "review_evidence_valid": True,
+            "review_weighted_f1": 0.0,
+        },
+    )
+    assert result.streak == 0 and not result.tripped
+
+
+def test_invalid_review_with_primary_skill_error_is_excluded_from_aggregation():
+    result = runner.aggregate(
+        [
+            {
+                "resolved": False,
+                "error_kind": "skill-not-invoked",
+                "review_evidence_valid": False,
+            }
+        ]
+    )
+    assert result["excluded_runs"] == 1 and result["valid_runs"] == 0
+
+
 def test_sweep_keeps_rows_in_submission_order_whatever_order_they_finish():
     # Cells finish in whatever order the machine allows, but a wave is folded
     # in submission order — the outage streak counts consecutive failures, and
@@ -870,13 +916,12 @@ def test_sweep_hands_a_ctrl_c_back_without_waiting_for_the_running_cells(monkeyp
 
     monkeypatch.setattr(runner, "wait", interrupt_once_the_wave_is_running)
     try:
-        with pytest.raises(KeyboardInterrupt):
+        with runner.cancellation_scope(release), pytest.raises(KeyboardInterrupt):
             _sweep(CELLS, workers=2, run=run)
 
-        # Both cells are still parked on `release`, so the abort could not have
-        # joined them — an executor shut down through its context manager waits
-        # for exactly that, which is what made Ctrl-C look ignored.
-        assert finished == []
+        # Cancellation releases active work before joining; no worker can
+        # outlive the assets the interrupted sweep is about to clean up.
+        assert set(finished) == set(CELLS[:2])
     finally:
         release.set()
 
@@ -893,6 +938,33 @@ def test_workers_is_bounded_at_both_ends_before_the_sweep_starts():
     for rejected in ("0", "-1", str(runner.MAX_WORKERS + 1)):
         with pytest.raises(SystemExit):
             runner.build_parser().parse_args([*base, "--workers", rejected])
+
+
+def test_partial_wave_submission_preserves_rows_and_original_interruption(monkeypatch):
+    original = runner.ThreadPoolExecutor.submit
+    submissions = 0
+
+    def submit(pool, *args, **kwargs):
+        nonlocal submissions
+        submissions += 1
+        if submissions == 2:
+            raise KeyboardInterrupt("submission interrupted")
+        return original(pool, *args, **kwargs)
+
+    monkeypatch.setattr(runner.ThreadPoolExecutor, "submit", submit)
+    records = []
+    with pytest.raises(KeyboardInterrupt, match="submission interrupted"):
+        runner.sweep_task_cells(
+            CELLS,
+            workers=2,
+            run=lambda *_: _row(),
+            on_start=lambda *_: None,
+            on_record=lambda *record: records.append(record),
+            outage_streak=0,
+            outage_limit=5,
+        )
+    assert len(records) == 2
+    assert records[1][2]["error_kind"] == "cancelled"
 
 
 @pytest.mark.parametrize("error_kind", ["infra-error", "cleanup-failure"])

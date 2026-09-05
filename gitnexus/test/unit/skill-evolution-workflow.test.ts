@@ -202,6 +202,67 @@ function runSeedStep(ghImplementation: string): {
 }
 
 describe('gitnexus skill-evolution workflow contract', () => {
+  it.each(['main', 'feature', 'detached'])(
+    'fetches review history while checked out on %s',
+    (branch) => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'evolution-baseline-'));
+      const remote = path.join(root, 'upstream.git');
+      const checkout = path.join(root, 'checkout');
+      const git = (cwd: string, ...args: string[]) =>
+        execFileSync(
+          'git',
+          ['-C', cwd, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', ...args],
+          { encoding: 'utf8' },
+        ).trim();
+      try {
+        mkdirSync(remote);
+        git(remote, 'init', '-q', '-b', 'main');
+        writeFileSync(path.join(remote, 'source'), 'before');
+        git(remote, 'add', 'source');
+        git(remote, 'commit', '-qm', 'base');
+        execFileSync('git', ['clone', '-q', remote, checkout]);
+        if (branch === 'feature') git(checkout, 'checkout', '-qb', 'feature');
+        if (branch === 'detached') git(checkout, 'checkout', '-q', '--detach');
+        const before = git(checkout, 'rev-parse', 'HEAD');
+        writeFileSync(path.join(remote, 'source'), 'after');
+        git(remote, 'commit', '-qam', 'advance');
+        const script = stepRun('Point the benchmark task repo at the checkout');
+        execFileSync('bash', ['-euc', script.slice(script.indexOf('git -C'))], {
+          env: {
+            ...process.env,
+            GITHUB_WORKSPACE: checkout,
+            GITHUB_SERVER_URL: root,
+            GITHUB_REPOSITORY: 'upstream',
+          },
+        });
+        expect(git(checkout, 'rev-parse', 'refs/remotes/origin/main^{commit}')).toBe(
+          git(remote, 'rev-parse', 'HEAD'),
+        );
+        expect(git(checkout, 'rev-parse', 'HEAD')).toBe(before);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('requires the real review canary before paid work and retains failed-sweep evidence', () => {
+    const steps = evolveJob?.steps ?? [];
+    const preflight = steps.findIndex(
+      (step) => step.name === 'Verify contained review execution before paid sessions',
+    );
+    const paid = steps.findIndex((step) => step.name === 'Run the propose → benchmark → gate loop');
+    expect(preflight).toBeGreaterThanOrEqual(0);
+    expect(preflight).toBeLessThan(paid);
+    expect(steps[preflight].if).toBeUndefined();
+    expect(steps[preflight].env?.GITNEXUS_REQUIRE_CLAUDE_CANARY).toBe('1');
+    expect(steps[preflight].env?.GITNEXUS_REQUIRE_BWRAP_CANARY).toBe('1');
+    expect(findStep('Upload benchmark evidence')?.if).toBe('always()');
+    expect(findStep('Detect and bound the applied promotion')?.if).toBeUndefined();
+    expect(stepRun('Open the promotion PR')).toContain(
+      'gitnexus-cursor-integration/skills/gitnexus-review',
+    );
+  });
+
   it('applies gate-passing overlays so the promotion-PR path is reachable', () => {
     const loop = stepRun('Run the propose → benchmark → gate loop');
     expect(loop).toContain('./workflow_bench/run-evolution.sh --apply');

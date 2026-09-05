@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import posixpath
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -191,67 +191,30 @@ def _match_score(actual: ReviewFinding, expected: ExpectedFinding) -> tuple[int,
     return category, severity, -distance
 
 
-def _greedy_pairs(
-    candidates: list[tuple[tuple[int, int, int, int, str, str, int], int, int]],
-) -> list[tuple[int, int]]:
-    matched_actual: set[int] = set()
-    matched_expected: set[int] = set()
-    pairs: list[tuple[int, int]] = []
-    for _score, actual_index, expected_index in candidates:
-        if actual_index in matched_actual or expected_index in matched_expected:
-            continue
-        matched_actual.add(actual_index)
-        matched_expected.add(expected_index)
-        pairs.append((actual_index, expected_index))
-    return pairs
-
-
 def _assign_pairs(
     candidates: list[tuple[tuple[int, int, int, int, str, str, int], int, int]],
 ) -> list[tuple[int, int]]:
-    """Maximum-cardinality assignment; remaining ties follow candidate rank."""
+    """Maximum cardinality at every size, with deterministic ranked traversal."""
 
-    if not candidates:
-        return []
-    actual_ids = sorted({actual_index for _score, actual_index, _expected_index in candidates})
-    expected_ids = sorted({expected_index for _score, _actual_index, expected_index in candidates})
-    if len(actual_ids) > 16 or len(expected_ids) > 16:
-        return _greedy_pairs(candidates)
+    edges: dict[int, list[int]] = {}
+    for _score, actual_index, expected_index in candidates:
+        edges.setdefault(actual_index, []).append(expected_index)
+    owners: dict[int, int] = {}
 
-    actual_pos = {actual_index: index for index, actual_index in enumerate(actual_ids)}
-    expected_pos = {expected_index: index for index, expected_index in enumerate(expected_ids)}
-    edges: dict[int, list[tuple[tuple[int, int, int, int, str, str, int], int]]] = {}
-    for score, actual_index, expected_index in candidates:
-        edges.setdefault(actual_pos[actual_index], []).append((score, expected_pos[expected_index]))
-
-    memo: dict[tuple[int, int], tuple[int, tuple, tuple[tuple[int, int], ...]]] = {}
-
-    def search(index: int, mask: int) -> tuple[int, tuple, tuple[tuple[int, int], ...]]:
-        key = (index, mask)
-        cached = memo.get(key)
-        if cached is not None:
-            return cached
-        if index == len(actual_ids):
-            empty: tuple[int, tuple, tuple[tuple[int, int], ...]] = (0, (), ())
-            memo[key] = empty
-            return empty
-        best = search(index + 1, mask)
-        for score, expected_pos_index in edges.get(index, ()):
-            bit = 1 << expected_pos_index
-            if mask & bit:
+    def augment(actual_index: int, seen: set[int]) -> bool:
+        for expected_index in edges[actual_index]:
+            if expected_index in seen:
                 continue
-            card, scores, pairs = search(index + 1, mask | bit)
-            candidate = (
-                card + 1,
-                (score, *scores),
-                ((actual_ids[index], expected_ids[expected_pos_index]), *pairs),
-            )
-            if candidate[0] > best[0] or (candidate[0] == best[0] and candidate[1] > best[1]):
-                best = candidate
-        memo[key] = best
-        return best
+            seen.add(expected_index)
+            previous = owners.get(expected_index)
+            if previous is None or augment(previous, seen):
+                owners[expected_index] = actual_index
+                return True
+        return False
 
-    return list(search(0, 0)[2])
+    for actual_index in sorted(edges):
+        augment(actual_index, set())
+    return sorted((actual_index, expected_index) for expected_index, actual_index in owners.items())
 
 
 def score_review(
@@ -259,13 +222,15 @@ def score_review(
     actual: Sequence[ReviewFinding],
     expected: Sequence[ExpectedFinding],
 ) -> dict[str, Any]:
+    actual = sorted(actual, key=astuple)
+    expected = sorted(expected, key=astuple)
     candidates: list[tuple[tuple[int, int, int, int, str, str, int], int, int]] = []
     for actual_index, finding in enumerate(actual):
         for expected_index, label in enumerate(expected):
             score = _match_score(finding, label)
             if score is not None:
                 # Content keys, not list indices: JSON finding order must not
-                # change which pairs a greedy match commits.
+                # change which pairs the matching selects.
                 expected_span = label.line_end - label.line_start
                 candidates.append(
                     (
@@ -277,7 +242,6 @@ def score_review(
     candidates.sort(reverse=True)
     pairs = _assign_pairs(candidates)
     matched_actual = {actual_index for actual_index, _expected_index in pairs}
-    matched_expected = {expected_index for _actual_index, expected_index in pairs}
 
     tp = len(pairs)
     fp = len(actual) - tp
@@ -287,22 +251,23 @@ def score_review(
     f1 = (
         2 * precision * recall / (precision + recall)
         if precision is not None and recall is not None and precision + recall
-        else None
+        else (0.0 if expected else None)
     )
     expected_weight = sum(SEVERITY_WEIGHT[item.severity] for item in expected)
-    matched_weight = sum(SEVERITY_WEIGHT[expected[e].severity] for _, e in pairs)
+    matched_weight = sum(
+        min(SEVERITY_WEIGHT[actual[a].severity], SEVERITY_WEIGHT[expected[e].severity]) for a, e in pairs
+    )
     fp_weight = sum(SEVERITY_WEIGHT[actual[a].severity] for a in range(len(actual)) if a not in matched_actual)
     weighted_precision = matched_weight / (matched_weight + fp_weight) if matched_weight + fp_weight else None
     weighted_recall = matched_weight / expected_weight if expected_weight else None
     weighted_f1 = (
         2 * weighted_precision * weighted_recall / (weighted_precision + weighted_recall)
-        if weighted_precision is not None
-        and weighted_recall is not None
-        and weighted_precision + weighted_recall
-        else None
+        if weighted_precision is not None and weighted_recall is not None and weighted_precision + weighted_recall
+        else (0.0 if expected else None)
     )
     blockers = [index for index, item in enumerate(expected) if item.severity in BLOCKING_SEVERITIES]
-    blocker_recall = sum(index in matched_expected for index in blockers) / len(blockers) if blockers else None
+    matched_blockers = {e for a, e in pairs if actual[a].severity in BLOCKING_SEVERITIES}
+    blocker_recall = sum(index in matched_blockers for index in blockers) / len(blockers) if blockers else None
     severity_accuracy = (
         sum(actual[a].severity == expected[e].severity for a, e in pairs) / tp if tp else None
     )

@@ -24,6 +24,89 @@ CANDIDATE_ARMS = {
     "candidate_workflow_direct": "workflow_direct",
     "candidate_review": "review",
 }
+PROMOTION_SCHEMA_VERSION = 6
+
+
+def promotion_policy(
+    candidate_arms: Sequence[str],
+    *,
+    metric: str = "cost_usd",
+    min_runs: int = 3,
+    min_improvement_pct: float = 5.0,
+    max_task_regression_pct: float = 20.0,
+) -> dict[str, dict[str, Any]]:
+    """The exact per-arm policy shared by evidence production and application."""
+    if not candidate_arms or len(set(candidate_arms)) != len(candidate_arms):
+        raise ValueError("promotion policy requires unique candidate arms")
+    policies = {}
+    for arm in candidate_arms:
+        if arm not in CANDIDATE_ARMS:
+            raise ValueError(f"unsupported candidate arm: {arm}")
+        policies[arm] = (
+            {
+                "metric": "review_weighted_f1",
+                "min_runs": min_runs,
+                "min_improvement": 0.01,
+                "quality_rule": "correct verdict on every repeat; minimum blocker recall; no clean-control regression",
+            }
+            if arm == "candidate_review"
+            else {
+                "metric": metric,
+                "min_runs": min_runs,
+                "min_improvement_pct": min_improvement_pct,
+                "max_task_regression_pct": max_task_regression_pct,
+                "max_failed_task_regression_pct": MAX_FAILED_TASK_REGRESSION_PCT,
+                "min_gated_task_ratio": MIN_GATED_TASK_RATIO,
+                "quality_rule": "no per-task resolution-rate regression",
+            }
+        )
+    return policies
+
+
+def promotion_evidence(
+    results: dict[str, dict[str, dict[str, Any]]],
+    *,
+    policy: dict[str, dict[str, Any]],
+    model: str | None,
+    complete: bool,
+) -> dict[str, Any]:
+    """Produce discriminated, recomputable decisions, including partial reports."""
+    decisions = []
+    for candidate, rules in policy.items():
+        common = {
+            "incumbent_arm": CANDIDATE_ARMS[candidate],
+            "candidate_arm": candidate,
+            "model": model,
+            "min_runs": rules["min_runs"],
+        }
+        if candidate == "candidate_review":
+            decision = evaluate_review_candidate(results, **common, min_improvement=rules["min_improvement"])
+        else:
+            decision = evaluate_candidate(
+                results,
+                **common,
+                **{
+                    key: rules[key]
+                    for key in (
+                        "metric",
+                        "min_improvement_pct",
+                        "max_task_regression_pct",
+                        "max_failed_task_regression_pct",
+                    )
+                },
+            )
+        if not complete:
+            decision["decision"] = "insufficient_evidence"
+            decision["reasons"].append("sweep aborted; partial evidence cannot promote")
+        decisions.append(decision)
+    return {
+        "schema_version": PROMOTION_SCHEMA_VERSION,
+        "run_status": "complete" if complete else "aborted",
+        "policy": policy,
+        "decisions": decisions,
+    }
+
+
 CANDIDATE_SKILLS = {
     "gitnexus-plan",
     "gitnexus-review",
@@ -648,6 +731,9 @@ def evaluate_review_candidate(
                 "task": task_id,
                 "class": incumbent.get("class", ""),
                 "incumbent_weighted_f1": incumbent_score,
+                "incumbent": dict(incumbent),
+                "candidate": dict(candidate),
+                "gated": True,
                 "candidate_weighted_f1": candidate_score,
                 "incumbent_blocker_recall": incumbent_blockers,
                 "candidate_blocker_recall": candidate_blockers,
@@ -661,6 +747,7 @@ def evaluate_review_candidate(
         if (
             incumbent_runs < min_runs
             or candidate_runs < min_runs
+            or incumbent_runs != candidate_runs
             or incumbent.get("excluded_runs")
             or candidate.get("excluded_runs")
         ):
@@ -678,6 +765,15 @@ def evaluate_review_candidate(
             insufficient = True
             reasons.append(f"{task_id}: structured review quality metrics are incomplete")
             continue
+        if candidate.get("review_verdict_correct") is None:
+            insufficient = True
+            reasons.append(f"{task_id}: candidate verdict evidence is incomplete")
+        elif candidate["review_verdict_correct"] is not True:
+            regression = True
+            reasons.append(f"{task_id}: candidate verdict was incorrect on a valid repeat")
+        if (incumbent_blockers is None) != (candidate_blockers is None):
+            insufficient = True
+            reasons.append(f"{task_id}: blocker recall evidence is incomplete")
         if incumbent_blockers is not None and candidate_blockers is not None and float(candidate_blockers) < float(
             incumbent_blockers
         ):
@@ -714,7 +810,8 @@ def evaluate_review_candidate(
         "decision": decision,
         "metric": "review_weighted_f1",
         "model": model,
-        "task_results": task_rows,
+        "tasks": task_rows,
+        "ungated_tasks": [],
         "reasons": reasons,
     }
 
@@ -824,6 +921,8 @@ def evaluate_candidate(
                 "task": task_id,
                 "class": incumbent.get("class", ""),
                 "incumbent_resolved": f"{incumbent['resolved']}/{incumbent_runs}",
+                "incumbent": dict(incumbent),
+                "candidate": dict(candidate),
                 "candidate_resolved": f"{candidate['resolved']}/{candidate_runs}",
                 "incumbent_excluded_runs": incumbent_excluded,
                 "candidate_excluded_runs": candidate_excluded,

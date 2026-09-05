@@ -12,11 +12,11 @@ tasks:
     verify: test -s review-output.json
     oracle:
       command: test -s review-output.json
-      files: [{source: review-pr-2718-defect.labels.json, target: review-labels.json}]
+      files: [{ source: review-pr-2718-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: &deps
-      - {source: node_modules, target: node_modules}
-      - {source: gitnexus/node_modules, target: gitnexus/node_modules}
-      - {source: gitnexus-shared/node_modules, target: gitnexus-shared/node_modules}
+      - { source: node_modules, target: node_modules }
+      - { source: gitnexus/node_modules, target: gitnexus/node_modules }
+      - { source: gitnexus-shared/node_modules, target: gitnexus-shared/node_modules }
 
   - <<: *review_case
     id: review-pr-2794-defect
@@ -26,7 +26,7 @@ tasks:
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2794. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
-      files: [{source: review-pr-2794-defect.labels.json, target: review-labels.json}]
+      files: [{ source: review-pr-2794-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
   - <<: *review_case
@@ -37,7 +37,7 @@ tasks:
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2108. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
-      files: [{source: review-pr-2108-defect.labels.json, target: review-labels.json}]
+      files: [{ source: review-pr-2108-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
   - <<: *review_case
@@ -48,7 +48,7 @@ tasks:
     prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
-      files: [{source: review-pr-2258-defect.labels.json, target: review-labels.json}]
+      files: [{ source: review-pr-2258-defect.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
   - <<: *review_case
@@ -60,7 +60,7 @@ tasks:
     prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
-      files: [{source: review-pr-2258-clean.labels.json, target: review-labels.json}]
+      files: [{ source: review-pr-2258-clean.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps
 
   - <<: *review_case
@@ -72,5 +72,5 @@ tasks:
     prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2773. Report only actionable defects introduced by the local diff.
     oracle:
       command: test -s review-output.json
-      files: [{source: review-pr-2773-clean.labels.json, target: review-labels.json}]
+      files: [{ source: review-pr-2773-clean.labels.json, target: review-labels.json }]
     sandbox_dependencies: *deps

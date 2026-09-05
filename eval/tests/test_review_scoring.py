@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,60 @@ from workflow_bench.review_scoring import (
     parse_review_output,
     score_review,
 )
+
+
+@pytest.mark.parametrize("noise", [False, True])
+def test_complete_misses_are_measured_zero(noise):
+    actual = (ReviewFinding("noise", "low", "other.py", 1, 1, "style", "s", "e", "r", False),) if noise else ()
+    score = score_review("comment" if noise else "approve", actual, (expected(),))
+    assert score["f1"] == score["weighted_f1"] == 0
+
+
+def test_downgraded_blocker_loses_weight_and_blocker_credit():
+    actual = ReviewFinding("a", "low", "src/api.ts", 20, 20, "correctness", "s", "e", "r", False)
+    score = score_review("comment", (actual,), (expected(),))
+    assert score["weighted_recall"] == 0.2
+    assert score["blocker_recall"] == 0
+    assert score["verdict_correct"] is False
+
+
+@pytest.mark.parametrize("size", [2, 17, 100])
+def test_maximum_matching_at_every_supported_size(size):
+    a = ReviewFinding("a", "high", "src/api.ts", 1, 1, "a", "s", "e", "r", True)
+    actual = [a, replace(a, finding_id="b", line=10, end_line=10, category="b")]
+    labels = [
+        expected(finding_id="broad", line_start=1, line_end=10, category="a"),
+        expected(finding_id="tight", line_start=1, line_end=1, category="b"),
+    ]
+    for i in range(2, size):
+        actual.append(replace(a, finding_id=str(i), path=f"{i}.py"))
+        labels.append(expected(finding_id=str(i), path=f"{i}.py", line_start=1, line_end=1))
+    for findings in (actual, list(reversed(actual))):
+        for expected_labels in (labels, list(reversed(labels))):
+            assert score_review("request_changes", findings, expected_labels)["true_positives"] == size
+
+
+def test_dense_matching_handles_the_full_finding_limit():
+    a = ReviewFinding("a", "high", "src/api.ts", 20, 20, "correctness", "s", "e", "r", True)
+    actual = [replace(a, finding_id=str(i)) for i in range(100)]
+    labels = [expected(finding_id=str(i)) for i in range(100)]
+    assert score_review("request_changes", actual, labels)["true_positives"] == 100
+
+
+@pytest.mark.parametrize("large_side", ["actual", "expected"])
+def test_maximum_matching_with_asymmetric_large_inputs(large_side):
+    a = ReviewFinding("a", "high", "src/api.ts", 1, 1, "a", "s", "e", "r", True)
+    actual = [a, replace(a, finding_id="b", line=10, end_line=10, category="b")]
+    labels = [
+        expected(finding_id="broad", line_start=1, line_end=10, category="a"),
+        expected(finding_id="tight", line_start=1, line_end=1, category="b"),
+    ]
+    for i in range(15):
+        if large_side == "actual":
+            actual.append(replace(a, finding_id=str(i), path=f"extra-{i}.py"))
+        else:
+            labels.append(expected(finding_id=str(i), path=f"extra-{i}.py"))
+    assert score_review("request_changes", actual, labels)["true_positives"] == 2
 
 
 def finding(**overrides):

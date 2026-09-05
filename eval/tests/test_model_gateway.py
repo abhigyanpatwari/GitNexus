@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import subprocess
+import os
+import json
+import signal
+import socket
+import time
+import sys
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
 import pytest
 import yaml
+
 
 from workflow_bench.model_gateway import (
     DEFAULT_GATEWAY_READY_TIMEOUT_S,
@@ -26,6 +36,167 @@ from workflow_bench.model_gateway import (
     write_openai_litellm_config,
 )
 from workflow_bench.evolve import build_parser, runner_environment
+
+
+def test_locked_litellm_translates_messages_to_offline_responses(monkeypatch, tmp_path):
+    from workflow_bench import model_gateway
+
+    observed = []
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            observed.append((self.path, self.headers.get("Authorization"), body))
+            response = {
+                "id": "resp_offline",
+                "object": "response",
+                "created_at": int(time.time()),
+                "status": "completed",
+                "model": "gpt-4.1",
+                "error": None,
+                "output": [
+                    {
+                        "id": "msg_offline",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "offline pong", "annotations": []}],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 1,
+                    "output_tokens": 2,
+                    "total_tokens": 3,
+                    "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                },
+            }
+            payload = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    worker = threading.Thread(target=upstream.serve_forever, daemon=True)
+    worker.start()
+    original = model_gateway.write_openai_litellm_config
+
+    def config(path, names):
+        original(path, names)
+        document = yaml.safe_load(path.read_text())
+        for entry in document["model_list"]:
+            entry["litellm_params"]["api_base"] = f"http://127.0.0.1:{upstream.server_port}/v1"
+        path.write_text(yaml.safe_dump(document))
+        return path
+
+    monkeypatch.setattr(model_gateway, "write_openai_litellm_config", config)
+    try:
+        with OpenAIGateway(
+            openai_api_key="offline-upstream-secret",
+            model_names=["gpt-4.1"],
+            work_dir=tmp_path / "gateway",
+            ready_timeout_s=60,
+        ) as gateway:
+            port = gateway.port
+            request = urllib.request.Request(
+                gateway.base_url + "/v1/messages",
+                data=json.dumps(
+                    {
+                        "model": "gpt-4.1",
+                        "max_tokens": 32,
+                        "messages": [{"role": "user", "content": "ping"}],
+                    }
+                ).encode(),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": gateway.auth_token,
+                    "anthropic-version": "2023-06-01",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                translated = json.load(response)
+            assert "offline pong" in json.dumps(translated)
+            assert len(observed) == 1 and observed[0][0] == "/v1/responses"
+            assert observed[0][1] == "Bearer offline-upstream-secret"
+            assert gateway.auth_token != "offline-upstream-secret"
+        with socket.socket() as client:
+            assert client.connect_ex(("127.0.0.1", port)) != 0
+        gateway.close()  # ownership close is idempotent
+    finally:
+        upstream.shutdown()
+        upstream.server_close()
+        worker.join(timeout=5)
+
+
+@pytest.mark.parametrize("termination", ["terminate", "kill"])
+@pytest.mark.parametrize("phase", ["ready", "startup"])
+def test_gateway_lifetime_ends_with_its_parent(tmp_path, termination, phase):
+    ready = tmp_path / "ready.json"
+    proxy_pid = tmp_path / "proxy-pid"
+    proxy = tmp_path / "proxy.py"
+    proxy.write_text(f"""import os,sys
+from pathlib import Path
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response({200 if phase == "ready" else 503}); self.end_headers()
+Path(sys.argv[2]).write_text(str(os.getpid()))
+HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+""")
+    parent_code = f"""
+import json,os,sys,time,subprocess
+from pathlib import Path
+from workflow_bench import model_gateway
+model_gateway.litellm_proxy_argv=lambda **kwargs: [sys.executable, {str(proxy)!r}, str(kwargs['port']), {str(proxy_pid)!r}]
+gateway=model_gateway.OpenAIGateway(openai_api_key='offline-secret', model_names=['gpt-4.1'], work_dir=Path({str(tmp_path / "gateway")!r}), ready_timeout_s=10)
+if {phase == "startup"!r}:
+    Path({str(ready)!r}).write_text(json.dumps({{'port':gateway.port}}))
+gateway.__enter__()
+if gateway._process.stdin is not None:
+    assert not os.get_inheritable(gateway._process.stdin.fileno())
+Path({str(ready)!r}).write_text(json.dumps({{'port':gateway.port}}))
+time.sleep(60)
+"""
+    parent = subprocess.Popen(
+        [sys.executable, "-c", parent_code],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 12
+        while (not ready.exists() or not proxy_pid.exists()) and parent.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), parent.communicate(timeout=1)
+        port = json.loads(ready.read_text())["port"]
+        getattr(parent, termination)()
+        parent.wait(timeout=5)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with socket.socket() as client:
+                if client.connect_ex(("127.0.0.1", port)) != 0:
+                    break
+            time.sleep(0.02)
+        else:
+            pytest.fail("gateway port survived abrupt parent death")
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=5)
+        if proxy_pid.exists():
+            try:
+                if os.name == "nt":
+                    os.kill(int(proxy_pid.read_text()), signal.SIGTERM)
+                else:
+                    os.killpg(int(proxy_pid.read_text()), signal.SIGKILL)
+            except OSError:
+                pass
 
 
 @pytest.mark.parametrize(

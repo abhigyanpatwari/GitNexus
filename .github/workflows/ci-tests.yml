@@ -905,5 +905,6 @@ jobs:
       - name: Prove Windows process-tree ownership
         run: >-
           uv run --locked --extra dev python -m pytest
-          tests/test_process_control.py -q
+          tests/test_process_control.py tests/test_model_gateway.py
+          -k "not locked_litellm" -q
         working-directory: eval

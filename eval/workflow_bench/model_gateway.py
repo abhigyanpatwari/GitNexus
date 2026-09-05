@@ -274,10 +274,15 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
         self.log_path = work_dir / "litellm.log"
         self._process: subprocess.Popen[bytes] | None = None
         self._log: Any = None
+        self._job: Any = None
 
     def log_tail(self, limit: int = 1000) -> str:
         try:
-            return self.log_path.read_bytes()[-limit:].decode(errors="replace")
+            text = self.log_path.read_bytes()[-limit:].decode(errors="replace")
+            for secret in (self.openai_api_key, self.auth_token):
+                if secret:
+                    text = text.replace(secret, "[REDACTED]")
+            return text
         except OSError:
             return ""
 
@@ -290,6 +295,7 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
             "PYTHONUNBUFFERED": "1",
+            "LITELLM_LOCAL_MODEL_COST_MAP": "True",
             "OPENAI_API_KEY": self.openai_api_key,
             "LITELLM_MASTER_KEY": self.auth_token,
         }
@@ -300,20 +306,38 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
             self._log = self.log_path.open("wb")
             self.log_path.chmod(0o600)
             self._process = subprocess.Popen(
-                litellm_proxy_argv(
-                    config=config,
-                    host="127.0.0.1",
-                    port=self.port,
-                ),
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("gateway_supervisor.py")),
+                    *litellm_proxy_argv(
+                        config=config,
+                        host="127.0.0.1",
+                        port=self.port,
+                    ),
+                ],
                 cwd=str(self.work_dir),
                 env=env,
-                stdin=subprocess.DEVNULL,
+                # This pipe's non-inheritable write end belongs only to this
+                # parent. EOF reaches the supervisor even after SIGKILL.
+                stdin=subprocess.PIPE,
                 stdout=self._log,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
+                start_new_session=os.name != "nt",
+                creationflags=0x00000004 | 0x00000200 if os.name == "nt" else 0,
             )
-        except OSError as exc:
+            if os.name == "nt":
+                from .process_control import _WindowsJob
+
+                self._job = _WindowsJob(self._process, [(self._process, None, None)])
+        except BaseException as exc:
+            if os.name == "nt" and self._job is None and self._process is not None:
+                # A failed Job Object creation must not leave the supervisor
+                # suspended before it can observe the liveness pipe.
+                self._process.kill()
+                self._process.wait(timeout=5)
             self.close()
+            if not isinstance(exc, OSError):
+                raise
             raise RuntimeError(f"failed to start the OpenAI LiteLLM gateway: {exc}") from exc
         try:
             self._wait_until_ready()
@@ -327,16 +351,18 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
 
     def close(self) -> None:
         process = self._process
-        self._process = None
         try:
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+            if process is not None:
+                if process.stdin is not None and not process.stdin.closed:
+                    process.stdin.close()
+                # Keep the supervisor alive until its process-tree cleanup
+                # completes. Killing it early would discard the ownership.
+                process.wait(timeout=15)
+                self._process = None
         finally:
+            job, self._job = self._job, None
+            if job is not None:
+                job.close()
             log, self._log = self._log, None
             if log is not None:
                 log.close()

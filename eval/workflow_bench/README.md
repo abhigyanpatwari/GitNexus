@@ -8,19 +8,19 @@ report.
 
 ## What it compares
 
-| Arm | Sessions | Notes |
-| --- | --- | --- |
-| `workflow` | `gitnexus-plan` on the task, then `gitnexus-work` on the produced plan | The skills must be installed (`gitnexus setup`, or repo-local `.claude/skills/`) |
-| `candidate_workflow` | same sessions as `workflow`, with a candidate skill overlay | Paired with `workflow` on the same task/ref/model |
-| `workflow_direct` | one `gitnexus-work` direct-mode session | The middle option — execution discipline without a planning pass |
-| `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay | Paired with `workflow_direct` on the same task/ref/model |
-| `ce_workflow` | `ce-plan` on the task, then `ce-work` on the produced plan | External comparator: the explicitly supplied, pinned compound-engineering plugin's plan→work family |
-| `ce_workflow_direct` | one `ce-work` direct-mode session | External comparator paired with `workflow_direct` |
-| `review` | one `gitnexus-review` session over an immutable historical PR snapshot | Emits strict `review-output.json`; hidden human labels score quality after the session |
-| `candidate_review` | the same review with a `gitnexus-review` candidate overlay | Paired with `review` on the same case/ref/model/runtime |
-| `ce_review` | one pinned `ce-code-review` session over the same changes | External comparator paired with both review arms |
-| `baseline` | one session with the identical task text | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools |
-| `baseline_nomcp` | like baseline, graph tools also disallowed | Separates the workflow-discipline question from the GitNexus-tools question (off by default) |
+| Arm                         | Sessions                                                               | Notes                                                                                               |
+| --------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `workflow`                  | `gitnexus-plan` on the task, then `gitnexus-work` on the produced plan | The skills must be installed (`gitnexus setup`, or repo-local `.claude/skills/`)                    |
+| `candidate_workflow`        | same sessions as `workflow`, with a candidate skill overlay            | Paired with `workflow` on the same task/ref/model                                                   |
+| `workflow_direct`           | one `gitnexus-work` direct-mode session                                | The middle option — execution discipline without a planning pass                                    |
+| `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay      | Paired with `workflow_direct` on the same task/ref/model                                            |
+| `ce_workflow`               | `ce-plan` on the task, then `ce-work` on the produced plan             | External comparator: the explicitly supplied, pinned compound-engineering plugin's plan→work family |
+| `ce_workflow_direct`        | one `ce-work` direct-mode session                                      | External comparator paired with `workflow_direct`                                                   |
+| `review`                    | one `gitnexus-review` session over an immutable historical PR snapshot | Emits strict `review-output.json`; hidden human labels score quality after the session              |
+| `candidate_review`          | the same review with a `gitnexus-review` candidate overlay             | Paired with `review` on the same case/ref/model/runtime                                             |
+| `ce_review`                 | one pinned `ce-code-review` session over the same changes              | External comparator paired with both review arms                                                    |
+| `baseline`                  | one session with the identical task text                               | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools               |
+| `baseline_nomcp`            | like baseline, graph tools also disallowed                             | Separates the workflow-discipline question from the GitNexus-tools question (off by default)        |
 
 Every arm runs in a fresh detached git worktree of the task's `ref`, once per
 `--runs`. The model-visible `verify` command is recorded as
@@ -205,7 +205,7 @@ artifacts. Those artifacts are the trajectory evidence: cluster failures and
 expensive detours, propose one bounded prompt change, and feed it back as the
 next overlay.
 
-When candidate arms are present the runner also writes schema-4
+When candidate arms are present the runner also writes schema-6
 `promotion.json`. It
 binds the immutable overlay digest, benchmark model, truthful candidate origin
 (a named proposer model or `manual-initial-overlay`), selected
@@ -213,6 +213,22 @@ task definitions, resolved commits, and exact hidden-oracle bytes/commands,
 immutable dependency bytes, committed base digest of every apply
 destination, exact required arms, thresholds, and evidence expiry. Its default
 deterministic gate is deliberately conservative:
+
+Schema 6 binds a separate policy to each required candidate arm and records
+whether the sweep completed. Apply validates the paired metrics and recomputes
+each decision. Historical schema 5 reports remain readable; regenerate their
+benchmark evidence before applying an overlay. Editing a schema number does
+not supply the missing evidence.
+
+Review candidates optimize weighted F1 with a minimum improvement of 0.01,
+complete paired evidence on every selected task, and no per-task quality
+regression. Complete misses score zero. Matching uses maximum cardinality
+throughout the 100-finding limit. Downgraded findings receive at most their
+reported severity's weight; only blocking-severity matches count toward blocker
+recall. Every valid candidate repeat must have the correct verdict, and the
+minimum blocker recall across repeats must not regress. Clean controls retain
+their false-positive and verdict safeguards. Implementation candidates retain
+the efficiency policy below:
 
 - at least 3 paired VALID runs per task, zero excluded runs in either arm
   (session/infra-error rows therefore block promotion), and a named model;
@@ -257,6 +273,39 @@ online model-weight RL. The same records can feed a later offline RL pipeline
 without weakening today's deterministic promotion boundary.
 
 ### Closing the loop automatically (`evolve.py`)
+
+The evolution workflow runs an offline containment preflight with the pinned
+Claude Code 2.1.214 binary before starting a paid proposer or benchmark. The
+review canary seals the workspace read-only and exposes only the pre-created
+`review-output.json` as writable. Runtime mount placeholders are prepared in
+the disposable clone before sealing it; existing config bytes are preserved.
+Any pre-existing result entry, including a symlink, is rejected. Required
+canaries fail when their runtime or Bubblewrap is unavailable.
+
+The default outage limit is five consecutive unusable results, across task
+boundaries. Invalid review JSON advances this limit even when a skill or session
+error was recorded first. A valid zero-quality review resets it. Concurrent
+waves can exceed the limit by at most `workers - 1` completed cells; no further
+wave starts after a trip. Completed rows and redacted diagnostics remain in the
+partial report, the runner exits nonzero, and the evolution driver stops without
+applying or starting another generation.
+
+SIGINT and SIGTERM propagate one cancellation event through managed commands,
+including clone, setup, Claude, and verification. Executor submissions copy
+the run context so indirect subprocess helpers receive the same event. Active
+process groups or Windows Job Objects are terminated and workers joined before
+shared assets or the gateway are released. Controlled cancellation tests require
+cleanup within 15 seconds. Cancellation remains distinct from timeout and
+quality failure in recorded evidence.
+
+The gateway runs under a private supervisor watching a pipe owned only by the
+harness. Parent exit, including SIGKILL, closes that pipe and stops the proxy
+group; Windows also retains kill-on-close Job Object ownership. Keep completed
+JSONL rows, transcripts, the partial report, and gateway diagnostics when
+investigating an interrupted run. A subsequent paid comparison needs fresh
+evidence from all arms under the same dependency lock. LiteLLM pricing comes
+from that locked release's local cost map; compare no old/new-lock costs as
+quality evidence.
 
 `workflow_bench.evolve` automates the three manual arrows — propose,
 benchmark, apply — without moving the trust boundary:
@@ -364,7 +413,7 @@ session receives `--effort xhigh`.
 
 Caveats, honestly:
 
-- Both arms run on the same model, so the *comparison* stays fair at any
+- Both arms run on the same model, so the _comparison_ stays fair at any
   quality level — but small free models follow skills less reliably, so
   expect lower resolve rates and noisier savings than on frontier models.
   Treat free-model runs as directional; confirm headline numbers with a
@@ -391,16 +440,16 @@ Three task classes × three arms, single-repo (GitNexus itself). **Every arm
 resolved every task** — at this difficulty, pass/fail quality is saturated
 and the comparison is pure cost:
 
-| task (class) | arm | resolved | cost $ | wall | turns | vs baseline cost |
-| --- | --- | --- | --- | --- | --- | --- |
-| trivial-version-alias | workflow | 1/1 | 9.16 | 16m | 63 | −333% |
-| trivial-version-alias | baseline | 1/1 | 2.11 | 2.8m | 16 | — |
-| inv-bug-pdg-note | workflow | 1/1 | 14.56 | 21m | 83 | −331% |
-| inv-bug-pdg-note | workflow_direct | 1/1 | 5.23 | 7.5m | 32 | −55% |
-| inv-bug-pdg-note | baseline | 1/1 | 3.38 | 4.7m | 22 | — |
-| inv-feature-list-repos-filter | workflow | 1/1 | 13.22 | 19m | 84 | −211% |
-| inv-feature-list-repos-filter | workflow_direct | 1/1 | 4.87 | 4.8m | 38 | −15% (wall +14% faster) |
-| inv-feature-list-repos-filter | baseline | 1/1 | 4.25 | 5.5m | 32 | — |
+| task (class)                  | arm             | resolved | cost $ | wall | turns | vs baseline cost        |
+| ----------------------------- | --------------- | -------- | ------ | ---- | ----- | ----------------------- |
+| trivial-version-alias         | workflow        | 1/1      | 9.16   | 16m  | 63    | −333%                   |
+| trivial-version-alias         | baseline        | 1/1      | 2.11   | 2.8m | 16    | —                       |
+| inv-bug-pdg-note              | workflow        | 1/1      | 14.56  | 21m  | 83    | −331%                   |
+| inv-bug-pdg-note              | workflow_direct | 1/1      | 5.23   | 7.5m | 32    | −55%                    |
+| inv-bug-pdg-note              | baseline        | 1/1      | 3.38   | 4.7m | 22    | —                       |
+| inv-feature-list-repos-filter | workflow        | 1/1      | 13.22  | 19m  | 84    | −211%                   |
+| inv-feature-list-repos-filter | workflow_direct | 1/1      | 4.87   | 4.8m | 38    | −15% (wall +14% faster) |
+| inv-feature-list-repos-filter | baseline        | 1/1      | 4.25   | 5.5m | 32    | —                       |
 
 What the ground base says, honestly:
 
@@ -415,7 +464,7 @@ What the ground base says, honestly:
   detect_changes-before-commit) is cheap. It produced noticeably more test
   coverage than baseline for near-equal cost on the feature task.
 - **Quality didn't differentiate because nothing failed.** The regime where
-  the workflow should win on *resolve rate* — cross-module tasks where
+  the workflow should win on _resolve rate_ — cross-module tasks where
   baselines flail — is the unmeasured cell (`cross-module-parse-retry`), and
   the next thing to measure, ideally with `--runs 3+` on a free backend.
 - Caveats: n=1 per cell, one repo, one model; churn numbers from this run
@@ -433,11 +482,11 @@ If a future run shows the workflow flattering itself here, distrust the run.
 The hardest class — retry-with-backoff across the worker-pool/pipeline
 seams, transient-vs-deterministic classification:
 
-| arm | resolved | cost $ | wall | turns | churn |
-| --- | --- | --- | --- | --- | --- |
-| workflow | 1/1 | 18.32 | 37m | 107 | 4/+373/−17 |
-| **workflow_direct** | 1/1 | **9.53** | **15m** | **52** | 11/+244/−66 |
-| baseline | 1/1 | 18.03 | 34m | 98 | 6/+345/−69 |
+| arm                 | resolved | cost $   | wall    | turns  | churn       |
+| ------------------- | -------- | -------- | ------- | ------ | ----------- |
+| workflow            | 1/1      | 18.32    | 37m     | 107    | 4/+373/−17  |
+| **workflow_direct** | 1/1      | **9.53** | **15m** | **52** | 11/+244/−66 |
+| baseline            | 1/1      | 18.03    | 34m     | 98     | 6/+345/−69  |
 
 (The workflow_direct row is the clean re-run under clone isolation — the
 original was contaminated, see the integrity note below.)
@@ -471,14 +520,14 @@ category-priced freshness (`accept` for compact classes), per-category turn
 budgets, and the work-phase HEAD==pin fast path, the same
 `inv-bug-pdg-note` workflow cell re-measured (n=1):
 
-| | ground base | optimized | delta |
-| --- | --- | --- | --- |
-| resolved | ✅ | ✅ | — |
-| cost $ | 14.56 | 11.70 | **−20%** |
-| turns | 83 | 72 | −13% |
-| output tokens | 59,789 | 53,345 | −11% |
-| cache_read | 6.64M | 5.07M | −24% |
-| wall | 21m | 25m | +15% |
+|               | ground base | optimized | delta    |
+| ------------- | ----------- | --------- | -------- |
+| resolved      | ✅          | ✅        | —        |
+| cost $        | 14.56       | 11.70     | **−20%** |
+| turns         | 83          | 72        | −13%     |
+| output tokens | 59,789      | 53,345    | −11%     |
+| cache_read    | 6.64M       | 5.07M     | −24%     |
+| wall          | 21m         | 25m       | +15%     |
 
 Verified in-transcript: the compact form fired (115-line plan vs 209 for a
 simpler task pre-optimization), the plan session dropped 72→49 turns, and
@@ -491,8 +540,8 @@ this task class, so the routing rule above stands unchanged.
 ## Writing good tasks
 
 See `tasks.scenarios.yaml`. Small enough to finish headless, real enough to
-require investigation — the workflow's savings come from *not re-reading and
-not re-investigating*, which trivial tasks never exercise. Keep `verify` as a
+require investigation — the workflow's savings come from _not re-reading and
+not re-investigating_, which trivial tasks never exercise. Keep `verify` as a
 model-visible authored-test quality signal, and add an independent `oracle`
 whose source files live under `workflow_bench/oracles/`. Oracle commands must
 run only files staged beneath `$GITNEXUS_BENCH_ORACLE_ROOT`; for Vitest, include
@@ -502,7 +551,7 @@ carry build pre-hooks).
 
 ## Relation to the SWE-bench harness
 
-The rest of `eval/` benchmarks GitNexus *tools* inside a litellm agent loop
-(baseline vs graph-enhanced). This module benchmarks the *skill workflow*
+The rest of `eval/` benchmarks GitNexus _tools_ inside a litellm agent loop
+(baseline vs graph-enhanced). This module benchmarks the _skill workflow_
 inside the real CLI harness those skills ship for. Different question, same
 spirit: measure, don't assume.

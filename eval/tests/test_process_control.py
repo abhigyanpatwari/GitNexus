@@ -7,6 +7,9 @@ import os
 import signal
 import sys
 import time
+import threading
+import subprocess
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,6 +26,99 @@ from workflow_bench.process_control import (
 
 
 PYTHON = sys.executable
+
+
+def test_cancel_before_spawn_never_starts_the_child(tmp_path):
+    event = threading.Event()
+    event.set()
+    sentinel = tmp_path / "spawned"
+    result = run_managed([PYTHON, "-c", f"open({str(sentinel)!r}, 'w').close()"], timeout=60, cancel_event=event)
+    assert result.state == "cancelled"
+    assert not sentinel.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal escalation")
+def test_cancel_after_spawn_kills_a_term_ignoring_child():
+    event = threading.Event()
+    started = time.monotonic()
+    result = run_managed(
+        [
+            PYTHON,
+            "-c",
+            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready',flush=True); time.sleep(60)",
+        ],
+        timeout=60,
+        terminate_grace=0.1,
+        cancel_event=event,
+        stdout_observer=lambda chunk: event.set() if b"ready" in chunk else None,
+    )
+    assert result.state == "cancelled" and result.forced_kill
+    assert not result.timed_out
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent signals")
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_signal_cancels_active_wave_before_assets_are_released(tmp_path, signum):
+    ready = tmp_path / "child-pid"
+    assets = tmp_path / "assets"
+    assets.write_text("shared")
+    command = (
+        f"import os,time; from pathlib import Path; Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(60)"
+    )
+    script = f"""
+import json,sys
+from pathlib import Path
+from workflow_bench.process_control import cancellation_scope, run_managed
+from workflow_bench.runner import sweep_task_cells
+rows=[]
+def run(index, arm):
+    if index == 0:
+        return {{'resolved': True, 'error_kind': None}}
+    result=run_managed([sys.executable, '-c', {command!r}], timeout=60)
+    assert Path({str(assets)!r}).exists(), 'assets removed while a worker was active'
+    return {{'resolved': False, 'error_kind': result.state}}
+with cancellation_scope(handle_signals=True) as event:
+    streak, stopped=sweep_task_cells([(i, 'review') for i in range(10)], workers=2, run=run,
+        on_start=lambda *args: None, on_record=lambda i,a,r: rows.append([i,r]),
+        outage_streak=0, outage_limit=5, cancel_event=event)
+Path({str(assets)!r}).unlink()
+print(json.dumps({{'rows': rows, 'stopped': stopped}}))
+"""
+    process = subprocess.Popen(
+        [PYTHON, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        child_pid = int(ready.read_text())
+        started = time.monotonic()
+        process.send_signal(signum)
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == 0, stderr
+        assert time.monotonic() - started < 15
+        report = json.loads(stdout)
+        assert report["stopped"] and [row[0] for row in report["rows"]] == [0, 1]
+        assert report["rows"][0][1]["resolved"] is True
+        assert report["rows"][1][1]["error_kind"] == "cancelled"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        assert not assets.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if ready.exists():
+            try:
+                os.killpg(int(ready.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def test_managed_process_captures_normal_exit() -> None:

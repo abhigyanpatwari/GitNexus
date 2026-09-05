@@ -69,6 +69,111 @@ class SandboxError(RuntimeError):
     """Containment could not be established without weakening the contract."""
 
 
+# Claude Code 2.1.214's subprocess scrubber and nested sandbox bind these
+# paths even when absent. Mount targets must exist before sealing the clone.
+REVIEW_RUNTIME_FILES = (
+    "bunfig.toml",
+    "package.json",
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    ".gitmodules",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    ".env",
+    ".env.local",
+    ".env.development",
+    ".env.development.local",
+    ".env.test",
+    ".env.test.local",
+    ".env.production",
+    ".env.production.local",
+    ".git/config",
+    ".git/config.lock",
+    ".git/config.worktree",
+    ".git/config.worktree.lock",
+    ".git/info/exclude",
+    ".gitconfig",
+    ".bash_profile",
+    ".bashrc",
+    ".profile",
+    ".ripgreprc",
+    ".zprofile",
+    ".zshrc",
+)
+REVIEW_RUNTIME_DIRECTORIES = (
+    ".git/hooks",
+    ".git/info",
+    ".git/modules",
+    ".git/worktrees",
+    ".claude/commands",
+    ".claude/agents",
+    "node_modules/.bin",
+    ".github",
+    "scripts",
+    ".vscode",
+    ".idea",
+)
+
+
+def prepare_review_workspace(sandbox: SandboxSession, artifact_name: str) -> Path:
+    """Prepare disposable mount targets; never truncate a pre-existing entry."""
+
+    clone = _real_directory(sandbox.clone, label="review clone")
+    if PurePosixPath(artifact_name).name != artifact_name or "\\" in artifact_name or artifact_name in ("", ".", ".."):
+        raise SandboxError("review artifact must be a root filename")
+    output = clone / artifact_name
+    # No agent runs while this private clone is being prepared. On POSIX the
+    # directory descriptor additionally binds the exclusive create to its owner.
+    directory_fd = None
+    try:
+        if os.name != "nt":
+            directory_fd = os.open(clone, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fd = os.open(
+            artifact_name if directory_fd is not None else output,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise SandboxError("review artifact must be a regular file")
+        finally:
+            os.close(fd)
+    except FileExistsError as exc:
+        raise SandboxError("review artifact already exists") from exc
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+    if sandbox.backend != "bwrap":
+        return output
+    created: list[str] = []
+    for names, directory in ((REVIEW_RUNTIME_DIRECTORIES, True), (REVIEW_RUNTIME_FILES, False)):
+        for name in names:
+            # Record only absent entries. The no-follow traversal validates
+            # every parent before creating anything in the host filesystem.
+            missing = not os.path.lexists(clone / name)
+            _prepare_clone_target(clone, PurePosixPath(name), directory=directory, label="review runtime")
+            if missing:
+                created.append(name)
+    common_dir = clone / ".git/commondir"
+    missing = not os.path.lexists(common_dir)
+    _prepare_clone_target(clone, PurePosixPath(".git/commondir"), directory=False, label="review runtime")
+    if missing:
+        common_dir.write_text(".\n")
+        created.append(".git/commondir")
+    # Private status presentation only; never alter the repository's ignores.
+    excludes = sandbox.private_root / "git-excludes"
+    excludes.chmod(0o600)
+    with excludes.open("a") as stream:
+        stream.write("".join(f"/{name}\n" for name in created))
+    excludes.chmod(0o400)
+    (sandbox.private_root / "review-created-paths.json").write_text(json.dumps(created))
+    return output
+
+
 @dataclass(frozen=True)
 class ReadOnlyMount:
     source: Path

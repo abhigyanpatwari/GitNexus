@@ -9,15 +9,19 @@ import stat
 import subprocess
 import sys
 import threading
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner
+from workflow_bench import runner, runner_artifacts
+from workflow_bench import proposer_sandbox
 
 from workflow_bench.process_control import ManagedProcessResult, run_managed
+
+
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
@@ -46,6 +50,64 @@ from workflow_bench.proposer_sandbox import (
     stage_task_assets,
 )
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
+
+
+@pytest.mark.parametrize("entry", ["file", "directory", "relative-link", "absolute-link"])
+def test_review_preparation_rejects_existing_output_without_touching_target(tmp_path, entry):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    sentinel = tmp_path / "sentinel"
+    sentinel.write_text("must survive")
+    output = clone / "review-output.json"
+    if entry == "file":
+        output.write_text("existing result")
+    elif entry == "directory":
+        output.mkdir()
+    else:
+        output.symlink_to(sentinel if entry == "absolute-link" else "../sentinel")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        with pytest.raises(SandboxError, match="already exists"):
+            proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+    assert sentinel.read_text() == "must survive"
+    if entry == "file":
+        assert output.read_text() == "existing result"
+    if "link" in entry:
+        assert output.is_symlink()
+
+
+def test_review_preparation_creates_a_private_regular_output(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+        assert output.read_bytes() == b""
+        assert stat.S_ISREG(output.lstat().st_mode)
+        assert stat.S_IMODE(output.stat().st_mode) == 0o600
+
+
+def test_review_preparation_preserves_existing_runtime_files_and_tracks_only_created_paths(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "bunfig.toml").write_text("existing configuration\n")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        proposer_sandbox.prepare_review_workspace(replace(sandbox, backend="bwrap"), "review-output.json")
+        created = json.loads((sandbox.private_root / "review-created-paths.json").read_text())
+        assert "bunfig.toml" not in created
+        assert ".npmrc" in created
+        assert (clone / "bunfig.toml").read_text() == "existing configuration\n"
+        assert (clone / ".git/commondir").read_text() == ".\n"
+
+
+def test_review_preparation_rejects_a_runtime_symlink_parent(tmp_path):
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (clone / ".claude").symlink_to(outside, target_is_directory=True)
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        with pytest.raises(SandboxError):
+            proposer_sandbox.prepare_review_workspace(replace(sandbox, backend="bwrap"), "review-output.json")
+    assert list(outside.iterdir()) == []
 
 
 def test_environment_is_allowlisted_and_shell_children_are_credential_free(monkeypatch) -> None:
@@ -94,6 +156,7 @@ def test_unsafe_host_session_translates_virtual_paths_and_disables_containment(t
     with prepare_sandbox(
         clone=clone,
         backend="host-unsafe",
+        claude_bin=sys.executable,
         read_only_mounts=(ReadOnlyMount(evidence, "/evidence"),),
     ) as sandbox:
         assert sandbox.command_prefix == []
@@ -226,7 +289,7 @@ def test_host_unsafe_sandbox_cleanup_survives_readonly_tmpdir_copies(tmp_path) -
     clone = tmp_path / "clone"
     clone.mkdir()
     leftover = None
-    with prepare_sandbox(clone=clone, backend="host-unsafe") as sandbox:
+    with prepare_sandbox(clone=clone, backend="host-unsafe", claude_bin=sys.executable) as sandbox:
         leftover = sandbox.private_root
         copied = sandbox.temp / "tmp.XXXX" / "gitnexus-shared" / "src"
         copied.mkdir(parents=True)
@@ -1059,7 +1122,8 @@ def test_clone_controlled_mcp_replacement_is_never_executed_or_credentialed(tmp_
     os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
     reason="real Claude/Bash/MCP canary is mandatory in the named Ubuntu CI job",
 )
-def test_real_claude_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path) -> None:
+@pytest.mark.parametrize("review_layout", [False, True])
+def test_real_claude_auth_inner_sandbox_and_mcp_permissions(tmp_path: Path, review_layout: bool) -> None:
     """Exercise the exact CLI boundary without contacting a paid model."""
 
     claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
@@ -1093,7 +1157,7 @@ for line in sys.stdin:
             }]
         }
     elif method == "tools/call":
-        Path("/workspace/mcp-called").write_text("ok")
+        Path("/tmp/mcp-called").write_text("ok")
         result = {"content": [{"type": "text", "text": "repository list ready"}]}
     else:
         result = {}
@@ -1101,6 +1165,31 @@ for line in sys.stdin:
 """
     )
     fake_mcp.chmod(0o500)
+
+    review_command = """test -z "${ANTHROPIC_API_KEY:-}" && python3 - <<'PY'
+import json
+import subprocess
+from pathlib import Path
+source = Path('/workspace/canary.txt')
+assert 'hook-readable' in source.read_text()
+assert 'changed for review' in subprocess.check_output(['git', 'diff', '--', 'canary.txt'], text=True)
+for operation in (lambda: source.write_text('forbidden'), lambda: source.rename(source.with_name('renamed')), source.unlink):
+    try:
+        operation()
+    except OSError:
+        pass
+    else:
+        raise AssertionError('source mutation was allowed')
+Path('/workspace/review-output.json').write_text(json.dumps({'schema_version': 1, 'verdict': 'approve', 'findings': []}))
+PY"""
+    if review_layout:
+        for command in (
+            ["git", "init", "-q"],
+            ["git", "add", "canary.txt", "fake_mcp.py"],
+            ["git", "-c", "user.name=Canary", "-c", "user.email=canary@example.test", "commit", "-qm", "fixture"],
+        ):
+            subprocess.run(command, cwd=clone, check=True, capture_output=True)
+        (clone / "canary.txt").write_text("hook-readable\nchanged for review\n")
 
     observed_tool_results: dict[str, dict] = {}
 
@@ -1139,7 +1228,6 @@ for line in sys.stdin:
                         "name": "Read",
                         "input": {
                             "file_path": "/workspace/canary.txt",
-                            "pages": "",
                         },
                     }
                 ]
@@ -1161,7 +1249,9 @@ for line in sys.stdin:
                         "id": "toolu_bash_canary",
                         "name": "Bash",
                         "input": {
-                            "command": ('test -z "${ANTHROPIC_API_KEY:-}" && printf canary > /workspace/bash-called')
+                            "command": review_command
+                            if review_layout
+                            else ('test -z "${ANTHROPIC_API_KEY:-}" && printf canary > /workspace/bash-called')
                         },
                     }
                 ]
@@ -1258,6 +1348,16 @@ for line in sys.stdin:
             }
         )
         with prepare_sandbox(clone=clone, claude_bin=claude, preflight=True) as sandbox:
+            if review_layout:
+                output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+                before = runner_artifacts.workspace_snapshot(clone)
+                sandbox = replace(
+                    sandbox,
+                    command_prefix=sandbox.command_prefix_for(
+                        read_only_workspace=True,
+                        extra_writable_mounts=(ReadOnlyMount(output, "/workspace/review-output.json"),),
+                    ),
+                )
             result = sandbox.run(
                 [
                     sandbox.claude_bin,
@@ -1293,6 +1393,11 @@ for line in sys.stdin:
                 ),
                 stdin_data=b"Use all three available tools, then finish.",
             )
+            assert (sandbox.temp / "mcp-called").read_text() == "ok"
+            if review_layout:
+                runner_artifacts.enforce_phase_workspace(clone, before, allowed_artifact=output)
+                assert json.loads(output.read_text())["verdict"] == "approve"
+                assert (clone / "canary.txt").read_text() == "hook-readable\nchanged for review\n"
     finally:
         server.shutdown()
         server.server_close()
@@ -1306,5 +1411,5 @@ for line in sys.stdin:
     assert "hook-readable" in json.dumps(read_result)
     bash_result = observed_tool_results["toolu_bash_canary"]
     assert bash_result.get("is_error") is not True, bash_result
-    assert (clone / "bash-called").read_text() == "canary"
-    assert (clone / "mcp-called").read_text() == "ok"
+    if not review_layout:
+        assert (clone / "bash-called").read_text() == "canary"

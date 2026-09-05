@@ -15,7 +15,9 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import BinaryIO, Literal
@@ -23,9 +25,42 @@ from typing import BinaryIO, Literal
 
 MAX_TAIL_BYTES = 64 * 1024
 DEFAULT_TERMINATE_GRACE = 5.0
+_CANCELLATION: ContextVar[threading.Event | None] = ContextVar("managed_process_cancellation", default=None)
+
+
+@contextmanager
+def cancellation_scope(
+    event: threading.Event | None = None, *, handle_signals: bool = False
+) -> Iterator[threading.Event]:
+    """Share one cancellation signal through every managed command in a run.
+
+    Worker contexts must be copied explicitly at executor submission. This also
+    covers clone/setup and evidence helpers which call run_managed indirectly.
+    """
+    event = event or _CANCELLATION.get() or threading.Event()
+    token = _CANCELLATION.set(event)
+    previous = {}
+    try:
+        if handle_signals and threading.current_thread() is threading.main_thread():
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                previous[signum] = signal.signal(signum, lambda *_: event.set())
+        yield event
+    except BaseException:
+        event.set()
+        raise
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        _CANCELLATION.reset(token)
+
+
+class _CancellationRequested(Exception):
+    pass
+
 
 ProcessState = Literal[
     "exited",
+    "cancelled",
     "input-failure",
     "timeout",
     "forced-kill",
@@ -446,11 +481,15 @@ def _run_managed_inner(
     capture_stdout_bytes: int | None = None,
     echo_stdout: bool = False,
     stdout_observer: Callable[[bytes], None] | None = None,
+    cancel_event: threading.Event | None = None,
     _ownership_slot: list[tuple[subprocess.Popen[bytes], _WindowsJob | None, int | None]],
 ) -> ManagedProcessResult:
     """Implementation registered with an outer post-spawn ownership guard."""
 
     started = time.monotonic()
+    cancel_event = cancel_event or _CANCELLATION.get()
+    if cancel_event is not None and cancel_event.is_set():
+        return _empty_result("cancelled", started, "cancelled before spawn")
     if timeout <= 0 or terminate_grace < 0 or tail_bytes <= 0:
         raise ValueError("timeout and tail_bytes must be positive; terminate_grace must be non-negative")
     if capture_stdout_bytes is not None and capture_stdout_bytes <= 0:
@@ -518,14 +557,28 @@ def _run_managed_inner(
     detail = None
     timed_out = False
     forced_kill = False
+    cancelled = False
     try:
-        process.wait(timeout=timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise _CancellationRequested()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            try:
+                process.wait(timeout=min(0.1, remaining) if cancel_event is not None else remaining)
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= deadline:
+                    raise
     except (KeyboardInterrupt, SystemExit):
         _abort_owned_process(process, job, owned_pgid)
         raise
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        state = "timeout"
+    except (subprocess.TimeoutExpired, _CancellationRequested) as stopped:
+        cancelled = isinstance(stopped, _CancellationRequested)
+        timed_out = not cancelled
+        state = "cancelled" if cancelled else "timeout"
         try:
             if job is not None:
                 # Job Object termination is the Windows tree-wide primitive;
@@ -688,6 +741,8 @@ def _run_managed_inner(
             raise
 
     captured_stdout, capture_overflow = stdout_capture.result() if stdout_capture is not None else (None, False)
+    if cancelled and state in ("timeout", "forced-kill", "cancelled"):
+        state = "cancelled"
     return ManagedProcessResult(
         state=state,
         returncode=process.returncode,
@@ -717,6 +772,7 @@ def run_managed(
     capture_stdout_bytes: int | None = None,
     echo_stdout: bool = False,
     stdout_observer: Callable[[bytes], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ManagedProcessResult:
     """Run one command with bounded output and owned-tree termination.
 
@@ -746,6 +802,7 @@ def run_managed(
             capture_stdout_bytes=capture_stdout_bytes,
             echo_stdout=echo_stdout,
             stdout_observer=stdout_observer,
+            cancel_event=cancel_event,
             _ownership_slot=ownership_slot,
         )
     except BaseException:

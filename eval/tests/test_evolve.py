@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow_bench import evolve
+from workflow_bench import evolve, evolution
 from workflow_bench.runner_sessions import PARENT_EVENT_STREAM_SOURCE
 from workflow_bench.evolve import (
     build_parser,
@@ -1151,18 +1151,24 @@ def bound_task_fixtures():
 
 
 def promote_decision(**overrides):
-    """A schema 5 decision: a verdict plus the gated evidence base behind it."""
-    decision = {
-        "incumbent_arm": "workflow",
-        "candidate_arm": "candidate_workflow",
-        "decision": "promote",
-        "metric": "cost_usd",
-        "ungated_tasks": ["task-impossible"],
-        "tasks": [
-            {"task": "task-a", "gated": True},
-            {"task": "task-impossible", "gated": False},
-        ],
+    """A real producer decision, including its recomputable paired metrics."""
+    base = {"runs": 3, "valid_runs": 3, "excluded_runs": 0, "error_kinds": {}}
+    results = {
+        "task-a": {
+            "workflow": {**base, "resolved": 3, "cost_usd": 1.0},
+            "candidate_workflow": {**base, "resolved": 3, "cost_usd": 0.8},
+        },
+        "task-impossible": {
+            "workflow": {**base, "resolved": 0, "cost_usd": 1.0},
+            "candidate_workflow": {**base, "resolved": 0, "cost_usd": 1.0},
+        },
     }
+    decision = evolution.promotion_evidence(
+        results,
+        policy=evolution.promotion_policy(["candidate_workflow"]),
+        model="bench-model",
+        complete=True,
+    )["decisions"][0]
     decision.update(overrides)
     return decision
 
@@ -1170,7 +1176,8 @@ def promote_decision(**overrides):
 def promotion_fixture(*, decisions=None, expires_delta=timedelta(days=1)):
     now = datetime.now(UTC)
     return {
-        "schema_version": 5,
+        "schema_version": 6,
+        "run_status": "complete",
         "generated_at": now.isoformat(),
         "evidence_expires_at": (now + expires_delta).isoformat(),
         "benchmark_model": "bench-model",
@@ -1181,12 +1188,7 @@ def promotion_fixture(*, decisions=None, expires_delta=timedelta(days=1)):
         "target_base_digests": {"path": "base"},
         "required_candidate_arms": ["candidate_workflow"],
         "selected_tasks": bound_task_fixtures(),
-        "policy": {
-            "metric": "cost_usd",
-            "min_runs": 3,
-            "min_improvement_pct": 5.0,
-            "max_task_regression_pct": 20.0,
-        },
+        "policy": evolution.promotion_policy(["candidate_workflow"]),
         "decisions": decisions if decisions is not None else [promote_decision()],
     }
 
@@ -1201,12 +1203,7 @@ def validate_fixture(promotion):
         selected_tasks=bound_task_fixtures(),
         target_base_digests={"path": "base"},
         required_candidate_arms=["candidate_workflow"],
-        policy={
-            "metric": "cost_usd",
-            "min_runs": 3,
-            "min_improvement_pct": 5.0,
-            "max_task_regression_pct": 20.0,
-        },
+        policy=evolution.promotion_policy(["candidate_workflow"]),
     )
 
 

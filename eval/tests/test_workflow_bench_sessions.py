@@ -121,6 +121,7 @@ def skill_events(skill_input: dict, *, tool_id: str = "skill-1", is_error: bool 
 
 def fake_sandbox(root: Path) -> SimpleNamespace:
     return SimpleNamespace(
+        backend="test-double",
         claude_bin="claude",
         clone=root,
         private_root=root,

@@ -1,7 +1,21 @@
 {
   "schema_version": 1,
   "findings": [
-    {"id":"pr2258-vacuous-gated-recall-pass","severity":"medium","path":"gitnexus/bench/impact-pdg/gate-mutation-recall.mjs","line_start":20,"line_end":29,"category":"tests"},
-    {"id":"pr2258-stale-child-invocation-doc","severity":"low","path":"gitnexus/bench/impact-pdg/README.md","line_start":233,"line_end":233,"category":"other"}
+    {
+      "id": "pr2258-vacuous-gated-recall-pass",
+      "severity": "medium",
+      "path": "gitnexus/bench/impact-pdg/gate-mutation-recall.mjs",
+      "line_start": 20,
+      "line_end": 29,
+      "category": "tests"
+    },
+    {
+      "id": "pr2258-stale-child-invocation-doc",
+      "severity": "low",
+      "path": "gitnexus/bench/impact-pdg/README.md",
+      "line_start": 233,
+      "line_end": 233,
+      "category": "other"
+    }
   ]
 }

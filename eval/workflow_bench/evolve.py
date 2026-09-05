@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -61,10 +62,12 @@ from .evolution import (
     CANDIDATE_SKILLS,
     EVIDENCE_MAX_AGE_DAYS,
     MAX_CANDIDATE_FILES,
-    MAX_FAILED_TASK_REGRESSION_PCT,
     MIN_GATED_TASK_RATIO,
     candidate_overlay_files,
     required_candidate_arms,
+    PROMOTION_SCHEMA_VERSION,
+    promotion_policy,
+    promotion_evidence,
 )
 from .oracle_assets import MAX_CLONE_REFS, sanitize_clone_for_hidden_oracles
 from .promotion_apply import (
@@ -971,12 +974,24 @@ def validate_promotion_for_apply(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """Require one complete, current, exact evidence binding before apply."""
-    if promotion.get("schema_version") != 5:
-        raise ValueError("promotion binding uses an unsupported schema")
+    if promotion.get("schema_version") != PROMOTION_SCHEMA_VERSION:
+        raise ValueError("promotion binding uses an unsupported schema; regenerate evidence with schema 6")
+    if promotion.get("run_status") != "complete":
+        raise ValueError("promotion requires a complete sweep")
+    if (
+        not required_candidate_arms
+        or any(arm not in CANDIDATE_ARMS for arm in required_candidate_arms)
+        or len(set(required_candidate_arms)) != len(required_candidate_arms)
+    ):
+        raise ValueError("promotion requires unique candidate arms")
     sha256_pattern = re.compile(r"[0-9a-f]{64}")
     if not selected_tasks:
         raise ValueError("promotion binding has no selected tasks")
+    task_ids = []
     for task in selected_tasks:
+        if not isinstance(task, dict) or not isinstance(task.get("id"), str) or not task["id"]:
+            raise ValueError("promotion binding requires named selected tasks")
+        task_ids.append(task["id"])
         if not isinstance(task, dict) or any(
             not isinstance(task.get(field), str) or sha256_pattern.fullmatch(task[field]) is None
             for field in (
@@ -1003,6 +1018,8 @@ def validate_promotion_for_apply(
                 or item["size"] < 0
             ):
                 raise ValueError("promotion binding contains malformed hidden-oracle file evidence")
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError("promotion binding requires unique selected tasks")
     expected_bindings = {
         "benchmark_model": benchmark_model,
         "proposer_model": proposer_model,
@@ -1017,7 +1034,12 @@ def validate_promotion_for_apply(
         if promotion.get(field) != expected:
             raise ValueError(f"promotion binding mismatch for {field}")
     actual_policy = promotion.get("policy")
-    if not isinstance(actual_policy, dict) or any(actual_policy.get(field) != value for field, value in policy.items()):
+    if (
+        not isinstance(actual_policy, dict)
+        or set(policy) != set(required_candidate_arms)
+        or json.dumps(actual_policy, sort_keys=True, allow_nan=False)
+        != json.dumps(policy, sort_keys=True, allow_nan=False)
+    ):
         raise ValueError("promotion binding mismatch for policy")
 
     try:
@@ -1058,12 +1080,14 @@ def validate_promotion_for_apply(
             raise ValueError(f"promotion decision has wrong incumbent for {candidate}")
         if decision.get("decision") != "promote":
             raise ValueError(f"candidate arm is not promotable: {candidate}")
-        if decision.get("metric") != policy.get("metric"):
+        if decision.get("metric") != policy[candidate].get("metric"):
             raise ValueError(f"promotion decision metric mismatch for {candidate}")
         _require_gate_evidence(
             decision,
             candidate=candidate,
             selected_tasks={task["id"] for task in selected_tasks},
+            policy=policy[candidate],
+            model=benchmark_model,
         )
     return [by_arm[candidate] for candidate in required_candidate_arms]
 
@@ -1073,14 +1097,10 @@ def _require_gate_evidence(
     *,
     candidate: str,
     selected_tasks: set[str],
+    policy: dict[str, Any],
+    model: str,
 ) -> None:
-    """Bind the schema 4 gate fields a schema 3 decision cannot supply.
-
-    Schema 4 promotes on a partial evidence base — some tasks can sit outside
-    the gate — so which tasks those were is part of the evidence, not a report
-    detail. Without this, relabeling a schema 3 decision `"schema_version": 4`
-    applies a promotion whose gated base was never disclosed or checked.
-    """
+    """Check complete per-task bindings and recompute the claimed decision."""
     tasks = decision.get("tasks")
     if not isinstance(tasks, list) or not tasks:
         raise ValueError(f"promotion decision has no per-task gate evidence for {candidate}")
@@ -1112,6 +1132,71 @@ def _require_gate_evidence(
             f"promotion decision rests on too thin a gated evidence base for {candidate}: "
             f"{len(gated)}/{len(tasks)} tasks gated"
         )
+    if candidate == "candidate_review" and ungated:
+        raise ValueError("review promotion requires every selected task")
+
+    results = {}
+    for row in tasks:
+        arms = {}
+        for side, arm in (("incumbent", CANDIDATE_ARMS[candidate]), ("candidate", candidate)):
+            metrics = row.get(side)
+            if not isinstance(metrics, dict):
+                raise ValueError("promotion is missing paired arm metrics; regenerate evidence")
+            for key in ("runs", "valid_runs", "excluded_runs", "resolved"):
+                value = metrics.get(key)
+                if type(value) is not int or value < 0:
+                    raise ValueError(f"promotion has invalid {side} {key}")
+            if (
+                metrics["runs"] != metrics["valid_runs"] + metrics["excluded_runs"]
+                or metrics["resolved"] > metrics["valid_runs"]
+            ):
+                raise ValueError("promotion run counts are inconsistent")
+            if candidate == "candidate_review":
+                for key in ("review_verdict_correct", "review_clean_control", "review_clean_pass"):
+                    if not isinstance(metrics.get(key), bool):
+                        raise ValueError(f"promotion has invalid {key}")
+                for key in ("review_weighted_f1", "review_blocker_recall", "review_false_positives"):
+                    value = metrics.get(key)
+                    nullable = key == "review_blocker_recall" or (
+                        key == "review_weighted_f1" and metrics["review_clean_control"]
+                    )
+                    _require_finite_metric(
+                        value, key, nullable=nullable, maximum=None if key == "review_false_positives" else 1
+                    )
+            else:
+                _require_finite_metric(metrics.get(policy["metric"]), policy["metric"], nullable=True)
+                kinds = metrics.get("error_kinds", {})
+                if not isinstance(kinds, dict) or any(
+                    not isinstance(key, str) or type(value) is not int or value < 0 for key, value in kinds.items()
+                ):
+                    raise ValueError("promotion has invalid error-kind counts")
+            arms[arm] = metrics
+        if (
+            candidate == "candidate_review"
+            and arms[candidate]["review_clean_control"] != arms[CANDIDATE_ARMS[candidate]]["review_clean_control"]
+        ):
+            raise ValueError("promotion clean-control evidence disagrees between paired arms")
+        results[row["task"]] = arms
+    recomputed = promotion_evidence(results, policy={candidate: policy}, model=model, complete=True)["decisions"][0]
+    if recomputed["decision"] != "promote" or recomputed != decision:
+        raise ValueError("promotion decision does not match recomputed evidence")
+
+
+def _require_finite_metric(value: Any, name: str, *, nullable: bool = False, maximum: float | None = None) -> None:
+    if value is None and nullable:
+        return
+    try:
+        finite = math.isfinite(value)
+    except (TypeError, OverflowError):
+        finite = False
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not finite
+        or value < 0
+        or (maximum is not None and value > maximum)
+    ):
+        raise ValueError(f"promotion has invalid {name}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1317,14 +1402,6 @@ def _run_generations(
     bwrap_bin: Path,
     sandbox_backend: str,
 ) -> int:
-    policy_binding = {
-        "metric": args.promotion_metric,
-        "min_runs": args.promotion_min_runs,
-        "min_improvement_pct": args.promotion_min_improvement,
-        "max_task_regression_pct": args.promotion_max_task_regression,
-        "max_failed_task_regression_pct": MAX_FAILED_TASK_REGRESSION_PCT,
-        "min_gated_task_ratio": MIN_GATED_TASK_RATIO,
-    }
     out_root = args.out_root or Path("results") / time.strftime("wfevolve-%Y%m%d-%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)
     evidence_dir: Path | None = args.seed_results
@@ -1484,7 +1561,13 @@ def _run_generations(
                 selected_tasks=selected_tasks,
                 target_base_digests=target_base_digests,
                 required_candidate_arms=candidate_arms,
-                policy=policy_binding,
+                policy=promotion_policy(
+                    candidate_arms,
+                    metric=args.promotion_metric,
+                    min_runs=args.promotion_min_runs,
+                    min_improvement_pct=args.promotion_min_improvement,
+                    max_task_regression_pct=args.promotion_max_task_regression,
+                ),
             )
         except ValueError as exc:
             print(f"[gen {generation}] NOT PROMOTED — {exc}")

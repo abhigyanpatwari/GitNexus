@@ -132,7 +132,7 @@ on:
         default: false
         type: boolean
       seed_from_previous:
-        description: 'Seed the proposer with the previous run''s evidence and rejected proposal. Turn off to start from a blank slate — required when the earlier evidence is not trustworthy (e.g. produced before a harness-integrity fix), since a tainted proposal would otherwise propagate into every later generation.'
+        description: "Seed the proposer with the previous run's evidence and rejected proposal. Turn off to start from a blank slate — required when the earlier evidence is not trustworthy (e.g. produced before a harness-integrity fix), since a tainted proposal would otherwise propagate into every later generation."
         required: false
         default: true
         type: boolean
@@ -304,6 +304,16 @@ jobs:
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
 
+      - name: Verify contained review execution before paid sessions
+        working-directory: eval
+        env:
+          GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
+          GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
+          CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+        run: |
+          set -euo pipefail
+          uv run --locked --extra dev python -m pytest tests/test_proposer_sandbox.py -q
+
       - name: Install monorepo root dependencies
         run: |
           set -euo pipefail
@@ -346,7 +356,9 @@ jobs:
           # objects are present even when actions/checkout selected another ref.
           git -C "${GITHUB_WORKSPACE}" fetch --no-tags --quiet \
             "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" \
-            '+refs/heads/main:refs/heads/main'
+            '+refs/heads/main:refs/remotes/origin/main'
+          baseline_sha="$(git -C "${GITHUB_WORKSPACE}" rev-parse --verify 'refs/remotes/origin/main^{commit}')"
+          echo "Fetched review corpus history at ${baseline_sha}"
 
       - name: Seed the proposer with the previous run's evidence
         id: seed
@@ -564,7 +576,7 @@ jobs:
           git config user.name 'gitnexus-evolution[bot]'
           git config user.email 'gitnexus-evolution[bot]@users.noreply.github.com'
           git checkout -b "${branch}"
-          git add .claude/skills gitnexus/skills gitnexus-claude-plugin/skills
+          git add .claude/skills gitnexus/skills gitnexus-claude-plugin/skills gitnexus-cursor-integration/skills/gitnexus-review
           git commit -m 'feat(skills): promoted evolution overlay (gate-passed)'
 
           # The App token reaches git through GIT_ASKPASS reading step env at
