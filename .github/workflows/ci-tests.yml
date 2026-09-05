@@ -24,11 +24,11 @@ jobs:
         shard: ${{ fromJSON(needs.shard-plan.outputs.cov_shards) }}
     # Fail loudly (don't silently skip) if the FTS extension is unavailable, so
     # FTS-dependent lbug integration suites are guaranteed to run in CI.
-    # Same contract for Zig's optionalDependency grammar: this runner is
-    # linux-x64, which @tree-sitter-grammars/tree-sitter-zig publishes a
-    # prebuild for, so an absent grammar here is a packaging regression and not
-    # an unsupported platform. Without it every Zig suite skips and the job is
-    # green having never executed the native Zig parser once.
+    # Same contract for Zig's vendored grammar: this runner is linux-x64,
+    # which vendor/tree-sitter-zig ships a prebuild for, so an absent grammar
+    # here is a packaging regression and not an unsupported platform. Without
+    # it every Zig suite skips and the job is green having never executed the
+    # native Zig parser once.
     env:
       GITNEXUS_REQUIRE_FTS: '1'
       GITNEXUS_REQUIRE_ZIG: '1'
@@ -284,10 +284,12 @@ jobs:
         shell: bash
         run: python3 .github/scripts/check-tree-sitter-upgrade-readiness.py --assert-current
 
-      # GITNEXUS_REQUIRE_ZIG=1: every OS in this matrix has a published
-      # tree-sitter-zig prebuild, so the smoke's "optional grammar may be
-      # absent" exemption is revoked here and an ABI-broken Zig binding fails
-      # the job instead of being accepted as a clean absence.
+      # GITNEXUS_REQUIRE_ZIG=1: every OS in this matrix has a committed
+      # vendored tree-sitter-zig prebuild (linux-arm64 is rebuilt by the
+      # prebuild workflow; ubuntu/windows/macos latest are x64/arm64 with
+      # shipped binaries), so the smoke's "optional grammar may be absent"
+      # exemption is revoked here and an ABI-broken Zig binding fails the
+      # job instead of being accepted as a clean absence.
       - name: Run parser-loader ABI load-smoke (dynamic)
         run: npx vitest run test/unit/parser-loader-abi.test.ts
         env:
@@ -847,7 +849,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap socat
+          sudo apt-get install --yes --no-install-recommends bubblewrap ripgrep socat
           apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
           if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -905,5 +907,6 @@ jobs:
       - name: Prove Windows process-tree ownership
         run: >-
           uv run --locked --extra dev python -m pytest
-          tests/test_process_control.py -q
+          tests/test_process_control.py tests/test_model_gateway.py
+          -k "not locked_litellm" -q
         working-directory: eval

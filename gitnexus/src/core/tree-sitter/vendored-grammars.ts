@@ -34,6 +34,7 @@ export const VENDORED_GRAMMAR_PACKAGES: ReadonlySet<string> = new Set([
   'tree-sitter-swift',
   'tree-sitter-kotlin',
   'tree-sitter-objc',
+  'tree-sitter-zig',
 ]);
 
 /** Absolute directory of a vendored grammar package under `vendor/`. */
@@ -43,7 +44,7 @@ export const vendoredGrammarDir = (packageName: string): string =>
 /**
  * Load a vendored tree-sitter grammar by its absolute path under `vendor/`.
  *
- * GitNexus vendors six grammars (c/dart/proto/swift/kotlin/objc) inside its own
+ * GitNexus vendors seven grammars (c/dart/proto/swift/kotlin/objc/zig) inside its own
  * package under `vendor/`, each shipping committed per-platform prebuilds. They
  * are deliberately NOT npm dependencies and must NEVER be copied into
  * `node_modules`: an undeclared package under `node_modules` is "extraneous" to

@@ -27,6 +27,10 @@
     "proto": {
       "name": "tree-sitter-proto",
       "upstream": { "github": "coder3101/tree-sitter-proto" }
+    },
+    "zig": {
+      "name": "tree-sitter-zig",
+      "upstream": { "npm": "@tree-sitter-grammars/tree-sitter-zig" }
     }
   }
 }

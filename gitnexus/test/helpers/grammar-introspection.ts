@@ -70,10 +70,8 @@ const GRAMMAR_PACKAGES: Partial<Record<SupportedLanguages, { pkg: string; subpat
     pkg: 'tree-sitter-typescript',
     subpaths: ['typescript/src/node-types.json', 'tsx/src/node-types.json'],
   },
-  // optionalDependency — loadGrammarModel returns null when absent, so the
-  // gate skips Zig literals ('unavailable', R9) instead of failing.
   [SupportedLanguages.Zig]: {
-    pkg: '@tree-sitter-grammars/tree-sitter-zig',
+    pkg: 'tree-sitter-zig',
     subpaths: ['src/node-types.json'],
   },
 };
@@ -111,7 +109,7 @@ interface NodeTypeEntry {
 
 /** Resolve the on-disk directory of an installed package, or null if absent. */
 function resolvePackageDir(pkg: string): string | null {
-  // Vendored grammars (c/dart/proto/swift/kotlin/objc) are NOT in node_modules — they
+  // Vendored grammars (c/dart/proto/swift/kotlin/objc/zig) are NOT in node_modules — they
   // load from vendor/ by absolute path (vendored-grammars.ts / #2111), so resolve
   // their node-types.json from there rather than via _require.resolve.
   if (VENDORED_GRAMMAR_PACKAGES.has(pkg)) {

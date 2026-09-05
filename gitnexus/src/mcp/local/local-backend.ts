@@ -283,7 +283,12 @@ function normalizeToolParams(
       const value = input[key];
       // Internal CLI callers materialize omitted optional flags as undefined.
       if (value === undefined) continue;
-      if (typeof value !== 'string' || !value.trim()) {
+      // Strict OpenAI/Anthropic adapters also materialize omitted optional
+      // string aliases as "". Treat those exactly like undefined. Required
+      // canonical values are still rejected by the method-specific check
+      // below, and non-string aliases remain invalid.
+      if (typeof value === 'string' && !value.trim()) continue;
+      if (typeof value !== 'string') {
         return { error: `MCP parameter ${method}.${key} must be a non-empty string.` };
       }
       supplied.push({ key, value: value.trim() });
@@ -297,7 +302,7 @@ function normalizeToolParams(
       };
     }
 
-    for (const alias of aliases) delete normalized[alias];
+    for (const key of keys) delete normalized[key];
     if (supplied.length > 0) normalized[canonical] = supplied[0].value;
   }
 

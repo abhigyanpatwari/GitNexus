@@ -4,7 +4,7 @@
  * One registry-driven script replaces the former per-grammar
  * build-tree-sitter-<name>.cjs files (they were ~95% identical).
  *
- * The grammars (tree-sitter-c/dart/proto/swift/kotlin) are loaded from
+ * The grammars (tree-sitter-c/dart/proto/swift/kotlin/zig) are loaded from
  * `vendor/<name>/` by absolute path at runtime (see
  * src/core/tree-sitter/vendored-grammars.ts) and are NEVER copied into
  * node_modules — an undeclared package under node_modules is "extraneous" to
@@ -45,6 +45,7 @@ const GRAMMARS = {
   proto: { required: false, display: 'Proto', ext: '.proto' },
   swift: { required: false, display: 'Swift', ext: '.swift' },
   kotlin: { required: false, display: 'Kotlin', ext: '.kt/.kts' },
+  zig: { required: false, display: 'Zig', ext: '.zig' },
 };
 
 const skipOptional = process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS === '1';

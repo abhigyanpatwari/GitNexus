@@ -6,7 +6,7 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
  *
  * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` used to be an install-time-only env (the
  * postinstall build scripts read it). `parser-loader` now also honors it at
- * analyze time: when set, genuinely-optional grammars (swift/dart/kotlin)
+ * analyze time: when set, genuinely-optional grammars (swift/dart/kotlin/zig)
  * report unavailable so the ingestion pipeline skips their files, mirroring a
  * genuinely-absent binding. Grammars that are required `dependencies` routed
  * through the optional machinery for ABI safety (C — `severity: 'error'`) are
@@ -39,9 +39,8 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
     expect(isLanguageAvailable(SupportedLanguages.Swift)).toBe(false);
     expect(isLanguageAvailable(SupportedLanguages.Dart)).toBe(false);
     expect(isLanguageAvailable(SupportedLanguages.Kotlin)).toBe(false);
-    // Zig is an npm optionalDependency rather than a vendored grammar, but it
-    // is just as genuinely optional: the documented opt-out must cover it too
-    // (`optional-grammars.ts` lists it among the skippable grammars).
+    // Zig is a vendored optional grammar: the documented opt-out must cover
+    // it too (`optional-grammars.ts` lists it among the skippable grammars).
     expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(false);
   });
 
@@ -58,6 +57,7 @@ describe('parser-loader GITNEXUS_SKIP_OPTIONAL_GRAMMARS runtime gate', () => {
       expect(isLanguageAvailable(SupportedLanguages.Swift), `value=${v}`).toBe(false);
       expect(isLanguageAvailable(SupportedLanguages.Dart), `value=${v}`).toBe(false);
       expect(isLanguageAvailable(SupportedLanguages.Kotlin), `value=${v}`).toBe(false);
+      expect(isLanguageAvailable(SupportedLanguages.Zig), `value=${v}`).toBe(false);
     }
   });
 

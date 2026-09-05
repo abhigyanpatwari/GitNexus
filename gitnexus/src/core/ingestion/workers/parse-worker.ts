@@ -1,5 +1,4 @@
 import { parentPort, threadId, workerData } from 'node:worker_threads';
-import { createRequire } from 'node:module';
 import {
   boundCallableStartPosition,
   localIdentity,
@@ -59,7 +58,7 @@ type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 // `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
 // — routing this table through `parser-loader.getLanguageGrammar` so there is
 // one loader — is the deferred Tier-1 consolidation.)
-// Swift/Dart/Kotlin/C are vendored grammars loaded from `vendor/` by absolute
+// Swift/Dart/Kotlin/C/Zig are vendored grammars loaded from `vendor/` by absolute
 // path (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Each
 // may be absent on a platform without a prebuild or a toolchain-less /
 // `--ignore-scripts` install, so every load is guarded so a missing binding
@@ -84,11 +83,9 @@ try {
   C = requireVendoredGrammar('tree-sitter-c') as TreeSitterLanguage;
 } catch {}
 
-// @tree-sitter-grammars/tree-sitter-zig is an optionalDependency — may not be installed
-const _require = createRequire(import.meta.url);
 let Zig: TreeSitterLanguage | null = null;
 try {
-  Zig = _require('@tree-sitter-grammars/tree-sitter-zig');
+  Zig = requireVendoredGrammar('tree-sitter-zig') as TreeSitterLanguage;
 } catch {}
 
 let ObjectiveC: TreeSitterLanguage | null = null;
