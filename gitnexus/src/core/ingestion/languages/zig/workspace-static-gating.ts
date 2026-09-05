@@ -1,6 +1,7 @@
-import path from 'node:path';
 import type { ParsedFile, ReferenceSite } from 'gitnexus-shared';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import type { ZigBuildZonConfig } from '../../language-config.js';
+import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
 import {
   buildZigBoolConstMap,
   collectZigStaticGatedRanges,
@@ -17,6 +18,7 @@ export function populateZigWorkspaceStaticGating(
   ctx: {
     readonly fileContents: ReadonlyMap<string, string>;
     readonly treeCache?: { get(filePath: string): unknown };
+    readonly resolutionConfig?: unknown;
   },
 ): void {
   const parser = getZigParser();
@@ -37,7 +39,12 @@ export function populateZigWorkspaceStaticGating(
   for (const parsed of parsedFiles) {
     const tree = trees.get(parsed.filePath);
     if (tree === undefined) continue;
-    const aliases = collectImportAliases(tree, parsed.filePath, knownPaths);
+    const aliases = collectImportAliases(
+      tree,
+      parsed.filePath,
+      knownPaths,
+      ctx.resolutionConfig as ZigBuildZonConfig | null | undefined,
+    );
     if (aliases.size === 0) continue;
     const ranges = collectZigStaticGatedRanges(
       tree.rootNode,
@@ -61,6 +68,7 @@ function collectImportAliases(
   tree: ZigTree,
   fromFile: string,
   knownPaths: ReadonlySet<string>,
+  resolutionConfig?: ZigBuildZonConfig | null,
 ): ZigImportAliasMap {
   const aliases = new Map<string, string>();
   for (const decl of tree.rootNode.descendantsOfType('variable_declaration')) {
@@ -72,14 +80,8 @@ function collectImportAliases(
     const raw = builtin?.descendantsOfType('string').at(0)?.text;
     if (binding === undefined || raw === undefined) continue;
     const specifier = raw.replace(/^['"]|['"]$/g, '');
-    if (!specifier.includes('/') && !specifier.endsWith('.zig')) continue;
-    const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), specifier));
-    const target = knownPaths.has(resolved)
-      ? resolved
-      : !resolved.endsWith('.zig') && knownPaths.has(`${resolved}.zig`)
-        ? `${resolved}.zig`
-        : undefined;
-    if (target !== undefined) aliases.set(binding, target);
+    const target = resolveZigImportInternal(fromFile, specifier, knownPaths, resolutionConfig);
+    if (target !== null) aliases.set(binding, target);
   }
   return aliases;
 }
