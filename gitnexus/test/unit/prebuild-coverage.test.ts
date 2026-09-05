@@ -175,3 +175,28 @@ describe('npm-dependency grammar prebuild coverage', () => {
     });
   }
 });
+
+describe('prebuild workflow validate snippets cover every REGISTRY grammar', () => {
+  // The "Validate the .node loads and parses" step looks up snippets[GRAMMAR].
+  // A missing key yields undefined, and tree-sitter's parse() throws
+  // "Input must be a function" — the six zig jobs on #3180.
+  const workflow = readFileSync(
+    path.join(GITNEXUS_ROOT, '..', '.github/workflows/build-tree-sitter-prebuilds.yml'),
+    'utf8',
+  );
+  const registry = [
+    ...workflow.matchAll(/^\s{12}(\w+):\s+\{\s+name:\s+'tree-sitter-/gm),
+  ].map((m) => m[1]);
+  const snippets = [...workflow.matchAll(/^\s{14}(\w+):\s+"/gm)].map((m) => m[1]);
+
+  it('REGISTRY and snippets are both non-empty (the regex still matches the workflow)', () => {
+    expect(registry.length).toBeGreaterThan(0);
+    expect(snippets.length).toBeGreaterThan(0);
+  });
+
+  it('every REGISTRY grammar has a parse snippet', () => {
+    expect(snippets.sort(), 'add a snippets.<grammar> entry when extending REGISTRY').toEqual(
+      [...registry].sort(),
+    );
+  });
+});

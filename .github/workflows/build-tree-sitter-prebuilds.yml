@@ -477,11 +477,14 @@ jobs:
               proto:  "syntax = \"proto3\";\nmessage M { int32 id = 1; }",
               kotlin: "fun main() { println(\"hi\") }",
               swift:  "func greet() { print(\"hi\") }",
+              zig:    "pub fn main() void {}",
             };
+            const src = snippets[process.env.GRAMMAR];
+            if (!src) throw new Error("no validate snippet for grammar: " + process.env.GRAMMAR);
             const lang = require("node-gyp-build")(process.cwd());
             const Parser = require("tree-sitter");
             const p = new Parser(); p.setLanguage(lang);
-            const tree = p.parse(snippets[process.env.GRAMMAR]);
+            const tree = p.parse(src);
             if (!tree || !tree.rootNode || tree.rootNode.hasError) {
               throw new Error("parse failed/error: " + (tree && tree.rootNode && tree.rootNode.type));
             }
