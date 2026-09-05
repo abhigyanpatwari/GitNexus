@@ -1,0 +1,76 @@
+# Exact-head historical PR corpus. Hidden labels are captured by the harness
+# before clone sanitization and never enter a reviewer mount.
+tasks:
+  - &review_case
+    id: review-pr-2718-defect
+    class: review-defect
+    repo: ~/GitNexus
+    ref: ff86ccf1e79cd7e4175da437ae8aeaf67b64aaa1
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-2718.patch]
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2718.patch && rm -rf eval/workflow_bench
+    prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2718. Report only actionable defects introduced by the local diff.
+    verify: test -s review-output.json
+    oracle:
+      command: test -s review-output.json
+      files: [{ source: review-pr-2718-defect.labels.json, target: review-labels.json }]
+    sandbox_dependencies: &deps
+      - { source: node_modules, target: node_modules }
+      - { source: gitnexus/node_modules, target: gitnexus/node_modules }
+      - { source: gitnexus-shared/node_modules, target: gitnexus-shared/node_modules }
+
+  - <<: *review_case
+    id: review-pr-2794-defect
+    ref: 911151e2304f298a995fcc69c738ad2c6db9393a
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-2794.patch]
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2794.patch && rm -rf eval/workflow_bench
+    prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2794. Report only actionable defects introduced by the local diff.
+    oracle:
+      command: test -s review-output.json
+      files: [{ source: review-pr-2794-defect.labels.json, target: review-labels.json }]
+    sandbox_dependencies: *deps
+
+  - <<: *review_case
+    id: review-pr-2108-defect
+    ref: 3a4247ec36b5ad86b1123d3bbce8183a643f7434
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-2108.patch]
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2108.patch && rm -rf eval/workflow_bench
+    prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2108. Report only actionable defects introduced by the local diff.
+    oracle:
+      command: test -s review-output.json
+      files: [{ source: review-pr-2108-defect.labels.json, target: review-labels.json }]
+    sandbox_dependencies: *deps
+
+  - <<: *review_case
+    id: review-pr-2258-defect
+    ref: 78b4077d8acc86f1b0c32e41012174d484e81f12
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-2258.patch]
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2258.patch && rm -rf eval/workflow_bench
+    prompt: Review the historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
+    oracle:
+      command: test -s review-output.json
+      files: [{ source: review-pr-2258-defect.labels.json, target: review-labels.json }]
+    sandbox_dependencies: *deps
+
+  - <<: *review_case
+    id: review-pr-2258-clean
+    class: review-clean
+    ref: 78b4077d8acc86f1b0c32e41012174d484e81f12
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-2258b.patch]
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2258b.patch && rm -rf eval/workflow_bench
+    prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2258. Report only actionable defects introduced by the local diff.
+    oracle:
+      command: test -s review-output.json
+      files: [{ source: review-pr-2258-clean.labels.json, target: review-labels.json }]
+    sandbox_dependencies: *deps
+
+  - <<: *review_case
+    id: review-pr-2773-clean
+    class: review-clean
+    ref: 84f584449de02376a8ffc096dceac2e8f732cab5
+    sandbox_copy: [eval/workflow_bench/review_cases/pr-2773.patch]
+    setup: git apply --exclude='eval/workflow_bench/*' eval/workflow_bench/review_cases/pr-2773.patch && rm -rf eval/workflow_bench
+    prompt: Review this historical snapshot of https://github.com/abhigyanpatwari/GitNexus/pull/2773. Report only actionable defects introduced by the local diff.
+    oracle:
+      command: test -s review-output.json
+      files: [{ source: review-pr-2773-clean.labels.json, target: review-labels.json }]
+    sandbox_dependencies: *deps
