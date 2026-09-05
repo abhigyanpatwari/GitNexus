@@ -1272,19 +1272,25 @@ export const executeParameterized = async (
  */
 export const closeLbug = async (repoId?: string): Promise<void> => {
   if (repoId) {
+    // Locked: closeOne now deletes the pool entry before its awaited
+    // db.close() finishes, so an unlocked call here could race a concurrent
+    // initLbug(repoId, ...) — that init could acquire the lock right after
+    // the delete, see no cached entry, and start opening a fresh connection
+    // while this close's checkpoint is still in flight, reopening the exact
+    // race withPoolLock exists to close (review finding on PR #3189).
     // Awaited: closeOne is now async (see evictLRU's rationale); callers of
     // closeLbug rely on pool.delete() having already run — e.g. isLbugReady()
     // returning false — by the time this promise resolves.
-    await closeOne(repoId);
+    await withPoolLock(() => closeOne(repoId));
     return;
   }
 
-  // Locked (unlike the per-repoId branch above): without this, an initLbug
-  // that runs while this loop is mid-await (closeOne yields during the
-  // native close) can register a fresh pool entry after `pool.keys()` was
-  // already snapshotted, so a caller expecting closeLbug() to mean "pool is
-  // now empty" would find that new entry still resident (review finding on
-  // PR #3187).
+  // Locked for the same reason as the per-repoId branch above, plus: without
+  // this, an initLbug that runs while this loop is mid-await (closeOne
+  // yields during the native close) can register a fresh pool entry after
+  // `pool.keys()` was already snapshotted, so a caller expecting closeLbug()
+  // to mean "pool is now empty" would find that new entry still resident
+  // (review finding on PR #3187).
   await withPoolLock(async () => {
     for (const id of [...pool.keys()]) {
       await closeOne(id);
