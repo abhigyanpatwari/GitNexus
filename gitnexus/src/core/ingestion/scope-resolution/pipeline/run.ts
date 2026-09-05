@@ -642,6 +642,7 @@ export function runScopeResolution(
   provider.populateWorkspaceReferences?.(parsedFiles, {
     fileContents: getFileContents(),
     treeCache,
+    resolutionConfig: input.resolutionConfig,
   });
 
   // A callable-flow-only provider has no reason to build the whole-graph

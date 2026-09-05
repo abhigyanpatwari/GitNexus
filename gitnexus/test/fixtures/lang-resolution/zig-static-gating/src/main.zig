@@ -9,6 +9,7 @@
 
 // Cross-file alias — should resolve `cfg.FOO`, `cfg.BAR` against cfg.zig.
 const cfg = @import("./cfg.zig");
+const wrapped_cfg = wrap(@import("./cfg.zig"));
 
 pub const UPGRADERS_ENABLED: bool = false;
 pub const DEBUG: bool = true;
@@ -30,6 +31,7 @@ pub const CYCLE_B = CYCLE_A;
 pub const ALIAS_TO_VAR = IS_RUNTIME_FLAG_FALSE;
 
 pub fn run() void {
+    const local_cfg = @import("./cfg.zig");
     // Live: not under any if-gate.
     live_unconditional();
 
@@ -162,6 +164,15 @@ pub fn run() void {
     if (cfg.NOT_A_BOOL != 0) {
         live_cross_file_not_bool();
     }
+    // Function-local imports use the same workspace constants.
+    if (local_cfg.FOO) {
+        gated_local_cross_file_foo();
+    }
+    // An import nested inside another initializer does not bind the variable
+    // directly to that module, so its members must remain unknown/fail-open.
+    if (wrapped_cfg.FOO) {
+        live_wrapped_cross_file_foo();
+    }
 
     // Bare literal gate: no constant table involved, but it must still be gated.
     if (false) {
@@ -206,6 +217,18 @@ pub fn run() void {
 }
 
 fn live_unconditional() void {
+    _ = 1;
+}
+
+fn wrap(value: anytype) @TypeOf(value) {
+    return value;
+}
+
+fn gated_local_cross_file_foo() void {
+    _ = 1;
+}
+
+fn live_wrapped_cross_file_foo() void {
     _ = 1;
 }
 

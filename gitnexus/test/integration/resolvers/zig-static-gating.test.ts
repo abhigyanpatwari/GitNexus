@@ -174,11 +174,8 @@ describe('Zig static-gated edges', () => {
     expect(isGated('gated_chain_tail')).toBe(true);
   });
 
-  // Cross-file positive cases: the gating module resolves `alias.NAME` through
-  // `lookupBoolsForPath`, but the scope-capture emitter runs per file in the
-  // parse worker with only `{ path, content }` in hand — no sibling sources —
-  // so v1 stamps file-local constants only. Re-enable once the emitter can
-  // see imported files (see PR description, "Cross-file constants").
+  // Cross-file cases are enriched after per-file extraction, once sibling
+  // source facts are available but before reference finalization.
   it('tags `if (cfg.FOO)` cross-file when FOO is false in cfg.zig', () => {
     expect(isGated('gated_cross_file_foo')).toBe(true);
   });
@@ -197,5 +194,13 @@ describe('Zig static-gated edges', () => {
 
   it('does NOT tag `cfg.NOT_A_BOOL != 0` (imported decl is not a bool literal)', () => {
     expect(isGated('live_cross_file_not_bool')).toBe(false);
+  });
+
+  it('tags a cross-file bool accessed through a function-local import alias', () => {
+    expect(isGated('gated_local_cross_file_foo')).toBe(true);
+  });
+
+  it('does NOT treat a nested @import as the declaration direct module alias', () => {
+    expect(isGated('live_wrapped_cross_file_foo')).toBe(false);
   });
 });

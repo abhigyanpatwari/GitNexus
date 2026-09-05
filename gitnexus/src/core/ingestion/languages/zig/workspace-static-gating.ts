@@ -63,13 +63,12 @@ function collectImportAliases(
   knownPaths: ReadonlySet<string>,
 ): ZigImportAliasMap {
   const aliases = new Map<string, string>();
-  for (const decl of tree.rootNode.namedChildren) {
-    if (decl.type !== 'variable_declaration') continue;
+  for (const decl of tree.rootNode.descendantsOfType('variable_declaration')) {
     const names = decl.namedChildren.filter((node) => node.type === 'identifier');
     const binding = names[0]?.text;
-    const builtin = decl
-      .descendantsOfType('builtin_function')
-      .find((node) => node.text.startsWith('@import('));
+    const builtin = decl.namedChildren.find(
+      (node) => node.type === 'builtin_function' && node.text.startsWith('@import('),
+    );
     const raw = builtin?.descendantsOfType('string').at(0)?.text;
     if (binding === undefined || raw === undefined) continue;
     const specifier = raw.replace(/^['"]|['"]$/g, '');
