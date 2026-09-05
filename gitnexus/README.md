@@ -631,7 +631,7 @@ results until you re-run `gitnexus analyze --repair-fts` from a shell where the 
 
 ### Installation fails with native module errors
 
-Some optional language grammars (Dart, Proto, Swift, Kotlin) require native compilation. If they fail, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing. Zig (`@tree-sitter-grammars/tree-sitter-zig`, an npm `optionalDependency`) behaves the same way: if its native binding fails to install, `.zig` files are skipped.
+Some optional language grammars (Dart, Proto, Swift, Kotlin, Zig) ship vendored native prebuilds. If a prebuild is missing and a source build is not possible, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
 
 If `npm install -g gitnexus` fails on native modules:
 

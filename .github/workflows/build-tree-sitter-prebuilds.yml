@@ -20,6 +20,11 @@ name: Build tree-sitter prebuilds
 #   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
 #                         prebuilds were originally upstream-shipped, now
 #                         GitNexus-cross-built like the rest for uniformity)
+#   - tree-sitter-zig    (vendored source; built from gitnexus/vendor/ — moved
+#                         off npm optionalDependency so `npm i -g gitnexus`
+#                         no longer warns on peerOptional tree-sitter@^0.22.1.
+#                         Upstream linux-arm64 prebuild is a mispackaged
+#                         x86-64 binary; this workflow rebuilds all six.)
 #
 # Output: gitnexus/vendor/<grammar>/prebuilds/<platform-arch>/<grammar>.node for
 # all 6 targets ({linux,darwin,win32}-{x64,arm64}). tree-sitter grammars are
@@ -33,8 +38,9 @@ name: Build tree-sitter prebuilds
 #      OR an edit to the grammar's build-affecting source (parser.c / grammar.js /
 #      binding.gyp / scanner / bindings). The `guard` job is the real gate (it
 #      diffs BOTH the recorded version AND the source files vs the PR base); the
-#      `paths:` filter below keeps ordinary code PRs at ZERO matrix time and
-#      excludes the prebuilds the job commits back, so it never retriggers itself.
+#      `paths:` filter below keeps ordinary code PRs at ZERO matrix time. PR
+#      filters see the cumulative diff, so the guard separately skips updates
+#      containing only the prebuilds the job commits back.
 # Net effect: an ordinary code PR triggers nothing; touching one grammar's source
 # costs exactly one matrix run for that grammar. Delivery of the rebuilt binaries:
 #   - same-repo PR  -> committed straight onto the PR's own branch (in the SAME PR);
@@ -55,7 +61,7 @@ on:
   workflow_dispatch:
     inputs:
       grammars:
-        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift), or "all".'
+        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift,zig), or "all".'
         required: false
         type: string
         default: 'all'
@@ -80,13 +86,14 @@ on:
       # Any build-affecting change under a vendored grammar triggers a rebuild —
       # not just a version bump — so editing the vendored source (parser.c,
       # grammar.js, binding.gyp, scanner, bindings) re-cuts the prebuilds too.
-      # The prebuilds we commit back are EXCLUDED (negated last) so the bot's own
-      # in-PR commit can never retrigger this workflow (no build->commit->build loop).
+      # Excludes PRs containing only prebuilds. A source PR still matches after a
+      # bot commit because PR filters use the cumulative diff; `guard` stops the
+      # build->commit->build loop using the synchronize event's before/head diff.
       - 'gitnexus/vendor/tree-sitter-*/**'
       - '!gitnexus/vendor/tree-sitter-*/prebuilds/**'
       # Self-test: re-run the guard if a future grammar pin is reintroduced in
       # the main package.json (optionalDependencies fallback). No-op otherwise —
-      # all five grammars are now fully vendored (kotlin included).
+      # all six grammars are now fully vendored (kotlin and zig included).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
@@ -123,6 +130,9 @@ jobs:
         id: decide
         env:
           EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           # Untrusted dispatch inputs — read via env only, validated in JS.
           INPUT_GRAMMARS: ${{ inputs.grammars }}
           INPUT_REF: ${{ inputs.ref }}
@@ -131,7 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           node --input-type=module - <<'NODE'
-          import { execSync } from 'node:child_process';
+          import { execFileSync, execSync } from 'node:child_process';
           import fs from 'node:fs';
           import { appendFileSync } from 'node:fs';
 
@@ -157,6 +167,11 @@ jobs:
             // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
             // were originally upstream-shipped; rebuilding them here unifies it.
             swift:  { name: 'tree-sitter-swift',  kind: 'vendored' },
+            // zig is vendored WITH its source (parser.c/binding.gyp). Moved off
+            // the npm optionalDependency so published installs no longer warn
+            // on peerOptional tree-sitter@^0.22.1. Upstream linux-arm64
+            // prebuild is a mispackaged x86-64 binary; rebuild here.
+            zig:    { name: 'tree-sitter-zig',    kind: 'vendored' },
           };
           const PLATFORMS = [
             { platform_arch: 'linux-x64',    os: 'ubuntu-24.04' },
@@ -186,6 +201,30 @@ jobs:
 
           const event = process.env.EVENT;
           const force = process.env.FORCE === 'true';
+
+          // PR path filters and the source/version checks below see the entire
+          // PR, so excluding prebuilds there does NOT prevent a rebuild loop.
+          // Check the whole push (not HEAD^ or the author's identity): a push
+          // containing source edits followed by a binary commit must still build.
+          if (event === 'pull_request' && process.env.ACTION === 'synchronize') {
+            const before = process.env.BEFORE_SHA;
+            const head = process.env.HEAD_SHA;
+            for (const sha of [before, head]) {
+              if (!sha || !/^[0-9a-fA-F]{40}$/.test(sha)) {
+                throw new Error('synchronize requires valid before/head SHAs; refusing an unbounded rebuild');
+              }
+            }
+            // Fail closed if either commit is unavailable. Never fall back to
+            // the cumulative PR diff, which would re-enable the loop.
+            const changed = execFileSync('git', [
+              'diff', '--name-only', '--no-renames', '-z', before, head, '--',
+            ], { encoding: 'utf8' }).split('\0').filter(Boolean);
+            if (changed.every((p) => /^gitnexus\/vendor\/tree-sitter-[^/]+\/prebuilds\//.test(p))) {
+              appendFileSync(process.env.GITHUB_OUTPUT, 'any=false\nmatrix={"include":[]}\n');
+              console.log('::notice::Push changes only prebuild outputs (or no files) — skipping native matrix.');
+              process.exit(0);
+            }
+          }
 
           // Select which grammar shortnames are in play.
           let selected;
@@ -243,9 +282,9 @@ jobs:
             } else {
               // pull_request: build when the recorded version changed OR any
               // build-affecting source file under the vendored grammar changed vs
-              // the PR base. The prebuilds/ subtree is excluded from the diff so
-              // the bot's own in-PR commit (which adds ONLY prebuilds) never reads
-              // as a source change — this is the other half of the no-loop guard.
+              // the PR base. Exclude generated outputs from build inputs; the
+              // synchronize check above prevents rebuilding the original source
+              // change after every generated-prebuild commit.
               const base = recordedVersion(baseRoot, name);
               const versionChanged = !!head && head !== base;
               let sourceChanged = false;
@@ -467,11 +506,14 @@ jobs:
               proto:  "syntax = \"proto3\";\nmessage M { int32 id = 1; }",
               kotlin: "fun main() { println(\"hi\") }",
               swift:  "func greet() { print(\"hi\") }",
+              zig:    "pub fn main() void {}",
             };
+            const src = snippets[process.env.GRAMMAR];
+            if (!src) throw new Error("no validate snippet for grammar: " + process.env.GRAMMAR);
             const lang = require("node-gyp-build")(process.cwd());
             const Parser = require("tree-sitter");
             const p = new Parser(); p.setLanguage(lang);
-            const tree = p.parse(snippets[process.env.GRAMMAR]);
+            const tree = p.parse(src);
             if (!tree || !tree.rootNode || tree.rootNode.hasError) {
               throw new Error("parse failed/error: " + (tree && tree.rootNode && tree.rootNode.type));
             }
