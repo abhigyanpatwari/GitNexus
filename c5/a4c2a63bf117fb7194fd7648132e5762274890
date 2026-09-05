@@ -1,0 +1,104 @@
+gitnexus/test/unit/node-workspace-memo-rejection.test.ts
+  s_b3fb8faa15e34b::t_0cf84898f1b5e1 20-21,40,92,107-113
+  s_b3fb8faa15e34b::t_6f69b791d95386 1-19,22-39,41-91,93-106,114-115
+gitnexus/src/core/ingestion/languages/ruby/name-fallback-visibility.ts
+  s_b3fb8faa15e34b::t_96d2b59e8a338d 110-121,126,131-138
+  s_b3fb8faa15e34b::t_e241a64312d8de 172-174,178-181
+gitnexus/test/unit/scope-resolution/wildcard-collision-export-evidence.test.ts
+  s_b3fb8faa15e34b::t_f95d63d65333b1 128-130,137-153,157-174
+  s_b3fb8faa15e34b::t_a11fb9ce07d250 1-78,83-94,99-127,175-191
+  s_b3fb8faa15e34b::t_3946cf746b00db 79-82,95-98,131-136,154-156
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 710-713,732
+gitnexus/src/core/ingestion/languages/go/name-fallback-visibility.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 36-42,110-115
+  s_b3fb8faa15e34b::t_514d55daa23abf 116
+gitnexus/test/unit/scope-resolution/esm-export-marker.test.ts
+  s_b3fb8faa15e34b::t_6f69b791d95386 10,124-128,132-136
+  s_b3fb8faa15e34b::t_a11fb9ce07d250 1-9,11-50,81-96,102-123,129-131,137-140
+  s_b3fb8faa15e34b::t_3946cf746b00db 70,97-101
+  s_b3fb8faa15e34b::t_f95d63d65333b1 51-69,71-80
+gitnexus-shared/src/scope-resolution/symbol-definition.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 114-125
+gitnexus/src/core/run-analyze.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 24,3876-3879
+gitnexus/src/core/ingestion/scope-resolution/utils/name-fallback-visibility.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 24-27
+gitnexus/src/core/ingestion/languages/typescript/captures.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 392-393,669-670,679
+  s_b3fb8faa15e34b::t_96d2b59e8a338d 35,666-668,671-678
+gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts
+  s_b3fb8faa15e34b::t_e90fa563e20d28 732
+  s_b3fb8faa15e34b::t_3946cf746b00db 751-753
+  s_b3fb8faa15e34b::t_e241a64312d8de 204-206,214,754
+  s_b3fb8faa15e34b::t_96d2b59e8a338d 207-213,699-711,715-719,726,733-734,739-750
+gitnexus/test/unit/node-workspace-vite-entry-comments.test.ts
+  s_b3fb8faa15e34b::t_f95d63d65333b1 1-76
+gitnexus/test/unit/scope-resolution/resolved-callee-names.test.ts
+  s_b3fb8faa15e34b::t_3946cf746b00db 26-32
+  s_b3fb8faa15e34b::t_4872c7da0d2399 1-25,33-43
+gitnexus/src/core/ingestion/pipeline.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 19,414-418,482,528-553
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_b3fb8faa15e34b::t_3946cf746b00db 111-114
+  s_b3fb8faa15e34b::t_96d2b59e8a338d 1-75,81-110,115-146
+  s_b3fb8faa15e34b::t_701c9a7b88bd50 76-80
+gitnexus/src/core/ingestion/languages/dart/name-fallback-visibility.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 10-26,70-76
+gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts
+  s_b3fb8faa15e34b::t_823d64949602f1 506-518,522-523
+  s_b3fb8faa15e34b::t_62c8b9f1b6b2c6 524
+gitnexus/test/unit/scope-resolution/free-call-fallback-guess-taint.test.ts
+  s_b3fb8faa15e34b::t_f95d63d65333b1 2-9,181,197-204,207-208,211-212
+  s_b3fb8faa15e34b::t_3946cf746b00db 77-82
+  s_b3fb8faa15e34b::t_4872c7da0d2399 1,10-76,83-180,182-196,205-206,209-210,213-217
+gitnexus/src/types/pipeline.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 37-44
+gitnexus/src/core/ingestion/community-processor.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 316
+gitnexus-shared/src/scope-resolution/finalize-algorithm.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 1003-1020,1022-1024,1035-1036,1047-1052,1056,1059,1400-1403,1420
+  s_b3fb8faa15e34b::t_96d2b59e8a338d 1054-1055,1057-1058,1060-1074,1083,1393,1395-1399,1417-1419,1421
+gitnexus/test/unit/scope-resolution/name-fallback-visibility.test.ts
+  s_b3fb8faa15e34b::t_4872c7da0d2399 172-199,219-222,228,355-388,594-613,616
+  s_b3fb8faa15e34b::t_f95d63d65333b1 614-615,617-621,623-625,628-655
+  s_b3fb8faa15e34b::t_3946cf746b00db 171,626-627
+  s_b3fb8faa15e34b::t_a75c47890c7c0c 622
+gitnexus/test/unit/scope-resolution/go/go-test-file-siblings.test.ts
+  s_b3fb8faa15e34b::t_4872c7da0d2399 147-172
+gitnexus/src/core/ingestion/import-resolvers/node-workspace-packages.ts
+  s_b3fb8faa15e34b::t_96d2b59e8a338d 735-744,763,768-795
+  s_b3fb8faa15e34b::t_d7806cd9cdcd3f 764-767
+  s_b3fb8faa15e34b::t_e241a64312d8de 474-481
+  s_b3fb8faa15e34b::t_1d04a74aa27ce3 796-797
+gitnexus/src/core/ingestion/languages/go/package-siblings.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 32-42,44-59,86-91,95-104,106-110
+gitnexus/src/core/ingestion/languages/javascript/captures.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 987-988,1216-1217,1226
+  s_b3fb8faa15e34b::t_96d2b59e8a338d 39,1213-1215,1218-1225
+gitnexus/test/integration/resolvers/barrel-review-3182-repros.test.ts
+  s_b3fb8faa15e34b::t_a39bc96aec7dab 41,119,123
+  s_b3fb8faa15e34b::t_3946cf746b00db 36-38,109
+  s_b3fb8faa15e34b::t_d1ffde8184cd27 75-81,90-96,126-132
+  s_b3fb8faa15e34b::t_f95d63d65333b1 1-35,39-40,42-74,82-89,97-108,110-118,120-122,124-125,133-137
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_b3fb8faa15e34b::t_e241a64312d8de 85,88-91,93-100,106-122
+gitnexus/test/integration/resolvers/barrel-wildcard-arrow-const.test.ts
+  s_b3fb8faa15e34b::t_849033419328f3 21-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "c5a4c2a63bf117fb7194fd7648132e5762274890",
+  "prompts": {},
+  "sessions": {
+    "s_b3fb8faa15e34b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0652d86-8724-480b-abcf-b7d79c011b99",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
