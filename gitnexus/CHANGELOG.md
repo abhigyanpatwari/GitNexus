@@ -4,10 +4,6 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Zig grammar is vendored** — `npm i -g gitnexus` no longer warns about `@tree-sitter-grammars/tree-sitter-zig`'s `peerOptional tree-sitter@^0.22.1`. Zig loads from `vendor/tree-sitter-zig` like Dart/Kotlin/Swift. Upstream's `linux-arm64` prebuild is a mispackaged x86-64 binary and is omitted until the GitNexus prebuild workflow rebuilds it.
-
 ## [1.6.11] - 2026-09-04
 
 ### Added
