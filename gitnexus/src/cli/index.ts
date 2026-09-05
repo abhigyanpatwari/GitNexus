@@ -4,7 +4,7 @@
 // Removing it from here improves MCP server startup time significantly.
 
 import { Command } from 'commander';
-import { createRequire } from 'node:module';
+import { packageVersion } from '../core/package-version.js';
 import {
   createAnalyzerLbugLazyAction,
   createLazyAction,
@@ -14,16 +14,16 @@ import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.j
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
+import { writeCommandBanner } from './command-banner.js';
+import { runProcessCliUpdateNotice } from './update-notice.js';
 
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json');
 const program = new Command();
 
 function collectCodingAgents(value: string, previous: string[] | undefined): string[] {
   return [...(previous ?? []), ...value.split(',')];
 }
 
-program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
+program.name('gitnexus').description('GitNexus local CLI and MCP server').version(packageVersion());
 
 program
   .command('setup')
@@ -301,6 +301,11 @@ program
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
 
 program
+  .command('update')
+  .description('Install the latest published GitNexus globally (`npm i -g gitnexus@<x.y.z>`).')
+  .action(createLazyAction(() => import('./update.js'), 'updateCommand'));
+
+program
   .command('embeddings')
   .description('Manage the on-demand local embedding runtime')
   .command('install')
@@ -509,7 +514,17 @@ program
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));
 
+program.command('__update-check', { hidden: true }).action(async () => {
+  const { refresh } = await import('../core/update-check.js');
+  await refresh();
+});
+
 registerGroupCommands(program);
 localizeCliHelp(program);
 
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  writeCommandBanner(actionCommand);
+});
+
+runProcessCliUpdateNotice(packageVersion());
 program.parse(process.argv);

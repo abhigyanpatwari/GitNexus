@@ -20,11 +20,10 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { createRequire } from 'module';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
+import { packageVersion } from '../../src/core/package-version.js';
 
-const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version;
+const PKG_VERSION = packageVersion();
 const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 // vi.hoisted lets the mock factory below (which is hoisted by Vitest) see

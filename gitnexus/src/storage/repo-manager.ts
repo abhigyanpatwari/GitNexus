@@ -17,7 +17,6 @@
 import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
-import os from 'os';
 import {
   getGitRoot,
   getInferredRepoName,
@@ -26,6 +25,7 @@ import {
 } from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
+import { getGlobalDir } from './global-dir.js';
 import { logger } from '../core/logger.js';
 import { acquireIndexLock, IndexLockTimeoutError, type IndexLockHandle } from './index-lock.js';
 import {
@@ -73,6 +73,7 @@ export { ensureStoragePathWritable, InvalidStoragePathError };
 export { CONTENT_RETENTION_SCHEMA_VERSION } from './repo-meta.js';
 export type { ContentRetention, FtsProfile } from './repo-meta.js';
 export type { AnalyzerRunnerIdentity, RepoMeta };
+export { getGlobalDir } from './global-dir.js';
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -535,13 +536,6 @@ const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
 };
 
 // ─── Global Registry (~/.gitnexus/registry.json) ───────────────────────
-
-/**
- * Get the path to the global GitNexus directory
- */
-export const getGlobalDir = (): string => {
-  return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
-};
 
 /**
  * Get the path to the global registry file

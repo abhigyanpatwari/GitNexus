@@ -12,7 +12,6 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
-import { createRequire } from 'node:module';
 import {
   canonicalizePath,
   cloneDirBelongsToEntry,
@@ -86,9 +85,19 @@ import { UPLOAD_ROOT } from './upload-paths.js';
 import { sweepStaleUploads } from './upload-sweep.js';
 import { isRfc1918PrivateIpv4 } from './private-ip.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
+import {
+  bindServeUpdateControllerLifecycle,
+  buildServerInfo,
+  createServeUpdateController,
+} from './update-controller.js';
 
-const _require = createRequire(import.meta.url);
-const pkg = _require('../../package.json');
+export {
+  bindServeUpdateControllerLifecycle,
+  buildServerInfo,
+  createServeUpdateController,
+  type ServerInfoResponse,
+  type ServeUpdateController,
+} from './update-controller.js';
 
 /**
  * Determine whether an HTTP Origin header value is allowed by CORS policy.
@@ -891,6 +900,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   await backend.init();
   const cleanupMcp = await mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
+  const updateController = createServeUpdateController();
 
   // Backstop: remove any upload staging dirs orphaned by a previous crash.
   void sweepStaleUploads().catch(() => {});
@@ -1045,21 +1055,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // Server info: version and launch context (npx / global / local dev)
   app.get('/api/info', (_req, res) => {
-    const execPath = process.env.npm_execpath ?? '';
-    const argv0 = process.argv[1] ?? '';
-    let launchContext: 'npx' | 'global' | 'local';
-    if (
-      execPath.includes('npx') ||
-      argv0.includes('_npx') ||
-      process.env.npm_config_prefix?.includes('_npx')
-    ) {
-      launchContext = 'npx';
-    } else if (argv0.includes('node_modules')) {
-      launchContext = 'local';
-    } else {
-      launchContext = 'global';
-    }
-    res.json({ version: pkg.version, launchContext, nodeVersion: process.version });
+    res.json(buildServerInfo(updateController.snapshot()));
   });
 
   // List all registered repos
@@ -2148,12 +2144,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       resolve();
     });
     server.on('error', (err) => reject(err));
+    // `listening` is the successful startup boundary for notifier work.
+    bindServeUpdateControllerLifecycle(server, updateController);
 
     // Graceful shutdown — close Express + LadybugDB cleanly. Pino's default
     // destination is `sync: false` (buffered); `flushLoggerSync()` before
     // `process.exit` so records emitted during cleanup reach stderr.
     const shutdown = async () => {
       console.log('\nShutting down...');
+      updateController.stop();
       server.close();
       jobManager.dispose();
       embedJobManager.dispose();

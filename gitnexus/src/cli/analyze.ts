@@ -787,8 +787,6 @@ const analyzeCommandImpl = async (
   cliOptions?: AnalyzeOptions,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<void> => {
-  console.log('\n  GitNexus Analyzer\n');
-
   // ── Resolve the target repo root ──────────────────────────────────
   // Resolved FIRST because `.gitnexusrc` is read from the repo root (not the
   // caller's cwd), and config can set defaults that the validation below

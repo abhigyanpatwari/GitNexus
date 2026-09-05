@@ -121,6 +121,7 @@ USER node
 
 # The web UI defaults to http://localhost:4747 - keep that contract.
 ENV GITNEXUS_HOME=/data/gitnexus \
+    GITNEXUS_NO_UPDATE_NOTIFIER=1 \
     NODE_ENV=production \
     PORT=4747
 

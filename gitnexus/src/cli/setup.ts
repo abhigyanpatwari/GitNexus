@@ -10,10 +10,10 @@ import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import { execFile, execFileSync } from 'child_process';
-import { createRequire } from 'module';
 import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { parseTree, modify, applyEdits, ParseError, parse as parseJsonc } from 'jsonc-parser';
+import { packageVersion } from '../core/package-version.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
 import {
   getEditorTargets,
@@ -37,9 +37,8 @@ const execFileAsync = promisify(execFile);
 // re-stamped every release by scripts/sync-plugin-manifests.mjs (#2445),
 // since they too execute `gitnexus@<version>` on connect. Only the READMEs
 // stay on `gitnexus@latest` — they're quickstart docs, not executed state.
-const _require = createRequire(import.meta.url);
-const _pkg = _require('../../package.json') as { version?: unknown };
-if (typeof _pkg.version !== 'string' || !_pkg.version) {
+const PKG_VERSION = packageVersion();
+if (!PKG_VERSION) {
   throw new Error(
     'gitnexus/package.json#version is missing or not a string — cannot generate MCP fallback config.',
   );
@@ -47,7 +46,7 @@ if (typeof _pkg.version !== 'string' || !_pkg.version) {
 // Version-pinned ref for the persisted MCP entry — deliberately distinct from
 // the cjs's exported `gitnexus@latest` hint ref (resolve-analyze-cmd.cjs); the
 // two are not unified (see the comment above and that file's MCP_PINNED_REF).
-const MCP_PINNED_REF = `gitnexus@${_pkg.version}`;
+const MCP_PINNED_REF = `gitnexus@${PKG_VERSION}`;
 
 /**
  * Build the `command` string written into an editor's hook settings, which the
