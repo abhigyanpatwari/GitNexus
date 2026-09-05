@@ -36,19 +36,16 @@
  *      Array where Element: Equatable`) are not narrowed — the `Self`
  *      type of a protocol method resolves to the protocol, not the
  *      conforming type.
- *   2. **Cross-module `import` resolution** is still directory-segment
- *      based (`import Foo` → files under a `Foo/` dir); explicit imports do
- *      not yet consult the SPM target map (follow-up, tracked under #1935).
- *      Same-target visibility (the common case) IS SPM-target-subtree
- *      accurate — handled by sibling augmentation grouped via
- *      `groupSwiftFilesBySpmTarget`, not by explicit imports.
+ *   2. **Cross-module `import` resolution** consults the SPM target map when
+ *      available. Without package config (for example an Xcode-only repo),
+ *      it falls back to matching a directory segment named after the module.
  *   3. **Operator / subscript overloads** dispatch by name only.
  *   4. **`@_exported import` re-exports** are treated as plain imports.
  */
 
 import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { loadSwiftPackageConfig } from '../../language-config.js';
+import { loadSwiftPackageConfig, type SwiftPackageConfig } from '../../language-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
@@ -67,6 +64,11 @@ import {
   type SwiftResolveContext,
 } from './index.js';
 
+function declaredSwiftTargets(resolutionConfig: unknown): ReadonlyMap<string, string> | null {
+  const config = resolutionConfig as Partial<SwiftPackageConfig> | null | undefined;
+  return config?.declaredTargets instanceof Map ? config.declaredTargets : null;
+}
+
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
 const swiftScopeResolver: ScopeResolver = {
@@ -83,8 +85,12 @@ const swiftScopeResolver: ScopeResolver = {
   // `goScopeResolver`'s `loadGoModulePath`.
   loadResolutionConfig: (repoPath: string) => loadSwiftPackageConfig(repoPath),
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
-    const ws: SwiftResolveContext = { fromFile, allFilePaths };
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) => {
+    const ws: SwiftResolveContext = {
+      fromFile,
+      allFilePaths,
+      targets: declaredSwiftTargets(resolutionConfig),
+    };
     return resolveSwiftImportTarget(
       interpretSwiftImport({
         '@import.source': { name: '@import.source', text: targetRaw, range: ZERO_RANGE },

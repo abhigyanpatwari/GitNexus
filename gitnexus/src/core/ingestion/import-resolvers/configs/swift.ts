@@ -98,10 +98,13 @@ function getSwiftTargetIndex(
 export const swiftPackageStrategy: ImportResolverStrategy = (rawImportPath, _filePath, ctx) => {
   const swiftPackageConfig = ctx.configs.swiftPackageConfig;
   if (swiftPackageConfig) {
+    // A readable manifest is authoritative. Without one, retain the existing
+    // directory-inferred map as a fail-open fallback for Xcode-only projects.
+    const targets = swiftPackageConfig.declaredTargets ?? swiftPackageConfig.targets;
     // Only the targets map is needed; build the index lazily so repos
     // without a Package.swift config pay nothing.
-    if (swiftPackageConfig.targets.has(rawImportPath)) {
-      const index = getSwiftTargetIndex(ctx, swiftPackageConfig.targets);
+    if (targets.has(rawImportPath)) {
+      const index = getSwiftTargetIndex(ctx, targets);
       const files = index.byTarget.get(rawImportPath);
       if (files !== undefined && files.length > 0) {
         // Copy so callers can't mutate the cached index bucket.

@@ -485,6 +485,20 @@ describe('swiftPackageStrategy', () => {
     const result = swiftPackageStrategy('Foundation', 'App.swift', ctx);
     expect(result).toBeNull();
   });
+
+  it('uses manifest declarations instead of same-named source directories', () => {
+    const files = ['Sources/Foundation/Thing.swift', 'Sources/App/main.swift'];
+    const ctx = makeCtx(files, {
+      swiftPackageConfig: {
+        targets: new Map([
+          ['Foundation', 'Sources/Foundation'],
+          ['App', 'Sources/App'],
+        ]),
+        declaredTargets: new Map([['App', 'Sources/App']]),
+      },
+    });
+    expect(swiftPackageStrategy('Foundation', 'Sources/App/main.swift', ctx)).toBeNull();
+  });
 });
 
 describe('rubyRequireStrategy', () => {
