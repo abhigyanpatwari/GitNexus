@@ -4,14 +4,14 @@
  * from the PR review of the Zig provider — the assertion is the behavior that
  * was wrong, not merely that extraction runs.
  *
- * `@tree-sitter-grammars/tree-sitter-zig` is an optionalDependency: the whole
- * file skips cleanly when it is absent, mirroring the Dart/Kotlin suites.
+ * Vendored `tree-sitter-zig` may be absent on a platform without a prebuild:
+ * the whole file skips cleanly when it is, mirroring the Dart/Kotlin suites.
  */
 import { describe, it, expect } from 'vitest';
-import { createRequire } from 'node:module';
 import Parser from 'tree-sitter';
 import { SupportedLanguages, type BindingRef, type SymbolDefinition } from 'gitnexus-shared';
 import { isOptionalGrammarRequired } from '../helpers/optional-grammar.js';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import type { SyntaxNode } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { zigExportChecker } from '../../src/core/ingestion/export-detection.js';
 import { createMethodExtractor } from '../../src/core/ingestion/method-extractors/generic.js';
@@ -50,10 +50,9 @@ import { createSemanticModel } from '../../src/core/ingestion/model/semantic-mod
 import { extract as extractScopes } from '../../src/core/ingestion/scope-extractor.js';
 import { populateClassOwnedMembers } from '../../src/core/ingestion/scope-resolution/scope/walkers.js';
 
-const _require = createRequire(import.meta.url);
 let Zig: unknown = null;
 try {
-  Zig = _require('@tree-sitter-grammars/tree-sitter-zig');
+  Zig = requireVendoredGrammar('tree-sitter-zig');
 } catch {
   // optional grammar absent on this platform — suite skips below
 }
@@ -71,7 +70,7 @@ describe.skipIf(!isOptionalGrammarRequired(SupportedLanguages.Zig))(
       expect(
         Zig,
         'GITNEXUS_REQUIRE_ZIG=1 declares the Zig grammar mandatory on this runner, but ' +
-          "require('@tree-sitter-grammars/tree-sitter-zig') failed — every case below would " +
+          "requireVendoredGrammar('tree-sitter-zig') failed — every case below would " +
           'have skipped and the job would still be green.',
       ).not.toBeNull();
     });

@@ -1,7 +1,19 @@
-import { describe, it, expect } from 'vitest';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { load } from 'js-yaml';
 
 /**
  * Regression guard: every tree-sitter grammar GitNexus ships must provide a
@@ -174,4 +186,189 @@ describe('npm-dependency grammar prebuild coverage', () => {
       expect(nonNapi, `${grammar} has non-N-API prebuilds: ${nonNapi.join(', ')}`).toEqual([]);
     });
   }
+});
+
+describe('prebuild workflow validate snippets cover every REGISTRY grammar', () => {
+  // The "Validate the .node loads and parses" step looks up snippets[GRAMMAR].
+  // A missing key yields undefined, and tree-sitter's parse() throws
+  // "Input must be a function" — the six zig jobs on #3180.
+  const workflow = readFileSync(
+    path.join(GITNEXUS_ROOT, '..', '.github/workflows/build-tree-sitter-prebuilds.yml'),
+    'utf8',
+  );
+  const registry = [...workflow.matchAll(/^\s{12}(\w+):\s+\{\s+name:\s+'tree-sitter-/gm)].map(
+    (m) => m[1],
+  );
+  const snippets = [...workflow.matchAll(/^\s{14}(\w+):\s+"/gm)].map((m) => m[1]);
+
+  it('REGISTRY and snippets are both non-empty (the regex still matches the workflow)', () => {
+    expect(registry.length).toBeGreaterThan(0);
+    expect(snippets.length).toBeGreaterThan(0);
+  });
+
+  it('every REGISTRY grammar has a parse snippet', () => {
+    expect(snippets.sort(), 'add a snippets.<grammar> entry when extending REGISTRY').toEqual(
+      [...registry].sort(),
+    );
+  });
+});
+
+describe('prebuild workflow rebuild loop guard', () => {
+  const workflow = load(
+    readFileSync(
+      path.join(GITNEXUS_ROOT, '..', '.github/workflows/build-tree-sitter-prebuilds.yml'),
+      'utf8',
+    ),
+  ) as {
+    jobs: { guard: { steps: { id?: string; run?: string; env?: Record<string, string> }[] } };
+  };
+  const decide = workflow.jobs.guard.steps.find((step) => step.id === 'decide');
+  if (!decide?.run) throw new Error('Missing prebuild workflow Decide script');
+  // Execute the actual workflow script against real commits, including the
+  // cumulative PR diff that remains after generated binaries are committed.
+  const script = decide.run.match(/node --input-type=module - <<'NODE'\n([\s\S]*?)\nNODE/)?.[1];
+  if (!script) throw new Error('Missing prebuild workflow Decide Node heredoc');
+  let root: string;
+  let base: string;
+  let source: string;
+  const vendor = 'gitnexus/vendor/tree-sitter-zig';
+
+  function git(...args: string[]): string {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+  }
+
+  function write(rel: string, contents: string): void {
+    const dest = path.join(root, rel);
+    mkdirSync(path.dirname(dest), { recursive: true });
+    writeFileSync(dest, contents);
+  }
+
+  function commit(message: string): string {
+    git('add', 'gitnexus');
+    git('-c', 'commit.gpgsign=false', 'commit', '-qm', message);
+    return git('rev-parse', 'HEAD');
+  }
+
+  function runGuard(env: Record<string, string> = {}) {
+    const runnerTemp = mkdtempSync(path.join(root, 'runner-'));
+    const output = path.join(runnerTemp, 'output');
+    const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+      cwd: root,
+      input: script,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        EVENT: 'pull_request',
+        ACTION: 'synchronize',
+        BASE_SHA: base,
+        BEFORE_SHA: source,
+        HEAD_SHA: git('rev-parse', 'HEAD'),
+        INPUT_GRAMMARS: '',
+        INPUT_REF: '',
+        FORCE: 'false',
+        RUNNER_TEMP: runnerTemp,
+        GITHUB_OUTPUT: output,
+        ...env,
+      },
+    });
+    return { ...result, output: existsSync(output) ? readFileSync(output, 'utf8') : '' };
+  }
+
+  function expectBuild(env: Record<string, string> = {}): void {
+    const result = runGuard(env);
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toContain('any=true\n');
+    const matrix = JSON.parse(result.output.split('matrix=')[1]);
+    expect(matrix.include).toHaveLength(6);
+    expect(matrix.include.every((entry: { grammar: string }) => entry.grammar === 'zig')).toBe(
+      true,
+    );
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(path.join(tmpdir(), 'gitnexus-prebuild-guard-'));
+    git('init', '-q');
+    git('config', 'user.name', 'Prebuild test');
+    git('config', 'user.email', 'prebuild-test@example.invalid');
+    mkdirSync(path.join(root, 'hooks'));
+    git('config', 'core.hooksPath', path.join(root, 'hooks'));
+    write('gitnexus/package.json', '{}');
+    base = commit('base without vendored zig');
+    write(`${vendor}/package.json`, '{"version":"1.1.2"}');
+    write(`${vendor}/src/parser.c`, 'original source');
+    source = commit('vendor zig source');
+    write(`${vendor}/prebuilds/win32-x64/tree-sitter-zig.node`, 'binary build 1');
+    write(`${vendor}/prebuilds/SHA256SUMS`, 'checksum 1');
+    commit('generated prebuilds');
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('wires the event action and exact push endpoints into the guard', () => {
+    expect(decide.env).toMatchObject({
+      ACTION: '${{ github.event.action }}',
+      BEFORE_SHA: '${{ github.event.before }}',
+      HEAD_SHA: '${{ github.event.pull_request.head.sha }}',
+    });
+  });
+
+  it('stops repeated binary-only updates while the PR still contains new source', () => {
+    let before = source;
+    for (let build = 2; build <= 4; build++) {
+      const result = runGuard({ BEFORE_SHA: before });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.output).toBe('any=false\nmatrix={"include":[]}\n');
+      before = git('rev-parse', 'HEAD');
+      write(`${vendor}/prebuilds/win32-x64/tree-sitter-zig.node`, `binary build ${build}`);
+      write(`${vendor}/prebuilds/SHA256SUMS`, `checksum ${build}`);
+      commit('generated prebuilds');
+    }
+  });
+
+  it('builds a newly opened PR and supports manual recuts', () => {
+    expectBuild({ ACTION: 'opened', BEFORE_SHA: '' });
+    expectBuild({ EVENT: 'workflow_dispatch', ACTION: '', BEFORE_SHA: '', INPUT_GRAMMARS: 'zig' });
+  });
+
+  it('builds source changes even when the last commit in the push only updates binaries', () => {
+    expectBuild({ BEFORE_SHA: base });
+    const before = git('rev-parse', 'HEAD');
+    write(`${vendor}/src/parser.c`, 'updated source without a version bump');
+    commit('edit parser');
+    write(`${vendor}/prebuilds/SHA256SUMS`, 'checksum 2');
+    commit('generated prebuilds');
+    expectBuild({ BEFORE_SHA: before });
+  });
+
+  it('still builds after unrelated updates that may have cancelled an earlier build', () => {
+    const before = git('rev-parse', 'HEAD');
+    write('gitnexus/package.json', '{"description":"updated"}');
+    commit('update package');
+    expectBuild({ BEFORE_SHA: before });
+  });
+
+  it('uses event endpoints even when the checkout contains additional base-branch changes', () => {
+    const head = git('rev-parse', 'HEAD');
+    write(`${vendor}/src/parser.c`, 'source from an advanced PR merge ref');
+    commit('simulate merge ref changes');
+    const result = runGuard({ HEAD_SHA: head });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.output).toBe('any=false\nmatrix={"include":[]}\n');
+  });
+
+  it('does not hide source removal when a source file moves into prebuilds', () => {
+    const before = git('rev-parse', 'HEAD');
+    git('mv', `${vendor}/src/parser.c`, `${vendor}/prebuilds/parser.c`);
+    commit('move source');
+    expectBuild({ BEFORE_SHA: before });
+  });
+
+  it.each(['', 'not-a-sha', '0'.repeat(40)])(
+    'fails closed for an unavailable push endpoint: %s',
+    (before) => {
+      const result = runGuard({ BEFORE_SHA: before });
+      expect(result.status).not.toBe(0);
+      expect(result.output).not.toContain('any=true');
+    },
+  );
 });
