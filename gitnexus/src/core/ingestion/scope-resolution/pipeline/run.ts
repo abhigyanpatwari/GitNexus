@@ -639,6 +639,10 @@ export function runScopeResolution(
     `lang=${provider.language} parsedFiles=${parsedFiles.length} preExtractedHits=${preExtractedHits} skipped=${filesSkipped}`,
   );
   provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
+  provider.populateWorkspaceReferences?.(parsedFiles, {
+    fileContents: getFileContents(),
+    treeCache,
+  });
 
   // A callable-flow-only provider has no reason to build the whole-graph
   // lookup or finalize ordinary references when none of its files emitted a

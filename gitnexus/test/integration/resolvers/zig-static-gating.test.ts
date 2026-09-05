@@ -179,7 +179,7 @@ describe('Zig static-gated edges', () => {
   // parse worker with only `{ path, content }` in hand — no sibling sources —
   // so v1 stamps file-local constants only. Re-enable once the emitter can
   // see imported files (see PR description, "Cross-file constants").
-  it.skip('tags `if (cfg.FOO)` cross-file when FOO is false in cfg.zig (tracked: #3162)', () => {
+  it('tags `if (cfg.FOO)` cross-file when FOO is false in cfg.zig', () => {
     expect(isGated('gated_cross_file_foo')).toBe(true);
   });
 
@@ -187,7 +187,7 @@ describe('Zig static-gated edges', () => {
     expect(isGated('live_cross_file_bar')).toBe(false);
   });
 
-  it.skip('tags the ELSE branch of `if (cfg.BAR)` when BAR is true (tracked: #3162)', () => {
+  it('tags the ELSE branch of `if (cfg.BAR)` when BAR is true', () => {
     expect(isGated('gated_cross_file_else')).toBe(true);
   });
 

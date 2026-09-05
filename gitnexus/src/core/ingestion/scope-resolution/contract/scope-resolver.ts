@@ -698,6 +698,21 @@ export interface ScopeResolver {
   ) => void;
 
   /**
+   * Optional workspace-wide enrichment of extracted reference sites. Runs
+   * after all files have been extracted and before reference finalization.
+   * Use this when a per-file capture needs conservative facts from an
+   * imported sibling (for example a compile-time branch constant).
+   */
+  readonly populateWorkspaceReferences?: (
+    parsedFiles: readonly ParsedFile[],
+    ctx: {
+      readonly fileContents: ReadonlyMap<string, string>;
+      readonly treeCache?: { get(filePath: string): unknown };
+      readonly resolutionConfig?: unknown;
+    },
+  ) => void;
+
+  /**
    * Recognize a `super(...)`-style receiver text. Python returns
    * `/^super\s*\(/.test(t)`. Java returns `t === 'super'`. C++ may
    * also need `this` capture. Languages without inheritance return
