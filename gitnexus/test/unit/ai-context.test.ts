@@ -138,9 +138,10 @@ describe('generateAIContextFiles', () => {
   });
 
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
+    const isolatedDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-skip-test-'));
     const stats = { nodes: 42, edges: 84, processes: 3 };
-    const agentsPath = path.join(tmpDir, 'AGENTS.md');
-    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    const agentsPath = path.join(isolatedDir, 'AGENTS.md');
+    const claudePath = path.join(isolatedDir, 'CLAUDE.md');
     const agentsContent = '# AGENTS\n\nCustom manual instructions only\n';
     const claudeContent = '# CLAUDE\n\nCustom manual instructions only\n';
 
@@ -148,7 +149,7 @@ describe('generateAIContextFiles', () => {
     await fs.writeFile(claudePath, claudeContent, 'utf-8');
 
     const result = await generateAIContextFiles(
-      tmpDir,
+      isolatedDir,
       storagePath,
       'TestProject',
       stats,
@@ -163,5 +164,12 @@ describe('generateAIContextFiles', () => {
     const claudeAfter = await fs.readFile(claudePath, 'utf-8');
     expect(agentsAfter).toBe(agentsContent);
     expect(claudeAfter).toBe(claudeContent);
+    expect(result.files).toContain(
+      '.claude/skills/gitnexus/ (skipped via --skip-agents-md)',
+    );
+    await expect(
+      fs.access(path.join(isolatedDir, '.claude', 'skills', 'gitnexus')),
+    ).rejects.toThrow();
+    await fs.rm(isolatedDir, { recursive: true, force: true });
   });
 });

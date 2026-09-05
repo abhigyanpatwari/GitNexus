@@ -300,10 +300,16 @@ export async function generateAIContextFiles(
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
-  // Install skills to .claude/skills/gitnexus/
-  const installedSkills = await installSkills(repoPath);
-  if (installedSkills.length > 0) {
-    createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+  // A caller that opts out of instruction-file updates is asking for an
+  // index-only operation. Installing repo-local skills would still mutate the
+  // project's instruction surface and can shadow an existing global catalog.
+  if (!options?.skipAgentsMd) {
+    const installedSkills = await installSkills(repoPath);
+    if (installedSkills.length > 0) {
+      createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+    }
+  } else {
+    createdFiles.push('.claude/skills/gitnexus/ (skipped via --skip-agents-md)');
   }
 
   return { files: createdFiles };
