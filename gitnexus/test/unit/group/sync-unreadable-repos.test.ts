@@ -75,6 +75,20 @@ vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
+// This file focuses on failures from `initLbug` and extraction after a member
+// has resolved. Keep its deliberately synthetic registry paths from being
+// intercepted by the production storage inspection; the real registry-backed
+// storage gate is covered by sync-registry-identity.test.ts.
+vi.mock('../../../src/storage/storage-resolver.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/storage/storage-resolver.js')>();
+  return {
+    ...actual,
+    requireRegisteredStoragePath: vi.fn(
+      async (entry: { storagePath: string }) => entry.storagePath,
+    ),
+  };
+});
+
 /**
  * Armed by the bridge-write-failure suite at the bottom of this file, `null`
  * everywhere else. There is no filesystem shape that makes the real writer fail

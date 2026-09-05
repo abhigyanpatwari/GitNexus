@@ -263,6 +263,10 @@ describe('PARSE_CACHE_VERSION', () => {
   it('pins SCHEMA_BUMP to 93 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161)', () => {
     expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(93);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
+    // The PREVIOUS version must fail the reuse gate, not merely differ from the
+    // current one — a hardcoded number outside the conflict hunk rebases cleanly
+    // while being wrong, which is exactly how the 37/38 exact clashes landed.
+    // Every nearby historical or in-flight value is rejected.
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
       82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,

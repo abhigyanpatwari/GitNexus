@@ -11,6 +11,11 @@
 import path from 'path';
 import fsp from 'fs/promises';
 import { UPLOAD_ROOT, STAGING_PREFIX } from './upload-paths.js';
+import {
+  canonicalizePath,
+  readRegistryStrict,
+  registryPathEquals,
+} from '../storage/repo-manager.js';
 
 export interface SweepOptions {
   /** Remove staging dirs older than this (default 6h). */
@@ -34,6 +39,8 @@ export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ remo
     return { removed }; // root does not exist yet — nothing to sweep
   }
 
+  const stalePromotedDirs: string[] = [];
+
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const full = path.join(root, entry.name);
@@ -46,20 +53,33 @@ export async function sweepStaleUploads(opts: SweepOptions = {}): Promise<{ remo
         await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
         removed.push(full);
       } else {
-        // Promoted upload dir. A successfully-analyzed (registered) repo always
-        // has a `.gitnexus` index inside it; a stale promoted dir WITHOUT one is
-        // an orphan from an analysis that failed before registering — remove it.
-        const hasIndex = await fsp
-          .access(path.join(full, '.gitnexus'))
-          .then(() => true)
-          .catch(() => false);
-        if (!hasIndex) {
-          await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
-          removed.push(full);
-        }
+        stalePromotedDirs.push(full);
       }
     } catch {
       /* stat race — skip */
+    }
+  }
+
+  // Promoted upload directories are source repositories. Their persistence is
+  // determined by registry membership, not by whether their index currently
+  // happens to be materialized or where that index is stored. Registry failure
+  // must never turn into deletion; staging cleanup above remains independent.
+  let registeredPaths: string[];
+  try {
+    registeredPaths = (await readRegistryStrict())
+      .filter((entry) => typeof entry.path === 'string' && entry.path.trim().length > 0)
+      .map((entry) => canonicalizePath(entry.path));
+  } catch {
+    return { removed };
+  }
+
+  for (const full of stalePromotedDirs) {
+    const isRegistered = registeredPaths.some((registeredPath) =>
+      registryPathEquals(registeredPath, canonicalizePath(full)),
+    );
+    if (!isRegistered) {
+      await fsp.rm(full, { recursive: true, force: true }).catch(() => {});
+      removed.push(full);
     }
   }
 

@@ -18,6 +18,7 @@ import path from 'path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName, RELATION_SCHEMA } from './schema.js';
+import type { ContentRetention } from '../../storage/repo-meta.js';
 import { VALID_NODE_TABLES, parseRelationSchemaPairs, RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
@@ -294,7 +295,16 @@ const formatFtsDescription = (description: string): string =>
 // 0-based line invariant. Kept as a named alias to read intent at the use site.
 const EXACT_SYMBOL_CONTENT_LABELS = SYMBOL_NODE_LABELS;
 
-const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
+const extractContent = async (
+  node: GraphNode,
+  contentCache: FileContentCache,
+  contentRetention: ContentRetention,
+): Promise<string> => {
+  // File content is intentionally lazy-read for full indexes. Do not let this
+  // compatibility path recreate source text that the selected profile forbids.
+  if (contentRetention === 'none' || (contentRetention === 'symbol' && node.label === 'File')) {
+    return '';
+  }
   const filePath = node.properties.filePath;
   const prepared = await contentCache.get(filePath);
   const content = prepared.content;
@@ -476,6 +486,7 @@ export const streamAllCSVsToDisk = async (
   repoPath: string,
   csvDir: string,
   onNodePhaseComplete?: (nodeFiles: Map<NodeTableName, { csvPath: string; rows: number }>) => void,
+  contentRetention: ContentRetention = 'full',
 ): Promise<StreamedCSVResult> => {
   // Deterministic (id-sorted) node/relationship row order when enabled;
   // default off = today's graph-insertion order (byte-identical).
@@ -624,7 +635,7 @@ export const streamAllCSVsToDisk = async (
       let pending: Promise<void> | undefined;
       switch (node.label) {
         case 'File': {
-          const content = await extractContent(node, contentCache);
+          const content = await extractContent(node, contentCache, contentRetention);
           pending = fileWriter.addRow(
             [
               escapeCSVField(node.id),
@@ -679,7 +690,7 @@ export const streamAllCSVsToDisk = async (
           break;
         }
         case 'Method': {
-          const content = await extractContent(node, contentCache);
+          const content = await extractContent(node, contentCache, contentRetention);
           pending = methodWriter.addRow(
             [
               escapeCSVField(node.id),
@@ -697,7 +708,7 @@ export const streamAllCSVsToDisk = async (
           break;
         }
         case 'Section': {
-          const content = await extractContent(node, contentCache);
+          const content = await extractContent(node, contentCache, contentRetention);
           pending = sectionWriter.addRow(
             [
               escapeCSVField(node.id),
@@ -799,7 +810,7 @@ export const streamAllCSVsToDisk = async (
           // Code element nodes (Function, Class, Interface, CodeElement)
           const writer = codeWriterMap[node.label];
           if (writer) {
-            const content = await extractContent(node, contentCache);
+            const content = await extractContent(node, contentCache, contentRetention);
             const row = [
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
@@ -820,7 +831,7 @@ export const streamAllCSVsToDisk = async (
             // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
             const mlWriter = multiLangWriters.get(node.label);
             if (mlWriter) {
-              const content = await extractContent(node, contentCache);
+              const content = await extractContent(node, contentCache, contentRetention);
               pending = mlWriter.addRow(
                 [
                   escapeCSVField(node.id),

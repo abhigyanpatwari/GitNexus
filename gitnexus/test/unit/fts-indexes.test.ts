@@ -35,7 +35,7 @@ const {
   initialiseSearchFTSStemmer,
   missingSearchFTSIndexTables,
 } = await import('../../src/core/search/fts-indexes.js');
-const { FTS_INDEXES } = await import('../../src/core/search/fts-schema.js');
+const { FTS_INDEXES, getFtsIndexes } = await import('../../src/core/search/fts-schema.js');
 const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 
 /** SHOW_INDEXES rows covering every configured FTS index's expected properties. */
@@ -74,6 +74,16 @@ describe('createSearchFTSIndexes', () => {
       'drop:Function.function_fts',
       'create:Function.function_fts:porter',
     ]);
+  });
+
+  it('applies the table filter within the selected content-retention profile', async () => {
+    await createSearchFTSIndexes({
+      indexes: getFtsIndexes('name-only'),
+      tables: new Set(['Function']),
+    });
+
+    expect(calls).toEqual(['drop:Function.function_fts', 'create:Function.function_fts:porter']);
+    expect(createFTSIndex).toHaveBeenCalledWith('Function', 'function_fts', ['name'], 'porter');
   });
 
   it('invokes onIndexStart/onIndexReady once per index', async () => {

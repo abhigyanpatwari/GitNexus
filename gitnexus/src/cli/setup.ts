@@ -450,6 +450,7 @@ const HOOK_HELPERS = [
   'hook-db-lock-probe.cjs',
   'win-rm-list-json.ps1',
   'resolve-analyze-cmd.cjs',
+  'registry-query.cjs',
 ] as const;
 
 // win-rm-list-json.ps1 is best-effort: it is read (not require()'d) by

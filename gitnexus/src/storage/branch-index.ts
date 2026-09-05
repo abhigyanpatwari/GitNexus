@@ -68,13 +68,14 @@ export const branchSlug = (rawRef: string): string => {
 export const resolveBranchPlacement = async (
   repoPath: string,
   label: string | null,
+  resolvedStoragePath?: string,
 ): Promise<{ branch?: string }> => {
   // Detached HEAD / non-git / no label → flat (CI-safe, byte-identical).
   if (!label) return {};
   // The flat slot only — identical to `getStoragePaths(repoPath).storagePath`,
   // which is `getStoragePath(repoPath)` verbatim (the `branch` argument only
   // ever scopes `lbugPath`/`metaPath`, never `storagePath`).
-  const storagePath = getStoragePath(repoPath);
+  const storagePath = resolvedStoragePath ?? getStoragePath(repoPath);
   const flatMeta = await loadMeta(storagePath);
   // The flat slot's owner is authoritative ONLY when it is a non-empty string.
   // A corrupt/hand-edited meta (empty string, or a non-string value that slips

@@ -247,7 +247,7 @@ export const Header = ({
                             />
                           </div>
                         </div>
-                        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto pb-1">
+                        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto pb-1">
                           {filteredRepos.length === 0 ? (
                             <div className="px-4 py-3 text-sm text-text-muted">
                               {t('header:noRepositoriesFound', { query: repoSearchQuery })}

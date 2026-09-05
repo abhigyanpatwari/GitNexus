@@ -250,7 +250,6 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // capture schemas would have shared one PARSE_CACHE_VERSION and the durable
 // ParsedFile store would have replayed pre-fix ParsedFiles verbatim for one of
 // them. Only comparing against origin/main at MERGE time surfaces it.
-// PR #2840 (Objective-C, draft) still claims 44 as well — it must move too.
 // RE-CHECK AGAINST origin/main IMMEDIATELY BEFORE MERGING.
 // 45 -> 46 for the JavaScript bare-identifier read captures (A2), which emit
 // `@reference.read.identifier` in value positions (call arguments,
@@ -664,6 +663,7 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // `route-extractors/` and `workers/` module content — would close the missing-
 // bump axis without invalidating on unrelated churn, and is the real follow-up.
 // RE-CHECK AGAINST origin/main AND OPEN PRs IMMEDIATELY BEFORE MERGING.
+//
 // 80 -> 81: ParsedFile and parse-cache shards are one immutable `.v8` envelope
 // each (no JSON/path/generation siblings). A v80 index still names `.json`
 // keys and would skip workers while scope-resolution found nothing — the

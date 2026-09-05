@@ -28,7 +28,6 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from '../core/lbug/lbug-config.js';
 import {
-  getStoragePaths,
   getGlobalRegistryPath,
   RegistryNameCollisionError,
   AnalysisNotFinalizedError,
@@ -1418,7 +1417,7 @@ const analyzeCommandImpl = async (
       // run can write meta.json and then fail before registerRepo(); in
       // that half-finalized state, runFullAnalysis returns alreadyUpToDate
       // on the next invocation unless we check the registry here too.
-      await assertAnalysisFinalized(repoPath);
+      await assertAnalysisFinalized(repoPath, result.storagePath);
       // The fast path skips context regeneration, but a changed `.gitnexusrc`
       // defaultBranch / `--default-branch` must still take effect. Surgically
       // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
@@ -1488,7 +1487,7 @@ const analyzeCommandImpl = async (
     // success so the silent-finalize state surfaces with a non-zero
     // exit code and an actionable error instead of being mistaken for
     // a healthy index.
-    await assertAnalysisFinalized(repoPath);
+    await assertAnalysisFinalized(repoPath, result.storagePath);
 
     // Skill generation (CLI-only, uses pipeline result from analysis).
     // Gated so `--index-only --skills` skips community skill writes too
@@ -1519,10 +1518,9 @@ const analyzeCommandImpl = async (
               (count: number) => count >= 5,
             ).length;
           }
-          const { storagePath: sp } = getStoragePaths(repoPath);
           await generateAIContextFiles(
             repoPath,
-            sp,
+            result.storagePath,
             result.repoName,
             {
               files: s.files ?? 0,

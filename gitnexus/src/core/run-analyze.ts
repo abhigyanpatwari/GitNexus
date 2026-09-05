@@ -75,6 +75,13 @@ import {
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
+import { getFtsIndexes } from './search/fts-schema.js';
+import {
+  applyContentRetention,
+  contentRetentionFromEnvironment,
+  contentRetentionMismatch,
+  ftsProfileForContentRetention,
+} from './content-retention.js';
 import {
   cjkSegmentationModeMismatch,
   getSearchFTSCjkSegmentation,
@@ -112,11 +119,18 @@ import {
   isRepoRegistered,
   cleanupOldKuzuFiles,
   reconcileMetadataFiles,
+  ensureStoragePathWritable,
   isMissingFilesystemError,
   INDEX_METADATA_FILE,
   type AnalyzerRunnerIdentity,
+  type ContentRetention,
   type RepoMeta,
 } from '../storage/repo-manager.js';
+import {
+  ANALYZE_STORAGE_REQUIREMENTS,
+  requireStoragePath,
+  resolveStoragePath,
+} from '../storage/storage-resolver.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
 import {
   DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
@@ -518,6 +532,8 @@ export function analyzeFailureMayHaveMutatedLiveIndex(error: unknown): boolean {
 export interface AnalyzeResult {
   repoName: string;
   repoPath: string;
+  /** The exact storage slot selected and validated for this analysis. */
+  storagePath: string;
   stats: {
     files?: number;
     nodes?: number;
@@ -996,11 +1012,16 @@ interface WriteTarget {
  * `--branch` / checked-out mismatch error the pipeline used to throw inline, so
  * that failure still surfaces before any lock is taken.
  */
-async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Promise<WriteTarget> {
+async function resolveWriteTarget(
+  repoPath: string,
+  options: AnalyzeOptions,
+  validatedStoragePath?: string,
+): Promise<WriteTarget> {
   // `storagePath` is ALWAYS the flat `.gitnexus` — content-addressed caches
   // (parse-cache, parsedfile-store) and kuzu-migration cleanup live there and
   // are shared across branches (#2106 KTD7).
-  const { storagePath } = getStoragePaths(repoPath);
+  const storagePath =
+    validatedStoragePath ?? (await requireStoragePath(repoPath, ANALYZE_STORAGE_REQUIREMENTS));
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
   // Normalize the auto-detected branch the same way an explicit `--branch` is
@@ -1021,8 +1042,10 @@ async function resolveWriteTarget(repoPath: string, options: AnalyzeOptions): Pr
     );
   }
   const branchLabel = options.branch ?? checkedOutBranch;
-  const placement = options.branch ? await resolveBranchPlacement(repoPath, branchLabel) : {};
-  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
+  const placement = options.branch
+    ? await resolveBranchPlacement(repoPath, branchLabel, storagePath)
+    : {};
+  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch, storagePath);
   return {
     storagePath,
     repoHasGit,
@@ -1073,6 +1096,7 @@ export async function runFullAnalysis(
   // cached value via getSearchFTSStemmer.)
   initialiseSearchFTSStemmer();
   initialiseSearchFTSCjkSegmentation();
+  const contentRetention = contentRetentionFromEnvironment();
   // Scope the degraded-parse log throttle to this run (module-level counter
   // would otherwise stay saturated on a reused process).
   resetDegradedParseCounter();
@@ -1101,7 +1125,12 @@ export async function runFullAnalysis(
     // checkout) still releases the held lock via `finally` (no leak).
     const MAX_RELOCK = 3;
     for (let attempt = 0; attempt < MAX_RELOCK; attempt++) {
-      const fresh = await resolveWriteTarget(repoPath, options);
+      const resolvedStoragePath = resolveStoragePath(repoPath);
+      const fresh = await resolveWriteTarget(
+        repoPath,
+        options,
+        resolvedStoragePath === writeTarget.storagePath ? writeTarget.storagePath : undefined,
+      );
       if (fresh.metaDir === writeTarget.metaDir) {
         writeTarget = fresh; // same slot — adopt the freshly-read commit/branch/placement
         break;
@@ -1122,6 +1151,7 @@ export async function runFullAnalysis(
       options,
       callbacks,
       writeTarget,
+      contentRetention,
       runnerIdentityAtBootstrap,
     );
   } finally {
@@ -1134,6 +1164,7 @@ async function runFullAnalysisInner(
   options: AnalyzeOptions,
   callbacks: AnalyzeCallbacks,
   writeTarget: WriteTarget,
+  contentRetention: ContentRetention,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
@@ -1151,6 +1182,13 @@ async function runFullAnalysisInner(
   // does not own the flat slot. See resolveWriteTarget for the full contract.
   const { storagePath, repoHasGit, currentCommit, branchLabel, placement, lbugPath, metaDir } =
     writeTarget;
+  let storageWritable: Promise<void> | undefined;
+  const ensureWritableStorage = (): Promise<void> => {
+    storageWritable ??= ensureStoragePathWritable(storagePath);
+    return storageWritable;
+  };
+  const ftsProfile = ftsProfileForContentRetention(contentRetention);
+  const ftsIndexes = getFtsIndexes(ftsProfile);
   let coldParseRebuildDir: string | undefined;
 
   // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
@@ -1164,13 +1202,13 @@ async function runFullAnalysisInner(
     log('Migrating from KuzuDB to LadybugDB — rebuilding index...');
   }
 
-  // Keep gitnexus.json and the legacy meta.json mirror in sync (fresher
-  // indexedAt wins; nothing is deleted). Best-effort: loadMeta has its own
-  // legacy fallback, so a reconciliation failure (read-only mount, full disk)
-  // must never abort the analyze run — a repo that indexed fine read-only
-  // before the rename must keep doing so.
+  // Keep gitnexus.json and the legacy meta.json mirror in sync. Use the
+  // ownership-validated write target rather than resolving storage again from
+  // the registry while holding the index lock. Best-effort: loadMeta has its
+  // own legacy fallback, so a reconciliation failure (read-only mount, full
+  // disk) must never abort the analyze run.
   try {
-    await reconcileMetadataFiles(repoPath);
+    await reconcileMetadataFiles(repoPath, storagePath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
@@ -1178,7 +1216,31 @@ async function runFullAnalysisInner(
 
   const existingMeta = await loadMeta(metaDir);
 
+  // Claim a fresh, ownership-validated slot before the pipeline writes caches.
+  // A later registry-name collision or pipeline failure can otherwise leave
+  // cache files without metadata, which must be treated as unowned on the next
+  // invocation. This marker deliberately has no DB/freshness receipt, so read
+  // paths still reject it until a successful analyze writes the final metadata.
+  if (!existingMeta && !(await loadMeta(storagePath))) {
+    await saveMeta(storagePath, {
+      repoPath,
+      storagePath,
+      lastCommit: '',
+      indexedAt: new Date().toISOString(),
+    });
+  }
+
   // ── FTS-only repair path ────────────────────────────────────────────
+  if (
+    options.repairFts &&
+    existingMeta &&
+    contentRetentionMismatch(existingMeta, contentRetention)
+  ) {
+    log(
+      'content retention or FTS profile changed; forcing a full rebuild before rebuilding search indexes.',
+    );
+    options = { ...options, force: true, repairFts: false };
+  }
   if (options.repairFts) {
     if (!existingMeta) {
       throw new Error(
@@ -1228,6 +1290,7 @@ async function runFullAnalysisInner(
           'Run `gitnexus analyze` (full) to rebuild from scratch.',
       );
     }
+    await ensureWritableStorage();
     try {
       await initLbug(lbugPath);
       // Gate on FTS availability BEFORE touching any index. createSearchFTSIndexes
@@ -1269,6 +1332,7 @@ async function runFullAnalysisInner(
       }
       progress('fts', 85, 'Repairing search indexes...');
       const repairFailures = await createSearchFTSIndexes({
+        indexes: ftsIndexes,
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -1276,7 +1340,7 @@ async function runFullAnalysisInner(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
-      const missing = await verifySearchFTSIndexes(executeQuery);
+      const missing = await verifySearchFTSIndexes(executeQuery, ftsIndexes);
       if (missing.length > 0) {
         // #2889: name WHY each index is missing when the build itself said so.
         // Repair now rebuilds every table it can before reporting, so the tables
@@ -1285,14 +1349,16 @@ async function runFullAnalysisInner(
         // only ever list "missing", never a reason. Same sentence the analyze
         // degrade path prints, so one failure does not read two ways.
         const reasons =
-          repairFailures.length > 0 ? ` ${summarizeFtsIndexBuildFailures(repairFailures)}.` : '';
+          repairFailures.length > 0
+            ? ` ${summarizeFtsIndexBuildFailures(repairFailures, ftsIndexes)}.`
+            : '';
         throw new Error(
           `FTS repair failed - missing indexes after rebuild: ${missing.join(', ')}.${reasons} ` +
             'Run `gitnexus analyze --force` to perform a full graph+FTS rebuild; ' +
             'if that also fails, verify FTS extension availability via `gitnexus doctor`.',
         );
       }
-      await ensureGitNexusIgnored(repoPath);
+      await ensureGitNexusIgnored(repoPath, storagePath);
       // #2767: stamp ONLY capabilities.fts so a long-lived MCP session's
       // ensureInitialized() has an explicit, correctly-scoped signal that FTS
       // changed — indexedAt/lastCommit/runnerIdentity/stats are copied through
@@ -1341,6 +1407,7 @@ async function runFullAnalysisInner(
           name: options.registryName,
           allowDuplicateName: options.allowDuplicateName,
           branch: placement.branch,
+          storagePath,
         });
       }
       return {
@@ -1349,6 +1416,7 @@ async function runFullAnalysisInner(
           getInferredRepoName(repoPath) ??
           path.basename(resolveRepoIdentityRoot(repoPath)),
         repoPath,
+        storagePath,
         stats: existingMeta.stats ?? {},
         ftsRepairedOnly: true,
       };
@@ -1452,6 +1520,7 @@ async function runFullAnalysisInner(
     // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
     // now, while nothing is open, so every open in this run is replay-free.
     // The rebuild wipes the DB regardless, so no committed data is at stake.
+    await ensureWritableStorage();
     const { removed, failed } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
     if (removed.length > 0) {
       log(
@@ -1502,6 +1571,18 @@ async function runFullAnalysisInner(
         `${capsOnly ? ', but with different caps' : ''}); forcing a full ` +
         `rebuild so the CFG layer is ${pdgOn ? 'fully persisted' : 'fully removed'}. ` +
         `Tip: set \`pdg: ${pdgOn}\` in .gitnexusrc to pin the mode across runs.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  // Retention controls the DB's persisted text and FTS columns. Incremental
+  // writeback only touches changed files, so changing it in place would leave
+  // old source text and index pages behind. Rebuild the database instead.
+  if (existingMeta && contentRetentionMismatch(existingMeta, contentRetention)) {
+    const recorded = existingMeta.contentRetention ?? 'full (legacy)';
+    log(
+      `content retention changed (index built with ${recorded}, this run uses ${contentRetention}); ` +
+        'forcing a full rebuild so stored text and FTS indexes are recreated.',
     );
     options = { ...options, force: true };
   }
@@ -1826,6 +1907,7 @@ async function runFullAnalysisInner(
             name: options.registryName,
             allowDuplicateName: options.allowDuplicateName,
             branch: placement.branch,
+            storagePath,
           });
           if (!placement.branch) {
             try {
@@ -1870,7 +1952,7 @@ async function runFullAnalysisInner(
           // date" run must not fail over it; read-only storage — the
           // documented Docker :ro workflow (#1549) — degrades to a warning.
           try {
-            await adoptFlatBranchLabel(repoPath, branchLabel);
+            await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
             await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
           } catch (err) {
             // EACCES/EPERM also arise from ownership problems and transient
@@ -1884,7 +1966,7 @@ async function runFullAnalysisInner(
             );
           }
         }
-        await ensureGitNexusIgnored(repoPath);
+        await ensureGitNexusIgnored(repoPath, storagePath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
           // canonical repo basename (#1259) but leaves arbitrary subdirs
@@ -1894,6 +1976,7 @@ async function runFullAnalysisInner(
             getInferredRepoName(repoPath) ??
             path.basename(resolveRepoIdentityRoot(repoPath)),
           repoPath,
+          storagePath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
           isPrimaryBranch: !placement.branch,
@@ -1901,6 +1984,8 @@ async function runFullAnalysisInner(
       }
     }
   }
+
+  await ensureWritableStorage();
 
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
@@ -2069,8 +2154,8 @@ async function runFullAnalysisInner(
         pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
         // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
         // (force === true) so the incremental writeback never reads back an
-        // offloaded BasicBlock layer. Memory-only; byte-identical output.
-        streamPdgEmit: resolveStreamPdgEmit(options),
+        // offloaded BasicBlock layer. Non-full retention profiles must keep
+        // BasicBlock source text in memory until the retention pass below.
         pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
         // Streamed structural emit (#2680) — same full-rebuild gate as the PDG
         // toggle above, for the same incremental-writeback reason.
@@ -2087,6 +2172,10 @@ async function runFullAnalysisInner(
         springActuatorPath: options.springActuatorPath,
         asyncApiSpecPath: options.asyncApiSpecPath,
         springActuatorScanExclusions,
+        // Streaming/chunked PDG emit must remain disabled for non-full content
+        // retention profiles because BasicBlock source text is stripped only
+        // after all semantic phases have completed.
+        streamPdgEmit: contentRetention === 'full' && resolveStreamPdgEmit(options),
       },
     );
   } catch (err) {
@@ -2106,6 +2195,11 @@ async function runFullAnalysisInner(
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
+
+  // Parsing and graph construction always see the original source. Apply the
+  // retention boundary only after all semantic phases have completed and
+  // before any graph rows, FTS values, or embeddings are persisted.
+  applyContentRetention(pipelineResult.graph, contentRetention);
 
   // Compute current per-file content hashes from the pipeline's File nodes.
   // Used both to drive the incremental DB writeback (when eligible) and to
@@ -2914,11 +3008,19 @@ async function runFullAnalysisInner(
         await wipeLbugDbFiles(buildPath);
         await initLbug(buildPath);
         walCheckpointDriver = startWalCheckpointDriver();
-        await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-          lbugMsgCount++;
-          const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
-          progress('lbug', pct, msg);
-        });
+        await loadGraphToLbug(
+          pipelineResult.graph,
+          pipelineResult.repoPath,
+          storagePath,
+          (msg) => {
+            lbugMsgCount++;
+            const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+            progress('lbug', pct, msg);
+          },
+          undefined,
+          undefined,
+          contentRetention,
+        );
       } else {
         // 1a. Drop every FTS index before touching a single row (#2589).
         //     `deleteNodesForFiles` below DETACH DELETEs rows out of tables
@@ -2983,7 +3085,7 @@ async function runFullAnalysisInner(
         const derivedSnapshot = preserveDerivedLayer
           ? await snapshotDerivedRelsForFiles(filesToDelete, [...tablesWithRows])
           : [];
-        await dropSearchFTSIndexes(indexCatalogRows, incrementalFtsRebuildTables);
+        await dropSearchFTSIndexes(indexCatalogRows, ftsIndexes, incrementalFtsRebuildTables);
         // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
         //     loop issued a count + delete per table per FILE — ~13k
@@ -3083,11 +3185,19 @@ async function runFullAnalysisInner(
           effectiveWriteCount: effectiveWriteSet.size,
           deleteCount: filesToDelete.length,
         });
-        await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
-          lbugMsgCount++;
-          const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
-          progress('lbug', pct, msg);
-        });
+        await loadGraphToLbug(
+          subgraph,
+          pipelineResult.repoPath,
+          storagePath,
+          (msg) => {
+            lbugMsgCount++;
+            const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+            progress('lbug', pct, msg);
+          },
+          undefined,
+          undefined,
+          contentRetention,
+        );
         if (preserveDerivedLayer && derivedSnapshot.length > 0) {
           await restoreDerivedRels(derivedSnapshot);
         }
@@ -3116,6 +3226,7 @@ async function runFullAnalysisInner(
         },
         pipelineResult.pdgEmitManifest,
         pipelineResult.graphEmitManifest,
+        contentRetention,
       );
     }
 
@@ -3150,6 +3261,7 @@ async function runFullAnalysisInner(
       // pre-existing row (#2544/#2546) must not discard this run's otherwise-
       // successful graph/embeddings work — only keyword search degrades.
       const ftsResult = await buildSearchIndexesOrDegrade(executeQuery, {
+        indexes: ftsIndexes,
         tables: incrementalFtsRebuildTables,
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
@@ -3868,8 +3980,12 @@ async function runFullAnalysisInner(
     // honesty contract silently decays to "whatever interpolates".
     const meta: RepoMeta = {
       repoPath,
+      storagePath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      contentRetention,
+      contentRetentionSchemaVersion: 1,
+      ftsProfile,
       runnerIdentity,
       // Persist only normalized repo-relative exclusions, never absolute paths
       // or payloads. Keep them after runtime enrichment is disabled so a later
@@ -4063,6 +4179,7 @@ async function runFullAnalysisInner(
       // primary/flat run (placement.branch === undefined) refreshes the
       // top-level fields (#2106).
       branch: placement.branch,
+      storagePath,
     });
 
     // ── #2354: the flat workspace slot has adopted this run's branch ──────
@@ -4077,7 +4194,7 @@ async function runFullAnalysisInner(
     // already-stamped meta label).
     if (!placement.branch && branchLabel) {
       try {
-        await adoptFlatBranchLabel(repoPath, branchLabel);
+        await adoptFlatBranchLabel(repoPath, branchLabel, storagePath);
       } catch (e) {
         log(
           `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
@@ -4086,7 +4203,7 @@ async function runFullAnalysisInner(
     }
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
-    await ensureGitNexusIgnored(repoPath);
+    await ensureGitNexusIgnored(repoPath, storagePath);
 
     // ── Generate AI context files (best-effort) ───────────────────────
     let aggregatedClusterCount = 0;
@@ -4249,6 +4366,7 @@ async function runFullAnalysisInner(
     return {
       repoName: projectName,
       repoPath,
+      storagePath,
       stats: meta.stats,
       pipelineResult,
       ...(graphWriteCollapsed ? { graphWriteCollapsed } : {}),

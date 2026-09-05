@@ -16,7 +16,7 @@ import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useAppState } from '../hooks/useAppState';
 import { type GraphNode, getSyntaxLanguageFromFilename } from 'gitnexus-shared';
 import { NODE_COLORS } from '../lib/constants';
-import { readFile, type ReadFileResult } from '../services/backend-client';
+import { BackendError, readFile, type ReadFileResult } from '../services/backend-client';
 import { useTranslation } from 'react-i18next';
 
 const getSyntaxLanguage = (filePath: string | undefined): string => {
@@ -205,6 +205,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   const CONTEXT_LINES = 50; // lines of context above and below the symbol
 
   const [fileResult, setFileResult] = useState<ReadFileResult | null>(null);
+  const [sourceUnavailable, setSourceUnavailable] = useState(false);
   const [isLoadingFile, setIsLoadingFile] = useState(false);
   const selectedViewerRef = useRef<HTMLDivElement>(null);
 
@@ -214,12 +215,14 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
   useEffect(() => {
     if (!selectedFilePath) {
       setFileResult(null);
+      setSourceUnavailable(false);
       return;
     }
 
     let cancelled = false;
     setIsLoadingFile(true);
     setFileResult(null);
+    setSourceUnavailable(false);
 
     // Determine read range: full file for File nodes, buffered for symbols
     const startLine = selectedNode?.properties?.startLine as number | undefined;
@@ -242,9 +245,12 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
           setIsLoadingFile(false);
         }
       })
-      .catch(() => {
+      .catch((error) => {
         if (!cancelled) {
           setFileResult(null);
+          setSourceUnavailable(
+            error instanceof BackendError && error.code === 'source_unavailable',
+          );
           setIsLoadingFile(false);
         }
       });
@@ -384,7 +390,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+            <div ref={selectedViewerRef} className="min-h-0 flex-1 scrollbar-thin overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -426,7 +432,9 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 </SyntaxHighlighter>
               ) : (
                 <div className="px-3 py-3 text-sm text-text-muted">
-                  {selectedIsFile ? (
+                  {sourceUnavailable ? (
+                    <>{t('graph:codePanel.sourceUnavailable')}</>
+                  ) : selectedIsFile ? (
                     <>{t('graph:codePanel.codeNotAvailable', { path: selectedFilePath })}</>
                   ) : (
                     <>{t('graph:codePanel.selectFile')}</>
@@ -457,7 +465,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {t('graph:codePanel.references', { count: aiReferences.length })}
               </span>
             </div>
-            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 scrollbar-thin space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label

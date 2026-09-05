@@ -29,14 +29,16 @@ import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
+import { resolveStoragePath } from './storage-resolver.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
+import { INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
+
+export { GITNEXUS_DIR, INDEX_METADATA_FILE, LEGACY_METADATA_FILE } from './storage-constants.js';
 
 /** The `.gitnexus` directory name, relative to a repo root. */
-export const GITNEXUS_DIR = '.gitnexus';
-export const INDEX_METADATA_FILE = 'gitnexus.json';
-// Dual-written mirror of INDEX_METADATA_FILE, kept for backward compatibility
-// with consumers that only know the pre-rename filename (see MIGRATION.md).
-export const LEGACY_METADATA_FILE = 'meta.json';
+export type ContentRetention = 'full' | 'symbol' | 'none';
+export type FtsProfile = 'full' | 'symbol-no-file-content' | 'name-only';
+export const CONTENT_RETENTION_SCHEMA_VERSION = 1;
 
 /**
  * Versioned receipt for the analyzer process that produced an index.
@@ -84,8 +86,14 @@ export interface AnalyzerRunnerIdentity {
 
 export interface RepoMeta {
   repoPath: string;
+  /** Complete index directory selected for this successful analysis. */
+  storagePath?: string;
   lastCommit: string;
   indexedAt: string;
+  /** Missing on legacy metadata means the upstream-compatible `full` profile. */
+  contentRetention?: ContentRetention;
+  contentRetentionSchemaVersion?: number;
+  ftsProfile?: FtsProfile;
   /**
    * Runtime enrichment mode plus redacted scan exclusions. Payload data and
    * absolute/external paths are deliberately excluded from metadata.
@@ -564,11 +572,12 @@ export interface RepoMeta {
 }
 
 /**
- * Get the .gitnexus storage path for a repository.
- * Used for local metadata and caches that are not committed.
+ * Resolve the configured storage path for a repository.
+ * This can be its repository-local `.gitnexus` directory, an external slot,
+ * or a previously registered storage path.
  */
 export const getStoragePath = (repoPath: string): string => {
-  return path.join(path.resolve(repoPath), GITNEXUS_DIR);
+  return resolveStoragePath(repoPath);
 };
 
 /**

@@ -5,7 +5,29 @@ import {
   resolveAnalysisFeatureVersions,
   type AnalysisFeatureDescriptor,
 } from '../../src/core/analysis-features.js';
+import {
+  SPRING_AOP_FEATURE,
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+  SPRING_NON_HTTP_HANDLERS_FEATURE,
+} from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import {
+  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
+} from '../../src/core/ingestion/languages/java/analysis-features.js';
 import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
+
+const FEATURES = [
+  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  SPRING_AOP_FEATURE,
+  SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONDITIONALS_FEATURE,
+  SPRING_NON_HTTP_HANDLERS_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
+  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
+  JAVA_RECORD_COMPONENT_ACCESSORS_FEATURE,
+] as const;
 
 describe('analysis feature versions', () => {
   it('separates the global Class schema capability from JVM-only Bean evidence', () => {

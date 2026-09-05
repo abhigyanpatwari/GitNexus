@@ -9,7 +9,7 @@ import {
 } from '../lbug/lbug-adapter.js';
 import { getFtsCapability } from '../lbug/extension-loader.js';
 import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
-import { FTS_INDEXES } from './fts-schema.js';
+import { FTS_INDEXES, type FTSIndexDefinition } from './fts-schema.js';
 
 /**
  * Strip filesystem paths from a LadybugDB error before it reaches the HTTP
@@ -156,6 +156,7 @@ export const SUPPORTED_FTS_STEMMERS: ReadonlySet<string> = new Set<string>([
 ]);
 
 export interface CreateSearchFTSIndexesOptions {
+  indexes?: readonly FTSIndexDefinition[];
   onIndexStart?: (table: string, indexName: string) => void;
   onIndexReady?: (table: string, indexName: string) => void;
   /**
@@ -224,9 +225,12 @@ export function getSearchFTSStemmer(): string {
  * THIS connection with no index created or dropped since — the same freshness
  * contract, and the same one-shared-`SHOW_INDEXES`-read purpose, as the gates in
  * `lbug-adapter.ts`. Omit it to have the sweep read the catalog itself.
+ * @param indexes FTS definitions for the active content-retention profile.
+ * @param tables When set, restrict the sweep to these node tables.
  */
 export async function dropSearchFTSIndexes(
   indexRows?: IndexCatalogSnapshot,
+  indexes: readonly FTSIndexDefinition[] = FTS_INDEXES,
   tables?: ReadonlySet<string>,
 ): Promise<void> {
   // One catalog read for the whole sweep, decided PER CONFIGURED INDEX on
@@ -248,7 +252,7 @@ export async function dropSearchFTSIndexes(
   // so an index left over from an older, differently-named set was never dropped
   // whether the sweep ran or not.
   const rows = await resolveGateRows(indexRows);
-  for (const { table, indexName } of FTS_INDEXES) {
+  for (const { table, indexName } of indexes) {
     if (tables && !tables.has(table)) continue;
     // Skip only what the catalog POSITIVELY proves absent. Without this, a
     // machine whose FTS extension cannot load, analyzing a DB that never carried
@@ -325,7 +329,7 @@ export async function createSearchFTSIndexes(
 ): Promise<FtsIndexBuildFailure[]> {
   const stemmer = getSearchFTSStemmer();
   const failures: FtsIndexBuildFailure[] = [];
-  for (const { table, indexName, properties } of FTS_INDEXES) {
+  for (const { table, indexName, properties } of options?.indexes ?? FTS_INDEXES) {
     if (options?.tables && !options.tables.has(table)) continue;
     options?.onIndexStart?.(table, indexName);
     // Drop first so the live `properties` always win. `createFTSIndex` is
@@ -365,12 +369,16 @@ export async function createSearchFTSIndexes(
  * Anything heading for a network response has to pass it through
  * {@link redactPaths} first, the same rule the query-side warnings follow.
  */
-export const summarizeFtsIndexBuildFailures = (failures: readonly FtsIndexBuildFailure[]): string =>
-  `FTS index build failed for ${failures.length} of ${FTS_INDEXES.length} tables: ` +
+export const summarizeFtsIndexBuildFailures = (
+  failures: readonly FtsIndexBuildFailure[],
+  indexes: readonly FTSIndexDefinition[] = FTS_INDEXES,
+): string =>
+  `FTS index build failed for ${failures.length} of ${indexes.length} tables: ` +
   failures.map((f) => `${f.table}.${f.indexName} (${f.error})`).join(', ');
 
 export async function verifySearchFTSIndexes(
   executeQuery: (cypher: string) => Promise<unknown[]>,
+  indexes: readonly FTSIndexDefinition[] = FTS_INDEXES,
 ): Promise<string[]> {
   // Read the catalog once and check each configured index both EXISTS and
   // covers its expected columns. A queryability-only probe (CALL QUERY_FTS_INDEX
@@ -400,7 +408,7 @@ export async function verifySearchFTSIndexes(
   }
 
   const missing: string[] = [];
-  for (const { table, indexName, properties } of FTS_INDEXES) {
+  for (const { table, indexName, properties } of indexes) {
     const actual = propsByIndex.get(indexName);
     // Absent from the catalog, or present but not covering every expected column.
     if (!actual || !properties.every((p) => actual.includes(p))) {
@@ -508,7 +516,8 @@ export async function buildSearchIndexesOrDegrade(
     // name+content-only index is invisible to the build (it succeeds) yet still
     // means description search is broken (#2299).
     const failures = await createSearchFTSIndexes(options);
-    const missing = await verifySearchFTSIndexes(executeQuery);
+    const indexes = options?.indexes ?? FTS_INDEXES;
+    const missing = await verifySearchFTSIndexes(executeQuery, indexes);
     if (failures.length === 0 && missing.length === 0) return { ok: true };
 
     // A table that failed to build is necessarily missing too — report it once,
@@ -516,7 +525,7 @@ export async function buildSearchIndexesOrDegrade(
     const named = new Set(failures.map((f) => `${f.table}.${f.indexName}`));
     const unexplained = missing.filter((name) => !named.has(name));
     const error = [
-      failures.length > 0 ? summarizeFtsIndexBuildFailures(failures) : '',
+      failures.length > 0 ? summarizeFtsIndexBuildFailures(failures, indexes) : '',
       // Structural incompleteness with no thrown error — classified capability
       // (degrade) below, matching prior behavior; a broken *write* surfaces as
       // a thrown IO/checkpoint error and is classified integrity there.

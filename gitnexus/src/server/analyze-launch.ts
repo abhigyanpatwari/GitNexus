@@ -15,13 +15,8 @@ import { existsSync, statSync } from 'node:fs';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
-import {
-  canonicalizePath,
-  getStoragePath,
-  INDEX_METADATA_FILE,
-  listRegisteredRepos,
-  registryPathEquals,
-} from '../storage/repo-manager.js';
+import { INDEX_METADATA_FILE } from '../storage/repo-manager.js';
+import { ANALYZE_STORAGE_REQUIREMENTS, requireStoragePath } from '../storage/storage-resolver.js';
 import { logger } from '../core/logger.js';
 import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
@@ -77,21 +72,7 @@ const FINALIZE_SETTLE_POLL_MS = 200;
  * than failing a job whose analysis genuinely succeeded — e.g. a no-op
  * non-force analyze legitimately rewrites nothing.
  */
-/**
- * Look up the analyzed repo's registered storage path. The request's
- * user-provided path is used only as a comparison key; the filesystem probes
- * below run against the registry's own `storagePath` — the server-owned
- * record readers resolve through, and not a user-controlled value
- * (CodeQL js/path-injection).
- */
-const registeredStoragePath = async (targetPath: string): Promise<string | null> => {
-  const target = canonicalizePath(path.resolve(targetPath));
-  const entries = await listRegisteredRepos();
-  const entry = entries.find((e) => registryPathEquals(canonicalizePath(e.path), target));
-  return entry?.storagePath ?? null;
-};
-
-const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Promise<void> => {
+const waitForSettledIndex = async (storagePath: string, jobStartMs: number): Promise<void> => {
   const settled = (storagePath: string): boolean => {
     try {
       const lbugStat = statSync(path.join(storagePath, 'lbug'));
@@ -109,13 +90,10 @@ const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Prom
   };
   const deadline = Date.now() + FINALIZE_SETTLE_TIMEOUT_MS;
   for (;;) {
-    // Re-resolved each round: the worker registers the repo as part of the
-    // finalization this gate is waiting out.
-    const storagePath = await registeredStoragePath(targetPath);
-    if (storagePath && settled(storagePath)) return;
+    if (settled(storagePath)) return;
     if (Date.now() > deadline) {
       logger.warn(
-        { targetPath },
+        { storagePath },
         'analyze finalization not visible after timeout; completing job anyway',
       );
       return;
@@ -127,16 +105,18 @@ const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Prom
 export function createLaunchAnalysisWorker(deps: LaunchDeps) {
   const { jobManager, backend, acquireRepoLock, releaseRepoLock, closeDbHandle } = deps;
 
-  return function launchAnalysisWorker(
+  return async function launchAnalysisWorker(
     job: { id: string },
     targetPath: string,
     opts: LaunchOptions,
-  ): void {
+  ): Promise<void> {
     // For waitForSettledIndex: files (re)written by this job have mtimes at or
     // after this instant. Taken before the fork so no worker write predates it.
     const jobStartMs = Date.now();
-    // Acquire shared repo lock (keyed on storagePath to match embed handler)
-    const analyzeLockKey = getStoragePath(targetPath);
+    const analyzeLockKey = await requireStoragePath(targetPath, ANALYZE_STORAGE_REQUIREMENTS);
+    // Acquire shared repo lock only after ownership validation. The same
+    // resolved path is retained for finalization instead of being looked up
+    // again through the registry after the worker exits.
     const lockErr = acquireRepoLock(analyzeLockKey);
     if (lockErr) {
       jobManager.updateJob(job.id, { status: 'failed', error: lockErr });
@@ -202,7 +182,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // below true in practice: the repo is actually queryable when the
           // client receives the SSE complete event, and an index this run knows
           // to be incomplete is never published at all.
-          waitForSettledIndex(targetPath, jobStartMs)
+          waitForSettledIndex(analyzeLockKey, jobStartMs)
             .then(() => closeDbHandle())
             .catch(() => {}) // best-effort: eviction failure must not fail the job
             .then(() => {
@@ -266,7 +246,10 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
               // ordering comment above the chain true — the repo really is
               // queryable when the client receives the SSE complete event.
               return backend.init().then(() => {
-                jobManager.updateJob(job.id, { status: 'complete', repoName: msg.result.repoName });
+                jobManager.updateJob(job.id, {
+                  status: 'complete',
+                  repoName: msg.result.repoName,
+                });
               });
             })
             .catch((err) => {
@@ -343,6 +326,11 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       });
     };
 
-    forkWorker();
+    try {
+      forkWorker();
+    } catch (error) {
+      releaseRepoLock(analyzeLockKey);
+      throw error;
+    }
   };
 }

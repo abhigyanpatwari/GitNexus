@@ -343,7 +343,7 @@ export const QueryFAB = () => {
           </div>
 
           {showResults && queryResult.rows.length > 0 && (
-            <div className="scrollbar-thin max-h-48 overflow-auto border-t border-border-subtle">
+            <div className="max-h-48 scrollbar-thin overflow-auto border-t border-border-subtle">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-surface">
                   <tr>

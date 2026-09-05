@@ -292,6 +292,14 @@ describe('LocalBackend.init', () => {
     await backend.init();
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
+
+  it('does not delete legacy Kuzu files while initializing a read backend', async () => {
+    setupSingleRepo();
+
+    await backend.init();
+
+    expect(cleanupOldKuzuFiles).not.toHaveBeenCalled();
+  });
 });
 
 describe('LocalBackend.disconnect', () => {
@@ -1044,13 +1052,22 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either "name" or "uid"');
   });
 
-  it('context tool returns not-found for missing symbol', async () => {
+  it('context tool returns content availability with a missing symbol', async () => {
     (executeParameterized as any).mockResolvedValue([]);
-    const result = await backend.callTool('context', { name: 'doesNotExist' });
+    const result = await backend.callTool('context', {
+      name: 'doesNotExist',
+      include_content: true,
+    });
     expect(result.error).toContain('not found');
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
   });
 
-  it('context tool returns disambiguation for multiple matches', async () => {
+  it('context tool returns content availability with ambiguous matches', async () => {
     (executeParameterized as any).mockResolvedValue([
       {
         id: 'func:main:1',
@@ -1069,9 +1086,15 @@ describe('LocalBackend.callTool', () => {
         endLine: 5,
       },
     ]);
-    const result = await backend.callTool('context', { name: 'main' });
+    const result = await backend.callTool('context', { name: 'main', include_content: true });
     expect(result.status).toBe('ambiguous');
     expect(result.candidates).toHaveLength(2);
+    expect(result.contentAvailability).toEqual({
+      requested: true,
+      profile: 'full',
+      available: true,
+      scope: 'full',
+    });
 
     // #470: every candidate carries a relevance score in [0, 1] and the list
     // is sorted descending by score (with deterministic tiebreakers).

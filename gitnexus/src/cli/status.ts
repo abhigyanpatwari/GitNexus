@@ -5,7 +5,21 @@
  */
 
 import path from 'path';
-import { findRepo, getStoragePaths, loadMeta, hasKuzuIndex } from '../storage/repo-manager.js';
+import {
+  getStoragePaths,
+  loadMeta,
+  hasKuzuIndex,
+  readRegistryStrict,
+  resolveRegistryEntry,
+  RegistryNotFoundError,
+  RegistryAmbiguousTargetError,
+} from '../storage/repo-manager.js';
+import {
+  requireRegisteredStoragePath,
+  requireStoragePath,
+  STATUS_STORAGE_REQUIREMENTS,
+  StorageRequirementError,
+} from '../storage/storage-resolver.js';
 import {
   getCurrentCommit,
   getCurrentBranch,
@@ -81,11 +95,140 @@ const printDriftDetail = (drift: Extract<IndexContentDrift, { kind: 'drifted' }>
   }
 };
 
+const isExpectedUnindexedStatus = (error: StorageRequirementError): boolean =>
+  error.inspection.state === 'missing' ||
+  error.inspection.state === 'empty' ||
+  (error.inspection.state === 'owned' && !error.inspection.hasCodeIndexDB);
+
+const printNotIndexed = (repoPath: string, storagePath: string, json: boolean): void => {
+  if (json) {
+    console.log(
+      JSON.stringify({
+        schemaVersion: 1,
+        repository: repoPath,
+        storagePath,
+        error: 'not-indexed',
+      }),
+    );
+  } else {
+    console.log(t('status.repoNotIndexed'));
+    console.log(t('common.runAnalyzeShort'));
+  }
+};
+
 export interface StatusOptions {
   json?: boolean;
+  /** Resolve a registered index without requiring its original checkout to remain on disk. */
+  repo?: string;
 }
 
 export const statusCommand = async (options: StatusOptions = {}) => {
+  if (options.repo) {
+    let entry;
+    try {
+      entry = resolveRegistryEntry(await readRegistryStrict(), options.repo);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      if (err instanceof RegistryNotFoundError || err instanceof RegistryAmbiguousTargetError) {
+        if (options.json) {
+          console.log(
+            JSON.stringify({ schemaVersion: 1, repository: options.repo, error: 'not-indexed' }),
+          );
+        } else {
+          console.log(error);
+        }
+        return;
+      }
+      throw err;
+    }
+
+    let storagePath: string;
+    try {
+      storagePath = await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+    } catch (err) {
+      if (!(err instanceof StorageRequirementError) || !isExpectedUnindexedStatus(err)) throw err;
+      if (err.inspection.state === 'owned' && !err.inspection.hasCodeIndexDB) {
+        const staleKuzu = await hasKuzuIndex(err.inspection.storagePath);
+        if (options.json) {
+          console.log(
+            JSON.stringify({
+              schemaVersion: 1,
+              repository: entry.path,
+              storagePath: err.inspection.storagePath,
+              error: staleKuzu ? 'stale-kuzu-index' : 'not-indexed',
+            }),
+          );
+        } else if (staleKuzu) {
+          console.log(t('status.staleKuzu'));
+          console.log(t('status.rebuildLadybug'));
+        } else {
+          console.log(`No usable code index at ${err.inspection.storagePath}`);
+        }
+      } else {
+        printNotIndexed(entry.path, err.inspection.storagePath, Boolean(options.json));
+      }
+      return;
+    }
+
+    const meta = await loadMeta(storagePath);
+    if (!meta) {
+      if (options.json) {
+        console.log(
+          JSON.stringify({
+            schemaVersion: 1,
+            repository: entry.path,
+            storagePath,
+            error: 'not-indexed',
+          }),
+        );
+      } else {
+        console.log(`No readable index metadata at ${storagePath}`);
+      }
+      return;
+    }
+
+    const currentRunnerIdentity = resolveAnalyzerRunnerIdentity(import.meta.url);
+    const runnerIdentityIsCurrent = analyzerRunnerIdentitiesEqual(
+      meta.runnerIdentity,
+      currentRunnerIdentity,
+    );
+    const incompleteReasons = getIndexIncompleteReasons(meta);
+    const sourceAvailable = isGitRepo(entry.path);
+    const payload = {
+      schemaVersion: 1,
+      repository: entry.path,
+      storagePath,
+      sourceAvailable,
+      index: {
+        indexedAt: meta.indexedAt,
+        commit: meta.lastCommit,
+        runnerIdentity: meta.runnerIdentity ?? null,
+        runnerIdentityStatus: runnerIdentityIsCurrent ? 'current' : 'stale-or-unknown',
+        incompleteReasons,
+        contentRetention: meta.contentRetention ?? 'full',
+      },
+      current: sourceAvailable ? { commit: getCurrentCommit(entry.path) } : null,
+      // Without a checkout GitNexus can prove the index is readable, but cannot
+      // certify that it is current relative to source. Keep that distinction in
+      // the machine-readable status instead of reporting a false all-clear.
+      status: sourceAvailable ? 'registered' : 'source-unavailable',
+    };
+    if (options.json) {
+      console.log(JSON.stringify(payload));
+    } else {
+      console.log(`Repository: ${entry.path}`);
+      console.log(`Index storage: ${storagePath}`);
+      console.log(`Indexed: ${new Date(meta.indexedAt).toLocaleString()}`);
+      console.log(`Indexed commit: ${meta.lastCommit?.slice(0, 7)}`);
+      console.log(
+        sourceAvailable
+          ? 'Status: registered index (use status without --repo for working-tree freshness)'
+          : 'Status: source checkout unavailable; graph index remains queryable through the registry',
+      );
+    }
+    return;
+  }
+
   const cwd = process.cwd();
 
   if (!isGitRepo(cwd)) {
@@ -97,23 +240,33 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     return;
   }
 
-  const repo = await findRepo(cwd);
-  if (!repo) {
-    // Check if there's a stale KuzuDB index that needs migration
-    const repoRoot = getGitRoot(cwd) ?? cwd;
-    const { storagePath } = getStoragePaths(repoRoot);
-    const staleKuzu = await hasKuzuIndex(storagePath);
+  const repoPath = getGitRoot(cwd);
+  if (!repoPath) {
+    if (options.json) {
+      console.log(JSON.stringify({ schemaVersion: 1, error: 'not-git-repository' }));
+      return;
+    }
+    console.log(t('status.notGitRepo'));
+    return;
+  }
+
+  let storagePath: string;
+  try {
+    storagePath = await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS);
+  } catch (err) {
+    if (!(err instanceof StorageRequirementError) || !isExpectedUnindexedStatus(err)) throw err;
+    const inspection = err.inspection;
+    const staleKuzu = await hasKuzuIndex(inspection.storagePath);
     if (options.json) {
       console.log(
         JSON.stringify({
           schemaVersion: 1,
-          repository: repoRoot,
+          repository: repoPath,
+          storagePath: inspection.storagePath,
           error: staleKuzu ? 'stale-kuzu-index' : 'not-indexed',
         }),
       );
-      return;
-    }
-    if (staleKuzu) {
+    } else if (staleKuzu) {
       console.log(t('status.staleKuzu'));
       console.log(t('status.rebuildLadybug'));
     } else {
@@ -122,6 +275,18 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     }
     return;
   }
+
+  const meta = await loadMeta(storagePath);
+  if (!meta) {
+    printNotIndexed(repoPath, storagePath, Boolean(options.json));
+    return;
+  }
+
+  const repo = {
+    repoPath,
+    storagePath,
+    meta,
+  };
 
   const currentCommit = getCurrentCommit(repo.repoPath);
   const currentBranch = getCurrentBranch(repo.repoPath);
@@ -134,7 +299,7 @@ export const statusCommand = async (options: StatusOptions = {}) => {
   let activeMeta = repo.meta;
   let workspaceLagsBranch = false;
   if (currentBranch && repo.meta.branch && currentBranch !== repo.meta.branch) {
-    const { metaPath } = getStoragePaths(repo.repoPath, currentBranch);
+    const { metaPath } = getStoragePaths(repo.repoPath, currentBranch, repo.storagePath);
     const branchMeta = await loadMeta(path.dirname(metaPath));
     if (branchMeta) activeMeta = branchMeta;
     else workspaceLagsBranch = true;

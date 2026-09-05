@@ -17,7 +17,12 @@
 import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
-import { getInferredRepoName, resolveRepoIdentityRoot, stripUrlCredentials } from './git.js';
+import {
+  getGitRoot,
+  getInferredRepoName,
+  resolveRepoIdentityRoot,
+  stripUrlCredentials,
+} from './git.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { writeFileAtomic } from './fs-atomic.js';
 import { getGlobalDir } from './global-dir.js';
@@ -36,10 +41,22 @@ import {
   getStoragePath,
   isMissingFilesystemError,
   loadMeta,
-  tryReadMetaFile,
   type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from './repo-meta.js';
+import {
+  defaultStoragePath,
+  ensureStoragePathWritable,
+  InvalidStoragePathError,
+  inspectResolvedStorage,
+  inspectRegisteredStorage,
+  inspectStoragePath,
+  isTransientStorageInspection,
+  LIST_STORAGE_REQUIREMENTS,
+  requireDeletableStoragePath,
+  StorageDeletionError,
+  validateConfiguredStoragePath,
+} from './storage-resolver.js';
 
 // Re-export the #2106 branch primitives (extracted to branch-index.ts, R10) so
 // existing `repo-manager` import sites and tests keep working unchanged.
@@ -49,9 +66,12 @@ export type { BranchSummary };
 // Re-export the metadata primitives (extracted to repo-meta.ts) for the same
 // reason. They moved DOWN a layer so `branch-index.ts` can read the flat slot's
 // metadata without importing back out of this module — see repo-meta.ts for the
-// cycle that made the extraction necessary. `LEGACY_METADATA_FILE` and
-// `tryReadMetaFile` stay module-private here, exactly as before.
+// cycle that made the extraction necessary. `LEGACY_METADATA_FILE` stays
+// module-private here, exactly as before.
 export { getStoragePath, INDEX_METADATA_FILE, isMissingFilesystemError, loadMeta };
+export { ensureStoragePathWritable, InvalidStoragePathError };
+export { CONTENT_RETENTION_SCHEMA_VERSION } from './repo-meta.js';
+export type { ContentRetention, FtsProfile } from './repo-meta.js';
 export type { AnalyzerRunnerIdentity, RepoMeta };
 export { getGlobalDir } from './global-dir.js';
 
@@ -189,8 +209,12 @@ const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
  * metaDir is the directory containing the metadata file — both handle the
  * legacy mirror automatically.
  */
-export const getStoragePaths = (repoPath: string, branch?: string) => {
-  const storagePath = getStoragePath(repoPath);
+export const getStoragePaths = (
+  repoPath: string,
+  branch?: string,
+  resolvedStoragePath?: string,
+) => {
+  const storagePath = resolvedStoragePath ?? getStoragePath(repoPath);
   const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
@@ -283,99 +307,97 @@ export const saveMeta = async (metaDir: string, meta: RepoMeta): Promise<void> =
   }
 };
 
-/**
- * Check if a path has a GitNexus index (metadata file or legacy location)
- */
+/** Check whether the resolved storage contains an owned, usable code index. */
 export const hasIndex = async (repoPath: string): Promise<boolean> => {
-  const paths = getStoragePaths(repoPath);
-  // Check new metadata file first
-  try {
-    await fs.access(paths.metaPath);
-    return true;
-  } catch {
-    // Fall back to legacy location
-    try {
-      await fs.access(path.join(paths.storagePath, LEGACY_METADATA_FILE));
-      return true;
-    } catch {
-      return false;
-    }
-  }
+  const inspection = await inspectResolvedStorage(repoPath);
+  return inspection.state === 'owned' && inspection.hasCodeIndexDB;
 };
 
-/**
- * Load an indexed repo from a path (checks metadata file first, then legacy)
- */
+/** Load an owned index from one already-determined repository path. */
 export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> => {
-  const paths = getStoragePaths(repoPath);
+  const inspection = await inspectResolvedStorage(repoPath);
+  // Do not require LadybugDB here: clean needs to locate an owned
+  // metadata-only slot so it can remove interrupted or legacy remnants.
+  if (inspection.state !== 'owned') return null;
+
+  const paths = getStoragePaths(inspection.repoPath, undefined, inspection.storagePath);
   const meta = await loadMeta(paths.storagePath);
   if (!meta) return null;
 
   return {
-    repoPath: path.resolve(repoPath),
+    repoPath: inspection.repoPath,
     ...paths,
     meta,
   };
 };
 
-/** `indexedAt` as epoch millis; 0 when absent/unparseable (i.e. oldest). */
-const metaTimestamp = (meta: RepoMeta): number => {
-  const t = Date.parse(meta.indexedAt ?? '');
-  return Number.isFinite(t) ? t : 0;
+type ReconcileMetadataRead =
+  | { state: 'absent' }
+  | { state: 'invalid'; error: unknown }
+  | { state: 'valid'; meta: RepoMeta };
+
+const readReconcileMetadata = async (
+  dir: string,
+  filename: typeof INDEX_METADATA_FILE | typeof LEGACY_METADATA_FILE,
+): Promise<ReconcileMetadataRead> => {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(dir, filename), 'utf-8');
+  } catch (error) {
+    return isMissingFilesystemError(error) ? { state: 'absent' } : { state: 'invalid', error };
+  }
+
+  try {
+    return { state: 'valid', meta: JSON.parse(raw) as RepoMeta };
+  } catch (error) {
+    return { state: 'invalid', error };
+  }
 };
 
 /**
- * Reconcile `gitnexus.json` and the legacy `meta.json` mirror in one
- * directory: whichever parses and is fresher (by `indexedAt`) wins and is
- * re-written to BOTH files via `saveMeta`. Never deletes anything.
+ * Reconcile `gitnexus.json` and the legacy `meta.json` mirror in one directory.
+ * A valid primary is authoritative; legacy metadata is used only when the
+ * primary is provably absent. Never deletes anything.
  * Returns true when a write occurred.
  */
 const reconcileMetaDir = async (dir: string): Promise<boolean> => {
-  const primary = await tryReadMetaFile(dir, INDEX_METADATA_FILE);
-  const legacy = await tryReadMetaFile(dir, LEGACY_METADATA_FILE);
-
-  if (!primary && !legacy) {
-    // Fresh directory (neither file) is a silent no-op; a file that exists
-    // but doesn't parse deserves a warning — loadMeta will treat it as "no
-    // prior index" and the next successful saveMeta self-heals it.
-    for (const filename of [INDEX_METADATA_FILE, LEGACY_METADATA_FILE]) {
-      try {
-        await fs.access(path.join(dir, filename));
-        logger.warn(
-          { dir, filename },
-          'Metadata file exists but is unreadable/corrupt; leaving as-is (next successful analyze rewrites it)',
-        );
-      } catch {
-        // absent — expected for a fresh directory
-      }
-    }
+  const primary = await readReconcileMetadata(dir, INDEX_METADATA_FILE);
+  if (primary.state === 'invalid') {
+    logger.warn(
+      { dir, filename: INDEX_METADATA_FILE, err: primary.error },
+      'Primary metadata is unreadable/corrupt; leaving both metadata files unchanged',
+    );
     return false;
   }
 
-  if (primary && legacy) {
-    if (JSON.stringify(primary) === JSON.stringify(legacy)) return false; // converged
-    // Both parse but differ — the fresher one wins (an older binary may have
-    // re-analyzed and written only meta.json AFTER gitnexus.json was created;
-    // blind-preferring the primary would permanently shadow that fresher
-    // state, silently certifying a stale index as up to date).
-    const winner = metaTimestamp(legacy) > metaTimestamp(primary) ? legacy : primary;
-    await saveMeta(dir, winner);
-    logger.info(
-      { dir, winner: winner === legacy ? LEGACY_METADATA_FILE : INDEX_METADATA_FILE },
-      'Reconciled diverged metadata files (fresher indexedAt wins, written to both)',
-    );
+  if (primary.state === 'valid') {
+    const legacy = await readReconcileMetadata(dir, LEGACY_METADATA_FILE);
+    if (legacy.state === 'valid' && JSON.stringify(primary.meta) === JSON.stringify(legacy.meta)) {
+      return false;
+    }
+    await saveMeta(dir, primary.meta);
     return true;
   }
 
-  // Exactly one parses — establish/repair the other so both stay in sync.
-  const survivor = (primary ?? legacy) as RepoMeta;
-  await saveMeta(dir, survivor);
-  return true;
+  const legacy = await readReconcileMetadata(dir, LEGACY_METADATA_FILE);
+  if (legacy.state === 'valid') {
+    await saveMeta(dir, legacy.meta);
+    return true;
+  }
+  if (legacy.state === 'invalid') {
+    logger.warn(
+      { dir, filename: LEGACY_METADATA_FILE, err: legacy.error },
+      'Legacy metadata is unreadable/corrupt; leaving it unchanged',
+    );
+  }
+  return false;
 };
 
 /**
  * Reconcile the metadata files for a repo's flat slot and every
- * `branches/<slug>/` slot. Runs once per `analyze` (see run-analyze.ts).
+ * `branches/<slug>/` slot. `resolvedStoragePath` is the ownership-validated
+ * write target supplied by analyze; callers that omit it retain the historic
+ * repository-path lookup for compatibility.
  *
  * This is a best-effort compatibility sync, NOT a one-way migration: the
  * legacy `meta.json` mirror is kept in sync indefinitely (removal happens at
@@ -384,8 +406,11 @@ const reconcileMetaDir = async (dir: string): Promise<boolean> => {
  * pre-rename version sees current metadata instead of "no prior index".
  * Returns true when any file was written.
  */
-export const reconcileMetadataFiles = async (repoPath: string): Promise<boolean> => {
-  const storagePath = getStoragePath(repoPath);
+export const reconcileMetadataFiles = async (
+  repoPath: string,
+  resolvedStoragePath?: string,
+): Promise<boolean> => {
+  const storagePath = resolvedStoragePath ?? getStoragePath(repoPath);
   let changed = await reconcileMetaDir(storagePath);
 
   const branchesDir = path.join(storagePath, BRANCHES_DIR);
@@ -418,20 +443,10 @@ export const reconcileMetadataFiles = async (repoPath: string): Promise<boolean>
   return changed;
 };
 
-/**
- * Find .gitnexus by walking up from a starting path
- */
+/** Resolve the Git worktree first, then load only that repository's index. */
 export const findRepo = async (startPath: string): Promise<IndexedRepo | null> => {
-  let current = path.resolve(startPath);
-  const root = path.parse(current).root;
-
-  while (current !== root) {
-    const repo = await loadRepo(current);
-    if (repo) return repo;
-    current = path.dirname(current);
-  }
-
-  return null;
+  const resolved = path.resolve(startPath);
+  return loadRepo(getGitRoot(resolved) ?? resolved);
 };
 
 export function isReadOnlyFilesystemError(err: unknown): boolean {
@@ -442,8 +457,12 @@ export function isReadOnlyFilesystemError(err: unknown): boolean {
 /**
  * Keep .gitnexus/ ignored. It contains local index state and caches.
  */
-export const ensureGitNexusIgnored = async (repoPath: string): Promise<void> => {
-  const gitignorePath = path.join(getStoragePath(repoPath), '.gitignore');
+export const ensureGitNexusIgnored = async (
+  repoPath: string,
+  resolvedStoragePath?: string,
+): Promise<void> => {
+  const storagePath = resolvedStoragePath ?? getStoragePath(repoPath);
+  const gitignorePath = path.join(storagePath, '.gitignore');
   const desired = '*\n';
 
   // Idempotent fast path: skip the write entirely when the file already has
@@ -694,18 +713,33 @@ const readRegistryFile = async (strict: boolean): Promise<RegistryEntry[]> => {
       }
       return [];
     }
+    // `storagePath` was not present in pre-external-storage registry files.
+    // Normalize only that legacy absence at the read boundary; malformed values
+    // remain visible to the strict destructive-operation safety checks below.
+    const entries = data.map((entry) =>
+      entry &&
+      typeof entry === 'object' &&
+      !Array.isArray(entry) &&
+      typeof (entry as Record<string, unknown>).path === 'string' &&
+      (entry as Record<string, unknown>).storagePath === undefined
+        ? {
+            ...(entry as Record<string, unknown>),
+            storagePath: defaultStoragePath((entry as Record<string, unknown>).path as string),
+          }
+        : entry,
+    ) as RegistryEntry[];
     if (strict) {
       // Reject the WHOLE registry, never filter the bad rows out. Dropping them
       // would report the repos they name as unregistered, which is precisely
       // the unreadable-as-missing answer this mode refuses to give.
-      const bad = data.findIndex((entry) => !isResolvableEntry(entry));
+      const bad = entries.findIndex((entry) => !isResolvableEntry(entry));
       if (bad !== -1) {
         throw new Error(
           `${getGlobalRegistryPath()} entry ${bad} does not identify a repo — name and storagePath must be non-empty strings and path must be a string (registry is corrupt)`,
         );
       }
     }
-    return sanitizeEntries(data as RegistryEntry[]);
+    return sanitizeEntries(entries);
   } catch (err) {
     if (strict) throw err;
     return [];
@@ -798,6 +832,12 @@ export interface RegisterRepoOptions {
    * existing branch summaries).
    */
   branch?: string;
+  /**
+   * The storage slot already selected and validated by the caller. Passing it
+   * prevents registry registration from re-resolving configuration after an
+   * analysis or index operation has begun.
+   */
+  storagePath?: string;
 }
 
 /**
@@ -893,12 +933,46 @@ const registerRepoUnlocked = async (
   // Canonicalisation is applied at COMPARE points only (see below),
   // which is where the cross-platform divergence actually matters.
   const resolved = path.resolve(repoPath);
-  const { storagePath } = getStoragePaths(resolved);
+  const storagePath =
+    opts?.storagePath === undefined
+      ? getStoragePaths(resolved).storagePath
+      : validateConfiguredStoragePath(opts.storagePath);
 
   // Canonical form used strictly for comparison — `realpathSync.native`
   // expands macOS /var → /private/var and Windows 8.3 → long-name,
   // falling back to `path.resolve` when the path doesn't exist.
   const canonicalInput = canonicalizePath(repoPath);
+
+  // Production write paths pass the storage slot they already validated. Do
+  // not let a changed environment/registry redirect their registry entry, and
+  // require the metadata receipt to describe that same repository and slot.
+  // The omitted-option path deliberately retains legacy direct-call behavior.
+  if (opts?.storagePath !== undefined) {
+    if (!registryPathEquals(canonicalizePath(meta.repoPath), canonicalInput)) {
+      throw new Error(
+        `Refusing to register ${resolved}: metadata belongs to ${meta.repoPath}, not this repository.`,
+      );
+    }
+    if (
+      meta.storagePath === undefined &&
+      !registryPathEquals(
+        canonicalizePath(storagePath),
+        canonicalizePath(defaultStoragePath(resolved)),
+      )
+    ) {
+      throw new Error(
+        `Refusing to register ${resolved}: external storage metadata must bind storagePath to the selected directory.`,
+      );
+    }
+    if (
+      meta.storagePath !== undefined &&
+      !registryPathEquals(canonicalizePath(meta.storagePath), canonicalizePath(storagePath))
+    ) {
+      throw new Error(
+        `Refusing to register ${resolved}: metadata storagePath does not match the selected storage directory.`,
+      );
+    }
+  }
 
   // Mutating writes must not treat an unreadable/truncated registry as empty
   // (#3094): lenient `readRegistry()` returns `[]` on parse failure and would
@@ -1124,22 +1198,51 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
  * delete (large sub-index, AV scan, network mount) never blocks every other
  * registry operation on the machine.
  */
-export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> => {
+export const adoptFlatBranchLabel = async (
+  repoPath: string,
+  branch: string,
+  resolvedStoragePath?: string,
+): Promise<void> => {
   const canonicalInput = canonicalizePath(repoPath);
   const isRegistered = (list: RegistryEntry[]): number =>
     list.findIndex((e) => registryPathEquals(canonicalizePath(e.path), canonicalInput));
   // Cheap membership gate only (#2364 review F2): never touch the disk for an
   // unregistered repo. The mutate below re-reads its own fresh snapshot.
-  if (isRegistered(await readRegistry()) < 0) return; // no-op, disk included (no self-heal)
+  const initialEntries = await readRegistry();
+  const initialIdx = isRegistered(initialEntries);
+  if (initialIdx < 0) return; // no-op, disk included (no self-heal)
 
   const resolved = path.resolve(repoPath);
-  const { storagePath } = getStoragePaths(resolved);
+  const storagePath =
+    resolvedStoragePath === undefined
+      ? getStoragePaths(resolved).storagePath
+      : validateConfiguredStoragePath(resolvedStoragePath);
+  const registeredStoragePath = initialEntries[initialIdx].storagePath;
+  if (!registryPathEquals(canonicalizePath(registeredStoragePath), canonicalizePath(storagePath))) {
+    throw new Error(
+      `Refusing to adopt branch metadata: the registry storage path does not match the selected storage directory.`,
+    );
+  }
+  if (resolvedStoragePath !== undefined) {
+    const inspection = await inspectStoragePath(storagePath, resolved);
+    if (inspection.state !== 'owned') {
+      throw new Error(
+        `Refusing to adopt branch metadata: storage is not owned by this repository (${inspection.state}).`,
+      );
+    }
+  }
   // Remove a shadowed sub-index directory, mirroring `clean --branch`'s
   // containment guard: the target MUST live under .gitnexus/branches/.
-  const branchDir = path.join(storagePath, BRANCHES_DIR, branchSlug(branch));
-  const branchesRoot = path.join(storagePath, BRANCHES_DIR) + path.sep;
+  const branchesRoot = path.join(storagePath, BRANCHES_DIR);
+  const branchDir = path.join(branchesRoot, branchSlug(branch));
+  const branchRelativePath = path.relative(branchesRoot, branchDir);
+  const branchDirIsContained =
+    branchRelativePath !== '' &&
+    branchRelativePath !== '..' &&
+    !branchRelativePath.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(branchRelativePath);
   let dirGone = false;
-  if (branchDir.startsWith(branchesRoot)) {
+  if (branchDirIsContained) {
     let rmError: NodeJS.ErrnoException | undefined;
     await fs.rm(branchDir, { recursive: true, force: true }).catch((err: unknown) => {
       rmError = err as NodeJS.ErrnoException;
@@ -1171,6 +1274,8 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
         'Could not remove the shadowed branch sub-index; keeping its registry summary so `gitnexus clean --branch` can still target it.',
       );
     }
+  } else {
+    throw new Error('Refusing to adopt branch metadata: branch storage target escapes branches/.');
   }
 
   // Re-read AFTER the potentially slow recursive rm, and under the lock: the
@@ -1182,6 +1287,9 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
     const idx = isRegistered(entries);
     if (idx < 0) return; // unregistered concurrently → still a no-op
     const entry = entries[idx];
+    if (!registryPathEquals(canonicalizePath(entry.storagePath), canonicalizePath(storagePath))) {
+      return; // a concurrent registration selected a different slot
+    }
     const remaining = dirGone ? entry.branches?.filter((b) => b.branch !== branch) : entry.branches;
     const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
     if (entry.branch === branch && !droppedSummary) return; // already coherent
@@ -1296,7 +1404,8 @@ export const isRepoRegistered = async (repoPath: string): Promise<boolean> => {
  * Verify that a successful `analyze` call actually produced an indexed,
  * registered repo on disk. Two checks, both strictly required:
  *
- *   1. `gitnexus.json` must exist at `<repoPath>/.gitnexus/gitnexus.json`
+ *   1. `gitnexus.json` must exist in the storage directory selected for this
+ *      analysis (the caller may pass that exact directory).
  *      (the primary metadata file; the legacy `meta.json` mirror is not
  *      sufficient — a finalized analyze always writes the primary).
  *   2. The global registry (`getGlobalRegistryPath()`) must contain an
@@ -1305,12 +1414,20 @@ export const isRepoRegistered = async (repoPath: string): Promise<boolean> => {
  * Throws {@link AnalysisNotFinalizedError} on the first failure with the
  * specific missing artifact. Pure read — does not mutate disk state.
  *
- * Callers must skip this assertion on the `alreadyUpToDate` early-return
- * path, where the rebuild was deliberately not run.
+ * The optional `resolvedStoragePath` carries the exact slot used by the
+ * analysis. Omitting it preserves the legacy local-resolution behavior for
+ * direct callers.
  */
-export const assertAnalysisFinalized = async (repoPath: string): Promise<void> => {
+export const assertAnalysisFinalized = async (
+  repoPath: string,
+  resolvedStoragePath?: string,
+): Promise<void> => {
   const resolved = path.resolve(repoPath);
-  const { storagePath, metaPath } = getStoragePaths(resolved);
+  const storagePath =
+    resolvedStoragePath === undefined
+      ? getStoragePaths(resolved).storagePath
+      : validateConfiguredStoragePath(resolvedStoragePath);
+  const metaPath = path.join(storagePath, INDEX_METADATA_FILE);
 
   try {
     await fs.access(metaPath);
@@ -1318,7 +1435,14 @@ export const assertAnalysisFinalized = async (repoPath: string): Promise<void> =
     throw new AnalysisNotFinalizedError(resolved, storagePath, 'meta', getGlobalRegistryPath());
   }
 
-  if (!(await isRepoRegistered(resolved))) {
+  const canonicalRepoPath = canonicalizePath(resolved);
+  const canonicalStoragePath = canonicalizePath(storagePath);
+  const registeredAtStoragePath = (await readRegistry()).some(
+    (entry) =>
+      registryPathEquals(canonicalizePath(entry.path), canonicalRepoPath) &&
+      registryPathEquals(canonicalizePath(entry.storagePath), canonicalStoragePath),
+  );
+  if (!registeredAtStoragePath) {
     throw new AnalysisNotFinalizedError(
       resolved,
       storagePath,
@@ -1359,9 +1483,10 @@ export class UnsafeStoragePathError extends Error {
 /**
  * Guard rail for destructive CLI paths (`remove` #664,
  * `clean --all` #258, future MCP `remove` tool): verify that a
- * registry entry's `storagePath` is the canonical `<repo>/.gitnexus`
- * subfolder of its `path`. If not, throw {@link UnsafeStoragePathError}
- * so the caller exits without touching disk.
+ * registry entry's `storagePath` names the registered index. Repository-local
+ * indexes are validated by their canonical `<repo>/.gitnexus` path; external
+ * slots must additionally prove their ownership through matching persisted
+ * metadata before a recursive deletion is allowed.
  *
  * Why this exists (#1003 review — @magyargergo):
  *   - `~/.gitnexus/registry.json` is a plain-text user-writable file.
@@ -1378,22 +1503,23 @@ export class UnsafeStoragePathError extends Error {
  *     the registry field. But `clean --all` DOES iterate the registry
  *     and trust each entry's stored storagePath (same shape as
  *     `remove`), so this helper must be wired into that loop too.
- *   - `server/api.ts` recomputes storagePath from `getStoragePath(entry.path)`
- *     and so is likewise safe-by-construction.
+ *   - An external slot is intentionally not constrained under a checkout. Its
+ *     own metadata must bind both the source checkout path and the resolved
+ *     storage path before it may be removed.
  *
- * Pure string check — does NOT require the paths to exist on disk.
- * Windows: case-insensitive; POSIX: case-sensitive. Matches the
- * comparison shape used elsewhere in this module.
+ * The resolver preserves the legacy local-path allowance while also rejecting
+ * foreign or malformed metadata. External slots additionally require metadata
+ * ownership so a hand-edited registry cannot redirect a destructive command to
+ * an arbitrary directory.
  */
-export const assertSafeStoragePath = (entry: RegistryEntry): void => {
-  const expected = path.join(path.resolve(entry.path), '.gitnexus');
-  const actual = path.resolve(entry.storagePath);
-  const matches =
-    process.platform === 'win32'
-      ? expected.toLowerCase() === actual.toLowerCase()
-      : expected === actual;
-  if (!matches) {
-    throw new UnsafeStoragePathError(entry, expected, actual);
+export const assertSafeStoragePath = async (entry: RegistryEntry): Promise<void> => {
+  try {
+    await requireDeletableStoragePath(entry);
+  } catch (error) {
+    if (error instanceof StorageDeletionError) {
+      throw new UnsafeStoragePathError(entry, error.expectedStoragePath, error.actualStoragePath);
+    }
+    throw error;
   }
 };
 
@@ -1487,14 +1613,13 @@ export const findRegistryEntryByName = (
 /**
  * List all registered repos from the global registry.
  *
- * With `validate: true`, prunes only entries whose metadata is *provably* gone
- * (fs.access on both gitnexus.json and legacy meta.json fails with ENOENT or
- * ENOTDIR) and persists the result on a best-effort basis: the pruned view is
- * always returned, even when the write fails. Entries that are merely "not provably
- * absent" — any other fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are
- * KEPT, so a transient I/O storm cannot wipe the registry. A kept entry is
- * therefore "not confirmed present," not "confirmed present"; downstream DB
- * opens are independently and lazily guarded.
+ * With `validate: true`, returns only entries whose storage is owned by the
+ * registered repository and contains a LadybugDB index. Entries whose storage
+ * path is provably gone, empty, or has no ownership metadata are pruned and
+ * persisted on a best-effort basis. A storage entry that cannot be inspected
+ * because of a transient filesystem error is kept in the returned view, so an
+ * I/O storm cannot make the registry disappear; it remains unconfirmed until a
+ * later validating read succeeds.
  */
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
@@ -1502,66 +1627,64 @@ export const listRegisteredRepos = async (opts?: {
   const entries = await readRegistry();
   if (!opts?.validate) return entries;
 
-  // Validate each entry still has a .gitnexus/ directory with metadata
+  // Validate each entry through the shared storage resolver. The registry's
+  // storagePath is intentional here: GITNEXUS_STORAGE_PATH must not redirect
+  // validation of an explicitly registered repository to another slot.
   const valid: RegistryEntry[] = [];
+  // Keep the exact inspected registry slot, not just the repository path.
+  // A concurrent analyze may re-register the same checkout into another
+  // external slot while this read-only validation walk is in flight.
+  const prunedSlots = new Set<string>();
+  const registrySlotKey = (entry: RegistryEntry): string =>
+    `${canonicalizePath(entry.path)}\0${canonicalizePath(entry.storagePath)}`;
   for (const entry of entries) {
-    // Named to avoid shadowing the exported `hasIndex` function above.
-    let indexFound = false;
-    let firstNonMissingError: NodeJS.ErrnoException | null = null;
-    let lastMissingError: NodeJS.ErrnoException | null = null;
-
-    // Check for new metadata file first
-    try {
-      await fs.access(path.join(entry.storagePath, INDEX_METADATA_FILE));
-      indexFound = true;
-    } catch (err: any) {
-      if (isMissingFilesystemError(err)) lastMissingError = err;
-      else firstNonMissingError = err;
-    }
-
-    // Fall back to legacy meta.json
-    if (!indexFound) {
-      try {
-        await fs.access(path.join(entry.storagePath, LEGACY_METADATA_FILE));
-        indexFound = true;
-      } catch (err: any) {
-        if (isMissingFilesystemError(err)) lastMissingError = err;
-        else if (!firstNonMissingError) firstNonMissingError = err;
-      }
-    }
-
-    if (indexFound) {
+    const inspection = await inspectRegisteredStorage(entry);
+    const meetsRequirements =
+      LIST_STORAGE_REQUIREMENTS.allowedStates.includes(inspection.state) &&
+      (!LIST_STORAGE_REQUIREMENTS.requireCodeIndexDB || inspection.hasCodeIndexDB);
+    if (meetsRequirements) {
       valid.push(entry);
-    } else if (!firstNonMissingError && lastMissingError) {
-      // Index genuinely removed — safe to prune
+    } else if (
+      inspection.state === 'missing' ||
+      inspection.state === 'empty' ||
+      (inspection.state === 'unowned' &&
+        inspection.reason === 'Storage directory contains data but no valid ownership metadata.')
+    ) {
+      // A missing/empty directory or a registry slot with no ownership
+      // metadata is not a usable index. Removing only the registry row is
+      // safe; the storage directory itself is never deleted here.
+      prunedSlots.add(registrySlotKey(entry));
+    } else if (isTransientStorageInspection(inspection)) {
+      // Not provably absent or invalid. Keep the old safety behavior for
+      // EIO/EAGAIN/EBUSY/EACCES-style filesystem failures.
+      valid.push(entry);
     } else {
-      // Not provably absent — keep entry to prevent mass registry wipe.
-      // Warn so an I/O storm becomes observable instead of silently
-      // keeping (or, pre-fix, silently wiping) entries.
       logger.warn(
-        { name: entry.name, storagePath: entry.storagePath, code: firstNonMissingError?.code },
-        'Keeping registry entry despite fs.access failure (not provably absent); not pruning to avoid mass registry wipe.',
+        {
+          name: entry.name,
+          storagePath: entry.storagePath,
+          state: inspection.state,
+          hasCodeIndexDB: inspection.hasCodeIndexDB,
+          reason: inspection.reason,
+        },
+        'Skipping registry entry during validation because its storage is not a usable owned code index.',
       );
-      valid.push(entry);
     }
   }
 
   // If we pruned any entries, save the cleaned registry — under the lock, and
-  // only then. The validation walk above is read-only (an fs.access per entry,
-  // slow on a network mount or a large registry) and the common case prunes
-  // nothing, so holding the global lock across it would serialize every
-  // `gitnexus augment` behind unrelated registry work for no benefit. Re-read
-  // inside the lock and drop the provably-absent paths from that fresh
-  // snapshot, so a concurrent registration in the validation window survives.
-  if (valid.length !== entries.length) {
-    const pruned = new Set(
-      entries.filter((entry) => !valid.includes(entry)).map((entry) => entry.path),
-    );
+  // only then. The validation walk above is read-only and can touch several
+  // files per entry, so holding the global lock across it would serialize
+  // every `gitnexus augment` behind unrelated registry work for no benefit.
+  // Re-read inside the lock and drop only the same provably-absent storage
+  // slots from that fresh snapshot, so a concurrent re-registration of the
+  // same repository path into another slot survives.
+  if (prunedSlots.size > 0) {
     try {
       await withRegistryLock(async () => {
         const fresh = await readRegistry();
         await writeRegistry(
-          fresh.filter((entry) => !pruned.has(entry.path)),
+          fresh.filter((entry) => !prunedSlots.has(registrySlotKey(entry))),
           1,
         );
       });
@@ -1571,7 +1694,7 @@ export const listRegisteredRepos = async (opts?: {
       // — this runs on MCP startup (LocalBackend.init → refreshRepos), where
       // nothing catches and a rejection reads as "Server disconnected".
       logger.warn(
-        { err, prunedCount: pruned.size },
+        { err, prunedCount: prunedSlots.size },
         'Could not persist the pruned global registry; continuing with the in-memory pruned view.',
       );
     }
