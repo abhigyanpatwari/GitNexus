@@ -5,7 +5,7 @@ Usage:
         --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
         --model claude-sonnet-4-20250514
 
-Each task runs in a fresh detached git worktree of the target repo, once per
+Each task runs in a fresh self-contained clone of the target repo, once per
 arm per run:
 
 * ``workflow`` — two headless Claude Code sessions: gitnexus-plan, then

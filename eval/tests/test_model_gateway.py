@@ -358,10 +358,21 @@ def test_gateway_startup_budget_outlives_a_cold_litellm_import(monkeypatch, tmp_
     monkeypatch.setenv(GATEWAY_READY_TIMEOUT_ENV, "42.5")
     assert gateway_ready_timeout_s() == 42.5
 
-    for bad in ("0", "-1", "soon"):
+    for bad in ("0", "-1", "soon", "nan", "inf", "-inf", "1e999"):
         monkeypatch.setenv(GATEWAY_READY_TIMEOUT_ENV, bad)
         with pytest.raises(ValueError, match=GATEWAY_READY_TIMEOUT_ENV):
             gateway_ready_timeout_s()
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("nan"), float("inf"), float("-inf")])
+def test_gateway_rejects_invalid_explicit_readiness_budgets(tmp_path: Path, timeout: float) -> None:
+    with pytest.raises(ValueError, match="finite and positive"):
+        OpenAIGateway(
+            openai_api_key="sk-offline-test",
+            model_names=["gpt-4.1"],
+            work_dir=tmp_path / "gw",
+            ready_timeout_s=timeout,
+        )
 
 
 def test_gateway_readiness_timeout_reports_the_proxy_log_and_the_override(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ proxy process — never in the sandboxed agent environment.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 import secrets
@@ -60,8 +61,8 @@ def gateway_ready_timeout_s() -> float:
         value = float(raw)
     except ValueError as exc:
         raise ValueError(f"{GATEWAY_READY_TIMEOUT_ENV} must be a number of seconds, not {raw!r}") from exc
-    if value <= 0:
-        raise ValueError(f"{GATEWAY_READY_TIMEOUT_ENV} must be positive, not {raw!r}")
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{GATEWAY_READY_TIMEOUT_ENV} must be finite and positive, not {raw!r}")
     return value
 
 
@@ -268,6 +269,8 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
         self.model_names = tuple(model_names)
         self.work_dir = work_dir
         self.ready_timeout_s = gateway_ready_timeout_s() if ready_timeout_s is None else ready_timeout_s
+        if not math.isfinite(self.ready_timeout_s) or self.ready_timeout_s <= 0:
+            raise ValueError("gateway readiness timeout must be finite and positive")
         self.auth_token = secrets.token_hex(16)
         self.port = _free_loopback_port()
         self.base_url = f"http://127.0.0.1:{self.port}"
