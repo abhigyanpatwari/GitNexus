@@ -12,6 +12,7 @@ import stat
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -52,6 +53,8 @@ PARENT_EVENT_STREAM_SOURCE = "parent-captured-stream-json"
 # reporter also speaks up on its own to distinguish "thinking" from "wedged".
 PROGRESS_HEARTBEAT_SECONDS = 60.0
 MAX_PROGRESS_LINE_BYTES = 1024 * 1024
+MAX_PROGRESS_PENDING = 256
+MAX_PROGRESS_TOOL_ID_CHARS = 256
 MAX_TOOL_PREVIEW_CHARS = 800
 _SAFE_TOOL_NAME = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 
@@ -116,13 +119,12 @@ def _tool_result_log_status(name: str, block: dict[str, Any]) -> str:
 
 
 class SessionProgress:
-    """Narrate a live Claude session without ever echoing its output.
+    """Report session metadata and bounded, redacted tool I/O previews.
 
     A session's stdout is evidence: it is redacted before anything is written
-    out, so it can never be streamed to the log. This reports only what the
-    parent can derive safely — turn counts, tool names, API retries, and how
-    long the session has been quiet — which is what tells a watcher whether a
-    long run is working or stuck.
+    out, so raw events and model prose are never streamed to the log. Turn
+    counts, tool activity, API retries, and quiet time distinguish work from
+    a wedged session. Tool arguments and results are content, not metadata.
     """
 
     def __init__(
@@ -150,7 +152,7 @@ class SessionProgress:
         self._tools = 0
         self._pending_tools: dict[str, str] = {}
         self._last_activity = "starting"
-        self._pending_messages: list[str] = []
+        self._pending_messages: deque[str] = deque(maxlen=MAX_PROGRESS_PENDING)
         self._timer: threading.Thread | None = None
         self._done = threading.Event()
 
@@ -237,8 +239,11 @@ class SessionProgress:
                 self._say(f"turn {self._turns} · {self._last_activity}")
                 for block, name in zip(uses, names, strict=True):
                     tool_id = block.get("id")
-                    if isinstance(tool_id, str):
+                    if isinstance(tool_id, str) and len(tool_id) <= MAX_PROGRESS_TOOL_ID_CHARS:
+                        self._pending_tools.pop(tool_id, None)
                         self._pending_tools[tool_id] = name
+                        if len(self._pending_tools) > MAX_PROGRESS_PENDING:
+                            del self._pending_tools[next(iter(self._pending_tools))]
                     if _debuggable_tool(name):
                         self._say(f"tool {name} input={_tool_preview(block.get('input'), self._secrets)}")
             else:

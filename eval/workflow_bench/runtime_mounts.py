@@ -261,7 +261,8 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
                 label="primary GitNexus shared runtime",
             )
         except SandboxError:
-            primary_shared = None
+            # Keep the already validated local shared runtime when primary is unavailable.
+            pass
         else:
             reuse_primary_shared = node_modules.source == (primary / "gitnexus" / "node_modules")
             if not reuse_primary_shared:

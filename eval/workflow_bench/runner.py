@@ -315,14 +315,18 @@ def _run_hidden_oracle(
     mount_point.mkdir(mode=0o700)
     primary: BaseException | None = None
     try:
-        with staged_task_oracle(sandbox.private_root, snapshot) as stage_root:
+        host_unsafe = getattr(sandbox, "backend", "bwrap") == "host-unsafe"
+        # Host mode has no bind mounts. Keep relative candidate imports valid
+        # by staging beside the candidate, still only after the model exits.
+        stage_parent = worktree if host_unsafe else sandbox.private_root
+        with staged_task_oracle(stage_parent, snapshot) as stage_root:
             oracle_env = build_sandbox_environment()
             # A private RO bind at a random workspace sibling preserves each
             # oracle's ../gitnexus import as the candidate implementation. The
             # empty mountpoint exists only post-model and is removed before the
             # credited patch is captured.
             oracle_mount = f"{SANDBOX_WORKSPACE}/{mount_name}"
-            oracle_env[ORACLE_ENV_VAR] = oracle_mount
+            oracle_env[ORACLE_ENV_VAR] = str(stage_root) if host_unsafe else oracle_mount
             passed, _output = _verification_outcome(
                 run_verify(
                     snapshot.command,
@@ -331,7 +335,9 @@ def _run_hidden_oracle(
                     command_prefix=sandbox.command_prefix_for(
                         read_only_workspace=True,
                         unshare_network=True,
-                        extra_read_only_mounts=(ReadOnlyMount(source=stage_root, target=oracle_mount),),
+                        extra_read_only_mounts=()
+                        if host_unsafe
+                        else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
                     ),
                     env=oracle_env,
                     require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
@@ -754,7 +760,7 @@ def _run_wave(
         for run_idx, arm in wave:
             futures.append(pool.submit(copy_context().run, run, run_idx, arm))
         wait(futures)
-    except BaseException as exc:
+    except (Exception, KeyboardInterrupt, SystemExit) as exc:
         interruption = exc
         cancel_event.set()
     finally:

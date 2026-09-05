@@ -118,6 +118,7 @@ print(json.dumps({{'rows': rows, 'stopped': stopped}}))
             try:
                 os.killpg(int(ready.read_text()), signal.SIGKILL)
             except ProcessLookupError:
+                # Successful cancellation has already reaped this process group.
                 pass
 
 

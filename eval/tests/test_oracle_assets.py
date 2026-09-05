@@ -7,6 +7,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -372,6 +373,26 @@ def test_vacuous_authored_test_cannot_self_certify_resolution(
     assert record["oracle_passed"] is False
     assert record["resolved"] is False
     assert record["error_kind"] == "oracle-failed"
+
+
+def test_host_unsafe_oracle_executes_beside_candidate_and_is_removed(tmp_path: Path) -> None:
+    from workflow_bench.proposer_sandbox import prepare_sandbox
+
+    source = tmp_path / "oracles"
+    write_oracle(
+        source,
+        b"from pathlib import Path\nassert (Path(__file__).resolve().parents[2] / 'candidate.txt').read_text() == 'candidate'\n",
+    )
+    snapshot = capture_task_oracle(
+        oracle_task(command='python3 "$GITNEXUS_BENCH_ORACLE_ROOT/nested/oracle.test.ts"'), root=source
+    )
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "candidate.txt").write_text("candidate")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as session:
+        passed, detail = runner._run_hidden_oracle(snapshot, clone, bench_args(), session)
+        assert passed, detail
+        assert not list(clone.glob(".wfbench-oracle-*"))
 
 
 def test_oracle_path_and_bytes_appear_only_after_the_model_session(

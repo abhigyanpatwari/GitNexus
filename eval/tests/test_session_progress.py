@@ -1,7 +1,7 @@
 """Live progress reporting for long headless sessions.
 
-The session event stream is evidence and is redacted before it is written
-anywhere, so progress may only report metadata derived from it. These tests pin
+Progress includes event metadata and bounded, redacted tool argument/result
+previews. Model prose and raw event streams are never echoed. These tests pin
 that boundary along with the signals that distinguish work from a wedged run.
 """
 
@@ -21,6 +21,46 @@ def _drain_lines(stream: io.StringIO) -> list[str]:
 def _observe(progress: SessionProgress, chunk: bytes) -> None:
     progress.observe(chunk)
     progress._emit_pending()
+
+
+def test_progress_bounds_unanswered_tools_and_undrained_messages() -> None:
+    progress = SessionProgress("bounded", stream=io.StringIO())
+    for index in range(2000):
+        progress.observe(
+            (
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {"type": "tool_use", "id": str(index), "name": "Bash", "input": {"command": "true"}}
+                            ]
+                        },
+                    }
+                )
+                + "\n"
+            ).encode()
+        )
+    assert len(progress._pending_tools) <= 256
+    assert len(progress._pending_messages) <= 256
+    assert "1999" in progress._pending_tools
+    assert "0" not in progress._pending_tools
+    progress.observe(
+        (
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "content": [{"type": "tool_result", "tool_use_id": "1999", "content": "recent result"}]
+                    },
+                }
+            )
+            + "\n"
+        ).encode()
+    )
+    progress._emit_pending()
+    assert "recent result" in progress._stream.getvalue()
+    assert "1999" not in progress._pending_tools
 
 
 def test_progress_reports_bounded_redacted_tool_io_but_never_model_prose() -> None:

@@ -1348,6 +1348,8 @@ PY"""
             }
         )
         with prepare_sandbox(clone=clone, claude_bin=claude, preflight=True) as sandbox:
+            output = None
+            before = {}
             if review_layout:
                 output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
                 before = runner_artifacts.workspace_snapshot(clone)
@@ -1393,8 +1395,17 @@ PY"""
                 ),
                 stdin_data=b"Use all three available tools, then finish.",
             )
+            assert result.ok, result.stderr_tail + result.stdout_tail
+            report = json.loads(result.stdout_tail)
+            assert report["subtype"] == "success" and report["is_error"] is False, report
+            read_result = observed_tool_results["toolu_read_canary"]
+            assert read_result.get("is_error") is not True, read_result
+            assert "hook-readable" in json.dumps(read_result)
+            bash_result = observed_tool_results["toolu_bash_canary"]
+            assert bash_result.get("is_error") is not True, bash_result
             assert (sandbox.temp / "mcp-called").read_text() == "ok"
             if review_layout:
+                assert output is not None
                 runner_artifacts.enforce_phase_workspace(clone, before, allowed_artifact=output)
                 assert json.loads(output.read_text())["verdict"] == "approve"
                 assert (clone / "canary.txt").read_text() == "hook-readable\nchanged for review\n"
@@ -1403,13 +1414,5 @@ PY"""
         server.server_close()
         thread.join(timeout=5)
 
-    assert result.ok, result.stderr_tail + result.stdout_tail
-    report = json.loads(result.stdout_tail)
-    assert report["subtype"] == "success" and report["is_error"] is False, report
-    read_result = observed_tool_results["toolu_read_canary"]
-    assert read_result.get("is_error") is not True, read_result
-    assert "hook-readable" in json.dumps(read_result)
-    bash_result = observed_tool_results["toolu_bash_canary"]
-    assert bash_result.get("is_error") is not True, bash_result
     if not review_layout:
         assert (clone / "bash-called").read_text() == "canary"

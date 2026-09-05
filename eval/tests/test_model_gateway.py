@@ -27,7 +27,6 @@ from workflow_bench.model_gateway import (
     gateway_ready_timeout_s,
     anthropic_api_key_from_environ,
     claude_gateway_model_env,
-    credential_secrets,
     is_openai_model,
     litellm_proxy_argv,
     openai_backend_model,
@@ -35,7 +34,6 @@ from workflow_bench.model_gateway import (
     resolve_model_access,
     write_openai_litellm_config,
 )
-from workflow_bench.evolve import build_parser, runner_environment
 
 
 def test_locked_litellm_translates_messages_to_offline_responses(monkeypatch, tmp_path):
@@ -196,6 +194,7 @@ time.sleep(60)
                 else:
                     os.killpg(int(proxy_pid.read_text()), signal.SIGKILL)
             except OSError:
+                # Successful ownership cleanup has already removed this process.
                 pass
 
 
@@ -358,28 +357,6 @@ def test_gateway_readiness_timeout_reports_the_proxy_log_and_the_override(tmp_pa
     assert GATEWAY_READY_TIMEOUT_ENV in message
 
 
-def test_runner_environment_does_not_forward_the_openai_key() -> None:
-    args = build_parser().parse_args(
-        [
-            "--tasks",
-            "t.yaml",
-            "--model",
-            "gpt-4.1",
-            "--anthropic-api-key",
-            "loopback-master",
-            "--openai-api-key",
-            "sk-openai-secret",
-        ]
-    )
-    env = runner_environment(args)
-    assert env["GITNEXUS_BENCH_ANTHROPIC_API_KEY"] == "loopback-master"
-    assert "GITNEXUS_BENCH_AUTH_TOKEN" not in env
-    assert "OPENAI_API_KEY" not in env
-    assert "GITNEXUS_BENCH_OPENAI_API_KEY" not in env
-    assert "sk-openai-secret" not in env.values()
-    assert credential_secrets(args) == ["loopback-master", "sk-openai-secret"]
-
-
 def test_openai_backend_model_preserves_openai_prefix() -> None:
     assert openai_backend_model("gpt-4.1") == "openai/gpt-4.1"
     assert openai_backend_model("openai/gpt-4.1") == "openai/gpt-4.1"
@@ -420,7 +397,3 @@ def test_anthropic_api_key_prefers_the_named_env_and_keeps_the_legacy_alias(monk
     assert anthropic_api_key_from_environ() == "legacy-secret"
     monkeypatch.setenv("GITNEXUS_BENCH_ANTHROPIC_API_KEY", "named-secret")
     assert anthropic_api_key_from_environ() == "named-secret"
-    args = build_parser().parse_args(
-        ["--tasks", "t.yaml", "--model", "pinned", "--auth-token", "alias-secret"]
-    )
-    assert args.auth_token == "alias-secret"

@@ -32,6 +32,35 @@ from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import pid_namespace_command, preflight_bubblewrap
 
 
+def test_runner_environment_does_not_forward_the_openai_key() -> None:
+    from workflow_bench.model_gateway import credential_secrets
+
+    args = build_parser().parse_args(
+        [
+            "--tasks",
+            "t.yaml",
+            "--model",
+            "gpt-4.1",
+            "--anthropic-api-key",
+            "loopback-master",
+            "--openai-api-key",
+            "sk-openai-secret",
+        ]
+    )
+    env = evolve.runner_environment(args)
+    assert env["GITNEXUS_BENCH_ANTHROPIC_API_KEY"] == "loopback-master"
+    assert "GITNEXUS_BENCH_AUTH_TOKEN" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "GITNEXUS_BENCH_OPENAI_API_KEY" not in env
+    assert "sk-openai-secret" not in env.values()
+    assert credential_secrets(args) == ["loopback-master", "sk-openai-secret"]
+
+
+def test_parser_keeps_the_legacy_auth_token_alias() -> None:
+    args = build_parser().parse_args(["--tasks", "t.yaml", "--model", "pinned", "--auth-token", "alias-secret"])
+    assert args.auth_token == "alias-secret"
+
+
 def row(**overrides):
     base = {
         "task": "demo-task",
