@@ -29,6 +29,71 @@
 
 import { installGlobalStdoutSentinel } from '../mcp/stdio-context.js';
 
+import type { UpdateState } from '../core/update-check.js';
+
+interface McpUpdateLogger {
+  info(bindings: Record<string, unknown>, message: string): unknown;
+}
+
+interface McpUpdateChecker {
+  evaluate(): Promise<UpdateState | null>;
+  armUpdateRefreshScheduler(onState: (state: UpdateState | null) => void): () => void;
+}
+
+type LoadMcpUpdateChecker = () => Promise<McpUpdateChecker>;
+
+const announcedUpdateVersions = new Set<string>();
+
+/**
+ * Start the process-scoped MCP update adapter after its transport startup
+ * boundary. All failures stay inside this best-effort side channel.
+ */
+export async function startMcpUpdateNotifier(
+  logger: McpUpdateLogger,
+  loadChecker: LoadMcpUpdateChecker = () => import('../core/update-check.js'),
+): Promise<void> {
+  let checker: McpUpdateChecker;
+  try {
+    checker = await loadChecker();
+  } catch {
+    return;
+  }
+
+  const announce = (state: UpdateState | null): void => {
+    try {
+      if (
+        !state?.updateAvailable ||
+        !state.latestVersion ||
+        announcedUpdateVersions.has(state.latestVersion)
+      ) {
+        return;
+      }
+      announcedUpdateVersions.add(state.latestVersion);
+      logger.info(
+        { event: 'gitnexus.update_available', latestVersion: state.latestVersion },
+        'GitNexus update available',
+      );
+    } catch {
+      // Logging must never escape into MCP startup or scheduler promises.
+    }
+  };
+
+  try {
+    announce(await checker.evaluate());
+  } catch {
+    // Cache evaluation and any detached refresh are best-effort.
+  }
+
+  let stop: (() => void) | undefined;
+  try {
+    stop = checker.armUpdateRefreshScheduler(announce);
+  } catch {
+    return;
+  }
+
+  process.once('exit', () => stop?.());
+}
+
 export const mcpCommand = async (options?: {
   http?: boolean;
   port?: string;
@@ -117,9 +182,11 @@ export const mcpCommand = async (options?: {
       );
       process.exit(1);
     }
+    void startMcpUpdateNotifier(logger).catch(() => {});
     return;
   }
 
   // Start MCP server (serves all repos, discovers new ones lazily)
   await startMCPServer(backend, repositoryPolicy);
+  void startMcpUpdateNotifier(logger).catch(() => {});
 };

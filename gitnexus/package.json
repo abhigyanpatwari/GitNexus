@@ -1,6 +1,6 @@
 {
   "name": "gitnexus",
-  "version": "1.6.10",
+  "version": "1.6.11",
   "description": "Graph-powered code intelligence for AI agents. Index any codebase, query via MCP or CLI.",
   "author": "Abhigyan Patwari",
   "license": "PolyForm-Noncommercial-1.0.0",
@@ -40,6 +40,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.js",
+    "build:web": "node scripts/build.js --web",
     "serve": "tsx src/cli/index.ts serve",
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",
@@ -52,7 +53,7 @@
     "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js",
+    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js --web && node scripts/assert-web-assets.mjs web",
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
