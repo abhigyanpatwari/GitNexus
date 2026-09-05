@@ -132,6 +132,15 @@ const typescriptScopeResolver: ScopeResolver = {
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
 
+  // ECMAScript: `export * from './a'; export * from './b'` with a name declared
+  // in both exports NEITHER — the finalize pass refuses the binding instead of
+  // taking the first-listed source (see `exclusiveWildcardReexports`).
+  exclusiveWildcardReexports: true,
+  // `import { x }` never reaches a class member: named imports and named
+  // re-exports bind to module-level declarations only (a class method sharing
+  // a name with a top-level value must not win the callable preference).
+  namedImportsBindTopLevelOnly: true,
+
   // TypeScript uses `.values()` / `.keys()` method-call syntax for collection
   // views -- no property-style accessors like C#'s `Dictionary<K,V>.Values` --
   // so `elementTypeOf` answers only the `index` route and lets the regular

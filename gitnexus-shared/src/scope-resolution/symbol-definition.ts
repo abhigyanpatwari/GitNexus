@@ -111,6 +111,18 @@ export interface SymbolDefinition {
    *  source (for example an anonymous class). Consumers may use this only as a
    *  conservative priority hint; it does not change graph-node identity. */
   isSynthetic?: boolean;
+  /**
+   * Whether the producing language saw EXPORT EVIDENCE on this declaration —
+   * an `export` modifier, a later `export { name }` specifier, an `export
+   * default name`. TRI-STATE, and the absence is load-bearing: `undefined`
+   * means the language emitted no verdict (most languages, and any ECMAScript
+   * file whose export surface is a CommonJS assignment the marker cannot read),
+   * which readers MUST treat as "unknown" and fall back to their prior
+   * behavior. Only `false` says "this module does not publish the name": a
+   * `false` keeps a module-private `function foo` from being counted as a
+   * wildcard provider or bound through a barrel's `export *` closure.
+   */
+  isExported?: boolean;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)

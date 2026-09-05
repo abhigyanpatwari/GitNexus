@@ -115,6 +115,34 @@ export interface FinalizeHooks {
   expandsWildcardTo(targetModuleScope: ScopeId, workspaceIndex: WorkspaceIndex): readonly string[];
 
   /**
+   * Does this language make two `wildcard` re-exports that both DECLARE the
+   * same name AMBIGUOUS (no winner), rather than overloads or redeclarations
+   * of one entity?
+   *
+   * True for ECMAScript modules: `export * from './a'; export * from './b'`
+   * with `collide` declared in both excludes the name from the module's
+   * exports, so binding either source is a guess. False (the default) for
+   * languages whose wildcard import is `#include`, `require`, or a package
+   * fan-out, where the same name declared in two files is an overload set
+   * (C++ `write_audit(int)` / `write_audit(int, int)` across two headers), a
+   * redeclaration of one function, or a per-file `init` — legal, and resolved
+   * downstream by arity or by definition. Only a language that opts in has
+   * its collisions refused and reported via `ambiguousWildcardExports`.
+   */
+  readonly wildcardCollisionIsAmbiguous?: boolean;
+
+  /**
+   * A named import / named re-export binds only to MODULE-LEVEL declarations
+   * of the target file. Opt-in for languages whose `import { x }` can never
+   * reach a class member: without it, a class method sharing a name with a
+   * top-level value — or standing alone — wins the callable preference in
+   * `findExportByName` and the import binds to a symbol the module cannot
+   * export (a confident wrong edge). Languages that bind module-level members
+   * by bare name (static members, module functions) leave it off.
+   */
+  readonly namedImportsBindTopLevelOnly?: boolean;
+
+  /**
    * Merge `incoming` bindings into `existing` for a given name. Called
    * once per name at each scope. Typical rules:
    *   - Python: local > imported > wildcard (last-write-wins within tier).
@@ -164,6 +192,24 @@ export interface FinalizeStats {
   readonly unresolvedEdges: number;
   readonly sccCount: number;
   readonly largestSccSize: number;
+  /**
+   * Names a file re-exported through two or more `export *` sources that each
+   * DECLARE the name, so the language names no winner. The finalize pass
+   * refuses to bind them (they are absent from the file's re-export closure
+   * AND from its wildcard-expanded module-scope bindings) instead of taking the
+   * first-listed source and publishing the guess as `import-resolved`.
+   * Reported so the caller can record the refusal — an importer of that name
+   * stays unresolved, and the reason must be auditable rather than silent.
+   */
+  readonly ambiguousWildcardExports: readonly AmbiguousWildcardExport[];
+}
+
+/** One refused `export *` collision — see `FinalizeStats.ambiguousWildcardExports`. */
+export interface AmbiguousWildcardExport {
+  readonly filePath: string;
+  readonly name: string;
+  /** `nodeId`s of the colliding declarations, in `export *` declaration order. */
+  readonly candidateDefIds: readonly string[];
 }
 
 export interface FinalizeOutput {
@@ -223,7 +269,25 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // SCC-condensed). Eliminates the recursive crawl that the per-edge
   // `tryFinalize` call site used to do; lookups are O(1) afterwards.
   // See `buildReexportClosures` for the algorithm.
-  const reexportClosures = buildReexportClosures(input.files, byFilePath, edgeIndex);
+  const ambiguityByFile = collectAmbiguityByFile(
+    input.files,
+    byFilePath,
+    edgeIndex,
+    hooks.wildcardCollisionIsAmbiguous === true,
+    hooks.namedImportsBindTopLevelOnly === true,
+  );
+  const ambiguousByFile = new Map<string, ReadonlySet<string>>();
+  for (const [filePath, byName] of ambiguityByFile) {
+    ambiguousByFile.set(filePath, new Set(byName.keys()));
+  }
+  const topLevelOnly = hooks.namedImportsBindTopLevelOnly === true;
+  const reexportClosures = buildReexportClosures(
+    input.files,
+    byFilePath,
+    edgeIndex,
+    ambiguousByFile,
+    topLevelOnly,
+  );
 
   // ── Phase 3: process SCCs in reverse-topological order (leaves first).
   // Within each SCC, run a bounded fixpoint that resolves intra-SCC edges.
@@ -231,6 +295,17 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // already finalized); edges inside the SCC may need multiple passes.
   const linkedByScope = new Map<ScopeId, readonly ImportEdge[]>();
   let linkedEdges = 0;
+  // Every refused name, reported from the ambiguity map itself rather than from
+  // the edges phase 4 happens to drop: a language whose `expandsWildcardTo`
+  // returns nothing (TypeScript — `export *` never binds names locally) drops
+  // no expanded edge, yet its importers were refused through the closure just
+  // the same, and that refusal must still be visible.
+  const ambiguousWildcardExports: AmbiguousWildcardExport[] = [];
+  for (const [filePath, byName] of ambiguityByFile) {
+    for (const [name, candidateDefIds] of byName) {
+      ambiguousWildcardExports.push({ filePath, name, candidateDefIds });
+    }
+  }
 
   for (const scc of sccs) {
     const sccFiles = new Set(scc.files);
@@ -249,7 +324,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         if (drafts === undefined) continue;
         for (const draft of drafts) {
           if (draft.finalized !== null) continue;
-          const finalized = tryFinalize(draft, byFilePath, reexportClosures);
+          const finalized = tryFinalize(draft, byFilePath, reexportClosures, topLevelOnly);
           if (finalized !== null) {
             draft.finalized = finalized;
             progressed = true;
@@ -278,6 +353,13 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     const drafts = edgeIndex.get(file.filePath);
     if (drafts === undefined) continue;
     const finalized: ImportEdge[] = [];
+    // Names this file's `export *` sources collide on (see
+    // `collectAmbiguousWildcards`). Their expanded edges are dropped here, so
+    // the file's own module scope does not bind an arbitrary winner either —
+    // suppressing them only in the closure would leave this binding standing,
+    // and it was this binding, not the closure, that produced the published
+    // `import-resolved` guess.
+    const ambiguousHere = ambiguousByFile.get(file.filePath) ?? EMPTY_NAME_SET;
     for (const d of drafts) {
       const edge = d.finalized;
       if (edge === null) {
@@ -286,7 +368,10 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       if (d.source.kind === 'wildcard' && edge.linkStatus !== 'unresolved') {
         // Produce one `wildcard-expanded` ImportEdge per exported name.
         const expanded = expandWildcard(edge, byFilePath, hooks, input.workspaceIndex);
-        for (const e of expanded) finalized.push(e);
+        for (const e of expanded) {
+          if (e.kind === 'wildcard-expanded' && ambiguousHere.has(e.localName)) continue;
+          finalized.push(e);
+        }
       } else {
         finalized.push(edge);
       }
@@ -312,6 +397,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     unresolvedEdges: totalEdges - linkedEdges,
     sccCount,
     largestSccSize,
+    ambiguousWildcardExports: Object.freeze(ambiguousWildcardExports),
   };
 
   return Object.freeze({
@@ -529,6 +615,7 @@ function tryFinalize(
   draft: ImportEdgeDraft,
   byFilePath: Map<string, FinalizeFile>,
   reexportClosures: ReadonlyMap<string, FileReexportClosure>,
+  topLevelOnly: boolean,
 ): ImportEdge | null {
   const targetFile = draft.targetFile;
   if (targetFile === null) return draft.base; // already terminal
@@ -552,7 +639,11 @@ function tryFinalize(
   // so consumers can reach the module as a symbol — but its absence is not
   // a failure.
   if (draft.base.kind === 'namespace') {
-    const moduleDef = findExportByName(targetModule.localDefs, extractExportedName(draft.source));
+    const moduleDef = findExportByName(
+      targetModule.localDefs,
+      extractExportedName(draft.source),
+      topLevelOnly,
+    );
     return {
       ...draft.base,
       targetModuleScope: targetModule.moduleScope,
@@ -564,7 +655,7 @@ function tryFinalize(
   // local defs. Multi-hop re-export chains settle iteratively — each hop
   // resolves once its prior hop is finalized.
   const importedName = extractExportedName(draft.source);
-  const exported = findExportByName(targetModule.localDefs, importedName);
+  const exported = findExportByName(targetModule.localDefs, importedName, topLevelOnly);
 
   if (exported !== undefined) {
     const transitiveVia =
@@ -691,15 +782,18 @@ function buildReexportClosures(
   files: readonly FinalizeFile[],
   byFilePath: ReadonlyMap<string, FinalizeFile>,
   edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
+  ambiguous: ReadonlyMap<string, ReadonlySet<string>>,
+  topLevelOnly: boolean,
 ): ReadonlyMap<string, FileReexportClosure> {
   const closures = new Map<string, Map<string, ReexportClosureEntry>>();
   for (const file of files) closures.set(file.filePath, new Map());
 
   // ── Step 1: build the re-export sub-graph (only resolvable wildcard /
-  // reexport / flagged-named targets contribute edges), and collect the
-  // per-file ambiguous names in the same walk.
+  // reexport / flagged-named targets contribute edges). The per-file
+  // ambiguous-name sets arrive precomputed (`collectAmbiguityByFile`) because
+  // phase 4 consults the same sets when it expands wildcards into module
+  // scope — one source of truth for "this name has no winner".
   const subGraph = new Map<string, Set<string>>();
-  const ambiguous = new Map<string, ReadonlySet<string>>();
   for (const file of files) {
     const targets = new Set<string>();
     const drafts = edgeIndex.get(file.filePath);
@@ -710,7 +804,6 @@ function buildReexportClosures(
         if (!byFilePath.has(d.targetFile)) continue;
         targets.add(d.targetFile);
       }
-      ambiguous.set(file.filePath, collectAmbiguousReexports(drafts, byFilePath));
     }
     subGraph.set(file.filePath, targets);
   }
@@ -726,7 +819,7 @@ function buildReexportClosures(
     if (!scc.isCycle) {
       const filePath = scc.files[0];
       if (filePath !== undefined) {
-        populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous);
+        populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous, topLevelOnly);
       }
       continue;
     }
@@ -740,7 +833,9 @@ function buildReexportClosures(
       progressed = false;
       iter++;
       for (const filePath of scc.files) {
-        if (populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous)) {
+        if (
+          populateFileClosure(filePath, byFilePath, edgeIndex, closures, ambiguous, topLevelOnly)
+        ) {
           progressed = true;
         }
       }
@@ -820,6 +915,212 @@ function isNamedReexport(draft: ImportEdgeDraft): draft is ImportEdgeDraft & {
  * are still filling in, so detecting them needs a set that grows during the
  * fixpoint — the thing this pre-pass exists to avoid.
  */
+/**
+ * Per-file set of re-exported names that have NO decidable winner, from both
+ * detectors: `collectAmbiguousReexports` (flagged-named vs flagged-named) and
+ * `collectAmbiguousWildcards` (`export *` vs `export *`, direct declarations).
+ * Fixed for the whole run; consulted by the closure fixpoint AND by phase 4's
+ * wildcard expansion, so a refused name is absent from BOTH the exports an
+ * importer can reach and the module-scope bindings the file itself sees.
+ */
+function collectAmbiguityByFile(
+  files: readonly FinalizeFile[],
+  byFilePath: ReadonlyMap<string, FinalizeFile>,
+  edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
+  wildcardCollisionIsAmbiguous: boolean,
+  topLevelOnly: boolean,
+): ReadonlyMap<string, ReadonlyMap<string, readonly string[]>> {
+  const out = new Map<string, ReadonlyMap<string, readonly string[]>>();
+  for (const file of files) {
+    const drafts = edgeIndex.get(file.filePath);
+    if (drafts === undefined) continue;
+    const byName = new Map<string, readonly string[]>();
+    for (const name of collectAmbiguousReexports(drafts, byFilePath)) {
+      byName.set(name, namedReexportCandidates(drafts, byFilePath, name, topLevelOnly));
+    }
+    // Wildcard-vs-wildcard is a language rule (`FinalizeHooks.
+    // wildcardCollisionIsAmbiguous`): ECMAScript excludes the name, C++
+    // overloads it. Without the opt-in this half stays first-wins.
+    if (wildcardCollisionIsAmbiguous) {
+      for (const [name, ids] of collectAmbiguousWildcards(file, drafts, byFilePath)) {
+        if (!byName.has(name)) byName.set(name, ids);
+      }
+    }
+    if (byName.size === 0) continue;
+    out.set(file.filePath, byName);
+  }
+  return out;
+}
+
+/** The declarations a flagged-named collision on `localName` points at. */
+function namedReexportCandidates(
+  drafts: readonly ImportEdgeDraft[],
+  byFilePath: ReadonlyMap<string, FinalizeFile>,
+  localName: string,
+  topLevelOnly: boolean,
+): readonly string[] {
+  const ids: string[] = [];
+  for (const draft of drafts) {
+    if (!isNamedReexport(draft) || draft.source.localName !== localName) continue;
+    const targetFile = draft.targetFile;
+    if (targetFile === null) continue;
+    const target = byFilePath.get(targetFile);
+    if (target === undefined) continue;
+    const def = findExportByName(target.localDefs, draft.source.importedName, topLevelOnly);
+    if (def !== undefined && !ids.includes(def.nodeId)) ids.push(def.nodeId);
+  }
+  return Object.freeze(ids);
+}
+
+/**
+ * `export * from './a'; export * from './b'` where BOTH `a` and `b` declare
+ * `collide`: the language names no winner (ECMAScript excludes the name from
+ * the module's exports entirely; a direct `import { collide }` of it is a
+ * SyntaxError-class ambiguity). First-wins here published the `a` binding as
+ * `import-resolved` at full confidence — a definite target for a call that has
+ * none, which is the incorrect-context-over-missing-context failure in its
+ * purest form. The name is refused instead and reported.
+ *
+ * Decidable in this pre-pass because it reads only the targets' own
+ * `localDefs` — nothing that fills in during the closure fixpoint. Collisions
+ * that arrive TRANSITIVELY (two wildcards whose targets each re-export the
+ * name from somewhere else) are still first-wins; detecting them needs a set
+ * that grows mid-fixpoint, the thing this pre-pass exists to avoid.
+ *
+ * A name the file DECLARES itself, or re-exports by NAME, is excluded: an
+ * explicit export shadows every `export *`, so those collisions are legal and
+ * resolved by precedence, not ambiguous.
+ *
+ * Only MODULE-LEVEL, EXPORT-SHAPED declarations can collide. `localDefs` also
+ * carries class members, properties and parameters (a `Property:value` on two
+ * unrelated classes, an interface field named `move`), which no `export *`
+ * publishes. Counting those produced thousands of phantom collisions on a real
+ * monorepo (2,640 on grafana) and — the dangerous half — would have refused a
+ * genuinely exported `move()` because some class elsewhere had a `move`
+ * property. The wildcard closure loop tolerates the wider set because nobody
+ * imports a property by name; a refusal cannot afford the same tolerance.
+ *
+ * Export evidence, when the language supplies it (`SymbolDefinition.isExported`,
+ * tri-state), settles the rest: a def marked `false` is module-private and is
+ * neither a provider here nor published by the closure
+ * (`indexTopLevelExportsByName`), so a private `function foo` beside an exported
+ * one no longer refuses the export — and, the half that matters more, cannot be
+ * the first-listed winner the closure binds either. A def marked `true` counts
+ * whatever its label, `Variable` included: the closure publishes a `Variable`,
+ * so two sources each exporting `const alpha` are a real collision and must be
+ * refused rather than first-wins.
+ *
+ * Without evidence (`isExported` undefined — most languages) `Variable` is
+ * excluded from the COLLISION set only: the typical top-level `const` in a
+ * barrel's sources is module-private (`const category = ['Axis']` in fourteen
+ * option-builder files), so counting it would refuse a real exported constant
+ * of the same name for nothing. Residual risk, accepted, for that evidence-free
+ * case: a non-exported `function`/`class` sharing its name with an exported one
+ * behind the same barrel is counted as a collision and the export is refused —
+ * a missing edge, never a wrong one. `ownerId` is only set for class members, so
+ * a callable nested in an object literal (`showIf: (cfg) => …` across fourteen
+ * option-builder files) still counts as a provider when unmarked. Measured
+ * before the export marker existed: grafana@871af0720 refuses 52 names (from
+ * 2,640 before the member exclusion), discourse@3f71fa15c 5.
+ */
+
+/** Labels that are never a module export, whatever their owner. */
+const NON_EXPORTABLE_MEMBER_LABELS: readonly string[] = [
+  'Property',
+  'Method',
+  'Constructor',
+  'Parameter',
+  'Field',
+];
+/** Labels excluded from the collision set when no export evidence is present. */
+const UNMARKED_NON_COLLIDING_LABELS: ReadonlySet<string> = new Set([
+  ...NON_EXPORTABLE_MEMBER_LABELS,
+  'Variable',
+]);
+/**
+ * Labels a module can never export by name: class/interface members and
+ * parameters. Filtered by LABEL, not `ownerId` — `ownerId` is populated in a
+ * later pass and is not reliable while the closure is built.
+ */
+const MEMBER_LABELS: ReadonlySet<string> = new Set(NON_EXPORTABLE_MEMBER_LABELS);
+
+/**
+ * A declaration `export *` could publish, for COLLISION purposes: top-level, of
+ * an exportable kind, and not marked module-private. With export evidence the
+ * label rule yields to the marker (an exported `Variable` collides; a private
+ * `function` does not); without it `Variable` is left out — see the header.
+ */
+function isWildcardPublishable(def: SymbolDefinition): boolean {
+  // Explicit evidence wins over the label: a CommonJS `module.exports = {
+  // alpha() {} }` member is labeled Method and IS the module's export.
+  if (def.isExported === true) return true;
+  if (def.isExported === false) return false;
+  if (def.ownerId !== undefined) return false;
+  return !UNMARKED_NON_COLLIDING_LABELS.has(def.type);
+}
+
+/**
+ * Can a declaration of the barrel's OWN shadow a name its `export *` sources
+ * collide on? Only a module-level binding can — ECMAScript's explicit-export
+ * precedence is about the module's own exports. A class MEMBER named `clash`
+ * (`export class Unrelated { clash() {} }`) is not such a binding and must not
+ * switch the collision check off; it did, and a confident edge to one source's
+ * `clash` was emitted where the import should have been refused.
+ */
+function canShadowWildcard(def: SymbolDefinition): boolean {
+  if (def.isExported === true) return true;
+  if (def.isExported === false) return false;
+  if (def.ownerId !== undefined) return false;
+  return !MEMBER_LABELS.has(def.type);
+}
+function collectAmbiguousWildcards(
+  file: FinalizeFile,
+  drafts: readonly ImportEdgeDraft[],
+  byFilePath: ReadonlyMap<string, FinalizeFile>,
+): ReadonlyMap<string, readonly string[]> {
+  const shadowed = new Set<string>();
+  for (const def of file.localDefs) {
+    if (!canShadowWildcard(def)) continue;
+    const name = deriveSimpleName(def);
+    if (name !== null) shadowed.add(name);
+  }
+  for (const draft of drafts) {
+    if (isNamedReexport(draft)) shadowed.add(draft.source.localName);
+  }
+
+  // name → (target file → declaring def ids), in declaration order.
+  const providers = new Map<string, Map<string, string[]>>();
+  for (const draft of drafts) {
+    if (draft.source.kind !== 'wildcard') continue;
+    const targetFile = draft.targetFile;
+    if (targetFile === null) continue;
+    const target = byFilePath.get(targetFile);
+    if (target === undefined) continue;
+    for (const def of target.localDefs) {
+      if (!isWildcardPublishable(def)) continue;
+      const name = deriveSimpleName(def);
+      if (name === null || shadowed.has(name)) continue;
+      let byTarget = providers.get(name);
+      if (byTarget === undefined) {
+        byTarget = new Map<string, string[]>();
+        providers.set(name, byTarget);
+      }
+      const ids = byTarget.get(targetFile);
+      if (ids === undefined) byTarget.set(targetFile, [def.nodeId]);
+      else ids.push(def.nodeId);
+    }
+  }
+  const conflicting = new Map<string, readonly string[]>();
+  for (const [name, byTarget] of providers) {
+    // Two DIFFERENT source files declaring the name. The same file declaring
+    // it twice (overloads, a declaration merged with its namespace) is one
+    // provider and not a collision.
+    if (byTarget.size < 2) continue;
+    conflicting.set(name, Object.freeze([...byTarget.values()].flat()));
+  }
+  return conflicting;
+}
+
 function collectAmbiguousReexports(
   drafts: readonly ImportEdgeDraft[],
   byFilePath: ReadonlyMap<string, FinalizeFile>,
@@ -859,6 +1160,7 @@ function populateFileClosure(
   edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
   closures: Map<string, Map<string, ReexportClosureEntry>>,
   ambiguousByFile: ReadonlyMap<string, ReadonlySet<string>>,
+  topLevelOnly: boolean,
 ): boolean {
   const myClosure = closures.get(filePath);
   if (myClosure === undefined) return false;
@@ -883,7 +1185,7 @@ function populateFileClosure(
     if (ambiguous.has(localName) || myClosure.has(localName)) continue;
 
     const importedName = draft.source.importedName;
-    const direct = findExportByName(targetModule.localDefs, importedName);
+    const direct = findExportByName(targetModule.localDefs, importedName, topLevelOnly);
     if (direct !== undefined) {
       myClosure.set(localName, { def: direct, via: Object.freeze([targetFile]) });
       continue;
@@ -909,9 +1211,27 @@ function populateFileClosure(
     const targetModule = byFilePath.get(targetFile);
     if (targetModule === undefined) continue;
 
-    for (const def of targetModule.localDefs) {
-      const name = deriveSimpleName(def);
-      if (name === null || ambiguous.has(name) || myClosure.has(name)) continue;
+    // Fan out the WINNER per name, not every def. `export const alpha = () =>
+    // {}` emits both a `Variable` (the lexical declaration) and a `Function`
+    // (the arrow) under the same simple name; iterating `localDefs` raw let
+    // whichever came first — the `Variable` — claim the closure slot, and a
+    // call bound to a value shadow emits no CALLS edge. Named re-exports
+    // already go through `findExportByName`'s callable-preferred index; the
+    // wildcard hop is the same lookup and must apply the same preference.
+    // Measured: grafana `Button`/`clearButtonStyles` (arrow consts behind
+    // `export *`) resolved 8 of 475 ledger entries before this.
+    // Over TOP-LEVEL declarations only. `localDefs` also carries class members;
+    // `Foo.render` (label `Method`, callable) outranked the file's real
+    // `const render` in the callable-preferred index and `import { render }`
+    // bound to a symbol `export *` can never publish — a confident wrong edge
+    // where the value shadow used to yield none. Gated by the same hook as the
+    // named-import path: only a language that opted in (ECMAScript, where
+    // `export *` cannot publish a class member) narrows; every other language's
+    // wildcard keeps the wide index, whose members are legitimately reachable.
+    for (const [name, def] of (topLevelOnly ? indexTopLevelExportsByName : indexExportsByName)(
+      targetModule.localDefs,
+    )) {
+      if (ambiguous.has(name) || myClosure.has(name)) continue;
       myClosure.set(name, { def, via: Object.freeze([targetFile]) });
     }
     const targetClosure = closures.get(targetFile);
@@ -993,6 +1313,13 @@ function deriveSimpleName(def: SymbolDefinition): string | null {
 function findExportByName(
   defs: readonly SymbolDefinition[],
   name: string,
+  /**
+   * `true` (a `namedImportsBindTopLevelOnly` language): consult only
+   * module-level declarations, so a class member can neither outrank a
+   * top-level value nor bind on its own. Phase-4 wildcard expansion keeps
+   * the wide index — that is the path languages use to bind members.
+   */
+  topLevelOnly: boolean = false,
 ): SymbolDefinition | undefined {
   // GENERIC RULE (applies to every language using this finalize
   // algorithm): when MULTIPLE `SymbolDefinition`s share the same simple
@@ -1018,7 +1345,7 @@ function findExportByName(
   //
   // See `gitnexus/test/integration/resolvers/typescript-hof-callbacks.test.ts`
   // for the cross-file regression this rule prevents.
-  return indexExportsByName(defs).get(name);
+  return (topLevelOnly ? indexTopLevelExportsByName(defs) : indexExportsByName(defs)).get(name);
 }
 
 /**
@@ -1059,6 +1386,47 @@ function indexExportsByName(
       index.set(name, d);
   }
   EXPORTS_BY_NAME.set(defs, index);
+  return index;
+}
+
+/**
+ * `indexExportsByName` restricted to declarations a module publishes by name:
+ * members (by LABEL — `ownerId` is stamped by a later reconcile pass and is not
+ * reliable while the closure is built) are skipped unless the language marked
+ * them exported (a CommonJS `module.exports = { alpha() {} }` member), and so
+ * is any def the language marked module-private (`isExported === false`) — a
+ * function nested inside another function carries the Function label and used
+ * to displace the real exported value of the same name here; a barrel cannot
+ * republish what its source never exported, and binding it would put a private
+ * `function foo` in front of the exported one another source provides.
+ * `Variable` stays, since a barrel legitimately republishes a `const`. Same
+ * memoization contract.
+ */
+const TOP_LEVEL_EXPORTS_BY_NAME = new WeakMap<
+  readonly SymbolDefinition[],
+  ReadonlyMap<string, SymbolDefinition>
+>();
+
+function indexTopLevelExportsByName(
+  defs: readonly SymbolDefinition[],
+): ReadonlyMap<string, SymbolDefinition> {
+  const cached = TOP_LEVEL_EXPORTS_BY_NAME.get(defs);
+  if (cached !== undefined) return cached;
+  const index = new Map<string, SymbolDefinition>();
+  for (const d of defs) {
+    // Evidence over label, both ways: a marked-private def (a function nested
+    // in another function carries the Function label too) is skipped, and a
+    // marked-exported member (`module.exports = { alpha() {} }`) is admitted.
+    if (d.isExported === false) continue;
+    if (d.isExported !== true && MEMBER_LABELS.has(d.type)) continue;
+    const name = deriveSimpleName(d);
+    if (name === null) continue;
+    const existing = index.get(name);
+    if (existing === undefined) index.set(name, d);
+    else if (!isCallableOrTypeLike(existing.type) && isCallableOrTypeLike(d.type))
+      index.set(name, d);
+  }
+  TOP_LEVEL_EXPORTS_BY_NAME.set(defs, index);
   return index;
 }
 
