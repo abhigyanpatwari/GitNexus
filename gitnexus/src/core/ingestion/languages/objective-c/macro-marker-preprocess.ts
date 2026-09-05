@@ -17,6 +17,7 @@
 
 interface ScanState {
   inBlockComment: boolean;
+  inLineCommentContinuation: boolean;
   inPreprocessorDirective: boolean;
   quote: '"' | "'" | undefined;
   braceDepth: number;
@@ -66,6 +67,10 @@ function startsPreprocessorDirective(line: string): boolean {
 }
 
 function scanLine(line: string, state: ScanState): void {
+  if (state.inLineCommentContinuation) {
+    state.inLineCommentContinuation = hasEscapedLineEnding(line);
+    return;
+  }
   if (state.inPreprocessorDirective) {
     state.inPreprocessorDirective = hasEscapedLineEnding(line);
     return;
@@ -96,7 +101,10 @@ function scanLine(line: string, state: ScanState): void {
       continue;
     }
 
-    if (code === 0x2f && next === 0x2f) return;
+    if (code === 0x2f && next === 0x2f) {
+      state.inLineCommentContinuation = hasEscapedLineEnding(line);
+      return;
+    }
     if (code === 0x2f && next === 0x2a) {
       state.inBlockComment = true;
       index++;
@@ -123,6 +131,7 @@ function scanLine(line: string, state: ScanState): void {
 export function preprocessObjectiveCMacroMarkers(source: string, _filePath?: string): string {
   const state: ScanState = {
     inBlockComment: false,
+    inLineCommentContinuation: false,
     inPreprocessorDirective: false,
     quote: undefined,
     braceDepth: 0,
@@ -134,6 +143,7 @@ export function preprocessObjectiveCMacroMarkers(source: string, _filePath?: str
     const line = segments[index];
     if (
       !state.inBlockComment &&
+      !state.inLineCommentContinuation &&
       !state.inPreprocessorDirective &&
       state.quote === undefined &&
       state.braceDepth === 0 &&

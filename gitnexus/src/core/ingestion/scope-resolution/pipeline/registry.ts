@@ -55,5 +55,4 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.Vue, vueScopeResolver],
   [SupportedLanguages.Zig, zigScopeResolver],
   [SupportedLanguages.ObjectiveC, objectiveCScopeResolver],
-  [SupportedLanguages.Zig, zigScopeResolver],
 ]);

@@ -412,6 +412,53 @@ describe('chunkNode', () => {
     expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ProtocolSections.m');
   });
 
+  it('expands Objective-C instance variables before chunking a class declaration', async () => {
+    const content = [
+      '@interface Worker {',
+      '  id _first;',
+      '  id _second;',
+      '}',
+      '- (void)run;',
+      '@end',
+    ].join('\n');
+    const firstIvar = 'id _first;';
+    const secondIvar = 'id _second;';
+    const method = '- (void)run;';
+    const firstIvarStart = content.indexOf(firstIvar);
+    const secondIvarStart = content.indexOf(secondIvar);
+    const methodStart = content.indexOf(method);
+    const instanceVariables = makeFakeNode(
+      'instance_variables',
+      content.indexOf('{'),
+      content.indexOf('}') + 1,
+      [
+        makeFakeNode('field_definition', firstIvarStart, firstIvarStart + firstIvar.length),
+        makeFakeNode('field_definition', secondIvarStart, secondIvarStart + secondIvar.length),
+      ],
+    );
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode('identifier', content.indexOf('Worker'), content.indexOf('Worker') + 'Worker'.length),
+      instanceVariables,
+      makeFakeNode('method_declaration', methodStart, methodStart + method.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'Worker.m', 1, 6, 48, 0);
+    const combined = result.map((chunk) => chunk.text).join('\n');
+
+    expect(result.length).toBeGreaterThan(1);
+    expect(combined).toContain(firstIvar);
+    expect(combined).toContain(secondIvar);
+    expect(combined).toContain(method);
+    expect(result.some((chunk) => chunk.text.includes(firstIvar) && chunk.text.includes(secondIvar))).toBe(
+      true,
+    );
+  });
+
   it('keeps Objective-C protocol inheritance in the declaration prefix', async () => {
     const content = ['@protocol Worker <Runnable, Observable>', '- (void)run;', '@end'].join('\n');
     const protocolNameStart = content.indexOf('Worker');

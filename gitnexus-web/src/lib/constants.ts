@@ -135,6 +135,8 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
   'Folder',
   'File',
   'Class',
+  'Protocol',
+  'Category',
   'Interface',
   'Enum',
   'Type',

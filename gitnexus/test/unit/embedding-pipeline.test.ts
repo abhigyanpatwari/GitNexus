@@ -13,6 +13,7 @@ import {
   LABEL_CATEGORY,
   LABEL_PROTOCOL,
   LABELS_WITH_EXPORTED,
+  STRUCTURAL_LABELS,
 } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
 
@@ -23,6 +24,13 @@ describe('embedding schema column contracts', () => {
   it('does not query Objective-C protocol/category tables for an isExported column', () => {
     expect(LABELS_WITH_EXPORTED.has(LABEL_PROTOCOL)).toBe(false);
     expect(LABELS_WITH_EXPORTED.has(LABEL_CATEGORY)).toBe(false);
+  });
+
+  it('keeps Objective-C protocol/category declaration chunking without unsupported structural extraction', () => {
+    expect(STRUCTURAL_LABELS.has(LABEL_PROTOCOL)).toBe(false);
+    expect(STRUCTURAL_LABELS.has(LABEL_CATEGORY)).toBe(false);
+    expect(EMBEDDABLE_LABELS).toContain(LABEL_PROTOCOL);
+    expect(EMBEDDABLE_LABELS).toContain(LABEL_CATEGORY);
   });
 });
 

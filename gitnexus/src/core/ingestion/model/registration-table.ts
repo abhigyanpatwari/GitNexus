@@ -15,7 +15,7 @@
  *       └── symbols (SymbolTable)     ← owns fileIndex + callableByName,
  *                                       calls dispatch() in add()
  *
- * ## Behavior groups (5 hooks, 13 table entries)
+ * ## Behavior groups (4 hooks, 12 table entries)
  *
  * | Group         | NodeLabel values                                  | Hook         | Skip callable? |
  * |---------------|---------------------------------------------------|--------------|----------------|

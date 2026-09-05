@@ -112,8 +112,6 @@ export const isShortLabel = (label: string): boolean =>
  */
 export const STRUCTURAL_LABELS: ReadonlySet<string> = new Set([
   LABEL_CLASS,
-  LABEL_PROTOCOL,
-  LABEL_CATEGORY,
   LABEL_STRUCT,
   LABEL_INTERFACE,
 ]);

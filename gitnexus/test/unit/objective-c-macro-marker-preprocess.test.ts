@@ -48,4 +48,19 @@ describe('preprocessObjectiveCMacroMarkers', () => {
 
     expect(preprocessObjectiveCMacroMarkers(source, 'Example.m')).toBe(source);
   });
+
+  it('does not rewrite markers inside a continued line comment', () => {
+    const source = [
+      '// The following token remains part of this comment \\',
+      'RCT_EXTERN_C_END',
+      'RCT_EXTERN_C_BEGIN',
+      '',
+    ].join('\n');
+
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'CommentedMarker.h');
+
+    expect(normalized).toHaveLength(source.length);
+    expect(normalized).toContain('RCT_EXTERN_C_END');
+    expect(normalized.split('\n')[2]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
+  });
 });

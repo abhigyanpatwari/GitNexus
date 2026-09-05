@@ -163,7 +163,10 @@ const FIELD_LIKE_MEMBER_TYPES = new Set([
   'enum_assignment',
 ]);
 
-const DECLARATION_MEMBER_WRAPPER_TYPES = new Set(['qualified_protocol_interface_declaration']);
+const DECLARATION_MEMBER_WRAPPER_TYPES = new Set([
+  'qualified_protocol_interface_declaration',
+  'instance_variables',
+]);
 
 const declarationChunk = async (
   content: string,

@@ -140,8 +140,17 @@ describe('BasicBlock taint/PDG substrate label (issue #2080)', () => {
 // reference-equality assertions on the hook functions themselves.
 // ---------------------------------------------------------------------------
 
-describe('class-like behavior group — all 6 labels route to types.registerClass', () => {
-  const CLASS_LIKE_LABELS = ['Class', 'Struct', 'Interface', 'Enum', 'Record', 'Trait'] as const;
+describe('class-like behavior group — all 8 labels route to types.registerClass', () => {
+  const CLASS_LIKE_LABELS = [
+    'Class',
+    'Protocol',
+    'Category',
+    'Struct',
+    'Interface',
+    'Enum',
+    'Record',
+    'Trait',
+  ] as const;
 
   for (const label of CLASS_LIKE_LABELS) {
     it(`${label} writes to types.registerClass`, () => {
