@@ -94,6 +94,8 @@ def test_review_preparation_preserves_existing_runtime_files_and_tracks_only_cre
         created = json.loads((sandbox.private_root / "review-created-paths.json").read_text())
         assert "bunfig.toml" not in created
         assert ".npmrc" in created
+        assert ".mcp.json" in created
+        assert json.loads((clone / ".mcp.json").read_text()) == {}
         assert (clone / "bunfig.toml").read_text() == "existing configuration\n"
         assert (clone / ".git/commondir").read_text() == ".\n"
 

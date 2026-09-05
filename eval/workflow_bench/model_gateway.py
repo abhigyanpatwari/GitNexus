@@ -299,6 +299,10 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
             "OPENAI_API_KEY": self.openai_api_key,
             "LITELLM_MASTER_KEY": self.auth_token,
         }
+        if os.name == "nt":
+            # Windows subprocess DLL/socket initialization needs SystemRoot.
+            # Keep the rest of the gateway's credential boundary explicit.
+            env["SystemRoot"] = os.environ["SystemRoot"]
         # Never hand the proxy a pipe: nothing drains it after startup, so the
         # proxy would block forever once its request logs fill the 64 KiB pipe
         # buffer, and every later session request would hang without a status.

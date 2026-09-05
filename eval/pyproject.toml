@@ -9,6 +9,7 @@ dependencies = [
     "litellm[proxy]!=1.82.7,!=1.82.8,>=1.99.0",
     "cryptography>=50.0.0",
     "python-multipart>=0.0.30",
+    "restrictedpython>=8.3",
     "datasets>=3.0.0",
     "typer>=0.12.0",
     "rich>=13.0.0",

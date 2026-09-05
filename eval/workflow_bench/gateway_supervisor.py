@@ -6,6 +6,7 @@ PYTHONPATH. The gateway receives DEVNULL, never the owner-liveness descriptor.
 
 from __future__ import annotations
 
+import os
 import signal
 import sys
 import threading
@@ -18,7 +19,9 @@ def main() -> int:
 
     def watch_owner() -> None:
         try:
-            sys.stdin.buffer.read(1)
+            # A buffered stdin lock held by a daemon aborts CPython shutdown
+            # when the proxy exits while the owner is still alive.
+            os.read(sys.stdin.fileno(), 1)
         finally:
             cancelled.set()
 

@@ -36,6 +36,26 @@ from workflow_bench.model_gateway import (
 )
 
 
+def test_supervisor_reports_proxy_failure_without_aborting_on_its_stdin_reader():
+    supervisor = Path(__file__).resolve().parents[1] / "workflow_bench" / "gateway_supervisor.py"
+    process = subprocess.Popen(
+        [sys.executable, str(supervisor), sys.executable, "-c", "raise RuntimeError('proxy failed')"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # Keep the owner pipe open: the proxy exits independently of its owner.
+        process.wait(timeout=10)
+        assert process.returncode == 1
+        assert b"proxy failed" in process.stderr.read()
+    finally:
+        process.stdin.close()
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
 def test_locked_litellm_translates_messages_to_offline_responses(monkeypatch, tmp_path):
     from workflow_bench import model_gateway
 
@@ -171,7 +191,9 @@ time.sleep(60)
         deadline = time.monotonic() + 12
         while (not ready.exists() or not proxy_pid.exists()) and parent.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert ready.exists(), parent.communicate(timeout=1)
+        if not ready.exists():
+            _, stderr = parent.communicate(timeout=1)
+            pytest.fail(stderr)
         port = json.loads(ready.read_text())["port"]
         getattr(parent, termination)()
         parent.wait(timeout=5)
@@ -226,7 +248,9 @@ def test_openai_litellm_config_routes_each_id_to_openai_and_env_key(tmp_path: Pa
     assert config["litellm_settings"]["request_timeout"] == GATEWAY_REQUEST_TIMEOUT_S
     path = write_openai_litellm_config(tmp_path / "litellm.yaml", ["gpt-4.1"])
     assert yaml.safe_load(path.read_text())["model_list"][0]["model_name"] == "gpt-4.1"
-    assert path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        # Windows chmod exposes a read-only flag, not POSIX access bits.
+        assert path.stat().st_mode & 0o777 == 0o600
 
 
 def test_resolve_model_access_starts_proxy_only_for_openai_ids() -> None:
@@ -311,7 +335,8 @@ def test_openai_gateway_never_leaves_proxy_output_on_an_undrained_pipe(tmp_path:
     assert captured["stderr"] is subprocess.STDOUT
     assert captured["stdout"] is not subprocess.PIPE
     assert getattr(captured["stdout"], "name", "") == str(gateway.log_path)
-    assert gateway.log_path.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert gateway.log_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_gateway_startup_budget_outlives_a_cold_litellm_import(monkeypatch, tmp_path: Path) -> None:

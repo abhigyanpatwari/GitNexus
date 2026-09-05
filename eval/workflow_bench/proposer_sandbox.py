@@ -73,6 +73,7 @@ class SandboxError(RuntimeError):
 # paths even when absent. Mount targets must exist before sealing the clone.
 REVIEW_RUNTIME_FILES = (
     "bunfig.toml",
+    ".mcp.json",
     "package.json",
     ".npmrc",
     ".yarnrc",
@@ -157,6 +158,8 @@ def prepare_review_workspace(sandbox: SandboxSession, artifact_name: str) -> Pat
             missing = not os.path.lexists(clone / name)
             _prepare_clone_target(clone, PurePosixPath(name), directory=directory, label="review runtime")
             if missing:
+                if name == ".mcp.json":
+                    (clone / name).write_text("{}\n")
                 created.append(name)
     common_dir = clone / ".git/commondir"
     missing = not os.path.lexists(common_dir)
