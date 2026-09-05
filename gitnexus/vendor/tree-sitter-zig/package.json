@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-zig",
+  "version": "1.1.2",
+  "description": "Zig grammar for tree-sitter",
+  "repository": "https://github.com/tree-sitter-grammars/tree-sitter-zig",
+  "license": "MIT",
+  "main": "bindings/node/index.js",
+  "types": "bindings/node/index.d.ts",
+  "_vendoredBy": "gitnexus - runtime package derived from @tree-sitter-grammars/tree-sitter-zig@1.1.2 (ABI 14). Vendored so `npm i -g gitnexus` no longer hits peerOptional tree-sitter@^0.22.1 against the bundled tree-sitter@0.21.1 (npm overrides on a published package are ignored by dependents). Loaded from vendor/ by absolute path at runtime (vendored-grammars.ts) — NEVER copied to node_modules (#2111). No scripts/dependencies here (#836/#1728). Upstream linux-arm64 prebuild is a mispackaged x86-64 binary and is omitted; GitNexus-cross-built prebuilds come from .github/workflows/build-tree-sitter-prebuilds.yml (regenerated whenever this `version` changes). To re-pin: bump `version`, refresh src/ + bindings/node/ from the new npm tarball, update this note, and let the prebuild workflow rebuild the binaries.",
+  "peerDependencies": {
+    "tree-sitter": "^0.21.0"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  }
+}

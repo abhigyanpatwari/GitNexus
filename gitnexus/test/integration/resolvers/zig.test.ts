@@ -15,9 +15,9 @@ import {
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { describeGrammarPresence, optionalGrammarGate } from '../../helpers/optional-grammar.js';
 
-// `@tree-sitter-grammars/tree-sitter-zig` is an optionalDependency: on a
-// platform without a prebuild the grammar is absent and the pipeline skips
-// `.zig` files by contract, so these suites skip too (Swift/Dart pattern).
+// Vendored `tree-sitter-zig`: on a platform without a prebuild the grammar
+// is absent and the pipeline skips `.zig` files by contract, so these
+// suites skip too (Swift/Dart pattern).
 // Under GITNEXUS_REQUIRE_ZIG=1 the skip is not acceptable — the presence
 // assertion below fails the job instead of letting Zig vanish from a green run.
 const zig = optionalGrammarGate(SupportedLanguages.Zig);

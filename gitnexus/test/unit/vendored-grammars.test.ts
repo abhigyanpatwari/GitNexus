@@ -12,7 +12,7 @@ import {
 /**
  * Regression guard for #2111 / #1728.
  *
- * The five vendored tree-sitter grammars (c/dart/proto/swift/kotlin) MUST load
+ * The six vendored tree-sitter grammars (c/dart/proto/swift/kotlin/zig) MUST load
  * from `vendor/` by absolute path and MUST NEVER be copied into / required from
  * `node_modules`. An undeclared package under node_modules is "extraneous" to
  * every subsequent npm/npx arborist reify, which prunes/relocates it — on

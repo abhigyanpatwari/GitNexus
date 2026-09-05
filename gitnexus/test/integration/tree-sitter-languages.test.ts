@@ -10,7 +10,7 @@ import {
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';
-import { createRequire } from 'module';
+import { vendoredGrammarDir } from '../../src/core/tree-sitter/vendored-grammars.js';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
 
@@ -690,15 +690,9 @@ describe('Tree-sitter multi-language parsing', () => {
     // mismatch, bad export) must fail this test, not silently skip it. A
     // deliberate `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out in the environment
     // is the one non-failure reason an installed grammar reports unavailable.
-    const zigPackageInstalled = (() => {
-      if (isGrammarRuntimeSkipped(SupportedLanguages.Zig)) return false;
-      try {
-        createRequire(import.meta.url).resolve('@tree-sitter-grammars/tree-sitter-zig');
-        return true;
-      } catch {
-        return false;
-      }
-    })();
+    const zigPackageInstalled =
+      !isGrammarRuntimeSkipped(SupportedLanguages.Zig) &&
+      fs.existsSync(path.join(vendoredGrammarDir('tree-sitter-zig'), 'package.json'));
     it.skipIf(!zigPackageInstalled)('parses functions, structs, enums, and imports', async () => {
       expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(true);
       await loadLanguage(SupportedLanguages.Zig);
@@ -740,11 +734,10 @@ describe('Tree-sitter multi-language parsing', () => {
       // Exercise the loader's real absent-binding branch (the `source.load()`
       // catch in `loadGrammar`), not the `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`
       // opt-out, which is a separate code path with its own test
-      // (parser-loader-skip-optional.test.ts). The Zig row loads through the
-      // module-scoped `createRequire(import.meta.url)`, so stand in for
-      // `node:module` with a require that reports the package missing and
-      // delegates everything else. A fresh module copy is needed because the
-      // loader memoizes load results.
+      // (parser-loader-skip-optional.test.ts). Zig loads through
+      // `requireVendoredGrammar`, so stand in for that helper and report the
+      // grammar missing. A fresh module copy is needed because the loader
+      // memoizes load results.
       //
       // The fresh copy also re-reads `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` (parsed
       // lazily once per module). Under `=zig` / `=all` — a supported way to
@@ -752,25 +745,21 @@ describe('Tree-sitter multi-language parsing', () => {
       // path below would never run, so the variable is cleared for this test
       // and restored afterwards. Clearing (not skipping) keeps the branch
       // exercised in every environment.
-      const ZIG_PKG = '@tree-sitter-grammars/tree-sitter-zig';
       const SKIP_ENV = 'GITNEXUS_SKIP_OPTIONAL_GRAMMARS';
       const savedSkip = process.env[SKIP_ENV];
       delete process.env[SKIP_ENV];
-      vi.doMock('node:module', async (importOriginal) => {
-        const actual = await importOriginal<typeof import('node:module')>();
+      vi.doMock('../../src/core/tree-sitter/vendored-grammars.js', async (importOriginal) => {
+        const actual =
+          await importOriginal<typeof import('../../src/core/tree-sitter/vendored-grammars.js')>();
         return {
           ...actual,
-          createRequire: (url: string | URL) => {
-            const real = actual.createRequire(url);
-            const stub = ((id: string) => {
-              if (id === ZIG_PKG) {
-                const err = new Error(`Cannot find module '${id}'`) as NodeJS.ErrnoException;
-                err.code = 'MODULE_NOT_FOUND';
-                throw err;
-              }
-              return real(id);
-            }) as unknown as NodeJS.Require;
-            return Object.assign(stub, real);
+          requireVendoredGrammar: (packageName: string) => {
+            if (packageName === 'tree-sitter-zig') {
+              const err = new Error(`Cannot find module '${packageName}'`) as NodeJS.ErrnoException;
+              err.code = 'MODULE_NOT_FOUND';
+              throw err;
+            }
+            return actual.requireVendoredGrammar(packageName);
           },
         };
       });
@@ -788,7 +777,7 @@ describe('Tree-sitter multi-language parsing', () => {
       } finally {
         if (savedSkip === undefined) delete process.env[SKIP_ENV];
         else process.env[SKIP_ENV] = savedSkip;
-        vi.doUnmock('node:module');
+        vi.doUnmock('../../src/core/tree-sitter/vendored-grammars.js');
         vi.resetModules();
       }
     });
@@ -1005,8 +994,8 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.CSharp, 'simple.cs'],
         [SupportedLanguages.Rust, 'simple.rs'],
         [SupportedLanguages.PHP, 'simple.php'],
-        // Dart and Swift (vendored optional grammars) and Zig (npm optionalDependency)
-        // are excluded — none of the three is guaranteed to be installed
+        // Dart, Swift, and Zig (vendored optional grammars) are excluded —
+        // none of the three is guaranteed to be installed on every platform.
       ];
 
       for (const [lang, fixture, filePath] of langFixtures) {
