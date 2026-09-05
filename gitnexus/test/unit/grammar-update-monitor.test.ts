@@ -73,20 +73,28 @@ describe('COMPATIBLE_ABI gate', () => {
 });
 
 describe('GRAMMARS registry', () => {
-  it('covers all five grammars (swift/kotlin npm, dart/proto github, c npm)', () => {
-    expect(Object.keys(mod.GRAMMARS).sort()).toEqual(['c', 'dart', 'kotlin', 'proto', 'swift']);
+  it('covers all six grammars (swift/kotlin/zig npm, dart/proto github, c npm)', () => {
+    expect(Object.keys(mod.GRAMMARS).sort()).toEqual([
+      'c',
+      'dart',
+      'kotlin',
+      'proto',
+      'swift',
+      'zig',
+    ]);
     expect(mod.GRAMMARS.swift.npm).toBe('tree-sitter-swift');
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
+    expect(mod.GRAMMARS.zig.npm).toBe('@tree-sitter-grammars/tree-sitter-zig');
   });
 
-  it('marks c and kotlin report-only (holds); swift/dart/proto are auto-updatable', () => {
+  it('marks c and kotlin report-only (holds); swift/dart/proto/zig are auto-updatable', () => {
     expect(mod.GRAMMARS.c.npm).toBe('tree-sitter-c');
     expect(mod.GRAMMARS.c.hold).toBeTruthy(); // ABI-pinned: detected/reported, never auto-applied
     // kotlin is pinned to an unreleased fwcd main commit for `fun interface`
     // support (#169); npm latest (0.3.8) lacks it, so the strict-inequality
     // isNewer would auto-revert the pin without this hold.
     expect(mod.GRAMMARS.kotlin.hold).toBeTruthy();
-    for (const k of ['swift', 'dart', 'proto']) {
+    for (const k of ['swift', 'dart', 'proto', 'zig']) {
       expect(mod.GRAMMARS[k].hold).toBeUndefined();
     }
   });

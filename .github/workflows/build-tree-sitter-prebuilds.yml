@@ -20,6 +20,11 @@ name: Build tree-sitter prebuilds
 #   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
 #                         prebuilds were originally upstream-shipped, now
 #                         GitNexus-cross-built like the rest for uniformity)
+#   - tree-sitter-zig    (vendored source; built from gitnexus/vendor/ — moved
+#                         off npm optionalDependency so `npm i -g gitnexus`
+#                         no longer warns on peerOptional tree-sitter@^0.22.1.
+#                         Upstream linux-arm64 prebuild is a mispackaged
+#                         x86-64 binary; this workflow rebuilds all six.)
 #
 # Output: gitnexus/vendor/<grammar>/prebuilds/<platform-arch>/<grammar>.node for
 # all 6 targets ({linux,darwin,win32}-{x64,arm64}). tree-sitter grammars are
@@ -55,7 +60,7 @@ on:
   workflow_dispatch:
     inputs:
       grammars:
-        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift), or "all".'
+        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift,zig), or "all".'
         required: false
         type: string
         default: 'all'
@@ -86,7 +91,7 @@ on:
       - '!gitnexus/vendor/tree-sitter-*/prebuilds/**'
       # Self-test: re-run the guard if a future grammar pin is reintroduced in
       # the main package.json (optionalDependencies fallback). No-op otherwise —
-      # all five grammars are now fully vendored (kotlin included).
+      # all six grammars are now fully vendored (kotlin and zig included).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
@@ -157,6 +162,11 @@ jobs:
             // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
             // were originally upstream-shipped; rebuilding them here unifies it.
             swift:  { name: 'tree-sitter-swift',  kind: 'vendored' },
+            // zig is vendored WITH its source (parser.c/binding.gyp). Moved off
+            // the npm optionalDependency so published installs no longer warn
+            // on peerOptional tree-sitter@^0.22.1. Upstream linux-arm64
+            // prebuild is a mispackaged x86-64 binary; rebuild here.
+            zig:    { name: 'tree-sitter-zig',    kind: 'vendored' },
           };
           const PLATFORMS = [
             { platform_arch: 'linux-x64',    os: 'ubuntu-24.04' },

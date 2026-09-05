@@ -70,10 +70,8 @@ const GRAMMAR_PACKAGES: Partial<Record<SupportedLanguages, { pkg: string; subpat
     pkg: 'tree-sitter-typescript',
     subpaths: ['typescript/src/node-types.json', 'tsx/src/node-types.json'],
   },
-  // optionalDependency — loadGrammarModel returns null when absent, so the
-  // gate skips Zig literals ('unavailable', R9) instead of failing.
   [SupportedLanguages.Zig]: {
-    pkg: '@tree-sitter-grammars/tree-sitter-zig',
+    pkg: 'tree-sitter-zig',
     subpaths: ['src/node-types.json'],
   },
 };

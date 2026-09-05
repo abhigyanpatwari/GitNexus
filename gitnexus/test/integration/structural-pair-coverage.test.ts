@@ -160,8 +160,8 @@ const NON_BRIDGE_CORPUS = [
 ] as const satisfies readonly CorpusEntry[];
 
 /**
- * Same contract, for fixtures whose grammar is an npm optionalDependency and
- * may be absent on the runner. Gated per language rather than per case so a
+ * Same contract, for fixtures whose grammar is optional (vendored prebuild
+ * may be absent on the runner). Gated per language rather than per case so a
  * missing grammar SKIPS (the pipeline drops the files by contract, and an
  * empty emit would otherwise fail every sentinel for a reason that has
  * nothing to do with the schema).

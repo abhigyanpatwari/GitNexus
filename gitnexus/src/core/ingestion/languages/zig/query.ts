@@ -1,16 +1,14 @@
 import Parser from 'tree-sitter';
-import { createRequire } from 'node:module';
-
-const _require = createRequire(import.meta.url);
+import { requireVendoredGrammar } from '../../../tree-sitter/vendored-grammars.js';
 
 /**
  * Zig scope-resolution query (RFC #909 Ring 3).
  *
- * The grammar is an optionalDependency (`@tree-sitter-grammars/tree-sitter-zig`),
- * so the language module is required lazily and `getZigParser` /
- * `getZigScopeQuery` throw only when actually invoked without the grammar
- * installed. That is safe: the parse pipeline filters `.zig` files through
- * `parser-loader.isLanguageAvailable` before any scope extraction runs.
+ * The grammar is vendored (`vendor/tree-sitter-zig`) and may be absent on a
+ * platform without a prebuild, so the language module is required lazily and
+ * `getZigParser` / `getZigScopeQuery` throw only when actually invoked without
+ * the grammar installed. That is safe: the parse pipeline filters `.zig` files
+ * through `parser-loader.isLanguageAvailable` before any scope extraction runs.
  *
  * Zig specifics encoded here:
  *   - Containers (struct/enum/union/opaque) are anonymous nodes bound by the
@@ -413,7 +411,7 @@ let _parser: Parser | null = null;
 let _query: Parser.Query | null = null;
 
 function getZigLanguage(): Parameters<Parser['setLanguage']>[0] {
-  return _require('@tree-sitter-grammars/tree-sitter-zig');
+  return requireVendoredGrammar('tree-sitter-zig') as Parameters<Parser['setLanguage']>[0];
 }
 
 export function getZigParser(): Parser {
