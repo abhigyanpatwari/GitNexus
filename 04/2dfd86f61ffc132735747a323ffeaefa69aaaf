@@ -1,0 +1,21 @@
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_b3fb8faa15e34b::t_24d0b010880460 47-73,88-90,92-93,108-109,112-115,164-167,169-173,185
+gitnexus/test/unit/scope-resolution/esm-export-marker.test.ts
+  s_b3fb8faa15e34b::t_c2b1fd9eec52ad 107-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "042dfd86f61ffc132735747a323ffeaefa69aaaf",
+  "prompts": {},
+  "sessions": {
+    "s_b3fb8faa15e34b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0652d86-8724-480b-abcf-b7d79c011b99",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
