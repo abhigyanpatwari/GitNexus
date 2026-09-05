@@ -24,6 +24,30 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx prettier --check .
 
+  parse-cache-version:
+    # Guards a collision no single-branch test can see: two PRs claiming the
+    # same SCHEMA_BUMP both pass their own `toBe(N)` pin, then share one
+    # PARSE_CACHE_VERSION after merge and one side's parse-time capture change
+    # silently replays pre-change ParsedFiles forever. Ten ledger entries, four
+    # exact clashes, every one caught by hand at merge time until now.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # Full history: the check reads the BASE branch's value, which a
+          # shallow clone does not contain. The script exits 2 (distinct from a
+          # real conflict) if the ref is unreachable, so a misconfiguration here
+          # cannot masquerade as a pass.
+          fetch-depth: 0
+      - name: Fetch base branch
+        run: git fetch --no-tags --depth=1 origin "${GITHUB_BASE_REF:-main}:refs/remotes/origin/${GITHUB_BASE_REF:-main}" || git fetch --no-tags origin "${GITHUB_BASE_REF:-main}"
+      - name: Compare SCHEMA_BUMP against the base branch
+        env:
+          GITNEXUS_BASE_REF: origin/${{ github.base_ref || 'main' }}
+        run: node scripts/check-parse-cache-version.mjs
+
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
