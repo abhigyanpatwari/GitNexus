@@ -196,6 +196,10 @@ describe('Zig static-gated edges', () => {
     expect(isGated('live_cross_file_not_bool')).toBe(false);
   });
 
+  it('resolves a relative cross-file import with an omitted .zig extension', () => {
+    expect(isGated('gated_extensionless_cross_file_foo')).toBe(true);
+  });
+
   it('tags a cross-file bool accessed through a function-local import alias', () => {
     expect(isGated('gated_local_cross_file_foo')).toBe(true);
   });

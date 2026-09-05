@@ -72,9 +72,14 @@ function collectImportAliases(
     const raw = builtin?.descendantsOfType('string').at(0)?.text;
     if (binding === undefined || raw === undefined) continue;
     const specifier = raw.replace(/^['"]|['"]$/g, '');
-    if (!specifier.endsWith('.zig')) continue;
+    if (!specifier.includes('/') && !specifier.endsWith('.zig')) continue;
     const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), specifier));
-    if (knownPaths.has(resolved)) aliases.set(binding, resolved);
+    const target = knownPaths.has(resolved)
+      ? resolved
+      : !resolved.endsWith('.zig') && knownPaths.has(`${resolved}.zig`)
+        ? `${resolved}.zig`
+        : undefined;
+    if (target !== undefined) aliases.set(binding, target);
   }
   return aliases;
 }

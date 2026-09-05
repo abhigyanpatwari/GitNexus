@@ -9,6 +9,7 @@
 
 // Cross-file alias — should resolve `cfg.FOO`, `cfg.BAR` against cfg.zig.
 const cfg = @import("./cfg.zig");
+const cfg_no_ext = @import("./cfg");
 const wrapped_cfg = wrap(@import("./cfg.zig"));
 
 pub const UPGRADERS_ENABLED: bool = false;
@@ -164,6 +165,9 @@ pub fn run() void {
     if (cfg.NOT_A_BOOL != 0) {
         live_cross_file_not_bool();
     }
+    if (cfg_no_ext.FOO) {
+        gated_extensionless_cross_file_foo();
+    }
     // Function-local imports use the same workspace constants.
     if (local_cfg.FOO) {
         gated_local_cross_file_foo();
@@ -225,6 +229,10 @@ fn wrap(value: anytype) @TypeOf(value) {
 }
 
 fn gated_local_cross_file_foo() void {
+    _ = 1;
+}
+
+fn gated_extensionless_cross_file_foo() void {
     _ = 1;
 }
 
