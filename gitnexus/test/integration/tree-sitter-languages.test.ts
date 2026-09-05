@@ -10,7 +10,7 @@ import {
 import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';
-import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
+import { vendoredGrammarDir } from '../../src/core/tree-sitter/vendored-grammars.js';
 
 const fixturesDir = path.resolve(__dirname, '..', 'fixtures', 'sample-code');
 
@@ -690,15 +690,9 @@ describe('Tree-sitter multi-language parsing', () => {
     // mismatch, bad export) must fail this test, not silently skip it. A
     // deliberate `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out in the environment
     // is the one non-failure reason an installed grammar reports unavailable.
-    const zigPackageInstalled = (() => {
-      if (isGrammarRuntimeSkipped(SupportedLanguages.Zig)) return false;
-      try {
-        requireVendoredGrammar('tree-sitter-zig');
-        return true;
-      } catch {
-        return false;
-      }
-    })();
+    const zigPackageInstalled =
+      !isGrammarRuntimeSkipped(SupportedLanguages.Zig) &&
+      fs.existsSync(path.join(vendoredGrammarDir('tree-sitter-zig'), 'package.json'));
     it.skipIf(!zigPackageInstalled)('parses functions, structs, enums, and imports', async () => {
       expect(isLanguageAvailable(SupportedLanguages.Zig)).toBe(true);
       await loadLanguage(SupportedLanguages.Zig);

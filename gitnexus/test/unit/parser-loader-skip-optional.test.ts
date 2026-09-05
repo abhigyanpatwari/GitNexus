@@ -6,7 +6,7 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
  *
  * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` used to be an install-time-only env (the
  * postinstall build scripts read it). `parser-loader` now also honors it at
- * analyze time: when set, genuinely-optional grammars (swift/dart/kotlin)
+ * analyze time: when set, genuinely-optional grammars (swift/dart/kotlin/zig)
  * report unavailable so the ingestion pipeline skips their files, mirroring a
  * genuinely-absent binding. Grammars that are required `dependencies` routed
  * through the optional machinery for ABI safety (C — `severity: 'error'`) are

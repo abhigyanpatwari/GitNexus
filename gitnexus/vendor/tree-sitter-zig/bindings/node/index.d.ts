@@ -15,7 +15,7 @@ type NodeInfo =
     })
   | (BaseNode & {
       fields: { [name: string]: ChildNode };
-      children: ChildNode[];
+      children?: ChildNode;
     });
 
 type Language = {
