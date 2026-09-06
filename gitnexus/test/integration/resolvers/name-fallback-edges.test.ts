@@ -149,7 +149,7 @@ end
     // The specific lie this work removed. Asserted over the whole graph, not
     // just the one edge, so a future emitter cannot reintroduce it elsewhere.
     const mislabeled = getRelationships(result, 'CALLS').filter(
-      (c) => c.rel.confidence === 0.5 && c.rel.reason === 'import-resolved',
+      (c) => c.rel.reason === 'import-resolved',
     );
     expect(mislabeled).toEqual([]);
   });

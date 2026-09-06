@@ -31,6 +31,11 @@ import { emitFreeCallFallback } from '../../../src/core/ingestion/scope-resoluti
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
 import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 import { GLOBAL_NAME_FALLBACK_REASON } from '../../../src/core/graph/edge-reasons.js';
+import {
+  formatNameFallbackSummary,
+  summarizeNameFallback,
+} from '../../../src/core/ingestion/scope-resolution/name-fallback-summary.js';
+import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 
 const CALLER_FILE = 'caller.ts';
 const TARGET_FILE = 'target.ts';
@@ -162,7 +167,7 @@ function run(sites: readonly ReferenceSite[]) {
   const graph = createKnowledgeGraph();
   fnNode(graph, 'fn:main', 'main', CALLER_FILE);
   fnNode(graph, 'fn:helper', 'helper', TARGET_FILE);
-  const outcomes: { kind: string }[] = [];
+  const outcomes: ResolutionOutcome[] = [];
   emitFreeCallFallback(
     graph,
     indexes,
@@ -213,5 +218,21 @@ describe('free-call dedup: the label is decided from every collapsed site, never
     expect(calls).toHaveLength(1);
     expect(calls[0]!.confidence).toBe(0.5);
     expect(calls[0]!.reason).toBe(GLOBAL_NAME_FALLBACK_REASON);
+  });
+
+  it('reports guessed sites without claiming they are final guessed edges', () => {
+    for (const sites of [
+      [guessedSite(3), preciseSite(4)],
+      [preciseSite(3), guessedSite(4)],
+    ]) {
+      const { calls, outcomes } = run(sites);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.reason).toBe('import-resolved');
+      const summary = summarizeNameFallback(outcomes);
+      expect(summary?.totalGuessed).toBe(1);
+      const line = formatNameFallbackSummary(summary);
+      expect(line).toContain('name-fallback resolution: 1 call sites');
+      expect(line).not.toContain('CALLS edges');
+    }
   });
 });

@@ -127,9 +127,10 @@ export function render() {
   // — so the label, not just the name, is the assertion that actually catches
   // a regression here.
   it('every arrow-const winner through the wildcard chain is the Function def, not the Variable shadow', () => {
-    const byTarget = new Map(callsFromMain().map((e) => [e.target, e.targetLabel]));
-    expect(byTarget.get('Button')).toBe('Function');
-    expect(byTarget.get('LinkButton')).toBe('Function');
-    expect(byTarget.get('clearButtonStyles')).toBe('Function');
+    const calls = callsFromMain();
+    for (const name of ['Button', 'LinkButton', 'clearButtonStyles']) {
+      const labels = calls.filter((edge) => edge.target === name).map((edge) => edge.targetLabel);
+      expect(labels, name).toEqual(['Function']);
+    }
   });
 });
