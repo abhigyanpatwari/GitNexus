@@ -1,0 +1,21 @@
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_2fc6857ad45390::t_4f1a00c84b3939 60-62,67-75,82-86,99-105
+gitnexus/test/unit/scope-resolution/esm-export-marker.test.ts
+  s_2fc6857ad45390::t_93449e892bf446 177-180,205-213
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "677b56053d49fce4a05cb9b643dce95da1281987",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
