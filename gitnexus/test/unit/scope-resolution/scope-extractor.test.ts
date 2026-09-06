@@ -329,7 +329,7 @@ describe('Pass 3: raw imports', () => {
         interpretImport: () => named,
       }),
     );
-    expect(result.parsedImports).toEqual([named]);
+    expect(result.parsedImports).toEqual([{ ...named, declaredAtScope: result.moduleScope }]);
   });
 
   it('drops imports when `interpretImport` returns null', () => {
@@ -443,7 +443,7 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
       'a.ts',
       mockProvider({ interpretImport: () => named }),
     );
-    expect(result.parsedImports).toEqual([named]);
+    expect(result.parsedImports).toEqual([{ ...named, declaredAtScope: result.moduleScope }]);
   });
 
   // ─── The provider capability that opts out of the position rule ──────────
@@ -474,8 +474,10 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
       'a.c',
       mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: false }),
     );
-    // Byte-identical to the un-deferred shape, not merely `!== true`.
-    expect(result.parsedImports).toEqual([named]);
+    // Scope provenance survives, without adding the execution-deferral flag.
+    expect(result.parsedImports).toEqual([
+      { ...named, declaredAtScope: 'scope:a.c#2:0-99:0:Function' },
+    ]);
   });
 
   it('the identical captures ARE marked for a provider that does not declare it', () => {
@@ -488,7 +490,9 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
     ];
     expect(
       extract(captures, 'a.ts', mockProvider({ interpretImport: () => named })).parsedImports,
-    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
+    ).toEqual([
+      { ...named, declaredAtScope: 'scope:a.ts#2:0-99:0:Function', runsOnlyWhenCalled: true },
+    ]);
     // Absent must mean `true`, not merely "not false" — the default is the
     // safe direction (position defers), and only an explicit `false` withholds
     // deferral. Spelling `true` therefore has to behave exactly like absent.
@@ -498,7 +502,9 @@ describe('Pass 3: runsOnlyWhenCalled', () => {
         'a.ts',
         mockProvider({ interpretImport: () => named, importsExecuteWhereWritten: true }),
       ).parsedImports,
-    ).toEqual([{ ...named, runsOnlyWhenCalled: true }]);
+    ).toEqual([
+      { ...named, declaredAtScope: 'scope:a.ts#2:0-99:0:Function', runsOnlyWhenCalled: true },
+    ]);
   });
 });
 
@@ -925,7 +931,9 @@ describe('end-to-end fixture (all 5 passes together)', () => {
     expect(fn.bindings.get('save')).toBeDefined();
 
     // Import collected.
-    expect(result.parsedImports).toEqual([parsedImport]);
+    expect(result.parsedImports).toEqual([
+      { ...parsedImport, declaredAtScope: result.moduleScope },
+    ]);
 
     // Type binding attached to function scope.
     expect(fn.typeBindings.get('name')?.rawName).toBe('string');

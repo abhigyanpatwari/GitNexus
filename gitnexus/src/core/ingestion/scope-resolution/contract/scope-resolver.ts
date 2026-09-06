@@ -847,6 +847,10 @@ export interface ScopeResolver {
    */
   readonly allowGlobalFreeCallFallback?: boolean;
 
+  /** Opt in to binding imports at their extracted lexical scope, rather than
+   * publishing every file's imports at module scope. */
+  readonly importsBindAtLexicalScope?: boolean;
+
   /**
    * Two `wildcard` re-exports that both DECLARE a name make it AMBIGUOUS in
    * this language — ECMAScript `export *` semantics, where the module simply
@@ -918,6 +922,8 @@ export interface ScopeResolver {
     readonly site: {
       readonly name: string;
       readonly rawQualifiedName?: string;
+      /** Lexical call-site scope; absent only for legacy/synthetic hook callers. */
+      readonly inScope?: ScopeId;
     };
   }) => boolean;
 
