@@ -4,6 +4,16 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`branch` on `POST /api/analyze`** — `serve` can now index a branch other than the remote's
+  default. The field was previously accepted and silently discarded: the job returned 202 and
+  reported `complete` while indexing the default branch. It is validated with the same rules as
+  the CLI's `--branch` (a malformed ref is rejected with 400 before it reaches `git`), and an
+  explicit branch pins the run to its own index slot via the existing `branches/<slug>/`
+  placement, so two branches of one repository no longer overwrite each other. Omitting the
+  field keeps the previous behavior.
+
 ## [1.6.11] - 2026-09-04
 
 ### Added

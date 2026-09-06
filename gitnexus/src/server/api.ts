@@ -64,6 +64,10 @@ import {
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
+// Branch-name validation is shared with the CLI's `--branch` so an HTTP caller
+// and a CLI caller accept exactly the same refs (core/run-analyze.ts already
+// reaches into cli/analyze-config.js for sanitizeDetectedBranch).
+import { GitNexusRcError, validateBranchName } from '../cli/analyze-config.js';
 import {
   assertServeAuthForPublicOrigin,
   createPublicOriginMatcher,
@@ -1519,6 +1523,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           springActuatorPath,
           asyncApiSpecPath,
           token: repoToken,
+          branch: repoBranch,
         } = req.body;
 
         // Input type validation
@@ -1548,6 +1553,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         if (!repoUrl && !repoLocalPath) {
           res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
           return;
+        }
+
+        // Branch: optional index-branch selector, validated with the same rules
+        // as the CLI's `--branch` so both entry points accept the same refs.
+        // Rejecting here (rather than letting the clone fail) keeps a malformed
+        // ref from ever reaching `git`.
+        if (repoBranch !== undefined && typeof repoBranch !== 'string') {
+          res.status(400).json({ error: '"branch" must be a string' });
+          return;
+        }
+        let analyzeBranch: string | undefined;
+        if (repoBranch !== undefined) {
+          try {
+            analyzeBranch = validateBranchName(repoBranch, '"branch"');
+          } catch (err) {
+            if (err instanceof GitNexusRcError) {
+              res.status(400).json({ error: err.message });
+              return;
+            }
+            throw err;
+          }
         }
 
         // Token: optional, restricted charset to prevent header smuggling
@@ -1619,7 +1645,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     progress: { phase: progress.phase, percent: 5, message: progress.message },
                   });
                 },
-                repoToken ? { token: repoToken } : undefined,
+                repoToken || analyzeBranch
+                  ? {
+                      ...(repoToken ? { token: repoToken } : {}),
+                      ...(analyzeBranch ? { branch: analyzeBranch } : {}),
+                    }
+                  : undefined,
               );
             }
 
@@ -1633,6 +1664,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               dropEmbeddings,
               springActuatorPath,
               asyncApiSpecPath,
+              branch: analyzeBranch,
             });
           } catch (err: any) {
             if (targetPath) releaseRepoLock(getStoragePath(targetPath));

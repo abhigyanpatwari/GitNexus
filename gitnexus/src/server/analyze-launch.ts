@@ -49,6 +49,14 @@ export interface LaunchOptions {
   springActuatorPath?: string;
   asyncApiSpecPath?: string;
   registryName?: string;
+  /**
+   * Index-branch selector, forwarded to `AnalyzeOptions.branch` so a run pins
+   * the per-branch slot (`branches/<slug>/`) instead of the flat one. The
+   * caller is responsible for having the branch checked out — `resolveWriteTarget`
+   * in core refuses a label that disagrees with the working tree, which is what
+   * keeps one branch's content out of another's slot (#2106).
+   */
+  branch?: string;
 }
 
 const MAX_WORKER_RETRIES = 2;
@@ -339,6 +347,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           ...(opts.springActuatorPath ? { springActuatorPath: opts.springActuatorPath } : {}),
           ...(opts.asyncApiSpecPath ? { asyncApiSpecPath: opts.asyncApiSpecPath } : {}),
           ...(opts.registryName ? { registryName: opts.registryName } : {}),
+          ...(opts.branch ? { branch: opts.branch } : {}),
         },
       });
     };
