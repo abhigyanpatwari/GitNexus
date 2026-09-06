@@ -53,6 +53,18 @@ import {
 const PHP_COMPOSER: ComposerConfig = { psr4: new Map([['App', 'app']]) };
 /** The value `loadGoModulePath` produces for a repo with a `go.mod`. */
 const GO_MODULE = { modulePath: 'example.com/mod' };
+/** The root dependency scope `loadRubyResolutionConfig` would have produced. */
+const RUBY_GEMS = {
+  scopesByDirectory: new Map([
+    [
+      '',
+      {
+        externalRequirePrefixes: new Set(['rails']),
+        localLoadRootsByPrefix: new Map(),
+      },
+    ],
+  ]),
+};
 /** What `scanCSharpProject` would report for the C# workspace below — the
  *  in-repo namespace evidence the #1881 suffix-fallback gate reads. */
 const CSHARP_NAMESPACES = {
@@ -272,7 +284,7 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
     {
       files: ['lib/app/models/user.rb', 'lib/generators.rb', 'lib/main.rb'],
       fromFile: 'lib/main.rb',
-      resolutionConfig: undefined,
+      resolutionConfig: RUBY_GEMS,
       external: 'rails/generators',
       decoy: 'lib/generators.rb',
       reachesDecoy: 'generators',
@@ -389,7 +401,6 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
  * TypeScript one, then deleting its line here.
  */
 const KNOWN_GAPS: ReadonlyMap<SupportedLanguages, string> = new Map<SupportedLanguages, string>([
-  [SupportedLanguages.Ruby, '`rails/generators` -> `lib/generators.rb`'],
   [SupportedLanguages.Dart, '`package:http/http.dart` -> `lib/http.dart`'],
   [SupportedLanguages.Swift, '`Foundation` -> `Sources/Foundation/Thing.swift`'],
   [SupportedLanguages.C, '`stdio.h` -> `src/stdio.h`'],

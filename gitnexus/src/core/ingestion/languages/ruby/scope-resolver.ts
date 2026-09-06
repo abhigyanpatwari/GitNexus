@@ -10,6 +10,7 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
 import { decodeMarker } from '../../utils/heritage-marker.js';
+import { loadRubyResolutionConfig } from './resolution-config.js';
 
 /**
  * #1991: resolve a BARE mixin reference (`include Loggable`) to a nested module by
@@ -267,6 +268,8 @@ export const rubyScopeResolver: ScopeResolver = {
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveRubyImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
+
+  loadResolutionConfig: (repoPath) => loadRubyResolutionConfig(repoPath),
 
   expandsWildcardTo: (targetModuleScope, parsedFiles) =>
     expandRubyWildcardNames(targetModuleScope, parsedFiles),
