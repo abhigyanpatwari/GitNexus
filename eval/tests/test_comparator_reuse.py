@@ -57,6 +57,8 @@ def _row(**overrides) -> dict:
         "transcript_artifacts": [_artifact()],
         "recorded_at": datetime.now(UTC).isoformat(),
         "runtime_digest": _digest("cli"),
+        "task_asset_manifest_digest": _digest("assets"),
+        "sandbox_dependency_manifest_digest": _digest("deps"),
     }
     base.update(overrides)
     return base
@@ -78,6 +80,8 @@ def _expected(**overrides) -> ComparatorReuseExpectation:
                 oracle_digest=_digest("oracle"),
                 oracle_command_digest=_digest("oracle-cmd"),
                 oracle_manifest_digest=_digest("oracle-man"),
+                task_asset_manifest_digest=_digest("assets"),
+                sandbox_dependency_manifest_digest=_digest("deps"),
             )
         },
         skill_digests={"review": _digest("skill"), "ce_review": None},
@@ -204,3 +208,22 @@ def test_a_reused_row_ages_from_its_first_measurement_not_the_copy(tmp_path: Pat
 def test_a_future_dated_row_is_corrupt_not_fresh():
     ahead = (datetime.now(UTC) + timedelta(days=2)).isoformat()
     assert row_is_reusable_comparator(_row(recorded_at=ahead), _expected()) is False
+
+
+def test_a_changed_sandbox_dependency_is_not_the_same_baseline():
+    """The environment is part of the measurement.
+
+    This branch itself changes `sandbox_dependencies` in the review corpus, so a
+    prior row measured against the old set is a measurement of a different
+    machine. Reusing it would compare a fresh candidate to a baseline built
+    somewhere else and hand the promotion gate a false comparison.
+    """
+
+    assert row_is_reusable_comparator(
+        _row(sandbox_dependency_manifest_digest=_digest("other-deps")), _expected()
+    ) is False
+    assert row_is_reusable_comparator(
+        _row(task_asset_manifest_digest=_digest("other-assets")), _expected()
+    ) is False
+    # A row that predates the field is not evidence of agreement either.
+    assert row_is_reusable_comparator(_row(sandbox_dependency_manifest_digest=None), _expected()) is False

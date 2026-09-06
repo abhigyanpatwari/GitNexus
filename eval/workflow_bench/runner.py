@@ -1305,6 +1305,9 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
     )
     out["resolved"] = sum(1 for r in records if r["resolved"])
+    # Reused rows are last generation's measurement. The health canary below has
+    # to ask whether THIS environment worked, so it needs the freshly-run count.
+    out["resolved_fresh"] = sum(1 for r in records if r["resolved"] and not r.get("reused"))
     out["runs"] = len(records)
     out["valid_runs"] = len(valid)
     out["excluded_runs"] = len(records) - len(valid)
@@ -1384,9 +1387,19 @@ def broken_incumbent_arms(
     some-runs-resolved-zero case since here nothing completed at all.
     aggregate() never marks an excluded/unverifiable row resolved=True, so
     resolved == 0 alone already covers both cases.
+
+    A reused row proves last generation's environment worked, not this one's, so
+    the count consulted here is ``resolved_fresh``. Without that, an arm whose
+    cells were all reused always looks healthy and the canary can never fire —
+    which is exactly when a broken environment would go unnoticed. The sweep
+    keeps one paid cell per incumbent arm so this count is never vacuous.
     """
     present = incumbent_arms & {arm for arms in results.values() for arm in arms}
-    return sorted(arm for arm in present if all(arms[arm]["resolved"] == 0 for arms in results.values() if arm in arms))
+    return sorted(
+        arm
+        for arm in present
+        if all(arms[arm].get("resolved_fresh", arms[arm]["resolved"]) == 0 for arms in results.values() if arm in arms)
+    )
 
 
 def _cost_cell(value: Any) -> str:
@@ -1760,6 +1773,7 @@ def _comparator_reuse_expectation(
     tasks: Sequence[Any],
     task_bindings: Sequence[Mapping[str, Any]],
     oracle_snapshots: Sequence[Any],
+    asset_snapshots: Mapping[str, Any],
     sandbox_backend: str,
     ce_plugin_snapshot: CePluginSnapshot | None,
 ) -> ComparatorReuseExpectation:
@@ -1780,6 +1794,12 @@ def _comparator_reuse_expectation(
             oracle_digest=oracle.digest,
             oracle_command_digest=oracle.command_digest,
             oracle_manifest_digest=oracle.manifest_digest,
+            task_asset_manifest_digest=getattr(
+                asset_snapshots.get(str(task["id"])), "manifest_digest", None
+            ),
+            sandbox_dependency_manifest_digest=getattr(
+                asset_snapshots.get(str(task["id"])), "dependency_manifest_digest", None
+            ),
         )
     return ComparatorReuseExpectation(
         model=args.model,
@@ -2012,6 +2032,25 @@ def _run_sweep(
         except (OSError, SandboxError, ValueError) as exc:
             parser.error(str(exc))
             raise AssertionError("ArgumentParser.error() returned unexpectedly")
+        # Asset snapshots are built here, up front, for two reasons. Comparator
+        # reuse has to compare this sweep's task-asset and dependency digests
+        # against the prior row's, and those digests do not exist until the
+        # snapshot does. Building them all before any cell or prefetch thread
+        # starts also keeps TaskAssetCache single-threaded, which is what its own
+        # "plain dict, read-then-write race" comment asks for.
+        asset_snapshots: dict[str, TaskAssetSnapshot] = {}
+        asset_snapshot_errors: dict[str, BaseException] = {}
+        for _task, _binding in zip(tasks, task_bindings, strict=True):
+            try:
+                asset_snapshots[str(_task["id"])] = task_asset_cache.prepare(
+                    _task,
+                    repo=Path(_binding["repo_identity"]),
+                    resolved_sha=_binding["resolved_sha"],
+                    expected_dependency_binding=_binding,
+                )
+            except (OSError, SandboxError, ValueError) as exc:
+                asset_snapshot_errors[str(_task["id"])] = exc
+
         reuse_source = args.reuse_results.expanduser().resolve() if args.reuse_results is not None else None
         reusable_rows: dict[tuple[str, str, int], dict[str, Any]] = {}
         if reuse_source is not None:
@@ -2029,10 +2068,25 @@ def _run_sweep(
                     tasks=tasks,
                     task_bindings=task_bindings,
                     oracle_snapshots=oracle_snapshots,
+                    asset_snapshots=asset_snapshots,
                     sandbox_backend=sandbox_backend,
                     ce_plugin_snapshot=ce_plugin_snapshot,
                 ),
             )
+            # Keep one paid cell per incumbent arm. A generation that reuses an
+            # arm end to end measures nothing about today's environment, and
+            # broken_incumbent_arms would then be reading last week's health.
+            # One cell per arm is the cheapest thing that keeps the canary real.
+            incumbent_arms = [arm for arm in args.arms if arm not in candidate_arms]
+            for arm in incumbent_arms:
+                arm_keys = sorted(key for key in reusable_rows if key[1] == arm)
+                if arm_keys and len(arm_keys) == len(tasks) * args.runs:
+                    dropped = arm_keys[0]
+                    del reusable_rows[dropped]
+                    print(
+                        f"reuse-results: keeping one paid {arm} cell "
+                        f"({dropped[0]} run {dropped[2]}) so incumbent health is measured this sweep"
+                    )
             print(
                 f"reuse-results {reuse_source}: {len(reusable_rows)} comparator "
                 f"cell(s) match this sweep; candidate arms always run"
@@ -2080,8 +2134,8 @@ def _run_sweep(
                         )
                         paid_cells.append((run_idx, arm))
 
-                asset_snapshot: TaskAssetSnapshot | None = None
-                asset_snapshot_error: BaseException | None = None
+                asset_snapshot = asset_snapshots.get(str(task["id"]))
+                asset_snapshot_error: BaseException | None = asset_snapshot_errors.get(str(task["id"]))
                 graph_key = (str(repo), task_sha)
                 if graph_prefetch is not None and graph_prefetch.key == graph_key:
                     _join_graph_prefetch()
@@ -2105,19 +2159,6 @@ def _run_sweep(
                 graph_snapshot = graph_snapshots.get(graph_key)
                 graph_snapshot_error = graph_snapshot_errors.get(graph_key)
                 clone_template, template_head = clone_templates.get(graph_key, (None, None))
-                if paid_cells:
-                    try:
-                        # Prepared here, once, rather than lazily inside the first cell:
-                        # TaskAssetCache is a plain dict, so a lazy build would be a
-                        # read-then-write race the moment cells stop running serially.
-                        asset_snapshot = task_asset_cache.prepare(
-                            task,
-                            repo=repo,
-                            resolved_sha=task_sha,
-                            expected_dependency_binding=task_binding,
-                        )
-                    except (OSError, SandboxError, ValueError) as exc:
-                        asset_snapshot_error = exc
                 cell_context = TaskCellContext(
                     task=task,
                     oracle_snapshot=oracle_snapshot,
@@ -2202,7 +2243,13 @@ def _run_sweep(
                                 graph_snapshot_errors=graph_snapshot_errors,
                                 cancel_event=cancel_event,
                             )
-                    outage_streak, outage_tripped = sweep_task_cells(
+                    # A reused success is evidence the pipeline can produce a good
+                # row, so it resets the consecutive-failure count the same way a
+                # paid success does. Leaving reused rows out let a streak carry
+                # across them and trip on stale history.
+                for _run_idx, _arm, _record in reused_records:
+                    outage_streak = systemic_outage_streak(_record.get("error_kind"), outage_streak)
+                outage_streak, outage_tripped = sweep_task_cells(
                         paid_cells,
                         workers=args.workers,
                         run=partial(run_cell, cell_context),

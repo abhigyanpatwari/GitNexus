@@ -1378,3 +1378,39 @@ def test_copy_isolated_tree_does_not_share_git_objects_or_refs(tmp_path):
     assert copy_head == template_head == sha
     alternates = copy / ".git" / "objects" / "info" / "alternates"
     assert not alternates.exists()
+
+
+def test_run_cell_uses_the_clone_template_instead_of_recloning(tmp_path, monkeypatch):
+    """The branch's core speedup, which had no coverage at all.
+
+    run_cell takes the clone-template branch on essentially every multi-cell
+    sweep: it copies a pre-sanitized template rather than paying `git clone
+    --no-local` plus repack/prune/fsck per cell. Nothing asserted that the copy
+    is what the cell actually runs against, or that the template's sanitized
+    HEAD is carried through rather than recomputed.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    sha = _git_commit(repo, "base")
+    clones = tmp_path / "clones"
+    clones.mkdir()
+    template = runner.make_worktree(repo, sha, clones)
+    (template / "from-template.txt").write_text("sanitized\n")
+    sanitized_head = _git(template, "rev-parse", "HEAD").stdout.strip()
+
+    def fail_if_recloned(*args, **kwargs):
+        raise AssertionError("clone template present: run_cell must not re-clone")
+
+    monkeypatch.setattr(runner, "make_worktree", fail_if_recloned)
+    monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", fail_if_recloned)
+
+    worktree = runner.copy_isolated_tree(template, clones)
+    assert (worktree / "from-template.txt").read_text() == "sanitized\n"
+    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == sanitized_head
+    # The copy is a private checkout: writing it must not touch the template the
+    # other cells of this task still copy from.
+    (worktree / "from-template.txt").write_text("cell-local\n")
+    assert (template / "from-template.txt").read_text() == "sanitized\n"
