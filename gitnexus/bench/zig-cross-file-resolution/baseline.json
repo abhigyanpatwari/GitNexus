@@ -12,5 +12,5 @@
     "gated_calls": 1920,
     "ms_budget": 4000
   },
-  "scaling_ratio_budget": 5.5
+  "linear_scaling_slack": 1.375
 }

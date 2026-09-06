@@ -8,7 +8,7 @@ import {
   isPositionStaticGated,
   type ZigImportAliasMap,
 } from '../../call-extractors/zig-static-gating.js';
-import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { parseSourceSafe, ParseTimeoutError } from '../../../tree-sitter/safe-parse.js';
 import { getZigParser } from './query.js';
 
 type ZigTree = ReturnType<ReturnType<typeof getZigParser>['parse']>;
@@ -28,9 +28,17 @@ export function populateZigWorkspaceStaticGating(
   for (const parsed of parsedFiles) {
     const source = ctx.fileContents.get(parsed.filePath);
     if (source === undefined) continue;
-    const tree =
-      (ctx.treeCache?.get(parsed.filePath) as ZigTree | undefined) ??
-      parseSourceSafe(parser, source, undefined, { bufferSize: getTreeSitterBufferSize(source) });
+    let tree = ctx.treeCache?.get(parsed.filePath) as ZigTree | undefined;
+    if (tree === undefined) {
+      try {
+        tree = parseSourceSafe(parser, source, undefined, {
+          bufferSize: getTreeSitterBufferSize(source),
+        });
+      } catch (err) {
+        if (err instanceof ParseTimeoutError) continue;
+        throw err;
+      }
+    }
     trees.set(parsed.filePath, tree);
     bools.set(parsed.filePath, buildZigBoolConstMap(tree.rootNode));
   }

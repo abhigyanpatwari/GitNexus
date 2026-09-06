@@ -86,9 +86,11 @@ function measure(modules) {
 }
 
 const report = { small: measure(SMALL_MODULES), large: measure(LARGE_MODULES) };
+report.workload_ratio = LARGE_MODULES / SMALL_MODULES;
 report.scaling_ratio = Number(
   (report.large.min_ms / Math.max(report.small.min_ms, 0.01)).toFixed(3),
 );
+report.linear_factor = Number((report.scaling_ratio / report.workload_ratio).toFixed(3));
 
 if (!process.argv.includes('--check')) {
   console.log(JSON.stringify(report, null, 2));
@@ -97,19 +99,33 @@ if (!process.argv.includes('--check')) {
 
 const baseline = JSON.parse(readFileSync(join(HERE, 'baseline.json'), 'utf8'));
 const failures = [];
+const requirePositiveNumber = (path, value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    failures.push(`${path}: expected a finite positive number, got ${JSON.stringify(value)}`);
+    return false;
+  }
+  return true;
+};
 for (const arm of ['small', 'large']) {
   for (const key of ['modules', 'calls_per_module', 'gated_calls']) {
     if (report[arm][key] !== baseline[arm][key]) {
       failures.push(`${arm}.${key}: expected ${baseline[arm][key]}, got ${report[arm][key]}`);
     }
   }
-  if (report[arm].min_ms > baseline[arm].ms_budget) {
+  if (
+    requirePositiveNumber(`${arm}.ms_budget`, baseline[arm].ms_budget) &&
+    report[arm].min_ms > baseline[arm].ms_budget
+  ) {
     failures.push(`${arm}.min_ms ${report[arm].min_ms} exceeds budget ${baseline[arm].ms_budget}`);
   }
 }
-if (report.scaling_ratio > baseline.scaling_ratio_budget) {
+if (
+  requirePositiveNumber('linear_scaling_slack', baseline.linear_scaling_slack) &&
+  report.linear_factor > baseline.linear_scaling_slack
+) {
   failures.push(
-    `scaling_ratio ${report.scaling_ratio} exceeds budget ${baseline.scaling_ratio_budget}`,
+    `linear_factor ${report.linear_factor} exceeds slack ${baseline.linear_scaling_slack} ` +
+      `(runtime ${report.scaling_ratio}x for ${report.workload_ratio}x work)`,
   );
 }
 
