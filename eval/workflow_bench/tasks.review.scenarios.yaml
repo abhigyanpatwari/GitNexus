@@ -17,6 +17,9 @@ tasks:
       - { source: node_modules, target: node_modules }
       - { source: gitnexus/node_modules, target: gitnexus/node_modules }
       - { source: gitnexus-shared/node_modules, target: gitnexus-shared/node_modules }
+      # Host-built types/JS. Historical clones have no dist/, so `tsc` in the
+      # read-only workspace otherwise reports TS2307/TS6379 (run 33962002890).
+      - { source: gitnexus-shared/dist, target: gitnexus-shared/dist }
 
   - <<: *review_case
     id: review-pr-2794-defect

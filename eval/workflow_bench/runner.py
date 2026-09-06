@@ -57,6 +57,15 @@ from typing import Any
 
 import yaml
 
+from .comparator_reuse import (
+    ComparatorReuseExpectation,
+    TaskReuseBinding,
+    current_runtime_digest,
+    default_reuse_max_age,
+    load_result_rows,
+    materialize_reused_row,
+    select_reusable_comparator_rows,
+)
 from .evolution import (
     CANDIDATE_ARMS,
     EVIDENCE_MAX_AGE_DAYS,
@@ -121,6 +130,7 @@ from .runner_artifacts import (
     enforce_phase_workspace,
     enforce_work_evidence,
     implementation_diff_digest,
+    copy_isolated_tree,
     make_worktree,
     new_plan_doc,
     parse_shortstat as parse_shortstat,
@@ -884,6 +894,8 @@ class TaskCellContext:
     candidate_overlay: Path | None
     overlay_digest: str | None
     sandbox_backend: str = "bwrap"
+    clone_template: Path | None = None
+    sanitized_head: str | None = None
 
 
 def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
@@ -908,8 +920,14 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             raise RuntimeError("sanitized graph snapshot is unavailable")
         if ctx.asset_snapshot is None:
             raise RuntimeError("task asset snapshot is unavailable")
-        worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
-        sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
+        if ctx.clone_template is not None:
+            if not ctx.sanitized_head:
+                raise RuntimeError("clone template is missing its sanitized HEAD")
+            worktree = copy_isolated_tree(ctx.clone_template, ctx.trees_dir)
+            sanitized_head = ctx.sanitized_head
+        else:
+            worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
+            sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
         ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
         dependency_mounts = stage_task_assets(
             task,
@@ -1057,6 +1075,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
                 "skill_digest": expected_skill_digest,
                 "candidate_overlay_digest": (ctx.overlay_digest if arm in CANDIDATE_ARMS else None),
+                "runtime_digest": current_runtime_digest(),
                 "recorded_at": datetime.now(UTC).isoformat(),
             }
         )
@@ -1557,6 +1576,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-bindings-json", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--promotion-target-bases-json", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--unsafe-no-bwrap", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--reuse-results",
+        type=Path,
+        default=None,
+        help="prior wfbench results dir whose incumbent/CE rows may be reused "
+        "when model, effort, tasks, oracles, skill bytes, and CE plugin still "
+        "match. Candidate arms always run. Used by evolve.py so a weekly "
+        "generation does not re-pay for an unchanged comparator.",
+    )
     return parser
 
 
@@ -1684,6 +1712,49 @@ def main() -> None:
         gateway.__exit__(None, None, None)
 
 
+def _comparator_reuse_expectation(
+    *,
+    args: argparse.Namespace,
+    tasks: Sequence[Any],
+    task_bindings: Sequence[Mapping[str, Any]],
+    oracle_snapshots: Sequence[Any],
+    sandbox_backend: str,
+    ce_plugin_snapshot: CePluginSnapshot | None,
+) -> ComparatorReuseExpectation:
+    """Bind this sweep's immutable identity for comparator-row reuse."""
+
+    skill_digests: dict[str, str | None] = {}
+    for arm in args.arms:
+        execution = CANDIDATE_ARMS.get(arm, arm)
+        if execution in EVALUATED_ARM_SKILLS:
+            skill_digests[arm] = skill_fingerprint(HARNESS_ROOT, execution)
+        else:
+            skill_digests[arm] = None
+    task_locks: dict[str, TaskReuseBinding] = {}
+    for task, binding, oracle in zip(tasks, task_bindings, oracle_snapshots, strict=True):
+        task_locks[str(task["id"])] = TaskReuseBinding(
+            task_base_sha=str(binding["resolved_sha"]),
+            task_prompt_digest=hashlib.sha256(str(task["prompt"]).encode()).hexdigest(),
+            oracle_digest=oracle.digest,
+            oracle_command_digest=oracle.command_digest,
+            oracle_manifest_digest=oracle.manifest_digest,
+        )
+    return ComparatorReuseExpectation(
+        model=args.model,
+        effort=args.effort,
+        sandbox_backend=sandbox_backend,
+        runtime_digest=current_runtime_digest(),
+        now=datetime.now(UTC),
+        max_age=default_reuse_max_age(),
+        tasks=task_locks,
+        skill_digests=skill_digests,
+        ce_plugin_version=ce_plugin_snapshot.version if ce_plugin_snapshot is not None else None,
+        ce_plugin_manifest_digest=(
+            ce_plugin_snapshot.manifest_digest if ce_plugin_snapshot is not None else None
+        ),
+    )
+
+
 def _run_sweep(
     args: argparse.Namespace,
     *,
@@ -1740,8 +1811,35 @@ def _run_sweep(
         except (OSError, SandboxError, ValueError) as exc:
             parser.error(str(exc))
             raise AssertionError("ArgumentParser.error() returned unexpectedly")
+        reuse_source = args.reuse_results.expanduser().resolve() if args.reuse_results is not None else None
+        reusable_rows: dict[tuple[str, str, int], dict[str, Any]] = {}
+        if reuse_source is not None:
+            if reuse_source == out_dir.resolve():
+                parser.error("--reuse-results cannot be this sweep's --out directory")
+                raise AssertionError("ArgumentParser.error() returned unexpectedly")
+            results_file = reuse_source / "results.jsonl"
+            if results_file.is_symlink() or not results_file.is_file():
+                parser.error("--reuse-results must contain a regular results.jsonl")
+                raise AssertionError("ArgumentParser.error() returned unexpectedly")
+            reusable_rows = select_reusable_comparator_rows(
+                load_result_rows(results_file),
+                expected=_comparator_reuse_expectation(
+                    args=args,
+                    tasks=tasks,
+                    task_bindings=task_bindings,
+                    oracle_snapshots=oracle_snapshots,
+                    sandbox_backend=sandbox_backend,
+                    ce_plugin_snapshot=ce_plugin_snapshot,
+                ),
+            )
+            print(
+                f"reuse-results {reuse_source}: {len(reusable_rows)} comparator "
+                f"cell(s) match this sweep; candidate arms always run"
+            )
         graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot] = {}
         graph_snapshot_errors: dict[tuple[str, str], BaseException] = {}
+        clone_templates: dict[tuple[str, str], tuple[Path, str]] = {}
+        clone_template_errors: dict[tuple[str, str], BaseException] = {}
         for task, task_binding, oracle_snapshot in zip(
             tasks,
             task_bindings,
@@ -1752,41 +1850,79 @@ def _run_sweep(
                 break
             repo = Path(task_binding["repo_identity"])
             task_sha = task_binding["resolved_sha"]
+            per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
+            planned = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
+            reused_records: list[tuple[int, str, dict[str, Any]]] = []
+            paid_cells: list[tuple[int, str]] = []
+            for run_idx, arm in planned:
+                prior = reusable_rows.get((task["id"], arm, run_idx))
+                if prior is None or reuse_source is None:
+                    paid_cells.append((run_idx, arm))
+                    continue
+                try:
+                    reused_records.append(
+                        (
+                            run_idx,
+                            arm,
+                            materialize_reused_row(prior, source_dir=reuse_source, dest_dir=out_dir),
+                        )
+                    )
+                except (OSError, SandboxError, ValueError) as exc:
+                    print(
+                        f"[{task['id']}][{arm}][run {run_idx}] comparator reuse "
+                        f"failed ({exc}); running a paid cell"
+                    )
+                    paid_cells.append((run_idx, arm))
+
             asset_snapshot: TaskAssetSnapshot | None = None
             asset_snapshot_error: BaseException | None = None
             graph_key = (str(repo), task_sha)
             graph_snapshot: SanitizedGraphSnapshot | None = graph_snapshots.get(graph_key)
             graph_snapshot_error: BaseException | None = graph_snapshot_errors.get(graph_key)
-            try:
-                validate_no_prebuilt_graph_assets(task)
-                if graph_snapshot is None and graph_snapshot_error is None:
-                    graph_snapshot = prepare_sanitized_graph(
+            clone_template: Path | None = None
+            template_head: str | None = None
+            if paid_cells:
+                try:
+                    validate_no_prebuilt_graph_assets(task)
+                    if graph_key not in clone_templates and graph_key not in clone_template_errors:
+                        template = make_worktree(repo, task_sha, Path(trees))
+                        template_head = sanitize_clone_for_hidden_oracles(template)
+                        clone_templates[graph_key] = (template, template_head)
+                    if graph_key in clone_templates:
+                        clone_template, template_head = clone_templates[graph_key]
+                    if graph_key in clone_template_errors and graph_snapshot_error is None:
+                        graph_snapshot_error = clone_template_errors[graph_key]
+                    if graph_snapshot is None and graph_snapshot_error is None:
+                        graph_snapshot = prepare_sanitized_graph(
+                            task,
+                            repo=repo,
+                            resolved_sha=task_sha,
+                            parent=Path(trees),
+                            cache=task_asset_cache,
+                            claude_bin=args.claude_bin,
+                            bwrap_bin=bwrap_bin,
+                            sandbox_backend=sandbox_backend,
+                            runtime_mounts=runtime_mounts,
+                            clone_template=clone_template,
+                            sanitized_head=template_head,
+                        )
+                        graph_snapshots[graph_key] = graph_snapshot
+                except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
+                    graph_snapshot_error = exc
+                    graph_snapshot_errors[graph_key] = exc
+                    clone_template_errors.setdefault(graph_key, exc)
+                try:
+                    # Prepared here, once, rather than lazily inside the first cell:
+                    # TaskAssetCache is a plain dict, so a lazy build would be a
+                    # read-then-write race the moment cells stop running serially.
+                    asset_snapshot = task_asset_cache.prepare(
                         task,
                         repo=repo,
                         resolved_sha=task_sha,
-                        parent=Path(trees),
-                        cache=task_asset_cache,
-                        claude_bin=args.claude_bin,
-                        bwrap_bin=bwrap_bin,
-                        sandbox_backend=sandbox_backend,
-                        runtime_mounts=runtime_mounts,
+                        expected_dependency_binding=task_binding,
                     )
-                    graph_snapshots[graph_key] = graph_snapshot
-            except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
-                graph_snapshot_error = exc
-                graph_snapshot_errors[graph_key] = exc
-            try:
-                # Prepared here, once, rather than lazily inside the first cell:
-                # TaskAssetCache is a plain dict, so a lazy build would be a
-                # read-then-write race the moment cells stop running serially.
-                asset_snapshot = task_asset_cache.prepare(
-                    task,
-                    repo=repo,
-                    resolved_sha=task_sha,
-                    expected_dependency_binding=task_binding,
-                )
-            except (OSError, SandboxError, ValueError) as exc:
-                asset_snapshot_error = exc
+                except (OSError, SandboxError, ValueError) as exc:
+                    asset_snapshot_error = exc
             cell_context = TaskCellContext(
                 task=task,
                 oracle_snapshot=oracle_snapshot,
@@ -1805,9 +1941,9 @@ def _run_sweep(
                 runtime_mounts=runtime_mounts,
                 candidate_overlay=candidate_overlay,
                 overlay_digest=overlay_digest,
+                clone_template=clone_template,
+                sanitized_head=template_head,
             )
-            per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
-            cells = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
 
             def announce(run_idx: int, arm: str) -> None:
                 nonlocal started_cells
@@ -1830,16 +1966,24 @@ def _run_sweep(
                 if failure:
                     print(failure)
 
-            outage_streak, outage_tripped = sweep_task_cells(
-                cells,
-                workers=args.workers,
-                run=partial(run_cell, cell_context),
-                on_start=announce,
-                on_record=keep,
-                outage_streak=outage_streak,
-                outage_limit=args.outage_streak,
-                cancel_event=cancel_event,
-            )
+            for run_idx, arm, record in reused_records:
+                started_cells += 1
+                print(
+                    f"[{task['id']}][{arm}][run {run_idx}] reused comparator "
+                    f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                )
+                keep(run_idx, arm, record)
+            if paid_cells:
+                outage_streak, outage_tripped = sweep_task_cells(
+                    paid_cells,
+                    workers=args.workers,
+                    run=partial(run_cell, cell_context),
+                    on_start=announce,
+                    on_record=keep,
+                    outage_streak=outage_streak,
+                    outage_limit=args.outage_streak,
+                    cancel_event=cancel_event,
+                )
             results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
 
     selection_report = [

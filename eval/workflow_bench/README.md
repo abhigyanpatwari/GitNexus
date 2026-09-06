@@ -168,6 +168,34 @@ router thresholds as an incumbent policy, not permanent truth. Candidate
 changes run offline in the same throwaway clones as the incumbent; production
 skills never rewrite themselves from a live task.
 
+On the self-hosted evolution box, `run-evolution.sh` caps the sweep with
+`--max-runtime-seconds` derived from `/proc/uptime` (24h EventBridge window
+minus a 90-minute upload reserve). A `workflow_dispatch` that lands on an
+already-running instance therefore exits in-process instead of vanishing when
+the box stops — a cancelled GitHub job skips even `if: always()`, which is
+how run 33962002890 lost 51 finished sessions. Local runs are uncapped.
+
+A review generation is 6 tasks × 3 arms × 3 runs. Serial workers=1 at ~19
+minutes per session is a 16-hour job (run 33962002890). Two harness changes
+cut that without shrinking the gate:
+
+- **Comparator reuse.** `evolve.py` forwards the seed / prior generation as
+  `--reuse-results`. Incumbent `review` and `ce_review` rows are copied into
+  the new `results.jsonl` when model, effort, task SHA, prompt digest, oracle
+  bytes, incumbent skill digest, CE plugin digest, and sandbox backend still
+  match. Candidate arms always run. A weekly generation with an unchanged
+  incumbent therefore pays 18 sessions, not 54. A promotion, model change,
+  task-corpus change, or harness `RUNTIME_DIGEST` change invalidates the
+  lock and re-runs the comparators.
+- **Sanitized clone templates.** Each unique task SHA is cloned and
+  sanitized once. Cells copy that parentless snapshot (reflink when the
+  filesystem allows) instead of `git clone --no-local` plus repack/prune/fsck
+  54 times. Isolation is a private `.git`, not a second copy of full history.
+
+Dispatch defaults to `--workers 3` so those 18 paid cells can overlap. Size
+workers to the host: a cell that loses CPU and hits the session ceiling is
+an excluded run the gate refuses.
+
 Build an overlay that mirrors only the canonical repo-local skill paths:
 
 ```text
@@ -368,10 +396,10 @@ paired benchmark as any other candidate.
 
 For ad-hoc use, run the driver on the existing re-evaluation triggers
 (model/harness change or 90-day staleness). The repository workflow runs a
-deliberate weekly drift check: scheduled concurrency stays serial unless
-`GITNEXUS_EVOLUTION_WORKERS` is raised after a funded host-sized proof, and
-`--workers` is bounded to 1–8 before paid work starts. `--generations` remains
-the only loop bound.
+deliberate weekly drift check: dispatch defaults to three concurrent cells
+of one task; scheduled concurrency still requires
+`GITNEXUS_EVOLUTION_WORKERS=3` after a clean proof. `--workers` is bounded
+to 1–8 before paid work starts. `--generations` remains the only loop bound.
 
 ## Free-model setup (no paid tokens)
 

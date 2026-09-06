@@ -823,6 +823,92 @@ def _timeout_arm_key(arm: str) -> str:
     return CANDIDATE_ARMS.get(arm, arm)
 
 
+EVENTBRIDGE_INSTANCE_WINDOW_SECONDS = 86_400
+EVENTBRIDGE_STOP_RESERVE_SECONDS = 5_400
+MIN_INSTANCE_SWEEP_SECONDS = 600
+
+
+def instance_window_budget_seconds(
+    uptime_seconds: float,
+    *,
+    window_seconds: int = EVENTBRIDGE_INSTANCE_WINDOW_SECONDS,
+    reserve_seconds: int = EVENTBRIDGE_STOP_RESERVE_SECONDS,
+    min_seconds: int = MIN_INSTANCE_SWEEP_SECONDS,
+) -> int:
+    """Seconds a sweep may run before an EventBridge 24h instance stop.
+
+    The dedicated evolution box is started ~15 minutes before the Saturday
+    cron and stopped 24h later. A ``workflow_dispatch`` that lands on an
+    already-running box inherits the leftover uptime, not a fresh day.
+    Run 33962002890 dispatched Friday 10:57 UTC and was still on its last
+    review cell when the Saturday 03:00 stop cancelled the runner — 51
+    finished sessions never uploaded because a cancelled job skips even
+    ``if: always()``. Capping the in-process sweep so it *fails* (instead
+    of vanishing) leaves the reserve for the upload step.
+    """
+
+    if window_seconds < 1 or reserve_seconds < 0 or min_seconds < 1:
+        raise ValueError("instance window and minimum must be positive; reserve must be non-negative")
+    if not math.isfinite(uptime_seconds) or uptime_seconds < 0:
+        raise ValueError("uptime must be a finite non-negative number")
+    leftover = int(window_seconds - uptime_seconds - reserve_seconds)
+    if leftover < min_seconds:
+        raise ValueError(
+            f"instance window has only {leftover}s left after a {reserve_seconds}s "
+            f"upload reserve (uptime {uptime_seconds:.0f}s of {window_seconds}s); "
+            f"need at least {min_seconds}s"
+        )
+    return leftover
+
+
+def instance_window_budget_from_proc(
+    uptime_path: Path = Path("/proc/uptime"),
+    *,
+    window_seconds: int | None = None,
+    reserve_seconds: int | None = None,
+) -> int:
+    """Read host uptime and apply the EventBridge window env overrides."""
+
+    window = (
+        window_seconds
+        if window_seconds is not None
+        else int(os.environ.get("EVENTBRIDGE_INSTANCE_WINDOW_SECONDS", str(EVENTBRIDGE_INSTANCE_WINDOW_SECONDS)))
+    )
+    reserve = (
+        reserve_seconds
+        if reserve_seconds is not None
+        else int(os.environ.get("EVENTBRIDGE_STOP_RESERVE_SECONDS", str(EVENTBRIDGE_STOP_RESERVE_SECONDS)))
+    )
+    try:
+        uptime = float(uptime_path.read_text().split()[0])
+    except (OSError, IndexError, ValueError) as exc:
+        raise ValueError(f"cannot read instance uptime from {uptime_path}: {exc}") from exc
+    return instance_window_budget_seconds(uptime, window_seconds=window, reserve_seconds=reserve)
+
+
+def remaining_runtime_seconds(*, max_runtime_seconds: int | None, started_monotonic: float) -> int | None:
+    """Seconds left in an optional wall-clock cap, or None when uncapped."""
+
+    if max_runtime_seconds is None:
+        return None
+    if max_runtime_seconds < 1:
+        raise ValueError("max runtime must be positive")
+    leftover = max_runtime_seconds - (time.monotonic() - started_monotonic)
+    return max(0, int(leftover))
+
+
+def capped_timeout_seconds(requested: int, remaining: int | None) -> int:
+    """Clamp one managed-process timeout to the leftover instance window."""
+
+    if requested < 1:
+        raise ValueError("requested timeout must be positive")
+    if remaining is None:
+        return requested
+    if remaining < 1:
+        raise ValueError("no time remains in the instance window")
+    return min(requested, remaining)
+
+
 def generation_timeout_seconds(
     *,
     task_count: int,
@@ -877,6 +963,7 @@ def runner_argv(
     task_bindings: list[dict[str, Any]],
     target_base_digests: dict[str, str],
     proposer_model: str | None = None,
+    reuse_results: Path | None = None,
 ) -> list[str]:
     incumbent_arms = resolve_incumbent_arms(overlay_dir, args.arms)
     paired_arms = executed_benchmark_arms(incumbent_arms)
@@ -927,6 +1014,8 @@ def runner_argv(
         argv += ["--ce-plugin-dir", str(args.ce_plugin_dir), "--ce-plugin-version", args.ce_plugin_version]
     if args.unsafe_no_bwrap:
         argv.append("--unsafe-no-bwrap")
+    if reuse_results is not None:
+        argv += ["--reuse-results", str(reuse_results)]
     return argv
 
 
@@ -1199,6 +1288,13 @@ def _require_finite_metric(value: Any, name: str, *, nullable: bool = False, max
         raise ValueError(f"promotion has invalid {name}")
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError(f"{value} is not a positive integer")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
@@ -1237,7 +1333,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed-results",
         type=Path,
         default=None,
-        help="prior wfbench results dir used as generation-0 proposer evidence",
+        help="prior wfbench results dir used as generation-0 proposer evidence "
+        "and as --reuse-results for unchanged incumbent/CE cells",
     )
     parser.add_argument(
         "--initial-overlay",
@@ -1270,6 +1367,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=runner_sessions.SESSION_TIMEOUT_SECONDS,
         help="per session, seconds",
+    )
+    parser.add_argument(
+        "--max-runtime-seconds",
+        type=_positive_int,
+        default=None,
+        help="wall-clock cap for the whole evolve process (CI sets this from "
+        "instance uptime so the sweep exits before EventBridge stops the box)",
     )
     parser.add_argument("--base-url", default=None)
     parser.add_argument(
@@ -1404,6 +1508,7 @@ def _run_generations(
 ) -> int:
     out_root = args.out_root or Path("results") / time.strftime("wfevolve-%Y%m%d-%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)
+    started_monotonic = time.monotonic()
     evidence_dir: Path | None = args.seed_results
     # Only a proposal this driver wrote in this run is stageable: a
     # --seed-results tree is an operator-supplied path, and its sibling
@@ -1513,6 +1618,16 @@ def _run_generations(
             print(f"[gen {generation}] promotion targets contain uncommitted or drifted bytes")
             return 1
         print(f"[gen {generation}] benchmarking candidate…")
+        leftover = remaining_runtime_seconds(
+            max_runtime_seconds=args.max_runtime_seconds,
+            started_monotonic=started_monotonic,
+        )
+        if leftover is not None and leftover < MIN_INSTANCE_SWEEP_SECONDS:
+            print(
+                f"[gen {generation}] stopping with {leftover}s left before the "
+                f"instance window ends; partial evidence is in {out_root}/"
+            )
+            return 1
         benchmark_argv = runner_argv(
             args,
             bench_dir,
@@ -1520,20 +1635,30 @@ def _run_generations(
             task_bindings=selected_tasks,
             target_base_digests=target_base_digests,
             proposer_model=generation_proposer_model,
+            reuse_results=evidence_dir,
         )
         benchmark_command = (
             benchmark_argv
             if sandbox_backend == "host-unsafe"
             else pid_namespace_command(benchmark_argv, bwrap_bin=bwrap_bin)
         )
-        bench = run_managed(
-            benchmark_command,
-            timeout=generation_timeout_seconds(
+        sweep_timeout = capped_timeout_seconds(
+            generation_timeout_seconds(
                 task_count=len(selected_task_rows),
                 runs=args.runs,
                 session_timeout=args.timeout,
                 incumbent_arms=incumbent_arms,
             ),
+            leftover,
+        )
+        if leftover is not None:
+            print(
+                f"[gen {generation}] sweep timeout {sweep_timeout}s "
+                f"(instance window leftover {leftover}s)"
+            )
+        bench = run_managed(
+            benchmark_command,
+            timeout=sweep_timeout,
             env=runner_environment(args),
             require_pid_namespace=sandbox_backend == "bwrap",
             # The sweep is the multi-hour phase; without this its per-run
@@ -1545,7 +1670,13 @@ def _run_generations(
             # The sweep runs with GITNEXUS_BENCH_ANTHROPIC_API_KEY in its environment,
             # so its detail/stderr tail is a token-bearing sink like any other.
             detail = redacted_failure(args, str(bench.detail or bench.stderr_tail[-1000:]))
-            print(f"[gen {generation}] benchmark run failed ({bench.state}, exit {bench.returncode}): {detail}")
+            if leftover is not None and bench.state == "timeout":
+                print(
+                    f"[gen {generation}] benchmark hit the instance-window budget "
+                    f"({sweep_timeout}s); partial evidence is in {bench_dir}: {detail}"
+                )
+            else:
+                print(f"[gen {generation}] benchmark run failed ({bench.state}, exit {bench.returncode}): {detail}")
             return 1
         promotion = json.loads((bench_dir / "promotion.json").read_text())
         for line in summarize_gate(promotion):
