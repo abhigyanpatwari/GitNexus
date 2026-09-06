@@ -202,6 +202,8 @@ function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
   return {
     resolveImportTarget: partial.resolveImportTarget ?? (() => null),
     isNamespaceImport: partial.isNamespaceImport,
+    wildcardCollisionIsAmbiguous: partial.wildcardCollisionIsAmbiguous === true,
+    namedImportsBindTopLevelOnly: partial.namedImportsBindTopLevelOnly === true,
     expandsWildcardTo: partial.expandsWildcardTo ?? (() => []),
     mergeBindings:
       partial.mergeBindings ??

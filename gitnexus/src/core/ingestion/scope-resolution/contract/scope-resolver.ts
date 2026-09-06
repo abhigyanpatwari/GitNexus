@@ -248,8 +248,8 @@
  * ## Semantic-model source of truth
  *
  * `ParsedFile` (from `gitnexus-shared/src/scope-resolution/parsed-file.ts`)
- * is the single semantic model consumed by both the legacy DAG and the
- * scope-resolution pipeline. Scope-resolution passes MUST NOT build a
+ * is the single semantic model consumed by the scope-resolution pipeline.
+ * Scope-resolution passes MUST NOT build a
  * parallel parse representation; if a pass needs AST-level facts that
  * `ParsedFile` doesn't expose, it should reuse the orchestrator's
  * `treeCache` (see `RunScopeResolutionInput.treeCache`) rather than
@@ -257,23 +257,20 @@
  *
  * ## Same-graph guarantee
  *
- * Edges emitted by `runScopeResolution` and edges emitted by the legacy
- * DAG are indistinguishable to downstream consumers:
+ * All language resolvers emit edges through `runScopeResolution` using the
+ * shared graph contract:
  *   - Node identity: same `generateId(...)` helper, same qualified-name
  *     keyspace, same File/Folder/Method/Class node labels.
  *   - Edge vocabulary: `'import-resolved' | 'global' | 'local-call' |
- *     'same-file' | 'interface-dispatch' | 'read' | 'write'` — both
- *     paths emit the same reasons (see
- *     `gitnexus/src/core/ingestion/call-processor.ts` for the legacy
- *     emitter and `passes/receiver-bound-calls.ts` /
+ *     'same-file' | 'interface-dispatch' | 'read' | 'write' |
+ *     'global-name-fallback'` (see `passes/receiver-bound-calls.ts` /
  *     `passes/free-call-fallback.ts` for the scope-resolution emitters).
- *   - Overload disambiguation: both paths use
+ *   - Overload disambiguation: resolvers use
  *     `generateId('Method', ...)` suffixed with `parameterTypes` when a
  *     method has overloads — see `graph-bridge/ids.ts`.
  *
  * The CI parity workflow (`.github/workflows/ci-scope-parity.yml`)
- * runs both paths on every migrated language's fixture corpus and
- * fails if the graph outputs diverge.
+ * exercises the registered language resolvers against their fixture corpus.
  *
  * Plan that introduced most of these invariants:
  * `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
@@ -849,6 +846,80 @@ export interface ScopeResolver {
    * but is too loose as a default for strict module systems.
    */
   readonly allowGlobalFreeCallFallback?: boolean;
+
+  /**
+   * Two `wildcard` re-exports that both DECLARE a name make it AMBIGUOUS in
+   * this language — ECMAScript `export *` semantics, where the module simply
+   * does not export the name and any binding is a guess. Opt-in: for a
+   * language whose wildcard import is `#include`, `require` or a package
+   * fan-out, the same name in two files is an overload set or a redeclaration,
+   * and refusing it would delete real edges (C++ arity-narrowed overloads
+   * across two headers). Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
+   */
+  readonly exclusiveWildcardReexports?: boolean;
+
+  /**
+   * A named import or named re-export can only bind to a MODULE-LEVEL
+   * declaration of the target file — ECMAScript semantics, where
+   * `import { x }` never reaches a class member. Opt-in: languages that bind
+   * module-level members by bare name (static members, module functions)
+   * leave it off. Forwarded to `FinalizeHooks.namedImportsBindTopLevelOnly`.
+   */
+  readonly namedImportsBindTopLevelOnly?: boolean;
+
+  /**
+   * Veto for a single `allowGlobalFreeCallFallback` guess.
+   *
+   * The fallback picks a callable because its SIMPLE NAME is unique in the
+   * workspace — it consults no import and no scope chain. For most languages a
+   * large share of those guesses are not merely unlikely but IMPOSSIBLE: Go
+   * cannot call an unexported identifier from another package, ESM cannot see a
+   * name it did not import, Rust cannot reach an item with no `use` path. This
+   * hook is where a language states those rules, so the shared pass can drop
+   * the edge instead of publishing a guess that the language forbids.
+   *
+   * Return `false` to REFUSE (no edge, recorded as `fallback-refused`). Return
+   * `true`, or leave the hook undefined, to emit the labeled
+   * `global-name-fallback` edge. **Only answer `false` when the call is
+   * impossible, not when it is merely unproven** — a wrongly-refused candidate
+   * is a lost real edge, whereas a wrongly-allowed one is at least labeled and
+   * excluded from flows.
+   *
+   * Deliberately NOT folded into `isCallableVisibleFromCaller`: that hook also
+   * gates precise dispatch paths (implicit-this, member calls), so a rule
+   * written for the name-guess tier would silently suppress resolved edges too.
+   *
+   * `parsedFileOf` reaches the CANDIDATE's parse result — a language whose rule
+   * depends on the declaration side (an `export` marker, a `pub` marker) needs
+   * it, because `SymbolDefinition` carries no visibility field. It returns
+   * `undefined` for a path outside this pass's file set; treat that as
+   * "cannot decide" and allow.
+   */
+  readonly isGlobalNameFallbackPlausible?: (ctx: {
+    readonly callerParsed: ParsedFile;
+    readonly candidate: SymbolDefinition;
+    readonly parsedFileOf: (filePath: string) => ParsedFile | undefined;
+    /**
+     * Raw source of any parsed file, for languages whose visibility rule needs
+     * a declaration the parse does not carry (Go's package clause: a test file's
+     * `package foo_test` is a different package from its directory's `foo`).
+     * Absent when the pipeline has no contents at hand; hooks must then answer
+     * from paths alone and, when undecidable, allow.
+     */
+    readonly sourceTextOf?: (filePath: string) => string | undefined;
+    /**
+     * The call site, so a language can tell a BARE name from a PATH-QUALIFIED
+     * one. Both reach this tier — a qualified call whose qualifier the resolver
+     * could not follow falls through to the bare-name search with only its tail
+     * name — but they are not the same claim. Rust's `User::new(...)` named its
+     * type in source, so refusing it for lacking a `use` of the module would
+     * delete an edge the source spells out.
+     */
+    readonly site: {
+      readonly name: string;
+      readonly rawQualifiedName?: string;
+    };
+  }) => boolean;
 
   /**
    * In this language every `Method` belongs to a class instance, so a

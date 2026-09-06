@@ -36,6 +36,7 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
+import { collectEsmExportEvidence, esmExportVerdict } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from '../typescript/import-decomposer.js';
 import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './query.js';
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
@@ -983,6 +984,8 @@ export function emitJsScopeCaptures(
   }
 
   const rawMatches = getJsScopeQuery(filePath).matches(tree.rootNode);
+  // Export evidence, read once per file (see `ts-js-export-marker.ts`).
+  const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
   const out: CaptureMatch[] = [];
 
   for (const m of rawMatches) {
@@ -1207,6 +1210,20 @@ export function emitJsScopeCaptures(
     // non-call match, an absent receiver, or a chain with no nameable base
     // all leave `grouped` untouched.
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
+    // `@declaration.is-exported`: a verdict for every declaration the file's
+    // export surface can decide (see `ts-js-export-marker.ts`); nothing where
+    // it cannot, because absence is the honest answer there.
+    const declNameNode = groupedNodes['@declaration.name'];
+    if (exportEvidence !== undefined && declNameNode !== undefined) {
+      const verdict = esmExportVerdict(declNameNode, exportEvidence);
+      if (verdict !== undefined) {
+        grouped['@declaration.is-exported'] = syntheticCapture(
+          '@declaration.is-exported',
+          declNameNode,
+          verdict ? 'true' : 'false',
+        );
+      }
+    }
     out.push(grouped);
 
     // Synthesize `this` receiver type-bindings on class member functions.

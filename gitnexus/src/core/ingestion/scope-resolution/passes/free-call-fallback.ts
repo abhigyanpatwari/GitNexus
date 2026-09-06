@@ -36,6 +36,7 @@ import type {
   ResolutionOutcomeRecorder,
   ResolutionSuppressionReason,
 } from '../resolution-outcome.js';
+import { GLOBAL_NAME_FALLBACK_REASON } from '../../../graph/edge-reasons.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
@@ -64,6 +65,15 @@ export function emitFreeCallFallback(
   workspaceIndex: WorkspaceResolutionIndex,
   options: {
     readonly allowGlobalFallback?: boolean;
+    /** Language whose pass this is, carried onto the fallback outcome records
+     *  so the analyze summary can report guesses/refusals PER LANGUAGE. A
+     *  repo-wide total hides which language's rules are the loose ones. */
+    readonly language?: string;
+    /** Per-language veto on a name guess — see
+     *  `ScopeResolver.isGlobalNameFallbackPlausible`. */
+    readonly isGlobalNameFallbackPlausible?: ScopeResolver['isGlobalNameFallbackPlausible'];
+    /** Raw source lookup handed to `isGlobalNameFallbackPlausible` (optional). */
+    readonly sourceTextOf?: (filePath: string) => string | undefined;
     /** When true, `Type(...)` constructor calls link to the Class def
      *  itself rather than its explicit Constructor. Swift opts in. */
     readonly constructorCallTargetsClass?: boolean;
@@ -138,6 +148,14 @@ export function emitFreeCallFallback(
   let allFilePathsMemo: ReadonlySet<string> | undefined;
   const allFilePaths = (): ReadonlySet<string> =>
     (allFilePathsMemo ??= new Set(parsedFiles.map((p) => p.filePath)));
+  // Candidate-side parse lookup for `isGlobalNameFallbackPlausible`. Built
+  // lazily and once, on the same terms as `allFilePaths` above: a language
+  // without the hook never pays for the index.
+  let parsedByPathMemo: ReadonlyMap<string, ParsedFile> | undefined;
+  const parsedFileByPath = (): ((filePath: string) => ParsedFile | undefined) => {
+    parsedByPathMemo ??= new Map(parsedFiles.map((p) => [p.filePath, p]));
+    return (filePath) => parsedByPathMemo!.get(filePath);
+  };
   // Per-pass memo of pickUniqueGlobalCallable's post-filter candidate list,
   // keyed (simpleName, callerFilePath). Only created when no per-caller
   // visibility filter applies (the list is then a pure function of name+file —
@@ -183,7 +201,17 @@ export function emitFreeCallFallback(
   };
 
   for (const parsed of parsedFiles) {
-    type PendingRel = { rel: Parameters<KnowledgeGraph['addRelationship']>[0]; gatedAll: boolean };
+    type PendingRel = {
+      rel: Parameters<KnowledgeGraph['addRelationship']>[0];
+      gatedAll: boolean;
+      /**
+       * The confidence/reason a PRECISELY resolved site (a real binding, not a
+       * unique-name guess) proved for this edge; `undefined` while every site
+       * collapsed into it so far was a guess. Decided at flush, not by the
+       * first site the walk met.
+       */
+      precise: { confidence: number; reason: string } | undefined;
+    };
     const pending = new Map<string, PendingRel>();
     const bindingCandidatesByScope =
       options.freeCallsRequireInstanceOwnership === true
@@ -543,10 +571,18 @@ export function emitFreeCallFallback(
           }
         }
       }
-      // V1: pickUniqueGlobalCallable ignores import context — resolves to any
-      // globally-unique callable. False cross-package edges are possible when
-      // the caller does not import the target package. Same-package calls are
-      // usually caught by nearest-scope lookup before reaching here.
+      // Name-guess tier: pickUniqueGlobalCallable consults no import context —
+      // it resolves to any globally-unique callable. Same-package calls are
+      // usually caught by nearest-scope lookup before reaching here, so what
+      // lands in this tier is disproportionately cross-module, and a
+      // cross-module name match is a guess.
+      //
+      // Two things make that honest rather than a lie. The language's
+      // `isGlobalNameFallbackPlausible` hook refuses candidates its own
+      // visibility rules forbid (below), and every edge that survives is
+      // emitted with `GLOBAL_NAME_FALLBACK_REASON` at 0.5 rather than
+      // masquerading as `import-resolved` at 0.85 (see the emit site).
+      let fnDefFromGlobalNameFallback = false;
       if (fnDef === undefined && options.allowGlobalFallback === true) {
         fnDef = pickUniqueGlobalCallable(
           site.name,
@@ -570,6 +606,47 @@ export function emitFreeCallFallback(
           scopeDefsCache,
           options.conversionOnlyArgTypePrefixes,
         );
+        fnDefFromGlobalNameFallback = fnDef !== undefined;
+      }
+      if (fnDefFromGlobalNameFallback && fnDef !== undefined) {
+        // An explicit named import cannot bind a declaration proven private
+        // to another module. In particular, a rejected named import must not
+        // reappear as a name guess to a class member or nested function.
+        // Unknown export evidence (e.g. dynamic module exports) keeps the
+        // existing fallback behavior.
+        const importsPrivateDeclaration =
+          fnDef.filePath !== parsed.filePath &&
+          fnDef.isExported === false &&
+          parsed.parsedImports.some(
+            (imported) =>
+              (imported.kind === 'named' || imported.kind === 'alias') &&
+              imported.localName === site.name,
+          );
+        if (
+          importsPrivateDeclaration ||
+          options.isGlobalNameFallbackPlausible?.({
+            callerParsed: parsed,
+            candidate: fnDef,
+            parsedFileOf: parsedFileByPath(),
+            sourceTextOf: options.sourceTextOf,
+            site: { name: site.name, rawQualifiedName: site.rawQualifiedName },
+          }) === false
+        ) {
+          // The language proved this call impossible. Mark the site handled so
+          // `emit-references` does not substitute its own looser guess for the
+          // edge we just refused — the point is no edge, not a different one.
+          options.recordResolutionOutcome?.({
+            kind: 'fallback-refused',
+            candidateId: fnDef.nodeId,
+            language: options.language,
+            phase: 'free-call-fallback',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+          });
+          handledSites.add(siteKey(parsed.filePath, site));
+          continue;
+        }
       }
       if (fnDef === undefined) continue;
       if (fnDef.isDeleted === true) {
@@ -617,40 +694,78 @@ export function emitFreeCallFallback(
         site.atRange.startCol,
         tgtGraphId,
       );
+      if (fnDefFromGlobalNameFallback) {
+        options.recordResolutionOutcome?.({
+          kind: 'fallback-guessed',
+          targetId: fnDef.nodeId,
+          language: options.language,
+          phase: 'free-call-fallback',
+          filePath: parsed.filePath,
+          name: site.name,
+          range: site.atRange,
+        });
+      }
       const relId = `rel:CALLS:${callerGraphId}->${tgtGraphId}`;
       // One edge per (caller, callee): `staticGated` is the AND over every site
       // that collapses into it, so a callee reached from one live site and one
       // dead site stays live whichever site the walk meets first. Emission is
       // deferred to the end of this file's sites for that reason.
+      const preciseHere = fnDefFromGlobalNameFallback
+        ? undefined
+        : {
+            confidence: 0.85,
+            // Match legacy DAG's reason convention so consumers that
+            // assert `reason === 'import-resolved'` keep working. The
+            // construction-site marker is opt-in for the same reason.
+            reason: constructionSiteReason(
+              fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
+              site,
+              options.markConstructionSites,
+            ),
+          };
       const pendingRel = pending.get(relId);
       if (pendingRel !== undefined) {
         if (site.staticGated !== true) pendingRel.gatedAll = false;
+        // The edge's label is decided at flush time from EVERY site that
+        // collapsed into it, not from whichever the walk met first. One site
+        // resolved through a real binding PROVES the dependency; a guessed
+        // site for the same pair is then redundant evidence, not a taint.
+        if (pendingRel.precise === undefined) pendingRel.precise = preciseHere;
         continue;
       }
       if (seen.has(relId)) continue;
       seen.add(relId);
       pending.set(relId, {
         gatedAll: site.staticGated === true,
+        precise: preciseHere,
         rel: {
           id: relId,
           sourceId: callerGraphId,
           targetId: tgtGraphId,
           type: 'CALLS',
-          confidence: 0.85,
-          // Match legacy DAG's reason convention so consumers that
-          // assert `reason === 'import-resolved'` keep working. The
-          // construction-site marker is opt-in for the same reason.
-          reason: constructionSiteReason(
-            fnDef.filePath !== parsed.filePath ? 'import-resolved' : 'local-call',
-            site,
-            options.markConstructionSites,
-          ),
+          // Guess values as placeholders; decided at flush from `precise`.
+          confidence: 0.5,
+          reason: GLOBAL_NAME_FALLBACK_REASON,
         },
       });
       emitted++;
     }
-    for (const { rel, gatedAll } of pending.values()) {
-      graph.addRelationship(gatedAll ? { ...rel, staticGated: true } : rel);
+    for (const { rel, gatedAll, precise } of pending.values()) {
+      // A name guess is not an import resolution and must not be spelled like
+      // one. It used to be emitted at 0.85 / `'import-resolved'`, which made
+      // it indistinguishable from an edge a real import produced — so every
+      // consumer that wanted to discount guesses had no field to do it with.
+      // 0.5 is the deliberate "coin flip" value, and the reason is what the
+      // process/community walks and the MCP tools actually key on, because
+      // 0.5 sits exactly ON their thresholds (see graph/edge-reasons.ts).
+      // An edge is a guess only when EVERY site that collapsed into it was one;
+      // a single precisely resolved site proves it, whatever order the walk
+      // met the sites in. Independent of `gatedAll`.
+      const labeled =
+        precise !== undefined
+          ? { ...rel, confidence: precise.confidence, reason: precise.reason }
+          : rel;
+      graph.addRelationship(gatedAll ? { ...labeled, staticGated: true } : labeled);
     }
   }
   return emitted;

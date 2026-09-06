@@ -707,6 +707,10 @@ function buildDefFromDeclarationMatch(
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
   const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
+  // Tri-state on purpose: only a producer that saw the file's export surface
+  // emits the marker, and both `true` and `false` are verdicts (see
+  // `SymbolDefinition.isExported`). Absent stays absent.
+  const isExported = parseBooleanCapture(match['@declaration.is-exported']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -725,6 +729,7 @@ function buildDefFromDeclarationMatch(
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
+    ...(isExported !== undefined ? { isExported } : {}),
   };
 }
 

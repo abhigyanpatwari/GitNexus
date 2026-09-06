@@ -28,6 +28,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import type { ScopeExtractionFailureSummary } from '../core/ingestion/scope-resolution/scope-extraction-failures.js';
 
@@ -311,6 +312,13 @@ export interface RepoMeta {
    * reads as absent, and both correctly mean "no hedge available from here".
    */
   undecidedInterfaceSatisfaction?: UndecidedSatisfactionSummary;
+  /**
+   * Census of the name-guessed CALLS edges the run emitted (labeled
+   * `global-name-fallback`), the impossible ones it refused, and the ambiguous
+   * `export *` names it declined to publish. Absent on indexes built before the
+   * census existed. See `scope-resolution/name-fallback-summary.ts`.
+   */
+  nameFallbackEdges?: NameFallbackSummary;
   /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against

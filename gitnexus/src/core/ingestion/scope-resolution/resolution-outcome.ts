@@ -108,6 +108,60 @@ export type ResolutionOutcome =
        * every real codebase and taught readers to ignore it.
        */
       readonly receiverOrigin?: ReceiverOrigin;
+    }
+  /**
+   * The global-name fallback fired: a callable was chosen because its SIMPLE
+   * NAME is unique in the workspace, with no import or scope chain leading to
+   * it. A labeled low-confidence edge WAS emitted.
+   *
+   * Separate from `resolved` because it is not a resolution, and separate from
+   * `suppressed` because an edge exists. Counting it is the only way a reader
+   * can tell how much of a language's call graph rests on name uniqueness — the
+   * number that was previously invisible because these edges were emitted with
+   * the same reason and confidence as import-resolved ones.
+   */
+  | {
+      readonly kind: 'fallback-guessed';
+      readonly targetId: string;
+      readonly language?: string;
+      readonly phase: string;
+      readonly filePath: string;
+      readonly name: string;
+      readonly range: Range;
+    }
+  /**
+   * A global-name-fallback candidate was REFUSED by the language's plausibility
+   * hook: the language's own visibility rules make that call impossible, so no
+   * edge was emitted.
+   *
+   * The counterpart of `fallback-guessed`, and the pair is what makes the
+   * refusal auditable — a refusal count with no guess count cannot distinguish
+   * "the guard works" from "the guard rejects everything".
+   */
+  | {
+      readonly kind: 'fallback-refused';
+      readonly candidateId: string;
+      readonly language?: string;
+      readonly phase: string;
+      readonly filePath: string;
+      readonly name: string;
+      readonly range: Range;
+    }
+  /**
+   * A barrel re-exported `name` through two or more `export *` sources that
+   * each declare it, so the language names no winner. The shared finalize pass
+   * REFUSED the binding (see `FinalizeStats.ambiguousWildcardExports`) instead
+   * of publishing the first-listed source as `import-resolved`; every importer
+   * of `name` through `filePath` stays unresolved. No `range`: the collision
+   * belongs to the file's export surface, not to one statement.
+   */
+  | {
+      readonly kind: 'reexport-ambiguous';
+      readonly candidateIds: readonly string[];
+      readonly phase: string;
+      /** The barrel file whose `export *` sources collide. */
+      readonly filePath: string;
+      readonly name: string;
     };
 
 /**
