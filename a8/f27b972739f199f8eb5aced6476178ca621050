@@ -1,0 +1,117 @@
+gitnexus/src/core/run-analyze.ts
+  s_2fc6857ad45390::t_6602f96bdda96a 20-24,3869-3876,3993
+gitnexus-shared/src/index.ts
+  s_2fc6857ad45390::t_ce8b8a311da39a 140
+gitnexus-shared/src/scope-resolution/finalize-algorithm.ts
+  s_2fc6857ad45390::t_fb22040b717636 117-144,195-212,272-290,298-310,329,358-364,373-376,402,620,644-648,660,787-788,794-797,824,838-840,920-1133,1173,1198,1224-1244,1326-1332,1358,1402-1442
+gitnexus-shared/src/scope-resolution/symbol-definition.ts
+  s_2fc6857ad45390::t_e90bad2f3ae924 114-125
+gitnexus/src/core/graph/edge-reasons.ts
+  s_2fc6857ad45390::t_317f1630b4b126 1-37
+gitnexus/src/core/graph/graph.ts
+  s_2fc6857ad45390::t_3f013bf9cfa168 166-172,174-176
+gitnexus/src/core/graph/types.ts
+  s_2fc6857ad45390::t_75c730d06f3eab 34,39-44,47-53
+gitnexus/src/core/ingestion/finalize-orchestrator.ts
+  s_2fc6857ad45390::t_b6d3484960e647 205-206
+gitnexus/src/core/ingestion/languages/dart/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_39930278393964 1-77
+gitnexus/src/core/ingestion/languages/dart/scope-resolver.ts
+  s_2fc6857ad45390::t_4381aed69bf945 44,237
+gitnexus/src/core/ingestion/languages/go/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_6206959a8c7cea 1-120
+gitnexus/src/core/ingestion/languages/go/scope-resolver.ts
+  s_2fc6857ad45390::t_17f9e2b00d5e63 19,89
+gitnexus/src/core/ingestion/languages/javascript/captures.ts
+  s_2fc6857ad45390::t_688f7949185648 39,987-988,1213-1226
+gitnexus/src/core/ingestion/languages/javascript/scope-resolver.ts
+  s_2fc6857ad45390::t_3aecc5040d417a 100-105
+gitnexus/src/core/ingestion/languages/ruby/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_890a69e7af7141 1-185
+gitnexus/src/core/ingestion/languages/ruby/scope-resolver.ts
+  s_2fc6857ad45390::t_e6f542db95ecd5 13,291
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_168e8e3b134664 1-123
+gitnexus/src/core/ingestion/languages/rust/scope-resolver.ts
+  s_2fc6857ad45390::t_539b35969b1acb 22,196
+gitnexus/src/core/ingestion/languages/swift/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_24e91084cfbc6c 1-62
+gitnexus/src/core/ingestion/languages/swift/scope-resolver.ts
+  s_2fc6857ad45390::t_47e00649343838 69,140
+gitnexus/src/core/ingestion/languages/typescript/captures.ts
+  s_2fc6857ad45390::t_e35158ee633343 35,392-393,666-679
+gitnexus/src/core/ingestion/languages/typescript/scope-resolver.ts
+  s_2fc6857ad45390::t_751106c5317ba9 135-143
+gitnexus/src/core/ingestion/languages/vue/scope-resolver.ts
+  s_2fc6857ad45390::t_3dcb5923313865 120-122
+gitnexus/src/core/ingestion/pipeline.ts
+  s_2fc6857ad45390::t_638105b1bbbe7d 19,414-418,482,528-553
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_2fc6857ad45390::t_651d6e624c8ed0 710-713,732
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_2fc6857ad45390::t_b7f282ba52f930 251-252,260-261,265-266,268,273,850-923
+gitnexus/src/core/ingestion/scope-resolution/graph-bridge/ids.ts
+  s_2fc6857ad45390::t_be540f7cb3f894 506-518,522-524
+gitnexus/src/core/ingestion/scope-resolution/name-fallback-summary.ts
+  s_2fc6857ad45390::t_1cacfd393e95e6 1-210
+gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts
+  s_2fc6857ad45390::t_ac7ab0aa744f18 39,68-76,151-158,204-214,574-585,609-649,697-707,713-725,729-733,740,746-748,753-768
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_2fc6857ad45390::t_cd0decaa0b00ec 735-736,740-751,1097-1102
+gitnexus/src/core/ingestion/scope-resolution/resolution-outcome.ts
+  s_2fc6857ad45390::t_bbbbef583386fb 111-164
+gitnexus/src/core/ingestion/scope-resolution/utils/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_cea1334d5dee08 1-97
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_2fc6857ad45390::t_34d2b7a2d7bce6 1-193
+gitnexus/src/core/lbug/graph-emit-sink.ts
+  s_2fc6857ad45390::t_d1a89044549005 73,285-297,308-313,486-495,623-629,638
+gitnexus/src/core/lbug/pdg-emit-sink.ts
+  s_2fc6857ad45390::t_b3ca527da47145 302-308
+gitnexus/src/storage/repo-meta.ts
+  s_2fc6857ad45390::t_3b129665261484 31,315-321
+gitnexus/src/types/pipeline.ts
+  s_2fc6857ad45390::t_885ae66f762f8b 37-44
+gitnexus/test/integration/resolvers/barrel-dir-index-wildcard.test.ts
+  s_2fc6857ad45390::t_afdaf4591944ec 1-135
+gitnexus/test/integration/resolvers/barrel-named-import-class-method.test.ts
+  s_2fc6857ad45390::t_6add3abc0bb6b2 1-105
+gitnexus/test/integration/resolvers/barrel-named-over-star-precedence.test.ts
+  s_2fc6857ad45390::t_9141780b3042b6 1-56
+gitnexus/test/integration/resolvers/barrel-review-3182-repros.test.ts
+  s_2fc6857ad45390::t_c97a44bd9d09a7 1-141
+gitnexus/test/integration/resolvers/barrel-wildcard-arrow-const.test.ts
+  s_2fc6857ad45390::t_f5f466cc2cc53d 1-94
+gitnexus/test/integration/resolvers/name-fallback-edges.test.ts
+  s_2fc6857ad45390::t_d5abd372ea9731 1-156
+gitnexus/test/unit/scope-resolution/esm-export-marker.test.ts
+  s_2fc6857ad45390::t_061f5fd51eb1b6 1-206
+gitnexus/test/unit/scope-resolution/free-call-fallback-guess-taint.test.ts
+  s_2fc6857ad45390::t_5bdec44bd59bb2 1-217
+gitnexus/test/unit/scope-resolution/name-fallback-summary.test.ts
+  s_2fc6857ad45390::t_fc8d06b14a02e6 1-232
+gitnexus/test/unit/scope-resolution/name-fallback-visibility.test.ts
+  s_2fc6857ad45390::t_eed0aa6ba2f9d9 1-742
+gitnexus/test/unit/scope-resolution/resolved-callee-names.test.ts
+  s_2fc6857ad45390::t_07561ec0ef1d9a 1-43
+gitnexus/test/unit/scope-resolution/wildcard-collision-export-evidence.test.ts
+  s_2fc6857ad45390::t_a85b41647e60a6 1-228
+gitnexus/test/unit/scope-resolution/wildcard-topLevelOnly-gate.test.ts
+  s_2fc6857ad45390::t_b30ae300bb93a2 1-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "a8f27b972739f199f8eb5aced6476178ca621050",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
