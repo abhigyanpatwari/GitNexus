@@ -44,8 +44,6 @@ export interface EsmExportEvidence {
   readonly commonJs: boolean;
 }
 
-const CJS_EXPORT_ASSIGNMENT = /^\s*(this\.[A-Za-z_$][\w$]*\s*=)/;
-
 /** Read binding patterns, never initializer expressions or property keys. */
 function bindsReceiver(node: SyntaxNode | null, name: string): boolean {
   if (node === null) return false;
@@ -219,8 +217,16 @@ export function collectEsmExportEvidence(
           namedLocals.add(child.text);
         }
       }
-    } else if (stmt.type === 'expression_statement' && CJS_EXPORT_ASSIGNMENT.test(stmt.text)) {
-      commonJs = true;
+    } else if (stmt.type === 'expression_statement') {
+      const assignment = stmt.namedChildren[0];
+      const left =
+        assignment?.type === 'assignment_expression' ? assignment.childForFieldName('left') : null;
+      if (
+        left !== null &&
+        (left.type === 'member_expression' || left.type === 'subscript_expression') &&
+        left.childForFieldName('object')?.type === 'this'
+      )
+        commonJs = true;
     }
   }
   return { namedLocals, commonJs };
@@ -257,7 +263,9 @@ export function esmExportVerdict(
   // program without crossing a nesting boundary — one inside a namespace or
   // ambient-module body is that container's export (see NESTING_BOUNDARIES).
   let underExport = false;
+  let functionScopedVariable = false;
   while (current !== null && current.type !== 'program') {
+    if (current.type === 'variable_declaration') functionScopedVariable = true;
     if (current.type === 'export_statement') {
       underExport = true;
       current = current.parent;
@@ -270,6 +278,12 @@ export function esmExportVerdict(
       return evidence.commonJs ? undefined : false;
     }
     if (NESTING_BOUNDARIES.has(current.type) && current.id !== nameNode.parent?.id) {
+      // `var` crosses blocks but never a function/namespace boundary. A
+      // module-scoped `var` can therefore be exported by a later clause.
+      if (current.type === 'statement_block' && functionScopedVariable) {
+        current = current.parent;
+        continue;
+      }
       return evidence.commonJs ? undefined : false;
     }
     current = current.parent;
