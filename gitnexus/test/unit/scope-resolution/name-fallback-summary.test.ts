@@ -224,9 +224,15 @@ describe('formatNameFallbackSummary', () => {
     const line = formatNameFallbackSummary(
       summarizeNameFallback([guessed('ruby'), refused('go'), refused('go'), refused('go')]),
     );
-    expect(line).toContain('1 call sites (1 distinct caller-file/name pairs)');
+    expect(line).toContain('1 call site (1 distinct caller-file/name pairs)');
     expect(line).toContain('3 refused as impossible');
     // `go` has more total activity, so it leads.
     expect(line).toMatch(/go 0\/3.*ruby 1\/0/);
+  });
+
+  it('uses plural call sites for multiple guesses', () => {
+    expect(
+      formatNameFallbackSummary(summarizeNameFallback([guessed('go'), guessed('go')])),
+    ).toContain('2 call sites (');
   });
 });

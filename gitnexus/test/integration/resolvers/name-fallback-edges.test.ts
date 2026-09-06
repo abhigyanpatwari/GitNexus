@@ -11,8 +11,8 @@
  *     import produced, so no consumer could discount it.
  *
  * These tests pin both. The Go arm proves the impossible edge is now REFUSED,
- * with the same-package call kept as the control that shows the refusal is
- * targeted rather than a blanket disabling of the tier. The Ruby arm proves a
+ * with a same-file call confirming ordinary local resolution is preserved.
+ * That control does not exercise the global-name tier. The Ruby arm proves a
  * surviving guess is LABELED, since Ruby deliberately keeps the tier for
  * autoload. The last test is the regression that matters most: no edge from
  * this tier may ever again carry `import-resolved`.
@@ -71,10 +71,11 @@ func CallItRemotely() int {
 
   afterAll(() => rmRepo(repoDir));
 
-  it('keeps the same-package call (control: the tier still works)', () => {
+  it('keeps ordinary same-file resolution as a control', () => {
     const calls = getRelationships(result, 'CALLS');
     const local = calls.find((c) => c.source === 'UseItLocally' && c.target === 'uniqueHelperXyz');
     expect(local).toBeDefined();
+    expect(local!.rel.reason).not.toBe(GLOBAL_NAME_FALLBACK_REASON);
   });
 
   it('emits NO caller edge from the other package', () => {

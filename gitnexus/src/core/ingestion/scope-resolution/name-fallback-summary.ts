@@ -195,7 +195,8 @@ export function formatNameFallbackSummary(
     summary.distinctGuessedPairs !== undefined
       ? ` (${summary.distinctGuessedPairs} distinct caller-file/name pairs)`
       : '';
-  return `name-fallback resolution: ${summary.totalGuessed} call sites${pairs}, ${summary.totalRefused} refused as impossible (guessed/refused by language: ${languages})${ambiguous}`;
+  const siteUnit = summary.totalGuessed === 1 ? 'call site' : 'call sites';
+  return `name-fallback resolution: ${summary.totalGuessed} ${siteUnit}${pairs}, ${summary.totalRefused} refused as impossible (guessed/refused by language: ${languages})${ambiguous}`;
 }
 
 /**

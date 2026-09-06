@@ -150,6 +150,32 @@ describe('@declaration.is-exported — Opus review follow-ups', () => {
 });
 
 describe('@declaration.is-exported (JavaScript emitter)', () => {
+  it('keeps bracket-form top-level this exports undecided like dot-form exports', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'x.js'],
+      [emitTsScopeCaptures, 'x.ts'],
+    ] as const) {
+      const v = verdicts(emit, "function api() {} this['api'] = api;", file);
+      expect(v.api).toBeUndefined();
+    }
+  });
+
+  it('recognizes exported module-scoped var inside a block, but not block let or function-local var', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'x.js'],
+      [emitTsScopeCaptures, 'x.ts'],
+    ] as const) {
+      const v = verdicts(
+        emit,
+        'if (ok) { var visible = 1; let hidden = 2; } function wrapper() { var nested = 3; } export { visible, hidden, nested };',
+        file,
+      );
+      expect(v.visible).toBe('true');
+      expect(v.hidden).toBe('false');
+      expect(v.nested).toBe('false');
+    }
+  });
+
   it('marks synthesized default-export HOC declarations in both emitters', () => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'Widget.jsx'],
