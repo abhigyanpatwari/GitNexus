@@ -125,6 +125,12 @@ export interface WorkerPool {
    *
    * Returns one result array per input group, in input order. A group whose
    * items were all quarantined yields an empty array.
+   *
+   * Required, not optional. `getQuarantinedPaths?` and `getStats?` below are
+   * marked optional as a compatibility accommodation for `WorkerPool` shapes
+   * that predate them — not as a convention for new members. Making this one
+   * optional would force a `?.` plus a fallback branch at its only production
+   * call site, and that branch could never run.
    */
   dispatchGroups<TInput, TResult>(
     groups: readonly DispatchGroup<TInput>[],
@@ -469,7 +475,9 @@ const DEFAULT_WORKER_READY_TIMEOUT_MS = 5_000;
  * extraction / structured-clone overhead, and the marginal worker adds
  * memory pressure (tree-sitter state + sub-batch buffer) without much
  * throughput gain. Operators on bigger machines override via
- * `GITNEXUS_WORKER_POOL_SIZE` or `--workers <N>`.
+ * `GITNEXUS_WORKER_POOL_SIZE` or `--workers <N>`; both are deliberate
+ * operator input and bypass the work-proportional sizing in `parse-impl`,
+ * which only bounds the AUTO default.
  */
 const DEFAULT_POOL_SIZE_CAP = 16;
 
@@ -647,7 +655,7 @@ export function resolveWorkerPoolOptions(
  * GITNEXUS_WORKER_POOL_SIZE=`) is an accident, not a request for zero workers;
  * only a literal `0` disables the pool.
  */
-function envWorkerPoolSize(): number | undefined {
+export function envWorkerPoolSize(): number | undefined {
   const raw = process.env.GITNEXUS_WORKER_POOL_SIZE;
   if (raw === undefined || raw.trim() === '') return undefined;
   return nonNegativeInteger(raw);
@@ -1383,15 +1391,20 @@ export const createWorkerPool = (
     // Layer 3: filter out quarantined paths so a known-bad file never reaches
     // a worker again this pool lifetime. The caller queries
     // `getQuarantinedPaths` after dispatch to route filtered items.
-    const dispatchableGroups = groups.map((group) => {
-      const items: TInput[] = [];
-      for (const item of group.items) {
-        const path = itemPath(item);
-        if (path !== undefined && quarantine.has(path)) continue;
-        items.push(item);
-      }
-      return { items, chunkHash: group.chunkHash };
-    });
+    // Quarantine is empty on every run that has not had a worker die, so the
+    // filter below would be an identity copy of every group's items. Skip it.
+    const dispatchableGroups =
+      quarantine.size === 0
+        ? groups
+        : groups.map((group) => {
+            const items: TInput[] = [];
+            for (const item of group.items) {
+              const path = itemPath(item);
+              if (path !== undefined && quarantine.has(path)) continue;
+              items.push(item);
+            }
+            return { items, chunkHash: group.chunkHash };
+          });
     const dispatchableCount = dispatchableGroups.reduce(
       (sum, group) => sum + group.items.length,
       0,
