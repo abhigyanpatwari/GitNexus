@@ -1,0 +1,39 @@
+gitnexus/src/core/ingestion/import-resolvers/node-workspace-packages.ts
+  s_2fc6857ad45390::t_22e7e6544099f6 21,225-229,233-242,290-328,330-333,344-346,350-351,353-418,454-467,470-489,496,503,507-511,577-595,600-604,688-885
+gitnexus/src/core/run-analyze.ts
+  s_2fc6857ad45390::t_9f232bf2173fbd 20,1085-1087
+gitnexus/test/integration/resolvers/barrel-workspace-hop.test.ts
+  s_2fc6857ad45390::t_dd4813a0b39baa 1-203
+gitnexus/test/integration/run-analyze-invalidates-workspace-memo.test.ts
+  s_2fc6857ad45390::t_81127a133e14ba 1-84
+gitnexus/test/unit/node-workspace-memo-rejection.test.ts
+  s_2fc6857ad45390::t_669c4ef92eb70e 1-115
+gitnexus/test/unit/node-workspace-nested-roots.test.ts
+  s_2fc6857ad45390::t_8b01bf811ab507 1-258
+gitnexus/test/unit/node-workspace-repo-root-race.test.ts
+  s_2fc6857ad45390::t_ccb5c0fea87ae2 1-134
+gitnexus/test/unit/node-workspace-review-fixes.test.ts
+  s_2fc6857ad45390::t_12baf0735abac2 1-330
+gitnexus/test/unit/node-workspace-scan-determinism.test.ts
+  s_2fc6857ad45390::t_676b3fe7d91dd9 1-171
+gitnexus/test/unit/node-workspace-vite-entry-comments.test.ts
+  s_2fc6857ad45390::t_0780d4752ac7ef 1-76
+gitnexus/test/unit/node-workspace-vite-structure.test.ts
+  s_2fc6857ad45390::t_a424b019ad6d61 1-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "ae927cd613deb4c260d16e5ff93fdcf4317d37aa",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
