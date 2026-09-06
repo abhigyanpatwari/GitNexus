@@ -44,8 +44,6 @@ export interface EsmExportEvidence {
   readonly commonJs: boolean;
 }
 
-const CJS_EXPORT_ASSIGNMENT = /^\s*(this\.[A-Za-z_$][\w$]*\s*=)/;
-
 /** Read binding patterns, never initializer expressions or property keys. */
 function bindsReceiver(node: SyntaxNode | null, name: string): boolean {
   if (node === null) return false;
@@ -57,18 +55,33 @@ function bindsReceiver(node: SyntaxNode | null, name: string): boolean {
   if (node.type === 'assignment_pattern')
     return bindsReceiver(node.childForFieldName('left'), name);
   if (node.type === 'pair_pattern') return bindsReceiver(node.childForFieldName('value'), name);
+  if (node.type === 'import_specifier') {
+    return bindsReceiver(node.childForFieldName('alias') ?? node.childForFieldName('name'), name);
+  }
   if (node.type === 'required_parameter' || node.type === 'optional_parameter') {
     return bindsReceiver(node.childForFieldName('pattern'), name);
   }
   return (
-    ['formal_parameters', 'object_pattern', 'array_pattern', 'rest_pattern'].includes(node.type) &&
-    node.namedChildren.some((child) => bindsReceiver(child, name))
+    [
+      'formal_parameters',
+      'object_pattern',
+      'array_pattern',
+      'rest_pattern',
+      'import_clause',
+      'named_imports',
+      'namespace_import',
+    ].includes(node.type) && node.namedChildren.some((child) => bindsReceiver(child, name))
   );
 }
 
 /** A locally bound `module`/`exports` is not Node's export receiver. */
 function isExportReceiverShadowed(node: SyntaxNode, name: string): boolean {
   for (let scope = node.parent; scope !== null; scope = scope.parent) {
+    if (
+      ['function_expression', 'generator_function', 'class'].includes(scope.type) &&
+      scope.childForFieldName('name')?.text === name
+    )
+      return true;
     if (
       bindsReceiver(scope.childForFieldName('parameters'), name) ||
       bindsReceiver(scope.childForFieldName('parameter'), name)
@@ -81,6 +94,13 @@ function isExportReceiverShadowed(node: SyntaxNode, name: string): boolean {
           ? statement.childForFieldName('declaration')
           : statement;
       if (declaration === null) continue;
+      if (
+        declaration.type === 'import_statement' &&
+        declaration.namedChildren.some(
+          (child) => child.type === 'import_clause' && bindsReceiver(child, name),
+        )
+      )
+        return true;
       if (
         declaration.type === 'lexical_declaration' ||
         declaration.type === 'variable_declaration'
@@ -197,8 +217,16 @@ export function collectEsmExportEvidence(
           namedLocals.add(child.text);
         }
       }
-    } else if (stmt.type === 'expression_statement' && CJS_EXPORT_ASSIGNMENT.test(stmt.text)) {
-      commonJs = true;
+    } else if (stmt.type === 'expression_statement') {
+      const assignment = stmt.namedChildren[0];
+      const left =
+        assignment?.type === 'assignment_expression' ? assignment.childForFieldName('left') : null;
+      if (
+        left !== null &&
+        (left.type === 'member_expression' || left.type === 'subscript_expression') &&
+        left.childForFieldName('object')?.type === 'this'
+      )
+        commonJs = true;
     }
   }
   return { namedLocals, commonJs };
@@ -235,7 +263,9 @@ export function esmExportVerdict(
   // program without crossing a nesting boundary — one inside a namespace or
   // ambient-module body is that container's export (see NESTING_BOUNDARIES).
   let underExport = false;
+  let functionScopedVariable = false;
   while (current !== null && current.type !== 'program') {
+    if (current.type === 'variable_declaration') functionScopedVariable = true;
     if (current.type === 'export_statement') {
       underExport = true;
       current = current.parent;
@@ -248,6 +278,12 @@ export function esmExportVerdict(
       return evidence.commonJs ? undefined : false;
     }
     if (NESTING_BOUNDARIES.has(current.type) && current.id !== nameNode.parent?.id) {
+      // `var` crosses blocks but never a function/namespace boundary. A
+      // module-scoped `var` can therefore be exported by a later clause.
+      if (current.type === 'statement_block' && functionScopedVariable) {
+        current = current.parent;
+        continue;
+      }
       return evidence.commonJs ? undefined : false;
     }
     current = current.parent;

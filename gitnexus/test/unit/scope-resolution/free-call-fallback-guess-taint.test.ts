@@ -231,7 +231,7 @@ describe('free-call dedup: the label is decided from every collapsed site, never
       const summary = summarizeNameFallback(outcomes);
       expect(summary?.totalGuessed).toBe(1);
       const line = formatNameFallbackSummary(summary);
-      expect(line).toContain('name-fallback resolution: 1 call sites');
+      expect(line).toContain('name-fallback resolution: 1 call site (');
       expect(line).not.toContain('CALLS edges');
     }
   });

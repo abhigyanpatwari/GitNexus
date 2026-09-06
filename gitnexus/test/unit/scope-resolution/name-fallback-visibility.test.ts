@@ -509,6 +509,17 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
 });
 
 describe('Swift: isGlobalNameFallbackPlausible', () => {
+  it.each(['sources', 'tests', 'Tests'])(
+    'does not invent target modules under unconfigured %s folders',
+    (root) => {
+      expect(
+        swiftIsGlobalNameFallbackPlausible({
+          callerParsed: mkCaller(`${root}/App/Caller.swift`),
+          candidate: mkCandidate(`${root}/Core/Helper.swift`, 'helper'),
+        }),
+      ).toBe(true);
+    },
+  );
   it('does not invent module boundaries between arbitrary Xcode directories', () => {
     expect(
       swiftIsGlobalNameFallbackPlausible({
