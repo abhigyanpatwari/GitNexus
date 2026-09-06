@@ -20,7 +20,7 @@ import {
   enrichExportedTypeMap,
   type BindingEntry,
 } from '../binding-accumulator.js';
-import { mergeChunkResults, dispatchChunkParse } from '../parsing-processor.js';
+import { mergeChunkResults, dispatchChunkParseRound } from '../parsing-processor.js';
 import {
   fileContentHash,
   computeChunkHash,
@@ -215,6 +215,28 @@ const TARGET_JOBS_PER_WORKER = 3;
 
 /** Floor for a derived sub-batch so jobs don't shrink to per-file IPC churn. */
 const MIN_SUB_BATCH_BYTES = 256 * 1024;
+
+/**
+ * Source bytes of cache-missing chunks allowed in flight in one pool round.
+ *
+ * A `dispatch` is a barrier, so one round-trip per cache pack leaves most slots
+ * idle: packs are keyed by `(language, hash(path) % 128)` and routinely land far
+ * under {@link DEFAULT_CHUNK_BYTE_BUDGET} (this repo: 1285 packs where the byte
+ * budget alone needs 16, 549 of them holding a single file). Rounds batch packs
+ * into one `dispatchGroups` call without touching pack identity.
+ *
+ * This is the in-flight cap, the same role Piscina's `maxQueue` plays: bigger
+ * rounds remove more barriers but hold more file content and more un-merged
+ * worker output on the main thread at once. Defaulting to one chunk budget
+ * keeps in-flight source bytes at the magnitude the loop already prefetched
+ * (`parseChunkConcurrency`, 2 chunks ahead). Override via
+ * `GITNEXUS_PARSE_ROUND_BYTES`.
+ */
+function resolveParseRoundByteBudget(options?: PipelineOptions): number {
+  const env = Number(process.env.GITNEXUS_PARSE_ROUND_BYTES);
+  if (Number.isFinite(env) && env > 0) return env;
+  return resolveChunkByteBudget(options);
+}
 
 function resolveChunkByteBudget(options?: PipelineOptions): number {
   const opt = options?.chunkByteBudget;
@@ -793,17 +815,25 @@ export async function runChunkedParseAndResolve(
     const verboseThroughputLog = isDev || isVerboseIngestionEnabled();
     const heapProbeEveryN = isDebugHeapEnabled() ? 25 : 0;
 
-    // ── Merge pipelining (#worker-idle) ──────────────────────────────────────
-    // Merging a chunk's worker results into the graph is the only remaining
-    // serial main-thread step (ParsedFile serialization now runs in workers).
-    // To stop the whole pool idling during that merge, we OVERLAP it with the
-    // NEXT chunk's worker parse: a freshly-dispatched worker chunk is parked in
-    // `pendingWorkerChunk`, and we merge+finalize it only AFTER starting the
-    // following chunk's dispatch — so the workers parse chunk N+1 while the
-    // main thread merges chunk N. Chunk ORDER is preserved (N finalized before
-    // N+1), which keeps the deferred aggregation deterministic. Cache-hit
-    // chunks drain any pending chunk first, then finalize inline (no worker
-    // dispatch to overlap).
+    // ── Dispatch rounds + merge pipelining (#worker-idle) ────────────────────
+    // Two separate idle sources, handled together here.
+    //
+    // 1. Barrier per chunk. `dispatch` resolves only when every job it created
+    //    has committed, so dispatching one cache pack at a time strands the
+    //    pool whenever a pack is smaller than it — which stable packs usually
+    //    are. Chunks accumulate into a ROUND (bounded by `roundByteBudget` of
+    //    cache-missing source) and go out in one `dispatchGroups` call.
+    // 2. Serial merge. Merging worker results into the graph is the only
+    //    remaining serial main-thread step (ParsedFile serialization now runs
+    //    in workers). A dispatched round is parked in `pendingRound` and
+    //    merged only AFTER the following round's dispatch has started, so the
+    //    workers parse round N+1 while the main thread merges round N.
+    //
+    // Chunk ORDER is preserved throughout — rounds drain in order and entries
+    // inside a round finalize by `chunkIdx` — which keeps deferred aggregation
+    // deterministic regardless of how chunks were batched. Cache hits ride
+    // along as round entries so they observe the same ordering without forcing
+    // a dispatch.
     interface PendingWorkerChunk {
       readonly rawResults: ParseWorkerResult[];
       readonly chunkIdx: number;
@@ -811,7 +841,34 @@ export async function runChunkedParseAndResolve(
       readonly chunkFiles: Array<{ path: string; content: string }>;
       readonly chunkStartMs: number | null;
     }
-    let pendingWorkerChunk: PendingWorkerChunk | null = null;
+
+    /**
+     * One chunk queued into the current round. A `hit` already has its worker
+     * output (from the parse cache); a `miss` gets it from the round's single
+     * `dispatchGroups` call. Both are finalized in `chunkIdx` order when the
+     * round drains, which is what keeps deferred aggregation deterministic
+     * regardless of how chunks were batched.
+     */
+    type RoundEntry =
+      | {
+          readonly kind: 'hit';
+          readonly chunkIdx: number;
+          readonly chunkFiles: Array<{ path: string; content: string }>;
+          readonly chunkStartMs: number | null;
+          readonly cachedRaw: ParseWorkerResult[];
+        }
+      | {
+          readonly kind: 'miss';
+          readonly chunkIdx: number;
+          readonly chunkHash: string | null;
+          readonly chunkFiles: Array<{ path: string; content: string }>;
+          readonly chunkStartMs: number | null;
+        };
+
+    const roundByteBudget = resolveParseRoundByteBudget(options);
+    let roundEntries: RoundEntry[] = [];
+    let roundMissBytes = 0;
+    let pendingRound: { entries: RoundEntry[]; missResults: ParseWorkerResult[][] } | null = null;
 
     // Apply one chunk's merged worker data: per-chunk aggregation into the
     // run-level accumulators + the throughput log. Shared by the cache-hit
@@ -946,6 +1003,149 @@ export async function runChunkedParseAndResolve(
       await applyChunkResults(chunkWorkerData, p.chunkIdx, p.chunkFiles, p.chunkStartMs);
     };
 
+    /**
+     * Dispatch a round's cache misses as ONE pool round. Returns the parked
+     * round; the caller drains it after starting the next one so the workers
+     * parse round N+1 while the main thread merges round N (the same overlap
+     * the per-chunk loop had, at round granularity).
+     */
+    const startRound = async (
+      entries: RoundEntry[],
+    ): Promise<{ entries: RoundEntry[]; results: Promise<ParseWorkerResult[][]> } | null> => {
+      if (entries.length === 0) return null;
+      const misses = entries.filter((entry) => entry.kind === 'miss');
+      if (misses.length === 0) {
+        return { entries, results: Promise.resolve([]) };
+      }
+      for (const miss of misses) {
+        if (durableParsedFileDir !== undefined && miss.chunkHash !== null) {
+          try {
+            await prepareDurableParsedFileChunk(durableParsedFileDir, miss.chunkHash);
+          } catch (err) {
+            // The durable store is an optimization — degrade like the restore
+            // path does instead of failing the analyze. Workers recreate the
+            // directory on write, so at worst the old generation lingers.
+            logger.warn(
+              { err, chunkHash: miss.chunkHash.slice(0, 8) },
+              'parsedfile-cache: could not reset durable chunk generation; continuing',
+            );
+          }
+        }
+      }
+      const roundFiles = misses.reduce((sum, miss) => sum + miss.chunkFiles.length, 0);
+      const firstIdx = misses[0].chunkIdx;
+      const lastIdx = misses[misses.length - 1].chunkIdx;
+      const progressForRound = (current: number, _total: number, filePath: string) => {
+        const globalCurrent = filesParsedSoFar + current;
+        // Parse phase covers 20-70 (M2). Deferred extraction handles 70-95.
+        const parsingProgress = 20 + (globalCurrent / totalParseable) * 50;
+        onProgress({
+          phase: 'parsing',
+          percent: Math.round(parsingProgress),
+          message:
+            firstIdx === lastIdx
+              ? `Parsing chunk ${firstIdx + 1}/${numChunks}...`
+              : `Parsing chunks ${firstIdx + 1}-${lastIdx + 1}/${numChunks}...`,
+          detail: filePath,
+          stats: {
+            filesProcessed: globalCurrent,
+            totalFiles: totalParseable,
+            nodesCreated: graph.nodeCount,
+          },
+        });
+      };
+      const activeWorkerPool = getOrCreateWorkerPool();
+      if (verboseThroughputLog) {
+        logger.info(
+          `🚚 round: ${misses.length} chunk(s) ${firstIdx + 1}-${lastIdx + 1}/${numChunks}, ` +
+            `${roundFiles} files in one dispatch`,
+        );
+      }
+      const results = dispatchChunkParseRound(
+        misses.map((miss) => ({
+          items: miss.chunkFiles,
+          chunkHash: miss.chunkHash ?? undefined,
+        })),
+        activeWorkerPool,
+        progressForRound,
+      );
+      // Mark handled so a rejection during the overlap drain below isn't
+      // flagged as unhandled; the `await` in drainRound re-throws it for real
+      // handling.
+      results.catch(() => {});
+      return { entries, results };
+    };
+
+    /**
+     * Merge + finalize every chunk of a parked round, in `chunkIdx` order.
+     * Takes RESOLVED worker output: the round's dispatch must already have
+     * settled before this runs, because the pool allows only one dispatch in
+     * flight at a time (see `closeRound`).
+     */
+    const drainRound = async (round: {
+      entries: RoundEntry[];
+      missResults: ParseWorkerResult[][];
+    }): Promise<void> => {
+      const missResults = round.missResults;
+      let missIdx = 0;
+      for (const entry of round.entries) {
+        if (entry.kind === 'hit') {
+          const chunkWorkerData = mergeChunkResults(
+            graph,
+            symbolTable,
+            entry.cachedRaw,
+            exportedTypeMap,
+          );
+          await applyChunkResults(
+            chunkWorkerData,
+            entry.chunkIdx,
+            entry.chunkFiles,
+            entry.chunkStartMs,
+          );
+          continue;
+        }
+        await finalizeWorkerChunk({
+          rawResults: missResults[missIdx++] ?? [],
+          chunkIdx: entry.chunkIdx,
+          chunkHash: entry.chunkHash,
+          chunkFiles: entry.chunkFiles,
+          chunkStartMs: entry.chunkStartMs,
+        });
+      }
+    };
+
+    /**
+     * Close the accumulated round.
+     *
+     * `WorkerPool.dispatch`/`dispatchGroups` is NOT reentrant — concurrent
+     * calls race on the shared per-slot busy/in-flight state and wedge the
+     * pool until every worker idle-times out. So exactly one dispatch is in
+     * flight here: start this round, merge the PREVIOUS round (whose results
+     * are already resolved) while these workers run, then await this round and
+     * park it resolved for the next close to merge.
+     */
+    const closeRound = async (): Promise<void> => {
+      const started = await startRound(roundEntries);
+      roundEntries = [];
+      roundMissBytes = 0;
+      const previous = pendingRound;
+      pendingRound = null;
+      if (previous) await drainRound(previous);
+      if (!started) return;
+      let missResults: ParseWorkerResult[][];
+      try {
+        missResults = await started.results;
+      } catch (err) {
+        if (!(err instanceof WorkerPoolInitializationError)) throw err;
+        // Every worker crashed during startup and the pool's bounded self-heal
+        // was exhausted. Fail fast (#1741) — there is no sequential parser to
+        // degrade to. `handleWorkerStartupFailure` always throws, so
+        // `missResults` stays definitely assigned for the parked round below.
+        handleWorkerStartupFailure(err);
+      }
+      pendingRound = { entries: started.entries, missResults };
+    };
+
     for (let chunkIdx = 0; chunkIdx < numChunks; chunkIdx++) {
       if (heapProbeEveryN > 0 && chunkIdx > 0 && chunkIdx % heapProbeEveryN === 0) {
         logHeapProbe(
@@ -1042,13 +1242,8 @@ export async function runChunkedParseAndResolve(
         // Cache hit: replay cached worker output. Finalize any parked worker
         // chunk FIRST so deferred aggregation stays in chunk order, then merge
         // + apply this hit inline (no worker dispatch to overlap).
-        if (pendingWorkerChunk) {
-          await finalizeWorkerChunk(pendingWorkerChunk);
-          pendingWorkerChunk = null;
-        }
         chunkCacheHits++;
         parseCacheHitFileCount += chunkFiles.length;
-        const chunkWorkerData = mergeChunkResults(graph, symbolTable, cachedRaw, exportedTypeMap);
         if (isDev) {
           logger.info(
             `📦 parse-cache HIT: chunk ${chunkIdx + 1}/${numChunks} (${chunkFiles.length} files, ${chunkHash?.slice(0, 8) ?? 'unknown'})`,
@@ -1071,82 +1266,22 @@ export async function runChunkedParseAndResolve(
           },
         });
         // The durable gate already snapshotted warm `.v8` shards into the
-        // run-scoped store for scope resolution.
-        await applyChunkResults(chunkWorkerData, chunkIdx, chunkFiles, chunkStartMs);
+        // run-scoped store for scope resolution. Queue into the round so this
+        // hit still finalizes in `chunkIdx` order relative to its neighbours.
+        roundEntries.push({ kind: 'hit', chunkIdx, chunkFiles, chunkStartMs, cachedRaw });
       } else {
-        // Cache miss: dispatch to workers, capture the raw results, store
-        // them under the chunk hash for the next run.
+        // Cache miss: queue for the round's single dispatch; the raw results
+        // are stored under the chunk hash when the round drains.
         chunkCacheMisses++;
         reparsedFileCount += chunkFiles.length;
-        if (durableParsedFileDir !== undefined && chunkHash !== null) {
-          try {
-            await prepareDurableParsedFileChunk(durableParsedFileDir, chunkHash);
-          } catch (err) {
-            // The durable store is an optimization — degrade like the restore
-            // path does instead of failing the analyze. Workers recreate the
-            // directory on write, so at worst the old generation lingers.
-            logger.warn(
-              { err, chunkHash: chunkHash.slice(0, 8) },
-              'parsedfile-cache: could not reset durable chunk generation; continuing',
-            );
-          }
-        }
-        const progressForChunk = (current: number, _total: number, filePath: string) => {
-          const globalCurrent = filesParsedSoFar + current;
-          // Parse phase covers 20-70 (M2). Deferred extraction handles 70-95.
-          const parsingProgress = 20 + (globalCurrent / totalParseable) * 50;
-          onProgress({
-            phase: 'parsing',
-            percent: Math.round(parsingProgress),
-            message: `Parsing chunk ${chunkIdx + 1}/${numChunks}...`,
-            detail: filePath,
-            stats: {
-              filesProcessed: globalCurrent,
-              totalFiles: totalParseable,
-              nodesCreated: graph.nodeCount,
-            },
-          });
-        };
-        const activeWorkerPool = getOrCreateWorkerPool();
-        // Worker path — PIPELINE: kick off this chunk's dispatch, merge the
-        // PREVIOUS chunk while these workers parse, then park this chunk for
-        // the next iteration to merge (overlapping its parse). The deferred
-        // merge + parse-cache write-guard + aggregation all run in
-        // `finalizeWorkerChunk`, in chunk order. The pool is the sole parse
-        // path — `getOrCreateWorkerPool` returns a pool or throws.
-        const dispatchPromise = dispatchChunkParse(
-          chunkFiles,
-          activeWorkerPool,
-          progressForChunk,
-          undefined,
-          chunkHash ?? undefined,
-        );
-        // Mark handled so a rejection during the overlap drain below isn't
-        // flagged as unhandled; the `await` re-throws it for real handling.
-        dispatchPromise.catch(() => {});
-        if (pendingWorkerChunk) {
-          await finalizeWorkerChunk(pendingWorkerChunk);
-          pendingWorkerChunk = null;
-        }
-        let chunkResults: ParseWorkerResult[];
-        try {
-          chunkResults = await dispatchPromise;
-        } catch (err) {
-          if (!(err instanceof WorkerPoolInitializationError)) throw err;
-          // Every worker crashed during startup and the pool's bounded
-          // self-heal was exhausted. Fail fast (#1741) — there is no sequential
-          // parser to degrade to. `handleWorkerStartupFailure` always throws, so
-          // `chunkResults` stays definitely assigned for the parked chunk below.
-          handleWorkerStartupFailure(err);
-        }
-        pendingWorkerChunk = {
-          rawResults: chunkResults,
-          chunkIdx,
-          chunkHash,
-          chunkFiles,
-          chunkStartMs,
-        };
+        roundEntries.push({ kind: 'miss', chunkIdx, chunkHash, chunkFiles, chunkStartMs });
+        for (const file of chunkFiles) roundMissBytes += file.content.length;
       }
+
+      // Close the round once enough cache-missing source is queued. Cache hits
+      // ride along without extending it — they cost no worker time, and the
+      // budget bounds what is in flight, not what is buffered.
+      if (roundMissBytes >= roundByteBudget) await closeRound();
 
       // (Per-chunk aggregation + parse-cache write + throughput log now run in
       // `applyChunkResults` / `finalizeWorkerChunk` — see the merge-pipelining
@@ -1155,11 +1290,13 @@ export async function runChunkedParseAndResolve(
       // scope-resolution phase, RING4-2 #943.)
     }
 
-    // Drain the final parked worker chunk — the last pipelined chunk has no
-    // successor to overlap its merge with, so merge + finalize it here.
-    if (pendingWorkerChunk) {
-      await finalizeWorkerChunk(pendingWorkerChunk);
-      pendingWorkerChunk = null;
+    // Drain the tail: close the partially-filled round, then drain the round
+    // it parked — the last round has no successor to overlap its merge with.
+    if (roundEntries.length > 0) await closeRound();
+    if (pendingRound) {
+      const last = pendingRound;
+      pendingRound = null;
+      await drainRound(last);
     }
 
     if (isDev && parseCache && (chunkCacheHits > 0 || chunkCacheMisses > 0)) {

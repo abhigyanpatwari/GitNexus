@@ -7,6 +7,7 @@ import { accumulateExportedTypesFromParsedNode, type ExportedTypeMap } from './c
 
 import type { ParsedFile } from 'gitnexus-shared';
 import { WorkerPool } from './workers/worker-pool.js';
+import type { DispatchGroup } from './workers/worker-pool.js';
 import type { SkippedPath } from './workers/clone-safety.js';
 import type { CfgSkipCounts } from './cfg/collect.js';
 import { logger } from '../logger.js';
@@ -227,26 +228,56 @@ export const dispatchChunkParse = async (
    */
   chunkHash?: string,
 ): Promise<ParseWorkerResult[]> => {
-  const parseableFiles: ParseWorkerInput[] = [];
-  for (const file of files) {
-    const lang = getLanguageFromFilename(file.path);
-    if (lang) parseableFiles.push({ path: file.path, content: file.content });
-  }
-  if (parseableFiles.length === 0) return [];
-
-  const total = files.length;
-  const chunkResults = await workerPool.dispatch<ParseWorkerInput, ParseWorkerResult>(
-    parseableFiles,
-    (filesProcessed) => {
-      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
-    },
-    chunkHash,
+  const [chunkResults = []] = await dispatchChunkParseRound(
+    [{ items: files, chunkHash }],
+    workerPool,
+    onFileProgress,
   );
 
   // Capture raw results for the incremental parse cache before merging.
   if (outRawResults) {
     for (const r of chunkResults) outRawResults.push(r);
   }
+  return chunkResults;
+};
+
+/**
+ * Dispatch SEVERAL parse-cache chunks as one pool round and return their raw
+ * results, one array per input group in input order.
+ *
+ * `WorkerPool.dispatch` is a barrier, so one round-trip per chunk leaves most
+ * slots idle whenever a chunk is smaller than the pool — which stable
+ * `(language, hash(path) % 128)` packs usually are. Batching chunks into one
+ * `dispatchGroups` call removes those barriers; jobs are still cut at chunk
+ * boundaries, so every result stays attributable to the chunk whose cache key
+ * owns it.
+ */
+export const dispatchChunkParseRound = async (
+  groups: ReadonlyArray<{
+    items: { path: string; content: string }[];
+    chunkHash?: string;
+  }>,
+  workerPool: WorkerPool,
+  onFileProgress?: FileProgressCallback,
+): Promise<ParseWorkerResult[][]> => {
+  const dispatchGroups: DispatchGroup<ParseWorkerInput>[] = groups.map((group) => {
+    const items: ParseWorkerInput[] = [];
+    for (const file of group.items) {
+      const lang = getLanguageFromFilename(file.path);
+      if (lang) items.push({ path: file.path, content: file.content });
+    }
+    return { items, chunkHash: group.chunkHash };
+  });
+  const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+  if (dispatchGroups.every((group) => group.items.length === 0)) return groups.map(() => []);
+
+  const perGroup = await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(
+    dispatchGroups,
+    (filesProcessed) => {
+      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
+    },
+  );
+  const chunkResults = perGroup.flat();
 
   // Skipped-language telemetry (worker output, independent of the merge).
   const skippedLanguages = new Map<string, number>();
@@ -311,7 +342,7 @@ export const dispatchChunkParse = async (
   }
 
   onFileProgress?.(total, total, 'done');
-  return chunkResults;
+  return perGroup;
 };
 
 // ============================================================================
