@@ -150,6 +150,54 @@ describe('@declaration.is-exported — Opus review follow-ups', () => {
 });
 
 describe('@declaration.is-exported (JavaScript emitter)', () => {
+  it('marks synthesized default-export HOC declarations in both emitters', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'Widget.jsx'],
+      [emitTsScopeCaptures, 'Widget.tsx'],
+    ] as const) {
+      const captures = emit('export default memo(() => <div />);', file).filter(
+        (capture) => capture['@declaration.function'] !== undefined,
+      );
+      expect(captures.length).toBeGreaterThan(0);
+      expect(
+        captures.every((capture) => capture['@declaration.is-exported']?.text === 'true'),
+      ).toBe(true);
+    }
+  });
+
+  it.each([
+    'function wrapper(module) { module.exports = {}; }',
+    "function wrapper(module) { module['exports'] = {}; }",
+    'function wrapper(exports) { exports.alpha = 1; }',
+    "const wrapper = exports => { exports['alpha'] = 1; };",
+    'function wrapper() { const module = {}; module.exports = {}; }',
+    'function wrapper() { { module.exports = {}; let module; } }',
+    'function wrapper({ receiver: module }) { module.exports = {}; }',
+    'const module = {}; module.exports = { alpha() {} };',
+  ])('ignores a shadowed CommonJS receiver: %s', (source) => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'x.js'],
+      [emitTsScopeCaptures, 'x.ts'],
+    ] as const) {
+      const v = verdicts(
+        emit,
+        `${source}\nexport function publicApi() {}\nfunction hidden() {}`,
+        file,
+      );
+      expect(v.publicApi).toBe('true');
+      expect(v.hidden).toBe('false');
+    }
+  });
+
+  it('retains real CommonJS writes inside an unshadowed wrapper', () => {
+    const v = verdicts(
+      emitJsScopeCaptures,
+      'function wrapper() { module.exports = {}; }\nfunction hidden() {}',
+      'x.js',
+    );
+    expect(v.hidden).toBeUndefined();
+  });
+
   it.each(["module['exports']", 'module["exports"]'])(
     'recognizes %s object methods and properties as exports',
     (target) => {

@@ -3866,9 +3866,9 @@ async function runFullAnalysisInner(
 
     const resolutionOutcomes = pipelineResult.resolutionOutcomes ?? [];
     logUnresolvedReceiverFiles(resolutionOutcomes);
-    // Census of name-guessed CALLS edges (labeled `global-name-fallback`), refused
-    // impossibles and ambiguous `export *` names — the honesty readout for this
-    // run's resolution. Logged, and persisted below as `nameFallbackEdges`.
+    // Census of guessed call sites (before edge coalescing), refused candidates
+    // and ambiguous `export *` names. The legacy `nameFallbackEdges` metadata
+    // key stores site counts, not the final population of heuristic edges.
     const nameFallbackSummary = summarizeNameFallback(
       resolutionOutcomes,
       countCallsByLanguage(pipelineResult.resolvedCalleeNamesByCaller, pipelineResult.graph),

@@ -10,8 +10,9 @@
  * then only if the declaration is `public`.
  *
  * A module is approximated by its source directory, the layout every Swift
- * package manifest produces: `Sources/<Target>/…` and `Tests/<Target>/…`. Files
- * outside that layout fall back to their top-level directory.
+ * package manifest produces: `Sources/<Target>/…` and `Tests/<Target>/…`.
+ * `src/<Target>/…` is also recognized by the package configuration loader.
+ * Files outside these layouts have unknown module identity.
  *
  * The `private` / `fileprivate` half of the rule is NOT implemented, because
  * neither marker is recoverable from the parse model this hook sees —
@@ -24,21 +25,26 @@ import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { modulePathReaches } from '../../scope-resolution/utils/name-fallback-visibility.js';
 
 /** Directory names that hold one subdirectory PER TARGET rather than sources. */
-const SWIFT_TARGET_ROOTS: ReadonlySet<string> = new Set(['Sources', 'Tests', 'sources', 'tests']);
+const SWIFT_TARGET_ROOTS: ReadonlySet<string> = new Set([
+  'Sources',
+  'Tests',
+  'sources',
+  'tests',
+  'src',
+]);
 
 /**
  * The module (target) a Swift file belongs to.
  *
- * `Sources/Core/User.swift` → `Core`. A path with no target root returns its
- * first segment, so a flat repository still groups its files together instead
- * of putting every file in its own module.
+ * `Sources/Core/User.swift` → `Core`. Arbitrary Xcode folders are not module
+ * boundaries; without a recognized target layout leave the answer unknown.
  */
 function swiftModuleOf(filePath: string): string {
   const segments = filePath.split('/').filter((s) => s !== '');
-  for (let i = 0; i < segments.length - 1; i++) {
+  for (let i = 0; i < segments.length - 2; i++) {
     if (SWIFT_TARGET_ROOTS.has(segments[i]!)) return segments[i + 1]!;
   }
-  return segments.length > 1 ? segments[0]! : '';
+  return '';
 }
 
 export function swiftIsGlobalNameFallbackPlausible(ctx: {

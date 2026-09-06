@@ -17,14 +17,16 @@ const memberOnly = `export function alpha(s: string) { return s; }\nexport class
 
 async function run(name: string, files: Record<string, string>) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `gn-named-member-${name}-`));
-  writeFixtureRepo(dir, files);
-  const result = await runPipelineFromRepo(dir, () => {});
-  const targets = getRelationships(result, 'CALLS')
-    .filter((e) => e.sourceFilePath.includes('src/main'))
-    .map((e) => e.target)
-    .sort();
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-  return targets;
+  try {
+    writeFixtureRepo(dir, files);
+    const result = await runPipelineFromRepo(dir, () => {});
+    return getRelationships(result, 'CALLS')
+      .filter((e) => e.sourceFilePath.includes('src/main'))
+      .map((e) => e.target)
+      .sort();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
 }
 
 describe.each(['ts', 'js'])(

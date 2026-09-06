@@ -1,7 +1,8 @@
 /**
- * Per-language census of the global-name fallback: how many CALLS edges rest on
- * a unique-name guess, and how many guesses each language's visibility rules
- * refused.
+ * Per-language census of global-name fallback decisions: how many call sites
+ * used a unique-name guess, and how many candidates visibility rules refused.
+ * Sites are counted before edge coalescing: a precisely bound site can prove
+ * the same caller/target dependency, so this is not a count of heuristic edges.
  *
  * Both halves are needed and neither is meaningful alone. A guess count with no
  * refusal count cannot distinguish a language with genuinely few impossible
@@ -60,7 +61,7 @@ export function countCallsByLanguage(
 const UNKNOWN_LANGUAGE = 'unknown';
 
 export interface NameFallbackLanguageCounts {
-  /** Labeled `global-name-fallback` edges emitted for this language — CALL SITES. */
+  /** Call sites resolved by a unique-name guess, before edge coalescing. */
   readonly guessed: number;
   /**
    * Distinct (caller file, callee name) pairs among those sites — the unit
@@ -118,9 +119,9 @@ export function summarizeNameFallback(
   const guessedPairsByLanguage = new Map<string, number>();
   const refused = new Map<string, number>();
   const ambiguousNames = new Set<string>();
-  // Two units, both kept. `guessed` counts call SITES — the number of emitted
-  // guessed edges, which is what the log line has always reported and what
-  // earlier persisted summaries hold. `guessedPairs` dedupes by (caller file,
+  // Two units, both kept. `guessed` counts call SITES, not final graph edges:
+  // a precise site may prove the same dependency during edge coalescing.
+  // Preserve the unit earlier summaries hold. `guessedPairs` dedupes by (caller file,
   // callee name), the unit `callsByLanguage` is counted in: ten guessed `foo()`
   // calls in one file are one pair against a denominator that counts `foo`
   // once, so the guessy RATIO uses pairs and is bounded by 1. Changing the unit
@@ -194,7 +195,7 @@ export function formatNameFallbackSummary(
     summary.distinctGuessedPairs !== undefined
       ? ` (${summary.distinctGuessedPairs} distinct caller-file/name pairs)`
       : '';
-  return `name-guessed CALLS edges: ${summary.totalGuessed} call sites${pairs}, ${summary.totalRefused} refused as impossible (guessed/refused by language: ${languages})${ambiguous}`;
+  return `name-fallback resolution: ${summary.totalGuessed} call sites${pairs}, ${summary.totalRefused} refused as impossible (guessed/refused by language: ${languages})${ambiguous}`;
 }
 
 /**

@@ -313,10 +313,12 @@ export interface RepoMeta {
    */
   undecidedInterfaceSatisfaction?: UndecidedSatisfactionSummary;
   /**
-   * Census of the name-guessed CALLS edges the run emitted (labeled
-   * `global-name-fallback`), the impossible ones it refused, and the ambiguous
+   * Census of name-guessed call sites before edge coalescing, the impossible
+   * candidates the run refused, and the ambiguous
    * `export *` names it declined to publish. Absent on indexes built before the
-   * census existed. See `scope-resolution/name-fallback-summary.ts`.
+   * census existed. The legacy key does not imply final edge counts: a precise
+   * site may prove a dependency shared with a guessed site.
+   * See `scope-resolution/name-fallback-summary.ts`.
    */
   nameFallbackEdges?: NameFallbackSummary;
   /**

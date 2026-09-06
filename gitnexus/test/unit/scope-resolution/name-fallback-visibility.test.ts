@@ -97,6 +97,27 @@ describe('shared path arithmetic', () => {
 });
 
 describe('Go: isGlobalNameFallbackPlausible', () => {
+  it('allows an external test package to dot-import exported production functions', () => {
+    const callerParsed = mkCaller('foo/caller_test.go', [
+      { kind: 'wildcard', targetRaw: 'example.com/mod/foo' },
+    ]);
+    const sourceTextOf = (file: string) =>
+      file.endsWith('_test.go') ? 'package foo_test' : 'package foo';
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed,
+        sourceTextOf,
+        candidate: mkCandidate('foo/helper.go', 'Helper'),
+      }),
+    ).toBe(true);
+    expect(
+      goIsGlobalNameFallbackPlausible({
+        callerParsed,
+        sourceTextOf,
+        candidate: mkCandidate('foo/helper.go', 'helper'),
+      }),
+    ).toBe(false);
+  });
   it('REFUSES an unexported identifier from another package', () => {
     // The headline case: `a.uniqueHelperXyz` is invisible to package `b`, and no
     // import can make it visible, so the guess is impossible rather than weak.
@@ -337,6 +358,19 @@ describe('Dart: isGlobalNameFallbackPlausible', () => {
 });
 
 describe('Rust: isGlobalNameFallbackPlausible', () => {
+  it.each([
+    ['src/a/b.rs', 'super::unique_helper_xyz', 'src/a.rs'],
+    ['src/a/b/c.rs', 'super::super::unique_helper_xyz', 'src/a/mod.rs'],
+    ['src/a/b.rs', 'self::child::unique_helper_xyz', 'src/a/b/child.rs'],
+  ])('resolves relative imports from %s', (caller, target, candidate) => {
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: BARE_SITE,
+        callerParsed: mkCaller(caller, [namedImport(target, BARE_SITE.name)]),
+        candidate: mkCandidate(candidate, BARE_SITE.name),
+      }),
+    ).toBe(true);
+  });
   it('REFUSES a cross-module item with no covering `use`', () => {
     expect(
       rustIsGlobalNameFallbackPlausible({
@@ -388,15 +422,24 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
   });
 
   it('allows an item whose `use` names the ITEM rather than only its module', () => {
-    // `use crate::user::User` may arrive with the item name still on the path.
-    // Matching only the full path missed the module and refused `User::new`.
+    // A bare call exercises the import matcher, not the qualified-site bypass.
+    const candidate = mkCandidate('src/user.rs', 'build_user');
     expect(
       rustIsGlobalNameFallbackPlausible({
-        site: { name: 'new', rawQualifiedName: 'User::new' },
-        callerParsed: mkCaller('src/main.rs', [namedImport('crate::user::User', 'User')]),
-        candidate: mkCandidate('src/user.rs', 'User.new'),
+        site: { name: 'build_user' },
+        callerParsed: mkCaller('src/main.rs', [
+          namedImport('crate::user::build_user', 'build_user'),
+        ]),
+        candidate,
       }),
     ).toBe(true);
+    expect(
+      rustIsGlobalNameFallbackPlausible({
+        site: { name: 'build_user' },
+        callerParsed: mkCaller('src/main.rs'),
+        candidate,
+      }),
+    ).toBe(false);
   });
 
   it('REFUSES when the only `use` of the module names a DIFFERENT item', () => {
@@ -466,6 +509,30 @@ describe('Rust: isGlobalNameFallbackPlausible', () => {
 });
 
 describe('Swift: isGlobalNameFallbackPlausible', () => {
+  it('does not invent module boundaries between arbitrary Xcode directories', () => {
+    expect(
+      swiftIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('App/Caller.swift'),
+        candidate: mkCandidate('Shared/Helper.swift', 'helper'),
+      }),
+    ).toBe(true);
+  });
+
+  it('recognizes distinct src targets and requires a matching import', () => {
+    const candidate = mkCandidate('src/Core/Helper.swift', 'helper');
+    expect(
+      swiftIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('src/App/Caller.swift'),
+        candidate,
+      }),
+    ).toBe(false);
+    expect(
+      swiftIsGlobalNameFallbackPlausible({
+        callerParsed: mkCaller('src/App/Caller.swift', [namedImport('Core')]),
+        candidate,
+      }),
+    ).toBe(true);
+  });
   it('allows a cross-file candidate in the same target (whole-module internal)', () => {
     expect(
       swiftIsGlobalNameFallbackPlausible({
