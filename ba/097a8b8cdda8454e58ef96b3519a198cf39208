@@ -1,0 +1,49 @@
+gitnexus/src/core/ingestion/languages/go/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_0f49d5d70dd90d 85-87,89-91,93,96
+gitnexus/src/core/ingestion/languages/javascript/captures.ts
+  s_2fc6857ad45390::t_de7d66590b2cca 1130-1136
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_3775510866ec54 11-14,18-19,36,54-55,57-65,90
+gitnexus/src/core/ingestion/languages/swift/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_7c27bcc0e9811c 13-15,28-34,39-40,44,47
+gitnexus/src/core/ingestion/languages/typescript/captures.ts
+  s_2fc6857ad45390::t_838b0febe7d663 567-573
+gitnexus/src/core/ingestion/scope-resolution/name-fallback-summary.ts
+  s_2fc6857ad45390::t_249bdda82aa406 2-5,64,122-124,198
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_2fc6857ad45390::t_c721a593831b64 49-98,102-107,126-131,136-141
+gitnexus/src/core/run-analyze.ts
+  s_2fc6857ad45390::t_84632983d3827f 3873-3875
+gitnexus/src/storage/repo-meta.ts
+  s_2fc6857ad45390::t_e5375367cae957 316-317,319-321
+gitnexus/test/integration/resolvers/barrel-dir-index-wildcard.test.ts
+  s_2fc6857ad45390::t_9ed27ad89ee35b 130-134
+gitnexus/test/integration/resolvers/barrel-named-import-class-method.test.ts
+  s_2fc6857ad45390::t_2019eebb70f934 20-29
+gitnexus/test/integration/resolvers/name-fallback-edges.test.ts
+  s_2fc6857ad45390::t_e227fc09f258c5 152
+gitnexus/test/unit/scope-resolution/esm-export-marker.test.ts
+  s_2fc6857ad45390::t_73405f1430080e 153-200
+gitnexus/test/unit/scope-resolution/free-call-fallback-guess-taint.test.ts
+  s_2fc6857ad45390::t_20efa93a1eb3ad 34-38,170,222-237
+gitnexus/test/unit/scope-resolution/name-fallback-visibility.test.ts
+  s_2fc6857ad45390::t_e0d23625b6d56c 100-120,361-373,425-426,429-433,436-442,512-535
+gitnexus/test/unit/scope-resolution/wildcard-topLevelOnly-gate.test.ts
+  s_2fc6857ad45390::t_ed365e06387da9 18-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "ba097a8b8cdda8454e58ef96b3519a198cf39208",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
