@@ -741,6 +741,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           {uploadSummary && !uploading && phase !== 'error' && (
             <p className="text-xs text-text-muted" data-testid="upload-summary">
               {t('onboarding:repoAnalyzer.upload.selected', {
+                count: uploadSummary.count,
                 fileCount: uploadSummary.count,
                 dropped: uploadSummary.dropped,
               })}
