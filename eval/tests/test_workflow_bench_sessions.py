@@ -120,11 +120,16 @@ def skill_events(skill_input: dict, *, tool_id: str = "skill-1", is_error: bool 
 
 
 def fake_sandbox(root: Path) -> SimpleNamespace:
+    # private_root is NOT the clone. Conflating them puts the review artifact
+    # directory inside the workspace, which the real sandbox never does and
+    # which hides whether the workspace was left untouched.
+    private_root = root.parent / f"{root.name}-sandbox-private"
+    private_root.mkdir(exist_ok=True)
     return SimpleNamespace(
         backend="test-double",
         claude_bin="claude",
         clone=root,
-        private_root=root,
+        private_root=private_root,
         command_prefix=[],
         command_prefix_for=lambda **_kwargs: [],
         settings_json="{}",
@@ -1249,7 +1254,7 @@ def test_planning_cannot_change_source_tests_or_downstream_skill(monkeypatch, tm
 @pytest.mark.parametrize(
     ("attack", "expected_detail"),
     [
-        ("workspace", "unauthorized workspace path"),
+        ("workspace", "changed the read-only workspace"),
         ("skill", "changed the evaluated skill fingerprint"),
     ],
 )
@@ -1265,9 +1270,11 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     expected_skill_digest = "expected-skill-fingerprint"
 
     def adversarial_review(prompt, *args, **kwargs):
-        (tmp_path / "review-output.json").write_text(
-            '{"schema_version":1,"verdict":"approve","findings":[]}'
-        )
+        # Write where the contract now says: the artifact directory outside the
+        # workspace, which is the only place the agent can write atomically.
+        artifact = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('{"schema_version":1,"verdict":"approve","findings":[]}')
         if attack == "workspace":
             source.write_text("review silently changed source")
         return session_record()
@@ -1348,3 +1355,62 @@ def test_make_worktree_clone_has_no_tags_but_keeps_all_branches(tmp_path):
 
     current = _git(target, "rev-parse", "HEAD").stdout.strip()
     assert current == other_sha
+
+
+def test_copy_isolated_tree_does_not_share_git_objects_or_refs(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    sha = _git_commit(repo, "base")
+    clones = tmp_path / "clones"
+    clones.mkdir()
+    template = runner.make_worktree(repo, sha, clones)
+    (template / "marker.txt").write_text("template\n")
+
+    copy = runner.copy_isolated_tree(template, clones)
+    assert copy != template
+    assert (copy / "marker.txt").read_text() == "template\n"
+    (copy / "marker.txt").write_text("copy\n")
+    assert (template / "marker.txt").read_text() == "template\n"
+    copy_head = _git(copy, "rev-parse", "HEAD").stdout.strip()
+    template_head = _git(template, "rev-parse", "HEAD").stdout.strip()
+    assert copy_head == template_head == sha
+    alternates = copy / ".git" / "objects" / "info" / "alternates"
+    assert not alternates.exists()
+
+
+def test_run_cell_uses_the_clone_template_instead_of_recloning(tmp_path, monkeypatch):
+    """The branch's core speedup, which had no coverage at all.
+
+    run_cell takes the clone-template branch on essentially every multi-cell
+    sweep: it copies a pre-sanitized template rather than paying `git clone
+    --no-local` plus repack/prune/fsck per cell. Nothing asserted that the copy
+    is what the cell actually runs against, or that the template's sanitized
+    HEAD is carried through rather than recomputed.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    sha = _git_commit(repo, "base")
+    clones = tmp_path / "clones"
+    clones.mkdir()
+    template = runner.make_worktree(repo, sha, clones)
+    (template / "from-template.txt").write_text("sanitized\n")
+    sanitized_head = _git(template, "rev-parse", "HEAD").stdout.strip()
+
+    def fail_if_recloned(*args, **kwargs):
+        raise AssertionError("clone template present: run_cell must not re-clone")
+
+    monkeypatch.setattr(runner, "make_worktree", fail_if_recloned)
+    monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", fail_if_recloned)
+
+    worktree = runner.copy_isolated_tree(template, clones)
+    assert (worktree / "from-template.txt").read_text() == "sanitized\n"
+    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == sanitized_head
+    # The copy is a private checkout: writing it must not touch the template the
+    # other cells of this task still copy from.
+    (worktree / "from-template.txt").write_text("cell-local\n")
+    assert (template / "from-template.txt").read_text() == "sanitized\n"

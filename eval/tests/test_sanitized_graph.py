@@ -212,6 +212,22 @@ def test_prepare_sanitized_graph_builds_once_from_parentless_tree_and_caches_onl
     assert removed == [seed]
 
 
+def test_prepare_sanitized_graph_requires_head_when_given_a_template(tmp_path: Path):
+    with pytest.raises(SandboxError, match="sanitized HEAD"):
+        sanitized_graph.prepare_sanitized_graph(
+            {},
+            repo=tmp_path,
+            resolved_sha="b" * 40,
+            parent=tmp_path,
+            cache=SimpleNamespace(),  # type: ignore[arg-type]
+            claude_bin="claude",
+            bwrap_bin="bwrap",
+            runtime_mounts=(),
+            clone_template=tmp_path,
+            sanitized_head=None,
+        )
+
+
 def test_graph_snapshot_rejects_arm_sanitization_identity_drift(tmp_path: Path):
     assets = SimpleNamespace(
         digest="digest",

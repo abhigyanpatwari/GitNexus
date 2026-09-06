@@ -57,6 +57,15 @@ from typing import Any
 
 import yaml
 
+from .comparator_reuse import (
+    ComparatorReuseExpectation,
+    TaskReuseBinding,
+    current_runtime_digest,
+    default_reuse_max_age,
+    load_result_rows,
+    materialize_reused_row,
+    select_reusable_comparator_rows,
+)
 from .evolution import (
     CANDIDATE_ARMS,
     EVIDENCE_MAX_AGE_DAYS,
@@ -88,12 +97,19 @@ from .oracle_assets import (
 )
 from .process_control import cancellation_scope, ManagedProcessError
 from .promotion_apply import committed_destination_base_digests
-from .review_scoring import REVIEW_OUTPUT, expected_findings, parse_review_output, score_review
+from .review_scoring import (
+    REVIEW_OUTPUT,
+    REVIEW_OUTPUT_ENV_VAR,
+    expected_findings,
+    parse_review_output,
+    score_review,
+)
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
     SANDBOX_GITNEXUS_SHARED as SANDBOX_GITNEXUS_SHARED,
     SANDBOX_NODE as SANDBOX_NODE,
+    SANDBOX_REVIEW_OUTPUT,
     SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
@@ -104,6 +120,7 @@ from .proposer_sandbox import (
     prepare_sandbox,
     prepare_review_workspace,
     redact_text,
+    review_output_path,
     require_claude_sandbox_helpers,
     sandbox_workspace_write_boundary,
 )
@@ -121,6 +138,7 @@ from .runner_artifacts import (
     enforce_phase_workspace,
     enforce_work_evidence,
     implementation_diff_digest,
+    copy_isolated_tree,
     make_worktree,
     new_plan_doc,
     parse_shortstat as parse_shortstat,
@@ -222,8 +240,9 @@ CE_WORK_DIRECT_PROMPT = (
 # Review cell: setup applies a historical PR diff, then the model sees a
 # read-only checkout. Both arms emit the same strict artifact so quality can be
 # scored deterministically against labels that remain hidden until it exits.
-REVIEW_OUTPUT_CONTRACT = """
-Write /workspace/review-output.json as UTF-8 JSON with exactly this shape:
+# Concatenated, not an f-string: the JSON shape below keeps its braces doubled
+# because the finished prompt is .format()-ed with the task text.
+REVIEW_OUTPUT_CONTRACT = f"\nWrite {SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT} " + """as UTF-8 JSON with exactly this shape:
 {{"schema_version":1,"verdict":"approve|comment|request_changes","findings":[{{
 "id":"unique stable id","severity":"critical|high|medium|low",
 "path":"repository-relative changed file","line":1,"end_line":1,
@@ -327,6 +346,15 @@ def _run_hidden_oracle(
             # credited patch is captured.
             oracle_mount = f"{SANDBOX_WORKSPACE}/{mount_name}"
             oracle_env[ORACLE_ENV_VAR] = str(stage_root) if host_unsafe else oracle_mount
+            review_artifact = review_output_path(sandbox, REVIEW_OUTPUT)
+            review_mounts: tuple[ReadOnlyMount, ...] = ()
+            if review_artifact.parent.is_dir():
+                oracle_env[REVIEW_OUTPUT_ENV_VAR] = sandbox.host_text(
+                    f"{SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT}"
+                )
+                review_mounts = (
+                    ReadOnlyMount(source=review_artifact.parent, target=SANDBOX_REVIEW_OUTPUT),
+                )
             passed, _output = _verification_outcome(
                 run_verify(
                     snapshot.command,
@@ -335,9 +363,9 @@ def _run_hidden_oracle(
                     command_prefix=sandbox.command_prefix_for(
                         read_only_workspace=True,
                         unshare_network=True,
-                        extra_read_only_mounts=()
+                        extra_read_only_mounts=(*review_mounts,)
                         if host_unsafe
-                        else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
+                        else (ReadOnlyMount(source=stage_root, target=oracle_mount), *review_mounts),
                     ),
                     env=oracle_env,
                     require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
@@ -563,9 +591,13 @@ def run_arm(
                 read_only_workspace=True,
                 read_only_paths=_evaluated_skill_roots(worktree, arm),
                 extra_writable_mounts=(
+                    # The DIRECTORY, outside the workspace. Binding the file
+                    # itself left the agent nowhere to put the temp file it
+                    # renames into place, so every review artifact came back
+                    # empty with EROFS in the transcript.
                     ReadOnlyMount(
-                        source=review_output,
-                        target=f"{SANDBOX_WORKSPACE}/{REVIEW_OUTPUT}",
+                        source=review_output.parent,
+                        target=SANDBOX_REVIEW_OUTPUT,
                     ),
                 ),
             ),
@@ -573,7 +605,8 @@ def run_arm(
         with sandbox_workspace_write_boundary(
             sandbox,
             read_only_workspace=True,
-            writable=(review_output,),
+            # Nothing in the workspace is writable now — the artifact left it.
+            writable=(),
         ):
             review_session = run_claude(
                 host_text(review_prompt.format(task=task["prompt"])),
@@ -584,11 +617,9 @@ def run_arm(
         sessions.append(review_session)
         if review_session["ok"] and phase_before is not None:
             try:
-                enforce_phase_workspace(
-                    worktree,
-                    phase_before,
-                    allowed_artifact=worktree / REVIEW_OUTPUT,
-                )
+                # The artifact is no longer in the workspace, so the review
+                # phase may now change nothing there at all.
+                enforce_phase_workspace(worktree, phase_before, allowed_artifact=None)
                 require_skill_fingerprint(
                     worktree,
                     arm,
@@ -643,6 +674,18 @@ def run_arm(
     record = sum_sessions(sessions)
     record["arm"] = arm
     record["plan_produced"] = arm not in ("workflow", "ce_workflow") or plan_doc is not None
+    # The verify command runs in its OWN sandbox invocation, which knows nothing
+    # about the review session's writable mount. Expose the artifact read-only and
+    # name it through the environment, the same shape _run_hidden_oracle uses, so
+    # one command works on both backends instead of hardcoding either path.
+    verify_env = environment_builder()
+    verify_mounts: tuple[ReadOnlyMount, ...] = ()
+    if arm in ("review", "ce_review"):
+        review_artifact = review_output_path(sandbox, REVIEW_OUTPUT)
+        verify_env[REVIEW_OUTPUT_ENV_VAR] = host_text(f"{SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT}")
+        verify_mounts = (
+            ReadOnlyMount(source=review_artifact.parent, target=SANDBOX_REVIEW_OUTPUT),
+        )
     authored_tests_passed, authored_test_output = _verification_outcome(
         run_verify(
             task["verify"],
@@ -651,21 +694,25 @@ def run_arm(
             command_prefix=sandbox.command_prefix_for(
                 read_only_workspace=True,
                 unshare_network=True,
+                extra_read_only_mounts=verify_mounts,
             ),
-            env=environment_builder(),
+            env=verify_env,
             require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
         )
     )
     review_score: dict[str, Any] | None = None
     if arm in ("review", "ce_review"):
         try:
-            verdict, findings = parse_review_output(worktree / REVIEW_OUTPUT)
+            verdict, findings = parse_review_output(review_output_path(sandbox, REVIEW_OUTPUT))
             labels = expected_findings(oracle_snapshot) if oracle_snapshot is not None else ()
             review_score = score_review(verdict, findings, labels)
         except (OSError, ValueError) as exc:
             record["ok"] = False
             record["error_kind"] = record["error_kind"] or "review-evidence-invalid"
-            record["error_detail"] = str(exc)
+            # Keep the FIRST detail, as error_kind already does. A phase-
+            # boundary violation is why the artifact is unparseable; reporting
+            # the parse failure over it buries the cause under the symptom.
+            record["error_detail"] = record.get("error_detail") or str(exc)
         record["review_score"] = review_score
         record["review_evidence_valid"] = review_score is not None
         if review_score is not None:
@@ -847,6 +894,11 @@ def sweep_task_cells(
                         "failures — aborting the remaining sweep; report and promotion are written "
                         "from partial evidence and the run exits non-zero."
                     )
+                    # Signal in-flight background work too. The breaker exists to
+                    # SHORTEN a doomed run; without this a graph prefetch keeps
+                    # building and the unconditional join blocks the abort for the
+                    # length of a full clone and offline index.
+                    cancel_event.set()
                     return outage_streak, True
         return outage_streak, False
 
@@ -884,6 +936,8 @@ class TaskCellContext:
     candidate_overlay: Path | None
     overlay_digest: str | None
     sandbox_backend: str = "bwrap"
+    clone_template: Path | None = None
+    sanitized_head: str | None = None
 
 
 def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
@@ -908,8 +962,14 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
             raise RuntimeError("sanitized graph snapshot is unavailable")
         if ctx.asset_snapshot is None:
             raise RuntimeError("task asset snapshot is unavailable")
-        worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
-        sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
+        if ctx.clone_template is not None:
+            if not ctx.sanitized_head:
+                raise RuntimeError("clone template is missing its sanitized HEAD")
+            worktree = copy_isolated_tree(ctx.clone_template, ctx.trees_dir)
+            sanitized_head = ctx.sanitized_head
+        else:
+            worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
+            sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
         ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
         dependency_mounts = stage_task_assets(
             task,
@@ -1014,7 +1074,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 oracle_snapshot=ctx.oracle_snapshot,
             )
             if execution_arm in ("review", "ce_review"):
-                review_source = worktree / REVIEW_OUTPUT
+                review_source = review_output_path(sandbox, REVIEW_OUTPUT)
                 if review_source.is_file() and not review_source.is_symlink():
                     review_artifact = ctx.out_dir / f"{task['id']}-{arm}-run{run_idx}.review.json"
                     review_artifact.write_bytes(_bounded_regular_bytes(review_source, limit=256 * 1024))
@@ -1057,6 +1117,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
                 "skill_digest": expected_skill_digest,
                 "candidate_overlay_digest": (ctx.overlay_digest if arm in CANDIDATE_ARMS else None),
+                "runtime_digest": current_runtime_digest(),
                 "recorded_at": datetime.now(UTC).isoformat(),
             }
         )
@@ -1244,6 +1305,9 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
     )
     out["resolved"] = sum(1 for r in records if r["resolved"])
+    # Reused rows are last generation's measurement. The health canary below has
+    # to ask whether THIS environment worked, so it needs the freshly-run count.
+    out["resolved_fresh"] = sum(1 for r in records if r["resolved"] and not r.get("reused"))
     out["runs"] = len(records)
     out["valid_runs"] = len(valid)
     out["excluded_runs"] = len(records) - len(valid)
@@ -1323,9 +1387,19 @@ def broken_incumbent_arms(
     some-runs-resolved-zero case since here nothing completed at all.
     aggregate() never marks an excluded/unverifiable row resolved=True, so
     resolved == 0 alone already covers both cases.
+
+    A reused row proves last generation's environment worked, not this one's, so
+    the count consulted here is ``resolved_fresh``. Without that, an arm whose
+    cells were all reused always looks healthy and the canary can never fire —
+    which is exactly when a broken environment would go unnoticed. The sweep
+    keeps one paid cell per incumbent arm so this count is never vacuous.
     """
     present = incumbent_arms & {arm for arms in results.values() for arm in arms}
-    return sorted(arm for arm in present if all(arms[arm]["resolved"] == 0 for arms in results.values() if arm in arms))
+    return sorted(
+        arm
+        for arm in present
+        if all(arms[arm].get("resolved_fresh", arms[arm]["resolved"]) == 0 for arms in results.values() if arm in arms)
+    )
 
 
 def _cost_cell(value: Any) -> str:
@@ -1557,6 +1631,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-bindings-json", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--promotion-target-bases-json", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--unsafe-no-bwrap", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--reuse-results",
+        type=Path,
+        default=None,
+        help="prior wfbench results dir whose incumbent/CE rows may be reused "
+        "when model, effort, tasks, oracles, skill bytes, and CE plugin still "
+        "match. Candidate arms always run. Used by evolve.py so a weekly "
+        "generation does not re-pay for an unchanged comparator.",
+    )
     return parser
 
 
@@ -1684,6 +1767,215 @@ def main() -> None:
         gateway.__exit__(None, None, None)
 
 
+def _comparator_reuse_expectation(
+    *,
+    args: argparse.Namespace,
+    tasks: Sequence[Any],
+    task_bindings: Sequence[Mapping[str, Any]],
+    oracle_snapshots: Sequence[Any],
+    asset_snapshots: Mapping[str, Any],
+    sandbox_backend: str,
+    ce_plugin_snapshot: CePluginSnapshot | None,
+) -> ComparatorReuseExpectation:
+    """Bind this sweep's immutable identity for comparator-row reuse."""
+
+    skill_digests: dict[str, str | None] = {}
+    for arm in args.arms:
+        execution = CANDIDATE_ARMS.get(arm, arm)
+        if execution in EVALUATED_ARM_SKILLS:
+            skill_digests[arm] = skill_fingerprint(HARNESS_ROOT, execution)
+        else:
+            skill_digests[arm] = None
+    task_locks: dict[str, TaskReuseBinding] = {}
+    for task, binding, oracle in zip(tasks, task_bindings, oracle_snapshots, strict=True):
+        task_locks[str(task["id"])] = TaskReuseBinding(
+            task_base_sha=str(binding["resolved_sha"]),
+            task_prompt_digest=hashlib.sha256(str(task["prompt"]).encode()).hexdigest(),
+            oracle_digest=oracle.digest,
+            oracle_command_digest=oracle.command_digest,
+            oracle_manifest_digest=oracle.manifest_digest,
+            task_asset_manifest_digest=getattr(
+                asset_snapshots.get(str(task["id"])), "manifest_digest", None
+            ),
+            sandbox_dependency_manifest_digest=getattr(
+                asset_snapshots.get(str(task["id"])), "dependency_manifest_digest", None
+            ),
+        )
+    return ComparatorReuseExpectation(
+        model=args.model,
+        effort=args.effort,
+        sandbox_backend=sandbox_backend,
+        runtime_digest=current_runtime_digest(),
+        now=datetime.now(UTC),
+        max_age=default_reuse_max_age(),
+        tasks=task_locks,
+        skill_digests=skill_digests,
+        ce_plugin_version=ce_plugin_snapshot.version if ce_plugin_snapshot is not None else None,
+        ce_plugin_manifest_digest=(
+            ce_plugin_snapshot.manifest_digest if ce_plugin_snapshot is not None else None
+        ),
+    )
+
+
+def task_has_planned_paid_cells(
+    task: Mapping[str, Any],
+    *,
+    arms: Sequence[str],
+    runs: int,
+    reusable_rows: Mapping[tuple[str, str, int], object],
+    reuse_source: Path | None,
+) -> bool:
+    """True when at least one planned cell is not a reusable comparator row."""
+
+    task_id = str(task["id"])
+    for run_idx in range(runs):
+        for arm in arms:
+            if reuse_source is None or (task_id, arm, run_idx) not in reusable_rows:
+                return True
+    return False
+
+
+def next_graph_prefetch_target(
+    remaining: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    arms: Sequence[str],
+    runs: int,
+    reusable_rows: Mapping[tuple[str, str, int], object],
+    reuse_source: Path | None,
+    ready_keys: set[tuple[str, str]],
+) -> tuple[Mapping[str, Any], Mapping[str, Any], tuple[str, str]] | None:
+    """Next later task that still needs a clone template and sanitized graph."""
+
+    for task, binding in remaining:
+        if not task_has_planned_paid_cells(
+            task,
+            arms=arms,
+            runs=runs,
+            reusable_rows=reusable_rows,
+            reuse_source=reuse_source,
+        ):
+            continue
+        key = (str(binding["repo_identity"]), str(binding["resolved_sha"]))
+        if key in ready_keys:
+            continue
+        return task, binding, key
+    return None
+
+
+def ensure_task_graph(
+    *,
+    task: Mapping[str, Any],
+    repo: Path,
+    task_sha: str,
+    graph_key: tuple[str, str],
+    trees: Path,
+    task_asset_cache: TaskAssetCache,
+    claude_bin: Path | str,
+    bwrap_bin: Path | str,
+    sandbox_backend: str,
+    runtime_mounts: Sequence[ReadOnlyMount],
+    clone_templates: dict[tuple[str, str], tuple[Path, str]],
+    clone_template_errors: dict[tuple[str, str], BaseException],
+    graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot],
+    graph_snapshot_errors: dict[tuple[str, str], BaseException],
+) -> None:
+    """Build one SHA's sanitized clone template and graph. Idempotent per key."""
+
+    if graph_key in graph_snapshots or graph_key in graph_snapshot_errors:
+        return
+    try:
+        validate_no_prebuilt_graph_assets(task)
+        if graph_key not in clone_templates and graph_key not in clone_template_errors:
+            template = make_worktree(repo, task_sha, trees)
+            template_head = sanitize_clone_for_hidden_oracles(template)
+            clone_templates[graph_key] = (template, template_head)
+        clone_template: Path | None = None
+        template_head: str | None = None
+        if graph_key in clone_templates:
+            clone_template, template_head = clone_templates[graph_key]
+        if graph_key in clone_template_errors:
+            graph_snapshot_errors[graph_key] = clone_template_errors[graph_key]
+            return
+        graph_snapshots[graph_key] = prepare_sanitized_graph(
+            task,
+            repo=repo,
+            resolved_sha=task_sha,
+            parent=trees,
+            cache=task_asset_cache,
+            claude_bin=claude_bin,
+            bwrap_bin=bwrap_bin,
+            sandbox_backend=sandbox_backend,
+            runtime_mounts=runtime_mounts,
+            clone_template=clone_template,
+            sanitized_head=template_head,
+        )
+    except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
+        graph_snapshot_errors[graph_key] = exc
+        clone_template_errors.setdefault(graph_key, exc)
+
+
+@dataclass
+class GraphPrefetch:
+    """In-flight clone+graph build for a later task SHA."""
+
+    key: tuple[str, str]
+    thread: threading.Thread
+
+    def join(self) -> None:
+        self.thread.join()
+
+
+def prefetch_next_graph(
+    *,
+    task: Mapping[str, Any],
+    binding: Mapping[str, Any],
+    graph_key: tuple[str, str],
+    trees: Path,
+    task_asset_cache: TaskAssetCache,
+    claude_bin: Path | str,
+    bwrap_bin: Path | str,
+    sandbox_backend: str,
+    runtime_mounts: Sequence[ReadOnlyMount],
+    clone_templates: dict[tuple[str, str], tuple[Path, str]],
+    clone_template_errors: dict[tuple[str, str], BaseException],
+    graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot],
+    graph_snapshot_errors: dict[tuple[str, str], BaseException],
+    cancel_event: threading.Event,
+) -> GraphPrefetch:
+    """Start clone+graph prep for the next unpaid SHA during paid sessions."""
+
+    repo = Path(binding["repo_identity"])
+    task_sha = str(binding["resolved_sha"])
+
+    def run() -> None:
+        if cancel_event.is_set():
+            return
+        print(f"[prefetch_next_graph] clone+graph for {task_sha}")
+        ensure_task_graph(
+            task=task,
+            repo=repo,
+            task_sha=task_sha,
+            graph_key=graph_key,
+            trees=trees,
+            task_asset_cache=task_asset_cache,
+            claude_bin=claude_bin,
+            bwrap_bin=bwrap_bin,
+            sandbox_backend=sandbox_backend,
+            runtime_mounts=runtime_mounts,
+            clone_templates=clone_templates,
+            clone_template_errors=clone_template_errors,
+            graph_snapshots=graph_snapshots,
+            graph_snapshot_errors=graph_snapshot_errors,
+        )
+
+    # copy_context, as the worker pool already does at _run_wave: a plain Thread
+    # does not inherit ContextVars, so without this every run_managed inside the
+    # graph build resolves _CANCELLATION to None and ignores the shared cancel.
+    thread = threading.Thread(target=copy_context().run, args=(run,), name="prefetch_next_graph", daemon=False)
+    thread.start()
+    return GraphPrefetch(key=graph_key, thread=thread)
+
+
 def _run_sweep(
     args: argparse.Namespace,
     *,
@@ -1740,107 +2032,236 @@ def _run_sweep(
         except (OSError, SandboxError, ValueError) as exc:
             parser.error(str(exc))
             raise AssertionError("ArgumentParser.error() returned unexpectedly")
+        # Asset snapshots are built here, up front, for two reasons. Comparator
+        # reuse has to compare this sweep's task-asset and dependency digests
+        # against the prior row's, and those digests do not exist until the
+        # snapshot does. Building them all before any cell or prefetch thread
+        # starts also keeps TaskAssetCache single-threaded, which is what its own
+        # "plain dict, read-then-write race" comment asks for.
+        asset_snapshots: dict[str, TaskAssetSnapshot] = {}
+        asset_snapshot_errors: dict[str, BaseException] = {}
+        for _task, _binding in zip(tasks, task_bindings, strict=True):
+            try:
+                asset_snapshots[str(_task["id"])] = task_asset_cache.prepare(
+                    _task,
+                    repo=Path(_binding["repo_identity"]),
+                    resolved_sha=_binding["resolved_sha"],
+                    expected_dependency_binding=_binding,
+                )
+            except (OSError, SandboxError, ValueError) as exc:
+                asset_snapshot_errors[str(_task["id"])] = exc
+
+        reuse_source = args.reuse_results.expanduser().resolve() if args.reuse_results is not None else None
+        reusable_rows: dict[tuple[str, str, int], dict[str, Any]] = {}
+        if reuse_source is not None:
+            if reuse_source == out_dir.resolve():
+                parser.error("--reuse-results cannot be this sweep's --out directory")
+                raise AssertionError("ArgumentParser.error() returned unexpectedly")
+            results_file = reuse_source / "results.jsonl"
+            if results_file.is_symlink() or not results_file.is_file():
+                parser.error("--reuse-results must contain a regular results.jsonl")
+                raise AssertionError("ArgumentParser.error() returned unexpectedly")
+            reusable_rows = select_reusable_comparator_rows(
+                load_result_rows(results_file),
+                expected=_comparator_reuse_expectation(
+                    args=args,
+                    tasks=tasks,
+                    task_bindings=task_bindings,
+                    oracle_snapshots=oracle_snapshots,
+                    asset_snapshots=asset_snapshots,
+                    sandbox_backend=sandbox_backend,
+                    ce_plugin_snapshot=ce_plugin_snapshot,
+                ),
+            )
+            # Keep one paid cell per incumbent arm. A generation that reuses an
+            # arm end to end measures nothing about today's environment, and
+            # broken_incumbent_arms would then be reading last week's health.
+            # One cell per arm is the cheapest thing that keeps the canary real.
+            incumbent_arms = [arm for arm in args.arms if arm not in candidate_arms]
+            for arm in incumbent_arms:
+                arm_keys = sorted(key for key in reusable_rows if key[1] == arm)
+                if arm_keys and len(arm_keys) == len(tasks) * args.runs:
+                    dropped = arm_keys[0]
+                    del reusable_rows[dropped]
+                    print(
+                        f"reuse-results: keeping one paid {arm} cell "
+                        f"({dropped[0]} run {dropped[2]}) so incumbent health is measured this sweep"
+                    )
+            print(
+                f"reuse-results {reuse_source}: {len(reusable_rows)} comparator "
+                f"cell(s) match this sweep; candidate arms always run"
+            )
         graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot] = {}
         graph_snapshot_errors: dict[tuple[str, str], BaseException] = {}
-        for task, task_binding, oracle_snapshot in zip(
-            tasks,
-            task_bindings,
-            oracle_snapshots,
-            strict=True,
-        ):
-            if outage_tripped or cancel_event.is_set():
-                break
-            repo = Path(task_binding["repo_identity"])
-            task_sha = task_binding["resolved_sha"]
-            asset_snapshot: TaskAssetSnapshot | None = None
-            asset_snapshot_error: BaseException | None = None
-            graph_key = (str(repo), task_sha)
-            graph_snapshot: SanitizedGraphSnapshot | None = graph_snapshots.get(graph_key)
-            graph_snapshot_error: BaseException | None = graph_snapshot_errors.get(graph_key)
-            try:
-                validate_no_prebuilt_graph_assets(task)
-                if graph_snapshot is None and graph_snapshot_error is None:
-                    graph_snapshot = prepare_sanitized_graph(
-                        task,
+        clone_templates: dict[tuple[str, str], tuple[Path, str]] = {}
+        clone_template_errors: dict[tuple[str, str], BaseException] = {}
+        graph_prefetch: GraphPrefetch | None = None
+        sweep_rows = list(zip(tasks, task_bindings, oracle_snapshots, strict=True))
+
+        def _join_graph_prefetch() -> None:
+            nonlocal graph_prefetch
+            if graph_prefetch is not None:
+                graph_prefetch.join()
+                graph_prefetch = None
+
+        try:
+            for index, (task, task_binding, oracle_snapshot) in enumerate(sweep_rows):
+                if outage_tripped or cancel_event.is_set():
+                    break
+                repo = Path(task_binding["repo_identity"])
+                task_sha = task_binding["resolved_sha"]
+                per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
+                planned = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
+                reused_records: list[tuple[int, str, dict[str, Any]]] = []
+                paid_cells: list[tuple[int, str]] = []
+                for run_idx, arm in planned:
+                    prior = reusable_rows.get((task["id"], arm, run_idx))
+                    if prior is None or reuse_source is None:
+                        paid_cells.append((run_idx, arm))
+                        continue
+                    try:
+                        reused_records.append(
+                            (
+                                run_idx,
+                                arm,
+                                materialize_reused_row(prior, source_dir=reuse_source, dest_dir=out_dir),
+                            )
+                        )
+                    except (OSError, SandboxError, ValueError) as exc:
+                        print(
+                            f"[{task['id']}][{arm}][run {run_idx}] comparator reuse "
+                            f"failed ({exc}); running a paid cell"
+                        )
+                        paid_cells.append((run_idx, arm))
+
+                asset_snapshot = asset_snapshots.get(str(task["id"]))
+                asset_snapshot_error: BaseException | None = asset_snapshot_errors.get(str(task["id"]))
+                graph_key = (str(repo), task_sha)
+                if graph_prefetch is not None and graph_prefetch.key == graph_key:
+                    _join_graph_prefetch()
+                if paid_cells and graph_key not in graph_snapshots and graph_key not in graph_snapshot_errors:
+                    ensure_task_graph(
+                        task=task,
                         repo=repo,
-                        resolved_sha=task_sha,
-                        parent=Path(trees),
-                        cache=task_asset_cache,
+                        task_sha=task_sha,
+                        graph_key=graph_key,
+                        trees=Path(trees),
+                        task_asset_cache=task_asset_cache,
                         claude_bin=args.claude_bin,
                         bwrap_bin=bwrap_bin,
                         sandbox_backend=sandbox_backend,
                         runtime_mounts=runtime_mounts,
+                        clone_templates=clone_templates,
+                        clone_template_errors=clone_template_errors,
+                        graph_snapshots=graph_snapshots,
+                        graph_snapshot_errors=graph_snapshot_errors,
                     )
-                    graph_snapshots[graph_key] = graph_snapshot
-            except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
-                graph_snapshot_error = exc
-                graph_snapshot_errors[graph_key] = exc
-            try:
-                # Prepared here, once, rather than lazily inside the first cell:
-                # TaskAssetCache is a plain dict, so a lazy build would be a
-                # read-then-write race the moment cells stop running serially.
-                asset_snapshot = task_asset_cache.prepare(
-                    task,
+                graph_snapshot = graph_snapshots.get(graph_key)
+                graph_snapshot_error = graph_snapshot_errors.get(graph_key)
+                clone_template, template_head = clone_templates.get(graph_key, (None, None))
+                cell_context = TaskCellContext(
+                    task=task,
+                    oracle_snapshot=oracle_snapshot,
                     repo=repo,
-                    resolved_sha=task_sha,
-                    expected_dependency_binding=task_binding,
-                )
-            except (OSError, SandboxError, ValueError) as exc:
-                asset_snapshot_error = exc
-            cell_context = TaskCellContext(
-                task=task,
-                oracle_snapshot=oracle_snapshot,
-                repo=repo,
-                task_sha=task_sha,
-                graph_snapshot=graph_snapshot,
-                graph_snapshot_error=graph_snapshot_error,
-                asset_snapshot=asset_snapshot,
-                asset_snapshot_error=asset_snapshot_error,
-                args=args,
-                out_dir=out_dir,
-                ce_plugin_snapshot=ce_plugin_snapshot,
-                trees_dir=Path(trees),
-                bwrap_bin=bwrap_bin,
-                sandbox_backend=sandbox_backend,
-                runtime_mounts=runtime_mounts,
-                candidate_overlay=candidate_overlay,
-                overlay_digest=overlay_digest,
-            )
-            per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
-            cells = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
-
-            def announce(run_idx: int, arm: str) -> None:
-                nonlocal started_cells
-                started_cells += 1
-                print(
-                    f"[{task['id']}][{arm}][run {run_idx}] starting "
-                    f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                    task_sha=task_sha,
+                    graph_snapshot=graph_snapshot,
+                    graph_snapshot_error=graph_snapshot_error,
+                    asset_snapshot=asset_snapshot,
+                    asset_snapshot_error=asset_snapshot_error,
+                    args=args,
+                    out_dir=out_dir,
+                    ce_plugin_snapshot=ce_plugin_snapshot,
+                    trees_dir=Path(trees),
+                    bwrap_bin=bwrap_bin,
+                    sandbox_backend=sandbox_backend,
+                    runtime_mounts=runtime_mounts,
+                    candidate_overlay=candidate_overlay,
+                    overlay_digest=overlay_digest,
+                    clone_template=clone_template,
+                    sanitized_head=template_head,
                 )
 
-            def keep(run_idx: int, arm: str, record: dict[str, Any]) -> None:
-                per_arm[arm].append(record)
-                with results_path.open("a") as fh:
-                    # Redact any API token a session-error stderr_tail echoed
-                    # into error_detail before it enters the uploaded
-                    # results.jsonl artifact (transcripts are redacted; this
-                    # sink was not).
-                    fh.write(redact_text(json.dumps(record), credential_secrets(args)) + "\n")
-                print(cell_progress_line(task["id"], arm, run_idx, record))
-                failure = cell_failure_detail_line(task["id"], arm, run_idx, record, credential_secrets(args))
-                if failure:
-                    print(failure)
+                def announce(run_idx: int, arm: str) -> None:
+                    nonlocal started_cells
+                    started_cells += 1
+                    print(
+                        f"[{task['id']}][{arm}][run {run_idx}] starting "
+                        f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                    )
 
-            outage_streak, outage_tripped = sweep_task_cells(
-                cells,
-                workers=args.workers,
-                run=partial(run_cell, cell_context),
-                on_start=announce,
-                on_record=keep,
-                outage_streak=outage_streak,
-                outage_limit=args.outage_streak,
-                cancel_event=cancel_event,
-            )
-            results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
+                def keep(run_idx: int, arm: str, record: dict[str, Any]) -> None:
+                    per_arm[arm].append(record)
+                    with results_path.open("a") as fh:
+                        # Redact any API token a session-error stderr_tail echoed
+                        # into error_detail before it enters the uploaded
+                        # results.jsonl artifact (transcripts are redacted; this
+                        # sink was not).
+                        fh.write(redact_text(json.dumps(record), credential_secrets(args)) + "\n")
+                    print(cell_progress_line(task["id"], arm, run_idx, record))
+                    failure = cell_failure_detail_line(task["id"], arm, run_idx, record, credential_secrets(args))
+                    if failure:
+                        print(failure)
+
+                for run_idx, arm, record in reused_records:
+                    started_cells += 1
+                    print(
+                        f"[{task['id']}][{arm}][run {run_idx}] reused comparator "
+                        f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                    )
+                    keep(run_idx, arm, record)
+                if paid_cells:
+                    if graph_prefetch is None and not cancel_event.is_set():
+                        ready_keys = (
+                            set(clone_templates)
+                            | set(clone_template_errors)
+                            | set(graph_snapshots)
+                            | set(graph_snapshot_errors)
+                        )
+                        target = next_graph_prefetch_target(
+                            [(later_task, later_binding) for later_task, later_binding, _ in sweep_rows[index + 1 :]],
+                            arms=args.arms,
+                            runs=args.runs,
+                            reusable_rows=reusable_rows,
+                            reuse_source=reuse_source,
+                            ready_keys=ready_keys,
+                        )
+                        if target is not None:
+                            later_task, later_binding, later_key = target
+                            graph_prefetch = prefetch_next_graph(
+                                task=later_task,
+                                binding=later_binding,
+                                graph_key=later_key,
+                                trees=Path(trees),
+                                task_asset_cache=task_asset_cache,
+                                claude_bin=args.claude_bin,
+                                bwrap_bin=bwrap_bin,
+                                sandbox_backend=sandbox_backend,
+                                runtime_mounts=runtime_mounts,
+                                clone_templates=clone_templates,
+                                clone_template_errors=clone_template_errors,
+                                graph_snapshots=graph_snapshots,
+                                graph_snapshot_errors=graph_snapshot_errors,
+                                cancel_event=cancel_event,
+                            )
+                    # A reused success is evidence the pipeline can produce a good
+                # row, so it resets the consecutive-failure count the same way a
+                # paid success does. Leaving reused rows out let a streak carry
+                # across them and trip on stale history.
+                for _run_idx, _arm, _record in reused_records:
+                    outage_streak = systemic_outage_streak(_record.get("error_kind"), outage_streak)
+                outage_streak, outage_tripped = sweep_task_cells(
+                        paid_cells,
+                        workers=args.workers,
+                        run=partial(run_cell, cell_context),
+                        on_start=announce,
+                        on_record=keep,
+                        outage_streak=outage_streak,
+                        outage_limit=args.outage_streak,
+                        cancel_event=cancel_event,
+                    )
+                results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
+        finally:
+            _join_graph_prefetch()
 
     selection_report = [
         "## Run provenance",
@@ -1858,10 +2279,12 @@ def _run_sweep(
         selection_report.append(
             f"Compound Engineering plugin: `{ce_plugin_snapshot.version}` (`{ce_plugin_snapshot.manifest_digest}`)"
         )
-    if cancel_event.is_set():
-        selection_report.append("Sweep cancelled: partial evidence; promotion is disabled.")
-    elif outage_tripped:
+    # outage first: the breaker now sets cancel_event to stop in-flight background
+    # work, so testing cancellation first would relabel every outage a cancellation.
+    if outage_tripped:
         selection_report.append("Sweep aborted: partial evidence; promotion is disabled.")
+    elif cancel_event.is_set():
+        selection_report.append("Sweep cancelled: partial evidence; promotion is disabled.")
     report = render_report(results) + "\n\n" + "\n".join(selection_report) + "\n"
     (out_dir / "report.md").write_text(report)
     if candidate_arms:
@@ -1908,12 +2331,14 @@ def _run_sweep(
             "in results.jsonl. Exiting non-zero rather than reporting a quiet no-promotion."
         )
         raise SystemExit(1)
-    if cancel_event.is_set():
-        raise SystemExit(130)
     if outage_tripped:
         # Non-zero exit so a driver (evolve.py) treats the partial benchmark as a
         # failed run and halts instead of proposing from outage-truncated evidence.
+        # Checked before cancel_event because the breaker sets it (see above), and
+        # an outage must keep exit 1 rather than becoming the 130 of a Ctrl-C.
         raise SystemExit(1)
+    if cancel_event.is_set():
+        raise SystemExit(130)
 
 
 if __name__ == "__main__":

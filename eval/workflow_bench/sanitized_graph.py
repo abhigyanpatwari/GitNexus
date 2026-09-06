@@ -24,7 +24,7 @@ from .proposer_sandbox import (
     build_sandbox_environment,
     prepare_sandbox,
 )
-from .runner_artifacts import make_worktree, remove_clone
+from .runner_artifacts import copy_isolated_tree, make_worktree, remove_clone
 from .task_assets import TaskAssetCache, TaskAssetSnapshot, _is_harness_sandbox_copy
 
 GRAPH_ASSET_PATHS = (
@@ -360,14 +360,29 @@ def prepare_sanitized_graph(
     bwrap_bin: Path | str,
     runtime_mounts: Sequence[ReadOnlyMount],
     sandbox_backend: str = "bwrap",
+    clone_template: Path | None = None,
+    sanitized_head: str | None = None,
 ) -> SanitizedGraphSnapshot:
-    """Sanitize, index offline once, scrub, and freeze graph assets for all arms."""
+    """Sanitize, index offline once, scrub, and freeze graph assets for all arms.
+
+    When ``clone_template`` is an already-sanitized snapshot, this copies it
+    (the copy is scrubbed and indexed) so the template stays a clean cell
+    seed. Callers that already paid for ``make_worktree`` + sanitization
+    should pass that template rather than cloning GitNexus again.
+    """
 
     validate_no_prebuilt_graph_assets(task)
-    seed = make_worktree(repo, resolved_sha, parent)
+    if clone_template is not None:
+        if not isinstance(sanitized_head, str) or not sanitized_head:
+            raise SandboxError("clone template requires the sanitized HEAD")
+        seed = copy_isolated_tree(clone_template, parent)
+    else:
+        seed = make_worktree(repo, resolved_sha, parent)
+        sanitized_head = None
     primary: BaseException | None = None
     try:
-        sanitized_head = sanitize_clone_for_hidden_oracles(seed)
+        if sanitized_head is None:
+            sanitized_head = sanitize_clone_for_hidden_oracles(seed)
         _scrub_source_references(seed)
         _neutralize_target_index_inputs(seed)
         with prepare_sandbox(

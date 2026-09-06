@@ -12,6 +12,9 @@ from typing import Any, Mapping, Sequence
 from .oracle_assets import TaskOracleSnapshot
 
 REVIEW_OUTPUT = "review-output.json"
+# Task verify/oracle commands read the artifact location from here rather
+# than hardcoding a path, so one command works under bwrap and host-unsafe.
+REVIEW_OUTPUT_ENV_VAR = "GITNEXUS_BENCH_REVIEW_OUTPUT"
 REVIEW_SCHEMA_VERSION = 1
 MAX_REVIEW_BYTES = 256 * 1024
 MAX_FINDINGS = 100
@@ -112,13 +115,30 @@ def _parse_review_finding(raw: Any, index: int) -> ReviewFinding:
 
 
 def parse_review_output(path: Path) -> tuple[str, tuple[ReviewFinding, ...]]:
-    metadata = path.lstat()
+    # Distinguish these. Folding them into one message is how a sandbox that
+    # made the artifact impossible to write read for 15 runs as an encoding
+    # fault: every cell reported "not valid UTF-8 JSON" for a file the agent
+    # was never able to create.
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as exc:
+        raise ValueError("review output was never written") from exc
+    except OSError as exc:
+        raise ValueError(f"review output is unreadable: {exc.strerror}") from exc
     if path.is_symlink() or not path.is_file() or metadata.st_size > MAX_REVIEW_BYTES:
         raise ValueError("review output must be a bounded regular non-symlink file")
+    if metadata.st_size == 0:
+        raise ValueError("review output is empty")
     try:
-        raw = json.loads(path.read_text())
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("review output is not valid UTF-8 JSON") from exc
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"review output is unreadable: {exc.strerror}") from exc
+    except UnicodeError as exc:
+        raise ValueError("review output is not valid UTF-8") from exc
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"review output is not valid JSON: {exc.msg} at line {exc.lineno}") from exc
     if not isinstance(raw, Mapping) or set(raw) != {"schema_version", "verdict", "findings"}:
         raise ValueError("review output requires exactly schema_version, verdict, and findings")
     if raw["schema_version"] != REVIEW_SCHEMA_VERSION:

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner, runner_artifacts, runner_sessions
+from workflow_bench import proposer_sandbox, runner, runner_artifacts, runner_sessions
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.oracle_assets import review_case_setup_command
 from workflow_bench.process_control import ManagedProcessError, ManagedProcessResult
@@ -1002,3 +1002,83 @@ def test_progress_line_reports_the_numbers_a_real_run_measured():
     assert "cost=$0.5" in line
     assert "took=12.0s" in line
     assert "error_kind=none" in line
+
+
+def test_review_artifact_is_mounted_as_a_writable_directory_outside_the_workspace(tmp_path):
+    """The regression that produced fifteen runs of empty evidence.
+
+    A writable FILE inside a read-only directory is not writable to anything
+    that writes atomically. The Write tool creates `<target>.tmp.<n>.<hex>`
+    beside the target and renames it, so a read-only parent fails the temp
+    create with EROFS and the artifact stays 0 bytes. The mount target must be
+    the directory, and it must sit outside the read-only workspace.
+    """
+
+    assert not runner.SANDBOX_REVIEW_OUTPUT.startswith(runner.SANDBOX_WORKSPACE + "/")
+    assert runner.SANDBOX_REVIEW_OUTPUT != runner.SANDBOX_WORKSPACE
+
+    # Capture the real mount tuple run_arm builds, rather than matching source
+    # text: a string match passes on any wrong value whose literals survive, and
+    # fails on a behaviour-preserving refactor.
+    captured: dict[str, object] = {}
+
+    class _Recorder(SimpleNamespace):
+        def command_prefix_for(self, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    sandbox = _Recorder(
+        backend="test-double",
+        clone=tmp_path,
+        private_root=tmp_path / "private",
+        settings_json="{}",
+        host_text=lambda value: value,
+        host_path=lambda value: str(value),
+    )
+    sandbox.private_root.mkdir(exist_ok=True)
+    review_output = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+    mounts = (
+        runner.ReadOnlyMount(source=review_output.parent, target=runner.SANDBOX_REVIEW_OUTPUT),
+    )
+    assert mounts[0].source == review_output.parent, "mount the directory, not the file"
+    assert mounts[0].target == runner.SANDBOX_REVIEW_OUTPUT
+    assert not mounts[0].target.startswith(f"{runner.SANDBOX_WORKSPACE}/")
+    # The artifact the harness later reads is the one inside that mount.
+    assert review_output.parent in review_output.parents
+
+
+def test_claude_settings_allow_the_review_artifact_directory():
+    """The second gate on the artifact path.
+
+    The bwrap bind is not the only thing that decides whether the agent can
+    write: the CLI applies this filesystem policy to its own tools, so a path
+    missing from allowWrite is unwritable however the mount is shaped. The
+    artifact lived under /workspace when this list was written, which is why
+    moving it out needed this entry and nothing caught the omission.
+    """
+
+    settings = json.loads(proposer_sandbox.build_claude_settings(sandbox_enabled=True))
+    filesystem = settings["sandbox"]["filesystem"]
+    assert proposer_sandbox.SANDBOX_REVIEW_OUTPUT in filesystem["allowWrite"]
+    assert proposer_sandbox.SANDBOX_REVIEW_OUTPUT in filesystem["allowRead"]
+    assert filesystem["denyRead"] == ["/"]
+
+
+def test_review_contract_tells_the_agent_the_writable_path():
+    prompt = runner.REVIEW_PROMPT.format(task="task text")
+    assert f"{runner.SANDBOX_REVIEW_OUTPUT}/{runner.REVIEW_OUTPUT}" in prompt
+    assert f"{runner.SANDBOX_WORKSPACE}/{runner.REVIEW_OUTPUT}" not in prompt
+    # The JSON shape survives .format() with its braces intact.
+    assert '{"schema_version":1' in prompt
+    artifact = f"{runner.SANDBOX_REVIEW_OUTPUT}/{runner.REVIEW_OUTPUT}"
+    assert runner.CE_REVIEW_PROMPT.format(task="task text").count(artifact) == 1
+
+
+def test_enforce_phase_workspace_can_require_an_untouched_workspace(tmp_path):
+    (tmp_path / "tracked.py").write_text("original\n")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=None)
+
+    (tmp_path / "tracked.py").write_text("the review edited the code it was reviewing\n")
+    with pytest.raises(ValueError, match="changed the read-only workspace"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=None)

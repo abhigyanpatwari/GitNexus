@@ -63,13 +63,17 @@
 #     uploads, and a promotion (if any) opens a well-formed PR. Run
 #     29907431284 (2026-07-22) went green end to end in 14h45m and reached a
 #     gate decision (`insufficient_evidence`, no promotion).
-# [ ] After resizing the runner, prove a manual workers=3 run has zero excluded
-#     runs and does not stretch the 48-minute serial mean toward the session
-#     ceiling; then set GITNEXUS_EVOLUTION_WORKERS=3 and
+# [ ] Confirm a workers=3 dispatch has zero excluded runs (review sessions in
+#     33962002890 averaged ~19m serial, well under the 90m session ceiling).
+#     Then set GITNEXUS_EVOLUTION_WORKERS=3 and
 #     GITNEXUS_EVOLUTION_ENABLED=true for scheduled runs. Scheduled runs
-#     require both values, so leaving workers unset/1 is an immediate rollback;
-#     workflow_dispatch remains available for the proof and bills real API
-#     usage on GITNEXUS_BENCH_ANTHROPIC_API_KEY or GITNEXUS_BENCH_OPENAI_API_KEY.
+#     require both values, so leaving the var unset is an immediate rollback.
+#     Dispatch defaults to 3; pass workers=1 only to debug a contended host.
+#     Weekly generations reuse matching incumbent/CE cells from the previous
+#     artifact so the paid matrix is the new candidate, not a 54-cell replay.
+#     Wall clock is quantised by ceil(cells_per_task / workers), and a review
+#     task is 9 cells cold, so 4 costs host contention for exactly the wall
+#     clock of 3. The next step up that buys anything is 5 (3 waves -> 2).
 name: GitNexus skill evolution
 
 on:
@@ -92,9 +96,9 @@ on:
         default: '3'
         type: string
       workers:
-        description: 'Benchmark cells of one task to run at once — raise only to match the runner’s vCPUs'
+        description: 'Benchmark cells of one task to run at once — 3 fits the evolution box; drop to 1 only if siblings hit the session ceiling'
         required: false
-        default: '1'
+        default: '3'
         type: string
       model:
         description: 'Model for the benchmark arms (match the model your skill users run)'
@@ -172,6 +176,12 @@ jobs:
     # stops the runner just disappears mid-step. Scheduled runs can start well
     # after the cron (the 2026-08-01 run was queued 65min late), so the job
     # budget has to absorb that delay and still land inside the uptime window.
+    # A Friday workflow_dispatch on a box that already booted for Saturday's
+    # cron inherits leftover uptime, not a fresh 24h. Run 33962002890 started
+    # Friday 10:57 UTC and vanished at the Saturday 03:00 stop — 51 finished
+    # sessions never uploaded. run-evolution.sh therefore passes
+    # --max-runtime-seconds from /proc/uptime so the sweep fails in-process
+    # and this always() upload still runs.
     timeout-minutes: 1260
     permissions:
       contents: read # The promotion PR uses a short-lived App token minted below.

@@ -57,6 +57,24 @@ MAX_PROGRESS_PENDING = 256
 MAX_PROGRESS_TOOL_ID_CHARS = 256
 MAX_TOOL_PREVIEW_CHARS = 800
 _SAFE_TOOL_NAME = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+_GHA_WORKFLOW_COMMAND = re.compile(r"(^|[\n\r])::")
+_GHA_HASH_COMMAND = re.compile(r"##\[")
+_GHA_COMPILER_ANNOTATION = re.compile(r"\((\d+),(\d+)\):\s+error\b", re.IGNORECASE)
+
+
+def neutralize_ci_log_text(text: str) -> str:
+    """Stop GitHub Actions from promoting tool output into check annotations.
+
+    Run 33962002890 logged in-sandbox ``tsc`` failures as
+    ``file.ts(line,col): error TS2307``, which Actions parsed as workflow
+    annotations on ``.github``. The same parser treats ``::error::`` and
+    ``##[error]`` as commands. Progress previews are evidence, not CI
+    signaling, so rewrite those forms before they hit the job log.
+    """
+
+    text = _GHA_WORKFLOW_COMMAND.sub(r"\1[:]", text)
+    text = _GHA_HASH_COMMAND.sub("# [", text)
+    return _GHA_COMPILER_ANNOTATION.sub(r"(\1,\2): compiler-error", text)
 
 
 def _safe_tool_name(value: Any) -> str:
@@ -177,7 +195,9 @@ class SessionProgress:
     def _say(self, message: str) -> None:
         # Queue only: the stdout drain thread calls observe() and must not
         # block on a full log pipe (process_control.stdout_observer contract).
-        self._pending_messages.append(f"[{self.label} {self._elapsed()}] {message}")
+        self._pending_messages.append(
+            neutralize_ci_log_text(f"[{self.label} {self._elapsed()}] {message}")
+        )
         self._last_spoke = time.monotonic()
 
     def _emit_pending(self) -> None:
