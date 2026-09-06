@@ -1,0 +1,23 @@
+gitnexus/src/core/ingestion/languages/go/package-siblings.ts
+  s_2fc6857ad45390::t_a0c2e81a72a68f 13-61,68-69,74-83,85-113,116,126-136
+gitnexus/test/integration/resolvers/go-external-test-package.test.ts
+  s_2fc6857ad45390::t_fcf5804e704101 1-145
+gitnexus/test/unit/scope-resolution/go/go-test-file-siblings.test.ts
+  s_2fc6857ad45390::t_c79bfb92f294b8 1-173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "bf34a890314a9d1a6387ed24d7785b93a4b23450",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
