@@ -52,37 +52,49 @@ from workflow_bench.proposer_sandbox import (
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets as stage_immutable_task_assets
 
 
-@pytest.mark.parametrize("entry", ["file", "directory", "relative-link", "absolute-link"])
-def test_review_preparation_rejects_existing_output_without_touching_target(tmp_path, entry):
+@pytest.mark.parametrize("entry", ["directory", "relative-link", "absolute-link"])
+def test_review_preparation_rejects_a_reused_artifact_directory(tmp_path, entry):
     clone = tmp_path / "clone"
     clone.mkdir()
     sentinel = tmp_path / "sentinel"
     sentinel.write_text("must survive")
-    output = clone / "review-output.json"
-    if entry == "file":
-        output.write_text("existing result")
-    elif entry == "directory":
-        output.mkdir()
-    else:
-        output.symlink_to(sentinel if entry == "absolute-link" else "../sentinel")
     with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        stale = proposer_sandbox.review_output_path(sandbox, "review-output.json").parent
+        if entry == "directory":
+            stale.mkdir()
+            (stale / "review-output.json").write_text("a previous cell's verdict")
+        else:
+            stale.symlink_to(sentinel if entry == "absolute-link" else "../sentinel")
         with pytest.raises(SandboxError, match="already exists"):
             proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
     assert sentinel.read_text() == "must survive"
-    if entry == "file":
-        assert output.read_text() == "existing result"
-    if "link" in entry:
-        assert output.is_symlink()
 
 
-def test_review_preparation_creates_a_private_regular_output(tmp_path):
+def test_review_preparation_leaves_a_clone_entry_of_the_same_name_alone(tmp_path):
+    # The artifact no longer lives in the workspace, so a file that happens to
+    # share its name is just one of the repository's own files.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "review-output.json").write_text("repository content")
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
+    assert (clone / "review-output.json").read_text() == "repository content"
+    assert clone not in output.parents
+
+
+def test_review_preparation_creates_a_private_directory_and_not_the_file(tmp_path):
     clone = tmp_path / "clone"
     clone.mkdir()
     with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as sandbox:
         output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
-        assert output.read_bytes() == b""
-        assert stat.S_ISREG(output.lstat().st_mode)
-        assert stat.S_IMODE(output.stat().st_mode) == 0o600
+        assert output == proposer_sandbox.review_output_path(sandbox, "review-output.json")
+        # The DIRECTORY is what has to exist and be writable: the agent writes
+        # a temp file beside the target and renames it.
+        assert output.parent.is_dir()
+        assert stat.S_IMODE(output.parent.stat().st_mode) == 0o700
+        # The file is deliberately absent — absence is how "never written" is
+        # told apart from "written badly".
+        assert not output.exists()
 
 
 def test_review_preparation_preserves_existing_runtime_files_and_tracks_only_created_paths(tmp_path):
@@ -1418,3 +1430,41 @@ PY"""
 
     if not review_layout:
         assert (clone / "bash-called").read_text() == "canary"
+
+
+def test_review_artifact_binds_a_writable_directory_outside_the_workspace(tmp_path):
+    """The bwrap argv, since the mount shape is the whole bug.
+
+    bwrap cannot create a mount point inside an already-read-only bind, so a
+    writable path has to live outside /workspace — and it has to be the
+    directory, or the agent has nowhere to put the temp file it renames into
+    place.
+    """
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=sys.executable, backend="host-unsafe") as session:
+        sandbox = replace(session, backend="bwrap")
+        output = proposer_sandbox.review_output_path(sandbox, "review-output.json")
+        output.parent.mkdir(mode=0o700)
+        argv = sandbox.command_prefix_for(
+            read_only_workspace=True,
+            extra_writable_mounts=(
+                proposer_sandbox.ReadOnlyMount(
+                    source=output.parent,
+                    target=proposer_sandbox.SANDBOX_REVIEW_OUTPUT,
+                ),
+            ),
+        )
+
+        target = proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+        assert not target.startswith(proposer_sandbox.SANDBOX_WORKSPACE + "/")
+        # The workspace itself is bound read-only...
+        workspace_at = argv.index(proposer_sandbox.SANDBOX_WORKSPACE)
+        assert argv[workspace_at - 2] == "--ro-bind"
+        # ...and the artifact directory is bound writable, as a directory.
+        artifact_at = argv.index(target)
+        assert argv[artifact_at - 2] == "--bind"
+        assert Path(argv[artifact_at - 1]) == output.parent
+        assert Path(argv[artifact_at - 1]).is_dir()
+        assert f"{proposer_sandbox.SANDBOX_WORKSPACE}/review-output.json" not in argv

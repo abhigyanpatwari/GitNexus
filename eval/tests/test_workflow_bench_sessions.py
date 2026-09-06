@@ -120,11 +120,16 @@ def skill_events(skill_input: dict, *, tool_id: str = "skill-1", is_error: bool 
 
 
 def fake_sandbox(root: Path) -> SimpleNamespace:
+    # private_root is NOT the clone. Conflating them puts the review artifact
+    # directory inside the workspace, which the real sandbox never does and
+    # which hides whether the workspace was left untouched.
+    private_root = root.parent / f"{root.name}-sandbox-private"
+    private_root.mkdir(exist_ok=True)
     return SimpleNamespace(
         backend="test-double",
         claude_bin="claude",
         clone=root,
-        private_root=root,
+        private_root=private_root,
         command_prefix=[],
         command_prefix_for=lambda **_kwargs: [],
         settings_json="{}",
@@ -1249,7 +1254,7 @@ def test_planning_cannot_change_source_tests_or_downstream_skill(monkeypatch, tm
 @pytest.mark.parametrize(
     ("attack", "expected_detail"),
     [
-        ("workspace", "unauthorized workspace path"),
+        ("workspace", "changed the read-only workspace"),
         ("skill", "changed the evaluated skill fingerprint"),
     ],
 )
@@ -1265,9 +1270,11 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     expected_skill_digest = "expected-skill-fingerprint"
 
     def adversarial_review(prompt, *args, **kwargs):
-        (tmp_path / "review-output.json").write_text(
-            '{"schema_version":1,"verdict":"approve","findings":[]}'
-        )
+        # Write where the contract now says: the artifact directory outside the
+        # workspace, which is the only place the agent can write atomically.
+        artifact = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('{"schema_version":1,"verdict":"approve","findings":[]}')
         if attack == "workspace":
             source.write_text("review silently changed source")
         return session_record()

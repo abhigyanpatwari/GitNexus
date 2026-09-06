@@ -217,11 +217,25 @@ def enforce_phase_workspace(
     worktree: Path,
     before: dict[str, str],
     *,
-    allowed_artifact: Path,
+    allowed_artifact: Path | None,
 ) -> None:
-    """Require a phase to change only its one explicit workspace artifact."""
+    """Require a phase to change only its one explicit workspace artifact.
+
+    ``allowed_artifact=None`` is the stricter contract: the phase must leave
+    the workspace byte-identical. That is what a review phase whose artifact
+    lives outside the workspace has to satisfy — there is nothing in there it
+    is entitled to touch.
+    """
 
     root = worktree.expanduser().absolute()
+    if allowed_artifact is None:
+        after = workspace_snapshot(root)
+        changed = sorted(
+            path for path in before.keys() | after.keys() if before.get(path) != after.get(path)
+        )
+        if changed:
+            raise ValueError(f"phase changed the read-only workspace: {', '.join(changed[:5])}")
+        return
     artifact = allowed_artifact.expanduser().absolute()
     try:
         relative = PurePosixPath(artifact.relative_to(root).as_posix())
