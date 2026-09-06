@@ -7,7 +7,7 @@ name: Build tree-sitter prebuilds
 #
 # Grammars covered here (the at-risk set — everything else already ships 6
 # upstream prebuilds AND stays dependency-review-tracked, so it is left alone).
-# All five are vendored under gitnexus/vendor/; `kind` (below) only picks where
+# All seven are vendored under gitnexus/vendor/; `kind` (below) only picks where
 # the build job fetches the C source to compile:
 #   - tree-sitter-c      (vendored prebuild-only; built from the published npm
 #                         package — closes upstream's 4/6 ARM gap #2116 for a
@@ -17,6 +17,8 @@ name: Build tree-sitter prebuilds
 #   - tree-sitter-kotlin (vendored source; built from gitnexus/vendor/ — pinned to
 #                         an unreleased main commit for `fun interface` support
 #                         (#169) that no npm release carries yet)
+#   - tree-sitter-objc   (vendored source; built from gitnexus/vendor/ — pinned
+#                         for the Objective-C provider MVP)
 #   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
 #                         prebuilds were originally upstream-shipped, now
 #                         GitNexus-cross-built like the rest for uniformity)
@@ -24,13 +26,13 @@ name: Build tree-sitter prebuilds
 #                         off npm optionalDependency so `npm i -g gitnexus`
 #                         no longer warns on peerOptional tree-sitter@^0.22.1.
 #                         Upstream linux-arm64 prebuild is a mispackaged
-#                         x86-64 binary; this workflow rebuilds all six.)
+#                         x86-64 binary; this workflow rebuilds all seven.)
 #
 # Output: gitnexus/vendor/<grammar>/prebuilds/<platform-arch>/<grammar>.node for
 # all 6 targets ({linux,darwin,win32}-{x64,arm64}). tree-sitter grammars are
 # N-API, so one ABI-stable .node per platform-arch works across all Node majors.
 #
-# COST DISCIPLINE — this is a HEAVY native matrix (up to 3 grammars x 6 runners,
+# COST DISCIPLINE — this is a HEAVY native matrix (up to 7 grammars x 6 runners,
 # incl. macOS + arm64). It is DELIBERATELY NOT wired into normal PR/push CI. It
 # runs only:
 #   1. on manual dispatch (workflow_dispatch); or
@@ -61,7 +63,7 @@ on:
   workflow_dispatch:
     inputs:
       grammars:
-        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,swift,zig), or "all".'
+        description: 'Comma-separated grammar shortnames to build (c,dart,proto,kotlin,objc,swift,zig), or "all".'
         required: false
         type: string
         default: 'all'
@@ -93,7 +95,7 @@ on:
       - '!gitnexus/vendor/tree-sitter-*/prebuilds/**'
       # Self-test: re-run the guard if a future grammar pin is reintroduced in
       # the main package.json (optionalDependencies fallback). No-op otherwise —
-      # all six grammars are now fully vendored (kotlin and zig included).
+      # all seven grammars are now fully vendored (including kotlin, objc, and zig).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
@@ -163,6 +165,9 @@ jobs:
             // unreleased main commit for `fun interface` support (#169) that no
             // npm release carries yet — so it must build from the vendored source.
             kotlin: { name: 'tree-sitter-kotlin', kind: 'vendored' },
+            // Objective-C is vendored WITH its source and its native bindings
+            // must be recut together with the pinned grammar snapshot.
+            objc:   { name: 'tree-sitter-objc',   kind: 'vendored' },
             // swift is vendored WITH its source (parser.c/scanner.c/binding.gyp),
             // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
             // were originally upstream-shipped; rebuilding them here unifies it.
@@ -505,6 +510,7 @@ jobs:
               dart:   "void main() { print(\"hi\"); }",
               proto:  "syntax = \"proto3\";\nmessage M { int32 id = 1; }",
               kotlin: "fun main() { println(\"hi\") }",
+              objc:   "@interface GNValidationProbe : NSObject\n@end",
               swift:  "func greet() { print(\"hi\") }",
               zig:    "pub fn main() void {}",
             };

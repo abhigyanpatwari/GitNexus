@@ -148,6 +148,10 @@ const DECLARATION_BODY_NODE_TYPES = new Set([
   'interface_body',
 ]);
 
+const DIRECT_MEMBER_DECLARATION_TYPES = new Set(['protocol_declaration', 'class_interface']);
+
+const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set(['identifier', 'protocol_reference_list']);
+
 const FIELD_LIKE_MEMBER_TYPES = new Set([
   'field_definition',
   'public_field_definition',
@@ -157,6 +161,11 @@ const FIELD_LIKE_MEMBER_TYPES = new Set([
   'lexical_declaration',
   'pair',
   'enum_assignment',
+]);
+
+const DECLARATION_MEMBER_WRAPPER_TYPES = new Set([
+  'qualified_protocol_interface_declaration',
+  'instance_variables',
 ]);
 
 const declarationChunk = async (
@@ -337,6 +346,8 @@ const getDeclarationBodyNode = (node: any): any | null => {
   const bodyNode = node.childForFieldName?.('body');
   if (bodyNode) return bodyNode;
 
+  if (DIRECT_MEMBER_DECLARATION_TYPES.has(node.type)) return node;
+
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (!child) continue;
@@ -352,15 +363,34 @@ const collectDeclarationUnits = (
 ): Array<{ startIndex: number; endIndex: number }> => {
   const members: Array<{ startIndex: number; endIndex: number; groupable: boolean }> = [];
 
-  for (let i = 0; i < bodyNode.namedChildCount; i++) {
-    const child = bodyNode.namedChild(i);
-    if (!child) continue;
-    members.push({
-      startIndex: child.startIndex,
-      endIndex: child.endIndex,
-      groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
-    });
-  }
+  const collectMembers = (
+    node: any,
+    skipHeaderChildren: boolean,
+    includeNodePrefixOnFirstMember = false,
+  ): void => {
+    const firstMemberIndex = members.length;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (!child) continue;
+      if (DECLARATION_MEMBER_WRAPPER_TYPES.has(child.type)) {
+        collectMembers(child, false, true);
+        continue;
+      }
+      if (skipHeaderChildren && DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)) continue;
+      members.push({
+        startIndex: child.startIndex,
+        endIndex: child.endIndex,
+        groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
+      });
+    }
+
+    const firstMember = members[firstMemberIndex];
+    if (includeNodePrefixOnFirstMember && firstMember) {
+      firstMember.startIndex = node.startIndex;
+    }
+  };
+
+  collectMembers(bodyNode, DIRECT_MEMBER_DECLARATION_TYPES.has(bodyNode.type));
 
   if (members.length === 0) return [];
 

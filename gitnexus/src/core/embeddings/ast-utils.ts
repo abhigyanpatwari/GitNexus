@@ -100,6 +100,8 @@ export const findDeclarationNode = (root: any): any | null => {
     'struct_item',
     'interface_declaration',
     'interface_definition',
+    'protocol_declaration', // Objective-C protocol
+    'class_interface', // Objective-C class, category, or extension
     'enum_declaration',
     'enum_item',
     'type_declaration', // Go: type X struct

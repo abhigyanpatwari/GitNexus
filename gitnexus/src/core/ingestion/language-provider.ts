@@ -36,7 +36,12 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
-import type { GraphNode, NodeLabel } from 'gitnexus-shared';
+import type {
+  GraphNode,
+  NodeLabel,
+  ParameterTypeClass,
+  RelationshipType,
+} from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type {
@@ -118,6 +123,68 @@ export function mergeCanonicalDefinitionProperties<
   canonicalProperties: TCanonical,
 ): Record<string, unknown> & TCanonical {
   return { ...providerProperties, ...canonicalProperties } as Record<string, unknown> & TCanonical;
+}
+
+export interface ProviderSemanticNode {
+  readonly id: string;
+  readonly label: NodeLabel;
+  readonly properties: {
+    readonly name: string;
+    readonly filePath: string;
+    readonly startLine: number;
+    readonly endLine: number;
+    readonly language: SupportedLanguages;
+    readonly isExported: boolean;
+    readonly qualifiedName?: string;
+    readonly parameterCount?: number;
+    readonly requiredParameterCount?: number;
+    readonly parameterTypes?: readonly string[];
+    readonly parameterTypeClasses?: readonly ParameterTypeClass[];
+    readonly returnType?: string;
+    readonly declaredType?: string;
+    readonly visibility?: string;
+    readonly isStatic?: boolean;
+    readonly isReadonly?: boolean;
+    readonly [key: string]: unknown;
+  };
+}
+
+export type ProviderSemanticRelationshipType = Extract<
+  RelationshipType,
+  'DECLARES' | 'DEFINES' | 'HAS_METHOD' | 'HAS_PROPERTY'
+>;
+
+export interface ProviderSemanticRelationship {
+  readonly id: string;
+  readonly sourceId: string;
+  readonly targetId: string;
+  readonly type: ProviderSemanticRelationshipType;
+  readonly confidence: number;
+  readonly reason: string;
+}
+
+export interface ProviderSemanticSymbol {
+  readonly filePath: string;
+  readonly name: string;
+  readonly nodeId: string;
+  readonly type: NodeLabel;
+  readonly qualifiedName?: string;
+  readonly parameterCount?: number;
+  readonly requiredParameterCount?: number;
+  readonly parameterTypes?: readonly string[];
+  readonly parameterTypeClasses?: readonly ParameterTypeClass[];
+  readonly returnType?: string;
+  readonly declaredType?: string;
+  readonly ownerId?: string;
+  readonly visibility?: string;
+  readonly isStatic?: boolean;
+  readonly isReadonly?: boolean;
+}
+
+export interface ProviderSemanticGraph {
+  readonly nodes: readonly ProviderSemanticNode[];
+  readonly relationships: readonly ProviderSemanticRelationship[];
+  readonly symbols: readonly ProviderSemanticSymbol[];
 }
 
 // ── Strategy tag types ─────────────────────────────────────────────────────
@@ -229,6 +296,29 @@ interface LanguageProviderConfig {
    * and language-specific callable compatibility.
    */
   readonly runtimeSymbolStrategy?: RuntimeSymbolStrategy;
+
+  /**
+   * Optional content-based language classifier. The filename detector remains
+   * the default source of truth; this hook lets a provider claim ambiguous
+   * files only when the source text carries language-specific evidence.
+   *
+   * Used for extensions shared by several languages, where mapping the suffix
+   * globally would steal files from an existing provider. Implementations must
+   * be deterministic and conservative: false negatives are acceptable, false
+   * positives change which parser and resolver consumes the file.
+   *
+   * Default: undefined (provider never overrides filename detection).
+   */
+  readonly classifyFileContent?: (filePath: string, sourceText: string) => boolean;
+
+  /**
+   * Cheap path-only prefilter for `classifyFileContent`. When supplied, callers
+   * can avoid loading source text for files this provider would never claim.
+   *
+   * Default: undefined (only callers that already have content invoke
+   * `classifyFileContent`).
+   */
+  readonly shouldClassifyFileContent?: (filePath: string) => boolean;
 
   // ── Core (required) ───────────────────────────────────────────────
   /** Type extraction: declarations, initializers, for-loop bindings */
@@ -642,6 +732,23 @@ interface LanguageProviderConfig {
     operands: readonly Operand[],
     repo: RepoConstants,
   ) => string | null;
+
+  /**
+   * Optional provider-owned semantic graph extraction for languages whose
+   * stable symbol identities cannot be represented by the generic query
+   * pipeline's `(label, filePath, qualifiedName)` rule.
+   *
+   * Runs in the parse worker after tree-sitter has parsed the file and after
+   * `extractParsedFile` has produced the scope-resolution artifact. The hook is
+   * deterministic and AST-based: it receives the already-parsed tree and must
+   * return plain graph nodes/relationships/symbol-table rows. Existing
+   * providers leave it undefined, preserving the generic capture path exactly.
+   */
+  readonly extractSemanticGraph?: (
+    tree: Parser.Tree,
+    filePath: string,
+    sourceText: string,
+  ) => ProviderSemanticGraph;
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.

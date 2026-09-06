@@ -14,6 +14,8 @@ export type NodeLabel =
   | 'Folder'
   | 'File'
   | 'Class'
+  | 'Protocol'
+  | 'Category'
   | 'Function'
   | 'Method'
   | 'Variable'

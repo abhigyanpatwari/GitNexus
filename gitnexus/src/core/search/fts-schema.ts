@@ -25,6 +25,8 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   // Original 5 (minus File) gain `description`.
   { table: 'Function', indexName: 'function_fts', properties: FTS_PROPERTIES },
   { table: 'Class', indexName: 'class_fts', properties: FTS_PROPERTIES },
+  { table: 'Protocol', indexName: 'protocol_fts', properties: FTS_PROPERTIES },
+  { table: 'Category', indexName: 'category_fts', properties: FTS_PROPERTIES },
   { table: 'Method', indexName: 'method_fts', properties: FTS_PROPERTIES },
   { table: 'Interface', indexName: 'interface_fts', properties: FTS_PROPERTIES },
   // Remaining EMBEDDABLE_LABELS symbol tables — all CODE_ELEMENT_BASE-shaped

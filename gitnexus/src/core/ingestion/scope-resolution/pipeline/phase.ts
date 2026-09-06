@@ -177,7 +177,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     logHeapProbe('scopeResolution-enter');
     const { scannedFiles } = getPhaseOutput<StructureOutput>(deps, 'structure');
     const parseOutput = getPhaseOutput<ParseOutput>(deps, 'parse');
-    const { model, parsedFiles: workerParsedFiles } = parseOutput;
+    const { model, parsedFiles: workerParsedFiles, contentLanguageByPath } = parseOutput;
     const scopeExtractionFailures = new Set(parseOutput.scopeExtractionFailures);
     // SemanticModel populated during `parse`: scope-resolution consumes
     // TypeRegistry / MethodRegistry / SymbolTable lookups instead of
@@ -257,7 +257,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       (typeof scannedFiles)[number][]
     >();
     for (const f of scannedFiles) {
-      const fileLang = getLanguageFromFilename(f.path);
+      const fileLang = contentLanguageByPath.has(f.path)
+        ? (contentLanguageByPath.get(f.path) ?? null)
+        : getLanguageFromFilename(f.path);
       if (fileLang === null) continue;
       // Tree-sitter providers require an available grammar. Standalone regex
       // providers deliberately have none and re-extract on the main thread.
