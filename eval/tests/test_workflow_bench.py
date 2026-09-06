@@ -245,6 +245,9 @@ def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_asset
     assert skipped == ["cross-module-parse-retry"]
     assert all(not task.get("sandbox_copy") for task in tasks)
     assert all(task["sandbox_dependencies"] for task in tasks)
+    assert all(
+        any(dep.get("source") == "gitnexus-shared/dist" for dep in task["sandbox_dependencies"]) for task in tasks
+    )
     assert all(task["oracle"]["command"] and task["oracle"]["files"] for task in tasks)
     assert all("./node_modules/.bin/vitest run" in task["oracle"]["command"] for task in tasks)
     assert all("npx vitest" not in task["oracle"]["command"] for task in tasks)

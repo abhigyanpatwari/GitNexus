@@ -15,6 +15,8 @@
 #   MODEL PROPOSER_MODEL EFFORT GENERATIONS RUNS WORKERS PROVIDER
 #   EVOLUTION_PROFILE CE_PLUGIN_DIR CE_PLUGIN_VERSION
 #   INCLUDE_EXPENSIVE SEED_RESULTS CLAUDE_BIN OUT_ROOT
+#   CI (caps --max-runtime-seconds from /proc/uptime)
+#   EVENTBRIDGE_INSTANCE_WINDOW_SECONDS EVENTBRIDGE_STOP_RESERVE_SECONDS
 #   UNSAFE_NO_BWRAP=1 (local review diagnostics only)
 #   GITNEXUS_BENCH_ANTHROPIC_API_KEY (legacy GITNEXUS_BENCH_AUTH_TOKEN)
 #   GITNEXUS_BENCH_OPENAI_API_KEY
@@ -199,6 +201,20 @@ if ((dry_run)); then
   exit 0
 fi
 
+# A cancelled GitHub job skips even `if: always()`, so evidence dies with the
+# runner. The evolution box is EventBridge-stopped 24h after boot; a Friday
+# dispatch inherits leftover uptime. Cap the sweep so it fails in-process and
+# the upload step still runs (run 33962002890).
+if [[ -n "${CI:-}" && -r /proc/uptime ]]; then
+  remaining="$(
+    cd "${eval_dir}"
+    uv run --locked --extra dev python -c \
+      'from workflow_bench.evolve import instance_window_budget_from_proc; print(instance_window_budget_from_proc())'
+  )"
+  cmd+=(--max-runtime-seconds "${remaining}")
+  echo "Capping the sweep to ${remaining}s so the instance-window reserve can upload evidence." >&2
+fi
+
 mkdir -p "${out_root}"
 source_sha="$(git -C "${eval_dir}/.." rev-parse HEAD)"
 runtime_digest="$(
@@ -220,5 +236,9 @@ SOURCE_SHA="${source_sha}" RUNTIME_DIGEST="${runtime_digest}" SANDBOX_BACKEND="$
   }, null, 2) + "\n")' "${out_root}/runtime-provenance.json"
 
 export PYTHONUNBUFFERED=1
+# The runner stamps this on every results.jsonl row and refuses to reuse a
+# comparator cell when a prior row's digest disagrees. Keep it on the evolve
+# process, not only in the provenance JSON sidecar.
+export RUNTIME_DIGEST="${runtime_digest}"
 cd "${eval_dir}"
 exec "${cmd[@]}"

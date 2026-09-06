@@ -15,13 +15,18 @@ import pytest
 from workflow_bench import evolve, evolution
 from workflow_bench.runner_sessions import PARENT_EVENT_STREAM_SOURCE
 from workflow_bench.evolve import (
+    MIN_INSTANCE_SWEEP_SECONDS,
     build_parser,
     build_proposer_prompt,
+    capped_timeout_seconds,
     executed_benchmark_arms,
     generation_timeout_seconds,
+    instance_window_budget_from_proc,
+    instance_window_budget_seconds,
     load_jsonl,
     proposer_evidence_entries,
     read_learnings,
+    remaining_runtime_seconds,
     resolve_incumbent_arms,
     runner_argv,
     select_evidence,
@@ -922,6 +927,27 @@ def test_runner_argv_inserts_ce_review_for_review_overlay(tmp_path):
     )
     arms = argv[argv.index("--arms") + 1 : argv.index("--promotion-metric")]
     assert arms == ["ce_review", "review", "candidate_review"]
+    assert "--reuse-results" not in argv
+
+
+def test_runner_argv_forwards_prior_results_for_comparator_reuse(tmp_path):
+    args = build_parser().parse_args(
+        ["--tasks", "t.yaml", "--model", "pinned", "--arms", "review"]
+    )
+    overlay = tmp_path / "overlay"
+    skill = overlay / ".claude" / "skills" / "gitnexus-review" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("candidate")
+    prior = tmp_path / "prior-bench"
+    argv = runner_argv(
+        args,
+        tmp_path / "bench",
+        overlay,
+        task_bindings=[{"id": "task"}],
+        target_base_digests={},
+        reuse_results=prior,
+    )
+    assert argv[argv.index("--reuse-results") + 1] == str(prior)
 
 
 def test_runner_argv_omits_proposer_for_manual_overlay(tmp_path):
@@ -1116,6 +1142,52 @@ def test_generation_timeout_rejects_unknown_arm() -> None:
             session_timeout=60,
             incumbent_arms=["mystery"],
         )
+
+
+def test_instance_window_budget_leaves_upload_reserve() -> None:
+    # Friday 10:57 on a box that booted 02:45 Saturday-window: ~8.2h uptime.
+    leftover = instance_window_budget_seconds(8.2 * 3600)
+    assert leftover == int(86_400 - 8.2 * 3600 - 5_400)
+    assert leftover >= MIN_INSTANCE_SWEEP_SECONDS
+    with pytest.raises(ValueError, match="only .*s left"):
+        instance_window_budget_seconds(23.5 * 3600)
+    with pytest.raises(ValueError, match="uptime must be"):
+        instance_window_budget_seconds(float("nan"))
+
+
+def test_instance_window_budget_from_proc_reads_uptime_and_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uptime = tmp_path / "uptime"
+    uptime.write_text("3600.00 8000.00\n")
+    monkeypatch.setenv("EVENTBRIDGE_INSTANCE_WINDOW_SECONDS", "20000")
+    monkeypatch.setenv("EVENTBRIDGE_STOP_RESERVE_SECONDS", "1000")
+    assert instance_window_budget_from_proc(uptime) == 20000 - 3600 - 1000
+    with pytest.raises(ValueError, match="cannot read instance uptime"):
+        instance_window_budget_from_proc(tmp_path / "missing")
+
+
+def test_capped_timeout_clamps_to_leftover_window() -> None:
+    assert capped_timeout_seconds(10_000, None) == 10_000
+    assert capped_timeout_seconds(10_000, 90) == 90
+    with pytest.raises(ValueError, match="no time remains"):
+        capped_timeout_seconds(10_000, 0)
+    started = time.monotonic() - 40
+    assert remaining_runtime_seconds(max_runtime_seconds=None, started_monotonic=started) is None
+    leftover = remaining_runtime_seconds(max_runtime_seconds=100, started_monotonic=started)
+    assert leftover is not None
+    assert 50 <= leftover <= 60
+
+
+def test_parser_rejects_non_positive_max_runtime() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["--tasks", "t.yaml", "--model", "pinned", "--max-runtime-seconds", "0"]
+        )
+    args = build_parser().parse_args(
+        ["--tasks", "t.yaml", "--model", "pinned", "--max-runtime-seconds", "7200"]
+    )
+    assert args.max_runtime_seconds == 7200
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Bubblewrap PID namespaces require Linux")

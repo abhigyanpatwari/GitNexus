@@ -1348,3 +1348,26 @@ def test_make_worktree_clone_has_no_tags_but_keeps_all_branches(tmp_path):
 
     current = _git(target, "rev-parse", "HEAD").stdout.strip()
     assert current == other_sha
+
+
+def test_copy_isolated_tree_does_not_share_git_objects_or_refs(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    sha = _git_commit(repo, "base")
+    clones = tmp_path / "clones"
+    clones.mkdir()
+    template = runner.make_worktree(repo, sha, clones)
+    (template / "marker.txt").write_text("template\n")
+
+    copy = runner.copy_isolated_tree(template, clones)
+    assert copy != template
+    assert (copy / "marker.txt").read_text() == "template\n"
+    (copy / "marker.txt").write_text("copy\n")
+    assert (template / "marker.txt").read_text() == "template\n"
+    copy_head = _git(copy, "rev-parse", "HEAD").stdout.strip()
+    template_head = _git(template, "rev-parse", "HEAD").stdout.strip()
+    assert copy_head == template_head == sha
+    alternates = copy / ".git" / "objects" / "info" / "alternates"
+    assert not alternates.exists()
