@@ -1112,10 +1112,7 @@ export async function runChunkedParseAndResolve(
       missResults: ParseWorkerResult[][];
     }): Promise<void> => {
       const missResults = round.missResults;
-      const missCount = round.entries.reduce(
-        (sum, entry) => sum + (entry.kind === 'miss' ? 1 : 0),
-        0,
-      );
+      const missCount = round.entries.filter((entry) => entry.kind === 'miss').length;
       // `dispatchGroups` returns one array per input group. If that contract
       // ever breaks, every later entry in this round would silently merge the
       // wrong chunk's results and skip its cache write, with a clean exit.
