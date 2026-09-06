@@ -296,9 +296,18 @@ export async function assertRemoteMatchesRequestedUrl(
 
 /**
  * Clone or pull a git repository.
- * If targetDir doesn't exist: git clone --depth 1
- * If targetDir exists with .git: git pull --ff-only (after verifying the
- * existing clone's remote.origin matches the requested URL).
+ *
+ * If targetDir doesn't exist: git clone --depth 1, adding `--branch <branch>`
+ * when one is requested.
+ *
+ * If targetDir exists with .git, its remote.origin is verified against the
+ * requested URL first, and then:
+ *   - without `options.branch`: git pull --ff-only, which updates whichever
+ *     branch is already checked out
+ *   - with `options.branch`: fetch that ref, then
+ *     `checkout -B <branch> origin/<branch>` — so the requested branch, not the
+ *     one already checked out, is what ends up in the working tree. Refuses a
+ *     dirty tree unless `overwriteLocalChanges` is set.
  *
  * Security:
  *   - targetDir must resolve inside CLONE_ROOT (~/.gitnexus/repos/). The

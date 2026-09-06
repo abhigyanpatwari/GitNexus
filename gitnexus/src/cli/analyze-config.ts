@@ -184,6 +184,31 @@ export function validateBranchName(value: string, source: string): string {
   if (trimmed.includes('..')) {
     throw new GitNexusRcError(`${source}: branch name must not contain "..".`);
   }
+  // The remaining `git check-ref-format` rules. Without these the validator
+  // accepted refs git itself refuses (`feature.lock`, `/feature`, `feature/`,
+  // `feature//next`, `@`, `.hidden`), so the failure surfaced later from the
+  // git subprocess instead of here. No real branch can violate them — git
+  // could not have created one — so nothing that works today starts failing.
+  if (trimmed.endsWith('.lock') || trimmed.split('/').some((part) => part.endsWith('.lock'))) {
+    throw new GitNexusRcError(`${source}: branch name must not end with ".lock".`);
+  }
+  if (trimmed.startsWith('/') || trimmed.endsWith('/')) {
+    throw new GitNexusRcError(`${source}: branch name must not start or end with "/".`);
+  }
+  if (trimmed.includes('//')) {
+    throw new GitNexusRcError(`${source}: branch name must not contain consecutive slashes.`);
+  }
+  if (trimmed === '@') {
+    throw new GitNexusRcError(`${source}: branch name must not be the single character "@".`);
+  }
+  if (trimmed.includes('@{')) {
+    throw new GitNexusRcError(`${source}: branch name must not contain "@{".`);
+  }
+  if (trimmed.endsWith('.') || trimmed.split('/').some((part) => part.startsWith('.'))) {
+    throw new GitNexusRcError(
+      `${source}: branch name must not end with "." or have a path component starting with ".".`,
+    );
+  }
   // Git permits a backtick in a ref, but the branch is embedded inside a
   // Markdown inline-code span in the generated AGENTS.md/CLAUDE.md regression
   // example, where a backtick would close the span early and let the rest of

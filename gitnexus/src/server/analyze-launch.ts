@@ -49,6 +49,20 @@ export interface LaunchOptions {
   springActuatorPath?: string;
   asyncApiSpecPath?: string;
   registryName?: string;
+  /**
+   * Index-branch selector, forwarded to `AnalyzeOptions.branch`.
+   *
+   * Setting it does not by itself mean a `branches/<slug>/` sub-directory:
+   * `resolveBranchPlacement` (storage/branch-index.ts) keeps the run on the flat
+   * slot when that slot has no recorded owner, or when its owner already IS this
+   * label. Only a label that differs from the flat slot's owner gets its own
+   * sub-directory.
+   *
+   * The caller is responsible for having the branch checked out —
+   * `resolveWriteTarget` in core refuses a label that disagrees with the working
+   * tree, which is what keeps one branch's content out of another's slot (#2106).
+   */
+  branch?: string;
 }
 
 const MAX_WORKER_RETRIES = 2;
@@ -339,6 +353,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           ...(opts.springActuatorPath ? { springActuatorPath: opts.springActuatorPath } : {}),
           ...(opts.asyncApiSpecPath ? { asyncApiSpecPath: opts.asyncApiSpecPath } : {}),
           ...(opts.registryName ? { registryName: opts.registryName } : {}),
+          ...(opts.branch ? { branch: opts.branch } : {}),
         },
       });
     };

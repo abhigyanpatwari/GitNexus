@@ -4,6 +4,23 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`branch` on `POST /api/analyze`** — `serve` can now index a branch other than the remote's
+  default. The field was previously accepted and silently discarded: the job returned 202 and
+  reported `complete` while indexing the default branch. It is validated with the same rules as
+  the CLI's `--branch`, so a malformed ref is rejected with 400 instead of failing later in the
+  background job, and the branch is part of a job's dedup identity, so a request for a second
+  branch is no longer answered with the in-flight job for the first. Omitting the field keeps
+  the previous behavior.
+
+### Fixed
+
+- **`--branch` / `.gitnexusrc` `defaultBranch` now reject every ref shape `git check-ref-format`
+  rejects** — `feature.lock`, `/feature`, `feature/`, `feature//next`, `@`, `@{`, and components
+  starting with `.` or ending with `.` previously passed validation and failed later in the git
+  subprocess. No branch git can create is affected.
+
 ## [1.6.11] - 2026-09-04
 
 ### Added

@@ -1010,6 +1010,8 @@ export const startAnalyze = async (request: {
   force?: boolean;
   embeddings?: boolean;
   token?: string;
+  /** Index-branch selector; omitted means the remote's default branch. */
+  branch?: string;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze`,
