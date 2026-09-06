@@ -17,6 +17,7 @@ and only the candidate arm is paid. Cold assumes an empty seed.
 from __future__ import annotations
 
 import json
+import math
 import re
 import statistics as st
 import subprocess
@@ -45,7 +46,10 @@ DURATIONS_BY_ARM: dict[str, tuple[float, ...]] = {
 PROPOSER_SECONDS: float = MEASURED["proposer_duration_s"]
 _RESIDUAL = MEASURED["residual"]
 # Clone, graph build, sandbox, teardown: the sweep's own time, taken as that
-# run's step wall minus what its sessions and proposer account for.
+# run's step wall minus what its sessions and proposer account for. Charged
+# SERIALLY, outside the pool. The residual mixes per-cell work the pool really
+# does divide with per-SHA graph setup it cannot, and the artifact cannot
+# separate them; serial is the pessimistic reading of an already-small term.
 CELL_OVERHEAD_SECONDS: float = _RESIDUAL["unaccounted_s"] / _RESIDUAL["cells"]
 
 # runner.py CANDIDATE_ARMS derives the candidate arm from its incumbent, and
@@ -143,7 +147,7 @@ def task_cells(runs: int, arms: tuple[str, ...], offset: int) -> list[float]:
     for run_idx in range(runs):
         for arm in arms:
             sample = DURATIONS_BY_ARM[arm]
-            cells.append(sample[(offset + run_idx) % len(sample)] + CELL_OVERHEAD_SECONDS)
+            cells.append(sample[(offset + run_idx) % len(sample)])
     return cells
 
 
@@ -179,7 +183,9 @@ def expected_task_seconds(
     if runs < 1 or not arms:
         return 0.0
     makespan = fed_makespan if fed_pool else wave_makespan
-    alignments = max(len(DURATIONS_BY_ARM[arm]) for arm in arms)
+    # lcm, not max: with samples of 13 and 14, max would wrap the shorter one
+    # and count its first entry twice.
+    alignments = math.lcm(*(len(DURATIONS_BY_ARM[arm]) for arm in arms))
     return (
         sum(makespan(task_cells(runs, arms, offset), workers) for offset in range(alignments))
         / alignments
@@ -189,11 +195,18 @@ def expected_task_seconds(
 def generation_seconds(
     *, task_count: int, runs: int, arms: tuple[str, ...], workers: int, fed_pool: bool
 ) -> int:
-    """Whole generation: one proposer session, then the tasks back to back."""
+    """Whole generation: proposer, then the tasks back to back, plus overhead.
+
+    Prices a HEALTHY sweep. A run whose cells return unusable evidence does not
+    reach this wall at all: the outage breaker aborts after
+    ``DEFAULT_OUTAGE_STREAK`` consecutive systemic failures, which for the
+    sample's own error sequence is cell 5 of 41.
+    """
 
     return round(
         PROPOSER_SECONDS
         + task_count * expected_task_seconds(runs, arms, workers, fed_pool=fed_pool)
+        + task_count * runs * len(arms) * CELL_OVERHEAD_SECONDS
     )
 
 

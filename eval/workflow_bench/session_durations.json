@@ -61,6 +61,7 @@
     "unaccounted_s": 2540.6,
     "cells": 41,
     "unique_shas": 5,
-    "_note": "Everything the sweep spent outside the agent sessions: per-SHA sanitize and `analyze --pdg --index-only`, plus each cell's clone, materialize, staging, sandbox and teardown. That run predates clone templates and graph prefetch, so this is an upper bound for the current code. The split between per-SHA and per-cell is not recoverable from the artifact, so the model charges it per cell and serially - the pessimistic reading of an already-small term."
-  }
+    "_note": "Everything the sweep spent outside the agent sessions: per-SHA sanitize and `analyze --pdg --index-only`, plus each cell's clone, materialize, staging, sandbox and teardown. That run predates clone templates and graph prefetch, so this is an upper bound for the current code. The split between per-SHA and per-cell is not recoverable from the artifact, so the model charges it per cell and serially, outside the pool - the pessimistic reading of an already-small term."
+  },
+  "_breaker": "Replaying this sample's error_kind sequence through today's systemic_outage_streak trips the outage breaker at cell 5 of 41 (DEFAULT_OUTAGE_STREAK=5). The source run executed all 41, so its runner did not break on this sequence. The durations stay valid as per-cell timings; what they cannot describe is a 54-cell sweep with this failure profile, because the current code would never run one."
 }
