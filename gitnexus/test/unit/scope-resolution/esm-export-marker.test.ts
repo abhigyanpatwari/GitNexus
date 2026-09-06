@@ -174,6 +174,10 @@ describe('@declaration.is-exported (JavaScript emitter)', () => {
     'function wrapper() { { module.exports = {}; let module; } }',
     'function wrapper({ receiver: module }) { module.exports = {}; }',
     'const module = {}; module.exports = { alpha() {} };',
+    "import module from './other'; module.exports = {};",
+    "import { receiver as exports } from './other'; exports.alpha = 1;",
+    "import * as module from './other'; module.exports = {};",
+    'const wrapper = function module() { module.exports = {}; };',
   ])('ignores a shadowed CommonJS receiver: %s', (source) => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'x.js'],
@@ -193,6 +197,15 @@ describe('@declaration.is-exported (JavaScript emitter)', () => {
     const v = verdicts(
       emitJsScopeCaptures,
       'function wrapper() { module.exports = {}; }\nfunction hidden() {}',
+      'x.js',
+    );
+    expect(v.hidden).toBeUndefined();
+  });
+
+  it('an imported source name does not shadow a different local alias', () => {
+    const v = verdicts(
+      emitJsScopeCaptures,
+      "import { module as other } from './other'; module.exports = {}; function hidden() {}",
       'x.js',
     );
     expect(v.hidden).toBeUndefined();
