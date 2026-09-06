@@ -1,0 +1,23 @@
+gitnexus/src/core/ingestion/community-processor.ts
+  s_2fc6857ad45390::t_c0ad07f3aad28c 22,135-146,316,318,320-325,361,363-364
+gitnexus/src/core/ingestion/process-processor.ts
+  s_2fc6857ad45390::t_57439768b5fd0c 13,15,440-455,459-461,473-474
+gitnexus/test/unit/name-guessed-edges-excluded-from-flows.test.ts
+  s_2fc6857ad45390::t_d2202c1233e23f 1-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "f619791acab829d58bd43b900d8230cc33d0cbc2",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
