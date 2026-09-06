@@ -1,0 +1,53 @@
+gitnexus-shared/src/scope-resolution/finalize-algorithm.ts
+  s_2fc6857ad45390::t_740fa2b8fc6d92 42,87-90,276-283,287,299,364,369,378-382,391-396,404-405,408,453-456,469,499,535,1587,1612-1622,1641,1643,1645-1646,1652
+gitnexus-shared/src/scope-resolution/types.ts
+  s_2fc6857ad45390::t_5064cc1769b530 110-117
+gitnexus/bench/scope-capture/baselines.json
+  s_2fc6857ad45390::t_05e8a7d31e7362 4-5,175-176,202-203
+gitnexus/src/core/ingestion/finalize-orchestrator.ts
+  s_2fc6857ad45390::t_f25157d0a7c107 203
+gitnexus/src/core/ingestion/languages/rust/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_8a7e529e9edbad 22,38-41,77-81,97-114,116-121
+gitnexus/src/core/ingestion/languages/rust/scope-resolver.ts
+  s_2fc6857ad45390::t_ff70738c83478c 196
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_2fc6857ad45390::t_2a75e680233808 1041,1052-1053,1056-1067
+gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts
+  s_2fc6857ad45390::t_420b262c0e8ebf 850-853,925-926
+gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts
+  s_2fc6857ad45390::t_4687dc5eafd650 632-636
+gitnexus/src/core/ingestion/scope-resolution/passes/imported-return-types.ts
+  s_2fc6857ad45390::t_9043bb86453547 123-126,134,162-166,168-173,175-180,182-183,185-187,189-199
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_2fc6857ad45390::t_69014a0edc4cf0 724
+gitnexus/src/storage/parse-cache.ts
+  s_2fc6857ad45390::t_0a8c95bcc4ecf2 738-742
+gitnexus/test/fixtures/go-captures-golden/expected-captures.json
+  s_2fc6857ad45390::t_5fe2ef84788db3 255-256
+gitnexus/test/integration/resolvers/rust-import-scope.test.ts
+  s_2fc6857ad45390::t_0aee8371ac7f2c 1-73
+gitnexus/test/unit/incremental-parse-cache.test.ts
+  s_2fc6857ad45390::t_c27c935fe74013 263-265,269
+gitnexus/test/unit/scope-resolution/import-scope-provenance.test.ts
+  s_2fc6857ad45390::t_e4799a5e95043d 1-159
+gitnexus/test/unit/scope-resolution/python/python-fixtures.test.ts
+  s_2fc6857ad45390::t_bc195f543126a0 190-196,203-209,216-222,229-242,251-258,272,280-303,309-311,317-324,337,363,378-384,396-419
+gitnexus/test/unit/scope-resolution/scope-extractor.test.ts
+  s_2fc6857ad45390::t_e91ec64cd79c71 332,446,477-480,493-495,505-507,934-936
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "3aa22a3db8e0d1c2255a94d94f2ff2020a5bfaed",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
