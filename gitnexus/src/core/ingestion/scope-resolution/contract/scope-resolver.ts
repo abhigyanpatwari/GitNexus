@@ -704,7 +704,7 @@ export interface ScopeResolver {
    * imported sibling (for example a compile-time branch constant).
    */
   readonly populateWorkspaceReferences?: (
-    parsedFiles: readonly ParsedFile[],
+    parsedFiles: ParsedFile[],
     ctx: {
       readonly fileContents: ReadonlyMap<string, string>;
       readonly treeCache?: { get(filePath: string): unknown };

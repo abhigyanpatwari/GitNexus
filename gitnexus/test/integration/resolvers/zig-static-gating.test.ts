@@ -7,8 +7,11 @@
  * such branches keep `staticGated` falsy.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import fs from 'node:fs';
 import path from 'path';
 import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+import { populateZigWorkspaceStaticGating } from '../../../src/core/ingestion/languages/zig/workspace-static-gating.js';
+import type { ParsedFile } from 'gitnexus-shared';
 
 describe('Zig static-gated edges', () => {
   let result: PipelineResult;
@@ -206,5 +209,46 @@ describe('Zig static-gated edges', () => {
 
   it('does NOT treat a nested @import as the declaration direct module alias', () => {
     expect(isGated('live_wrapped_cross_file_foo')).toBe(false);
+  });
+
+  it('fails open when an import alias is shadowed in another lexical scope', () => {
+    expect(isGated('live_shadowed_cross_file_foo')).toBe(false);
+  });
+
+  it('replaces a frozen parsed file instead of mutating it', () => {
+    const site = Object.freeze({
+      kind: 'call',
+      atRange: { startLine: 153, startCol: 8, endLine: 153, endCol: 30 },
+      staticGated: false,
+    });
+    const original = Object.freeze({
+      filePath: 'src/main.zig',
+      referenceSites: Object.freeze([site]),
+    }) as unknown as ParsedFile;
+    const parsedFiles = [
+      original,
+      Object.freeze({
+        filePath: 'src/cfg.zig',
+        referenceSites: Object.freeze([]),
+      }) as unknown as ParsedFile,
+    ];
+
+    expect(() =>
+      populateZigWorkspaceStaticGating(parsedFiles, {
+        fileContents: new Map([
+          [
+            'src/main.zig',
+            fs.readFileSync(path.join(FIXTURES, 'zig-static-gating', 'src', 'main.zig'), 'utf8'),
+          ],
+          [
+            'src/cfg.zig',
+            fs.readFileSync(path.join(FIXTURES, 'zig-static-gating', 'src', 'cfg.zig'), 'utf8'),
+          ],
+        ]),
+      }),
+    ).not.toThrow();
+    expect(parsedFiles[0]).not.toBe(original);
+    expect(Object.isFrozen(parsedFiles[0])).toBe(true);
+    expect(parsedFiles[0]?.referenceSites[0]?.staticGated).toBe(true);
   });
 });

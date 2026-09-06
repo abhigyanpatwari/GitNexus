@@ -14,7 +14,7 @@ import { getZigParser } from './query.js';
 type ZigTree = ReturnType<ReturnType<typeof getZigParser>['parse']>;
 
 export function populateZigWorkspaceStaticGating(
-  parsedFiles: readonly ParsedFile[],
+  parsedFiles: ParsedFile[],
   ctx: {
     readonly fileContents: ReadonlyMap<string, string>;
     readonly treeCache?: { get(filePath: string): unknown };
@@ -36,7 +36,7 @@ export function populateZigWorkspaceStaticGating(
   }
 
   const knownPaths = new Set(trees.keys());
-  for (const parsed of parsedFiles) {
+  for (const [index, parsed] of parsedFiles.entries()) {
     const tree = trees.get(parsed.filePath);
     if (tree === undefined) continue;
     const aliases = collectImportAliases(
@@ -60,7 +60,7 @@ export function populateZigWorkspaceStaticGating(
         ? ({ ...site, staticGated: true } satisfies ReferenceSite)
         : site,
     );
-    (parsed as { referenceSites: readonly ReferenceSite[] }).referenceSites = next;
+    parsedFiles[index] = Object.freeze({ ...parsed, referenceSites: Object.freeze(next) });
   }
 }
 
@@ -70,18 +70,29 @@ function collectImportAliases(
   knownPaths: ReadonlySet<string>,
   resolutionConfig?: ZigBuildZonConfig | null,
 ): ZigImportAliasMap {
-  const aliases = new Map<string, string>();
+  const candidates = new Map<string, string>();
+  const declarationCounts = new Map<string, number>();
   for (const decl of tree.rootNode.descendantsOfType('variable_declaration')) {
     const names = decl.namedChildren.filter((node) => node.type === 'identifier');
     const binding = names[0]?.text;
+    if (binding === undefined) continue;
+    declarationCounts.set(binding, (declarationCounts.get(binding) ?? 0) + 1);
     const builtin = decl.namedChildren.find(
       (node) => node.type === 'builtin_function' && node.text.startsWith('@import('),
     );
     const raw = builtin?.descendantsOfType('string').at(0)?.text;
-    if (binding === undefined || raw === undefined) continue;
+    if (raw === undefined) continue;
     const specifier = raw.replace(/^['"]|['"]$/g, '');
     const target = resolveZigImportInternal(fromFile, specifier, knownPaths, resolutionConfig);
-    if (target !== null) aliases.set(binding, target);
+    if (target !== null) candidates.set(binding, target);
+  }
+
+  const aliases = new Map<string, string>();
+  for (const [binding, target] of candidates) {
+    // Alias lookup below is name-based rather than position-aware. If a name
+    // is redeclared in another lexical scope, fail open instead of applying
+    // either module's constants to every use of that spelling.
+    if (declarationCounts.get(binding) === 1) aliases.set(binding, target);
   }
   return aliases;
 }

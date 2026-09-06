@@ -11,6 +11,7 @@
 const cfg = @import("./cfg.zig");
 const cfg_no_ext = @import("./cfg");
 const wrapped_cfg = wrap(@import("./cfg.zig"));
+const shadowed_cfg = @import("./cfg.zig");
 
 pub const UPGRADERS_ENABLED: bool = false;
 pub const DEBUG: bool = true;
@@ -220,6 +221,13 @@ pub fn run() void {
     _ = e3;
 }
 
+pub fn run_shadowed_alias() void {
+    const shadowed_cfg = @import("./other.zig");
+    if (shadowed_cfg.FOO) {
+        live_shadowed_cross_file_foo();
+    }
+}
+
 fn live_unconditional() void {
     _ = 1;
 }
@@ -237,6 +245,10 @@ fn gated_extensionless_cross_file_foo() void {
 }
 
 fn live_wrapped_cross_file_foo() void {
+    _ = 1;
+}
+
+fn live_shadowed_cross_file_foo() void {
     _ = 1;
 }
 
