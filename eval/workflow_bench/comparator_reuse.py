@@ -67,6 +67,11 @@ class TaskReuseBinding:
     oracle_digest: str
     oracle_command_digest: str
     oracle_manifest_digest: str
+    # The cell's environment is part of its identity: a comparator measured
+    # against different task assets or different sandbox dependencies is a
+    # measurement of a different machine, not a baseline for this sweep.
+    task_asset_manifest_digest: str | None = None
+    sandbox_dependency_manifest_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +167,16 @@ def row_is_reusable_comparator(row: Mapping[str, Any], expected: ComparatorReuse
         return False
     if row.get("oracle_manifest_digest") != binding.oracle_manifest_digest:
         return False
+    # Fail closed on both sides, as the runtime digest does: an unbound
+    # expectation means this sweep could not determine its own environment, and
+    # a row without the field was measured before it was recorded.
+    for field, bound in (
+        ("task_asset_manifest_digest", binding.task_asset_manifest_digest),
+        ("sandbox_dependency_manifest_digest", binding.sandbox_dependency_manifest_digest),
+    ):
+        prior = row.get(field)
+        if not isinstance(prior, str) or not prior or not bound or prior != bound:
+            return False
 
     if arm in CE_ARMS:
         if row.get("ce_plugin_version") != expected.ce_plugin_version:

@@ -47,10 +47,13 @@ PROPOSER_SECONDS: float = MEASURED["proposer_duration_s"]
 _RESIDUAL = MEASURED["residual"]
 # Clone, graph build, sandbox, teardown: the sweep's own time, taken as that
 # run's step wall minus what its sessions and proposer account for. Charged
-# SERIALLY, outside the pool. The residual mixes per-cell work the pool really
-# does divide with per-SHA graph setup it cannot, and the artifact cannot
-# separate them; serial is the pessimistic reading of an already-small term.
-CELL_OVERHEAD_SECONDS: float = _RESIDUAL["unaccounted_s"] / _RESIDUAL["cells"]
+# SERIALLY, outside the pool, and charged PER SHA rather than per cell. The
+# residual mixes per-cell work with per-SHA graph setup and the artifact cannot
+# separate them; per-SHA is the direction that refuses to credit a run for
+# shrinking work it still performs, which per-cell did - a weekly generation
+# pays one arm instead of three but builds exactly the same graphs. See
+# session_durations.json residual._split_assumption.
+SHA_OVERHEAD_SECONDS: float = _RESIDUAL["sha_overhead_s"]
 
 # runner.py CANDIDATE_ARMS derives the candidate arm from its incumbent, and
 # only an incumbent row can be reused from a prior generation.
@@ -193,7 +196,13 @@ def expected_task_seconds(
 
 
 def generation_seconds(
-    *, task_count: int, runs: int, arms: tuple[str, ...], workers: int, fed_pool: bool
+    *,
+    task_count: int,
+    runs: int,
+    arms: tuple[str, ...],
+    workers: int,
+    fed_pool: bool,
+    unique_shas: int,
 ) -> int:
     """Whole generation: proposer, then the tasks back to back, plus overhead.
 
@@ -202,20 +211,15 @@ def generation_seconds(
     ``DEFAULT_OUTAGE_STREAK`` consecutive systemic failures, which for the
     sample's own error sequence is cell 5 of 41.
 
-    KNOWN BIAS, in the optimistic direction for a seeded weekly run. The residual
-    is charged per cell because that is the only rate the artifact supports, but
-    part of what it blends is per-SHA graph build, which does not shrink when
-    fewer arms are paid. Weekly runs one arm instead of three and is therefore
-    billed roughly a third of a cost the real sweep still pays in full. The whole
-    residual is 2541s, so the overstatement of weekly savings is bounded by that
-    - under an hour. Splitting it honestly needs a run that times the per-SHA and
-    per-cell work separately; do not invent a split here.
+    Sweep overhead is charged per SHA, so it does not shrink with the arm count.
+    Weekly pays one arm instead of three but builds the same graphs, and billing
+    that per cell credited it for a saving the real run never makes.
     """
 
     return round(
         PROPOSER_SECONDS
         + task_count * expected_task_seconds(runs, arms, workers, fed_pool=fed_pool)
-        + task_count * runs * len(arms) * CELL_OVERHEAD_SECONDS
+        + unique_shas * SHA_OVERHEAD_SECONDS
     )
 
 
@@ -251,16 +255,28 @@ def main() -> int:
     reuse_enabled, clone_templates_enabled = feature_enabled()
     fed_pool = fed_pool_enabled(runner)
 
+    # Both walls build the same graphs; the arm count does not change that.
+    unique_shas = len({t.get("ref", "") for t in tasks if t.get("ref")})
     payload: dict[str, object] = {}
     for label, weekly in (("weekly", True), ("cold", False)):
         arms = paid_arms(weekly, bool(reuse_enabled))
         payload[f"estimated_{label}_wall_seconds"] = generation_seconds(
-            task_count=len(tasks), runs=runs, arms=arms, workers=workers, fed_pool=bool(fed_pool)
+            task_count=len(tasks),
+            runs=runs,
+            arms=arms,
+            workers=workers,
+            fed_pool=bool(fed_pool),
+            unique_shas=unique_shas,
         )
         payload[f"paid_{label}_cells"] = len(tasks) * runs * len(arms)
         # What the wave barrier costs: the same cells, continuously fed.
         payload[f"fed_pool_{label}_wall_seconds"] = generation_seconds(
-            task_count=len(tasks), runs=runs, arms=arms, workers=workers, fed_pool=True
+            task_count=len(tasks),
+            runs=runs,
+            arms=arms,
+            workers=workers,
+            fed_pool=True,
+            unique_shas=unique_shas,
         )
 
     all_durations = [d for sample in DURATIONS_BY_ARM.values() for d in sample]
@@ -283,7 +299,7 @@ def main() -> int:
             "median_candidate_cell_seconds": round(st.median(DURATIONS_BY_ARM[CANDIDATE_ARM])),
             "mean_candidate_cell_seconds": round(st.mean(DURATIONS_BY_ARM[CANDIDATE_ARM])),
             "proposer_seconds": round(PROPOSER_SECONDS),
-            "cell_overhead_seconds": round(CELL_OVERHEAD_SECONDS, 1),
+            "sha_overhead_seconds": round(SHA_OVERHEAD_SECONDS, 1),
         }
     )
     json.dump(payload, sys.stdout, sort_keys=True)

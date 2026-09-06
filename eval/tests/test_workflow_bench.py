@@ -67,6 +67,8 @@ def test_aggregate_takes_medians_and_counts_resolved():
         "diff_deletions": 5,
         "class": "demo",
         "resolved": 2,
+        # None of these are reused, so every resolution was measured this sweep.
+        "resolved_fresh": 2,
         "runs": 3,
         "valid_runs": 3,
         "excluded_runs": 0,
@@ -610,3 +612,23 @@ def test_prefetch_next_graph_runs_ensure_on_a_background_thread(monkeypatch):
     assert started.wait(timeout=2)
     job.join()
     assert seen == [("/repo", "bbb")]
+
+
+def test_a_reused_resolution_does_not_count_as_this_sweeps_health():
+    """resolved counts evidence; resolved_fresh counts evidence measured today.
+
+    broken_incumbent_arms reads resolved_fresh because a reused row proves last
+    generation's environment worked. Counting it would make an arm whose cells
+    were all reused look healthy in exactly the run where a broken environment
+    should have been caught.
+    """
+
+    reused = [record(resolved=True, reused=True), record(resolved=True, reused=True)]
+    agg = aggregate(reused)
+    assert agg["resolved"] == 2
+    assert agg["resolved_fresh"] == 0
+    assert broken_incumbent_arms({"t": {"review": agg}}, {"review"}) == ["review"]
+
+    mixed = aggregate([record(resolved=True, reused=True), record(resolved=True)])
+    assert mixed["resolved_fresh"] == 1
+    assert broken_incumbent_arms({"t": {"review": mixed}}, {"review"}) == []

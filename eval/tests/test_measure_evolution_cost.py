@@ -6,7 +6,7 @@ import pytest
 
 from workflow_bench.measure_evolution_cost import (
     CANDIDATE_ARM,
-    CELL_OVERHEAD_SECONDS,
+    SHA_OVERHEAD_SECONDS,
     DURATIONS_BY_ARM,
     PROPOSER_SECONDS,
     REVIEW_ARMS,
@@ -29,7 +29,7 @@ def test_every_arm_has_its_own_unsorted_sample():
         # the whole model exists to price.
         assert list(sample) != sorted(sample), arm
     assert PROPOSER_SECONDS > 0
-    assert CELL_OVERHEAD_SECONDS > 0
+    assert SHA_OVERHEAD_SECONDS > 0
 
 
 def test_weekly_reuse_pays_the_candidate_arm_only():
@@ -47,13 +47,31 @@ def test_cells_are_submitted_run_major_arm_minor():
     assert cells == expected
 
 
-def test_overhead_is_charged_serially_not_inside_the_pool():
-    # The residual mixes per-cell work the pool divides with per-SHA setup it
-    # cannot, so it sits outside the schedule where more workers cannot
-    # dissolve it.
+def test_overhead_is_charged_per_sha_and_outside_the_pool():
+    # Two properties at once: the residual sits outside the schedule, where more
+    # workers cannot dissolve it, and it scales with SHAs rather than cells.
     assert task_cells(1, (CANDIDATE_ARM,), 0) == [DURATIONS_BY_ARM[CANDIDATE_ARM][0]]
-    wide = generation_seconds(task_count=1, runs=3, arms=REVIEW_ARMS, workers=9, fed_pool=True)
-    assert wide >= PROPOSER_SECONDS + 9 * CELL_OVERHEAD_SECONDS
+    wide = generation_seconds(
+        task_count=1, runs=3, arms=REVIEW_ARMS, workers=9, fed_pool=True, unique_shas=5
+    )
+    assert wide >= PROPOSER_SECONDS + 5 * SHA_OVERHEAD_SECONDS
+
+
+def test_sweep_overhead_does_not_shrink_with_the_arm_count():
+    """The bias that made weekly look cheaper than it is.
+
+    A seeded weekly generation pays one arm instead of three but builds exactly
+    the same graphs. Charging the residual per cell billed it a third of a cost
+    the real sweep still pays; per SHA, the two attribute the same setup.
+    """
+
+    kwargs = dict(task_count=6, runs=3, workers=3, fed_pool=False, unique_shas=5)
+    weekly = generation_seconds(arms=(CANDIDATE_ARM,), **kwargs)
+    cold = generation_seconds(arms=REVIEW_ARMS, **kwargs)
+    weekly_sessions = 6 * expected_task_seconds(3, (CANDIDATE_ARM,), 3, fed_pool=False)
+    cold_sessions = 6 * expected_task_seconds(3, REVIEW_ARMS, 3, fed_pool=False)
+    # Whatever each wall is, the non-session part is identical.
+    assert round(weekly - weekly_sessions) == round(cold - cold_sessions)
     # Cycling wraps, so a task can ask for more runs than the sample holds.
     long_sample = task_cells(len(DURATIONS_BY_ARM[CANDIDATE_ARM]) + 2, (CANDIDATE_ARM,), 0)
     assert len(long_sample) == len(DURATIONS_BY_ARM[CANDIDATE_ARM]) + 2
@@ -78,10 +96,17 @@ def test_expected_task_seconds_is_alignment_averaged_and_deterministic():
 
 
 def test_a_generation_pays_one_proposer_session_on_top_of_its_tasks():
-    one = generation_seconds(task_count=1, runs=3, arms=REVIEW_ARMS, workers=3, fed_pool=False)
-    two = generation_seconds(task_count=2, runs=3, arms=REVIEW_ARMS, workers=3, fed_pool=False)
-    # Each extra task adds exactly one task's makespan; the proposer is paid once.
-    assert two - one == pytest.approx(one - PROPOSER_SECONDS, abs=1.0)
+    one = generation_seconds(
+        task_count=1, runs=3, arms=REVIEW_ARMS, workers=3, fed_pool=False, unique_shas=1
+    )
+    two = generation_seconds(
+        task_count=2, runs=3, arms=REVIEW_ARMS, workers=3, fed_pool=False, unique_shas=1
+    )
+    # Each extra task adds exactly one task's makespan. The proposer and the
+    # per-SHA sweep overhead are both paid once, not per task.
+    assert two - one == pytest.approx(
+        one - PROPOSER_SECONDS - SHA_OVERHEAD_SECONDS, abs=2.0
+    )
 
 
 def test_feature_flags_read_the_runner_not_the_wish():
