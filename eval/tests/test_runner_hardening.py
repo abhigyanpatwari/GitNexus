@@ -1,6 +1,7 @@
 """Regression tests for benchmark evidence and phase-boundary hardening."""
 
 import hashlib
+import inspect
 import json
 import shutil
 from contextlib import nullcontext
@@ -1002,3 +1003,43 @@ def test_progress_line_reports_the_numbers_a_real_run_measured():
     assert "cost=$0.5" in line
     assert "took=12.0s" in line
     assert "error_kind=none" in line
+
+
+def test_review_artifact_is_mounted_as_a_writable_directory_outside_the_workspace():
+    """The regression that produced fifteen runs of empty evidence.
+
+    A writable FILE inside a read-only directory is not writable to anything
+    that writes atomically. The Write tool creates `<target>.tmp.<n>.<hex>`
+    beside the target and renames it, so a read-only parent fails the temp
+    create with EROFS and the artifact stays 0 bytes. The mount target must be
+    the directory, and it must sit outside the read-only workspace.
+    """
+
+    assert not runner.SANDBOX_REVIEW_OUTPUT.startswith(runner.SANDBOX_WORKSPACE + "/")
+    assert runner.SANDBOX_REVIEW_OUTPUT != runner.SANDBOX_WORKSPACE
+
+    source = inspect.getsource(runner.run_arm)
+    mount = source[source.index("extra_writable_mounts=(") : source.index("with sandbox_workspace_write_boundary")]
+    assert "source=review_output.parent" in mount, "mount the directory, not the file"
+    assert "target=SANDBOX_REVIEW_OUTPUT" in mount
+    assert f"{{SANDBOX_WORKSPACE}}/{{REVIEW_OUTPUT}}" not in mount
+
+
+def test_review_contract_tells_the_agent_the_writable_path():
+    prompt = runner.REVIEW_PROMPT.format(task="task text")
+    assert f"{runner.SANDBOX_REVIEW_OUTPUT}/{runner.REVIEW_OUTPUT}" in prompt
+    assert f"{runner.SANDBOX_WORKSPACE}/{runner.REVIEW_OUTPUT}" not in prompt
+    # The JSON shape survives .format() with its braces intact.
+    assert '{"schema_version":1' in prompt
+    artifact = f"{runner.SANDBOX_REVIEW_OUTPUT}/{runner.REVIEW_OUTPUT}"
+    assert runner.CE_REVIEW_PROMPT.format(task="task text").count(artifact) == 1
+
+
+def test_enforce_phase_workspace_can_require_an_untouched_workspace(tmp_path):
+    (tmp_path / "tracked.py").write_text("original\n")
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=None)
+
+    (tmp_path / "tracked.py").write_text("the review edited the code it was reviewing\n")
+    with pytest.raises(ValueError, match="changed the read-only workspace"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=None)

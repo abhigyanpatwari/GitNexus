@@ -325,3 +325,31 @@ def test_clean_control_rewards_an_empty_approval_and_penalizes_noise():
     assert noisy["recall"] is None
     assert noisy["clean_pass"] is False
     assert noisy["verdict_correct"] is False
+
+
+def test_parse_review_output_names_the_actual_failure(tmp_path: Path):
+    """One message per cause.
+
+    Folding these together is how a sandbox that made the artifact impossible
+    to write read for fifteen runs as an encoding fault: every cell reported
+    "not valid UTF-8 JSON" for a file the agent was never able to create.
+    """
+
+    missing = tmp_path / "never-written.json"
+    with pytest.raises(ValueError, match="was never written"):
+        parse_review_output(missing)
+
+    empty = tmp_path / "empty.json"
+    empty.touch()
+    with pytest.raises(ValueError, match="is empty"):
+        parse_review_output(empty)
+
+    not_utf8 = tmp_path / "latin1.json"
+    not_utf8.write_bytes(b'{"verdict": "\xff\xfe"}')
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        parse_review_output(not_utf8)
+
+    prose = tmp_path / "prose.json"
+    prose.write_text("Here is my review of the changes.", encoding="utf-8")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        parse_review_output(prose)

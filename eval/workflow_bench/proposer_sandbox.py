@@ -22,6 +22,15 @@ from .process_control import ManagedProcessResult, run_managed
 MAX_EVIDENCE_FILE_BYTES = 256 * 1024
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 SANDBOX_WORKSPACE = "/workspace"
+# The review artifact lives OUTSIDE the workspace, in its own writable
+# directory. A writable FILE inside a read-only directory is not writable to
+# anything that writes atomically: the Write tool creates
+# `<target>.tmp.<n>.<hex>` beside the target and renames it, so a read-only
+# parent fails the temp create with EROFS and the artifact is never written.
+# Binding a writable directory outside /workspace lets the rename land while
+# the workspace itself stays entirely read-only.
+SANDBOX_REVIEW_OUTPUT = "/review-output"
+REVIEW_OUTPUT_DIRNAME = "review-output"
 SANDBOX_HOME = "/home/agent"
 SANDBOX_TMP = "/tmp"
 SANDBOX_CLAUDE = "/opt/claude/claude"
@@ -118,36 +127,41 @@ REVIEW_RUNTIME_DIRECTORIES = (
 )
 
 
-def prepare_review_workspace(sandbox: SandboxSession, artifact_name: str) -> Path:
-    """Prepare disposable mount targets; never truncate a pre-existing entry."""
+def review_output_path(sandbox: SandboxSession, artifact_name: str) -> Path:
+    """Host path of the review artifact: a private directory, not the clone.
 
-    clone = _real_directory(sandbox.clone, label="review clone")
+    One source of truth for the location, so the mount, the parse and the
+    artifact copy cannot drift apart.
+    """
+
     if PurePosixPath(artifact_name).name != artifact_name or "\\" in artifact_name or artifact_name in ("", ".", ".."):
         raise SandboxError("review artifact must be a root filename")
-    output = clone / artifact_name
-    # No agent runs while this private clone is being prepared. On POSIX the
-    # directory descriptor additionally binds the exclusive create to its owner.
-    directory_fd = None
-    try:
-        if os.name != "nt":
-            directory_fd = os.open(clone, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        fd = os.open(
-            artifact_name if directory_fd is not None else output,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-            dir_fd=directory_fd,
-        )
-        try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise SandboxError("review artifact must be a regular file")
-        finally:
-            os.close(fd)
-    except FileExistsError as exc:
-        raise SandboxError("review artifact already exists") from exc
-    finally:
-        if directory_fd is not None:
-            os.close(directory_fd)
+    return Path(sandbox.private_root) / REVIEW_OUTPUT_DIRNAME / artifact_name
 
+
+def prepare_review_workspace(sandbox: SandboxSession, artifact_name: str) -> Path:
+    """Prepare disposable mount targets; never truncate a pre-existing entry.
+
+    Creates the artifact's own directory and returns the path the agent is
+    expected to write. The file itself is deliberately NOT pre-created: the
+    agent writes it atomically (temp file beside the target, then rename), so
+    the directory is what has to be writable, and an existing empty file would
+    only be something for the write to trip over. Absence is meaningful — it is
+    how ``parse_review_output`` tells "never written" from "written badly".
+    """
+
+    output = review_output_path(sandbox, artifact_name)
+    # No agent runs while this private root is being prepared, and the
+    # exclusive create is what proves the directory is ours rather than
+    # something a previous cell left behind.
+    try:
+        output.parent.mkdir(mode=0o700, parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        raise SandboxError("review artifact directory already exists") from exc
+    except OSError as exc:
+        raise SandboxError(f"review artifact directory is unavailable: {output.parent}") from exc
+
+    clone = _real_directory(sandbox.clone, label="review clone")
     if sandbox.backend != "bwrap":
         return output
     created: list[str] = []

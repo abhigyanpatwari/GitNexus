@@ -103,6 +103,7 @@ from .proposer_sandbox import (
     SANDBOX_GITNEXUS_REGISTRY,
     SANDBOX_GITNEXUS_SHARED as SANDBOX_GITNEXUS_SHARED,
     SANDBOX_NODE as SANDBOX_NODE,
+    SANDBOX_REVIEW_OUTPUT,
     SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
@@ -113,6 +114,7 @@ from .proposer_sandbox import (
     prepare_sandbox,
     prepare_review_workspace,
     redact_text,
+    review_output_path,
     require_claude_sandbox_helpers,
     sandbox_workspace_write_boundary,
 )
@@ -232,8 +234,9 @@ CE_WORK_DIRECT_PROMPT = (
 # Review cell: setup applies a historical PR diff, then the model sees a
 # read-only checkout. Both arms emit the same strict artifact so quality can be
 # scored deterministically against labels that remain hidden until it exits.
-REVIEW_OUTPUT_CONTRACT = """
-Write /workspace/review-output.json as UTF-8 JSON with exactly this shape:
+# Concatenated, not an f-string: the JSON shape below keeps its braces doubled
+# because the finished prompt is .format()-ed with the task text.
+REVIEW_OUTPUT_CONTRACT = f"\nWrite {SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT} " + """as UTF-8 JSON with exactly this shape:
 {{"schema_version":1,"verdict":"approve|comment|request_changes","findings":[{{
 "id":"unique stable id","severity":"critical|high|medium|low",
 "path":"repository-relative changed file","line":1,"end_line":1,
@@ -573,9 +576,13 @@ def run_arm(
                 read_only_workspace=True,
                 read_only_paths=_evaluated_skill_roots(worktree, arm),
                 extra_writable_mounts=(
+                    # The DIRECTORY, outside the workspace. Binding the file
+                    # itself left the agent nowhere to put the temp file it
+                    # renames into place, so every review artifact came back
+                    # empty with EROFS in the transcript.
                     ReadOnlyMount(
-                        source=review_output,
-                        target=f"{SANDBOX_WORKSPACE}/{REVIEW_OUTPUT}",
+                        source=review_output.parent,
+                        target=SANDBOX_REVIEW_OUTPUT,
                     ),
                 ),
             ),
@@ -583,7 +590,8 @@ def run_arm(
         with sandbox_workspace_write_boundary(
             sandbox,
             read_only_workspace=True,
-            writable=(review_output,),
+            # Nothing in the workspace is writable now — the artifact left it.
+            writable=(),
         ):
             review_session = run_claude(
                 host_text(review_prompt.format(task=task["prompt"])),
@@ -594,11 +602,9 @@ def run_arm(
         sessions.append(review_session)
         if review_session["ok"] and phase_before is not None:
             try:
-                enforce_phase_workspace(
-                    worktree,
-                    phase_before,
-                    allowed_artifact=worktree / REVIEW_OUTPUT,
-                )
+                # The artifact is no longer in the workspace, so the review
+                # phase may now change nothing there at all.
+                enforce_phase_workspace(worktree, phase_before, allowed_artifact=None)
                 require_skill_fingerprint(
                     worktree,
                     arm,
@@ -669,13 +675,16 @@ def run_arm(
     review_score: dict[str, Any] | None = None
     if arm in ("review", "ce_review"):
         try:
-            verdict, findings = parse_review_output(worktree / REVIEW_OUTPUT)
+            verdict, findings = parse_review_output(review_output_path(sandbox, REVIEW_OUTPUT))
             labels = expected_findings(oracle_snapshot) if oracle_snapshot is not None else ()
             review_score = score_review(verdict, findings, labels)
         except (OSError, ValueError) as exc:
             record["ok"] = False
             record["error_kind"] = record["error_kind"] or "review-evidence-invalid"
-            record["error_detail"] = str(exc)
+            # Keep the FIRST detail, as error_kind already does. A phase-
+            # boundary violation is why the artifact is unparseable; reporting
+            # the parse failure over it buries the cause under the symptom.
+            record["error_detail"] = record.get("error_detail") or str(exc)
         record["review_score"] = review_score
         record["review_evidence_valid"] = review_score is not None
         if review_score is not None:
@@ -1032,7 +1041,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 oracle_snapshot=ctx.oracle_snapshot,
             )
             if execution_arm in ("review", "ce_review"):
-                review_source = worktree / REVIEW_OUTPUT
+                review_source = review_output_path(sandbox, REVIEW_OUTPUT)
                 if review_source.is_file() and not review_source.is_symlink():
                     review_artifact = ctx.out_dir / f"{task['id']}-{arm}-run{run_idx}.review.json"
                     review_artifact.write_bytes(_bounded_regular_bytes(review_source, limit=256 * 1024))
