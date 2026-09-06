@@ -69,6 +69,7 @@ import {
   createWorkerPool,
   workerPoolDisabledByEnv,
   resolveAutoPoolSize,
+  envWorkerPoolSize,
   WorkerPoolInitializationError,
   WorkerPoolDisabledError,
 } from '../workers/worker-pool.js';
@@ -579,7 +580,14 @@ export async function runChunkedParseAndResolve(
   // cores-based auto size is capped by source bytes / CHUNK_BYTES_PER_WORKER
   // so a tiny repo does not spawn a full idle pool. Cache pack membership
   // is independent of this number (#3088).
-  const explicitPoolSize = options?.workerPoolSize;
+  // `--workers <N>` and `GITNEXUS_WORKER_POOL_SIZE` are both deliberate
+  // operator input, so both bypass the work-proportional cap below. Only the
+  // env path used to be clamped by it, which made the documented escape hatch
+  // silently do nothing: on a 30MB repo the cap resolves to 16, so an operator
+  // asking for 24 still got 16 with no warning, while `--workers 24` got 24.
+  const explicitPoolSize = options?.workerPoolSize ?? envWorkerPoolSize();
+  // Cores-based auto size, bounded by source bytes so a tiny repo does not
+  // spawn a full idle pool.
   const workProportionalCap = Math.max(1, Math.ceil(totalBytes / CHUNK_BYTES_PER_WORKER));
   const effectivePoolSize =
     explicitPoolSize && explicitPoolSize > 0

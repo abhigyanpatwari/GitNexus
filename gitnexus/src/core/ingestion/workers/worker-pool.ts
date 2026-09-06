@@ -475,7 +475,9 @@ const DEFAULT_WORKER_READY_TIMEOUT_MS = 5_000;
  * extraction / structured-clone overhead, and the marginal worker adds
  * memory pressure (tree-sitter state + sub-batch buffer) without much
  * throughput gain. Operators on bigger machines override via
- * `GITNEXUS_WORKER_POOL_SIZE` or `--workers <N>`.
+ * `GITNEXUS_WORKER_POOL_SIZE` or `--workers <N>`; both are deliberate
+ * operator input and bypass the work-proportional sizing in `parse-impl`,
+ * which only bounds the AUTO default.
  */
 const DEFAULT_POOL_SIZE_CAP = 16;
 
@@ -653,7 +655,7 @@ export function resolveWorkerPoolOptions(
  * GITNEXUS_WORKER_POOL_SIZE=`) is an accident, not a request for zero workers;
  * only a literal `0` disables the pool.
  */
-function envWorkerPoolSize(): number | undefined {
+export function envWorkerPoolSize(): number | undefined {
   const raw = process.env.GITNEXUS_WORKER_POOL_SIZE;
   if (raw === undefined || raw.trim() === '') return undefined;
   return nonNegativeInteger(raw);
