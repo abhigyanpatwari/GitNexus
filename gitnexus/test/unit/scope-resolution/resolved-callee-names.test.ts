@@ -20,17 +20,46 @@ describe('collectResolvedCalleeNames', () => {
     fn('b', 'b', 'src/b.go');
     fn('c', 'c', 'src/c.ts');
     g.addNode({ id: 'file', label: 'File' as NodeLabel, properties: { filePath: 'src/a.go' } });
-    g.addRelationship({ id: 'r1', sourceId: 'a', targetId: 'b', type: 'CALLS', confidence: 0.85 });
-    g.addRelationship({ id: 'r2', sourceId: 'a', targetId: 'c', type: 'CALLS', confidence: 0.5 });
-    g.addRelationship({ id: 'r3', sourceId: 'c', targetId: 'b', type: 'CALLS', confidence: 0.85 });
+    g.addRelationship({
+      id: 'r1',
+      sourceId: 'a',
+      targetId: 'b',
+      type: 'CALLS',
+      confidence: 0.85,
+      reason: '',
+    });
+    g.addRelationship({
+      id: 'r2',
+      sourceId: 'a',
+      targetId: 'c',
+      type: 'CALLS',
+      confidence: 0.5,
+      reason: '',
+    });
+    g.addRelationship({
+      id: 'r3',
+      sourceId: 'c',
+      targetId: 'b',
+      type: 'CALLS',
+      confidence: 0.85,
+      reason: '',
+    });
     g.addRelationship({
       id: 'r4',
       sourceId: 'file',
       targetId: 'a',
       type: 'DEFINES',
       confidence: 1,
+      reason: '',
     });
-    g.addRelationship({ id: 'r5', sourceId: 'a', targetId: 'file', type: 'CALLS', confidence: 1 });
+    g.addRelationship({
+      id: 'r5',
+      sourceId: 'a',
+      targetId: 'file',
+      type: 'CALLS',
+      confidence: 1,
+      reason: '',
+    });
 
     const index = collectResolvedCalleeNames(g, g);
     expect([...index.keys()].sort()).toEqual(['a', 'c']);

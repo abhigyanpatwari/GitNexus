@@ -10,7 +10,7 @@
  * then only if the declaration is `public`.
  *
  * A module is approximated by its source directory, the layout every Swift
- * package manifest produces: `Sources/<Target>/…` and `Tests/<Target>/…`.
+ * package configuration discovers: `Sources/<Target>/…` (also under `Package/`).
  * `src/<Target>/…` is also recognized by the package configuration loader.
  * Files outside these layouts have unknown module identity.
  *
@@ -24,14 +24,8 @@
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { modulePathReaches } from '../../scope-resolution/utils/name-fallback-visibility.js';
 
-/** Directory names that hold one subdirectory PER TARGET rather than sources. */
-const SWIFT_TARGET_ROOTS: ReadonlySet<string> = new Set([
-  'Sources',
-  'Tests',
-  'sources',
-  'tests',
-  'src',
-]);
+/** Keep aligned with loadSwiftPackageConfig: other layouts are unconfigured. */
+const SWIFT_TARGET_ROOTS: ReadonlySet<string> = new Set(['Sources', 'src']);
 
 /**
  * The module (target) a Swift file belongs to.

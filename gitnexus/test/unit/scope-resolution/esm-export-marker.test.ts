@@ -150,6 +150,32 @@ describe('@declaration.is-exported — Opus review follow-ups', () => {
 });
 
 describe('@declaration.is-exported (JavaScript emitter)', () => {
+  it('keeps bracket-form top-level this exports undecided like dot-form exports', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'x.js'],
+      [emitTsScopeCaptures, 'x.ts'],
+    ] as const) {
+      const v = verdicts(emit, "function api() {} this['api'] = api;", file);
+      expect(v.api).toBeUndefined();
+    }
+  });
+
+  it('recognizes exported module-scoped var inside a block, but not block let or function-local var', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'x.js'],
+      [emitTsScopeCaptures, 'x.ts'],
+    ] as const) {
+      const v = verdicts(
+        emit,
+        'if (ok) { var visible = 1; let hidden = 2; } function wrapper() { var nested = 3; } export { visible, hidden, nested };',
+        file,
+      );
+      expect(v.visible).toBe('true');
+      expect(v.hidden).toBe('false');
+      expect(v.nested).toBe('false');
+    }
+  });
+
   it('marks synthesized default-export HOC declarations in both emitters', () => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'Widget.jsx'],
@@ -174,6 +200,10 @@ describe('@declaration.is-exported (JavaScript emitter)', () => {
     'function wrapper() { { module.exports = {}; let module; } }',
     'function wrapper({ receiver: module }) { module.exports = {}; }',
     'const module = {}; module.exports = { alpha() {} };',
+    "import module from './other'; module.exports = {};",
+    "import { receiver as exports } from './other'; exports.alpha = 1;",
+    "import * as module from './other'; module.exports = {};",
+    'const wrapper = function module() { module.exports = {}; };',
   ])('ignores a shadowed CommonJS receiver: %s', (source) => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'x.js'],
@@ -193,6 +223,15 @@ describe('@declaration.is-exported (JavaScript emitter)', () => {
     const v = verdicts(
       emitJsScopeCaptures,
       'function wrapper() { module.exports = {}; }\nfunction hidden() {}',
+      'x.js',
+    );
+    expect(v.hidden).toBeUndefined();
+  });
+
+  it('an imported source name does not shadow a different local alias', () => {
+    const v = verdicts(
+      emitJsScopeCaptures,
+      "import { module as other } from './other'; module.exports = {}; function hidden() {}",
       'x.js',
     );
     expect(v.hidden).toBeUndefined();
