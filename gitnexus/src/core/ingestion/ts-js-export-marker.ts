@@ -57,18 +57,33 @@ function bindsReceiver(node: SyntaxNode | null, name: string): boolean {
   if (node.type === 'assignment_pattern')
     return bindsReceiver(node.childForFieldName('left'), name);
   if (node.type === 'pair_pattern') return bindsReceiver(node.childForFieldName('value'), name);
+  if (node.type === 'import_specifier') {
+    return bindsReceiver(node.childForFieldName('alias') ?? node.childForFieldName('name'), name);
+  }
   if (node.type === 'required_parameter' || node.type === 'optional_parameter') {
     return bindsReceiver(node.childForFieldName('pattern'), name);
   }
   return (
-    ['formal_parameters', 'object_pattern', 'array_pattern', 'rest_pattern'].includes(node.type) &&
-    node.namedChildren.some((child) => bindsReceiver(child, name))
+    [
+      'formal_parameters',
+      'object_pattern',
+      'array_pattern',
+      'rest_pattern',
+      'import_clause',
+      'named_imports',
+      'namespace_import',
+    ].includes(node.type) && node.namedChildren.some((child) => bindsReceiver(child, name))
   );
 }
 
 /** A locally bound `module`/`exports` is not Node's export receiver. */
 function isExportReceiverShadowed(node: SyntaxNode, name: string): boolean {
   for (let scope = node.parent; scope !== null; scope = scope.parent) {
+    if (
+      ['function_expression', 'generator_function', 'class'].includes(scope.type) &&
+      scope.childForFieldName('name')?.text === name
+    )
+      return true;
     if (
       bindsReceiver(scope.childForFieldName('parameters'), name) ||
       bindsReceiver(scope.childForFieldName('parameter'), name)
@@ -81,6 +96,13 @@ function isExportReceiverShadowed(node: SyntaxNode, name: string): boolean {
           ? statement.childForFieldName('declaration')
           : statement;
       if (declaration === null) continue;
+      if (
+        declaration.type === 'import_statement' &&
+        declaration.namedChildren.some(
+          (child) => child.type === 'import_clause' && bindsReceiver(child, name),
+        )
+      )
+        return true;
       if (
         declaration.type === 'lexical_declaration' ||
         declaration.type === 'variable_declaration'
