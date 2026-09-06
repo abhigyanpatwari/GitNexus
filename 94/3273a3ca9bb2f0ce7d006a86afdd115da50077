@@ -1,0 +1,20 @@
+gitnexus/test/fixtures/lang-resolution/go-method-enrichment/app.go
+  s_2fc6857ad45390::t_d3ac12f21b817a 3,9
+  s_2fc6857ad45390::t_7ec9a8bf859521 1-2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "943273a3ca9bb2f0ce7d006a86afdd115da50077",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
