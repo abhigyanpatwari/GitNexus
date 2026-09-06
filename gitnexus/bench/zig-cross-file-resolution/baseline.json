@@ -1,0 +1,16 @@
+{
+  "_comment": "Correctness counts are exact. Timing budgets are deliberately loose and only guard large regressions in the post-extraction Zig workspace pass.",
+  "small": {
+    "modules": 40,
+    "calls_per_module": 12,
+    "gated_calls": 480,
+    "ms_budget": 1000
+  },
+  "large": {
+    "modules": 160,
+    "calls_per_module": 12,
+    "gated_calls": 1920,
+    "ms_budget": 4000
+  },
+  "scaling_ratio_budget": 5.5
+}

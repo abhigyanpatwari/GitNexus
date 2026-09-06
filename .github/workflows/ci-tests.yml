@@ -745,6 +745,13 @@ jobs:
         run: node --import tsx bench/scope-emission/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Zig cross-file static-gating guards (#3162)
+        if: ${{ !cancelled() }}
+        # Build-free: fingerprints cross-file dead-call classification and
+        # guards the workspace enrichment pass across file-count scaling.
+        run: node --import tsx bench/zig-cross-file-resolution/measure.mjs --check
+        working-directory: gitnexus
+
       - name: CFG construction time / disk / memory guards (#2081 M1)
         if: ${{ !cancelled() }}
         # Build-free: asserts collectFunctionCfgs output is unchanged
