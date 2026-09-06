@@ -111,17 +111,6 @@ export interface DispatchGroup<TInput> {
 
 export interface WorkerPool {
   /**
-   * Dispatch items across workers. Items are split into bounded jobs, each job
-   * is committed independently, and stalled jobs are split/retried locally.
-   *
-   * Files in {@link WorkerPool.getQuarantinedPaths} are filtered out before
-   * dispatch — they have already caused a worker death this pool lifetime and
-   * are not safe to re-attempt in workers. They are dropped from the run (the
-   * sequential fallback that once re-parsed them was removed); inspect the
-   * quarantine snapshot before and after each dispatch to surface skipped files
-   * in diagnostics.
-   */
-  /**
    * Dispatch several content-addressed chunks in ONE pool round.
    *
    * `dispatch` is a barrier: it resolves only once every job it created has
@@ -142,6 +131,18 @@ export interface WorkerPool {
     onProgress?: (filesProcessed: number) => void,
   ): Promise<TResult[][]>;
 
+  /**
+   * Dispatch ONE chunk across workers — {@link WorkerPool.dispatchGroups} with
+   * a single group. Items are split into bounded jobs, each job is committed
+   * independently, and stalled jobs are split/retried locally.
+   *
+   * Files in {@link WorkerPool.getQuarantinedPaths} are filtered out before
+   * dispatch — they have already caused a worker death this pool lifetime and
+   * are not safe to re-attempt in workers. They are dropped from the run (the
+   * sequential fallback that once re-parsed them was removed); inspect the
+   * quarantine snapshot before and after each dispatch to surface skipped files
+   * in diagnostics.
+   */
   dispatch<TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,

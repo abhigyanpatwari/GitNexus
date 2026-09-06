@@ -150,6 +150,52 @@ describe('parse-impl dispatch rounds', () => {
     expect(names).toContain('Go0');
   });
 
+  it('keeps hit and miss chunks attributed to their own files inside one round', async () => {
+    // The realistic incremental shape: some packs warm, some cold, batched into
+    // the SAME round. `drainRound` walks the round's entries in `chunkIdx`
+    // order but pulls worker output with a separate `missIdx` cursor, so a
+    // hit sitting between two misses is exactly where that cursor can slip.
+    // Cold-then-warm alone never exercises it -- every entry is the same kind.
+    const cache = {
+      version: PARSE_CACHE_VERSION,
+      entries: new Map<string, ParseWorkerResult[]>(),
+      usedKeys: new Set<string>(),
+      storagePath: storageDir,
+      onDiskKeys: new Set<string>(),
+    };
+
+    const cold = await run(cache);
+    const cachedPacks = cache.onDiskKeys.size + cache.entries.size;
+    expect(cachedPacks).toBeGreaterThan(1);
+
+    // Edit ONE file. Its pack now misses; every other pack still hits, so the
+    // next run's rounds carry both kinds together.
+    fs.writeFileSync(
+      path.join(repoPath, 'src/mod0.ts'),
+      'export function ts0() { return 999; }\nexport function ts0Extra() { return 1; }\n',
+    );
+
+    const mixed = await run(cache);
+
+    // The edited file's NEW symbol must be present, proving the miss chunk's
+    // fresh worker output landed under its own file...
+    const mixedPrint = fingerprint(mixed);
+    expect(mixedPrint).toContain('ts0Extra');
+    // ...and every untouched file's symbols must still be present and attached
+    // to their own paths, proving no hit chunk was overwritten by, or swapped
+    // with, a neighbouring miss chunk's results.
+    const coldPrint = fingerprint(cold);
+    const untouched = coldPrint
+      .split('\n')
+      .filter((entry) => !entry.endsWith('|src/mod0.ts'))
+      .sort();
+    const mixedUntouched = mixedPrint
+      .split('\n')
+      .filter((entry) => !entry.endsWith('|src/mod0.ts'))
+      .sort();
+    expect(mixedUntouched).toEqual(untouched);
+  });
+
   it('stores each pack’s own worker output, so a warm replay reproduces the cold graph', async () => {
     const cache = {
       version: PARSE_CACHE_VERSION,

@@ -207,12 +207,12 @@ export const mergeChunkResults = (
 };
 
 /**
- * Dispatch a chunk's files to the worker pool and return the RAW per-worker
- * results, WITHOUT merging them into the graph. Split out from
- * {@link processParsing} so the parse loop can overlap one chunk's
- * merge (main-thread, via {@link mergeChunkResults}) with the NEXT chunk's
- * worker parse — the merge is the only remaining serial main-thread step once
- * ParsedFile serialization moved into the workers (#worker-idle pipelining).
+ * Dispatch ONE chunk's files to the worker pool and return the RAW per-worker
+ * results, WITHOUT merging them into the graph. A thin single-group wrapper
+ * over {@link dispatchChunkParseRound}, used by {@link processParsing}'s
+ * one-shot path. The chunk-to-chunk overlap this once described now lives in
+ * `parse-impl.ts` at ROUND granularity (`startRound` / `drainRound` /
+ * `closeRound`), which batches several chunks into one dispatch.
  * Returns `[]` for an all-unparseable chunk (the caller merges `[]` → empty).
  */
 export const dispatchChunkParse = async (
