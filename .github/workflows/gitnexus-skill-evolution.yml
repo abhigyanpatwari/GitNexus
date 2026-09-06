@@ -71,6 +71,9 @@
 #     Dispatch defaults to 3; pass workers=1 only to debug a contended host.
 #     Weekly generations reuse matching incumbent/CE cells from the previous
 #     artifact so the paid matrix is the new candidate, not a 54-cell replay.
+#     Wall clock is quantised by ceil(cells_per_task / workers), and a review
+#     task is 9 cells cold, so 4 costs host contention for exactly the wall
+#     clock of 3. The next step up that buys anything is 5 (3 waves -> 2).
 name: GitNexus skill evolution
 
 on:

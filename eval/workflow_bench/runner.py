@@ -1755,6 +1755,162 @@ def _comparator_reuse_expectation(
     )
 
 
+def task_has_planned_paid_cells(
+    task: Mapping[str, Any],
+    *,
+    arms: Sequence[str],
+    runs: int,
+    reusable_rows: Mapping[tuple[str, str, int], object],
+    reuse_source: Path | None,
+) -> bool:
+    """True when at least one planned cell is not a reusable comparator row."""
+
+    task_id = str(task["id"])
+    for run_idx in range(runs):
+        for arm in arms:
+            if reuse_source is None or (task_id, arm, run_idx) not in reusable_rows:
+                return True
+    return False
+
+
+def next_graph_prefetch_target(
+    remaining: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    arms: Sequence[str],
+    runs: int,
+    reusable_rows: Mapping[tuple[str, str, int], object],
+    reuse_source: Path | None,
+    ready_keys: set[tuple[str, str]],
+) -> tuple[Mapping[str, Any], Mapping[str, Any], tuple[str, str]] | None:
+    """Next later task that still needs a clone template and sanitized graph."""
+
+    for task, binding in remaining:
+        if not task_has_planned_paid_cells(
+            task,
+            arms=arms,
+            runs=runs,
+            reusable_rows=reusable_rows,
+            reuse_source=reuse_source,
+        ):
+            continue
+        key = (str(binding["repo_identity"]), str(binding["resolved_sha"]))
+        if key in ready_keys:
+            continue
+        return task, binding, key
+    return None
+
+
+def ensure_task_graph(
+    *,
+    task: Mapping[str, Any],
+    repo: Path,
+    task_sha: str,
+    graph_key: tuple[str, str],
+    trees: Path,
+    task_asset_cache: TaskAssetCache,
+    claude_bin: Path | str,
+    bwrap_bin: Path | str,
+    sandbox_backend: str,
+    runtime_mounts: Sequence[ReadOnlyMount],
+    clone_templates: dict[tuple[str, str], tuple[Path, str]],
+    clone_template_errors: dict[tuple[str, str], BaseException],
+    graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot],
+    graph_snapshot_errors: dict[tuple[str, str], BaseException],
+) -> None:
+    """Build one SHA's sanitized clone template and graph. Idempotent per key."""
+
+    if graph_key in graph_snapshots or graph_key in graph_snapshot_errors:
+        return
+    try:
+        validate_no_prebuilt_graph_assets(task)
+        if graph_key not in clone_templates and graph_key not in clone_template_errors:
+            template = make_worktree(repo, task_sha, trees)
+            template_head = sanitize_clone_for_hidden_oracles(template)
+            clone_templates[graph_key] = (template, template_head)
+        clone_template: Path | None = None
+        template_head: str | None = None
+        if graph_key in clone_templates:
+            clone_template, template_head = clone_templates[graph_key]
+        if graph_key in clone_template_errors:
+            graph_snapshot_errors[graph_key] = clone_template_errors[graph_key]
+            return
+        graph_snapshots[graph_key] = prepare_sanitized_graph(
+            task,
+            repo=repo,
+            resolved_sha=task_sha,
+            parent=trees,
+            cache=task_asset_cache,
+            claude_bin=claude_bin,
+            bwrap_bin=bwrap_bin,
+            sandbox_backend=sandbox_backend,
+            runtime_mounts=runtime_mounts,
+            clone_template=clone_template,
+            sanitized_head=template_head,
+        )
+    except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
+        graph_snapshot_errors[graph_key] = exc
+        clone_template_errors.setdefault(graph_key, exc)
+
+
+@dataclass
+class GraphPrefetch:
+    """In-flight clone+graph build for a later task SHA."""
+
+    key: tuple[str, str]
+    thread: threading.Thread
+
+    def join(self) -> None:
+        self.thread.join()
+
+
+def prefetch_next_graph(
+    *,
+    task: Mapping[str, Any],
+    binding: Mapping[str, Any],
+    graph_key: tuple[str, str],
+    trees: Path,
+    task_asset_cache: TaskAssetCache,
+    claude_bin: Path | str,
+    bwrap_bin: Path | str,
+    sandbox_backend: str,
+    runtime_mounts: Sequence[ReadOnlyMount],
+    clone_templates: dict[tuple[str, str], tuple[Path, str]],
+    clone_template_errors: dict[tuple[str, str], BaseException],
+    graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot],
+    graph_snapshot_errors: dict[tuple[str, str], BaseException],
+    cancel_event: threading.Event,
+) -> GraphPrefetch:
+    """Start clone+graph prep for the next unpaid SHA during paid sessions."""
+
+    repo = Path(binding["repo_identity"])
+    task_sha = str(binding["resolved_sha"])
+
+    def run() -> None:
+        if cancel_event.is_set():
+            return
+        print(f"[prefetch_next_graph] clone+graph for {task_sha}")
+        ensure_task_graph(
+            task=task,
+            repo=repo,
+            task_sha=task_sha,
+            graph_key=graph_key,
+            trees=trees,
+            task_asset_cache=task_asset_cache,
+            claude_bin=claude_bin,
+            bwrap_bin=bwrap_bin,
+            sandbox_backend=sandbox_backend,
+            runtime_mounts=runtime_mounts,
+            clone_templates=clone_templates,
+            clone_template_errors=clone_template_errors,
+            graph_snapshots=graph_snapshots,
+            graph_snapshot_errors=graph_snapshot_errors,
+        )
+
+    thread = threading.Thread(target=run, name="prefetch_next_graph", daemon=False)
+    thread.start()
+    return GraphPrefetch(key=graph_key, thread=thread)
+
+
 def _run_sweep(
     args: argparse.Namespace,
     *,
@@ -1840,151 +1996,180 @@ def _run_sweep(
         graph_snapshot_errors: dict[tuple[str, str], BaseException] = {}
         clone_templates: dict[tuple[str, str], tuple[Path, str]] = {}
         clone_template_errors: dict[tuple[str, str], BaseException] = {}
-        for task, task_binding, oracle_snapshot in zip(
-            tasks,
-            task_bindings,
-            oracle_snapshots,
-            strict=True,
-        ):
-            if outage_tripped or cancel_event.is_set():
-                break
-            repo = Path(task_binding["repo_identity"])
-            task_sha = task_binding["resolved_sha"]
-            per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
-            planned = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
-            reused_records: list[tuple[int, str, dict[str, Any]]] = []
-            paid_cells: list[tuple[int, str]] = []
-            for run_idx, arm in planned:
-                prior = reusable_rows.get((task["id"], arm, run_idx))
-                if prior is None or reuse_source is None:
-                    paid_cells.append((run_idx, arm))
-                    continue
-                try:
-                    reused_records.append(
-                        (
-                            run_idx,
-                            arm,
-                            materialize_reused_row(prior, source_dir=reuse_source, dest_dir=out_dir),
-                        )
-                    )
-                except (OSError, SandboxError, ValueError) as exc:
-                    print(
-                        f"[{task['id']}][{arm}][run {run_idx}] comparator reuse "
-                        f"failed ({exc}); running a paid cell"
-                    )
-                    paid_cells.append((run_idx, arm))
+        graph_prefetch: GraphPrefetch | None = None
+        sweep_rows = list(zip(tasks, task_bindings, oracle_snapshots, strict=True))
 
-            asset_snapshot: TaskAssetSnapshot | None = None
-            asset_snapshot_error: BaseException | None = None
-            graph_key = (str(repo), task_sha)
-            graph_snapshot: SanitizedGraphSnapshot | None = graph_snapshots.get(graph_key)
-            graph_snapshot_error: BaseException | None = graph_snapshot_errors.get(graph_key)
-            clone_template: Path | None = None
-            template_head: str | None = None
-            if paid_cells:
-                try:
-                    validate_no_prebuilt_graph_assets(task)
-                    if graph_key not in clone_templates and graph_key not in clone_template_errors:
-                        template = make_worktree(repo, task_sha, Path(trees))
-                        template_head = sanitize_clone_for_hidden_oracles(template)
-                        clone_templates[graph_key] = (template, template_head)
-                    if graph_key in clone_templates:
-                        clone_template, template_head = clone_templates[graph_key]
-                    if graph_key in clone_template_errors and graph_snapshot_error is None:
-                        graph_snapshot_error = clone_template_errors[graph_key]
-                    if graph_snapshot is None and graph_snapshot_error is None:
-                        graph_snapshot = prepare_sanitized_graph(
+        def _join_graph_prefetch() -> None:
+            nonlocal graph_prefetch
+            if graph_prefetch is not None:
+                graph_prefetch.join()
+                graph_prefetch = None
+
+        try:
+            for index, (task, task_binding, oracle_snapshot) in enumerate(sweep_rows):
+                if outage_tripped or cancel_event.is_set():
+                    break
+                repo = Path(task_binding["repo_identity"])
+                task_sha = task_binding["resolved_sha"]
+                per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
+                planned = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
+                reused_records: list[tuple[int, str, dict[str, Any]]] = []
+                paid_cells: list[tuple[int, str]] = []
+                for run_idx, arm in planned:
+                    prior = reusable_rows.get((task["id"], arm, run_idx))
+                    if prior is None or reuse_source is None:
+                        paid_cells.append((run_idx, arm))
+                        continue
+                    try:
+                        reused_records.append(
+                            (
+                                run_idx,
+                                arm,
+                                materialize_reused_row(prior, source_dir=reuse_source, dest_dir=out_dir),
+                            )
+                        )
+                    except (OSError, SandboxError, ValueError) as exc:
+                        print(
+                            f"[{task['id']}][{arm}][run {run_idx}] comparator reuse "
+                            f"failed ({exc}); running a paid cell"
+                        )
+                        paid_cells.append((run_idx, arm))
+
+                asset_snapshot: TaskAssetSnapshot | None = None
+                asset_snapshot_error: BaseException | None = None
+                graph_key = (str(repo), task_sha)
+                if graph_prefetch is not None and graph_prefetch.key == graph_key:
+                    _join_graph_prefetch()
+                if paid_cells and graph_key not in graph_snapshots and graph_key not in graph_snapshot_errors:
+                    ensure_task_graph(
+                        task=task,
+                        repo=repo,
+                        task_sha=task_sha,
+                        graph_key=graph_key,
+                        trees=Path(trees),
+                        task_asset_cache=task_asset_cache,
+                        claude_bin=args.claude_bin,
+                        bwrap_bin=bwrap_bin,
+                        sandbox_backend=sandbox_backend,
+                        runtime_mounts=runtime_mounts,
+                        clone_templates=clone_templates,
+                        clone_template_errors=clone_template_errors,
+                        graph_snapshots=graph_snapshots,
+                        graph_snapshot_errors=graph_snapshot_errors,
+                    )
+                graph_snapshot = graph_snapshots.get(graph_key)
+                graph_snapshot_error = graph_snapshot_errors.get(graph_key)
+                clone_template, template_head = clone_templates.get(graph_key, (None, None))
+                if paid_cells:
+                    try:
+                        # Prepared here, once, rather than lazily inside the first cell:
+                        # TaskAssetCache is a plain dict, so a lazy build would be a
+                        # read-then-write race the moment cells stop running serially.
+                        asset_snapshot = task_asset_cache.prepare(
                             task,
                             repo=repo,
                             resolved_sha=task_sha,
-                            parent=Path(trees),
-                            cache=task_asset_cache,
-                            claude_bin=args.claude_bin,
-                            bwrap_bin=bwrap_bin,
-                            sandbox_backend=sandbox_backend,
-                            runtime_mounts=runtime_mounts,
-                            clone_template=clone_template,
-                            sanitized_head=template_head,
+                            expected_dependency_binding=task_binding,
                         )
-                        graph_snapshots[graph_key] = graph_snapshot
-                except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
-                    graph_snapshot_error = exc
-                    graph_snapshot_errors[graph_key] = exc
-                    clone_template_errors.setdefault(graph_key, exc)
-                try:
-                    # Prepared here, once, rather than lazily inside the first cell:
-                    # TaskAssetCache is a plain dict, so a lazy build would be a
-                    # read-then-write race the moment cells stop running serially.
-                    asset_snapshot = task_asset_cache.prepare(
-                        task,
-                        repo=repo,
-                        resolved_sha=task_sha,
-                        expected_dependency_binding=task_binding,
+                    except (OSError, SandboxError, ValueError) as exc:
+                        asset_snapshot_error = exc
+                cell_context = TaskCellContext(
+                    task=task,
+                    oracle_snapshot=oracle_snapshot,
+                    repo=repo,
+                    task_sha=task_sha,
+                    graph_snapshot=graph_snapshot,
+                    graph_snapshot_error=graph_snapshot_error,
+                    asset_snapshot=asset_snapshot,
+                    asset_snapshot_error=asset_snapshot_error,
+                    args=args,
+                    out_dir=out_dir,
+                    ce_plugin_snapshot=ce_plugin_snapshot,
+                    trees_dir=Path(trees),
+                    bwrap_bin=bwrap_bin,
+                    sandbox_backend=sandbox_backend,
+                    runtime_mounts=runtime_mounts,
+                    candidate_overlay=candidate_overlay,
+                    overlay_digest=overlay_digest,
+                    clone_template=clone_template,
+                    sanitized_head=template_head,
+                )
+
+                def announce(run_idx: int, arm: str) -> None:
+                    nonlocal started_cells
+                    started_cells += 1
+                    print(
+                        f"[{task['id']}][{arm}][run {run_idx}] starting "
+                        f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
                     )
-                except (OSError, SandboxError, ValueError) as exc:
-                    asset_snapshot_error = exc
-            cell_context = TaskCellContext(
-                task=task,
-                oracle_snapshot=oracle_snapshot,
-                repo=repo,
-                task_sha=task_sha,
-                graph_snapshot=graph_snapshot,
-                graph_snapshot_error=graph_snapshot_error,
-                asset_snapshot=asset_snapshot,
-                asset_snapshot_error=asset_snapshot_error,
-                args=args,
-                out_dir=out_dir,
-                ce_plugin_snapshot=ce_plugin_snapshot,
-                trees_dir=Path(trees),
-                bwrap_bin=bwrap_bin,
-                sandbox_backend=sandbox_backend,
-                runtime_mounts=runtime_mounts,
-                candidate_overlay=candidate_overlay,
-                overlay_digest=overlay_digest,
-                clone_template=clone_template,
-                sanitized_head=template_head,
-            )
 
-            def announce(run_idx: int, arm: str) -> None:
-                nonlocal started_cells
-                started_cells += 1
-                print(
-                    f"[{task['id']}][{arm}][run {run_idx}] starting "
-                    f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
-                )
+                def keep(run_idx: int, arm: str, record: dict[str, Any]) -> None:
+                    per_arm[arm].append(record)
+                    with results_path.open("a") as fh:
+                        # Redact any API token a session-error stderr_tail echoed
+                        # into error_detail before it enters the uploaded
+                        # results.jsonl artifact (transcripts are redacted; this
+                        # sink was not).
+                        fh.write(redact_text(json.dumps(record), credential_secrets(args)) + "\n")
+                    print(cell_progress_line(task["id"], arm, run_idx, record))
+                    failure = cell_failure_detail_line(task["id"], arm, run_idx, record, credential_secrets(args))
+                    if failure:
+                        print(failure)
 
-            def keep(run_idx: int, arm: str, record: dict[str, Any]) -> None:
-                per_arm[arm].append(record)
-                with results_path.open("a") as fh:
-                    # Redact any API token a session-error stderr_tail echoed
-                    # into error_detail before it enters the uploaded
-                    # results.jsonl artifact (transcripts are redacted; this
-                    # sink was not).
-                    fh.write(redact_text(json.dumps(record), credential_secrets(args)) + "\n")
-                print(cell_progress_line(task["id"], arm, run_idx, record))
-                failure = cell_failure_detail_line(task["id"], arm, run_idx, record, credential_secrets(args))
-                if failure:
-                    print(failure)
-
-            for run_idx, arm, record in reused_records:
-                started_cells += 1
-                print(
-                    f"[{task['id']}][{arm}][run {run_idx}] reused comparator "
-                    f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
-                )
-                keep(run_idx, arm, record)
-            if paid_cells:
-                outage_streak, outage_tripped = sweep_task_cells(
-                    paid_cells,
-                    workers=args.workers,
-                    run=partial(run_cell, cell_context),
-                    on_start=announce,
-                    on_record=keep,
-                    outage_streak=outage_streak,
-                    outage_limit=args.outage_streak,
-                    cancel_event=cancel_event,
-                )
-            results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
+                for run_idx, arm, record in reused_records:
+                    started_cells += 1
+                    print(
+                        f"[{task['id']}][{arm}][run {run_idx}] reused comparator "
+                        f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                    )
+                    keep(run_idx, arm, record)
+                if paid_cells:
+                    if graph_prefetch is None and not cancel_event.is_set():
+                        ready_keys = (
+                            set(clone_templates)
+                            | set(clone_template_errors)
+                            | set(graph_snapshots)
+                            | set(graph_snapshot_errors)
+                        )
+                        target = next_graph_prefetch_target(
+                            [(later_task, later_binding) for later_task, later_binding, _ in sweep_rows[index + 1 :]],
+                            arms=args.arms,
+                            runs=args.runs,
+                            reusable_rows=reusable_rows,
+                            reuse_source=reuse_source,
+                            ready_keys=ready_keys,
+                        )
+                        if target is not None:
+                            later_task, later_binding, later_key = target
+                            graph_prefetch = prefetch_next_graph(
+                                task=later_task,
+                                binding=later_binding,
+                                graph_key=later_key,
+                                trees=Path(trees),
+                                task_asset_cache=task_asset_cache,
+                                claude_bin=args.claude_bin,
+                                bwrap_bin=bwrap_bin,
+                                sandbox_backend=sandbox_backend,
+                                runtime_mounts=runtime_mounts,
+                                clone_templates=clone_templates,
+                                clone_template_errors=clone_template_errors,
+                                graph_snapshots=graph_snapshots,
+                                graph_snapshot_errors=graph_snapshot_errors,
+                                cancel_event=cancel_event,
+                            )
+                    outage_streak, outage_tripped = sweep_task_cells(
+                        paid_cells,
+                        workers=args.workers,
+                        run=partial(run_cell, cell_context),
+                        on_start=announce,
+                        on_record=keep,
+                        outage_streak=outage_streak,
+                        outage_limit=args.outage_streak,
+                        cancel_event=cancel_event,
+                    )
+                results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
+        finally:
+            _join_graph_prefetch()
 
     selection_report = [
         "## Run provenance",
