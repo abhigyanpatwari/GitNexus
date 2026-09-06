@@ -228,6 +228,10 @@ class SandboxSession:
             ReadOnlyMount(self.clone, SANDBOX_WORKSPACE),
             ReadOnlyMount(self.home, SANDBOX_HOME),
             ReadOnlyMount(self.temp, SANDBOX_TMP),
+            # The review artifact directory is a real mount on bwrap, so the
+            # host-unsafe backend has to translate it too. Without this the
+            # review prompt names a path that exists on neither backend.
+            ReadOnlyMount(Path(self.private_root) / REVIEW_OUTPUT_DIRNAME, SANDBOX_REVIEW_OUTPUT),
         ]
         for mount in sorted(mappings, key=lambda item: len(item.target), reverse=True):
             target = mount.target.rstrip("/")
@@ -248,9 +252,16 @@ class SandboxSession:
             SANDBOX_WORKSPACE,
             SANDBOX_HOME,
             SANDBOX_TMP,
+            SANDBOX_REVIEW_OUTPUT,
         ]
         ordered = sorted(set(targets), key=len, reverse=True)
-        pattern = re.compile("|".join(re.escape(target) for target in ordered))
+        # Only translate at a path boundary. "/review-output" occurs twice in
+        # "/review-output/review-output.json" - once as the directory and once
+        # inside the filename - and rewriting the second turned the artifact path
+        # into nonsense. A target must be followed by "/", whitespace, a quote or
+        # end of string to be a path rather than a prefix of a longer name.
+        boundary = r"""(?=[/\s"']|$)"""
+        pattern = re.compile("(?:" + "|".join(re.escape(target) for target in ordered) + ")" + boundary)
         return pattern.sub(lambda match: self.host_path(match.group(0)), value)
 
     @property
@@ -563,12 +574,17 @@ def build_claude_settings(*, sandbox_enabled: bool = True) -> str:
                 "allowLocalBinding": False,
             },
             "filesystem": {
-                "allowWrite": [SANDBOX_WORKSPACE, SANDBOX_TMP, SANDBOX_HOME],
+                # SANDBOX_REVIEW_OUTPUT is the review artifact directory. The
+                # bwrap bind alone is not enough: this policy is a second,
+                # independent gate the CLI applies to its own tools, and a path
+                # missing here is unwritable however the mount is shaped.
+                "allowWrite": [SANDBOX_WORKSPACE, SANDBOX_TMP, SANDBOX_HOME, SANDBOX_REVIEW_OUTPUT],
                 "denyRead": ["/"],
                 "allowRead": [
                     SANDBOX_WORKSPACE,
                     SANDBOX_TMP,
                     SANDBOX_HOME,
+                    SANDBOX_REVIEW_OUTPUT,
                     "/usr",
                     "/bin",
                     "/lib",

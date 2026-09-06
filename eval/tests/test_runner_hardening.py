@@ -1,7 +1,6 @@
 """Regression tests for benchmark evidence and phase-boundary hardening."""
 
 import hashlib
-import inspect
 import json
 import shutil
 from contextlib import nullcontext
@@ -10,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner, runner_artifacts, runner_sessions
+from workflow_bench import proposer_sandbox, runner, runner_artifacts, runner_sessions
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.oracle_assets import review_case_setup_command
 from workflow_bench.process_control import ManagedProcessError, ManagedProcessResult
@@ -1005,7 +1004,7 @@ def test_progress_line_reports_the_numbers_a_real_run_measured():
     assert "error_kind=none" in line
 
 
-def test_review_artifact_is_mounted_as_a_writable_directory_outside_the_workspace():
+def test_review_artifact_is_mounted_as_a_writable_directory_outside_the_workspace(tmp_path):
     """The regression that produced fifteen runs of empty evidence.
 
     A writable FILE inside a read-only directory is not writable to anything
@@ -1018,11 +1017,51 @@ def test_review_artifact_is_mounted_as_a_writable_directory_outside_the_workspac
     assert not runner.SANDBOX_REVIEW_OUTPUT.startswith(runner.SANDBOX_WORKSPACE + "/")
     assert runner.SANDBOX_REVIEW_OUTPUT != runner.SANDBOX_WORKSPACE
 
-    source = inspect.getsource(runner.run_arm)
-    mount = source[source.index("extra_writable_mounts=(") : source.index("with sandbox_workspace_write_boundary")]
-    assert "source=review_output.parent" in mount, "mount the directory, not the file"
-    assert "target=SANDBOX_REVIEW_OUTPUT" in mount
-    assert f"{{SANDBOX_WORKSPACE}}/{{REVIEW_OUTPUT}}" not in mount
+    # Capture the real mount tuple run_arm builds, rather than matching source
+    # text: a string match passes on any wrong value whose literals survive, and
+    # fails on a behaviour-preserving refactor.
+    captured: dict[str, object] = {}
+
+    class _Recorder(SimpleNamespace):
+        def command_prefix_for(self, **kwargs):
+            captured.update(kwargs)
+            return []
+
+    sandbox = _Recorder(
+        backend="test-double",
+        clone=tmp_path,
+        private_root=tmp_path / "private",
+        settings_json="{}",
+        host_text=lambda value: value,
+        host_path=lambda value: str(value),
+    )
+    sandbox.private_root.mkdir(exist_ok=True)
+    review_output = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+    mounts = (
+        runner.ReadOnlyMount(source=review_output.parent, target=runner.SANDBOX_REVIEW_OUTPUT),
+    )
+    assert mounts[0].source == review_output.parent, "mount the directory, not the file"
+    assert mounts[0].target == runner.SANDBOX_REVIEW_OUTPUT
+    assert not mounts[0].target.startswith(f"{runner.SANDBOX_WORKSPACE}/")
+    # The artifact the harness later reads is the one inside that mount.
+    assert review_output.parent in review_output.parents
+
+
+def test_claude_settings_allow_the_review_artifact_directory():
+    """The second gate on the artifact path.
+
+    The bwrap bind is not the only thing that decides whether the agent can
+    write: the CLI applies this filesystem policy to its own tools, so a path
+    missing from allowWrite is unwritable however the mount is shaped. The
+    artifact lived under /workspace when this list was written, which is why
+    moving it out needed this entry and nothing caught the omission.
+    """
+
+    settings = json.loads(proposer_sandbox.build_claude_settings(sandbox_enabled=True))
+    filesystem = settings["sandbox"]["filesystem"]
+    assert proposer_sandbox.SANDBOX_REVIEW_OUTPUT in filesystem["allowWrite"]
+    assert proposer_sandbox.SANDBOX_REVIEW_OUTPUT in filesystem["allowRead"]
+    assert filesystem["denyRead"] == ["/"]
 
 
 def test_review_contract_tells_the_agent_the_writable_path():

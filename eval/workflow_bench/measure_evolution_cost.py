@@ -201,6 +201,15 @@ def generation_seconds(
     reach this wall at all: the outage breaker aborts after
     ``DEFAULT_OUTAGE_STREAK`` consecutive systemic failures, which for the
     sample's own error sequence is cell 5 of 41.
+
+    KNOWN BIAS, in the optimistic direction for a seeded weekly run. The residual
+    is charged per cell because that is the only rate the artifact supports, but
+    part of what it blends is per-SHA graph build, which does not shrink when
+    fewer arms are paid. Weekly runs one arm instead of three and is therefore
+    billed roughly a third of a cost the real sweep still pays in full. The whole
+    residual is 2541s, so the overstatement of weekly savings is bounded by that
+    - under an hour. Splitting it honestly needs a run that times the per-SHA and
+    per-cell work separately; do not invent a split here.
     """
 
     return round(

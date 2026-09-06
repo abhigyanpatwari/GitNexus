@@ -149,8 +149,10 @@ UNSAFE_NO_BWRAP=1 RUNS=1 ./workflow_bench/run-evolution.sh
 This mode runs review sessions directly in disposable host worktrees and is
 **not** a security boundary: it does not isolate the network or create a PID
 namespace, and a session that can `chmod` can undo the workspace lock. The
-harness still drops write bits on the clone except `review-output.json` so
-accidental `npm install` / analyze writes cannot invalidate review evidence.
+harness drops write bits on the whole clone, with no carve-out, so accidental
+`npm install` / analyze writes cannot invalidate review evidence. The review
+artifact is not in the clone at all: it lives in a writable directory bound at
+`/review-output`, outside the workspace.
 Sandbox cleanup restores owner write bits before deleting the private TMPDIR,
 because a session that `copytree`s the locked clone would otherwise leave
 non-empty 0555 directories that `rmtree` cannot remove. Historical review
@@ -304,9 +306,12 @@ without weakening today's deterministic promotion boundary.
 
 The evolution workflow runs an offline containment preflight with the pinned
 Claude Code 2.1.214 binary before starting a paid proposer or benchmark. The
-review canary seals the workspace read-only and exposes only the pre-created
-`review-output.json` as writable. Runtime mount placeholders are prepared in
-the disposable clone before sealing it; existing config bytes are preserved.
+review canary seals the workspace read-only and writes nothing into it: the
+artifact directory is bound at `/review-output` outside the workspace, and the
+file itself is deliberately absent until the session creates it, so its absence
+distinguishes "never written" from "written badly". Runtime mount placeholders
+are prepared in the disposable clone before sealing it; existing config bytes
+are preserved.
 Any pre-existing result entry, including a symlink, is rejected. Required
 canaries fail when their runtime or Bubblewrap is unavailable.
 

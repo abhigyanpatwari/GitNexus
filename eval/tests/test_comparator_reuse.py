@@ -56,6 +56,7 @@ def _row(**overrides) -> dict:
         "transcript_missing": False,
         "transcript_artifacts": [_artifact()],
         "recorded_at": datetime.now(UTC).isoformat(),
+        "runtime_digest": _digest("cli"),
     }
     base.update(overrides)
     return base
@@ -67,7 +68,7 @@ def _expected(**overrides) -> ComparatorReuseExpectation:
         model="gpt-5.6-sol",
         effort="xhigh",
         sandbox_backend="bwrap",
-        runtime_digest=None,
+        runtime_digest=_digest("cli"),
         now=now,
         max_age=timedelta(days=90),
         tasks={
@@ -111,7 +112,11 @@ def test_runtime_digest_mismatch_rejects_when_both_sides_are_bound() -> None:
     row = _row(runtime_digest=_digest("old-cli"))
     assert row_is_reusable_comparator(row, _expected(runtime_digest=_digest("new-cli"))) is False
     assert row_is_reusable_comparator(row, _expected(runtime_digest=_digest("old-cli"))) is True
-    assert row_is_reusable_comparator(_row(), _expected(runtime_digest=_digest("new-cli"))) is True
+    # A row with no runtime_digest was measured by a harness that recorded none,
+    # which is the drift this lock exists to catch - not evidence of agreement.
+    assert row_is_reusable_comparator(_row(runtime_digest=None), _expected()) is False
+    # And a sweep that cannot determine its own digest must not reuse either.
+    assert row_is_reusable_comparator(_row(), _expected(runtime_digest=None)) is False
 
 
 def test_ce_review_matches_plugin_digest_not_repo_skill() -> None:
@@ -175,3 +180,27 @@ def test_materialize_rejects_same_directory_and_missing_transcript(tmp_path: Pat
     dest.mkdir()
     with pytest.raises(SandboxError, match="missing"):
         materialize_reused_row(row, source_dir=source, dest_dir=dest)
+
+
+def test_a_reused_row_ages_from_its_first_measurement_not_the_copy(tmp_path: Path):
+    """Reuse chains must not refresh the clock.
+
+    materialize_reused_row restamps recorded_at with the copy time, so aging
+    against that field let a row be copied forward every generation and outlive
+    max_age forever. The original measurement time is the one that counts.
+    """
+
+    original = (datetime.now(UTC) - timedelta(days=91)).isoformat()
+    chained = _row(recorded_at=datetime.now(UTC).isoformat(), reused_from_recorded_at=original)
+    assert row_is_reusable_comparator(chained, _expected()) is False
+    # The same row inside the window is still reusable.
+    fresh = _row(
+        recorded_at=datetime.now(UTC).isoformat(),
+        reused_from_recorded_at=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+    )
+    assert row_is_reusable_comparator(fresh, _expected()) is True
+
+
+def test_a_future_dated_row_is_corrupt_not_fresh():
+    ahead = (datetime.now(UTC) + timedelta(days=2)).isoformat()
+    assert row_is_reusable_comparator(_row(recorded_at=ahead), _expected()) is False
