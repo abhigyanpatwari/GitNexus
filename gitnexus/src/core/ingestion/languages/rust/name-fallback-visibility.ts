@@ -19,7 +19,7 @@
  * to the caller's module before comparison.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import {
   modulePathReaches,
   stripExtension,
@@ -34,6 +34,10 @@ const RUST_CRATE_ROOT_DIRS: ReadonlySet<string> = new Set(['src', 'tests', 'benc
 
 /** Path prefixes of a `use` that name a root rather than a module segment. */
 const RUST_USE_ROOT_PREFIXES: ReadonlySet<string> = new Set(['crate', '$crate']);
+
+// One scope lookup per immutable parsed-file snapshot, not per fallback site.
+// Weak keys release both the snapshot and its index at the end of ingestion.
+const scopeLookupByFile = new WeakMap<ParsedFile, ReadonlyMap<ScopeId, Scope>>();
 
 /**
  * The module path a Rust file provides, as a `/`-joined path.
@@ -70,7 +74,11 @@ function rustUsePathOf(targetRaw: string, callerFilePath: string): string {
 export function rustIsGlobalNameFallbackPlausible(ctx: {
   readonly callerParsed: ParsedFile;
   readonly candidate: SymbolDefinition;
-  readonly site: { readonly name: string; readonly rawQualifiedName?: string };
+  readonly site: {
+    readonly name: string;
+    readonly rawQualifiedName?: string;
+    readonly inScope?: ScopeId;
+  };
 }): boolean {
   if (ctx.candidate.filePath === ctx.callerParsed.filePath) return true;
   // A PATH-QUALIFIED call (`User::new(...)`, `crate::a::helper()`) reaches this
@@ -86,7 +94,31 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
   if (candidateModule === '') return true;
 
   const candidateName = rustSimpleNameOf(ctx.candidate);
+  // Imports are lexical evidence, not a file-wide allowlist. Legacy/synthetic
+  // imports without a scope receipt retain the previous conservative behavior.
+  let visibleScopes: Set<ScopeId> | undefined;
+  if (ctx.site.inScope !== undefined) {
+    let scopes = scopeLookupByFile.get(ctx.callerParsed);
+    if (scopes === undefined) {
+      scopes = new Map(ctx.callerParsed.scopes.map((scope) => [scope.id, scope]));
+      scopeLookupByFile.set(ctx.callerParsed, scopes);
+    }
+    visibleScopes = new Set();
+    let current: ScopeId | null = ctx.site.inScope;
+    while (current !== null && !visibleScopes.has(current)) {
+      visibleScopes.add(current);
+      const scope = scopes.get(current);
+      if (scope === undefined || scope.kind === 'Namespace') break;
+      current = scope.parent;
+    }
+  }
   for (const imp of ctx.callerParsed.parsedImports) {
+    if (
+      imp.declaredAtScope !== undefined &&
+      visibleScopes !== undefined &&
+      !visibleScopes.has(imp.declaredAtScope)
+    )
+      continue;
     const usePath = rustUsePathOf(imp.targetRaw, ctx.callerParsed.filePath);
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.

@@ -193,5 +193,6 @@ export const rustScopeResolver: ScopeResolver = {
   hoistTypeBindingsToModule: true,
   propagatesReturnTypesAcrossImports: true,
   allowGlobalFreeCallFallback: true,
+  importsBindAtLexicalScope: true,
   isGlobalNameFallbackPlausible: rustIsGlobalNameFallbackPlausible,
 };

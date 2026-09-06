@@ -39,7 +39,7 @@ import type { BindingRef, ImportEdge, ParsedImport, ScopeId, WorkspaceIndex } fr
 /** Per-file input for the finalize pass. */
 export interface FinalizeFile {
   readonly filePath: string;
-  /** The module scope id for this file; owns the finalized imports + bindings. */
+  /** Default binding scope for imports without lexical provenance or opt-in. */
   readonly moduleScope: ScopeId;
   readonly parsedImports: readonly ParsedImport[];
   /**
@@ -84,6 +84,10 @@ export interface FinalizeInput {
  * expects pure answers.
  */
 export interface FinalizeHooks {
+  /** Bind imports at their extracted lexical scope. Missing provenance retains
+   * the legacy module-scope behavior. Opt-in: lexical position and language
+   * import-binding semantics are distinct facts. */
+  readonly importsBindAtLexicalScope?: boolean;
   /**
    * Resolve a raw import target to the concrete file path that owns it.
    * Return `null` when no target file is resolvable (e.g., `np.foo` when
@@ -269,10 +273,18 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // SCC-condensed). Eliminates the recursive crawl that the per-edge
   // `tryFinalize` call site used to do; lookups are O(1) afterwards.
   // See `buildReexportClosures` for the algorithm.
+  // A local import is a dependency of its file, not a re-export of that file.
+  const moduleEdgeIndex = new Map<string, ImportEdgeDraft[]>();
+  for (const file of input.files) {
+    moduleEdgeIndex.set(
+      file.filePath,
+      (edgeIndex.get(file.filePath) ?? []).filter((d) => d.fromScope === file.moduleScope),
+    );
+  }
   const ambiguityByFile = collectAmbiguityByFile(
     input.files,
     byFilePath,
-    edgeIndex,
+    moduleEdgeIndex,
     hooks.wildcardCollisionIsAmbiguous === true,
     hooks.namedImportsBindTopLevelOnly === true,
   );
@@ -284,7 +296,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   const reexportClosures = buildReexportClosures(
     input.files,
     byFilePath,
-    edgeIndex,
+    moduleEdgeIndex,
     ambiguousByFile,
     topLevelOnly,
   );
@@ -349,12 +361,12 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     }
   }
 
-  // ── Phase 4: collect finalized `ImportEdge[]` per module scope, preserving
+  // ── Phase 4: collect finalized `ImportEdge[]` per binding scope, preserving
   // input order within each file, and wildcard-expand where applicable.
   for (const file of input.files) {
     const drafts = edgeIndex.get(file.filePath);
     if (drafts === undefined) continue;
-    const finalized: ImportEdge[] = [];
+    const finalizedByScope = new Map<ScopeId, ImportEdge[]>([[file.moduleScope, []]]);
     // Names this file's `export *` sources collide on (see
     // `collectAmbiguousWildcards`). Their expanded edges are dropped here, so
     // the file's own module scope does not bind an arbitrary winner either —
@@ -363,6 +375,11 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     // `import-resolved` guess.
     const ambiguousHere = ambiguousByFile.get(file.filePath) ?? EMPTY_NAME_SET;
     for (const d of drafts) {
+      let finalized = finalizedByScope.get(d.fromScope);
+      if (finalized === undefined) {
+        finalized = [];
+        finalizedByScope.set(d.fromScope, finalized);
+      }
       const edge = d.finalized;
       if (edge === null) {
         throw new Error(`Invariant violated: import edge was not finalized for ${file.filePath}`);
@@ -371,7 +388,12 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         // Produce one `wildcard-expanded` ImportEdge per exported name.
         const expanded = expandWildcard(edge, byFilePath, hooks, input.workspaceIndex);
         for (const e of expanded) {
-          if (e.kind === 'wildcard-expanded' && ambiguousHere.has(e.localName)) continue;
+          if (
+            d.fromScope === file.moduleScope &&
+            e.kind === 'wildcard-expanded' &&
+            ambiguousHere.has(e.localName)
+          )
+            continue;
           finalized.push(e);
         }
       } else {
@@ -379,10 +401,11 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       }
       if (edge.linkStatus !== 'unresolved') linkedEdges++;
     }
-    linkedByScope.set(file.moduleScope, Object.freeze(finalized));
+    for (const [scopeId, edges] of finalizedByScope)
+      linkedByScope.set(scopeId, Object.freeze(edges));
   }
 
-  // ── Phase 5: materialize module-scope bindings (local + imports + wildcards),
+  // ── Phase 5: materialize bindings (local + scoped imports + wildcards),
   // delegating precedence to `provider.mergeBindings`.
   const bindingsByScope = materializeBindings(input.files, linkedByScope, hooks);
 
@@ -427,6 +450,10 @@ function makeEdgeDrafts(
   hooks: FinalizeHooks,
   workspace: WorkspaceIndex,
 ): ImportEdgeDraft[] {
+  const fromScope =
+    hooks.importsBindAtLexicalScope === true
+      ? (parsed.declaredAtScope ?? file.moduleScope)
+      : file.moduleScope;
   // Dynamic-unresolved passes through — no `BindingRef`, no target file.
   if (parsed.kind === 'dynamic-unresolved') {
     const base: ImportEdge = {
@@ -439,7 +466,7 @@ function makeEdgeDrafts(
       {
         source: parsed,
         fromFile: file.filePath,
-        fromScope: file.moduleScope,
+        fromScope,
         targetFile: null,
         base,
         finalized: base, // already fully finalized
@@ -469,7 +496,7 @@ function makeEdgeDrafts(
       {
         source: parsed,
         fromFile: file.filePath,
-        fromScope: file.moduleScope,
+        fromScope,
         targetFile: null,
         base,
         finalized: base,
@@ -505,7 +532,7 @@ function makeEdgeDrafts(
     return {
       source: parsed,
       fromFile: file.filePath,
-      fromScope: file.moduleScope,
+      fromScope,
       targetFile: tf,
       base,
       finalized: isFileLevelTerminal ? base : null,
@@ -1557,7 +1584,7 @@ function materializeBindings(
   linkedByScope: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
   hooks: FinalizeHooks,
 ): ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>> {
-  const out = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+  const buckets = new Map<ScopeId, Map<string, readonly BindingRef[]>>();
 
   // Build a `nodeId → SymbolDefinition` index once across all files
   // (O(N_files × D_defs)) so the per-edge lookup below is O(1) instead
@@ -1582,8 +1609,17 @@ function materializeBindings(
       scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
     }
 
-    // Layer in finalized imports.
-    const imports = linkedByScope.get(file.moduleScope) ?? [];
+    buckets.set(file.moduleScope, scopeBindings);
+  }
+
+  // Layer imports into their binding scope; lexical locals already live in
+  // the scope tree and must not be copied into unrelated scope buckets.
+  for (const [scopeId, imports] of linkedByScope) {
+    let scopeBindings = buckets.get(scopeId);
+    if (scopeBindings === undefined) {
+      scopeBindings = new Map();
+      buckets.set(scopeId, scopeBindings);
+    }
     for (const edge of imports) {
       if (edge.targetDefId === undefined || edge.linkStatus === 'unresolved') continue;
       const def = defById.get(edge.targetDefId);
@@ -1602,15 +1638,18 @@ function materializeBindings(
       if (name === null) continue;
       const incoming: BindingRef[] = [{ def, origin, via: edge }];
       const existing = scopeBindings.get(name) ?? [];
-      scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+      scopeBindings.set(name, hooks.mergeBindings(existing, incoming, scopeId));
     }
+  }
 
+  const out = new Map<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>();
+  for (const [scopeId, scopeBindings] of buckets) {
     // Freeze nested buckets for immutability.
     const frozen = new Map<string, readonly BindingRef[]>();
     for (const [name, refs] of scopeBindings) {
       frozen.set(name, Object.freeze(refs.slice()));
     }
-    out.set(file.moduleScope, frozen);
+    out.set(scopeId, frozen);
   }
 
   return out;

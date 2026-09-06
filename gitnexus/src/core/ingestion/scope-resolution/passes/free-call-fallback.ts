@@ -629,7 +629,11 @@ export function emitFreeCallFallback(
             candidate: fnDef,
             parsedFileOf: parsedFileByPath(),
             sourceTextOf: options.sourceTextOf,
-            site: { name: site.name, rawQualifiedName: site.rawQualifiedName },
+            site: {
+              name: site.name,
+              rawQualifiedName: site.rawQualifiedName,
+              inScope: site.inScope,
+            },
           }) === false
         ) {
           // The language proved this call impossible. Mark the site handled so
