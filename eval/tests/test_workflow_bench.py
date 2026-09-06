@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -15,12 +16,15 @@ from workflow_bench.runner import (
     broken_incumbent_arms,
     build_parser,
     infra_error_record,
+    next_graph_prefetch_target,
     normalized_model_identifier,
     parse_shortstat,
+    prefetch_next_graph,
     render_report,
     savings,
     select_tasks,
     systemic_outage_streak,
+    task_has_planned_paid_cells,
 )
 
 
@@ -515,3 +519,94 @@ def test_run_evolution_script_is_the_shared_ci_and_local_entrypoint():
     assert "--include-expensive" in argv
     assert "claude-sonnet-5" not in argv
     assert printed.stderr  # rewrite notice goes to stderr
+
+
+def test_planned_paid_cells_treat_missing_reuse_as_paid():
+    task = {"id": "review-pr-2718-defect"}
+    assert task_has_planned_paid_cells(
+        task,
+        arms=["ce_review", "review", "candidate_review"],
+        runs=3,
+        reusable_rows={},
+        reuse_source=None,
+    )
+    reuse_source = Path("/tmp/seed")
+    rows = {
+        (task["id"], arm, run_idx): {}
+        for run_idx in range(3)
+        for arm in ("ce_review", "review", "candidate_review")
+    }
+    assert not task_has_planned_paid_cells(
+        task,
+        arms=["ce_review", "review", "candidate_review"],
+        runs=3,
+        reusable_rows=rows,
+        reuse_source=reuse_source,
+    )
+    del rows[(task["id"], "candidate_review", 0)]
+    assert task_has_planned_paid_cells(
+        task,
+        arms=["ce_review", "review", "candidate_review"],
+        runs=3,
+        reusable_rows=rows,
+        reuse_source=reuse_source,
+    )
+
+
+def test_next_graph_prefetch_skips_ready_shas_and_fully_reused_tasks(tmp_path: Path):
+    first = {"id": "review-a"}
+    second = {"id": "review-b"}
+    third = {"id": "review-c"}
+    reuse_source = tmp_path / "seed"
+    reused_second = {
+        (second["id"], arm, 0): {} for arm in ("ce_review", "review", "candidate_review")
+    }
+    target = next_graph_prefetch_target(
+        [
+            (first, {"repo_identity": "/repo", "resolved_sha": "aaa"}),
+            (second, {"repo_identity": "/repo", "resolved_sha": "bbb"}),
+            (third, {"repo_identity": "/repo", "resolved_sha": "ccc"}),
+        ],
+        arms=["ce_review", "review", "candidate_review"],
+        runs=1,
+        reusable_rows=reused_second,
+        reuse_source=reuse_source,
+        ready_keys={("/repo", "aaa")},
+    )
+    assert target is not None
+    task, binding, key = target
+    assert task["id"] == "review-c"
+    assert key == ("/repo", "ccc")
+    assert binding["resolved_sha"] == "ccc"
+
+
+def test_prefetch_next_graph_runs_ensure_on_a_background_thread(monkeypatch):
+    started = threading.Event()
+    seen: list[tuple[str, str]] = []
+
+    def fake_ensure(**kwargs):
+        seen.append(kwargs["graph_key"])
+        started.set()
+
+    monkeypatch.setattr("workflow_bench.runner.ensure_task_graph", fake_ensure)
+    cancel = threading.Event()
+    job = prefetch_next_graph(
+        task={"id": "review-b"},
+        binding={"repo_identity": "/repo", "resolved_sha": "bbb"},
+        graph_key=("/repo", "bbb"),
+        trees=Path("/tmp"),
+        task_asset_cache=None,
+        claude_bin="claude",
+        bwrap_bin="bwrap",
+        sandbox_backend="bwrap",
+        runtime_mounts=(),
+        clone_templates={},
+        clone_template_errors={},
+        graph_snapshots={},
+        graph_snapshot_errors={},
+        cancel_event=cancel,
+    )
+    assert job.key == ("/repo", "bbb")
+    assert started.wait(timeout=2)
+    job.join()
+    assert seen == [("/repo", "bbb")]
