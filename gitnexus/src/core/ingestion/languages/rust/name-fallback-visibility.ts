@@ -8,21 +8,15 @@
  * bare free call and never reaches this tier — it carries a qualified name and
  * is resolved earlier by `resolveQualifiedFreeCall`).
  *
- * One rule therefore covers both halves the visibility question splits into:
- *
- *  - A non-`pub` item cannot be `use`d from outside its module at all, so the
- *    absence of a covering `use` correctly refuses it.
- *  - A `pub` item is reachable, but only from a file that actually wrote the
- *    `use`, which is the same check.
- *
- * That is why this does not need to read the `pub` marker, which
- * `SymbolDefinition` does not carry. It asks the decidable question — "did this
- * file bring the name's module into scope?" — instead of the undecidable one.
+ * This hook checks import evidence, not Rust item visibility. A child module
+ * can use private ancestor items, and visibility restrictions such as
+ * `pub(crate)` require more context than `SymbolDefinition` carries. A matching
+ * import therefore keeps a labeled guess rather than proving accessibility.
  *
  * Module paths are matched against the candidate's FILE path (extension
  * stripped, and `mod`/`lib`/`main` stem dropped, since `a/b/mod.rs` IS module
- * `a::b`). `use` targets are `::`-separated and `crate::`/`super::` prefixes
- * contribute no segments, so suffix matching lines the two up.
+ * `a::b`). `crate::` names the root; `self::` and `super::` resolve relative
+ * to the caller's module before comparison.
  */
 
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
@@ -39,7 +33,7 @@ const RUST_DIRECTORY_MODULE_STEMS: ReadonlySet<string> = new Set(['mod', 'lib', 
 const RUST_CRATE_ROOT_DIRS: ReadonlySet<string> = new Set(['src', 'tests', 'benches', 'examples']);
 
 /** Path prefixes of a `use` that name a root rather than a module segment. */
-const RUST_USE_ROOT_PREFIXES: ReadonlySet<string> = new Set(['crate', 'self', 'super', '$crate']);
+const RUST_USE_ROOT_PREFIXES: ReadonlySet<string> = new Set(['crate', '$crate']);
 
 /**
  * The module path a Rust file provides, as a `/`-joined path.
@@ -57,9 +51,18 @@ function rustModulePathOf(filePath: string): string {
   return segments.join('/');
 }
 
-/** A `use` target with its root prefix dropped: `crate::a::b` → `a::b`. */
-function rustUsePathOf(targetRaw: string): string {
+/** Resolve explicit relative prefixes against the caller's module path. */
+function rustUsePathOf(targetRaw: string, callerFilePath: string): string {
   const segments = targetRaw.split('::').filter((s) => s !== '');
+  if (segments[0] === 'self' || segments[0] === 'super') {
+    const base = rustModulePathOf(callerFilePath).split('/').filter(Boolean);
+    if (segments[0] === 'self') segments.shift();
+    while (segments[0] === 'super') {
+      base.pop();
+      segments.shift();
+    }
+    return [...base, ...segments].join('::');
+  }
   while (segments.length > 0 && RUST_USE_ROOT_PREFIXES.has(segments[0]!)) segments.shift();
   return segments.join('::');
 }
@@ -84,7 +87,7 @@ export function rustIsGlobalNameFallbackPlausible(ctx: {
 
   const candidateName = rustSimpleNameOf(ctx.candidate);
   for (const imp of ctx.callerParsed.parsedImports) {
-    const usePath = rustUsePathOf(imp.targetRaw);
+    const usePath = rustUsePathOf(imp.targetRaw, ctx.callerParsed.filePath);
     // Only a glob introduces every bare item of a module. A named import must
     // match both the candidate's original name and the call's local spelling.
     if (imp.kind === 'wildcard') {

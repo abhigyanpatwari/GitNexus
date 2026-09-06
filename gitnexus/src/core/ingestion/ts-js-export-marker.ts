@@ -46,10 +46,65 @@ export interface EsmExportEvidence {
 
 const CJS_EXPORT_ASSIGNMENT = /^\s*(this\.[A-Za-z_$][\w$]*\s*=)/;
 
+/** Read binding patterns, never initializer expressions or property keys. */
+function bindsReceiver(node: SyntaxNode | null, name: string): boolean {
+  if (node === null) return false;
+  if (node.type === 'identifier' || node.type === 'shorthand_property_identifier_pattern') {
+    return node.text === name;
+  }
+  if (node.type === 'variable_declarator')
+    return bindsReceiver(node.childForFieldName('name'), name);
+  if (node.type === 'assignment_pattern')
+    return bindsReceiver(node.childForFieldName('left'), name);
+  if (node.type === 'pair_pattern') return bindsReceiver(node.childForFieldName('value'), name);
+  if (node.type === 'required_parameter' || node.type === 'optional_parameter') {
+    return bindsReceiver(node.childForFieldName('pattern'), name);
+  }
+  return (
+    ['formal_parameters', 'object_pattern', 'array_pattern', 'rest_pattern'].includes(node.type) &&
+    node.namedChildren.some((child) => bindsReceiver(child, name))
+  );
+}
+
+/** A locally bound `module`/`exports` is not Node's export receiver. */
+function isExportReceiverShadowed(node: SyntaxNode, name: string): boolean {
+  for (let scope = node.parent; scope !== null; scope = scope.parent) {
+    if (
+      bindsReceiver(scope.childForFieldName('parameters'), name) ||
+      bindsReceiver(scope.childForFieldName('parameter'), name)
+    )
+      return true;
+    if (scope.type !== 'program' && scope.type !== 'statement_block') continue;
+    for (const statement of scope.namedChildren) {
+      const declaration =
+        statement.type === 'export_statement'
+          ? statement.childForFieldName('declaration')
+          : statement;
+      if (declaration === null) continue;
+      if (
+        declaration.type === 'lexical_declaration' ||
+        declaration.type === 'variable_declaration'
+      ) {
+        if (declaration.namedChildren.some((child) => bindsReceiver(child, name))) return true;
+      } else if (
+        ['function_declaration', 'class_declaration'].includes(declaration.type) &&
+        declaration.childForFieldName('name')?.text === name
+      )
+        return true;
+    }
+  }
+  return false;
+}
+
 /** Static dot and bracket spellings of the same CommonJS export object. */
 function isModuleExportsReference(node: SyntaxNode): boolean {
   const object = node.childForFieldName('object');
-  if (object?.type !== 'identifier' || object.text !== 'module') return false;
+  if (
+    object?.type !== 'identifier' ||
+    object.text !== 'module' ||
+    isExportReceiverShadowed(node, 'module')
+  )
+    return false;
   if (node.type === 'member_expression') {
     return node.childForFieldName('property')?.text === 'exports';
   }
@@ -68,12 +123,22 @@ function hasCommonJsExportSurface(root: SyntaxNode): boolean {
   for (const member of root.descendantsOfType('member_expression')) {
     const object = member.childForFieldName('object');
     if (object === null) continue;
-    if (object.type === 'identifier' && object.text === 'exports') return true;
+    if (
+      object.type === 'identifier' &&
+      object.text === 'exports' &&
+      !isExportReceiverShadowed(member, 'exports')
+    )
+      return true;
     if (isModuleExportsReference(member)) return true;
   }
   for (const sub of root.descendantsOfType('subscript_expression')) {
     const object = sub.childForFieldName('object');
-    if (object?.type === 'identifier' && object.text === 'exports') return true;
+    if (
+      object?.type === 'identifier' &&
+      object.text === 'exports' &&
+      !isExportReceiverShadowed(sub, 'exports')
+    )
+      return true;
     if (isModuleExportsReference(sub)) return true;
   }
   return false;

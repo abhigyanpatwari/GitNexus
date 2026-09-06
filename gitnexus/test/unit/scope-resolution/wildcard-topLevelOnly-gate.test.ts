@@ -15,8 +15,8 @@
  * `ParsedFile` input against `finalizeScopeModel` with a FAKE resolver
  * (`namedImportsBindTopLevelOnly` toggled directly), same technique as
  * `finalize-orchestrator.test.ts`. No real language parser involved; the
- * fixture below is deliberately language-agnostic (Vue is the one migrated
- * resolver that opts in for real — see `languages/vue/scope-resolver.ts`).
+ * fixture below is deliberately language-agnostic (Vue, TypeScript, and
+ * JavaScript all opt in through their language-specific scope resolvers).
  *
  * Fixture shape, held constant across both hook settings:
  *   B.ts:  class Foo with method `beta` — NO top-level `beta` declaration.
