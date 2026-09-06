@@ -107,7 +107,14 @@ export type CaptureMatch = Readonly<Record<string, Capture>>;
  * produced when `expandsWildcardTo` materializes a wildcard against target
  * exports — a provider must never emit it at parse time.
  */
-export type ParsedImport =
+export type ParsedImport = ParsedImportSyntax & {
+  /** Lexical location retained by extraction, independently of execution timing.
+   * Absent for legacy or synthesized imports. Binding semantics remain opt-in
+   * through FinalizeHooks.importsBindAtLexicalScope. */
+  readonly declaredAtScope?: ScopeId;
+};
+
+type ParsedImportSyntax =
   /**
    * Per-name import without rename.
    *
