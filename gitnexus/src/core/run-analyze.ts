@@ -17,6 +17,7 @@ import { constants as fsConstants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
+import { invalidateNodeWorkspacePackages } from './ingestion/import-resolvers/node-workspace-packages.js';
 import {
   logNameFallbackSummary,
   summarizeNameFallback,
@@ -1081,6 +1082,9 @@ export async function runFullAnalysis(
   // Scope the degraded-parse log throttle to this run (module-level counter
   // would otherwise stay saturated on a reused process).
   resetDegradedParseCounter();
+  // The workspace-package memo is per process: this run must see the tree as it
+  // is now, not as the previous run in a long-lived watch/server process saw it.
+  invalidateNodeWorkspacePackages(repoPath);
 
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const acquireOpts = {
