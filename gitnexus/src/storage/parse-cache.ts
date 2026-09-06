@@ -735,7 +735,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // v93: Zig call captures inside a comptime-false branch carry
 // `@reference.static-gated` (feat/zig-static-gated-edges); the site gains
 // `staticGated` and the CALLS edge a BOOLEAN column.
-const SCHEMA_BUMP = 93;
+// v94: ParsedImport retains declaredAtScope and export evidence changes in
+// #3190. Old durable ParsedFiles lack the facts needed for scoped binding;
+// invalidate both stores so warm indexing actually applies the correction.
+// Re-check against main before merge (currently 93).
+const SCHEMA_BUMP = 94;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
