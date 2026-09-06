@@ -707,6 +707,10 @@ function buildDefFromDeclarationMatch(
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
   const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
   const isSynthetic = parseBooleanCapture(match['@declaration.is-synthetic']);
+  // Tri-state on purpose: only a producer that saw the file's export surface
+  // emits the marker, and both `true` and `false` are verdicts (see
+  // `SymbolDefinition.isExported`). Absent stays absent.
+  const isExported = parseBooleanCapture(match['@declaration.is-exported']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -725,6 +729,7 @@ function buildDefFromDeclarationMatch(
     ...(isExplicit === true ? { isExplicit: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
+    ...(isExported !== undefined ? { isExported } : {}),
   };
 }
 
@@ -1033,8 +1038,7 @@ function pass3CollectImports(
   if (provider.interpretImport === undefined) return;
   // Hoisted: the capability is a property of the language, identical for every
   // match in the file. A provider that declares its imports do not execute
-  // where they are written (C/C++ `#include`, Rust `use`, COBOL `COPY`) skips
-  // the position walk entirely — position cannot defer something that never
+  // where they are written skips the execution-deferral walk — position cannot defer something that never
   // runs, and marking one deferred would hide a real cycle. Absent reads as
   // `true`, so an undeclared provider is unchanged. See
   // `LanguageProvider.importsExecuteWhereWritten`.
@@ -1045,14 +1049,22 @@ function pass3CollectImports(
     const parsed = provider.interpretImport(match);
     if (parsed === null) continue;
     // The statement's own position, resolved to the innermost scope holding
-    // it. An unlocatable anchor leaves the import unmarked, which reads as
+    // it. Provenance is retained independently of execution timing. An
+    // unlocatable anchor leaves the import unmarked, which reads as
     // "runs at initialization" — the fail-safe direction, since it can only
     // make `check --cycles` over-report.
-    const inScopeId = positionCanDefer
-      ? positionIndex.atPosition(filePath, anchor.range.startLine, anchor.range.startCol)
-      : undefined;
-    const deferred = inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
-    parsedImports.push(deferred ? { ...parsed, runsOnlyWhenCalled: true } : parsed);
+    const inScopeId = positionIndex.atPosition(
+      filePath,
+      anchor.range.startLine,
+      anchor.range.startCol,
+    );
+    const deferred =
+      positionCanDefer && inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    parsedImports.push({
+      ...parsed,
+      ...(inScopeId !== undefined ? { declaredAtScope: inScopeId } : {}),
+      ...(deferred ? { runsOnlyWhenCalled: true } : {}),
+    });
   }
 }
 

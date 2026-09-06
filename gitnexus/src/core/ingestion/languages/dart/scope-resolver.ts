@@ -41,6 +41,7 @@ import { decodeMarker } from '../../utils/heritage-marker.js';
 import { typeApplicationArguments } from '../../utils/template-arguments.js';
 import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
 import { expandDartWildcardNames } from './expand-wildcards.js';
+import { dartIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 
 interface ClassDefRef {
   readonly graphId: string;
@@ -233,5 +234,6 @@ export const dartScopeResolver: ScopeResolver = {
   // No `new`: bare `Foo()` resolves to the type; with cross-file imports the
   // callee is reachable workspace-wide.
   allowGlobalFreeCallFallback: true,
+  isGlobalNameFallbackPlausible: dartIsGlobalNameFallbackPlausible,
   constructorCallTargetsClass: true,
 };
