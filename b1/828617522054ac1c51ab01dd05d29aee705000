@@ -1,0 +1,35 @@
+gitnexus/src/core/ingestion/languages/swift/name-fallback-visibility.ts
+  s_2fc6857ad45390::t_ae23684b33a8c8 13,27-28
+gitnexus/src/core/ingestion/scope-resolution/name-fallback-summary.ts
+  s_2fc6857ad45390::t_31c0c735e30c59 198-199
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_2fc6857ad45390::t_46cf913117ceba 58-60,65-73,80-84,97-103,220-229,266,268,281-286
+gitnexus/test/integration/resolvers/name-fallback-edges.test.ts
+  s_2fc6857ad45390::t_ec3ee0b9d7e16b 14-15,74,78
+gitnexus/test/unit/scope-resolution/esm-export-marker.test.ts
+  s_2fc6857ad45390::t_5ba10678e60e8a 153-178,203-206,231-239
+gitnexus/test/unit/scope-resolution/free-call-fallback-guess-taint.test.ts
+  s_2fc6857ad45390::t_328015f60b696e 234
+gitnexus/test/unit/scope-resolution/name-fallback-summary.test.ts
+  s_2fc6857ad45390::t_c9b47cd1de4f0d 227,232-237
+gitnexus/test/unit/scope-resolution/name-fallback-visibility.test.ts
+  s_2fc6857ad45390::t_ccffe76a10e559 512-522
+gitnexus/test/unit/scope-resolution/resolved-callee-names.test.ts
+  s_2fc6857ad45390::t_816564ed306518 23-46,53-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "b1828617522054ac1c51ab01dd05d29aee705000",
+  "prompts": {},
+  "sessions": {
+    "s_2fc6857ad45390": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a063c0-b1e3-7251-ad25-cfb5bfcd961e",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
