@@ -7,8 +7,11 @@
  * such branches keep `staticGated` falsy.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import fs from 'node:fs';
 import path from 'path';
 import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
+import { populateZigWorkspaceStaticGating } from '../../../src/core/ingestion/languages/zig/workspace-static-gating.js';
+import type { ParsedFile } from 'gitnexus-shared';
 
 describe('Zig static-gated edges', () => {
   let result: PipelineResult;
@@ -174,12 +177,9 @@ describe('Zig static-gated edges', () => {
     expect(isGated('gated_chain_tail')).toBe(true);
   });
 
-  // Cross-file positive cases: the gating module resolves `alias.NAME` through
-  // `lookupBoolsForPath`, but the scope-capture emitter runs per file in the
-  // parse worker with only `{ path, content }` in hand — no sibling sources —
-  // so v1 stamps file-local constants only. Re-enable once the emitter can
-  // see imported files (see PR description, "Cross-file constants").
-  it.skip('tags `if (cfg.FOO)` cross-file when FOO is false in cfg.zig (tracked: #3162)', () => {
+  // Cross-file cases are enriched after per-file extraction, once sibling
+  // source facts are available but before reference finalization.
+  it('tags `if (cfg.FOO)` cross-file when FOO is false in cfg.zig', () => {
     expect(isGated('gated_cross_file_foo')).toBe(true);
   });
 
@@ -187,7 +187,7 @@ describe('Zig static-gated edges', () => {
     expect(isGated('live_cross_file_bar')).toBe(false);
   });
 
-  it.skip('tags the ELSE branch of `if (cfg.BAR)` when BAR is true (tracked: #3162)', () => {
+  it('tags the ELSE branch of `if (cfg.BAR)` when BAR is true', () => {
     expect(isGated('gated_cross_file_else')).toBe(true);
   });
 
@@ -197,5 +197,58 @@ describe('Zig static-gated edges', () => {
 
   it('does NOT tag `cfg.NOT_A_BOOL != 0` (imported decl is not a bool literal)', () => {
     expect(isGated('live_cross_file_not_bool')).toBe(false);
+  });
+
+  it('resolves a relative cross-file import with an omitted .zig extension', () => {
+    expect(isGated('gated_extensionless_cross_file_foo')).toBe(true);
+  });
+
+  it('tags a cross-file bool accessed through a function-local import alias', () => {
+    expect(isGated('gated_local_cross_file_foo')).toBe(true);
+  });
+
+  it('does NOT treat a nested @import as the declaration direct module alias', () => {
+    expect(isGated('live_wrapped_cross_file_foo')).toBe(false);
+  });
+
+  it('fails open when an import alias is shadowed in another lexical scope', () => {
+    expect(isGated('live_shadowed_cross_file_foo')).toBe(false);
+  });
+
+  it('replaces a frozen parsed file instead of mutating it', () => {
+    const site = Object.freeze({
+      kind: 'call',
+      atRange: { startLine: 153, startCol: 8, endLine: 153, endCol: 30 },
+      staticGated: false,
+    });
+    const original = Object.freeze({
+      filePath: 'src/main.zig',
+      referenceSites: Object.freeze([site]),
+    }) as unknown as ParsedFile;
+    const parsedFiles = [
+      original,
+      Object.freeze({
+        filePath: 'src/cfg.zig',
+        referenceSites: Object.freeze([]),
+      }) as unknown as ParsedFile,
+    ];
+
+    expect(() =>
+      populateZigWorkspaceStaticGating(parsedFiles, {
+        fileContents: new Map([
+          [
+            'src/main.zig',
+            fs.readFileSync(path.join(FIXTURES, 'zig-static-gating', 'src', 'main.zig'), 'utf8'),
+          ],
+          [
+            'src/cfg.zig',
+            fs.readFileSync(path.join(FIXTURES, 'zig-static-gating', 'src', 'cfg.zig'), 'utf8'),
+          ],
+        ]),
+      }),
+    ).not.toThrow();
+    expect(parsedFiles[0]).not.toBe(original);
+    expect(Object.isFrozen(parsedFiles[0])).toBe(true);
+    expect(parsedFiles[0]?.referenceSites[0]?.staticGated).toBe(true);
   });
 });

@@ -145,6 +145,7 @@ export function selectScopeSourcePathsToRead(
 ): string[] {
   const hasPostExtractHooks =
     provider.populateWorkspaceOwners !== undefined ||
+    provider.populateWorkspaceReferences !== undefined ||
     provider.populateNamespaceSiblings !== undefined ||
     provider.populateRangeBindings !== undefined ||
     provider.emitPostResolutionEdges !== undefined;
