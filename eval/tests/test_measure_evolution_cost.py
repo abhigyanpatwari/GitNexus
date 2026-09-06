@@ -5,49 +5,59 @@ from __future__ import annotations
 import pytest
 
 from workflow_bench.measure_evolution_cost import (
-    CELL_COPY_SECONDS,
-    CELL_DURATIONS,
-    GRAPH_ANALYZE_SECONDS,
+    CANDIDATE_ARM,
+    CELL_OVERHEAD_SECONDS,
+    DURATIONS_BY_ARM,
     PROPOSER_SECONDS,
-    TEMPLATE_SANITIZE_SECONDS,
-    cell_durations,
-    expected_makespan,
+    REVIEW_ARMS,
+    expected_task_seconds,
     fed_makespan,
     fed_pool_enabled,
+    generation_seconds,
     graph_pipeline_enabled,
-    paid_cells_per_task,
-    setup_wall_seconds,
-    unique_paid_shas,
+    paid_arms,
+    task_cells,
     wave_makespan,
 )
 
-TASKS = [
-    {"id": "a", "ref": "sha-1"},
-    {"id": "b", "ref": "sha-2"},
-    {"id": "c", "ref": "sha-1"},
-]
 
-
-def test_measured_sample_is_present_and_unsorted():
-    # Sorting would hand each task a uniform block and hide the variance the
-    # whole model exists to price.
-    assert len(CELL_DURATIONS) >= 20
-    assert list(CELL_DURATIONS) != sorted(CELL_DURATIONS)
+def test_every_arm_has_its_own_unsorted_sample():
+    assert set(DURATIONS_BY_ARM) == set(REVIEW_ARMS)
+    for arm, sample in DURATIONS_BY_ARM.items():
+        assert len(sample) >= 10, arm
+        # Sorting would hand each task a uniform block and hide the variance
+        # the whole model exists to price.
+        assert list(sample) != sorted(sample), arm
     assert PROPOSER_SECONDS > 0
+    assert CELL_OVERHEAD_SECONDS > 0
 
 
-def test_weekly_reuse_pays_only_candidate_cells():
-    assert paid_cells_per_task(TASKS, runs=3, weekly=True, reuse_enabled=True) == [3, 3, 3]
-    assert paid_cells_per_task(TASKS, runs=3, weekly=False, reuse_enabled=True) == [9, 9, 9]
-    assert paid_cells_per_task(TASKS, runs=3, weekly=True, reuse_enabled=False) == [9, 9, 9]
+def test_weekly_reuse_pays_the_candidate_arm_only():
+    assert paid_arms(weekly=True, reuse_enabled=True) == (CANDIDATE_ARM,)
+    assert paid_arms(weekly=False, reuse_enabled=True) == REVIEW_ARMS
+    assert paid_arms(weekly=True, reuse_enabled=False) == REVIEW_ARMS
 
 
-def test_every_cell_carries_its_own_clone():
-    durations = cell_durations(3, True)
-    assert durations == [d + CELL_COPY_SECONDS for d in CELL_DURATIONS[:3]]
-    assert cell_durations(2, False) == [d + TEMPLATE_SANITIZE_SECONDS for d in CELL_DURATIONS[:2]]
-    # Cycling wraps, so a task can be longer than the sample.
-    assert len(cell_durations(len(CELL_DURATIONS) + 5, True)) == len(CELL_DURATIONS) + 5
+def test_cells_are_submitted_run_major_arm_minor():
+    # runner.py: [(run_idx, arm) for run_idx in range(runs) for arm in arms].
+    # At workers=3 that puts one cell of each arm in every wave.
+    cells = task_cells(2, REVIEW_ARMS, 0)
+    assert len(cells) == 6
+    expected = [
+        DURATIONS_BY_ARM[arm][run] + CELL_OVERHEAD_SECONDS
+        for run in range(2)
+        for arm in REVIEW_ARMS
+    ]
+    assert cells == expected
+
+
+def test_every_cell_carries_the_measured_overhead():
+    assert task_cells(1, (CANDIDATE_ARM,), 0) == [
+        DURATIONS_BY_ARM[CANDIDATE_ARM][0] + CELL_OVERHEAD_SECONDS
+    ]
+    # Cycling wraps, so a task can ask for more runs than the sample holds.
+    long_sample = task_cells(len(DURATIONS_BY_ARM[CANDIDATE_ARM]) + 2, (CANDIDATE_ARM,), 0)
+    assert len(long_sample) == len(DURATIONS_BY_ARM[CANDIDATE_ARM]) + 2
 
 
 def test_a_wave_costs_its_slowest_cell_and_a_fed_pool_does_not():
@@ -59,21 +69,20 @@ def test_a_wave_costs_its_slowest_cell_and_a_fed_pool_does_not():
     assert fed_makespan(slow, 1) == wave_makespan(slow, 1) == 24.0
 
 
-def test_expected_makespan_is_rotation_averaged_and_deterministic():
-    first = expected_makespan(9, 3, fed_pool=False, clone_templates_enabled=True)
-    assert first == expected_makespan(9, 3, fed_pool=False, clone_templates_enabled=True)
-    assert expected_makespan(0, 3, fed_pool=False, clone_templates_enabled=True) == 0.0
+def test_expected_task_seconds_is_alignment_averaged_and_deterministic():
+    waved = expected_task_seconds(3, REVIEW_ARMS, 3, fed_pool=False)
+    assert waved == expected_task_seconds(3, REVIEW_ARMS, 3, fed_pool=False)
+    assert expected_task_seconds(0, REVIEW_ARMS, 3, fed_pool=False) == 0.0
+    assert expected_task_seconds(3, (), 3, fed_pool=False) == 0.0
     # The barrier can only cost time, never save it.
-    assert first >= expected_makespan(9, 3, fed_pool=True, clone_templates_enabled=True)
+    assert waved >= expected_task_seconds(3, REVIEW_ARMS, 3, fed_pool=True)
 
 
-def test_setup_counts_each_sha_once_and_no_longer_charges_cells():
-    assert unique_paid_shas(TASKS, [9, 9, 9]) == 2
-    assert unique_paid_shas(TASKS, [9, 0, 0]) == 1
-    assert setup_wall_seconds(
-        unique_shas=2, paid_per_task=[9, 9, 9], clone_templates_enabled=True
-    ) == 2 * (TEMPLATE_SANITIZE_SECONDS + GRAPH_ANALYZE_SECONDS)
-    assert setup_wall_seconds(unique_shas=2, paid_per_task=[0], clone_templates_enabled=True) == 0
+def test_a_generation_pays_one_proposer_session_on_top_of_its_tasks():
+    one = generation_seconds(task_count=1, runs=3, arms=REVIEW_ARMS, workers=3, fed_pool=False)
+    two = generation_seconds(task_count=2, runs=3, arms=REVIEW_ARMS, workers=3, fed_pool=False)
+    # Each extra task adds exactly one task's makespan; the proposer is paid once.
+    assert two - one == pytest.approx(one - PROPOSER_SECONDS, abs=1.0)
 
 
 def test_feature_flags_read_the_runner_not_the_wish():
@@ -85,5 +94,5 @@ def test_feature_flags_read_the_runner_not_the_wish():
 
 @pytest.mark.parametrize("workers", [1, 3, 8])
 def test_more_workers_never_lengthen_a_task(workers):
-    serial = expected_makespan(9, 1, fed_pool=True, clone_templates_enabled=True)
-    assert expected_makespan(9, workers, fed_pool=True, clone_templates_enabled=True) <= serial
+    serial = expected_task_seconds(3, REVIEW_ARMS, 1, fed_pool=True)
+    assert expected_task_seconds(3, REVIEW_ARMS, workers, fed_pool=True) <= serial
