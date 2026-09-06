@@ -712,6 +712,79 @@ describe('setupQoder', () => {
   });
 });
 
+describe('setupDroid (Factory)', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+
+  const configPath = () => path.join(tempHome, '.factory', 'mcp.json');
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-droid-setup-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+
+    // Only create ~/.factory so other editors skip and don't pollute assertions.
+    await fs.mkdir(path.join(tempHome, '.factory'), { recursive: true });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('writes the MCP entry to ~/.factory/mcp.json under mcpServers', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(configPath(), 'utf-8'));
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('preserves existing servers in ~/.factory/mcp.json', async () => {
+    await fs.writeFile(
+      configPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(configPath(), 'utf-8'));
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('skips when ~/.factory directory does not exist', async () => {
+    await fs.rm(path.join(tempHome, '.factory'), { recursive: true, force: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.access(configPath())).rejects.toThrow();
+  });
+
+  it('leaves a corrupt ~/.factory/mcp.json untouched', async () => {
+    const corrupt = '{ this is not valid json !!!';
+    await fs.writeFile(configPath(), corrupt, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(await fs.readFile(configPath(), 'utf-8')).toBe(corrupt);
+  });
+});
+
 describe('Codex hooks (installClaudeSchemaHooks)', () => {
   let tempHome: string;
   let originalHome: string | undefined;

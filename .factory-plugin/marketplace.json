@@ -1,0 +1,19 @@
+{
+  "name": "gitnexus-marketplace",
+  "owner": {
+    "name": "GitNexus",
+    "email": "nico@gitnexus.dev"
+  },
+  "metadata": {
+    "description": "Code intelligence powered by a knowledge graph — execution flows, blast radius, and semantic search",
+    "homepage": "https://github.com/nicosxt/gitnexus"
+  },
+  "plugins": [
+    {
+      "name": "gitnexus",
+      "version": "1.6.9",
+      "source": "./gitnexus-factory-plugin",
+      "description": "Code intelligence powered by a knowledge graph. Provides execution flow tracing, blast radius analysis, and augmented search across your codebase."
+    }
+  ]
+}

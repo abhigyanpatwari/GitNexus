@@ -82,6 +82,7 @@ const PLATFORM_LOGIC = [
   'test/unit/hooks.test.ts',
   'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',
+  'test/unit/factory-plugin.test.ts',
   'test/unit/sidecar-recovery.test.ts',
   'test/unit/pool-wal-recovery.test.ts',
   'test/unit/lbug-adapter-wal-schema.test.ts',

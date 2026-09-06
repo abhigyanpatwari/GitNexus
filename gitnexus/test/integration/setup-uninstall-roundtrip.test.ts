@@ -82,7 +82,7 @@ describe('setup → uninstall round-trip', () => {
     process.env.USERPROFILE = tempHome;
 
     // Mark every editor as "installed" so setup configures all of them.
-    for (const dir of ['.cursor', '.claude', '.codex', '.codebuddy', '.qoder']) {
+    for (const dir of ['.cursor', '.claude', '.codex', '.codebuddy', '.qoder', '.factory']) {
       await fs.mkdir(path.join(tempHome, dir), { recursive: true });
     }
     await fs.mkdir(path.join(tempHome, '.gemini', 'antigravity'), { recursive: true });
