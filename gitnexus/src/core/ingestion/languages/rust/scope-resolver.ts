@@ -19,6 +19,7 @@ import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-l
 import type { HeritageTypeArgumentSink } from '../../scope-resolution/utils/generic-instantiation.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
+import { rustIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 
 /**
  * Emit Rust `S IMPLEMENTS T` edges from `impl T for S` trait implementations.
@@ -192,4 +193,5 @@ export const rustScopeResolver: ScopeResolver = {
   hoistTypeBindingsToModule: true,
   propagatesReturnTypesAcrossImports: true,
   allowGlobalFreeCallFallback: true,
+  isGlobalNameFallbackPlausible: rustIsGlobalNameFallbackPlausible,
 };

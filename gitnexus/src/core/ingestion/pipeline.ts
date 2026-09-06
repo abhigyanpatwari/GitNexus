@@ -16,6 +16,7 @@
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
+import type { KnowledgeGraph } from '../graph/types.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
@@ -410,6 +411,11 @@ export const runPipelineFromRepo = async (
     graphEmitSink?.close();
   }
 
+  // Resolved-call index for the name-fallback census: read through the SINK,
+  // whose field-wise scan includes every streamed edge, not through `graph`,
+  // which under streaming holds none of them.
+  const resolvedCalleeNamesByCaller = collectResolvedCalleeNames(graphEmitSink ?? graph, graph);
+
   // Extract final results for the PipelineResult contract
   const {
     totalFiles,
@@ -473,6 +479,7 @@ export const runPipelineFromRepo = async (
     communityResult,
     processResult,
     resolutionOutcomes,
+    resolvedCalleeNamesByCaller,
     undecidedSatisfaction,
     usedWorkerPool,
     reparsedFileCount,
@@ -518,3 +525,29 @@ export const runPipelineFromRepo = async (
 
   return result;
 };
+
+/**
+ * Caller node id → the simple names of every callee it has a CALLS edge to.
+ *
+ * `edges` may be the streaming sink or the raw graph; `nodes` is always the raw
+ * graph, which holds every node in both modes (only relationships stream). One
+ * O(E) field-wise pass, allocation-free per edge except for the per-caller set.
+ */
+export function collectResolvedCalleeNames(
+  edges: Pick<KnowledgeGraph, 'forEachRelationshipFields'>,
+  nodes: Pick<KnowledgeGraph, 'getNode'>,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const out = new Map<string, Set<string>>();
+  edges.forEachRelationshipFields((sourceId, targetId, type) => {
+    if (type !== 'CALLS') return;
+    const name = nodes.getNode(targetId)?.properties.name;
+    if (typeof name !== 'string' || name === '') return;
+    let names = out.get(sourceId);
+    if (names === undefined) {
+      names = new Set<string>();
+      out.set(sourceId, names);
+    }
+    names.add(name);
+  });
+  return out;
+}

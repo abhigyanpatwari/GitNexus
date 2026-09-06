@@ -17,6 +17,11 @@ import { constants as fsConstants } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { retryRename } from '../storage/fs-atomic.js';
 import { acquireIndexLock } from '../storage/index-lock.js';
+import {
+  logNameFallbackSummary,
+  summarizeNameFallback,
+  countCallsByLanguage,
+} from './ingestion/scope-resolution/name-fallback-summary.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import {
   logUnresolvedReceiverFiles,
@@ -3861,6 +3866,14 @@ async function runFullAnalysisInner(
 
     const resolutionOutcomes = pipelineResult.resolutionOutcomes ?? [];
     logUnresolvedReceiverFiles(resolutionOutcomes);
+    // Census of name-guessed CALLS edges (labeled `global-name-fallback`), refused
+    // impossibles and ambiguous `export *` names — the honesty readout for this
+    // run's resolution. Logged, and persisted below as `nameFallbackEdges`.
+    const nameFallbackSummary = summarizeNameFallback(
+      resolutionOutcomes,
+      countCallsByLanguage(pipelineResult.resolvedCalleeNamesByCaller, pipelineResult.graph),
+    );
+    logNameFallbackSummary(nameFallbackSummary);
 
     // Annotated so the capabilities stamp below is compile-checked against
     // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
@@ -3977,6 +3990,7 @@ async function runFullAnalysisInner(
       // Git-only: non-git repos never take the incremental path.
       schemaFingerprint: hasGitDir(repoPath) ? SCHEMA_FINGERPRINT : undefined,
       unresolvedReceiverMembers: summarizeUnresolvedReceivers(resolutionOutcomes),
+      nameFallbackEdges: nameFallbackSummary,
       scopeExtractionFailures: summarizeScopeExtractionFailures(
         pipelineResult.scopeExtractionFailures,
       ),

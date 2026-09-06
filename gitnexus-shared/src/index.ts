@@ -137,6 +137,7 @@ export type {
   FinalizeOutput,
   FinalizedScc,
   FinalizeStats,
+  AmbiguousWildcardExport,
 } from './scope-resolution/finalize-algorithm.js';
 
 // Scope-aware registries + 7-step lookup (RFC §4; Ring 2 SHARED #917)
