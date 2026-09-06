@@ -1389,15 +1389,20 @@ export const createWorkerPool = (
     // Layer 3: filter out quarantined paths so a known-bad file never reaches
     // a worker again this pool lifetime. The caller queries
     // `getQuarantinedPaths` after dispatch to route filtered items.
-    const dispatchableGroups = groups.map((group) => {
-      const items: TInput[] = [];
-      for (const item of group.items) {
-        const path = itemPath(item);
-        if (path !== undefined && quarantine.has(path)) continue;
-        items.push(item);
-      }
-      return { items, chunkHash: group.chunkHash };
-    });
+    // Quarantine is empty on every run that has not had a worker die, so the
+    // filter below would be an identity copy of every group's items. Skip it.
+    const dispatchableGroups =
+      quarantine.size === 0
+        ? groups
+        : groups.map((group) => {
+            const items: TInput[] = [];
+            for (const item of group.items) {
+              const path = itemPath(item);
+              if (path !== undefined && quarantine.has(path)) continue;
+              items.push(item);
+            }
+            return { items, chunkHash: group.chunkHash };
+          });
     const dispatchableCount = dispatchableGroups.reduce(
       (sum, group) => sum + group.items.length,
       0,
