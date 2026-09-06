@@ -43,18 +43,17 @@ def test_cells_are_submitted_run_major_arm_minor():
     # At workers=3 that puts one cell of each arm in every wave.
     cells = task_cells(2, REVIEW_ARMS, 0)
     assert len(cells) == 6
-    expected = [
-        DURATIONS_BY_ARM[arm][run] + CELL_OVERHEAD_SECONDS
-        for run in range(2)
-        for arm in REVIEW_ARMS
-    ]
+    expected = [DURATIONS_BY_ARM[arm][run] for run in range(2) for arm in REVIEW_ARMS]
     assert cells == expected
 
 
-def test_every_cell_carries_the_measured_overhead():
-    assert task_cells(1, (CANDIDATE_ARM,), 0) == [
-        DURATIONS_BY_ARM[CANDIDATE_ARM][0] + CELL_OVERHEAD_SECONDS
-    ]
+def test_overhead_is_charged_serially_not_inside_the_pool():
+    # The residual mixes per-cell work the pool divides with per-SHA setup it
+    # cannot, so it sits outside the schedule where more workers cannot
+    # dissolve it.
+    assert task_cells(1, (CANDIDATE_ARM,), 0) == [DURATIONS_BY_ARM[CANDIDATE_ARM][0]]
+    wide = generation_seconds(task_count=1, runs=3, arms=REVIEW_ARMS, workers=9, fed_pool=True)
+    assert wide >= PROPOSER_SECONDS + 9 * CELL_OVERHEAD_SECONDS
     # Cycling wraps, so a task can ask for more runs than the sample holds.
     long_sample = task_cells(len(DURATIONS_BY_ARM[CANDIDATE_ARM]) + 2, (CANDIDATE_ARM,), 0)
     assert len(long_sample) == len(DURATIONS_BY_ARM[CANDIDATE_ARM]) + 2
