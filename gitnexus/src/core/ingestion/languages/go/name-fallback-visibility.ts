@@ -82,19 +82,18 @@ export function goIsGlobalNameFallbackPlausible(ctx: {
     const cand = classifyGoFile(ctx.candidate.filePath, ctx.sourceTextOf);
     // Non-test files never see test-only declarations.
     if (cand.isTest && !caller.isTest) return false;
-    // An external test package and its tested package are different packages:
-    // a BARE name cannot cross that boundary in either direction. Undecidable
-    // (no package clause available) → allow.
+    // Different clauses require an explicit dot import, even in one directory.
+    // Fall through to the exported/import checks for external test packages.
+    // Missing source leaves package identity undecidable.
     if (
-      caller.declared !== undefined &&
-      cand.declared !== undefined &&
-      caller.declared !== cand.declared
+      caller.declared === undefined ||
+      cand.declared === undefined ||
+      caller.declared === cand.declared
     )
-      return false;
-    return true;
+      return true;
   }
 
-  // Different directory, so a different package — and a `_test.go` file's
+  // Different package — and a `_test.go` file's
   // declarations are compiled only into ITS OWN package's test binary. No other
   // package, test or not, can see them, exported or not. Decidable from the
   // path alone, so it comes before every exception below (the module-root
