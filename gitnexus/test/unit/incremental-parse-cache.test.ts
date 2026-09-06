@@ -260,12 +260,13 @@ describe('PARSE_CACHE_VERSION', () => {
   // Moved 92 -> 93 for #3161 (Zig static gating): call captures inside a
   // comptime-false branch gain the `@reference.static-gated` marker, a
   // parse-time fact a warm cache from an earlier head would replay without.
-  it('pins SCHEMA_BUMP to 93 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(93);
+  // 93 -> 94 (#3190): lexical import provenance and corrected export evidence.
+  it('pins SCHEMA_BUMP to 94 so concurrent bumps cannot silently collide (#3190)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(94);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }
