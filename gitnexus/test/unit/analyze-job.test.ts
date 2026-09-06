@@ -56,6 +56,65 @@ describe('JobManager', () => {
     expect(job2.id).toBe(job1.id);
   });
 
+  it('returns existing job for the same repoUrl AND the same branch', () => {
+    const job1 = manager.createJob({
+      repoUrl: 'https://github.com/user/repo',
+      branch: 'development',
+    });
+    manager.updateJob(job1.id, { status: 'analyzing' });
+    const job2 = manager.createJob({
+      repoUrl: 'https://github.com/user/repo',
+      branch: 'development',
+    });
+    expect(job2.id).toBe(job1.id);
+  });
+
+  it('does not return the active job to a caller asking for a different branch', () => {
+    const job1 = manager.createJob({
+      repoUrl: 'https://github.com/user/repo',
+      branch: 'development',
+    });
+    manager.updateJob(job1.id, { status: 'analyzing' });
+    // Handing job1 back would report branch "development" as the work being done
+    // for a caller that asked for "main". Falling through to the single-slot
+    // guard is the truthful answer.
+    expect(() =>
+      manager.createJob({ repoUrl: 'https://github.com/user/repo', branch: 'main' }),
+    ).toThrow(/already in progress/);
+  });
+
+  it('treats an unpinned request as distinct from a branch-pinned one', () => {
+    const job1 = manager.createJob({
+      repoUrl: 'https://github.com/user/repo',
+      branch: 'development',
+    });
+    manager.updateJob(job1.id, { status: 'analyzing' });
+    expect(() => manager.createJob({ repoUrl: 'https://github.com/user/repo' })).toThrow(
+      /already in progress/,
+    );
+  });
+
+  it('keeps callers that omit branch deduping exactly as before', () => {
+    // The parameter is optional, so every pre-existing call site (upload route,
+    // embed manager, tests) compares undefined === undefined and is unaffected.
+    const job1 = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job1.id, { status: 'analyzing' });
+    expect(manager.createJob({ repoPath: '/tmp/repo' }).id).toBe(job1.id);
+  });
+
+  it('carries the branch unchanged through the whole job lifecycle', () => {
+    // `branch` is part of dedup identity, so it must not drift mid-flight.
+    // `updateJob`'s Pick<> allowlist omits it, so no well-typed caller can
+    // change it; this pins that none of the updates the server actually
+    // performs (clone -> analyze -> terminal) disturbs it either.
+    const job = manager.createJob({ repoUrl: 'https://github.com/user/repo', branch: 'develop' });
+    manager.updateJob(job.id, { status: 'cloning' });
+    manager.updateJob(job.id, { repoPath: '/tmp/repo', status: 'analyzing' });
+    manager.updateJob(job.id, { progress: { phase: 'parsing', percent: 30, message: 'Parsing' } });
+    manager.updateJob(job.id, { status: 'complete', repoName: 'repo' });
+    expect(manager.getJob(job.id)?.branch).toBe('develop');
+  });
+
   it('updates job progress', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
     manager.updateJob(job.id, {
