@@ -1316,9 +1316,16 @@ export const createWorkerPool = (
     }
     if (dispatchableItems.length === 0) return [];
 
+    // Stable cache packs can be much smaller than either job ceiling. Split
+    // those packs across the live slots too, otherwise each serial dispatch
+    // feeds only one worker. Keep both configured ceilings as upper bounds.
+    const maxItemsPerJob = Math.min(
+      poolOptions.subBatchSize,
+      Math.max(1, Math.floor(dispatchableItems.length / activeSlots.size)),
+    );
     const jobs = createJobs(
       dispatchableItems,
-      poolOptions.subBatchSize,
+      maxItemsPerJob,
       poolOptions.subBatchMaxBytes,
       poolOptions.subBatchIdleTimeoutMs,
       chunkHash,
@@ -1456,7 +1463,19 @@ export const createWorkerPool = (
           retireWorkerAfterTimeout(existing, workerIndex, reason);
           return;
         }
-        await existing.terminate().catch(() => undefined);
+        // Recovery must settle before dispatch returns, but a failed thread
+        // may never acknowledge termination. Bound that wait as in shutdown.
+        const termination = existing.terminate().then(
+          () => undefined,
+          () => undefined,
+        );
+        if (!(await settledWithin(termination, poolOptions.shutdownDrainMs))) {
+          existing.unref?.();
+          logger.warn(
+            { workerIndex, drainMs: poolOptions.shutdownDrainMs, reason },
+            `Worker ${workerIndex} did not finish terminating within the shutdown drain; continuing recovery.`,
+          );
+        }
       };
 
       const replaceWorker = async (
@@ -1898,11 +1917,13 @@ export const createWorkerPool = (
         // (`error`, `exit`, msg-channel error). Bridges the per-job teardown
         // into the pool-level handleWorkerDeath recovery + breaker logic.
         const recoverAndResume = async (reason: string, excludePaths: readonly string[]) => {
-          activeWorkers--;
           busySlots.delete(workerIndex);
           inFlightProgress[workerIndex] = 0;
           requeueRemainder(job, excludePaths);
+          // Keep recovery in flight so another slot finishing cannot settle
+          // this dispatch before the replacement is ready for the next one.
           await handleWorkerDeath(workerIndex, reason, excludePaths);
+          activeWorkers--;
           if (stopped) return;
           // Slot may have been dropped or respawned. Kick the current slot
           // if still active, then wake any other idle live slots so the
@@ -1949,7 +1970,6 @@ export const createWorkerPool = (
                 // is respawned (or dropped) and can dispatch the next
                 // job deterministically.
                 void (async () => {
-                  activeWorkers--;
                   busySlots.delete(workerIndex);
                   requeueRemainder(job, decision.excludePaths);
                   await handleWorkerDeath(
@@ -1958,6 +1978,7 @@ export const createWorkerPool = (
                     decision.excludePaths,
                     'retire',
                   );
+                  activeWorkers--;
                   if (stopped) return;
                   if (activeSlots.has(workerIndex)) runWorker(workerIndex);
                   wakeIdleSlots();

@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ import pytest
 from workflow_bench import evolve, runner, runner_sessions, runtime_mounts
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.process_control import ManagedProcessResult
+from workflow_bench.proposer_sandbox import SandboxError
 from workflow_bench.runner import snapshot_plan_docs
 
 
@@ -71,6 +73,7 @@ def bench_args(**overrides):
         "claude_bin": "claude",
         "timeout": 5,
         "model": None,
+        "effort": "xhigh",
         "base_url": None,
         "auth_token": None,
         "permission_mode": None,
@@ -118,6 +121,7 @@ def skill_events(skill_input: dict, *, tool_id: str = "skill-1", is_error: bool 
 
 def fake_sandbox(root: Path) -> SimpleNamespace:
     return SimpleNamespace(
+        backend="test-double",
         claude_bin="claude",
         clone=root,
         private_root=root,
@@ -165,6 +169,25 @@ def test_run_claude_forwards_the_named_model_to_every_session(monkeypatch, tmp_p
         model="claude-sonnet-4-20250514",
     )
     assert captured[captured.index("--model") + 1] == "claude-sonnet-4-20250514"
+
+
+def test_run_claude_forwards_xhigh_effort_to_every_session(monkeypatch, tmp_path):
+    captured: list[str] = []
+
+    def fake_run(command, **kwargs):
+        captured.extend(command)
+        return fake_cli_result(VALID_REPORT)
+
+    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
+    runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        model="gpt-5.6-sol",
+        effort="xhigh",
+    )
+    assert captured[captured.index("--effort") + 1] == "xhigh"
 
 
 def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp_path):
@@ -295,10 +318,18 @@ def test_run_arm_keeps_session_error_kind_over_verify(monkeypatch, tmp_path):
 
 def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, tmp_path):
     read_only = runner.allowed_agent_tools(implementation=False)
+    review_tools = runner.allowed_agent_tools(implementation=False, allow_edit=False)
     implementation = runner.allowed_agent_tools(implementation=True)
     no_mcp = runner.allowed_agent_tools(implementation=True, include_mcp=False)
 
     assert read_only == [*runner.BUILTIN_AGENT_TOOLS, *runner.GITNEXUS_READ_ONLY_TOOLS]
+    assert review_tools == [
+        tool
+        for tool in [*runner.BUILTIN_AGENT_TOOLS, *runner.GITNEXUS_READ_ONLY_TOOLS]
+        if tool != "Edit"
+    ]
+    assert "Write" in review_tools
+    assert "Edit" not in review_tools
     assert implementation == [
         *runner.BUILTIN_AGENT_TOOLS,
         *runner.GITNEXUS_READ_ONLY_TOOLS,
@@ -326,7 +357,7 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
         )
 
     assert captured[0]["allowed_tools"] == read_only  # planning
-    assert captured[1]["allowed_tools"] == read_only  # review
+    assert captured[1]["allowed_tools"] == review_tools  # review
     assert captured[2]["allowed_tools"] == implementation
     assert captured[3]["allowed_tools"] == list(runner.BUILTIN_AGENT_TOOLS)
     assert captured[3]["mcp_config_json"] == '{"mcpServers":{}}'
@@ -355,7 +386,7 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
         directory.mkdir(parents=True)
     (runtime / "dist" / "cli" / "index.js").write_text("")
     (runtime / "hooks" / "claude" / "resolve-analyze-cmd.cjs").write_text("")
-    (runtime / "package.json").write_text(json.dumps({"version": runner.PINNED_GITNEXUS_VERSION}))
+    (runtime / "package.json").write_text(json.dumps({"version": "9.9.9-test"}))
     (runtime / "node_modules" / "gitnexus-shared").symlink_to(shared, target_is_directory=True)
     (shared / "package.json").write_text(json.dumps({"name": "gitnexus-shared"}))
     monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", tmp_path)
@@ -379,9 +410,6 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
         (shared / "package.json", f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"),
         (runtime / "hooks" / "claude", f"{runner.SANDBOX_GITNEXUS}/hooks/claude"),
     ]
-    package = json.loads((runtime / "package.json").read_text())
-    assert package["version"] == runner.PINNED_GITNEXUS_VERSION
-
     mounted_sources = {mount.source for mount in mounts}
     mounted_targets = {mount.target for mount in mounts}
     assert runtime not in mounted_sources
@@ -397,6 +425,118 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tm
     assert runtime / "hooks" not in mounted_sources
     assert runtime / "hooks" / "antigravity" not in mounted_sources
     assert f"{runner.SANDBOX_GITNEXUS}/hooks" not in mounted_targets
+
+
+def _install_pinned_runtime(root: Path) -> None:
+    runtime = root / "gitnexus"
+    shared = root / "gitnexus-shared"
+    for directory in (
+        runtime / "dist" / "cli",
+        runtime / "node_modules",
+        runtime / "vendor",
+        runtime / "hooks" / "claude",
+        shared / "dist",
+    ):
+        directory.mkdir(parents=True)
+    (runtime / "dist" / "cli" / "index.js").write_text("")
+    (runtime / "hooks" / "claude" / "resolve-analyze-cmd.cjs").write_text("")
+    (runtime / "package.json").write_text(json.dumps({"version": "9.9.9-test"}))
+    (runtime / "node_modules" / "gitnexus-shared").symlink_to(shared, target_is_directory=True)
+    (shared / "package.json").write_text(json.dumps({"name": "gitnexus-shared"}))
+
+
+def test_runtime_mounts_reuse_primary_checkout_node_modules_from_a_worktree(
+    monkeypatch, tmp_path
+) -> None:
+    primary = tmp_path / "primary"
+    worktree = tmp_path / "worktree"
+    _install_pinned_runtime(primary)
+    (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    _install_pinned_runtime(worktree)
+    shutil.rmtree(worktree / "gitnexus" / "node_modules")
+    (worktree / "gitnexus" / "node_modules").symlink_to(
+        primary / "gitnexus" / "node_modules",
+        target_is_directory=True,
+    )
+    (worktree / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n")
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", worktree)
+
+    mounts = runner.trusted_gitnexus_runtime_mounts()
+    by_target = {mount.target: mount.source for mount in mounts}
+
+    assert by_target[f"{runner.SANDBOX_GITNEXUS}/node_modules"] == (
+        primary / "gitnexus" / "node_modules"
+    )
+    assert by_target[f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"] == (
+        primary / "gitnexus-shared" / "package.json"
+    )
+    assert by_target[f"{runner.SANDBOX_GITNEXUS}/dist"] == worktree / "gitnexus" / "dist"
+
+
+def test_runtime_mounts_reuse_primary_shared_when_only_the_inner_link_points_there(
+    monkeypatch, tmp_path
+) -> None:
+    primary = tmp_path / "primary"
+    worktree = tmp_path / "worktree"
+    _install_pinned_runtime(primary)
+    (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    _install_pinned_runtime(worktree)
+    linked = worktree / "gitnexus" / "node_modules" / "gitnexus-shared"
+    linked.unlink()
+    linked.symlink_to(primary / "gitnexus-shared", target_is_directory=True)
+    (worktree / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n")
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", worktree)
+
+    mounts = runner.trusted_gitnexus_runtime_mounts()
+    by_target = {mount.target: mount.source for mount in mounts}
+
+    assert by_target[f"{runner.SANDBOX_GITNEXUS}/node_modules"] == (
+        worktree / "gitnexus" / "node_modules"
+    )
+    assert by_target[f"{runner.SANDBOX_GITNEXUS_SHARED}/package.json"] == (
+        primary / "gitnexus-shared" / "package.json"
+    )
+
+
+def test_runtime_mounts_reject_a_node_modules_symlink_outside_the_primary_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    primary = tmp_path / "primary"
+    worktree = tmp_path / "worktree"
+    outsider = tmp_path / "outsider"
+    _install_pinned_runtime(primary)
+    _install_pinned_runtime(outsider)
+    (primary / ".git" / "worktrees" / "wt").mkdir(parents=True)
+    _install_pinned_runtime(worktree)
+    shutil.rmtree(worktree / "gitnexus" / "node_modules")
+    (worktree / "gitnexus" / "node_modules").symlink_to(
+        outsider / "gitnexus" / "node_modules",
+        target_is_directory=True,
+    )
+    (worktree / ".git").write_text(f"gitdir: {primary / '.git' / 'worktrees' / 'wt'}\n")
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", worktree)
+
+    with pytest.raises(SandboxError, match="primary checkout"):
+        runner.trusted_gitnexus_runtime_mounts()
+
+
+def test_runtime_mounts_reject_a_node_modules_symlink_in_a_regular_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    checkout = tmp_path / "checkout"
+    other = tmp_path / "other"
+    _install_pinned_runtime(checkout)
+    _install_pinned_runtime(other)
+    (checkout / ".git").mkdir()
+    shutil.rmtree(checkout / "gitnexus" / "node_modules")
+    (checkout / "gitnexus" / "node_modules").symlink_to(
+        other / "gitnexus" / "node_modules",
+        target_is_directory=True,
+    )
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", checkout)
+
+    with pytest.raises(SandboxError, match="must be a real directory"):
+        runner.trusted_gitnexus_runtime_mounts()
 
 
 @pytest.mark.skipif(
@@ -458,7 +598,11 @@ def test_real_bubblewrap_runtime_mount_imports_cli_without_exposing_checkout(tmp
     assert visibility.ok, visibility.stderr_tail
     assert imported.ok, imported.stderr_tail
     assert analyze_imported.ok, analyze_imported.stderr_tail
-    assert imported.stdout_tail.strip() == runner.PINNED_GITNEXUS_VERSION
+    # The runtime the sandbox sees must be the one this checkout built —
+    # compared against the checkout itself rather than a constant, so a release
+    # bump cannot fail a benchmark that is running exactly what it should.
+    built = json.loads((runtime_mounts.HARNESS_ROOT / "gitnexus" / "package.json").read_text())
+    assert imported.stdout_tail.strip() == built["version"]
 
 
 def test_isolated_mcp_registry_contains_only_the_sandbox_clone(tmp_path):
@@ -638,6 +782,23 @@ def test_skill_invocation_parses_supported_exact_identifier_fields(skill_input):
             "gitnexus-work",
         )
         is True
+    )
+
+
+def test_skill_invocation_accepts_plugin_qualified_identifier():
+    assert (
+        runner_sessions.skill_was_invoked_events(
+            skill_events({"skill": "compound-engineering:ce-code-review"}),
+            "ce-code-review",
+        )
+        is True
+    )
+    assert (
+        runner_sessions.skill_was_invoked_events(
+            skill_events({"skill": "compound-engineering:ce-plan"}),
+            "ce-code-review",
+        )
+        is False
     )
 
 
@@ -967,6 +1128,35 @@ def test_final_result_event_must_be_last(monkeypatch, tmp_path):
     assert "not the last event" in rec["error_detail"]["event_stream_error"]
 
 
+def test_background_task_teardown_after_the_result_stays_valid_evidence(monkeypatch, tmp_path):
+    # Claude Code drains background-task bookkeeping after the final result
+    # event. Those `system` events carry no tool or usage payload, so they must
+    # not invalidate an otherwise complete session (run 29907431284 lost three
+    # runs this way, and the gate demands zero excluded runs).
+    teardown = [
+        {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
+        {"type": "system", "subtype": "task_updated", "task_id": "bdw43oy7j", "patch": {"status": "killed"}},
+        {"type": "system", "subtype": "task_notification", "task_id": "bdw43oy7j", "status": "stopped"},
+    ]
+    stream = event_stream(*skill_events({"skill": "gitnexus-work"})) + "".join(
+        json.dumps(event) + "\n" for event in teardown
+    )
+    monkeypatch.setattr(runner_sessions, "run_managed", lambda *a, **k: fake_cli_result(stream))
+    rec = runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        expected_skill="gitnexus-work",
+    )
+
+    assert rec["ok"] is True
+    assert rec["error_kind"] is None
+    assert rec["skill_invoked"] is True
+    assert rec["transcript_missing"] is False
+    assert "evidence_diagnostics" not in rec
+
+
 def test_snapshot_plan_docs_detects_one_modified_plan_and_rejects_ambiguous_output(tmp_path):
     plans = tmp_path / "docs" / "plans"
     plans.mkdir(parents=True)
@@ -1075,7 +1265,9 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     expected_skill_digest = "expected-skill-fingerprint"
 
     def adversarial_review(prompt, *args, **kwargs):
-        (tmp_path / "review-output.md").write_text("review findings")
+        (tmp_path / "review-output.json").write_text(
+            '{"schema_version":1,"verdict":"approve","findings":[]}'
+        )
         if attack == "workspace":
             source.write_text("review silently changed source")
         return session_record()
