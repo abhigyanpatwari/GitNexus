@@ -19,6 +19,7 @@ import { dirname, resolve } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
+import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -130,6 +131,18 @@ const DEFAULT_COMMUNITY_ENGINE: CommunityEngine = 'graphology';
 const LEIDEN_TIMEOUT_MS = 60_000;
 const ICEBUG_TIMEOUT_MS = 60_000;
 const MIN_CONFIDENCE_LARGE = 0.5;
+
+/**
+ * Whether a large graph's projection may include this edge.
+ *
+ * The confidence floor alone lets every global-name-fallback edge through — it
+ * is emitted at exactly `MIN_CONFIDENCE_LARGE`, so `confidence <` never
+ * excludes it. Clustering on unique-name guesses fuses unrelated areas into one
+ * community, which is precisely the noise the large-graph floor exists to
+ * remove, so the reason is checked too — see `graph/edge-reasons.ts`.
+ */
+const isLargeGraphEligible = (confidence: number, reason: string): boolean =>
+  confidence >= MIN_CONFIDENCE_LARGE && !isHeuristicEdgeReason(reason);
 
 export const resolveCommunityDetectionEngine = (
   raw = process.env[COMMUNITY_ENGINE_ENV],
@@ -300,11 +313,16 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
   const connectedNodes = new Set<string>();
   const nodeDegree = new Map<string, number>();
 
-  // Field-wise scan (#2680): this walks every edge and reads only these four,
+  // Field-wise scan (#2680): this walks every edge and reads only these five,
   // so taking objects would allocate one per edge for nothing.
-  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
     if (!isClusteringRelationship(type) || sourceId === targetId) return;
-    if (isLarge && confidence < MIN_CONFIDENCE_LARGE) return;
+    // A name-guessed edge must not join two nodes into a community at ANY graph
+    // size — the rationale in `graph/edge-reasons.ts` is about what the edge
+    // claims, not about how many symbols surround it. Process tracing applies
+    // the same reason gate unconditionally (`process-processor.ts`).
+    if (isHeuristicEdgeReason(reason)) return;
+    if (isLarge && !isLargeGraphEligible(confidence, reason)) return;
 
     connectedNodes.add(sourceId);
     connectedNodes.add(targetId);
@@ -340,9 +358,10 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
   const seenEdges = new Set<string>();
   const edges: Array<readonly [number, number]> = [];
 
-  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence) => {
+  knowledgeGraph.forEachRelationshipFields((sourceId, targetId, type, confidence, reason) => {
     if (!isClusteringRelationship(type) || sourceId === targetId) return;
-    if (isLarge && confidence < MIN_CONFIDENCE_LARGE) return;
+    if (isHeuristicEdgeReason(reason)) return;
+    if (isLarge && !isLargeGraphEligible(confidence, reason)) return;
 
     const sourceIndex = nodeIndexById.get(sourceId);
     const targetIndex = nodeIndexById.get(targetId);
