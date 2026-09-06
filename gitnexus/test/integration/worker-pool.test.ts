@@ -14,6 +14,7 @@ import {
 } from '../../src/core/ingestion/workers/worker-pool.js';
 import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -245,10 +246,8 @@ describe('worker pool integration', () => {
 
     const results = await pool.dispatch<any, any>(files);
 
-    // All 7 files fit one default sub-batch (size 200 / budget 8MB),
-    // so the dispatch returns exactly one chunk result regardless of
-    // pool size.
-    expect(results).toHaveLength(1);
+    // Small inputs must still split across the available workers.
+    expect(results.length).toBeGreaterThan(1);
 
     // Total files parsed should match input
     const totalParsed = results.reduce((sum: number, r: any) => sum + r.fileCount, 0);
@@ -793,6 +792,54 @@ describe('worker pool integration', () => {
     }
   });
 
+  it.each([2, 4, 7, 9])(
+    'uses available workers for a small %i-file cache pack',
+    async (fileCount) => {
+      const { tempDir, workerPath } = writeTempWorker(
+        'gitnexus-worker-small-pack-',
+        `
+      const { parentPort, threadId } = require('node:worker_threads');
+      let paths = [];
+      parentPort.on('message', (msg) => {
+        if (msg && msg.type === 'sub-batch') {
+          paths = msg.files.map((file) => file.path);
+          parentPort.postMessage({ type: 'progress', filesProcessed: paths.length });
+          parentPort.postMessage({ type: 'sub-batch-done' });
+        } else if (msg && msg.type === 'flush') {
+          parentPort.postMessage({ type: 'result', data: { paths, threadId } });
+        }
+      });
+    `,
+      );
+      pool = createWorkerPool(pathToFileURL(workerPath), 4, {
+        subBatchMaxBytes: 256 * 1024,
+      });
+
+      try {
+        // Stable cache packs are often smaller than the byte budget. They must
+        // still use the pool, including when a later dispatch has fewer files.
+        for (const count of [fileCount, 1]) {
+          const files = Array.from({ length: count }, (_, i) => ({
+            path: `file-${i}.ts`,
+            content: 'export const value = 1;',
+          }));
+          const progress: number[] = [];
+          const results = await pool.dispatch<
+            (typeof files)[number],
+            { paths: string[]; threadId: number }
+          >(files, (completed) => progress.push(completed), `pack-${count}`);
+          expect(new Set(results.map((result) => result.threadId)).size).toBe(Math.min(4, count));
+          expect(results.flatMap((result) => result.paths)).toEqual(files.map((file) => file.path));
+          expect(progress).toEqual([...progress].sort((a, b) => a - b));
+          expect(progress.at(-1)).toBe(count);
+        }
+      } finally {
+        await pool.terminate();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('bounds worker jobs by byte budget as well as file count', async () => {
     const { tempDir, workerPath } = writeTempWorker(
       'gitnexus-worker-byte-budget-',
@@ -830,6 +877,69 @@ describe('worker pool integration', () => {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(!hasDistWorker)(
+    'reuses compiled queries across jobs while keeping TS and TSX grammars separate',
+    async () => {
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worker-query-cache-'));
+      const workerPath = path.join(tempDir, 'worker.cjs');
+      const parserPath = createRequire(import.meta.url).resolve('tree-sitter');
+      fs.writeFileSync(
+        workerPath,
+        `
+        const { parentPort } = require('node:worker_threads');
+        const Parser = require(${JSON.stringify(parserPath)});
+        let queryCompilations = 0;
+        Parser.Query = new Proxy(Parser.Query, {
+          construct(target, args, newTarget) {
+            queryCompilations++;
+            return Reflect.construct(target, args, newTarget);
+          },
+        });
+        const send = parentPort.postMessage.bind(parentPort);
+        parentPort.postMessage = (message, ...args) => {
+          if (message.type === 'result') message.data.queryCompilations = queryCompilations;
+          return send(message, ...args);
+        };
+        import(${JSON.stringify(pathToFileURL(DIST_WORKER).href)});
+      `,
+      );
+      pool = createWorkerPool(pathToFileURL(workerPath), 1, { workerReadyTimeoutMs: 30_000 });
+      type QueryResult = {
+        queryCompilations: number;
+        fileCount: number;
+        nodes: Array<{ properties: { name: string } }>;
+      };
+      try {
+        const counts: number[] = [];
+        for (const [extension, name] of [
+          ['ts', 'first'],
+          ['ts', 'second'],
+          ['tsx', 'view'],
+          ['tsx', 'otherView'],
+          ['ts', 'last'],
+        ]) {
+          const file = {
+            path: `${name}.${extension}`,
+            content: `export function ${name}() { return ${extension === 'tsx' ? '<div />' : '1'}; }`,
+          };
+          const [result] = await pool.dispatch<typeof file, QueryResult>([file]);
+          expect(result.fileCount).toBe(1);
+          expect(result.nodes.map((node) => node.properties.name)).toContain(name);
+          counts.push(result.queryCompilations);
+        }
+        expect(counts[0]).toBeGreaterThan(0);
+        expect(counts[1]).toBe(counts[0]);
+        expect(counts[2]).toBeGreaterThan(counts[1]);
+        expect(counts[3]).toBe(counts[2]);
+        expect(counts[4]).toBe(counts[2]);
+      } finally {
+        await pool.terminate();
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
 
   it.skipIf(!hasDistWorker)('createWorkerPool with size 0 creates pool with zero workers', () => {
     const workerUrl = pathToFileURL(DIST_WORKER) as URL;
