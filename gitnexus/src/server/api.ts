@@ -1601,7 +1601,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           return;
         }
 
-        const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
+        const job = jobManager.createJob({
+          repoUrl,
+          repoPath: repoLocalPath,
+          branch: analyzeBranch,
+        });
 
         // If job was already running (dedup), just return its id. The token is
         // not part of the dedup identity and is never stored on the job, so a

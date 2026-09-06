@@ -68,6 +68,13 @@ export interface AnalyzeJob {
   repoUrl?: string;
   repoPath?: string;
   repoName?: string;
+  /**
+   * Index-branch selector this job was started with, part of the job's dedup
+   * identity. A repo is not "the same repo" for reuse purposes when a different
+   * branch was asked for — reusing across branches would hand the caller a 202
+   * for a job indexing something else.
+   */
+  branch?: string;
   progress: AnalyzeJobProgress;
   error?: string;
   /** Set only when a terminal `failed` job still persisted usable work. */
@@ -94,15 +101,25 @@ export class JobManager {
     this.cleanupTimer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
   }
 
-  /** Create a new job, or return existing active job for the same repo. */
-  createJob(params: { repoUrl?: string; repoPath?: string }): AnalyzeJob {
-    // Dedup: return existing active job for the same repo (by URL or path)
+  /**
+   * Create a new job, or return the existing active job for the same repo AND
+   * the same branch.
+   *
+   * Branch is part of the identity deliberately. Deduping on repo alone would
+   * return the in-flight job for branch A to a caller that asked for branch B,
+   * and that caller would read the resulting 202/`complete` as "B is indexed"
+   * — the same silent wrong-branch outcome that made `branch` worth honoring in
+   * the first place. Falling through instead lets the single-slot guard below
+   * reject the request outright, which is a truthful answer.
+   */
+  createJob(params: { repoUrl?: string; repoPath?: string; branch?: string }): AnalyzeJob {
+    // Dedup: return existing active job for the same repo (by URL or path) and branch
     for (const job of this.jobs.values()) {
       if (!this.isTerminal(job.status)) {
         const isSameRepo =
           (params.repoUrl && job.repoUrl === params.repoUrl) ||
           (params.repoPath && job.repoPath === params.repoPath);
-        if (isSameRepo) {
+        if (isSameRepo && job.branch === params.branch) {
           return job;
         }
       }
@@ -120,6 +137,7 @@ export class JobManager {
       status: 'queued',
       repoUrl: params.repoUrl,
       repoPath: params.repoPath,
+      branch: params.branch,
       progress: { phase: 'queued', percent: 0, message: 'Waiting to start...' },
       startedAt: Date.now(),
       retryCount: 0,

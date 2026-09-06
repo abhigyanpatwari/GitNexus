@@ -299,6 +299,33 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => validateBranchName('foo..bar', 'src')).toThrow(/must not contain ".."/);
   });
 
+  it('validateBranchName rejects the ref shapes git check-ref-format rejects', () => {
+    // These previously passed validation and failed later in the git subprocess,
+    // which over HTTP meant a 202 and a background failure instead of a 400.
+    expect(() => validateBranchName('feature.lock', 'src')).toThrow(/must not end with "\.lock"/);
+    expect(() => validateBranchName('refs/heads.lock/x', 'src')).toThrow(
+      /must not end with "\.lock"/,
+    );
+    expect(() => validateBranchName('/feature', 'src')).toThrow(/must not start or end with "\/"/);
+    expect(() => validateBranchName('feature/', 'src')).toThrow(/must not start or end with "\/"/);
+    expect(() => validateBranchName('feature//next', 'src')).toThrow(/consecutive slashes/);
+    expect(() => validateBranchName('@', 'src')).toThrow(/single character "@"/);
+    expect(() => validateBranchName('feature@{1}', 'src')).toThrow(/must not contain "@\{"/);
+    expect(() => validateBranchName('.hidden', 'src')).toThrow(/starting with "\."/);
+    expect(() => validateBranchName('feature/.hidden', 'src')).toThrow(/starting with "\."/);
+    expect(() => validateBranchName('feature.', 'src')).toThrow(/end with "\."/);
+  });
+
+  it('validateBranchName still accepts the real branch shapes those rules must not catch', () => {
+    // A dot, a slash and an @ are all legal in the middle of a ref — the new
+    // rules must reject only what git itself would.
+    expect(validateBranchName('release/1.2.3', 'src')).toBe('release/1.2.3');
+    expect(validateBranchName('feature/lockfile-bump', 'src')).toBe('feature/lockfile-bump');
+    expect(validateBranchName('user@host', 'src')).toBe('user@host');
+    expect(validateBranchName('v1.0', 'src')).toBe('v1.0');
+    expect(validateBranchName('a/b/c', 'src')).toBe('a/b/c');
+  });
+
   it('validateBranchName rejects a newline / control character', () => {
     expect(() => validateBranchName('main\nrm -rf', 'src')).toThrow(/control or hidden|whitespace/);
   });

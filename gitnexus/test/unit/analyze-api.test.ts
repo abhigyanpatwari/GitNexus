@@ -65,6 +65,51 @@ describe('analyze API logic', () => {
     expect(job2.id).toBe(job1.id);
   });
 
+  it('reuses the active job only when the requested branch matches', () => {
+    const job1 = manager.createJob({
+      repoUrl: 'https://github.com/user/branchy',
+      branch: 'development',
+    });
+    manager.updateJob(job1.id, { status: 'analyzing' });
+
+    // Same repo, same branch → the caller is genuinely asking for this job.
+    const same = manager.createJob({
+      repoUrl: 'https://github.com/user/branchy',
+      branch: 'development',
+    });
+    expect(same.id).toBe(job1.id);
+  });
+
+  it('refuses to answer a different-branch request with the in-flight job', () => {
+    const job1 = manager.createJob({
+      repoUrl: 'https://github.com/user/branchy',
+      branch: 'development',
+    });
+    manager.updateJob(job1.id, { status: 'analyzing' });
+
+    // Same repo, DIFFERENT branch. Handing back job1 would tell the caller their
+    // branch is being indexed when it is not — the silent wrong-branch outcome
+    // that honoring `branch` exists to remove. Falling through to the
+    // single-slot guard is the truthful answer.
+    expect(() =>
+      manager.createJob({ repoUrl: 'https://github.com/user/branchy', branch: 'main' }),
+    ).toThrow(/already in progress/);
+  });
+
+  it('does not reuse a branch-pinned job for an unpinned request', () => {
+    const pinned = manager.createJob({
+      repoUrl: 'https://github.com/user/branchy',
+      branch: 'development',
+    });
+    manager.updateJob(pinned.id, { status: 'analyzing' });
+
+    // `undefined` means "whatever the default branch is", which is not the same
+    // request as an explicit `development`.
+    expect(() => manager.createJob({ repoUrl: 'https://github.com/user/branchy' })).toThrow(
+      /already in progress/,
+    );
+  });
+
   it('SSE progress listener receives all events including terminal', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/sse-test' });
     const events: Array<{ phase: string; percent: number }> = [];

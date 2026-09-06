@@ -50,11 +50,17 @@ export interface LaunchOptions {
   asyncApiSpecPath?: string;
   registryName?: string;
   /**
-   * Index-branch selector, forwarded to `AnalyzeOptions.branch` so a run pins
-   * the per-branch slot (`branches/<slug>/`) instead of the flat one. The
-   * caller is responsible for having the branch checked out — `resolveWriteTarget`
-   * in core refuses a label that disagrees with the working tree, which is what
-   * keeps one branch's content out of another's slot (#2106).
+   * Index-branch selector, forwarded to `AnalyzeOptions.branch`.
+   *
+   * Setting it does not by itself mean a `branches/<slug>/` sub-directory:
+   * `resolveBranchPlacement` (storage/branch-index.ts) keeps the run on the flat
+   * slot when that slot has no recorded owner, or when its owner already IS this
+   * label. Only a label that differs from the flat slot's owner gets its own
+   * sub-directory.
+   *
+   * The caller is responsible for having the branch checked out —
+   * `resolveWriteTarget` in core refuses a label that disagrees with the working
+   * tree, which is what keeps one branch's content out of another's slot (#2106).
    */
   branch?: string;
 }
