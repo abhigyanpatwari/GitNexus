@@ -564,6 +564,13 @@ export function emitTsScopeCaptures(
           fnNode,
           deriveDefaultExportHocName(filePath),
         );
+        // This declaration's name is synthetic, so the later query-name
+        // marker cannot see it. The HOC predicate already proves the export.
+        grouped['@declaration.is-exported'] = syntheticCapture(
+          '@declaration.is-exported',
+          fnNode,
+          'true',
+        );
       }
     }
 
