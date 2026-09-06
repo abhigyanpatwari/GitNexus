@@ -125,6 +125,12 @@ export interface WorkerPool {
    *
    * Returns one result array per input group, in input order. A group whose
    * items were all quarantined yields an empty array.
+   *
+   * Required, not optional. `getQuarantinedPaths?` and `getStats?` below are
+   * marked optional as a compatibility accommodation for `WorkerPool` shapes
+   * that predate them — not as a convention for new members. Making this one
+   * optional would force a `?.` plus a fallback branch at its only production
+   * call site, and that branch could never run.
    */
   dispatchGroups<TInput, TResult>(
     groups: readonly DispatchGroup<TInput>[],
