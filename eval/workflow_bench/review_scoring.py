@@ -12,6 +12,9 @@ from typing import Any, Mapping, Sequence
 from .oracle_assets import TaskOracleSnapshot
 
 REVIEW_OUTPUT = "review-output.json"
+# Task verify/oracle commands read the artifact location from here rather
+# than hardcoding a path, so one command works under bwrap and host-unsafe.
+REVIEW_OUTPUT_ENV_VAR = "GITNEXUS_BENCH_REVIEW_OUTPUT"
 REVIEW_SCHEMA_VERSION = 1
 MAX_REVIEW_BYTES = 256 * 1024
 MAX_FINDINGS = 100

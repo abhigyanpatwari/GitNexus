@@ -177,6 +177,15 @@ def test_unsafe_host_session_translates_virtual_paths_and_disables_containment(t
         assert sandbox.require_pid_namespace is False
         assert sandbox.host_path("/workspace/review-output.json") == str(clone / "review-output.json")
         assert sandbox.host_path("/evidence/selected-rows.json") == str(evidence / "selected-rows.json")
+        # The review artifact left the workspace, so the host-unsafe backend has
+        # to translate its new home too. Untranslated, the review prompt names a
+        # path that exists on neither backend and the cell writes nothing.
+        assert sandbox.host_path(
+            f"{proposer_sandbox.SANDBOX_REVIEW_OUTPUT}/review-output.json"
+        ) == str(proposer_sandbox.review_output_path(sandbox, "review-output.json"))
+        assert sandbox.host_text(
+            f"write {proposer_sandbox.SANDBOX_REVIEW_OUTPUT}/review-output.json"
+        ) == f"write {proposer_sandbox.review_output_path(sandbox, 'review-output.json')}"
         assert sandbox.host_text("read /evidence and write /workspace/out") == (
             f"read {evidence} and write {clone}/out"
         )
@@ -879,9 +888,8 @@ def test_read_only_review_workspace_exposes_only_one_writable_artifact(tmp_path:
     clone.mkdir()
     source = clone / "source.ts"
     source.write_text("trusted\n")
-    output = clone / "review-output.json"
-    output.write_text("")
     script = """
+import os
 from pathlib import Path
 try:
     Path('/workspace/source.ts').write_text('tampered')
@@ -889,15 +897,24 @@ except OSError:
     pass
 else:
     raise SystemExit('review source remained writable')
-Path('/workspace/review-output.json').write_text('{"schema_version":1}')
+# Write the way the agent's Write tool does: a temp file beside the target,
+# then rename. Writing in place would pass against the mount shape that
+# shipped every artifact empty, which is the regression this canary exists for.
+target = Path('/review-output/review-output.json')
+staging = target.with_name(target.name + '.tmp.1.abc')
+staging.write_text('{"schema_version":1}')
+os.replace(staging, target)
 """
     with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        output = proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
         result = run_managed(
             [
                 *sandbox.command_prefix_for(
                     read_only_workspace=True,
                     extra_writable_mounts=(
-                        ReadOnlyMount(source=output, target="/workspace/review-output.json"),
+                        ReadOnlyMount(
+                            source=output.parent, target=proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+                        ),
                     ),
                 ),
                 "/usr/bin/python3",
@@ -912,6 +929,8 @@ Path('/workspace/review-output.json').write_text('{"schema_version":1}')
     assert result.ok, result.stderr_tail
     assert source.read_text() == "trusted\n"
     assert output.read_text() == '{"schema_version":1}'
+    # The staging file is gone: the rename landed rather than a copy.
+    assert list(output.parent.iterdir()) == [output]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
@@ -1182,6 +1201,7 @@ for line in sys.stdin:
 
     review_command = """test -z "${ANTHROPIC_API_KEY:-}" && python3 - <<'PY'
 import json
+import os
 import subprocess
 from pathlib import Path
 source = Path('/workspace/canary.txt')
@@ -1194,7 +1214,10 @@ for operation in (lambda: source.write_text('forbidden'), lambda: source.rename(
         pass
     else:
         raise AssertionError('source mutation was allowed')
-Path('/workspace/review-output.json').write_text(json.dumps({'schema_version': 1, 'verdict': 'approve', 'findings': []}))
+target = Path('/review-output/review-output.json')
+staging = target.with_name(target.name + '.tmp.1.abc')
+staging.write_text(json.dumps({'schema_version': 1, 'verdict': 'approve', 'findings': []}))
+os.replace(staging, target)
 PY"""
     if review_layout:
         for command in (
@@ -1371,7 +1394,11 @@ PY"""
                     sandbox,
                     command_prefix=sandbox.command_prefix_for(
                         read_only_workspace=True,
-                        extra_writable_mounts=(ReadOnlyMount(output, "/workspace/review-output.json"),),
+                        extra_writable_mounts=(
+                            ReadOnlyMount(
+                                output.parent, proposer_sandbox.SANDBOX_REVIEW_OUTPUT
+                            ),
+                        ),
                     ),
                 )
             result = sandbox.run(
@@ -1420,7 +1447,7 @@ PY"""
             assert (sandbox.temp / "mcp-called").read_text() == "ok"
             if review_layout:
                 assert output is not None
-                runner_artifacts.enforce_phase_workspace(clone, before, allowed_artifact=output)
+                runner_artifacts.enforce_phase_workspace(clone, before, allowed_artifact=None)
                 assert json.loads(output.read_text())["verdict"] == "approve"
                 assert (clone / "canary.txt").read_text() == "hook-readable\nchanged for review\n"
     finally:

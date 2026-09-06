@@ -124,8 +124,14 @@ def row_is_reusable_comparator(row: Mapping[str, Any], expected: ComparatorReuse
         return False
     if row.get("candidate_overlay_digest") not in (None, ""):
         return False
-    recorded = _parse_recorded_at(row.get("recorded_at"))
-    if recorded is None or expected.now - recorded > expected.max_age:
+    # Age against the ORIGINAL measurement, not the copy time: materialize_reused_row
+    # restamps recorded_at, so a chained row would otherwise refresh its own clock
+    # and never expire. Bound both directions - a future stamp is corrupt, not fresh.
+    recorded = _parse_recorded_at(row.get("reused_from_recorded_at") or row.get("recorded_at"))
+    if recorded is None:
+        return False
+    age = expected.now - recorded
+    if age > expected.max_age or age < timedelta(0):
         return False
     if row.get("model") != expected.model and row.get("benchmark_model") != expected.model:
         return False
@@ -133,13 +139,13 @@ def row_is_reusable_comparator(row: Mapping[str, Any], expected: ComparatorReuse
         return False
     if row.get("sandbox_backend") != expected.sandbox_backend:
         return False
+    # Fail closed. A row with no runtime_digest was measured by a harness that
+    # did not record one, which is exactly the drift this lock exists to catch;
+    # treating the absence as agreement made every legacy row reusable forever.
     prior_runtime = row.get("runtime_digest")
-    if (
-        isinstance(prior_runtime, str)
-        and prior_runtime
-        and expected.runtime_digest
-        and prior_runtime != expected.runtime_digest
-    ):
+    if not isinstance(prior_runtime, str) or not prior_runtime:
+        return False
+    if not expected.runtime_digest or prior_runtime != expected.runtime_digest:
         return False
 
     task_id = row.get("task")
@@ -231,7 +237,10 @@ def materialize_reused_row(
 
     materialized = dict(row)
     materialized["reused"] = True
-    materialized["reused_from_recorded_at"] = row.get("recorded_at")
+    # Keep the FIRST measurement time across a chain. Overwriting it with the
+    # previous copy's stamp let a row refresh its own clock every generation and
+    # outlive the max_age bound entirely.
+    materialized["reused_from_recorded_at"] = row.get("reused_from_recorded_at") or row.get("recorded_at")
     materialized["recorded_at"] = datetime.now(UTC).isoformat()
 
     artifacts = row.get("transcript_artifacts")

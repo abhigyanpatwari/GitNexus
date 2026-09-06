@@ -1033,6 +1033,12 @@ def runner_environment(args: argparse.Namespace) -> dict[str, str]:
         # actually show progress rather than a burst at the end.
         "PYTHONUNBUFFERED": "1",
     }
+    # process_control replaces the child environment wholesale, so a digest the
+    # workflow exported reaches the runner only if it is forwarded here. Without
+    # this the runner stamps no runtime_digest and the reuse lock never engages.
+    runtime_digest = os.environ.get("RUNTIME_DIGEST", "").strip()
+    if runtime_digest:
+        env["RUNTIME_DIGEST"] = runtime_digest
     if args.auth_token:
         env[ANTHROPIC_API_KEY_ENV] = args.auth_token
     return env
@@ -1570,6 +1576,19 @@ def _run_generations(
                     incumbent_arms=requested_arms,
                     prior_proposal=staged_prior_included,
                 )
+                # Check the window before the paid session, not after it. A
+                # generation that cannot fit its sweep should not buy a proposal
+                # first and discover the deadline on the way out.
+                before_proposer = remaining_runtime_seconds(
+                    max_runtime_seconds=args.max_runtime_seconds,
+                    started_monotonic=started_monotonic,
+                )
+                if before_proposer is not None and before_proposer < MIN_INSTANCE_SWEEP_SECONDS:
+                    print(
+                        f"[gen {generation}] stopping with {before_proposer}s left before the "
+                        f"instance window ends; not starting a proposer session"
+                    )
+                    return 1
                 print(f"[gen {generation}] proposing…")
                 record = run_proposer(
                     prompt,

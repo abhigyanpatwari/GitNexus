@@ -97,7 +97,13 @@ from .oracle_assets import (
 )
 from .process_control import cancellation_scope, ManagedProcessError
 from .promotion_apply import committed_destination_base_digests
-from .review_scoring import REVIEW_OUTPUT, expected_findings, parse_review_output, score_review
+from .review_scoring import (
+    REVIEW_OUTPUT,
+    REVIEW_OUTPUT_ENV_VAR,
+    expected_findings,
+    parse_review_output,
+    score_review,
+)
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -340,6 +346,15 @@ def _run_hidden_oracle(
             # credited patch is captured.
             oracle_mount = f"{SANDBOX_WORKSPACE}/{mount_name}"
             oracle_env[ORACLE_ENV_VAR] = str(stage_root) if host_unsafe else oracle_mount
+            review_artifact = review_output_path(sandbox, REVIEW_OUTPUT)
+            review_mounts: tuple[ReadOnlyMount, ...] = ()
+            if review_artifact.parent.is_dir():
+                oracle_env[REVIEW_OUTPUT_ENV_VAR] = sandbox.host_text(
+                    f"{SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT}"
+                )
+                review_mounts = (
+                    ReadOnlyMount(source=review_artifact.parent, target=SANDBOX_REVIEW_OUTPUT),
+                )
             passed, _output = _verification_outcome(
                 run_verify(
                     snapshot.command,
@@ -348,9 +363,9 @@ def _run_hidden_oracle(
                     command_prefix=sandbox.command_prefix_for(
                         read_only_workspace=True,
                         unshare_network=True,
-                        extra_read_only_mounts=()
+                        extra_read_only_mounts=(*review_mounts,)
                         if host_unsafe
-                        else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
+                        else (ReadOnlyMount(source=stage_root, target=oracle_mount), *review_mounts),
                     ),
                     env=oracle_env,
                     require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
@@ -659,6 +674,18 @@ def run_arm(
     record = sum_sessions(sessions)
     record["arm"] = arm
     record["plan_produced"] = arm not in ("workflow", "ce_workflow") or plan_doc is not None
+    # The verify command runs in its OWN sandbox invocation, which knows nothing
+    # about the review session's writable mount. Expose the artifact read-only and
+    # name it through the environment, the same shape _run_hidden_oracle uses, so
+    # one command works on both backends instead of hardcoding either path.
+    verify_env = environment_builder()
+    verify_mounts: tuple[ReadOnlyMount, ...] = ()
+    if arm in ("review", "ce_review"):
+        review_artifact = review_output_path(sandbox, REVIEW_OUTPUT)
+        verify_env[REVIEW_OUTPUT_ENV_VAR] = host_text(f"{SANDBOX_REVIEW_OUTPUT}/{REVIEW_OUTPUT}")
+        verify_mounts = (
+            ReadOnlyMount(source=review_artifact.parent, target=SANDBOX_REVIEW_OUTPUT),
+        )
     authored_tests_passed, authored_test_output = _verification_outcome(
         run_verify(
             task["verify"],
@@ -667,8 +694,9 @@ def run_arm(
             command_prefix=sandbox.command_prefix_for(
                 read_only_workspace=True,
                 unshare_network=True,
+                extra_read_only_mounts=verify_mounts,
             ),
-            env=environment_builder(),
+            env=verify_env,
             require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
         )
     )
@@ -866,6 +894,11 @@ def sweep_task_cells(
                         "failures — aborting the remaining sweep; report and promotion are written "
                         "from partial evidence and the run exits non-zero."
                     )
+                    # Signal in-flight background work too. The breaker exists to
+                    # SHORTEN a doomed run; without this a graph prefetch keeps
+                    # building and the unconditional join blocks the abort for the
+                    # length of a full clone and offline index.
+                    cancel_event.set()
                     return outage_streak, True
         return outage_streak, False
 
@@ -1915,7 +1948,10 @@ def prefetch_next_graph(
             graph_snapshot_errors=graph_snapshot_errors,
         )
 
-    thread = threading.Thread(target=run, name="prefetch_next_graph", daemon=False)
+    # copy_context, as the worker pool already does at _run_wave: a plain Thread
+    # does not inherit ContextVars, so without this every run_managed inside the
+    # graph build resolves _CANCELLATION to None and ignores the shared cancel.
+    thread = threading.Thread(target=copy_context().run, args=(run,), name="prefetch_next_graph", daemon=False)
     thread.start()
     return GraphPrefetch(key=graph_key, thread=thread)
 
@@ -2196,10 +2232,12 @@ def _run_sweep(
         selection_report.append(
             f"Compound Engineering plugin: `{ce_plugin_snapshot.version}` (`{ce_plugin_snapshot.manifest_digest}`)"
         )
-    if cancel_event.is_set():
-        selection_report.append("Sweep cancelled: partial evidence; promotion is disabled.")
-    elif outage_tripped:
+    # outage first: the breaker now sets cancel_event to stop in-flight background
+    # work, so testing cancellation first would relabel every outage a cancellation.
+    if outage_tripped:
         selection_report.append("Sweep aborted: partial evidence; promotion is disabled.")
+    elif cancel_event.is_set():
+        selection_report.append("Sweep cancelled: partial evidence; promotion is disabled.")
     report = render_report(results) + "\n\n" + "\n".join(selection_report) + "\n"
     (out_dir / "report.md").write_text(report)
     if candidate_arms:
@@ -2246,12 +2284,14 @@ def _run_sweep(
             "in results.jsonl. Exiting non-zero rather than reporting a quiet no-promotion."
         )
         raise SystemExit(1)
-    if cancel_event.is_set():
-        raise SystemExit(130)
     if outage_tripped:
         # Non-zero exit so a driver (evolve.py) treats the partial benchmark as a
         # failed run and halts instead of proposing from outage-truncated evidence.
+        # Checked before cancel_event because the breaker sets it (see above), and
+        # an outage must keep exit 1 rather than becoming the 130 of a Ctrl-C.
         raise SystemExit(1)
+    if cancel_event.is_set():
+        raise SystemExit(130)
 
 
 if __name__ == "__main__":

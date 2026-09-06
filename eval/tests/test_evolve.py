@@ -1167,16 +1167,19 @@ def test_instance_window_budget_from_proc_reads_uptime_and_env(
         instance_window_budget_from_proc(tmp_path / "missing")
 
 
-def test_capped_timeout_clamps_to_leftover_window() -> None:
+def test_capped_timeout_clamps_to_leftover_window(monkeypatch) -> None:
     assert capped_timeout_seconds(10_000, None) == 10_000
     assert capped_timeout_seconds(10_000, 90) == 90
     with pytest.raises(ValueError, match="no time remains"):
         capped_timeout_seconds(10_000, 0)
-    started = time.monotonic() - 40
+    # Pinned clock: the helper is pure arithmetic, so a real elapsed-time window
+    # would assert on scheduling rather than on the behaviour under test.
+    monkeypatch.setattr(evolve.time, "monotonic", lambda: 1040.0)
+    started = 1000.0
     assert remaining_runtime_seconds(max_runtime_seconds=None, started_monotonic=started) is None
     leftover = remaining_runtime_seconds(max_runtime_seconds=100, started_monotonic=started)
     assert leftover is not None
-    assert 50 <= leftover <= 60
+    assert leftover == 60
 
 
 def test_parser_rejects_non_positive_max_runtime() -> None:
