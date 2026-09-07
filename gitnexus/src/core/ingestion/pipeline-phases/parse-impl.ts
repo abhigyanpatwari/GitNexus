@@ -116,6 +116,7 @@ import {
 import { isDebugHeapEnabled, logHeapProbe } from '../utils/heap-probe.js';
 
 import { logger } from '../../logger.js';
+import { mapConcurrent } from '../../../lib/utils.js';
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /**
@@ -214,11 +215,18 @@ const CHUNK_BYTES_PER_WORKER = DEFAULT_CHUNK_BYTE_BUDGET;
  */
 const TARGET_JOBS_PER_WORKER = 3;
 
+/**
+ * Concurrent durable ParsedFile directory resets per round. Matches the file
+ * reader's `READ_CONCURRENCY`, because both compete for the same descriptors.
+ */
+const DURABLE_RESET_CONCURRENCY = 32;
+
 /** Floor for a derived sub-batch so jobs don't shrink to per-file IPC churn. */
 const MIN_SUB_BATCH_BYTES = 256 * 1024;
 
 /**
- * Source bytes of cache-missing chunks allowed in flight in one pool round.
+ * Source bytes an open round may HOLD — cache hits and misses alike — before
+ * it is dispatched and drained.
  *
  * A `dispatch` is a barrier, so one round-trip per cache pack leaves most slots
  * idle: packs are keyed by `(language, hash(path) % 128)` and routinely land far
@@ -589,9 +597,16 @@ export async function runChunkedParseAndResolve(
   // Cores-based auto size, bounded by source bytes so a tiny repo does not
   // spawn a full idle pool.
   const workProportionalCap = Math.max(1, Math.ceil(totalBytes / CHUNK_BYTES_PER_WORKER));
+  // An operator's number is honored, but never exceeds the number of files
+  // there are to parse — `GITNEXUS_WORKER_POOL_SIZE=100000` on a five-file repo
+  // should not become the literal thread count. This bounds `--workers` and the
+  // env var identically, keeping the parity above intact. Note it does NOT
+  // shrink an incremental re-analyze: `totalParseable` counts every parseable
+  // file in the scan, not the changed ones, so a warm run of a large repo still
+  // spawns the full requested pool.
   const effectivePoolSize =
     explicitPoolSize && explicitPoolSize > 0
-      ? explicitPoolSize
+      ? Math.min(explicitPoolSize, Math.max(1, totalParseable))
       : Math.min(resolveAutoPoolSize(), workProportionalCap);
   // Cache packs: stable (language, hash(path) mod 128) buckets, then the
   // per-call byte budget inside each bucket (#3088). Pool size is used only
@@ -1043,11 +1058,21 @@ export async function runChunkedParseAndResolve(
       if (misses.length === 0) {
         return { entries, results: Promise.resolve([]) };
       }
-      // Each chunk resets its own directory, so these are independent. Serially
-      // they would sit on the critical path this round exists to shorten: the
-      // pool stays idle and the previous round's merge waits, once per miss.
-      await Promise.all(
-        misses.map(async (miss) => {
+      // Each chunk resets its own directory, so these are independent and run
+      // concurrently: serially they would sit on the critical path this round
+      // exists to shorten, with the pool idle and the previous round's merge
+      // waiting, once per miss.
+      //
+      // BOUNDED, though. A round can hold hundreds of small packs, and each
+      // reset is a recursive rm + mkdir. Firing all of them at once competes
+      // for descriptors with the chunk prefetch this loop already has in
+      // flight, and `readFileContents` degrades a losing read SILENTLY by
+      // contract — a dropped file would vanish from the chunk, from the graph,
+      // and from the chunk hash, shipping a narrowed index with exit 0. Same
+      // helper and width the file reads use.
+      await mapConcurrent(
+        misses,
+        async (miss) => {
           if (durableParsedFileDir === undefined || miss.chunkHash === null) return;
           try {
             await prepareDurableParsedFileChunk(durableParsedFileDir, miss.chunkHash);
@@ -1061,7 +1086,8 @@ export async function runChunkedParseAndResolve(
               'parsedfile-cache: could not reset durable chunk generation; continuing',
             );
           }
-        }),
+        },
+        { concurrency: DURABLE_RESET_CONCURRENCY },
       );
       const roundFiles = misses.reduce((sum, miss) => sum + miss.chunkFiles.length, 0);
       const firstIdx = misses[0].chunkIdx;
