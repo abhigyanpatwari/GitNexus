@@ -22,6 +22,7 @@ import {
   listRegisteredRepos,
   registryPathEquals,
 } from '../storage/repo-manager.js';
+import { BRANCHES_DIR, branchSlug } from '../storage/branch-index.js';
 import { logger } from '../core/logger.js';
 import { autoHeapCapMb } from '../core/ingestion/utils/effective-ram.js';
 import { isTerminalJobStatus, type JobManager } from './analyze-job.js';
@@ -105,7 +106,35 @@ const registeredStoragePath = async (targetPath: string): Promise<string | null>
   return entry?.storagePath ?? null;
 };
 
-const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Promise<void> => {
+/**
+ * Resolve the directory this run's index actually landed in.
+ *
+ * `registerRepo` always records the FLAT `.gitnexus` as `entry.storagePath`,
+ * but a pinned `--branch` run whose label differs from the flat slot's owner
+ * writes `lbug`/`gitnexus.json` under `branches/<slug>/` instead. Probing the
+ * flat path for such a run watches files it never rewrote, so the gate below
+ * would spin to its timeout on a perfectly successful analysis (#3199 review).
+ *
+ * `isPrimaryBranch` is the worker's own report of `!placement.branch`, so this
+ * follows the placement core actually chose rather than recomputing it here
+ * (the flat slot's recorded owner can be adopted mid-run, which would make a
+ * recomputation race the thing it is trying to observe).
+ */
+const settleDirFor = (
+  registryStoragePath: string,
+  branch: string | undefined,
+  isPrimaryBranch: boolean | undefined,
+): string =>
+  branch && isPrimaryBranch === false
+    ? path.join(registryStoragePath, BRANCHES_DIR, branchSlug(branch))
+    : registryStoragePath;
+
+const waitForSettledIndex = async (
+  targetPath: string,
+  jobStartMs: number,
+  branch?: string,
+  isPrimaryBranch?: boolean,
+): Promise<void> => {
   const settled = (storagePath: string): boolean => {
     try {
       const lbugStat = statSync(path.join(storagePath, 'lbug'));
@@ -126,7 +155,7 @@ const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Prom
     // Re-resolved each round: the worker registers the repo as part of the
     // finalization this gate is waiting out.
     const storagePath = await registeredStoragePath(targetPath);
-    if (storagePath && settled(storagePath)) return;
+    if (storagePath && settled(settleDirFor(storagePath, branch, isPrimaryBranch))) return;
     if (Date.now() > deadline) {
       logger.warn(
         { targetPath },
@@ -187,6 +216,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
 
       // Capture stderr for crash diagnostics
       let stderrChunks = '';
+      // A terminal IPC message (`complete`/`error`) means the worker finished
+      // and is now winding down — it calls process.exit(0) ~500ms later. The
+      // job is deliberately still non-terminal at that point because the
+      // finalization gate is running, so without this flag the exit handler
+      // below reads that clean exit as a crash and retries a SUCCESSFUL
+      // analysis, three times, before failing it (#3199 review).
+      let terminalIpcSeen = false;
       child.stderr?.on('data', (chunk: Buffer) => {
         stderrChunks += chunk.toString();
         if (stderrChunks.length > 4096) stderrChunks = stderrChunks.slice(-4096);
@@ -199,6 +235,8 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
         // handler guard below; pairs with the worker's terminal-claim (#2264 P3).
         const current = jobManager.getJob(job.id);
         if (!current || isTerminalJobStatus(current.status)) return;
+
+        if (msg.type === 'complete' || msg.type === 'error') terminalIpcSeen = true;
 
         if (msg.type === 'progress') {
           jobManager.updateJob(job.id, {
@@ -216,7 +254,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // below true in practice: the repo is actually queryable when the
           // client receives the SSE complete event, and an index this run knows
           // to be incomplete is never published at all.
-          waitForSettledIndex(targetPath, jobStartMs)
+          waitForSettledIndex(targetPath, jobStartMs, opts.branch, msg.result.isPrimaryBranch)
             .then(() => closeDbHandle())
             .catch(() => {}) // best-effort: eviction failure must not fail the job
             .then(() => {
@@ -309,6 +347,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       child.on('exit', (code) => {
         const j = jobManager.getJob(job.id);
         if (!j || isTerminalJobStatus(j.status)) return;
+
+        // The worker already reported a terminal outcome; this exit is it
+        // winding down, not dying. The job is still non-terminal only because
+        // the finalization gate above has not resolved yet, and that gate owns
+        // the outcome — retrying here would fork a second worker over a
+        // finished, successful analysis.
+        if (terminalIpcSeen) return;
 
         // Worker crashed — attempt retry if under the limit
         if (j.retryCount < MAX_WORKER_RETRIES) {

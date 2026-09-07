@@ -15,6 +15,7 @@ vi.mock('../../src/core/logger.js', () => ({
 }));
 
 import {
+  analyzeCloneOptions,
   extractRepoName,
   extractWebRepoName,
   getCloneDir,
@@ -1365,5 +1366,83 @@ describe('git-clone', () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+describe('getCloneDir — a branch-pinned analyze gets its own working tree', () => {
+  it('keeps the historic directory for an unpinned request', () => {
+    // Backward compatibility: existing installs must keep using the dir they have.
+    expect(getCloneDir('Hello-World')).toBe(getCloneDir('Hello-World', undefined));
+  });
+
+  it('gives a pinned request a different directory from the unpinned one', () => {
+    // This separation is what stops (a) a pinned request failing on the dirty
+    // tree an earlier analyze left, and (b) a later unpinned request pulling on
+    // the branch a pin left checked out and indexing it as the default.
+    expect(getCloneDir('Hello-World', 'development')).not.toBe(getCloneDir('Hello-World'));
+  });
+
+  it('gives two different branches two different directories', () => {
+    expect(getCloneDir('Hello-World', 'development')).not.toBe(
+      getCloneDir('Hello-World', 'release/1.2'),
+    );
+  });
+
+  it('is stable for the same branch', () => {
+    expect(getCloneDir('Hello-World', 'release/1.2')).toBe(
+      getCloneDir('Hello-World', 'release/1.2'),
+    );
+  });
+
+  it('keeps a slash-bearing ref inside a single path segment under the clone root', () => {
+    // `release/1.2` must not become a nested directory, or the containment
+    // guarantees around CLONE_ROOT would be reasoning about a different path.
+    const dir = getCloneDir('Hello-World', 'release/1.2');
+    const base = getCloneDir('Hello-World');
+    expect(path.dirname(dir)).toBe(path.dirname(base));
+    expect(path.basename(dir)).not.toContain('/');
+  });
+
+  it('round-trips its own directory name, which is how DELETE re-derives it', () => {
+    // DELETE /api/repo calls getCloneDir(entry.name); the pinned repo is
+    // registered under this basename, so the two must agree.
+    const dir = getCloneDir('Hello-World', 'development');
+    expect(getCloneDir(path.basename(dir))).toBe(dir);
+  });
+
+  it('still rejects a traversal attempt in the repo name', () => {
+    expect(() => getCloneDir('..', 'development')).toThrow(/Invalid repository name/);
+    expect(() => getCloneDir('a/b', 'development')).toThrow(/Invalid repository name/);
+  });
+});
+
+describe('analyzeCloneOptions — the /api/analyze glue for #3198', () => {
+  // The route passes the result straight to `cloneOrPull`. Inline, a regression
+  // that dropped `branch` for token-less URLs left every other test green while
+  // silently reindexing the default branch — so each combination is pinned.
+  it('returns undefined when neither a token nor a branch is supplied', () => {
+    expect(analyzeCloneOptions(undefined, undefined)).toBeUndefined();
+  });
+
+  it('carries a token on its own', () => {
+    expect(analyzeCloneOptions('ghp_token', undefined)).toEqual({ token: 'ghp_token' });
+  });
+
+  it('carries a branch on its own — the public-repo case', () => {
+    // The regression that would reopen #3198: a branch requested for a public
+    // URL must still reach cloneOrPull, with no token in play.
+    expect(analyzeCloneOptions(undefined, 'development')).toEqual({ branch: 'development' });
+  });
+
+  it('carries both together', () => {
+    expect(analyzeCloneOptions('ghp_token', 'development')).toEqual({
+      token: 'ghp_token',
+      branch: 'development',
+    });
+  });
+
+  it('treats an empty branch as absent rather than sending an empty ref', () => {
+    expect(analyzeCloneOptions('ghp_token', '')).toEqual({ token: 'ghp_token' });
+    expect(analyzeCloneOptions('', '')).toBeUndefined();
   });
 });

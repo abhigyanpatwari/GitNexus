@@ -11,6 +11,7 @@ import fs from 'fs/promises';
 import os from 'node:os';
 import { logger } from '../core/logger.js';
 import { getGlobalDir } from '../storage/repo-manager.js';
+import { branchSlug } from '../storage/branch-index.js';
 import { sanitizeRepoName, stripUrlCredentials } from '../storage/git.js';
 import { validateGitUrl } from '../core/net/url-guard.js';
 import {
@@ -85,18 +86,59 @@ export function extractWebRepoName(url: string): string {
 }
 
 /** Get the clone target directory for a repo name. */
-export function getCloneDir(repoName: string): string {
+export function getCloneDir(repoName: string, branch?: string): string {
   // Re-validate at the boundary even though extractRepoName already checked —
   // callers may pass a repoName from another source (test fixtures, scripts).
   if (!repoName || repoName === '.' || repoName === '..' || !REPO_NAME_PATTERN.test(repoName)) {
     throw new Error('Invalid repository name');
   }
-  return path.join(CLONE_ROOT, repoName);
+  // A branch-pinned analyze gets its OWN working tree.
+  //
+  // Sharing one checkout per repo made `branch` unusable in practice: the tree
+  // is dirty after any analyze (generated AGENTS.md / CLAUDE.md / .claude/), so
+  // a pinned request hit `cloneOrPull`'s porcelain refusal; and a later request
+  // that OMITTED `branch` would pull whatever branch the last pin left checked
+  // out and index it as the default (#3199 review). Separate directories remove
+  // both, because the two requests no longer share a tree.
+  //
+  // `branchSlug` is the same helper the per-branch index slots use, so the two
+  // layouts agree on how a ref becomes a path segment. It emits only
+  // `[a-zA-Z0-9._-]`, so the composed name still satisfies REPO_NAME_PATTERN and
+  // round-trips through this function — which is how DELETE /api/repo re-derives
+  // the directory from the registry name.
+  const dirName = branch ? `${repoName}__${branchSlug(branch)}` : repoName;
+  if (!REPO_NAME_PATTERN.test(dirName)) {
+    throw new Error('Invalid repository name');
+  }
+  return path.join(CLONE_ROOT, dirName);
 }
 
 export interface CloneProgress {
   phase: 'cloning' | 'pulling';
   message: string;
+}
+
+/**
+ * Build the `cloneOrPull` options for an `/api/analyze` request.
+ *
+ * Extracted from the route so the token/branch combination is unit-testable.
+ * Inline, the branch-only case was the one nothing asserted: every existing
+ * test still passed if `branch` were dropped whenever no token was supplied —
+ * i.e. silently cloning the default branch for every public URL, which is the
+ * exact behavior #3198 is about (#3199 review).
+ *
+ * Returns `undefined` rather than `{}` when neither is set, because that is
+ * what `cloneOrPull` treats as "no options" at its own call sites.
+ */
+export function analyzeCloneOptions(
+  token?: string,
+  branch?: string,
+): Pick<CloneOrPullOptions, 'token' | 'branch'> | undefined {
+  if (!token && !branch) return undefined;
+  return {
+    ...(token ? { token } : {}),
+    ...(branch ? { branch } : {}),
+  };
 }
 
 export interface CloneOrPullOptions {

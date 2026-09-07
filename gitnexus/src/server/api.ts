@@ -57,6 +57,7 @@ import { assertString, BadRequestError, createRouteLimiter } from './validation.
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
 import { runGrepScanInWorker } from './grep-scan.js';
 import {
+  analyzeCloneOptions,
   extractWebRepoName,
   getCloneDir,
   cloneOrPull,
@@ -1633,7 +1634,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             // Clone if URL provided
             if (repoUrl && !repoLocalPath) {
               const repoName = extractWebRepoName(repoUrl);
-              targetPath = getCloneDir(repoName);
+              // Branch-pinned runs get their own clone dir, so they never share
+              // a working tree with the unpinned one (see getCloneDir).
+              targetPath = getCloneDir(repoName, analyzeBranch);
 
               jobManager.updateJob(job.id, {
                 status: 'cloning',
@@ -1649,12 +1652,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                     progress: { phase: progress.phase, percent: 5, message: progress.message },
                   });
                 },
-                repoToken || analyzeBranch
-                  ? {
-                      ...(repoToken ? { token: repoToken } : {}),
-                      ...(analyzeBranch ? { branch: analyzeBranch } : {}),
-                    }
-                  : undefined,
+                analyzeCloneOptions(repoToken, analyzeBranch),
               );
             }
 
@@ -1669,6 +1667,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               springActuatorPath,
               asyncApiSpecPath,
               branch: analyzeBranch,
+              // Both clone dirs share an `origin`, so the name `registerRepo`
+              // infers from the remote would be identical and the second one
+              // would fail with RegistryNameCollisionError. Register the pinned
+              // clone under its directory name instead: unique per branch, and
+              // it re-derives through getCloneDir for DELETE /api/repo.
+              ...(analyzeBranch && repoUrl ? { registryName: path.basename(targetPath) } : {}),
             });
           } catch (err: any) {
             if (targetPath) releaseRepoLock(getStoragePath(targetPath));
