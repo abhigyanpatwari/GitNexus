@@ -580,8 +580,11 @@ exit 1`);
       path.join(REPO_ROOT, 'eval/workflow_bench/run-evolution.sh'),
       'utf8',
     );
-    expect(script).toContain('--max-runtime-seconds');
-    expect(script).toContain('instance_window_budget_from_proc');
+    // The flag, not a precomputed number: the CLI reads /proc/uptime in the
+    // same breath as it starts the clock the cap is measured against, so
+    // nothing between the two can be charged to the sweep.
+    expect(script).toContain('--max-runtime-from-instance-window');
+    expect(script).not.toContain('instance_window_budget_from_proc');
     expect(script).toContain('export RUNTIME_DIGEST');
     // The workflow's half of that contract is calling the entrypoint, not
     // naming the flag: its only occurrence in the YAML is the explanatory

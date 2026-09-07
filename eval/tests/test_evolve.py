@@ -1237,6 +1237,124 @@ def test_parser_rejects_non_positive_max_runtime() -> None:
         ["--tasks", "t.yaml", "--model", "pinned", "--max-runtime-seconds", "7200"]
     )
     assert args.max_runtime_seconds == 7200
+    assert args.max_runtime_from_instance_window is False
+
+
+def _task_file(tmp_path: Path) -> Path:
+    tasks = tmp_path / "tasks.yaml"
+    tasks.write_text(
+        """tasks:
+  - id: demo
+    class: test
+    repo: .
+    prompt: implement
+    verify: "true"
+    oracle:
+      command: "true"
+      files:
+        - source: hidden.test.ts
+          target: hidden.test.ts
+"""
+    )
+    return tasks
+
+
+def _stub_main_preflight(monkeypatch, tmp_path) -> None:
+    """Everything main() shells out to before it reaches _run_generations."""
+
+    monkeypatch.setattr(evolve.runner, "selected_task_bindings", lambda _tasks: [{"id": "demo"}])
+    monkeypatch.setattr(evolve, "preflight_bubblewrap", lambda: tmp_path / "bwrap")
+    monkeypatch.setattr(evolve, "require_claude_sandbox_helpers", lambda: None)
+
+
+def test_the_runtime_cap_is_derived_where_its_clock_starts(monkeypatch, tmp_path, capsys) -> None:
+    """The budget and the clock it is measured against must be one instant.
+
+    run-evolution.sh used to compute the budget in a separate `uv run python -c`
+    and pass a number, so the script's remaining provenance work and this
+    interpreter's startup were charged to the sweep — out of the upload reserve
+    the cap exists to protect. main() reads /proc/uptime itself now, next to its
+    own clock, so no interval exists to lose.
+    """
+
+    uptime = tmp_path / "uptime"
+    uptime.write_text("3600.00 8000.00\n")
+    monkeypatch.setenv("EVENTBRIDGE_INSTANCE_WINDOW_SECONDS", "20000")
+    monkeypatch.setenv("EVENTBRIDGE_STOP_RESERVE_SECONDS", "1000")
+    monkeypatch.setattr(evolve, "read_instance_uptime_seconds", lambda: 3600.0)
+    captured: dict[str, object] = {}
+
+    def record(args, **kwargs):
+        captured["max_runtime_seconds"] = args.max_runtime_seconds
+        captured["started_monotonic"] = kwargs["started_monotonic"]
+        return 0
+
+    monkeypatch.setattr(evolve, "_run_generations", record)
+    _stub_main_preflight(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evolve",
+            "--tasks",
+            str(_task_file(tmp_path)),
+            "--model",
+            "pinned",
+            "--out-root",
+            str(tmp_path / "out"),
+            "--max-runtime-from-instance-window",
+        ],
+    )
+
+    assert evolve.main() == 0
+
+    assert captured["max_runtime_seconds"] == 20000 - 3600 - 1000
+    # Derived here, not passed in: the clock handed to the sweep is the one
+    # taken beside the uptime read.
+    assert isinstance(captured["started_monotonic"], float)
+    assert "capping the sweep to 15400s" in capsys.readouterr().out
+
+
+def test_the_runtime_cap_refuses_two_sources_of_truth(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(evolve, "read_instance_uptime_seconds", lambda: 3600.0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evolve",
+            "--tasks",
+            str(_task_file(tmp_path)),
+            "--model",
+            "pinned",
+            "--max-runtime-from-instance-window",
+            "--max-runtime-seconds",
+            "7200",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        evolve.main()
+
+
+def test_the_runtime_cap_fails_closed_without_a_readable_uptime(monkeypatch, tmp_path) -> None:
+    def unreadable():
+        raise ValueError("cannot read instance uptime from /proc/uptime")
+
+    monkeypatch.setattr(evolve, "read_instance_uptime_seconds", unreadable)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "evolve",
+            "--tasks",
+            str(_task_file(tmp_path)),
+            "--model",
+            "pinned",
+            "--max-runtime-from-instance-window",
+        ],
+    )
+    # Better to refuse than to run a box-stopped sweep believing it is uncapped.
+    with pytest.raises(SystemExit):
+        evolve.main()
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Bubblewrap PID namespaces require Linux")

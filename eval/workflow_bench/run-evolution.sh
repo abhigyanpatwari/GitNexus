@@ -15,7 +15,7 @@
 #   MODEL PROPOSER_MODEL EFFORT GENERATIONS RUNS WORKERS PROVIDER
 #   EVOLUTION_PROFILE CE_PLUGIN_DIR CE_PLUGIN_VERSION
 #   INCLUDE_EXPENSIVE SEED_RESULTS CLAUDE_BIN OUT_ROOT
-#   CI (caps --max-runtime-seconds from /proc/uptime)
+#   CI (passes --max-runtime-from-instance-window; the CLI reads /proc/uptime)
 #   EVENTBRIDGE_INSTANCE_WINDOW_SECONDS EVENTBRIDGE_STOP_RESERVE_SECONDS
 #   UNSAFE_NO_BWRAP=1 (local review diagnostics only)
 #   GITNEXUS_BENCH_ANTHROPIC_API_KEY (legacy GITNEXUS_BENCH_AUTH_TOKEN)
@@ -195,24 +195,22 @@ if ((${#passthrough[@]})); then
   cmd+=("${passthrough[@]}")
 fi
 
+# A cancelled GitHub job skips even `if: always()`, so evidence dies with the
+# runner. The evolution box is EventBridge-stopped 24h after boot; a Friday
+# dispatch inherits leftover uptime. Cap the sweep so it fails in-process and
+# the upload step still runs (run 33962002890). The CLI reads /proc/uptime
+# itself, in the same breath as it starts the clock the cap is measured
+# against; computing a number here — in a separate interpreter, before the
+# provenance work and the exec below — charged the sweep for every second
+# this script spent afterwards.
+if [[ -n "${CI:-}" && -r /proc/uptime ]]; then
+  cmd+=(--max-runtime-from-instance-window)
+fi
+
 if ((dry_run)); then
   printf '%q ' "${cmd[@]}"
   printf '\n'
   exit 0
-fi
-
-# A cancelled GitHub job skips even `if: always()`, so evidence dies with the
-# runner. The evolution box is EventBridge-stopped 24h after boot; a Friday
-# dispatch inherits leftover uptime. Cap the sweep so it fails in-process and
-# the upload step still runs (run 33962002890).
-if [[ -n "${CI:-}" && -r /proc/uptime ]]; then
-  remaining="$(
-    cd "${eval_dir}"
-    uv run --locked --extra dev python -c \
-      'from workflow_bench.evolve import instance_window_budget_from_proc; print(instance_window_budget_from_proc())'
-  )"
-  cmd+=(--max-runtime-seconds "${remaining}")
-  echo "Capping the sweep to ${remaining}s so the instance-window reserve can upload evidence." >&2
 fi
 
 mkdir -p "${out_root}"

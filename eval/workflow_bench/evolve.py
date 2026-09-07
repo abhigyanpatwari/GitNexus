@@ -871,13 +871,42 @@ def instance_window_budget_seconds(
     return leftover
 
 
-def instance_window_budget_from_proc(
-    uptime_path: Path = Path("/proc/uptime"),
+def _instance_uptime_or_none() -> float | None:
+    """The uptime read main() takes before it knows whether it needs it.
+
+    Deferring the read until after argument parsing would put the parse back
+    inside the interval the cap is supposed to cover, so it happens first and
+    an unreadable /proc/uptime is only an error if the flag turns out to be set.
+    """
+
+    try:
+        return read_instance_uptime_seconds()
+    except ValueError:
+        return None
+
+
+def read_instance_uptime_seconds(uptime_path: Path = Path("/proc/uptime")) -> float:
+    """Host uptime, the clock the EventBridge stop is scheduled against."""
+
+    try:
+        return float(uptime_path.read_text().split()[0])
+    except (OSError, IndexError, ValueError) as exc:
+        raise ValueError(f"cannot read instance uptime from {uptime_path}: {exc}") from exc
+
+
+def instance_window_budget_from_uptime(
+    uptime_seconds: float,
     *,
     window_seconds: int | None = None,
     reserve_seconds: int | None = None,
 ) -> int:
-    """Read host uptime and apply the EventBridge window env overrides."""
+    """Apply the EventBridge window env overrides to an already-read uptime.
+
+    Separate from the read so ``main`` can take the uptime in the same breath
+    as its own clock: the budget and the clock it is measured against have to
+    describe one instant, or the interval between them is spent by nobody and
+    charged to the sweep.
+    """
 
     window = (
         window_seconds
@@ -889,11 +918,22 @@ def instance_window_budget_from_proc(
         if reserve_seconds is not None
         else int(os.environ.get("EVENTBRIDGE_STOP_RESERVE_SECONDS", str(EVENTBRIDGE_STOP_RESERVE_SECONDS)))
     )
-    try:
-        uptime = float(uptime_path.read_text().split()[0])
-    except (OSError, IndexError, ValueError) as exc:
-        raise ValueError(f"cannot read instance uptime from {uptime_path}: {exc}") from exc
-    return instance_window_budget_seconds(uptime, window_seconds=window, reserve_seconds=reserve)
+    return instance_window_budget_seconds(uptime_seconds, window_seconds=window, reserve_seconds=reserve)
+
+
+def instance_window_budget_from_proc(
+    uptime_path: Path = Path("/proc/uptime"),
+    *,
+    window_seconds: int | None = None,
+    reserve_seconds: int | None = None,
+) -> int:
+    """Read host uptime and apply the EventBridge window env overrides."""
+
+    return instance_window_budget_from_uptime(
+        read_instance_uptime_seconds(uptime_path),
+        window_seconds=window_seconds,
+        reserve_seconds=reserve_seconds,
+    )
 
 
 def remaining_runtime_seconds(*, max_runtime_seconds: int | None, started_monotonic: float) -> int | None:
@@ -1388,8 +1428,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-runtime-seconds",
         type=_positive_int,
         default=None,
-        help="wall-clock cap for the whole evolve process (CI sets this from "
+        help="wall-clock cap for the whole evolve process (CI derives this from "
         "instance uptime so the sweep exits before EventBridge stops the box)",
+    )
+    parser.add_argument(
+        "--max-runtime-from-instance-window",
+        action="store_true",
+        help="derive --max-runtime-seconds from /proc/uptime at startup, so the "
+        "budget and the clock it is measured against describe one instant",
     )
     parser.add_argument("--base-url", default=None)
     parser.add_argument(
@@ -1428,14 +1474,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    # Before anything else: --max-runtime-seconds is measured from /proc/uptime
-    # before this process is even exec'd (run-evolution.sh), so every second
-    # spent parsing, reading tasks, running the sandbox preflight and starting
-    # the gateway would otherwise be handed back to the sweep and taken out of
-    # the upload reserve the cap exists to protect.
+    # These two lines are the cap, and they are adjacent on purpose: the clock
+    # the sweep is measured against, and the uptime the budget is derived from.
+    # run-evolution.sh used to compute the budget in its own `uv run python -c`
+    # and pass a number, so the script's remaining work and this interpreter's
+    # startup were spent by nobody and charged to the sweep — out of the upload
+    # reserve the cap exists to protect. Nothing can be spent between them now.
     started_monotonic = time.monotonic()
+    instance_uptime = _instance_uptime_or_none()
     parser = build_parser()
     args = parser.parse_args()
+    if args.max_runtime_from_instance_window:
+        if args.max_runtime_seconds is not None:
+            parser.error("--max-runtime-from-instance-window and --max-runtime-seconds are mutually exclusive")
+        if instance_uptime is None:
+            parser.error("--max-runtime-from-instance-window needs a readable /proc/uptime")
+        try:
+            args.max_runtime_seconds = instance_window_budget_from_uptime(instance_uptime)
+        except ValueError as exc:
+            parser.error(str(exc))
+        print(f"capping the sweep to {args.max_runtime_seconds}s so the instance-window reserve can upload evidence")
     if args.generations < 1:
         parser.error("--generations must be positive")
     if args.runs < 1 or args.timeout < 1:

@@ -21,6 +21,12 @@ from workflow_bench.proposer_sandbox import SandboxError
 from workflow_bench.runner_sessions import PARENT_EVENT_STREAM_SOURCE
 
 
+requires_openat = pytest.mark.skipif(
+    os.open not in os.supports_dir_fd,
+    reason="comparator reuse resolves every artifact against a pinned directory descriptor",
+)
+
+
 def _digest(text: str = "blob") -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -148,6 +154,7 @@ def test_select_drops_conflicting_duplicates() -> None:
     assert ("review-pr-2718-defect", "review", 0) in same
 
 
+@requires_openat
 def test_materialize_copies_transcript_and_review_artifacts(tmp_path: Path) -> None:
     payload = b'{"type":"result"}\n'
     source = tmp_path / "prior"
@@ -177,6 +184,7 @@ def test_materialize_copies_transcript_and_review_artifacts(tmp_path: Path) -> N
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
+@requires_openat
 def test_a_reused_artifact_is_copied_from_the_inode_that_was_checked(tmp_path: Path) -> None:
     """The reuse source is a directory another sweep wrote and may still write.
 
@@ -186,24 +194,24 @@ def test_a_reused_artifact_is_copied_from_the_inode_that_was_checked(tmp_path: P
     same substitution, made deterministic.
     """
 
-    source = tmp_path / "transcript.jsonl"
-    source.write_bytes(b"verified\n")
+    (tmp_path / "transcript.jsonl").write_bytes(b"verified\n")
     decoy = tmp_path / "decoy.jsonl"
     decoy.write_bytes(b"substituted\n")
-    destination = tmp_path / "copy.jsonl"
 
-    with comparator_reuse._open_regular(source, label="transcript") as descriptor:
-        source.unlink()
-        source.symlink_to(decoy)
-        comparator_reuse._copy_owner_only(descriptor, destination)
+    with comparator_reuse._open_real_directory(tmp_path, label="reuse source") as dir_fd:
+        with comparator_reuse._open_regular("transcript.jsonl", dir_fd=dir_fd, label="transcript") as descriptor:
+            (tmp_path / "transcript.jsonl").unlink()
+            (tmp_path / "transcript.jsonl").symlink_to(decoy)
+            comparator_reuse._copy_owner_only(descriptor, "copy.jsonl", dir_fd=dir_fd)
 
-    assert destination.read_bytes() == b"verified\n"
-    with pytest.raises(SandboxError, match="regular non-symlink"):
-        with comparator_reuse._open_regular(source, label="transcript"):
-            pass
+        assert (tmp_path / "copy.jsonl").read_bytes() == b"verified\n"
+        with pytest.raises(SandboxError, match="regular non-symlink"):
+            with comparator_reuse._open_regular("transcript.jsonl", dir_fd=dir_fd, label="transcript"):
+                pass
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
+@requires_openat
 def test_a_symlinked_transcripts_directory_is_refused_on_both_sides(tmp_path: Path) -> None:
     """`O_NOFOLLOW` refuses the leaf, not the directory above it.
 
@@ -237,6 +245,42 @@ def test_a_symlinked_transcripts_directory_is_refused_on_both_sides(tmp_path: Pa
         materialize_reused_row(row, source_dir=source, dest_dir=linked_dest)
 
 
+@requires_openat
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
+def test_a_renamed_transcripts_directory_cannot_redirect_a_copy(tmp_path: Path) -> None:
+    """The directory is pinned, not re-walked from its name.
+
+    An lstat that passed and a pathname used afterwards are two different
+    directories the moment a concurrent writer renames the first one away. This
+    performs exactly that substitution — rename, then leave a symlink in its
+    place — while the descriptor is held, which is what makes the race testable
+    without timing.
+    """
+
+    payload = b'{"type":"result"}\n'
+    results = tmp_path / "results"
+    transcripts = results / "transcripts"
+    transcripts.mkdir(parents=True)
+    (transcripts / "session-1.jsonl").write_bytes(payload)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with comparator_reuse._open_real_directory(results, label="reuse source") as root_fd:
+        with comparator_reuse._open_real_directory(
+            "transcripts", dir_fd=root_fd, label="transcript source"
+        ) as dir_fd:
+            transcripts.rename(results / "moved")
+            (results / "transcripts").symlink_to(outside, target_is_directory=True)
+            with comparator_reuse._open_regular(
+                "session-1.jsonl", dir_fd=dir_fd, label="transcript"
+            ) as artifact_fd:
+                comparator_reuse._copy_owner_only(artifact_fd, "copy.jsonl", dir_fd=dir_fd)
+
+    assert (results / "moved" / "copy.jsonl").read_bytes() == payload
+    assert not (outside / "copy.jsonl").exists()
+
+
+@requires_openat
 def test_materialize_rejects_same_directory_and_missing_transcript(tmp_path: Path) -> None:
     source = tmp_path / "prior"
     source.mkdir()
@@ -249,6 +293,7 @@ def test_materialize_rejects_same_directory_and_missing_transcript(tmp_path: Pat
         materialize_reused_row(row, source_dir=source, dest_dir=dest)
 
 
+@requires_openat
 def test_a_reused_row_ages_from_its_first_measurement_not_the_copy(tmp_path: Path):
     """Reuse chains must not refresh the clock.
 

@@ -263,23 +263,31 @@ def materialize_reused_row(
     artifacts = row.get("transcript_artifacts")
     if not isinstance(artifacts, list) or not artifacts:
         raise SandboxError("reused row is missing transcript_artifacts")
-    copied_artifacts: list[dict[str, Any]] = []
-    for artifact in artifacts:
-        copied_artifacts.append(_copy_transcript_artifact(source, dest, artifact))
-    materialized["transcript_artifacts"] = copied_artifacts
 
-    review_name = row.get("review_artifact")
-    if isinstance(review_name, str) and review_name:
-        _copy_named_artifact(source, dest, review_name, label="review artifact")
+    # Every path below is resolved against a held descriptor, never re-walked
+    # from a name. Both roots are already symlink-free (_resolved_directory
+    # resolved them), and pinning them here means the components under them
+    # cannot be swapped out from under a check that already passed.
+    with (
+        _open_real_directory(source, label="reuse source") as source_fd,
+        _open_real_directory(dest, label="reuse destination") as dest_fd,
+    ):
+        copied_artifacts: list[dict[str, Any]] = []
+        for artifact in artifacts:
+            copied_artifacts.append(_copy_transcript_artifact(source_fd, dest_fd, artifact))
+        materialized["transcript_artifacts"] = copied_artifacts
 
-    task = row.get("task")
-    arm = row.get("arm")
-    run = row.get("run")
-    if isinstance(task, str) and isinstance(arm, str) and isinstance(run, int) and not isinstance(run, bool):
-        patch_name = f"{task}-{arm}-run{run}.patch"
-        patch = source / patch_name
-        if patch.is_file() and not patch.is_symlink():
-            _copy_named_artifact(source, dest, patch_name, label="patch artifact")
+        review_name = row.get("review_artifact")
+        if isinstance(review_name, str) and review_name:
+            _copy_named_artifact(source_fd, dest_fd, review_name, label="review artifact")
+
+        task = row.get("task")
+        arm = row.get("arm")
+        run = row.get("run")
+        if isinstance(task, str) and isinstance(arm, str) and isinstance(run, int) and not isinstance(run, bool):
+            patch_name = f"{task}-{arm}-run{run}.patch"
+            if _is_regular_at(patch_name, dir_fd=source_fd):
+                _copy_named_artifact(source_fd, dest_fd, patch_name, label="patch artifact")
     return materialized
 
 
@@ -359,102 +367,156 @@ def _resolved_directory(path: Path, *, label: str) -> Path:
     return resolved.resolve()
 
 
-def _copy_transcript_artifact(source: Path, dest: Path, metadata: Mapping[str, Any]) -> dict[str, Any]:
+def _copy_transcript_artifact(source_fd: int, dest_fd: int, metadata: Mapping[str, Any]) -> dict[str, Any]:
     relative, expected_digest, expected_size = _transcript_metadata(metadata)
     name = PurePosixPath(relative).name
-    dest_dir = _real_child_directory(dest, "transcripts", label="transcript destination", create=True)
-    dest_dir.chmod(0o700)
-    destination = dest_dir / name
-    source_dir = _real_child_directory(source, "transcripts", label="transcript source")
-    # One descriptor for the size check, the digest and the copy. Re-opening the
-    # path between them is what let a concurrent writer swap the checked file
-    # for a symlink and have the copy follow it.
-    with _open_regular(source_dir / name, label="transcript") as source_fd:
-        if os.fstat(source_fd).st_size != expected_size:
-            raise SandboxError(f"reused transcript size drifted: {relative}")
-        digest = _sha256_descriptor(source_fd)
-        if digest != expected_digest:
-            raise SandboxError(f"reused transcript digest drifted: {relative}")
-        _copy_owner_only(source_fd, destination)
+    # Both `transcripts` components are opened as descriptors, not checked as
+    # names. An lstat that passes and a pathname that is used afterwards are two
+    # different directories whenever a concurrent writer renames the first one
+    # away — which the reuse directory, written by a prior sweep, invites.
+    with (
+        _open_real_directory("transcripts", dir_fd=dest_fd, label="transcript destination", create=True) as dest_dir_fd,
+        _open_real_directory("transcripts", dir_fd=source_fd, label="transcript source") as source_dir_fd,
+    ):
+        os.fchmod(dest_dir_fd, 0o700)
+        # One descriptor for the size check, the digest and the copy. Re-opening
+        # the name between them is what let a writer swap the checked file for a
+        # symlink and have the copy follow it.
+        with _open_regular(name, dir_fd=source_dir_fd, label="transcript") as artifact_fd:
+            if os.fstat(artifact_fd).st_size != expected_size:
+                raise SandboxError(f"reused transcript size drifted: {relative}")
+            digest = _sha256_descriptor(artifact_fd)
+            if digest != expected_digest:
+                raise SandboxError(f"reused transcript digest drifted: {relative}")
+            _copy_owner_only(artifact_fd, name, dir_fd=dest_dir_fd)
     return {"path": relative, "sha256": digest, "bytes": expected_size, "source": PARENT_EVENT_STREAM_SOURCE}
 
 
-def _copy_named_artifact(source: Path, dest: Path, name: str, *, label: str) -> None:
+def _copy_named_artifact(source_fd: int, dest_fd: int, name: str, *, label: str) -> None:
     relative = PurePosixPath(name)
     if relative.is_absolute() or len(relative.parts) != 1 or relative.parts[0] in {"", ".", ".."}:
         raise SandboxError(f"unsafe {label} path: {name!r}")
-    with _open_regular(source / name, label=label) as source_fd:
-        _copy_owner_only(source_fd, dest / name)
+    with _open_regular(name, dir_fd=source_fd, label=label) as artifact_fd:
+        _copy_owner_only(artifact_fd, name, dir_fd=dest_fd)
 
 
-def _real_child_directory(parent: Path, name: str, *, label: str, create: bool = False) -> Path:
-    """One directory component below the reuse root, proven not to be a symlink.
+def _require_openat() -> None:
+    """openat is what makes a checked directory and a used directory the same one.
 
-    ``_resolved_directory`` tolerates a symlinked ROOT because everything below
-    it is validated individually. ``transcripts`` is the component that argument
-    misses: it is neither a file read guarded by ``lstat`` nor a write guarded
-    by ``O_NOFOLLOW``, and ``O_NOFOLLOW`` refuses only the leaf, so a link here
-    redirects the read or the write out of the results directory entirely.
-    Checked per component, as ``evolution._require_directory_chain`` does.
+    Without it the only alternative is to re-walk the name after the check,
+    which is exactly the race this module is guarding. Refusing is safe: the
+    caller in runner treats a SandboxError from reuse as "run a paid cell", so
+    a platform without openat pays for the cells rather than copying through a
+    directory nobody verified. The sweep itself is Linux-only anyway (bwrap,
+    /proc/uptime); this is about the unit tests and about failing loudly.
     """
 
-    child = parent / name
+    if os.open not in os.supports_dir_fd or os.lstat not in os.supports_dir_fd:
+        raise SandboxError("comparator reuse requires POSIX openat support (os.supports_dir_fd)")
+
+
+def _is_regular_at(name: str, *, dir_fd: int) -> bool:
+    """True when `name` under the pinned directory is a regular non-symlink file."""
+
     try:
-        metadata = child.lstat()
-    except FileNotFoundError:
-        if not create:
-            raise SandboxError(f"{label} is missing: {child}") from None
-        child.mkdir(mode=0o700)
-        return child
-    except OSError as exc:
-        raise SandboxError(f"{label} is unavailable: {child}: {exc}") from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-        raise SandboxError(f"{label} must be a real directory: {child}")
-    return child
+        metadata = os.lstat(name, dir_fd=dir_fd)
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode)
 
 
 @contextmanager
-def _open_regular(path: Path, *, label: str) -> Iterator[int]:
-    """Open a regular non-symlink file and hold it open for every later read.
+def _open_real_directory(
+    path: Path | str,
+    *,
+    dir_fd: int | None = None,
+    label: str,
+    create: bool = False,
+) -> Iterator[int]:
+    """Open one directory that is not a symlink, and hold it for every use below.
 
-    Checking the path and then re-opening it is a race the reuse directory is
-    exposed to: it is written by a previous sweep and read by this one, so a
-    concurrent writer can replace a validated file with a symlink in between.
-    O_NOFOLLOW refuses the leaf link and the fstat comparison proves the open
-    descriptor is the inode that was checked — the same guarantee
-    evolution._bounded_regular_bytes makes for evidence files.
+    ``O_DIRECTORY | O_NOFOLLOW`` makes the check and the open a single syscall,
+    so unlike an ``lstat`` followed by a path, there is no window in which the
+    directory can be replaced. ``_resolved_directory`` still tolerates a
+    symlinked reuse ROOT — it hands this function the already-resolved path —
+    but every component below it is pinned.
     """
 
+    _require_openat()
+    if create:
+        try:
+            os.mkdir(path, 0o700, dir_fd=dir_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise SandboxError(f"{label} cannot be created: {path}: {exc}") from exc
     try:
-        before = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=dir_fd,
+        )
+    except FileNotFoundError as exc:
+        # Absent is a different fact from present-but-not-a-real-directory, and
+        # the caller falls through to a paid cell on either.
+        raise SandboxError(f"{label} is missing: {path}") from exc
     except OSError as exc:
-        raise SandboxError(f"{label} is missing: {path}: {exc}") from exc
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-        raise SandboxError(f"{label} must be a regular non-symlink file: {path}")
+        raise SandboxError(f"{label} must be a real directory: {path}: {exc}") from exc
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError as exc:
-        raise SandboxError(f"{label} is unreadable: {path}: {exc}") from exc
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise SandboxError(f"{label} changed while opening: {path}")
+        # O_DIRECTORY is the check on Linux; the fstat covers a platform whose
+        # os module does not define it, where the flag degrades to 0.
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise SandboxError(f"{label} must be a real directory: {path}")
         yield descriptor
     finally:
         os.close(descriptor)
 
 
-def _copy_owner_only(source: int, destination: Path) -> None:
+@contextmanager
+def _open_regular(name: str, *, dir_fd: int, label: str) -> Iterator[int]:
+    """Open a regular non-symlink file under a pinned directory, and hold it.
+
+    Checking a name and then re-opening it is a race the reuse directory is
+    exposed to: it is written by a previous sweep and read by this one, so a
+    concurrent writer can replace a validated file with a symlink in between.
+    Resolving against ``dir_fd`` removes the directory half, ``O_NOFOLLOW``
+    refuses the leaf link, and the fstat comparison proves the open descriptor
+    is the inode that was checked — the same guarantee
+    evolution._bounded_regular_bytes makes for evidence files.
+    """
+
+    _require_openat()
+    try:
+        before = os.lstat(name, dir_fd=dir_fd)
+    except OSError as exc:
+        raise SandboxError(f"{label} is missing: {name}: {exc}") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise SandboxError(f"{label} must be a regular non-symlink file: {name}")
+    try:
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+    except OSError as exc:
+        raise SandboxError(f"{label} is unreadable: {name}: {exc}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise SandboxError(f"{label} changed while opening: {name}")
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _copy_owner_only(source: int, name: str, *, dir_fd: int) -> None:
     # O_CREAT|O_EXCL is the existence check, and unlike a stat beforehand it is
     # atomic: a file appearing between check and open cannot slip through.
     try:
         descriptor = os.open(
-            destination,
+            name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
             0o600,
+            dir_fd=dir_fd,
         )
     except FileExistsError as exc:
-        raise SandboxError(f"reuse destination already exists: {destination}") from exc
+        raise SandboxError(f"reuse destination already exists: {name}") from exc
     try:
         os.fchmod(descriptor, 0o600)
         os.lseek(source, 0, os.SEEK_SET)

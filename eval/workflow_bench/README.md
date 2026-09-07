@@ -170,9 +170,11 @@ router thresholds as an incumbent policy, not permanent truth. Candidate
 changes run offline in the same throwaway clones as the incumbent; production
 skills never rewrite themselves from a live task.
 
-On the self-hosted evolution box, `run-evolution.sh` caps the sweep with
-`--max-runtime-seconds` derived from `/proc/uptime` (24h EventBridge window
-minus a 90-minute upload reserve). A `workflow_dispatch` that lands on an
+On the self-hosted evolution box, `run-evolution.sh` passes
+`--max-runtime-from-instance-window` and the CLI derives its own cap from
+`/proc/uptime` at startup (24h EventBridge window minus a 90-minute upload
+reserve), in the same breath as it starts the clock that cap is measured
+against — a budget computed anywhere earlier is spent by the seconds between. A `workflow_dispatch` that lands on an
 already-running instance therefore exits in-process instead of vanishing when
 the box stops — a cancelled GitHub job skips even `if: always()`, which is
 how run 33962002890 lost 51 finished sessions. Local runs are uncapped.
