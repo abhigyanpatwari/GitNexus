@@ -118,6 +118,7 @@ import { isDebugHeapEnabled, logHeapProbe } from '../utils/heap-probe.js';
 
 import { logger } from '../../logger.js';
 import { mapConcurrent } from '../../../lib/utils.js';
+import { createRoundBudget } from './parse-round-budget.js';
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /**
@@ -925,7 +926,7 @@ export async function runChunkedParseAndResolve(
      * Measured in UTF-8 bytes, matching `estimateItemBytes` in the worker pool,
      * so the cap means the same thing here as it does for a job's payload.
      */
-    let roundBufferedBytes = 0;
+    const roundBudget = createRoundBudget(roundByteBudget);
     /**
      * Files QUEUED into rounds so far. `filesParsedSoFar` only advances when a
      * round drains, so it is the right number for the throughput log but would
@@ -1224,7 +1225,7 @@ export async function runChunkedParseAndResolve(
     const closeRound = async (): Promise<void> => {
       const started = await startRound(roundEntries);
       roundEntries = [];
-      roundBufferedBytes = 0;
+      roundBudget.reset();
       const previous = pendingRound;
       pendingRound = null;
       if (previous) {
@@ -1347,6 +1348,8 @@ export async function runChunkedParseAndResolve(
         durableExpectedPaths !== undefined &&
         (await durableChunkHasShards(parsedFileStorePath, chunkHash, durableExpectedPaths));
 
+      // Set by whichever branch queues this chunk; drives the close below.
+      let roundIsFull = false;
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
         // chunk FIRST so deferred aggregation stays in chunk order, then merge
@@ -1384,9 +1387,7 @@ export async function runChunkedParseAndResolve(
           chunkStartMs,
           cachedRaw,
         });
-        for (const file of chunkFiles) {
-          roundBufferedBytes += Buffer.byteLength(file.content, 'utf8');
-        }
+        roundIsFull = roundBudget.addChunk(chunkFiles.map((file) => file.content));
         queuedFilesSoFar += chunkFiles.length;
       } else {
         // Cache miss: queue for the round's single dispatch; the raw results
@@ -1394,16 +1395,14 @@ export async function runChunkedParseAndResolve(
         chunkCacheMisses++;
         reparsedFileCount += chunkFiles.length;
         roundEntries.push({ kind: 'miss', chunkIdx, chunkHash, chunkFiles, chunkStartMs });
-        for (const file of chunkFiles) {
-          roundBufferedBytes += Buffer.byteLength(file.content, 'utf8');
-        }
+        roundIsFull = roundBudget.addChunk(chunkFiles.map((file) => file.content));
         queuedFilesSoFar += chunkFiles.length;
       }
 
       // One cap, on what the main thread is holding. That bounds the worker
       // round too, since a round's dispatched bytes are a subset of its
       // buffered bytes.
-      if (roundBufferedBytes >= roundByteBudget) await closeRound();
+      if (roundIsFull) await closeRound();
 
       // (Per-chunk aggregation + parse-cache write + throughput log now run in
       // `applyChunkResults` / `finalizeWorkerChunk` — see the merge-pipelining
