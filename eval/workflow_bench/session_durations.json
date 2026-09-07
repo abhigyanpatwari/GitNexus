@@ -1,0 +1,69 @@
+{
+  "_provenance": "Actions run 33912693948 (2026-09-04), review profile, gen-0, workers=1. Artifact gitnexus-evolution-33912693948-1: gen-0/bench/results.jsonl and gen-0/proposer-session.json. Step wall from the Actions API.",
+  "_caveat": "Every cell in that run returned unusable evidence (32 review-evidence-invalid, 6 session-error, 3 skill-not-invoked); two hit the 5400s ceiling and it cost 653. Durations are real, but a run that resolves cleanly may sit lower. It is the only live artifact - the 2026-07-22 green run's has expired.",
+  "_order": "Submission order, deliberately unsorted: the model cycles these, so sorting would hand each task a uniform block and hide the variance being measured.",
+  "_duration_scope": "duration_s is the sum of the cell's Claude session durations (runner_sessions.py). It excludes the clone, graph materialize, asset staging, sandbox setup and teardown - those live in the residual below.",
+  "session_ceiling_s": 5400,
+  "proposer_duration_s": 344.7,
+  "cell_duration_s_by_arm": {
+    "candidate_review": [
+      2485.6,
+      1338.0,
+      3075.2,
+      702.5,
+      1240.4,
+      5400.0,
+      762.1,
+      342.9,
+      826.3,
+      489.7,
+      675.4,
+      337.8,
+      734.3
+    ],
+    "ce_review": [
+      3744.6,
+      2140.4,
+      1418.4,
+      436.1,
+      653.3,
+      1022.3,
+      851.2,
+      1191.1,
+      902.1,
+      847.2,
+      502.6,
+      991.3,
+      1222.7,
+      544.0
+    ],
+    "review": [
+      5400.0,
+      2976.4,
+      1162.8,
+      627.1,
+      901.3,
+      436.9,
+      704.3,
+      963.4,
+      631.8,
+      627.9,
+      663.5,
+      662.4,
+      361.3,
+      741.1
+    ]
+  },
+  "residual": {
+    "benchmark_step_wall_s": 54623,
+    "session_seconds": 51737.7,
+    "proposer_seconds": 344.7,
+    "unaccounted_s": 2540.6,
+    "cells": 41,
+    "unique_shas": 5,
+    "_note": "Everything the sweep spent outside the agent sessions: per-SHA sanitize and `analyze --pdg --index-only`, plus each cell's clone, materialize, staging, sandbox and teardown. That run predates clone templates and graph prefetch, so this is an upper bound for the current code. The split between per-SHA and per-cell is not recoverable from the artifact, so the model charges it per cell and serially, outside the pool - the pessimistic reading of an already-small term.",
+    "_split_assumption": "The residual mixes per-SHA graph setup with per-cell clone/sandbox/teardown and the artifact cannot separate them. The model charges it per SHA, not per cell, because only that direction refuses to credit a run for shrinking work it still performs: a weekly generation pays one arm instead of three but builds the same graphs. This overstates cold slightly and refuses to understate weekly. Replace with measured per-SHA and per-cell times when a run records them separately.",
+    "sha_overhead_s": 508.1
+  },
+  "_breaker": "Replaying this sample's error_kind sequence through today's systemic_outage_streak trips the outage breaker at cell 5 of 41 (DEFAULT_OUTAGE_STREAK=5). The source run executed all 41, so its runner did not break on this sequence. The durations stay valid as per-cell timings; what they cannot describe is a 54-cell sweep with this failure profile, because the current code would never run one."
+}
