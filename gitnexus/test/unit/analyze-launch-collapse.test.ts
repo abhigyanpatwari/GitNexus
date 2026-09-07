@@ -183,8 +183,11 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     launch(job, REPO_PATH, { branch: 'development' });
 
     // `StartMessage.options` is typed as `AnalyzeOptions`, so this key IS
-    // `AnalyzeOptions.branch` — the field `resolveWriteTarget` reads to pin the
-    // run to `branches/<slug>/`. A rename there breaks this test.
+    // `AnalyzeOptions.branch` — the field `resolveWriteTarget` reads to choose
+    // the run's storage slot. (It does not always mean a `branches/<slug>/`
+    // sub-slot: `resolveBranchPlacement` keeps the flat slot when that slot has
+    // no owner, or when its owner is already this label.) A rename breaks this
+    // test.
     expect(child.send).toHaveBeenCalledWith(
       expect.objectContaining({
         options: expect.objectContaining({ branch: 'development' }),

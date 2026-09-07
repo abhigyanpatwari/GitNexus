@@ -1010,7 +1010,11 @@ export const startAnalyze = async (request: {
   force?: boolean;
   embeddings?: boolean;
   token?: string;
-  /** Index-branch selector; omitted means the remote's default branch. */
+  /**
+   * Index-branch selector. Omitted, a `url` request clones the remote's default
+   * branch; a `path` request is not cloned at all and indexes whatever that
+   * working tree already has checked out.
+   */
   branch?: string;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(

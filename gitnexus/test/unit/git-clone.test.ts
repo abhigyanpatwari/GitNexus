@@ -1410,6 +1410,30 @@ describe('getCloneDir — a branch-pinned analyze gets its own working tree', ()
     expect(getCloneDir(path.basename(dir))).toBe(dir);
   });
 
+  it('keeps the directory name inside the 255-byte filesystem limit', () => {
+    // validateBranchName allows a 255-char ref and branchSlug appends 9 more,
+    // so the naive `<repo>__<slug>` reached 267 and the clone could not create
+    // its target directory.
+    const longBranch = 'b'.repeat(255);
+    const base = path.basename(getCloneDir('Hello-World', longBranch));
+    expect(base.length).toBeLessThanOrEqual(255);
+  });
+
+  it('still separates two long branches that share a prefix', () => {
+    // Trimming keeps the hash, which is a digest of the FULL ref — otherwise
+    // two long branches would collapse onto one directory and silently share
+    // an index.
+    const a = 'b'.repeat(250) + 'one';
+    const b = 'b'.repeat(250) + 'two';
+    expect(getCloneDir('Hello-World', a)).not.toBe(getCloneDir('Hello-World', b));
+    expect(path.basename(getCloneDir('Hello-World', a)).length).toBeLessThanOrEqual(255);
+  });
+
+  it('round-trips a trimmed directory name too', () => {
+    const dir = getCloneDir('Hello-World', 'b'.repeat(255));
+    expect(getCloneDir(path.basename(dir))).toBe(dir);
+  });
+
   it('still rejects a traversal attempt in the repo name', () => {
     expect(() => getCloneDir('..', 'development')).toThrow(/Invalid repository name/);
     expect(() => getCloneDir('a/b', 'development')).toThrow(/Invalid repository name/);

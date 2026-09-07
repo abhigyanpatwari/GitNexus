@@ -86,6 +86,37 @@ export function extractWebRepoName(url: string): string {
 }
 
 /** Get the clone target directory for a repo name. */
+/**
+ * Longest single path component the supported filesystems accept (ext4, APFS,
+ * NTFS all cap at 255).
+ */
+const MAX_PATH_COMPONENT_BYTES = 255;
+
+/**
+ * `branchSlug` for a clone-directory name, trimmed to fit one path component.
+ *
+ * `validateBranchName` allows a ref up to 255 characters and `branchSlug`
+ * appends `-` plus 8 hash characters, so `<repo>__<slug>` can reach 267 — past
+ * the filesystem limit, and the clone would then fail to create its target
+ * directory (#3199 review).
+ *
+ * Only the READABLE half is trimmed; the 8-character hash is always kept, and
+ * it is a digest of the full ref, so two long branches that share a prefix
+ * still get different directories. The slug is not trimmed inside
+ * `branchSlug` itself because the per-branch *index* slots already use those
+ * names on disk — shortening them there would orphan existing indexes.
+ */
+const boundedBranchSegment = (repoName: string, branch: string): string => {
+  const slug = branchSlug(branch);
+  if (`${repoName}__${slug}`.length <= MAX_PATH_COMPONENT_BYTES) return slug;
+
+  const hash = slug.slice(slug.lastIndexOf('-')); // "-" + 8 hex
+  const budget = MAX_PATH_COMPONENT_BYTES - repoName.length - '__'.length - hash.length;
+  // A repo name long enough to leave no budget falls through to the caller's
+  // length check, which rejects it rather than building an unusable path.
+  return `${slug.slice(0, Math.max(0, budget))}${hash}`;
+};
+
 export function getCloneDir(repoName: string, branch?: string): string {
   // Re-validate at the boundary even though extractRepoName already checked —
   // callers may pass a repoName from another source (test fixtures, scripts).
@@ -106,8 +137,8 @@ export function getCloneDir(repoName: string, branch?: string): string {
   // `[a-zA-Z0-9._-]`, so the composed name still satisfies REPO_NAME_PATTERN and
   // round-trips through this function — which is how DELETE /api/repo re-derives
   // the directory from the registry name.
-  const dirName = branch ? `${repoName}__${branchSlug(branch)}` : repoName;
-  if (!REPO_NAME_PATTERN.test(dirName)) {
+  const dirName = branch ? `${repoName}__${boundedBranchSegment(repoName, branch)}` : repoName;
+  if (!REPO_NAME_PATTERN.test(dirName) || dirName.length > MAX_PATH_COMPONENT_BYTES) {
     throw new Error('Invalid repository name');
   }
   return path.join(CLONE_ROOT, dirName);
