@@ -69,6 +69,8 @@ import {
   createWorkerPool,
   workerPoolDisabledByEnv,
   resolveAutoPoolSize,
+  envWorkerPoolSize,
+  resolveHostParallelism,
   WorkerPoolInitializationError,
   WorkerPoolDisabledError,
 } from '../workers/worker-pool.js';
@@ -115,6 +117,8 @@ import {
 import { isDebugHeapEnabled, logHeapProbe } from '../utils/heap-probe.js';
 
 import { logger } from '../../logger.js';
+import { mapConcurrent } from '../../../lib/utils.js';
+import { createRoundBudget } from './parse-round-budget.js';
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /**
@@ -213,11 +217,18 @@ const CHUNK_BYTES_PER_WORKER = DEFAULT_CHUNK_BYTE_BUDGET;
  */
 const TARGET_JOBS_PER_WORKER = 3;
 
+/**
+ * Concurrent durable ParsedFile directory resets per round. Matches the file
+ * reader's `READ_CONCURRENCY`, because both compete for the same descriptors.
+ */
+const DURABLE_RESET_CONCURRENCY = 32;
+
 /** Floor for a derived sub-batch so jobs don't shrink to per-file IPC churn. */
 const MIN_SUB_BATCH_BYTES = 256 * 1024;
 
 /**
- * Source bytes of cache-missing chunks allowed in flight in one pool round.
+ * Source bytes an open round may HOLD — cache hits and misses alike — before
+ * it is dispatched and drained.
  *
  * A `dispatch` is a barrier, so one round-trip per cache pack leaves most slots
  * idle: packs are keyed by `(language, hash(path) % 128)` and routinely land far
@@ -579,12 +590,42 @@ export async function runChunkedParseAndResolve(
   // cores-based auto size is capped by source bytes / CHUNK_BYTES_PER_WORKER
   // so a tiny repo does not spawn a full idle pool. Cache pack membership
   // is independent of this number (#3088).
-  const explicitPoolSize = options?.workerPoolSize;
+  // `--workers <N>` and `GITNEXUS_WORKER_POOL_SIZE` are both deliberate
+  // operator input, so both bypass the work-proportional cap below. Only the
+  // env path used to be clamped by it, which made the documented escape hatch
+  // silently do nothing: on a 30MB repo the cap resolves to 16, so an operator
+  // asking for 24 still got 16 with no warning, while `--workers 24` got 24.
+  const explicitPoolSize = options?.workerPoolSize ?? envWorkerPoolSize();
+  // Cores-based auto size, bounded by source bytes so a tiny repo does not
+  // spawn a full idle pool.
   const workProportionalCap = Math.max(1, Math.ceil(totalBytes / CHUNK_BYTES_PER_WORKER));
+  // An operator's number is honored, but never exceeds the number of files
+  // there are to parse — `GITNEXUS_WORKER_POOL_SIZE=100000` on a five-file repo
+  // should not become the literal thread count. This bounds `--workers` and the
+  // env var identically, keeping the parity above intact. Note it does NOT
+  // shrink an incremental re-analyze: `totalParseable` counts every parseable
+  // file in the scan, not the changed ones, so a warm run of a large repo still
+  // spawns the full requested pool.
   const effectivePoolSize =
     explicitPoolSize && explicitPoolSize > 0
-      ? explicitPoolSize
+      ? Math.min(explicitPoolSize, Math.max(1, totalParseable))
       : Math.min(resolveAutoPoolSize(), workProportionalCap);
+  // Deliberate over-subscription is the operator's call, so this warns rather
+  // than caps — silently capping is what the override exists to stop. But an
+  // exported `GITNEXUS_WORKER_POOL_SIZE` applies to EVERY analyze in a
+  // long-lived caller (watch auto-sync, the MCP server), including small
+  // incremental ones, and that is easy to set once and forget.
+  if (explicitPoolSize && explicitPoolSize > 0) {
+    const hostParallelism = resolveHostParallelism();
+    if (effectivePoolSize > hostParallelism) {
+      logger.warn(
+        { requested: explicitPoolSize, spawning: effectivePoolSize, hostParallelism },
+        `Worker pool size ${effectivePoolSize} exceeds this host's ${hostParallelism} usable core(s); ` +
+          `parsing is CPU-bound, so the extra workers add memory pressure without throughput. ` +
+          `This applies to every analyze while the override is set.`,
+      );
+    }
+  }
   // Cache packs: stable (language, hash(path) mod 128) buckets, then the
   // per-call byte budget inside each bucket (#3088). Pool size is used only
   // for worker count and sub-batch fan-out, not membership.
@@ -861,20 +902,31 @@ export async function runChunkedParseAndResolve(
           readonly chunkStartMs: number | null;
         };
 
+    /**
+     * Chunk hashes whose durable ParsedFile directory could not be reset. The
+     * old generation's shards are still on disk, so a warm hit would union
+     * stale shards with the new ones. Treated exactly like a quarantined chunk:
+     * skip the parse-cache write so the next run re-dispatches into a clean
+     * directory rather than trusting a generation we could not clear.
+     */
+    const durablePrepareFailures = new Set<string>();
+
     const roundByteBudget = resolveParseRoundByteBudget(options);
     let roundEntries: RoundEntry[] = [];
-    let roundMissBytes = 0;
     /**
      * Bytes an open round is HOLDING, counting hits as well as misses.
      *
-     * `roundMissBytes` alone bounds only what the workers are asked to do, so a
-     * warm run — where nothing misses — would never reach the close condition
-     * and would buffer every chunk's cached output until the tail drain. That
-     * is the #2649 heap failure on a large repo. Closing on either cap keeps a
-     * hits-only run draining at the same cadence as a cold one; `startRound`
-     * already supports a round with no misses.
+     * Counting only the cache-MISSING bytes would bound just what the workers
+     * are asked to do, so a warm run — where nothing misses — would never reach
+     * the close condition and would buffer every chunk's cached output until
+     * the tail drain. That is the #2649 heap failure on a large repo. Counting
+     * both keeps a hits-only run draining at the same cadence as a cold one;
+     * `startRound` already supports a round with no misses.
+     *
+     * Measured in UTF-8 bytes, matching `estimateItemBytes` in the worker pool,
+     * so the cap means the same thing here as it does for a job's payload.
      */
-    let roundBufferedBytes = 0;
+    const roundBudget = createRoundBudget(roundByteBudget);
     /**
      * Files QUEUED into rounds so far. `filesParsedSoFar` only advances when a
      * round drains, so it is the right number for the throughput log but would
@@ -998,7 +1050,14 @@ export async function runChunkedParseAndResolve(
       if (parseCache && p.chunkHash && rawResults.length > 0) {
         const quarantineSet = new Set(workerPool?.getQuarantinedPaths?.() ?? []);
         const chunkHadQuarantine = p.chunkFiles.some((f) => quarantineSet.has(f.path));
-        if (chunkHadQuarantine) {
+        const durableGenerationStale = durablePrepareFailures.has(p.chunkHash);
+        if (durableGenerationStale) {
+          logger.warn(
+            { chunkHash: p.chunkHash.slice(0, 8) },
+            'parse-cache SKIP: durable generation for this chunk could not be reset, ' +
+              'so its shards may be stale; next run will re-dispatch it',
+          );
+        } else if (chunkHadQuarantine) {
           if (isDev) {
             const quarantinedInChunk = p.chunkFiles.filter((f) => quarantineSet.has(f.path)).length;
             logger.info(
@@ -1033,21 +1092,39 @@ export async function runChunkedParseAndResolve(
       if (misses.length === 0) {
         return { entries, results: Promise.resolve([]) };
       }
-      for (const miss of misses) {
-        if (durableParsedFileDir !== undefined && miss.chunkHash !== null) {
+      // Each chunk resets its own directory, so these are independent and run
+      // concurrently: serially they would sit on the critical path this round
+      // exists to shorten, with the pool idle and the previous round's merge
+      // waiting, once per miss.
+      //
+      // BOUNDED, though. A round can hold hundreds of small packs, and each
+      // reset is a recursive rm + mkdir. Firing all of them at once competes
+      // for descriptors with the chunk prefetch this loop already has in
+      // flight, and `readFileContents` degrades a losing read SILENTLY by
+      // contract — a dropped file would vanish from the chunk, from the graph,
+      // and from the chunk hash, shipping a narrowed index with exit 0. Same
+      // helper and width the file reads use.
+      await mapConcurrent(
+        misses,
+        async (miss) => {
+          if (durableParsedFileDir === undefined || miss.chunkHash === null) return;
           try {
             await prepareDurableParsedFileChunk(durableParsedFileDir, miss.chunkHash);
           } catch (err) {
             // The durable store is an optimization — degrade like the restore
             // path does instead of failing the analyze. Workers recreate the
             // directory on write, so at worst the old generation lingers.
+            // Caught per chunk so one failure cannot abort the others.
+            durablePrepareFailures.add(miss.chunkHash);
             logger.warn(
               { err, chunkHash: miss.chunkHash.slice(0, 8) },
-              'parsedfile-cache: could not reset durable chunk generation; continuing',
+              'parsedfile-cache: could not reset durable chunk generation; ' +
+                'continuing without caching this chunk',
             );
           }
-        }
-      }
+        },
+        { concurrency: DURABLE_RESET_CONCURRENCY },
+      );
       const roundFiles = misses.reduce((sum, miss) => sum + miss.chunkFiles.length, 0);
       const firstIdx = misses[0].chunkIdx;
       const lastIdx = misses[misses.length - 1].chunkIdx;
@@ -1105,10 +1182,7 @@ export async function runChunkedParseAndResolve(
       missResults: ParseWorkerResult[][];
     }): Promise<void> => {
       const missResults = round.missResults;
-      const missCount = round.entries.reduce(
-        (sum, entry) => sum + (entry.kind === 'miss' ? 1 : 0),
-        0,
-      );
+      const missCount = round.entries.filter((entry) => entry.kind === 'miss').length;
       // `dispatchGroups` returns one array per input group. If that contract
       // ever breaks, every later entry in this round would silently merge the
       // wrong chunk's results and skip its cache write, with a clean exit.
@@ -1151,8 +1225,7 @@ export async function runChunkedParseAndResolve(
     const closeRound = async (): Promise<void> => {
       const started = await startRound(roundEntries);
       roundEntries = [];
-      roundMissBytes = 0;
-      roundBufferedBytes = 0;
+      roundBudget.reset();
       const previous = pendingRound;
       pendingRound = null;
       if (previous) {
@@ -1275,6 +1348,8 @@ export async function runChunkedParseAndResolve(
         durableExpectedPaths !== undefined &&
         (await durableChunkHasShards(parsedFileStorePath, chunkHash, durableExpectedPaths));
 
+      // Set by whichever branch queues this chunk; drives the close below.
+      let roundIsFull = false;
       if (cachedRaw && cachedRaw.length > 0 && (durableHit || parsedFileStorePath === undefined)) {
         // Cache hit: replay cached worker output. Finalize any parked worker
         // chunk FIRST so deferred aggregation stays in chunk order, then merge
@@ -1312,7 +1387,7 @@ export async function runChunkedParseAndResolve(
           chunkStartMs,
           cachedRaw,
         });
-        for (const file of chunkFiles) roundBufferedBytes += file.content.length;
+        roundIsFull = roundBudget.addChunk(chunkFiles.map((file) => file.content));
         queuedFilesSoFar += chunkFiles.length;
       } else {
         // Cache miss: queue for the round's single dispatch; the raw results
@@ -1320,19 +1395,14 @@ export async function runChunkedParseAndResolve(
         chunkCacheMisses++;
         reparsedFileCount += chunkFiles.length;
         roundEntries.push({ kind: 'miss', chunkIdx, chunkHash, chunkFiles, chunkStartMs });
-        for (const file of chunkFiles) {
-          roundMissBytes += file.content.length;
-          roundBufferedBytes += file.content.length;
-        }
+        roundIsFull = roundBudget.addChunk(chunkFiles.map((file) => file.content));
         queuedFilesSoFar += chunkFiles.length;
       }
 
-      // Close on EITHER cap. `roundMissBytes` sizes the worker round;
-      // `roundBufferedBytes` bounds what the main thread is holding, which is
-      // the only cap a warm run can ever reach.
-      if (roundMissBytes >= roundByteBudget || roundBufferedBytes >= roundByteBudget) {
-        await closeRound();
-      }
+      // One cap, on what the main thread is holding. That bounds the worker
+      // round too, since a round's dispatched bytes are a subset of its
+      // buffered bytes.
+      if (roundIsFull) await closeRound();
 
       // (Per-chunk aggregation + parse-cache write + throughput log now run in
       // `applyChunkResults` / `finalizeWorkerChunk` — see the merge-pipelining
