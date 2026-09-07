@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -175,6 +176,7 @@ def test_materialize_copies_transcript_and_review_artifacts(tmp_path: Path) -> N
     assert copied["transcript_artifacts"][0]["sha256"] == hashlib.sha256(payload).hexdigest()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
 def test_a_reused_artifact_is_copied_from_the_inode_that_was_checked(tmp_path: Path) -> None:
     """The reuse source is a directory another sweep wrote and may still write.
 
@@ -199,6 +201,40 @@ def test_a_reused_artifact_is_copied_from_the_inode_that_was_checked(tmp_path: P
     with pytest.raises(SandboxError, match="regular non-symlink"):
         with comparator_reuse._open_regular(source, label="transcript"):
             pass
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
+def test_a_symlinked_transcripts_directory_is_refused_on_both_sides(tmp_path: Path) -> None:
+    """`O_NOFOLLOW` refuses the leaf, not the directory above it.
+
+    A `transcripts` symlink on the source side makes reuse read a file outside
+    the results directory; one on the destination side writes the copy outside
+    this sweep's evidence. Neither is covered by the per-file guards that let
+    _resolved_directory tolerate a symlinked root.
+    """
+
+    payload = b'{"type":"result"}\n'
+    outside = tmp_path / "outside"
+    (outside / "transcripts").mkdir(parents=True)
+    (outside / "transcripts" / "session-1.jsonl").write_bytes(payload)
+    row = _row(transcript_artifacts=[_artifact(payload=payload)])
+
+    linked_source = tmp_path / "linked-source"
+    linked_source.mkdir()
+    (linked_source / "transcripts").symlink_to(outside / "transcripts", target_is_directory=True)
+    dest = tmp_path / "fresh"
+    dest.mkdir()
+    with pytest.raises(SandboxError, match="transcript source must be a real directory"):
+        materialize_reused_row(row, source_dir=linked_source, dest_dir=dest)
+
+    source = tmp_path / "prior"
+    (source / "transcripts").mkdir(parents=True)
+    (source / "transcripts" / "session-1.jsonl").write_bytes(payload)
+    linked_dest = tmp_path / "linked-dest"
+    linked_dest.mkdir()
+    (linked_dest / "transcripts").symlink_to(outside / "transcripts", target_is_directory=True)
+    with pytest.raises(SandboxError, match="transcript destination must be a real directory"):
+        materialize_reused_row(row, source_dir=source, dest_dir=linked_dest)
 
 
 def test_materialize_rejects_same_directory_and_missing_transcript(tmp_path: Path) -> None:
@@ -256,6 +292,7 @@ def test_a_changed_sandbox_dependency_is_not_the_same_baseline():
     assert row_is_reusable_comparator(_row(sandbox_dependency_manifest_digest=None), _expected()) is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation may require elevated Windows privileges")
 def test_reuse_directories_allow_a_symlinked_parent_but_not_a_symlinked_leaf(tmp_path: Path):
     """Pins a deliberate difference from the sandbox's mount-root check.
 

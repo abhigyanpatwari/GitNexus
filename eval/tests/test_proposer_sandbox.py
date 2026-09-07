@@ -64,7 +64,12 @@ def test_review_preparation_rejects_a_reused_artifact_directory(tmp_path, entry)
             stale.mkdir()
             (stale / "review-output.json").write_text("a previous cell's verdict")
         else:
-            stale.symlink_to(sentinel if entry == "absolute-link" else "../sentinel")
+            # relpath, not a hand-written "../sentinel": stale is
+            # <private_root>/review-output, which is nowhere near tmp_path, so the
+            # literal produced a dangling link and the assertion below proved nothing.
+            stale.symlink_to(
+                sentinel if entry == "absolute-link" else Path(os.path.relpath(sentinel, stale.parent))
+            )
         with pytest.raises(SandboxError, match="already exists"):
             proposer_sandbox.prepare_review_workspace(sandbox, "review-output.json")
     assert sentinel.read_text() == "must survive"

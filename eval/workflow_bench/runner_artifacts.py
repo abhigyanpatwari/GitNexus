@@ -379,6 +379,13 @@ def copy_isolated_tree(source: Path, parent: Path) -> Path:
             timeout=600,
         )
         if not copied.ok:
+            # The fallback is for a filesystem that cannot reflink, which shows
+            # up as a normal nonzero exit. A cancellation or timeout is reported
+            # the same way (run_managed returns it rather than raising), and
+            # copytree cannot be cancelled — so falling back there makes the
+            # outage breaker wait out the full copy it set the event to avoid.
+            if copied.state != "exited":
+                raise ManagedProcessError(["cp", "-a", "--reflink=auto", str(source), str(target)], copied)
             shutil.copytree(source, target, symlinks=True, copy_function=shutil.copy2)
         _assert_self_contained_git_objects(target)
         return target

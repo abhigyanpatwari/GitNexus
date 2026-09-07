@@ -361,14 +361,15 @@ def _resolved_directory(path: Path, *, label: str) -> Path:
 
 def _copy_transcript_artifact(source: Path, dest: Path, metadata: Mapping[str, Any]) -> dict[str, Any]:
     relative, expected_digest, expected_size = _transcript_metadata(metadata)
-    dest_dir = dest / "transcripts"
-    dest_dir.mkdir(mode=0o700, exist_ok=True)
+    name = PurePosixPath(relative).name
+    dest_dir = _real_child_directory(dest, "transcripts", label="transcript destination", create=True)
     dest_dir.chmod(0o700)
-    destination = dest_dir / PurePosixPath(relative).name
+    destination = dest_dir / name
+    source_dir = _real_child_directory(source, "transcripts", label="transcript source")
     # One descriptor for the size check, the digest and the copy. Re-opening the
     # path between them is what let a concurrent writer swap the checked file
     # for a symlink and have the copy follow it.
-    with _open_regular(source / Path(*PurePosixPath(relative).parts), label="transcript") as source_fd:
+    with _open_regular(source_dir / name, label="transcript") as source_fd:
         if os.fstat(source_fd).st_size != expected_size:
             raise SandboxError(f"reused transcript size drifted: {relative}")
         digest = _sha256_descriptor(source_fd)
@@ -384,6 +385,32 @@ def _copy_named_artifact(source: Path, dest: Path, name: str, *, label: str) -> 
         raise SandboxError(f"unsafe {label} path: {name!r}")
     with _open_regular(source / name, label=label) as source_fd:
         _copy_owner_only(source_fd, dest / name)
+
+
+def _real_child_directory(parent: Path, name: str, *, label: str, create: bool = False) -> Path:
+    """One directory component below the reuse root, proven not to be a symlink.
+
+    ``_resolved_directory`` tolerates a symlinked ROOT because everything below
+    it is validated individually. ``transcripts`` is the component that argument
+    misses: it is neither a file read guarded by ``lstat`` nor a write guarded
+    by ``O_NOFOLLOW``, and ``O_NOFOLLOW`` refuses only the leaf, so a link here
+    redirects the read or the write out of the results directory entirely.
+    Checked per component, as ``evolution._require_directory_chain`` does.
+    """
+
+    child = parent / name
+    try:
+        metadata = child.lstat()
+    except FileNotFoundError:
+        if not create:
+            raise SandboxError(f"{label} is missing: {child}") from None
+        child.mkdir(mode=0o700)
+        return child
+    except OSError as exc:
+        raise SandboxError(f"{label} is unavailable: {child}: {exc}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise SandboxError(f"{label} must be a real directory: {child}")
+    return child
 
 
 @contextmanager

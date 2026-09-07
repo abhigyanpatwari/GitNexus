@@ -59,6 +59,7 @@ import yaml
 
 from .comparator_reuse import (
     REUSE_EXCLUDED_ERROR_KINDS,
+    CellKey,
     ComparatorReuseExpectation,
     TaskReuseBinding,
     current_runtime_digest,
@@ -2000,6 +2001,36 @@ def task_has_planned_paid_cells(
     return False
 
 
+def drop_canary_reuse_key(
+    reusable_rows: dict[CellKey, dict[str, Any]],
+    *,
+    arm: str,
+    tasks: Sequence[Mapping[str, Any]],
+    runs: int,
+) -> CellKey | None:
+    """Drop one reusable cell so an incumbent arm still measures THIS sweep.
+
+    An arm reused end to end measures nothing about today's environment, and
+    broken_incumbent_arms would then be reading last week's health.
+
+    Counted against the cells this sweep PLANS, not every key reuse selection
+    returned: selection accepts any non-negative prior run index, so a results
+    directory produced with more runs than this invocation leaves extra keys.
+    Comparing against those made the check false exactly when it mattered, and
+    the canary silently stopped firing while every planned cell stayed reused.
+
+    Returns the dropped key, or None when the arm already has a paid cell.
+    """
+
+    planned_keys = [(str(task["id"]), arm, run_idx) for task in tasks for run_idx in range(runs)]
+    arm_keys = sorted(key for key in planned_keys if key in reusable_rows)
+    if not arm_keys or len(arm_keys) != len(planned_keys):
+        return None
+    dropped = arm_keys[0]
+    del reusable_rows[dropped]
+    return dropped
+
+
 def next_graph_prefetch_target(
     remaining: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]],
     *,
@@ -2243,10 +2274,8 @@ def _run_sweep(
             # One cell per arm is the cheapest thing that keeps the canary real.
             incumbent_arms = [arm for arm in args.arms if arm not in candidate_arms]
             for arm in incumbent_arms:
-                arm_keys = sorted(key for key in reusable_rows if key[1] == arm)
-                if arm_keys and len(arm_keys) == len(tasks) * args.runs:
-                    dropped = arm_keys[0]
-                    del reusable_rows[dropped]
+                dropped = drop_canary_reuse_key(reusable_rows, arm=arm, tasks=tasks, runs=args.runs)
+                if dropped is not None:
                     print(
                         f"reuse-results: keeping one paid {arm} cell "
                         f"({dropped[0]} run {dropped[2]}) so incumbent health is measured this sweep"

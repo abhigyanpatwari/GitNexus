@@ -1428,6 +1428,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    # Before anything else: --max-runtime-seconds is measured from /proc/uptime
+    # before this process is even exec'd (run-evolution.sh), so every second
+    # spent parsing, reading tasks, running the sandbox preflight and starting
+    # the gateway would otherwise be handed back to the sweep and taken out of
+    # the upload reserve the cap exists to protect.
+    started_monotonic = time.monotonic()
     parser = build_parser()
     args = parser.parse_args()
     if args.generations < 1:
@@ -1499,6 +1505,7 @@ def main() -> int:
     try:
         return _run_generations(
             args,
+            started_monotonic=started_monotonic,
             selected_task_rows=selected_task_rows,
             skipped_expensive=skipped_expensive,
             selected_tasks=selected_tasks,
@@ -1514,6 +1521,7 @@ def main() -> int:
 def _run_generations(
     args: argparse.Namespace,
     *,
+    started_monotonic: float,
     selected_task_rows: list[dict[str, Any]],
     skipped_expensive: list[str],
     selected_tasks: list[dict[str, Any]],
@@ -1524,7 +1532,6 @@ def _run_generations(
 ) -> int:
     out_root = args.out_root or Path("results") / time.strftime("wfevolve-%Y%m%d-%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)
-    started_monotonic = time.monotonic()
     evidence_dir: Path | None = args.seed_results
     # Only a proposal this driver wrote in this run is stageable: a
     # --seed-results tree is an operator-supplied path, and its sibling

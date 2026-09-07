@@ -780,6 +780,34 @@ def test_reused_rows_alone_leave_current_health_unknown():
     assert arm_health(results, {"review"})["review"].measured is False
 
 
+def test_the_paid_canary_survives_a_prior_run_with_more_run_indices():
+    """The canary counts planned cells, not every key reuse selection returned.
+
+    Reuse selection accepts any non-negative prior `run`, so a results directory
+    produced with --runs 5 leaves keys this sweep never plans. Comparing against
+    those made the "arm is fully reused" test false exactly when it was true,
+    and the incumbent went a whole sweep without one measured cell.
+    """
+
+    tasks = [{"id": "task0"}, {"id": "task1"}]
+    reusable = {(task["id"], "review", run): {} for task in tasks for run in range(5)}
+
+    dropped = runner.drop_canary_reuse_key(reusable, arm="review", tasks=tasks, runs=3)
+
+    assert dropped == ("task0", "review", 0)
+    assert dropped not in reusable
+    # A second call is a no-op: the arm now has its paid cell.
+    assert runner.drop_canary_reuse_key(reusable, arm="review", tasks=tasks, runs=3) is None
+
+
+def test_an_arm_with_a_planned_paid_cell_keeps_every_reusable_row():
+    tasks = [{"id": "task0"}]
+    reusable = {("task0", "review", 0): {}}
+
+    assert runner.drop_canary_reuse_key(reusable, arm="review", tasks=tasks, runs=2) is None
+    assert len(reusable) == 1
+
+
 def test_reused_successes_do_not_mask_fresh_execution_failures():
     rows = [_cell(reused=True), _cell(reused=True), _cell(ok=False, error_kind="session-error")]
     flagged = unhealthy_arms(_arms(review=rows), {"review"})
