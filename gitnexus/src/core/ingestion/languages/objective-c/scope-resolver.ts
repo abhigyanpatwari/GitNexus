@@ -625,12 +625,27 @@ function uniqueMethods(methods: readonly ObjCMethodFact[]): readonly ObjCMethodF
 
 function classConformsToProtocol(
   workspace: ObjCWorkspaceFacts,
-  directProtocols: ReadonlySet<string>,
+  className: string,
   protocolName: string,
 ): boolean {
-  return [...directProtocols].some((directProtocol) =>
-    protocolHierarchy(workspace, directProtocol).includes(protocolName),
-  );
+  const seen = new Set<string>();
+  let currentClass: string | undefined = className;
+
+  while (currentClass !== undefined && !seen.has(currentClass)) {
+    seen.add(currentClass);
+    const directProtocols = workspace.classProtocols.get(currentClass);
+    if (
+      directProtocols !== undefined &&
+      [...directProtocols].some((directProtocol) =>
+        protocolHierarchy(workspace, directProtocol).includes(protocolName),
+      )
+    ) {
+      return true;
+    }
+    currentClass = workspace.superclassByClass.get(currentClass);
+  }
+
+  return false;
 }
 
 function findProtocolImplementationCandidates(
@@ -639,8 +654,9 @@ function findProtocolImplementationCandidates(
   selector: string,
 ): readonly ObjCMethodFact[] {
   const out: ObjCMethodFact[] = [];
-  for (const [className, protocols] of workspace.classProtocols) {
-    if (!classConformsToProtocol(workspace, protocols, protocolName)) continue;
+  const classNames = new Set([...workspace.classByName.keys(), ...workspace.classProtocols.keys()]);
+  for (const className of classNames) {
+    if (!classConformsToProtocol(workspace, className, protocolName)) continue;
     out.push(...findDispatchMethods(workspace, className, '-', selector).methods);
   }
   return uniqueMethods(out);

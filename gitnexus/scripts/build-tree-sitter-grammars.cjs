@@ -4,7 +4,7 @@
  * One registry-driven script replaces the former per-grammar
  * build-tree-sitter-<name>.cjs files (they were ~95% identical).
  *
- * The grammars (tree-sitter-c/dart/proto/swift/kotlin/zig) are loaded from
+ * The grammars (tree-sitter-c/objc/dart/proto/swift/kotlin/zig) are loaded from
  * `vendor/<name>/` by absolute path at runtime (see
  * src/core/tree-sitter/vendored-grammars.ts) and are NEVER copied into
  * node_modules — an undeclared package under node_modules is "extraneous" to

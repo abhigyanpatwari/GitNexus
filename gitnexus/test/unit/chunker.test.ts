@@ -376,6 +376,63 @@ describe('chunkNode', () => {
     expect(result[0].text).toContain('- (void)run');
   });
 
+  it('chunks an Objective-C implementation at method boundaries', async () => {
+    const content = [
+      '@implementation Worker',
+      '- (void)first {}',
+      '- (void)second {}',
+      '@end',
+    ].join('\n');
+    const firstMethod = '- (void)first {}';
+    const secondMethod = '- (void)second {}';
+    const firstImplementation = makeFakeNode(
+      'implementation_definition',
+      content.indexOf(firstMethod),
+      content.indexOf(firstMethod) + firstMethod.length,
+      [
+        makeFakeNode(
+          'method_definition',
+          content.indexOf(firstMethod),
+          content.indexOf(firstMethod) + firstMethod.length,
+        ),
+      ],
+    );
+    const secondImplementation = makeFakeNode(
+      'implementation_definition',
+      content.indexOf(secondMethod),
+      content.indexOf(secondMethod) + secondMethod.length,
+      [
+        makeFakeNode(
+          'method_definition',
+          content.indexOf(secondMethod),
+          content.indexOf(secondMethod) + secondMethod.length,
+        ),
+      ],
+    );
+    const declaration = makeFakeNode('class_implementation', 0, content.indexOf('@end') + 4, [
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
+      firstImplementation,
+      secondImplementation,
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'ImplementationWorker.m', 1, 4, 48, 0);
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ImplementationWorker.m');
+    expect(result).toHaveLength(2);
+    expect(result[0].text).toContain(firstMethod);
+    expect(result[1].text).toContain(secondMethod);
+    expect(result[1].text).not.toContain(firstMethod);
+  });
+
   it('parses distinct Objective-C sources correctly through one cached parser', async () => {
     const protocolMethods = [
       '- (void)startWithConfiguration:(id)configuration;',

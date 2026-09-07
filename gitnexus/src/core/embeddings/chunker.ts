@@ -145,10 +145,17 @@ const DECLARATION_BODY_NODE_TYPES = new Set([
   'class_body',
   'object_type',
   'declaration_list',
+  'implementation_definition',
   'interface_body',
 ]);
 
-const DIRECT_MEMBER_DECLARATION_TYPES = new Set(['protocol_declaration', 'class_interface']);
+const DIRECT_MEMBER_DECLARATION_TYPES = new Set([
+  'protocol_declaration',
+  'class_interface',
+  // tree-sitter-objc exposes each implementation_definition directly under
+  // class_implementation, rather than grouping them in a shared body node.
+  'class_implementation',
+]);
 
 const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set([
   'identifier',

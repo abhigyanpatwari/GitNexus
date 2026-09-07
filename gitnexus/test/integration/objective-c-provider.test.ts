@@ -532,7 +532,9 @@ describe('Objective-C provider integration', () => {
           '@protocol CycleB <CycleA>\n' +
           '- (void)cycleB;\n' +
           '@end\n' +
-          '@interface ConcreteWorker <Child>\n' +
+          '@interface BaseWorker <Child>\n' +
+          '@end\n' +
+          '@interface ConcreteWorker : BaseWorker\n' +
           '- (void)ping;\n' +
           '@end\n' +
           '@interface Caller\n' +

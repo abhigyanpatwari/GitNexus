@@ -746,7 +746,10 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // whitespace before a directive or bare marker. A warm v95 cache can retain
 // error-recovered facts for sources that begin those lines with form feed or
 // vertical tab.
-const SCHEMA_BUMP = 96;
+// v97: Objective-C macro-marker preprocessing recognizes comment-prefixed
+// directives and rejects invalid numeric marker prefixes. A warm v96 cache can
+// replay error-recovered facts from the previous normalization behavior.
+const SCHEMA_BUMP = 97;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

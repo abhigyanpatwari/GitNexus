@@ -155,7 +155,7 @@ describe('contentHashForNode', () => {
   });
 
   it('exports a text template version marker', () => {
-    expect(EMBEDDING_TEXT_VERSION).toBe('v4');
+    expect(EMBEDDING_TEXT_VERSION).toBe('v5');
   });
 });
 

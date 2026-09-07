@@ -84,4 +84,25 @@ describe('preprocessObjectiveCMacroMarkers', () => {
     expect(normalized.split('\n')[3]).toBe(' '.repeat('\vRCT_EXTERN_C_END'.length));
     expect(normalized).toContain('@protocol RCTBridgeModule <NSObject>');
   });
+
+  it('preserves directives preceded by comments', () => {
+    const source = [
+      '/**/ #define RCT_MARKER_SEQUENCE \\',
+      'RCT_EXTERN_C_END',
+      '/* leading comment',
+      ' */ #define RCT_SECOND_SEQUENCE \\',
+      'RCT_EXTERN_C_BEGIN',
+      '',
+    ].join('\n');
+
+    expect(preprocessObjectiveCMacroMarkers(source, 'CommentDirective.h')).toBe(source);
+  });
+
+  it('requires a valid identifier start for a bare marker', () => {
+    const source = ['123_RCT_EXTERN_C_END', 'RCT_EXTERN_C_END', ''].join('\n');
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'NumericMarker.h');
+
+    expect(normalized.split('\n')[0]).toBe('123_RCT_EXTERN_C_END');
+    expect(normalized.split('\n')[1]).toBe(' '.repeat('RCT_EXTERN_C_END'.length));
+  });
 });

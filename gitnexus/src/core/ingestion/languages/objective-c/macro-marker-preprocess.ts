@@ -34,6 +34,9 @@ function isBareMarkerIdentifier(line: string): boolean {
   while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
 
   const identifierStart = index;
+  const first = line.charCodeAt(index);
+  if (!((first >= 0x41 && first <= 0x5a) || first === 0x5f)) return false;
+
   let hasUppercaseLetter = false;
   while (index < line.length) {
     const code = line.charCodeAt(index);
@@ -62,10 +65,33 @@ function hasEscapedLineEnding(line: string): boolean {
   return trailingBackslashes % 2 === 1;
 }
 
-function startsPreprocessorDirective(line: string): boolean {
+function startsPreprocessorDirective(line: string, state: ScanState): boolean {
   let index = 0;
-  while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
-  return line.charCodeAt(index) === 0x23;
+  let inBlockComment = state.inBlockComment;
+
+  while (index < line.length) {
+    if (inBlockComment) {
+      const blockCommentEnd = line.indexOf('*/', index);
+      if (blockCommentEnd < 0) return false;
+      inBlockComment = false;
+      index = blockCommentEnd + 2;
+      continue;
+    }
+
+    while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
+    if (line.startsWith('/*', index)) {
+      inBlockComment = true;
+      index += 2;
+      continue;
+    }
+    if (line.startsWith('//', index)) return false;
+    if (line.charCodeAt(index) !== 0x23) return false;
+
+    state.inBlockComment = false;
+    return true;
+  }
+
+  return false;
 }
 
 function scanLine(line: string, state: ScanState): void {
@@ -77,7 +103,7 @@ function scanLine(line: string, state: ScanState): void {
     state.inPreprocessorDirective = hasEscapedLineEnding(line);
     return;
   }
-  if (startsPreprocessorDirective(line)) {
+  if (startsPreprocessorDirective(line, state)) {
     state.inPreprocessorDirective = hasEscapedLineEnding(line);
     return;
   }
