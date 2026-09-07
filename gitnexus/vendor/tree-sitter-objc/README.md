@@ -1,13 +1,11 @@
 # tree-sitter-objc
 
-
 [![CI][ci]](https://github.com/tree-sitter-grammars/tree-sitter-objc/actions/workflows/ci.yml)
 [![discord][discord]](https://discord.gg/w7nTvsVJhm)
 [![matrix][matrix]](https://matrix.to/#/#tree-sitter-chat:matrix.org)
 [![crates][crates]](https://crates.io/crates/tree-sitter-objc)
 [![npm][npm]](https://www.npmjs.com/package/tree-sitter-objc)
 [![pypi][pypi]](https://pypi.org/project/tree-sitter-objc)
-
 
 [Objective C](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Introduction/introObjectiveC.html)
 grammar for [tree-sitter](https://tree-sitter.github.io)

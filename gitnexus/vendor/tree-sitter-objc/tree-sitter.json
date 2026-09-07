@@ -6,11 +6,7 @@
       "camelcase": "Objc",
       "scope": "source.objc",
       "path": ".",
-      "file-types": [
-        "h",
-        "m",
-        "objc"
-      ],
+      "file-types": ["h", "m", "objc"],
       "highlights": "queries/highlights.scm",
       "injections": "queries/injections.scm",
       "locals": "queries/locals.scm",

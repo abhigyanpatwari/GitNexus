@@ -16235,111 +16235,33 @@
     }
   ],
   "conflicts": [
-    [
-      "type_specifier",
-      "_declarator"
-    ],
-    [
-      "type_specifier",
-      "_declarator",
-      "macro_type_specifier"
-    ],
-    [
-      "type_specifier",
-      "expression"
-    ],
-    [
-      "type_specifier",
-      "expression",
-      "macro_type_specifier"
-    ],
-    [
-      "type_specifier",
-      "macro_type_specifier"
-    ],
-    [
-      "type_specifier",
-      "sized_type_specifier"
-    ],
-    [
-      "sized_type_specifier"
-    ],
-    [
-      "attributed_statement"
-    ],
-    [
-      "_declaration_modifiers",
-      "attributed_statement"
-    ],
-    [
-      "enum_specifier"
-    ],
-    [
-      "type_specifier",
-      "_old_style_parameter_list"
-    ],
-    [
-      "parameter_list",
-      "_old_style_parameter_list"
-    ],
-    [
-      "function_declarator",
-      "_function_declaration_declarator"
-    ],
-    [
-      "_block_item",
-      "statement"
-    ],
-    [
-      "_top_level_item",
-      "_top_level_statement"
-    ],
-    [
-      "type_specifier",
-      "_top_level_expression_statement"
-    ],
-    [
-      "enum_specifier"
-    ],
-    [
-      "expression",
-      "generic_specifier"
-    ],
-    [
-      "_declarator",
-      "type_specifier",
-      "generic_specifier"
-    ],
-    [
-      "_declarator",
-      "type_specifier",
-      "sized_type_specifier"
-    ],
-    [
-      "attribute",
-      "expression"
-    ],
-    [
-      "parameterized_arguments"
-    ],
-    [
-      "string_literal"
-    ],
-    [
-      "extension_expression",
-      "range_expression"
-    ],
-    [
-      "abstract_array_declarator",
-      "array_type_specifier"
-    ],
-    [
-      "_type_definition_type"
-    ],
-    [
-      "keyword_declarator",
-      "method_parameter"
-    ]
+    ["type_specifier", "_declarator"],
+    ["type_specifier", "_declarator", "macro_type_specifier"],
+    ["type_specifier", "expression"],
+    ["type_specifier", "expression", "macro_type_specifier"],
+    ["type_specifier", "macro_type_specifier"],
+    ["type_specifier", "sized_type_specifier"],
+    ["sized_type_specifier"],
+    ["attributed_statement"],
+    ["_declaration_modifiers", "attributed_statement"],
+    ["enum_specifier"],
+    ["type_specifier", "_old_style_parameter_list"],
+    ["parameter_list", "_old_style_parameter_list"],
+    ["function_declarator", "_function_declaration_declarator"],
+    ["_block_item", "statement"],
+    ["_top_level_item", "_top_level_statement"],
+    ["type_specifier", "_top_level_expression_statement"],
+    ["enum_specifier"],
+    ["expression", "generic_specifier"],
+    ["_declarator", "type_specifier", "generic_specifier"],
+    ["_declarator", "type_specifier", "sized_type_specifier"],
+    ["attribute", "expression"],
+    ["parameterized_arguments"],
+    ["string_literal"],
+    ["extension_expression", "range_expression"],
+    ["abstract_array_declarator", "array_type_specifier"],
+    ["_type_definition_type"],
+    ["keyword_declarator", "method_parameter"]
   ],
   "precedences": [],
   "externals": [],
