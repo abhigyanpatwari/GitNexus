@@ -9,6 +9,7 @@ import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -665,6 +666,51 @@ def test_run_proposer_hides_the_hidden_harness_and_keeps_the_full_tool_surface(m
     assert captured.get("bare", False) is False
     assert captured["allowed_tools"] == evolve.PROPOSER_ALLOWED_TOOLS
     assert captured["settings_json"] == FakeSandbox.settings_json
+
+
+def test_proposer_session_cannot_outlive_the_remaining_instance_window(monkeypatch, tmp_path):
+    """Clearing the sweep minimum is not a licence to run a full session.
+
+    --timeout is sized for a whole generation, so a proposer started with the
+    minimum left would run far past --max-runtime-seconds and the box would take
+    the evidence with it.
+    """
+
+    captured: dict[str, object] = {}
+
+    @contextmanager
+    def fake_prepare_sandbox(**_kwargs):
+        yield SimpleNamespace(
+            claude_bin="claude",
+            command_prefix=[],
+            settings_json="{}",
+            transcript_projects=tmp_path / "transcript-projects",
+        )
+
+    def fake_run_claude(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": False, "error_kind": "session-error"}
+
+    monkeypatch.setattr(evolve.runner, "make_worktree", lambda _repo, _ref, destination: destination)
+    monkeypatch.setattr(evolve.runner, "remove_clone", lambda _clone: None)
+    monkeypatch.setattr(evolve, "sanitize_clone_for_hidden_oracles", lambda _clone: "0" * 40)
+    monkeypatch.setattr(evolve, "prepare_sandbox", fake_prepare_sandbox)
+    monkeypatch.setattr(evolve.runner, "run_claude", fake_run_claude)
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "model"])
+    assert args.timeout > evolve.MIN_INSTANCE_SWEEP_SECONDS, "otherwise this test proves nothing"
+
+    common = {
+        "overlay_dir": tmp_path / "overlay",
+        "proposal_path": tmp_path / "proposal.md",
+        "evidence_bundle": tmp_path / "evidence",
+        "bwrap_bin": tmp_path / "bwrap",
+    }
+    evolve.run_proposer("prompt", args, **common, remaining_seconds=evolve.MIN_INSTANCE_SWEEP_SECONDS + 1)
+    assert captured["timeout"] == evolve.MIN_INSTANCE_SWEEP_SECONDS + 1
+
+    # No cap configured means no budget to overrun: the session keeps its own.
+    evolve.run_proposer("prompt", args, **common)
+    assert captured["timeout"] == args.timeout
 
 
 def test_parser_defaults_match_the_gate_minimums():

@@ -699,8 +699,17 @@ def run_proposer(
     bwrap_bin: Path,
     sandbox_backend: str = "bwrap",
     progress_label: str | None = None,
+    remaining_seconds: int | None = None,
 ) -> dict[str, Any]:
-    """Run one proposer in confinement and copy only validated outputs out."""
+    """Run one proposer in confinement and copy only validated outputs out.
+
+    ``remaining_seconds`` is what is left of ``--max-runtime-seconds``. The
+    per-session ``--timeout`` is sized for a whole generation, so a proposer
+    started with only the sweep minimum left would otherwise be allowed to run
+    far past the instance window the caller just checked.
+    """
+
+    session_timeout = args.timeout if remaining_seconds is None else max(1, min(args.timeout, remaining_seconds))
 
     with tempfile.TemporaryDirectory(prefix="wfevolve-") as tmp:
         clone = runner.make_worktree(REPO_ROOT, "HEAD", Path(tmp))
@@ -737,7 +746,7 @@ def run_proposer(
                     host_text(prompt),
                     clone,
                     claude_bin=sandbox.claude_bin,
-                    timeout=args.timeout,
+                    timeout=session_timeout,
                     model=args.proposer_model,
                     effort=args.effort,
                     env=model_session_environment(
@@ -1600,6 +1609,11 @@ def _run_generations(
                     bwrap_bin=bwrap_bin,
                     sandbox_backend=sandbox_backend,
                     progress_label=f"gen {generation} proposer",
+                    # Clearing the minimum is not a licence to run for a whole
+                    # generation: the session timeout is the larger number, so
+                    # without this a proposer started with 601s left could still
+                    # burn the full --timeout past the instance window.
+                    remaining_seconds=before_proposer,
                 )
             # Redact any API token echoed into the session record (e.g. an
             # error_detail stderr_tail) before it enters the uploaded artifact.

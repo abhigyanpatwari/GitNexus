@@ -576,11 +576,20 @@ exit 1`);
     // A Friday dispatch inherits leftover uptime. The shared entrypoint — not
     // the workflow YAML — must cap the sweep so it fails in-process and the
     // always() upload still runs (run 33962002890).
-    const script = readFileSync(path.join(REPO_ROOT, 'eval/workflow_bench/run-evolution.sh'), 'utf8');
+    const script = readFileSync(
+      path.join(REPO_ROOT, 'eval/workflow_bench/run-evolution.sh'),
+      'utf8',
+    );
     expect(script).toContain('--max-runtime-seconds');
     expect(script).toContain('instance_window_budget_from_proc');
     expect(script).toContain('export RUNTIME_DIGEST');
-    expect(workflow).toContain('--max-runtime-seconds');
+    // The workflow's half of that contract is calling the entrypoint, not
+    // naming the flag: its only occurrence in the YAML is the explanatory
+    // comment above, so asserting on it would reject a correct comment edit
+    // while passing a loop step that had stopped invoking the script at all.
+    expect(stepRun('Run the propose → benchmark → gate loop')).toContain(
+      './workflow_bench/run-evolution.sh --apply',
+    );
   });
 
   it('uploads benchmark evidence unconditionally, on a path it addresses itself', () => {

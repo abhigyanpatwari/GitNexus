@@ -19,7 +19,8 @@ import json
 import os
 import re
 import stat
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -360,18 +361,20 @@ def _resolved_directory(path: Path, *, label: str) -> Path:
 
 def _copy_transcript_artifact(source: Path, dest: Path, metadata: Mapping[str, Any]) -> dict[str, Any]:
     relative, expected_digest, expected_size = _transcript_metadata(metadata)
-    source_file = _regular_file(source / Path(*PurePosixPath(relative).parts), label="transcript")
-    actual_size = source_file.stat().st_size
-    if actual_size != expected_size:
-        raise SandboxError(f"reused transcript size drifted: {relative}")
-    digest = _sha256_file(source_file)
-    if digest != expected_digest:
-        raise SandboxError(f"reused transcript digest drifted: {relative}")
     dest_dir = dest / "transcripts"
     dest_dir.mkdir(mode=0o700, exist_ok=True)
     dest_dir.chmod(0o700)
     destination = dest_dir / PurePosixPath(relative).name
-    _copy_owner_only(source_file, destination)
+    # One descriptor for the size check, the digest and the copy. Re-opening the
+    # path between them is what let a concurrent writer swap the checked file
+    # for a symlink and have the copy follow it.
+    with _open_regular(source / Path(*PurePosixPath(relative).parts), label="transcript") as source_fd:
+        if os.fstat(source_fd).st_size != expected_size:
+            raise SandboxError(f"reused transcript size drifted: {relative}")
+        digest = _sha256_descriptor(source_fd)
+        if digest != expected_digest:
+            raise SandboxError(f"reused transcript digest drifted: {relative}")
+        _copy_owner_only(source_fd, destination)
     return {"path": relative, "sha256": digest, "bytes": expected_size, "source": PARENT_EVENT_STREAM_SOURCE}
 
 
@@ -379,21 +382,42 @@ def _copy_named_artifact(source: Path, dest: Path, name: str, *, label: str) -> 
     relative = PurePosixPath(name)
     if relative.is_absolute() or len(relative.parts) != 1 or relative.parts[0] in {"", ".", ".."}:
         raise SandboxError(f"unsafe {label} path: {name!r}")
-    source_file = _regular_file(source / name, label=label)
-    _copy_owner_only(source_file, dest / name)
+    with _open_regular(source / name, label=label) as source_fd:
+        _copy_owner_only(source_fd, dest / name)
 
 
-def _regular_file(path: Path, *, label: str) -> Path:
+@contextmanager
+def _open_regular(path: Path, *, label: str) -> Iterator[int]:
+    """Open a regular non-symlink file and hold it open for every later read.
+
+    Checking the path and then re-opening it is a race the reuse directory is
+    exposed to: it is written by a previous sweep and read by this one, so a
+    concurrent writer can replace a validated file with a symlink in between.
+    O_NOFOLLOW refuses the leaf link and the fstat comparison proves the open
+    descriptor is the inode that was checked — the same guarantee
+    evolution._bounded_regular_bytes makes for evidence files.
+    """
+
     try:
-        metadata = path.lstat()
+        before = path.lstat()
     except OSError as exc:
         raise SandboxError(f"{label} is missing: {path}: {exc}") from exc
-    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
         raise SandboxError(f"{label} must be a regular non-symlink file: {path}")
-    return path
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError as exc:
+        raise SandboxError(f"{label} is unreadable: {path}: {exc}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise SandboxError(f"{label} changed while opening: {path}")
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
-def _copy_owner_only(source: Path, destination: Path) -> None:
+def _copy_owner_only(source: int, destination: Path) -> None:
     # O_CREAT|O_EXCL is the existence check, and unlike a stat beforehand it is
     # atomic: a file appearing between check and open cannot slip through.
     try:
@@ -406,17 +430,20 @@ def _copy_owner_only(source: Path, destination: Path) -> None:
         raise SandboxError(f"reuse destination already exists: {destination}") from exc
     try:
         os.fchmod(descriptor, 0o600)
-        with open(source, "rb") as handle:
-            while True:
-                chunk = handle.read(COPY_CHUNK_BYTES)
-                if not chunk:
-                    break
-                _write_all(descriptor, chunk)
+        os.lseek(source, 0, os.SEEK_SET)
+        while True:
+            chunk = os.read(source, COPY_CHUNK_BYTES)
+            if not chunk:
+                break
+            _write_all(descriptor, chunk)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
 
 
-def _sha256_file(path: Path) -> str:
-    with open(path, "rb") as handle:
+def _sha256_descriptor(descriptor: int) -> str:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    # dup so hashlib owns a file object it may close; the duplicate shares the
+    # offset, which is why every reader here seeks to 0 before it starts.
+    with os.fdopen(os.dup(descriptor), "rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()

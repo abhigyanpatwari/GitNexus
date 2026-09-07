@@ -330,9 +330,11 @@ def test_clean_control_rewards_an_empty_approval_and_penalizes_noise():
 def test_parse_review_output_names_the_actual_failure(tmp_path: Path):
     """One message per cause.
 
-    Folding these together makes a sandbox that renders the artifact impossible
-    to write indistinguishable from an encoding fault: every cell reports "not
-    valid UTF-8 JSON" for a file the agent was never able to create.
+    Folding empty, malformed and encoding failures together makes a sandbox that
+    left the artifact at 0 bytes indistinguishable from an encoding fault: every
+    such cell reports "not valid UTF-8 JSON". A file the agent never created
+    escaped that fold — lstat sat outside the try, so it raised
+    FileNotFoundError — but only as a bare OSError, naming no cause at all.
     """
 
     missing = tmp_path / "never-written.json"

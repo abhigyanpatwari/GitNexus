@@ -778,6 +778,23 @@ EXCLUDED_ERROR_KINDS = REUSE_EXCLUDED_ERROR_KINDS
 EXECUTION_FAILURE_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure", "cancelled"})
 EVIDENCE_FAILURE_KINDS = frozenset({"review-evidence-invalid", "evidence-unverified", "skill-not-invoked"})
 
+
+def execution_failed(record: Mapping[str, Any]) -> bool:
+    """The process or its tooling did not complete."""
+
+    return record.get("error_kind") in EXECUTION_FAILURE_KINDS
+
+
+def evidence_failed(record: Mapping[str, Any]) -> bool:
+    """It completed, but what it produced cannot be trusted or scored."""
+
+    return (
+        record.get("error_kind") in EVIDENCE_FAILURE_KINDS
+        or record.get("review_evidence_valid") is False
+        or record.get("transcript_missing") is True
+    )
+
+
 SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure", "review-evidence-invalid"})
 DEFAULT_OUTAGE_STREAK = 5
 
@@ -1310,17 +1327,17 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     )
     fresh = [r for r in records if not r.get("reused")]
     out["fresh_attempts"] = len(fresh)
-    out["execution_failures"] = sum(1 for r in fresh if r.get("error_kind") in EXECUTION_FAILURE_KINDS)
-    out["evidence_failures"] = sum(
-        1
-        for r in fresh
-        if r.get("error_kind") in EVIDENCE_FAILURE_KINDS
-        or r.get("review_evidence_valid") is False
-        or r.get("transcript_missing") is True
-    )
+    out["execution_failures"] = sum(1 for r in fresh if execution_failed(r))
+    out["evidence_failures"] = sum(1 for r in fresh if evidence_failed(r))
     # Admissible means the harness delivered a trustworthy measurement. It says
     # nothing about whether the answer was right, which is the whole point.
-    out["admissible"] = out["fresh_attempts"] - out["execution_failures"] - out["evidence_failures"]
+    #
+    # Count the rows that failed NEITHER way rather than subtracting both
+    # counters: run_arm keeps a pre-existing session error and still marks the
+    # review evidence invalid, so one row can land in both. Subtracting it twice
+    # drove an arm holding real measurements to admissible=0, which arm_health
+    # reads as UNUSABLE and enforce_measurement_health then fails the sweep on.
+    out["admissible"] = sum(1 for r in fresh if not execution_failed(r) and not evidence_failed(r))
     out["health_reasons"] = sorted(
         {
             str(r.get("error_kind"))

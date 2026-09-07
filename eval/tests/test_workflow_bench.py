@@ -751,6 +751,25 @@ def test_one_admissible_cell_leaves_an_arm_degraded_not_healthy():
     assert health.admissible == 1
 
 
+def test_a_row_that_fails_both_ways_is_only_subtracted_once():
+    """run_arm can produce a row that is an execution AND an evidence failure.
+
+    It keeps the first error_kind — a session-error survives — and still sets
+    review_evidence_valid=False when the artifact will not parse. Counting that
+    row against admissible twice zeroed an arm that held a real measurement,
+    which arm_health reports as UNUSABLE and the measurement gate then fails on.
+    """
+
+    both = _cell(resolved=False, ok=False, error_kind="session-error", review_evidence_valid=False)
+    results = _arms(review=[both, _cell(resolved=True, error_kind="oracle-failed")])
+    health = arm_health(results, {"review"})["review"]
+    assert (health.execution_failures, health.evidence_failures) == (1, 1)
+    assert health.fresh_attempts == 2
+    assert health.admissible == 1
+    assert health.status == "DEGRADED"
+    assert unhealthy_arms(results, {"review"}) == []
+
+
 def test_reused_rows_alone_leave_current_health_unknown():
     """Historical success cannot certify this sweep's environment."""
 

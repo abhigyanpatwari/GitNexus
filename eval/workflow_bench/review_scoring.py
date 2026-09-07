@@ -115,10 +115,13 @@ def _parse_review_finding(raw: Any, index: int) -> ReviewFinding:
 
 
 def parse_review_output(path: Path) -> tuple[str, tuple[ReviewFinding, ...]]:
-    # Distinguish these. Folding them into one message is how a sandbox that
-    # made the artifact impossible to write read for 15 runs as an encoding
-    # fault: every cell reported "not valid UTF-8 JSON" for a file the agent
-    # was never able to create.
+    # Distinguish these. Folding empty, malformed and encoding failures into one
+    # message is how a sandbox that left the artifact at 0 bytes read for 15
+    # runs as an encoding fault: json.loads("") raises, and every such cell
+    # reported "not valid UTF-8 JSON". A path the agent never created was not in
+    # that fold — the lstat below sat outside the try and raised
+    # FileNotFoundError — but it reached the caller as a bare OSError rather
+    # than saying what was wrong, which is why it is named here too.
     try:
         metadata = path.lstat()
     except FileNotFoundError as exc:

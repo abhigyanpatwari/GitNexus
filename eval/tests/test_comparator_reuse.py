@@ -175,6 +175,32 @@ def test_materialize_copies_transcript_and_review_artifacts(tmp_path: Path) -> N
     assert copied["transcript_artifacts"][0]["sha256"] == hashlib.sha256(payload).hexdigest()
 
 
+def test_a_reused_artifact_is_copied_from_the_inode_that_was_checked(tmp_path: Path) -> None:
+    """The reuse source is a directory another sweep wrote and may still write.
+
+    Validating a path and then re-opening it hands a concurrent writer the gap:
+    replace the checked file with a symlink and the copy follows it out of the
+    results directory. Swapping the path while the descriptor is held is that
+    same substitution, made deterministic.
+    """
+
+    source = tmp_path / "transcript.jsonl"
+    source.write_bytes(b"verified\n")
+    decoy = tmp_path / "decoy.jsonl"
+    decoy.write_bytes(b"substituted\n")
+    destination = tmp_path / "copy.jsonl"
+
+    with comparator_reuse._open_regular(source, label="transcript") as descriptor:
+        source.unlink()
+        source.symlink_to(decoy)
+        comparator_reuse._copy_owner_only(descriptor, destination)
+
+    assert destination.read_bytes() == b"verified\n"
+    with pytest.raises(SandboxError, match="regular non-symlink"):
+        with comparator_reuse._open_regular(source, label="transcript"):
+            pass
+
+
 def test_materialize_rejects_same_directory_and_missing_transcript(tmp_path: Path) -> None:
     source = tmp_path / "prior"
     source.mkdir()

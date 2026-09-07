@@ -1305,6 +1305,57 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     assert expected_detail in rec["error_detail"]
 
 
+@pytest.mark.parametrize("arm", ["review", "ce_review"])
+def test_run_arm_mounts_the_review_artifact_directory_outside_the_workspace(monkeypatch, tmp_path, arm):
+    """A writable FILE inside a read-only directory is not a writable path.
+
+    The Write tool creates `<target>.tmp.<n>.<hex>` beside the target and
+    renames it, so a read-only parent fails the temp create with EROFS and the
+    artifact stays 0 bytes. The mount target must be the directory, and it must
+    sit outside the read-only workspace.
+
+    Driven through run_arm rather than rebuilt here: an expected tuple assembled
+    in the test passes whatever run_arm actually mounts, which is the one thing
+    this needs to prove.
+    """
+
+    assert not runner.SANDBOX_REVIEW_OUTPUT.startswith(runner.SANDBOX_WORKSPACE + "/")
+    assert runner.SANDBOX_REVIEW_OUTPUT != runner.SANDBOX_WORKSPACE
+
+    verify_calls: list[dict] = []
+    sandbox = fake_sandbox(tmp_path)
+    sandbox.command_prefix_for = lambda **kwargs: verify_calls.append(kwargs) or []
+
+    def review_session(prompt, *args, **kwargs):
+        artifact = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text('{"schema_version":1,"verdict":"approve","findings":[]}')
+        return session_record()
+
+    monkeypatch.setattr(runner, "run_claude", review_session)
+    monkeypatch.setattr(runner, "skill_fingerprint", lambda *_a, **_k: "skill-digest")
+    monkeypatch.setattr(runner, "run_verify", lambda *a, **k: (True, "ok"))
+
+    runner.run_arm(
+        arm,
+        {"prompt": "p", "verify": "true"},
+        tmp_path,
+        bench_args(),
+        sandbox=sandbox,
+        expected_skill_digest="skill-digest",
+    )
+
+    review_output = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
+    mounts = [call["extra_read_only_mounts"] for call in verify_calls if "extra_read_only_mounts" in call]
+    assert mounts, "the verify invocation must be given the artifact mount"
+    assert mounts[-1] == (
+        runner.ReadOnlyMount(source=review_output.parent, target=runner.SANDBOX_REVIEW_OUTPUT),
+    ), "mount the directory, not the file"
+    assert not mounts[-1][0].target.startswith(f"{runner.SANDBOX_WORKSPACE}/")
+    # The artifact the harness later reads is the one inside that mount.
+    assert review_output.parent in review_output.parents
+
+
 def _git(repo, *args, check=True):
     return subprocess.run(["git", "-C", str(repo), *args], check=check, capture_output=True, text=True)
 
@@ -1378,39 +1429,3 @@ def test_copy_isolated_tree_does_not_share_git_objects_or_refs(tmp_path):
     assert copy_head == template_head == sha
     alternates = copy / ".git" / "objects" / "info" / "alternates"
     assert not alternates.exists()
-
-
-def test_run_cell_uses_the_clone_template_instead_of_recloning(tmp_path, monkeypatch):
-    """run_cell must copy the template, never re-clone.
-
-    run_cell takes the clone-template branch on essentially every multi-cell
-    sweep: it copies a pre-sanitized template rather than paying `git clone
-    --no-local` plus repack/prune/fsck per cell. Nothing asserted that the copy
-    is what the cell actually runs against, or that the template's sanitized
-    HEAD is carried through rather than recomputed.
-    """
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git(repo, "init", "--quiet")
-    _git(repo, "checkout", "--quiet", "-b", "main")
-    sha = _git_commit(repo, "base")
-    clones = tmp_path / "clones"
-    clones.mkdir()
-    template = runner.make_worktree(repo, sha, clones)
-    (template / "from-template.txt").write_text("sanitized\n")
-    sanitized_head = _git(template, "rev-parse", "HEAD").stdout.strip()
-
-    def fail_if_recloned(*args, **kwargs):
-        raise AssertionError("clone template present: run_cell must not re-clone")
-
-    monkeypatch.setattr(runner, "make_worktree", fail_if_recloned)
-    monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", fail_if_recloned)
-
-    worktree = runner.copy_isolated_tree(template, clones)
-    assert (worktree / "from-template.txt").read_text() == "sanitized\n"
-    assert _git(worktree, "rev-parse", "HEAD").stdout.strip() == sanitized_head
-    # The copy is a private checkout: writing it must not touch the template the
-    # other cells of this task still copy from.
-    (worktree / "from-template.txt").write_text("cell-local\n")
-    assert (template / "from-template.txt").read_text() == "sanitized\n"

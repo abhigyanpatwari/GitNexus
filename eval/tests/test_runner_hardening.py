@@ -3,6 +3,7 @@
 import hashlib
 import json
 import shutil
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -608,6 +609,67 @@ def test_run_cell_reports_a_cleanup_failure_over_its_primary_outcome(monkeypatch
     assert "clone is busy" in record["error_detail"]
 
 
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def test_run_cell_runs_the_arm_against_a_copy_of_the_clone_template(monkeypatch, tmp_path):
+    """run_cell must copy the template, never re-clone.
+
+    run_cell takes the clone-template branch on essentially every multi-cell
+    sweep: it copies a pre-sanitized template rather than paying `git clone
+    --no-local` plus repack/prune/fsck per cell. Asserting on a copy the test
+    makes itself proves nothing about that branch — the clone the arm receives
+    is what has to come from the template, carrying the template's sanitized
+    HEAD rather than a recomputed one.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    (repo / "from-template.txt").write_text("sanitized\n")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "user.name=test", "-c", "user.email=test@invalid", "commit", "--quiet", "-m", "base")
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    trees = tmp_path / "trees"
+    trees.mkdir()
+    template = runner.make_worktree(repo, sha, trees)
+    template_head = _git(template, "rev-parse", "HEAD").stdout.strip()
+
+    _stub_cell_dependencies(monkeypatch, tmp_path)
+
+    def fail_if_recloned(*_args, **_kwargs):
+        raise AssertionError("clone template present: run_cell must not re-clone")
+
+    monkeypatch.setattr(runner, "make_worktree", fail_if_recloned)
+    monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", fail_if_recloned)
+
+    seen: dict[str, object] = {}
+
+    def record_arm(_arm, _task, worktree, _args, **_kwargs):
+        seen["worktree"] = worktree
+        seen["head"] = _git(worktree, "rev-parse", "HEAD").stdout.strip()
+        seen["content"] = (worktree / "from-template.txt").read_text()
+        # The copy is a private checkout: what the cell writes must not reach
+        # the template the other cells of this task still copy from.
+        (worktree / "from-template.txt").write_text("cell-local\n")
+        return {"resolved": True, "ok": True, "error_kind": None}
+
+    monkeypatch.setattr(runner, "run_arm", record_arm)
+
+    runner.run_cell(
+        _cell_context(tmp_path, clone_template=template, sanitized_head=template_head),
+        0,
+        "workflow",
+    )
+
+    assert seen["content"] == "sanitized\n"
+    assert seen["head"] == template_head
+    assert seen["worktree"] != template
+    assert (template / "from-template.txt").read_text() == "sanitized\n"
+
+
 def test_run_cell_does_not_mask_the_staged_review_patch_before_setup(monkeypatch, tmp_path):
     """Review setup applies a patch staged under eval/workflow_bench.
 
@@ -1002,49 +1064,6 @@ def test_progress_line_reports_the_numbers_a_real_run_measured():
     assert "cost=$0.5" in line
     assert "took=12.0s" in line
     assert "error_kind=none" in line
-
-
-def test_review_artifact_is_mounted_as_a_writable_directory_outside_the_workspace(tmp_path):
-    """A writable file inside a read-only directory is not a writable path.
-
-    A writable FILE inside a read-only directory is not writable to anything
-    that writes atomically. The Write tool creates `<target>.tmp.<n>.<hex>`
-    beside the target and renames it, so a read-only parent fails the temp
-    create with EROFS and the artifact stays 0 bytes. The mount target must be
-    the directory, and it must sit outside the read-only workspace.
-    """
-
-    assert not runner.SANDBOX_REVIEW_OUTPUT.startswith(runner.SANDBOX_WORKSPACE + "/")
-    assert runner.SANDBOX_REVIEW_OUTPUT != runner.SANDBOX_WORKSPACE
-
-    # Capture the real mount tuple run_arm builds, rather than matching source
-    # text: a string match passes on any wrong value whose literals survive, and
-    # fails on a behaviour-preserving refactor.
-    captured: dict[str, object] = {}
-
-    class _Recorder(SimpleNamespace):
-        def command_prefix_for(self, **kwargs):
-            captured.update(kwargs)
-            return []
-
-    sandbox = _Recorder(
-        backend="test-double",
-        clone=tmp_path,
-        private_root=tmp_path / "private",
-        settings_json="{}",
-        host_text=lambda value: value,
-        host_path=lambda value: str(value),
-    )
-    sandbox.private_root.mkdir(exist_ok=True)
-    review_output = runner.review_output_path(sandbox, runner.REVIEW_OUTPUT)
-    mounts = (
-        runner.ReadOnlyMount(source=review_output.parent, target=runner.SANDBOX_REVIEW_OUTPUT),
-    )
-    assert mounts[0].source == review_output.parent, "mount the directory, not the file"
-    assert mounts[0].target == runner.SANDBOX_REVIEW_OUTPUT
-    assert not mounts[0].target.startswith(f"{runner.SANDBOX_WORKSPACE}/")
-    # The artifact the harness later reads is the one inside that mount.
-    assert review_output.parent in review_output.parents
 
 
 def test_claude_settings_allow_the_review_artifact_directory():
