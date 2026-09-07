@@ -48,6 +48,7 @@ import yaml
 
 from . import runner
 from . import runner_sessions
+from .comparator_reuse import current_runtime_digest
 from .model_gateway import (
     ANTHROPIC_API_KEY_ENV,
     attach_openai_gateway,
@@ -1036,7 +1037,7 @@ def runner_environment(args: argparse.Namespace) -> dict[str, str]:
     # process_control replaces the child environment wholesale, so a digest the
     # workflow exported reaches the runner only if it is forwarded here. Without
     # this the runner stamps no runtime_digest and the reuse lock never engages.
-    runtime_digest = os.environ.get("RUNTIME_DIGEST", "").strip()
+    runtime_digest = current_runtime_digest()
     if runtime_digest:
         env["RUNTIME_DIGEST"] = runtime_digest
     if args.auth_token:

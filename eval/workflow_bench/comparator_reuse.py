@@ -29,6 +29,7 @@ from .evolution import CANDIDATE_ARMS, EVIDENCE_MAX_AGE_DAYS
 from .proposer_sandbox import SandboxError
 from .runner_sessions import MAX_TRANSCRIPT_BYTES, PARENT_EVENT_STREAM_SOURCE
 from .runtime_mounts import CE_ARMS
+from .task_assets import COPY_CHUNK_BYTES, _write_all
 
 REUSABLE_COMPARATOR_ARMS = frozenset(
     {
@@ -378,34 +379,29 @@ def _regular_file(path: Path, *, label: str) -> Path:
 
 
 def _copy_owner_only(source: Path, destination: Path) -> None:
-    if destination.exists() or destination.is_symlink():
-        raise SandboxError(f"reuse destination already exists: {destination}")
-    descriptor = os.open(
-        destination,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
+    # O_CREAT|O_EXCL is the existence check, and unlike a stat beforehand it is
+    # atomic: a file appearing between check and open cannot slip through.
+    try:
+        descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except FileExistsError as exc:
+        raise SandboxError(f"reuse destination already exists: {destination}") from exc
     try:
         os.fchmod(descriptor, 0o600)
         with open(source, "rb") as handle:
             while True:
-                chunk = handle.read(1024 * 1024)
+                chunk = handle.read(COPY_CHUNK_BYTES)
                 if not chunk:
                     break
-                view = memoryview(chunk)
-                while view:
-                    written = os.write(descriptor, view)
-                    if written <= 0:
-                        raise OSError(f"short write while copying {source}")
-                    view = view[written:]
+                _write_all(descriptor, chunk)
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
 
 
 def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
     with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()

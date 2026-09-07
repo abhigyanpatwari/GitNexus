@@ -330,9 +330,9 @@ def test_clean_control_rewards_an_empty_approval_and_penalizes_noise():
 def test_parse_review_output_names_the_actual_failure(tmp_path: Path):
     """One message per cause.
 
-    Folding these together is how a sandbox that made the artifact impossible
-    to write read for fifteen runs as an encoding fault: every cell reported
-    "not valid UTF-8 JSON" for a file the agent was never able to create.
+    Folding these together makes a sandbox that renders the artifact impossible
+    to write indistinguishable from an encoding fault: every cell reports "not
+    valid UTF-8 JSON" for a file the agent was never able to create.
     """
 
     missing = tmp_path / "never-written.json"

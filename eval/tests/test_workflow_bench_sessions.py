@@ -1381,7 +1381,7 @@ def test_copy_isolated_tree_does_not_share_git_objects_or_refs(tmp_path):
 
 
 def test_run_cell_uses_the_clone_template_instead_of_recloning(tmp_path, monkeypatch):
-    """The branch's core speedup, which had no coverage at all.
+    """run_cell must copy the template, never re-clone.
 
     run_cell takes the clone-template branch on essentially every multi-cell
     sweep: it copies a pre-sanitized template rather than paying `git clone

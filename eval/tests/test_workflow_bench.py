@@ -13,6 +13,7 @@ import yaml
 
 from workflow_bench.runner import (
     aggregate,
+    GraphBuildEnv,
     broken_incumbent_arms,
     build_parser,
     infra_error_record,
@@ -596,16 +597,18 @@ def test_prefetch_next_graph_runs_ensure_on_a_background_thread(monkeypatch):
         task={"id": "review-b"},
         binding={"repo_identity": "/repo", "resolved_sha": "bbb"},
         graph_key=("/repo", "bbb"),
-        trees=Path("/tmp"),
-        task_asset_cache=None,
-        claude_bin="claude",
-        bwrap_bin="bwrap",
-        sandbox_backend="bwrap",
-        runtime_mounts=(),
-        clone_templates={},
-        clone_template_errors={},
-        graph_snapshots={},
-        graph_snapshot_errors={},
+        env=GraphBuildEnv(
+            trees=Path("/tmp"),
+            task_asset_cache=None,
+            claude_bin="claude",
+            bwrap_bin="bwrap",
+            sandbox_backend="bwrap",
+            runtime_mounts=(),
+            clone_templates={},
+            clone_template_errors={},
+            graph_snapshots={},
+            graph_snapshot_errors={},
+        ),
         cancel_event=cancel,
     )
     assert job.key == ("/repo", "bbb")
@@ -632,3 +635,32 @@ def test_a_reused_resolution_does_not_count_as_this_sweeps_health():
     mixed = aggregate([record(resolved=True, reused=True), record(resolved=True)])
     assert mixed["resolved_fresh"] == 1
     assert broken_incumbent_arms({"t": {"review": mixed}}, {"review"}) == []
+
+
+def test_graph_build_env_ready_keys_covers_successes_and_failures():
+    """A key that failed is attempted, not pending.
+
+    next_graph_prefetch_target skips keys already in ready_keys. If a failed
+    build were omitted, the sweep would prefetch it again every iteration and
+    pay a full clone and offline index each time for a build that cannot
+    succeed.
+    """
+
+    env = GraphBuildEnv(
+        trees=Path("/tmp"),
+        task_asset_cache=None,
+        claude_bin="claude",
+        bwrap_bin="bwrap",
+        sandbox_backend="bwrap",
+        runtime_mounts=(),
+        clone_templates={("/repo", "aaa"): (Path("/tmp/a"), "aaa")},
+        clone_template_errors={("/repo", "bbb"): OSError("clone failed")},
+        graph_snapshots={("/repo", "ccc"): object()},
+        graph_snapshot_errors={("/repo", "ddd"): OSError("index failed")},
+    )
+    assert env.ready_keys() == {
+        ("/repo", "aaa"),
+        ("/repo", "bbb"),
+        ("/repo", "ccc"),
+        ("/repo", "ddd"),
+    }
