@@ -699,9 +699,19 @@ export function resolveAutoPoolSize(): number {
   // pool cap exists to prevent. Falls back to os.cpus().length on
   // older Node versions. Mirrors `capabilities.ts:85`
   // (`defaultEmbeddingThreads`).
-  const cores =
-    typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
-  return Math.min(DEFAULT_POOL_SIZE_CAP, Math.max(1, cores - 1));
+  return Math.min(DEFAULT_POOL_SIZE_CAP, Math.max(1, resolveHostParallelism() - 1));
+}
+
+/**
+ * Usable parallelism for this process. Prefers `os.availableParallelism` so
+ * cgroup CPU limits are honored, falling back to `os.cpus().length` on older
+ * Node. Exported so callers that size work against the host (rather than
+ * against the pool default) do not re-derive the fallback.
+ */
+export function resolveHostParallelism(): number {
+  return typeof os.availableParallelism === 'function'
+    ? os.availableParallelism()
+    : os.cpus().length;
 }
 
 /**

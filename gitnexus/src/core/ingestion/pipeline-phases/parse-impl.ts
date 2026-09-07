@@ -70,6 +70,7 @@ import {
   workerPoolDisabledByEnv,
   resolveAutoPoolSize,
   envWorkerPoolSize,
+  resolveHostParallelism,
   WorkerPoolInitializationError,
   WorkerPoolDisabledError,
 } from '../workers/worker-pool.js';
@@ -608,6 +609,22 @@ export async function runChunkedParseAndResolve(
     explicitPoolSize && explicitPoolSize > 0
       ? Math.min(explicitPoolSize, Math.max(1, totalParseable))
       : Math.min(resolveAutoPoolSize(), workProportionalCap);
+  // Deliberate over-subscription is the operator's call, so this warns rather
+  // than caps — silently capping is what the override exists to stop. But an
+  // exported `GITNEXUS_WORKER_POOL_SIZE` applies to EVERY analyze in a
+  // long-lived caller (watch auto-sync, the MCP server), including small
+  // incremental ones, and that is easy to set once and forget.
+  if (explicitPoolSize && explicitPoolSize > 0) {
+    const hostParallelism = resolveHostParallelism();
+    if (effectivePoolSize > hostParallelism) {
+      logger.warn(
+        { requested: explicitPoolSize, spawning: effectivePoolSize, hostParallelism },
+        `Worker pool size ${effectivePoolSize} exceeds this host's ${hostParallelism} usable core(s); ` +
+          `parsing is CPU-bound, so the extra workers add memory pressure without throughput. ` +
+          `This applies to every analyze while the override is set.`,
+      );
+    }
+  }
   // Cache packs: stable (language, hash(path) mod 128) buckets, then the
   // per-call byte budget inside each bucket (#3088). Pool size is used only
   // for worker count and sub-batch fan-out, not membership.
@@ -884,6 +901,15 @@ export async function runChunkedParseAndResolve(
           readonly chunkStartMs: number | null;
         };
 
+    /**
+     * Chunk hashes whose durable ParsedFile directory could not be reset. The
+     * old generation's shards are still on disk, so a warm hit would union
+     * stale shards with the new ones. Treated exactly like a quarantined chunk:
+     * skip the parse-cache write so the next run re-dispatches into a clean
+     * directory rather than trusting a generation we could not clear.
+     */
+    const durablePrepareFailures = new Set<string>();
+
     const roundByteBudget = resolveParseRoundByteBudget(options);
     let roundEntries: RoundEntry[] = [];
     /**
@@ -1023,7 +1049,14 @@ export async function runChunkedParseAndResolve(
       if (parseCache && p.chunkHash && rawResults.length > 0) {
         const quarantineSet = new Set(workerPool?.getQuarantinedPaths?.() ?? []);
         const chunkHadQuarantine = p.chunkFiles.some((f) => quarantineSet.has(f.path));
-        if (chunkHadQuarantine) {
+        const durableGenerationStale = durablePrepareFailures.has(p.chunkHash);
+        if (durableGenerationStale) {
+          logger.warn(
+            { chunkHash: p.chunkHash.slice(0, 8) },
+            'parse-cache SKIP: durable generation for this chunk could not be reset, ' +
+              'so its shards may be stale; next run will re-dispatch it',
+          );
+        } else if (chunkHadQuarantine) {
           if (isDev) {
             const quarantinedInChunk = p.chunkFiles.filter((f) => quarantineSet.has(f.path)).length;
             logger.info(
@@ -1081,9 +1114,11 @@ export async function runChunkedParseAndResolve(
             // path does instead of failing the analyze. Workers recreate the
             // directory on write, so at worst the old generation lingers.
             // Caught per chunk so one failure cannot abort the others.
+            durablePrepareFailures.add(miss.chunkHash);
             logger.warn(
               { err, chunkHash: miss.chunkHash.slice(0, 8) },
-              'parsedfile-cache: could not reset durable chunk generation; continuing',
+              'parsedfile-cache: could not reset durable chunk generation; ' +
+                'continuing without caching this chunk',
             );
           }
         },

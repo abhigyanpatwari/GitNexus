@@ -383,6 +383,24 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     }
   });
 
+  it('does not cache a chunk whose durable generation could not be reset', async () => {
+    // The reset failed, so the previous generation's shards are still on disk.
+    // Caching this chunk would let a future warm hit union those stale shards
+    // with the new ones. Same posture as a quarantined chunk: leave it uncached
+    // so the next run re-dispatches into a directory it can actually clear.
+    const f = writeFile('src/stale-generation.ts', 'export function stale() { return 1; }\n');
+    const cache = newCache();
+    prepareOverride.impl = () => Promise.reject(new Error('EACCES: simulated cache failure'));
+    try {
+      await expect(run(cache, [f])).resolves.toBeDefined();
+    } finally {
+      prepareOverride.impl = undefined;
+    }
+
+    // Nothing was written under any key -- neither on disk nor in memory.
+    expect(cache.onDiskKeys.size + cache.entries.size).toBe(0);
+  });
+
   it('retains worker ParsedFiles when the main-thread run-store write fails', async () => {
     const f = writeFile(
       'src/persist-fallback.ts',
