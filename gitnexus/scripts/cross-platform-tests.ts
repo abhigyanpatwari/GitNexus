@@ -36,6 +36,12 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // The tsconfig loader rebases `paths` targets through `path.resolve`, so the
+  // wildcard suffix it must recognise is `/*` on POSIX and `\*` on Windows. It
+  // only looked for `/*`, and every alias target came back as `src*` on
+  // Windows while the Ubuntu run stayed green — so this file has to run where
+  // the separator differs.
+  'test/unit/tsconfig-index.test.ts',
   // The gitnexus-plan safe writer resolves every name through a per-platform
   // backend: Linux anchors through /proc/self/fd, macOS resolves lexically and
   // verifies each step against descriptors it holds open. Publication is link(2)

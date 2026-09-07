@@ -332,7 +332,15 @@ function repoRelative(repoRoot: string, absDir: string): string {
 function rebaseTarget(repoRoot: string, absTarget: string): string {
   // `/repo/src/*` must come back as `src/*`, not `src*`: stripping only the
   // star leaves a trailing slash that `path.relative` then eats.
-  const suffix = absTarget.endsWith('/*') ? '/*' : absTarget.endsWith('*') ? '*' : '';
-  const base = suffix === '' ? absTarget : absTarget.slice(0, -suffix.length);
+  //
+  // The target arrives from `path.resolve`, so on Windows it is `C:\repo\src\*`
+  // and an `endsWith('/*')` check never matches. It fell through to the bare
+  // `*` branch, `path.relative` ate the trailing backslash, and every alias
+  // target came back as `src*` — which `substituteStar` turns into `srclib/x`,
+  // so nothing an alias reached was ever resolved on Windows. Normalise the
+  // separator before looking at the suffix.
+  const normalized = absTarget.split(path.sep).join('/');
+  const suffix = normalized.endsWith('/*') ? '/*' : normalized.endsWith('*') ? '*' : '';
+  const base = suffix === '' ? normalized : normalized.slice(0, -suffix.length);
   return `${repoRelative(repoRoot, base)}${suffix}`;
 }
