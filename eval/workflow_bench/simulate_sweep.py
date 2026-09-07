@@ -300,13 +300,15 @@ def run_faithful(
     ``window`` is the design question. Queue every cell at once and workers race
     far ahead of the fold pointer, so a breaker trip has already paid for cells
     nobody has looked at - measured at 5 against a bound of 2. Holding
-    submission to ``window`` cells beyond the fold point restores the wave's
-    ``workers - 1`` overrun bound while still packing across task boundaries.
-    Defaults to ``workers``, the smallest value that keeps every worker fed.
+    submission to ``window`` cells beyond the fold point caps the overrun at
+    ``window - 1``, which is the wave's own ``workers - 1`` bound when the two
+    are equal, while still packing across task boundaries. Defaults to whatever
+    ``runner.sweep_packed_cells`` defaults to, so a run that names no window
+    compares the shipped policy rather than a more tightly queued prototype.
     """
 
     if window is None:
-        window = workers
+        window = max(workers * runner.PACKED_WINDOW_MULTIPLIER, workers)
 
     cells = _flatten(plan)
     ready = [threading.Event() for _ in plan]
@@ -472,6 +474,12 @@ SCHEDULERS = {
 }
 
 
+def _window_kwargs(name: str, window: int | None) -> dict[str, int]:
+    """``--window`` only means anything to the two schedulers that hold one."""
+
+    return {"window": window} if window is not None and name in ("faithful", "production") else {}
+
+
 def _plan_args(args: argparse.Namespace, weekly: bool, seed: int, fail_from: int | None = None):
     arms = (CANDIDATE_ARM,) if weekly else REVIEW_ARMS
     return {
@@ -489,14 +497,20 @@ def breaker_fidelity(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     limit = runner.DEFAULT_OUTAGE_STREAK
+    window = args.window if args.window is not None else max(
+        args.workers * runner.PACKED_WINDOW_MULTIPLIER, args.workers
+    )
     for fail_from in (0, 4, 12):
         kwargs, _arms = _plan_args(args, weekly=False, seed=args.seed, fail_from=fail_from)
         plan = build_plan(**kwargs)
         total = sum(len(c) for c in plan)
-        row: dict[str, Any] = {"fail_from": fail_from, "limit": limit, "total_cells": total}
+        row: dict[str, Any] = {
+            "fail_from": fail_from, "limit": limit, "total_cells": total, "window": window
+        }
         for name in ("wave", "faithful", "production"):
             out = SCHEDULERS[name](
-                plan, args.workers, outage_limit=limit, graph_seconds=args.graph_seconds
+                plan, args.workers, outage_limit=limit, graph_seconds=args.graph_seconds,
+                **_window_kwargs(name, window),
             )
             row[name] = {
                 "tripped_at": out.tripped_at,
@@ -506,8 +520,13 @@ def breaker_fidelity(args: argparse.Namespace) -> list[dict[str, Any]]:
         row["same_trip_point"] = (
             row["wave"]["tripped_at"] == row["faithful"]["tripped_at"] == row["production"]["tripped_at"]
         )
+        # The producer holds submission to ``window`` cells beyond the fold
+        # pointer, so at most ``window - 1`` cells past the tripping one can
+        # already be in flight. At ``window == workers`` that is exactly the
+        # wave scheduler's own ``workers - 1`` bound.
         row["overrun_within_bound"] = (
-            row["production"]["overrun"] is not None and row["production"]["overrun"] <= args.workers
+            row["production"]["overrun"] is not None
+            and row["production"]["overrun"] <= window - 1
         )
         rows.append(row)
     return rows
@@ -525,7 +544,12 @@ def main() -> int:
     parser.add_argument("--breaker-fidelity", action="store_true")
     parser.add_argument("--window-sweep", action="store_true", help="wall clock vs breaker overrun")
     parser.add_argument("--contention-sweep", action="store_true", help="does the gain survive real CPU?")
-    parser.add_argument("--window", type=int, default=None)
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=None,
+        help="submission window for the packed schedulers; defaults to the shipped policy",
+    )
     parser.add_argument(
         "--graph-seconds",
         type=float,
@@ -541,7 +565,6 @@ def main() -> int:
         rows = []
         for cpu_fraction in (0.0, 0.25, 0.5):
             for workers in (3, 6):
-                kwargs, _arms = _plan_args(args, weekly=False, seed=args.seed)
                 plans = [
                     build_plan(**_plan_args(args, False, args.seed + i)[0])
                     for i in range(args.repeat)
@@ -549,7 +572,6 @@ def main() -> int:
                 measured = {}
                 for name in ("wave", "faithful", "production"):
                     fn = SCHEDULERS[name]
-                    extra = {"window": 12} if name == "faithful" else {}
                     measured[name] = statistics.median(
                         fn(
                             plan,
@@ -558,7 +580,7 @@ def main() -> int:
                             graph_seconds=args.graph_seconds,
                             cpu_fraction=cpu_fraction,
                             burn_rate=burn_rate,
-                            **extra,
+                            **_window_kwargs(name, args.window),
                         ).wall_s
                         for plan in plans
                     )
@@ -571,6 +593,7 @@ def main() -> int:
                         "workers": workers,
                         "wave_s": round(measured["wave"], 2),
                         "faithful_s": round(measured["faithful"], 2),
+                        "production_s": round(measured["production"], 2),
                         "packing_gain_pct": round(
                             (measured["faithful"] - measured["wave"]) / measured["wave"] * 100, 1
                         ),
@@ -585,7 +608,6 @@ def main() -> int:
         total = len(review_tasks(_read(REVIEW_TASKS))) * args.runs * len(REVIEW_ARMS)
         rows = []
         for window in (args.workers, args.workers * 2, args.workers * 4, total):
-            kwargs, arms = _plan_args(args, weekly=False, seed=args.seed)
             clean = [build_plan(**_plan_args(args, False, args.seed + i)[0]) for i in range(args.repeat)]
             wall = statistics.median(
                 run_faithful(
@@ -640,7 +662,13 @@ def main() -> int:
         )
         for name in names:
             observed = statistics.median(
-                SCHEDULERS[name](p, args.workers, outage_limit=0, graph_seconds=args.graph_seconds).wall_s
+                SCHEDULERS[name](
+                    p,
+                    args.workers,
+                    outage_limit=0,
+                    graph_seconds=args.graph_seconds,
+                    **_window_kwargs(name, args.window),
+                ).wall_s
                 for p in plans
             )
             rows.append(

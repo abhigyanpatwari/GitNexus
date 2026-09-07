@@ -928,7 +928,6 @@ def sweep_packed_cells(
 
         halt = threading.Event()
         results: list[dict[str, Any] | None] = [None] * len(cells)
-        skipped: set[int] = set()
         submitted: list[Any] = []
         gate = threading.Condition()
         producing = True
@@ -954,7 +953,6 @@ def sweep_packed_cells(
                         ready_tasks[task_id] = True if await_ready is None else await_ready(task_id)
                     if not ready_tasks[task_id]:
                         with gate:
-                            skipped.add(index)
                             submitted.append(None)
                             gate.notify_all()
                         continue
