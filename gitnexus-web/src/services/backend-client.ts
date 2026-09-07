@@ -1011,9 +1011,10 @@ export const startAnalyze = async (request: {
   embeddings?: boolean;
   token?: string;
   /**
-   * Index-branch selector. Omitted, a `url` request clones the remote's default
-   * branch; a `path` request is not cloned at all and indexes whatever that
-   * working tree already has checked out.
+   * Index-branch selector. Omitted: a `url` with no existing clone takes the
+   * remote's default branch, an existing clone updates whichever branch it
+   * already has checked out, and a `path` request is not cloned at all and
+   * indexes that working tree as it stands.
    */
   branch?: string;
 }): Promise<{ jobId: string; status: string }> => {

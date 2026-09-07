@@ -376,13 +376,15 @@ export async function assertRemoteMatchesRequestedUrl(
  * when one is requested.
  *
  * If targetDir exists with .git, its remote.origin is verified against the
- * requested URL first, and then:
- *   - without `options.branch`: git pull --ff-only, which updates whichever
- *     branch is already checked out
- *   - with `options.branch`: fetch that ref, then
- *     `checkout -B <branch> origin/<branch>` — so the requested branch, not the
- *     one already checked out, is what ends up in the working tree. Refuses a
- *     dirty tree unless `overwriteLocalChanges` is set.
+ * requested URL first, and then the branch decides the update:
+ *   - no `options.branch`, or one that is ALREADY checked out: git pull
+ *     --ff-only, which updates the current branch in place. Nothing moves, so
+ *     no dirty-tree check applies.
+ *   - a `options.branch` that DIFFERS from the current one: fetch that ref,
+ *     then `checkout -B <branch> origin/<branch>` — so the requested branch,
+ *     not the one already checked out, is what ends up in the working tree.
+ *     This is the switching case, and it refuses a dirty tree unless
+ *     `overwriteLocalChanges` is set.
  *
  * Security:
  *   - targetDir must resolve inside CLONE_ROOT (~/.gitnexus/repos/). The
