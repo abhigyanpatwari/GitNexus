@@ -23,6 +23,14 @@ const COLUMNS_BY_TABLE = new Map<string, Set<string>>(
 );
 
 describe('FTS_INDEXES', () => {
+  it('indexes document declarations as individually discoverable sections', () => {
+    expect(FTS_INDEXES.find((index) => index.table === 'Section')).toEqual({
+      table: 'Section',
+      indexName: 'section_fts',
+      properties: ['name', 'content', 'description'],
+    });
+  });
+
   it('keeps File at name+content only (File has no description column)', () => {
     const file = FTS_INDEXES.find((i) => i.table === 'File');
     expect(file).toMatchObject({ properties: ['name', 'content'] });

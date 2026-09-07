@@ -44,4 +44,6 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   { table: 'Union', indexName: 'union_fts', properties: FTS_PROPERTIES },
   { table: 'Static', indexName: 'static_fts', properties: FTS_PROPERTIES },
   { table: 'Variable', indexName: 'variable_fts', properties: FTS_PROPERTIES },
+  // Markdown headings and static document declarations must be discoverable by name.
+  { table: 'Section', indexName: 'section_fts', properties: FTS_PROPERTIES },
 ];

@@ -642,6 +642,8 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 ### Supported Languages
 
+XAML files are indexed as documents. Literal `x:Name`, `x:Key`, and `x:Class` declarations become searchable `Section` nodes with source ranges and file containment. Namespace aliases are supported. Runtime bindings, event-handler resolution, markup-extension keys, entity-containing declaration values, DTDs, and documents deeper than 100 elements are not interpreted; the file remains indexed when declaration extraction is unavailable. Run `gitnexus analyze --force` to add declaration nodes and their search indexes to an existing index.
+
 | Language   | Imports | Named Bindings | Exports | Heritage | Type Annotations | Constructor Inference | Config | Frameworks | Entry Points |
 | ---------- | ------- | -------------- | ------- | -------- | ---------------- | --------------------- | ------ | ---------- | ------------ |
 | TypeScript | ✓       | ✓              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
