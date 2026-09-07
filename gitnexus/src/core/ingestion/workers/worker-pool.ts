@@ -96,10 +96,45 @@ export function buildDispatchMessage<T>(items: readonly T[]): {
     transferList,
   };
 }
+/**
+ * One content-addressed parse-cache chunk's worth of work inside a pool round.
+ * See {@link WorkerPool.dispatchGroups}.
+ */
+export interface DispatchGroup<TInput> {
+  readonly items: readonly TInput[];
+  /**
+   * Chunk hash tagged onto every job derived from `items`, exactly as the
+   * `chunkHash` argument of {@link WorkerPool.dispatch} does for a lone chunk.
+   */
+  readonly chunkHash?: string;
+}
+
 export interface WorkerPool {
   /**
-   * Dispatch items across workers. Items are split into bounded jobs, each job
-   * is committed independently, and stalled jobs are split/retried locally.
+   * Dispatch several content-addressed chunks in ONE pool round.
+   *
+   * `dispatch` is a barrier: it resolves only once every job it created has
+   * committed, so dispatching one small parse-cache pack at a time leaves most
+   * slots idle for the whole round-trip. Stable packs are keyed by
+   * `(language, hash(path) % 128)`, which routinely yields packs far below the
+   * byte budget — on this repo, 1285 packs where the budget alone needs 16, and
+   * 549 of them hold a single file. Batching packs into one round removes those
+   * barriers without touching pack identity: jobs are still cut at group
+   * boundaries, so each job carries exactly one `chunkHash` and every result
+   * stays attributable to the pack that owns its cache key.
+   *
+   * Returns one result array per input group, in input order. A group whose
+   * items were all quarantined yields an empty array.
+   */
+  dispatchGroups<TInput, TResult>(
+    groups: readonly DispatchGroup<TInput>[],
+    onProgress?: (filesProcessed: number) => void,
+  ): Promise<TResult[][]>;
+
+  /**
+   * Dispatch ONE chunk across workers — {@link WorkerPool.dispatchGroups} with
+   * a single group. Items are split into bounded jobs, each job is committed
+   * independently, and stalled jobs are split/retried locally.
    *
    * Files in {@link WorkerPool.getQuarantinedPaths} are filtered out before
    * dispatch — they have already caused a worker death this pool lifetime and
@@ -863,15 +898,21 @@ function inFlightExcludePath<TInput>(job: WorkerJob<TInput>, lastProgress: numbe
   return path ? [path] : [];
 }
 
+/**
+ * Cut `items` into bounded jobs. `startIndexOffset` places those jobs on a
+ * shared index space so several groups can be laid out end to end in one
+ * dispatch round and every result still sorts back into global input order.
+ */
 function createJobs<TInput>(
-  items: TInput[],
+  items: readonly TInput[],
   maxItems: number,
   maxBytes: number,
   timeoutMs: number,
   chunkHash?: string,
+  startIndexOffset = 0,
 ): WorkerJob<TInput>[] {
   const jobs: WorkerJob<TInput>[] = [];
-  let startIndex = 0;
+  let startIndex = startIndexOffset;
   let batch: TInput[] = [];
   let batchBytes = 0;
 
@@ -1263,11 +1304,44 @@ export const createWorkerPool = (
     workers.map((_, i) => bringSlotReady(i)),
   ).then(() => undefined);
 
-  const dispatch = async <TInput, TResult>(
-    items: TInput[],
+  /**
+   * Guards the one-dispatch-at-a-time contract. The dispatch machinery keeps
+   * its jobs/busy-slot/in-flight state per call, so two concurrent dispatches
+   * hand the same slots out twice: both stall, and the failure surfaces only
+   * when every worker hits its idle timeout (10s+ of a wedged pool with no
+   * indication of the cause). Fail loudly at the call instead.
+   */
+  let dispatchInFlight = false;
+
+  /**
+   * Claim the pool synchronously, then run the dispatch. The claim CANNOT be
+   * taken inside `dispatchGroupsInner`: its first statement awaits the
+   * readiness gate, so two calls made in the same tick would both get past the
+   * check before either set the flag.
+   */
+  const dispatchGroups = <TInput, TResult>(
+    groups: readonly DispatchGroup<TInput>[],
     onProgress?: (filesProcessed: number) => void,
-    chunkHash?: string,
-  ): Promise<TResult[]> => {
+  ): Promise<TResult[][]> => {
+    if (dispatchInFlight) {
+      return Promise.reject(
+        new WorkerPoolDispatchError(
+          'Worker pool dispatch is already in flight. `dispatch`/`dispatchGroups` is not ' +
+            'reentrant — await the previous call before starting another on the same pool.',
+          [],
+        ),
+      );
+    }
+    dispatchInFlight = true;
+    return dispatchGroupsInner<TInput, TResult>(groups, onProgress).finally(() => {
+      dispatchInFlight = false;
+    });
+  };
+
+  const dispatchGroupsInner = async <TInput, TResult>(
+    groups: readonly DispatchGroup<TInput>[],
+    onProgress?: (filesProcessed: number) => void,
+  ): Promise<TResult[][]> => {
     // Await the initial-spawn readiness gate (F13). On first dispatch
     // this blocks for up to poolOptions.workerReadyTimeoutMs while every initial
     // worker's `{type:'ready'}` handshake is checked; on subsequent
@@ -1285,7 +1359,8 @@ export const createWorkerPool = (
         [],
       );
     }
-    if (items.length === 0) return [];
+    const emptyPerGroup = (): TResult[][] => groups.map(() => []);
+    if (groups.every((group) => group.items.length === 0)) return emptyPerGroup();
     if (activeSlots.size === 0) {
       const detail =
         initialReadinessFailures.length > 0
@@ -1308,30 +1383,51 @@ export const createWorkerPool = (
     // Layer 3: filter out quarantined paths so a known-bad file never reaches
     // a worker again this pool lifetime. The caller queries
     // `getQuarantinedPaths` after dispatch to route filtered items.
-    const dispatchableItems: TInput[] = [];
-    for (const item of items) {
-      const path = itemPath(item);
-      if (path !== undefined && quarantine.has(path)) continue;
-      dispatchableItems.push(item);
-    }
-    if (dispatchableItems.length === 0) return [];
+    const dispatchableGroups = groups.map((group) => {
+      const items: TInput[] = [];
+      for (const item of group.items) {
+        const path = itemPath(item);
+        if (path !== undefined && quarantine.has(path)) continue;
+        items.push(item);
+      }
+      return { items, chunkHash: group.chunkHash };
+    });
+    const dispatchableCount = dispatchableGroups.reduce(
+      (sum, group) => sum + group.items.length,
+      0,
+    );
+    if (dispatchableCount === 0) return emptyPerGroup();
 
     // Stable cache packs can be much smaller than either job ceiling. Split
     // those packs across the live slots too, otherwise each serial dispatch
     // feeds only one worker. Keep both configured ceilings as upper bounds.
     const maxItemsPerJob = Math.min(
       poolOptions.subBatchSize,
-      Math.max(1, Math.floor(dispatchableItems.length / activeSlots.size)),
+      Math.max(1, Math.floor(dispatchableCount / activeSlots.size)),
     );
-    const jobs = createJobs(
-      dispatchableItems,
-      maxItemsPerJob,
-      poolOptions.subBatchMaxBytes,
-      poolOptions.subBatchIdleTimeoutMs,
-      chunkHash,
-    );
+    // Lay the groups end to end on one index space and cut jobs at every group
+    // boundary. A job therefore belongs to exactly one group, which is what
+    // lets a result be attributed back to the parse-cache chunk that owns it
+    // (and what keeps `chunkHash` a per-job constant through splits/requeues).
+    const jobs: WorkerJob<TInput>[] = [];
+    const groupEnds: number[] = [];
+    let groupStart = 0;
+    for (const group of dispatchableGroups) {
+      for (const job of createJobs(
+        group.items,
+        maxItemsPerJob,
+        poolOptions.subBatchMaxBytes,
+        poolOptions.subBatchIdleTimeoutMs,
+        group.chunkHash,
+        groupStart,
+      )) {
+        jobs.push(job);
+      }
+      groupStart += group.items.length;
+      groupEnds.push(groupStart);
+    }
 
-    return new Promise<TResult[]>((resolve, reject) => {
+    return await new Promise<TResult[][]>((resolve, reject) => {
       const results: WorkerJobResult<TResult>[] = [];
       const inFlightProgress = new Array(size).fill(0);
       // Tracks which slots are currently mid-job so the "wake idle slots"
@@ -1359,10 +1455,7 @@ export const createWorkerPool = (
       const reportProgress = () => {
         if (!onProgress) return;
         const inFlight = inFlightProgress.reduce((sum, value) => sum + value, 0);
-        const next = Math.min(
-          dispatchableItems.length,
-          Math.max(maxReported, completedFiles + inFlight),
-        );
+        const next = Math.min(dispatchableCount, Math.max(maxReported, completedFiles + inFlight));
         if (next === maxReported) return;
         maxReported = next;
         onProgress(next);
@@ -1551,9 +1644,19 @@ export const createWorkerPool = (
         if (jobs.length === 0 && activeWorkers === 0) {
           stopped = true;
           results.sort((a, b) => a.startIndex - b.startIndex);
-          if (onProgress && maxReported < dispatchableItems.length)
-            onProgress(dispatchableItems.length);
-          resolve(results.map((result) => result.data));
+          if (onProgress && maxReported < dispatchableCount) onProgress(dispatchableCount);
+          // Partition back per group. Job (and split sub-job) start indices
+          // stay inside their group's span, so a single forward walk over the
+          // sorted results assigns every result to exactly one group.
+          const perGroup: TResult[][] = groupEnds.map(() => []);
+          let groupIdx = 0;
+          for (const result of results) {
+            while (groupIdx < groupEnds.length - 1 && result.startIndex >= groupEnds[groupIdx]) {
+              groupIdx++;
+            }
+            perGroup[groupIdx].push(result.data);
+          }
+          resolve(perGroup);
         }
       };
 
@@ -2294,8 +2397,18 @@ export const createWorkerPool = (
     activeSlots.clear();
   };
 
+  const dispatch = async <TInput, TResult>(
+    items: TInput[],
+    onProgress?: (filesProcessed: number) => void,
+    chunkHash?: string,
+  ): Promise<TResult[]> => {
+    const [result] = await dispatchGroups<TInput, TResult>([{ items, chunkHash }], onProgress);
+    return result ?? [];
+  };
+
   return {
     dispatch,
+    dispatchGroups,
     terminate,
     size,
     getQuarantinedPaths: () => quarantine.snapshot(),

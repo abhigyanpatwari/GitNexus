@@ -50,11 +50,13 @@ function scanned(repo: string, files: string[]) {
 }
 
 /**
- * Capture every per-chunk progress message emitted during a run.
- * parse-impl emits one per chunk in the "Parsing chunk X/Y" form, so
- * counting unique chunk indices in the captured stream is a stable
- * proxy for the number of chunks the loop actually produced. Avoids
- * exposing internal counter state from parse-impl.
+ * Read the chunk count out of the progress stream. parse-impl reports progress
+ * as "Parsing chunk X/Y" for a single chunk and "Parsing chunks X-Z/Y" when a
+ * dispatch round batches several — so the DENOMINATOR, not the number of
+ * distinct messages, is the count of packs the loop produced. Reading `Y`
+ * keeps this independent of how chunks are grouped into rounds while still
+ * exercising the real budget-resolution path inside
+ * `runChunkedParseAndResolve`, rather than re-deriving packs in the test.
  */
 async function countChunksFromProgress(
   repoPath: string,
@@ -63,7 +65,7 @@ async function countChunksFromProgress(
 ): Promise<number> {
   const scan = scanned(repoPath, files);
   const graph = createKnowledgeGraph();
-  const chunkIndices = new Set<string>();
+  const totals = new Set<number>();
   await runChunkedParseAndResolve(
     graph,
     scan,
@@ -73,8 +75,8 @@ async function countChunksFromProgress(
     Date.now(),
     (p) => {
       if (typeof p.message !== 'string') return;
-      const m = /Parsing chunk (\d+)\/(\d+)/.exec(p.message);
-      if (m !== null) chunkIndices.add(`${m[1]}/${m[2]}`);
+      const m = /Parsing chunks? \d+(?:-\d+)?\/(\d+)/.exec(p.message);
+      if (m !== null) totals.add(Number(m[1]));
     },
     // Chunk count is byte-budget-driven and emitted before the pool runs, so it
     // is independent of worker vs sequential. Sequential parsing was removed, so
@@ -82,7 +84,10 @@ async function countChunksFromProgress(
     // integration tier.
     { ...options },
   );
-  return chunkIndices.size;
+  // Every message in a run carries the same denominator; more than one value
+  // would mean the loop changed its chunk count mid-run.
+  expect(totals.size).toBeLessThanOrEqual(1);
+  return totals.values().next().value ?? 0;
 }
 
 describe('parse-impl chunkByteBudget resolution (U14 / F7)', () => {
