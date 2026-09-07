@@ -16,6 +16,7 @@ import { normalizeFtsText } from '../lbug/csv-generator.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { redactPaths } from './fts-indexes.js';
 import { FTS_INDEXES } from './fts-schema.js';
+import type { FtsDisabledReason } from './fts-policy.js';
 import {
   applyCjkSegmentationIfEnabled,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
@@ -109,7 +110,9 @@ export const searchFTSFromLbug = async (
   query: string,
   limit: number = 20,
   repoId?: string,
+  disabledReason?: FtsDisabledReason,
 ): Promise<FTSSearchResponse> => {
+  if (disabledReason) return { results: [], ftsAvailable: false };
   // Applied once, up front, so every downstream branch searches with the
   // same text the index was built from (#2331/#2339) — index-time and
   // query-time text transforms must never diverge, since QUERY_FTS_INDEX

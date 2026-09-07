@@ -10,6 +10,12 @@
  */
 
 import { detectGraphWriteCollapse, type GraphWriteCollapseVerdict } from './index-freshness.js';
+import {
+  resolveFtsDisableReason,
+  getFtsDisabledReason,
+  FTS_DISABLED_MESSAGE,
+  type FtsSkipReason,
+} from './search/fts-policy.js';
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
 import path from 'path';
 import fs from 'fs/promises';
@@ -347,6 +353,7 @@ export interface AnalyzeOptions {
   useParseCache?: boolean;
   /** Repair only search indexes without re-running full parsing/indexing. */
   repairFts?: boolean;
+  skipFts?: boolean;
   /** Emit per-index FTS create logs. */
   verbose?: boolean;
   embeddings?: boolean;
@@ -554,7 +561,7 @@ export interface AnalyzeResult {
    * `--repair-fts`, not by installing the extension). Lets the CLI show the
    * correct recovery hint instead of always blaming a missing extension.
    */
-  ftsSkipReason?: 'extension-unavailable' | 'build-failed';
+  ftsSkipReason?: FtsSkipReason;
   /**
    * True when the index this run produced/validated is the flat workspace
    * slot (#2106 R2, inverted by #2354 to follow the checked-out branch).
@@ -1071,6 +1078,9 @@ export async function runFullAnalysis(
   // Validate operator-provided FTS config before anything else — a typo fails
   // here in ms, without taking the lock. (createSearchFTSIndexes reuses the
   // cached value via getSearchFTSStemmer.)
+  if (options.repairFts && resolveFtsDisableReason(options.skipFts)) {
+    throw new Error('--repair-fts cannot be used with --skip-fts or GITNEXUS_SKIP_FTS=1.');
+  }
   initialiseSearchFTSStemmer();
   initialiseSearchFTSCjkSegmentation();
   // Scope the degraded-parse log throttle to this run (module-level counter
@@ -1136,6 +1146,9 @@ async function runFullAnalysisInner(
   writeTarget: WriteTarget,
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
+  const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
+  const initAnalysisLbug = (dbPath: string) =>
+    ftsDisabledReason ? initLbug(dbPath, { skipFts: true }) : initLbug(dbPath);
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
@@ -1177,6 +1190,8 @@ async function runFullAnalysisInner(
   }
 
   const existingMeta = await loadMeta(metaDir);
+  const previousFtsDisabledReason = getFtsDisabledReason(existingMeta?.capabilities?.fts);
+  const ftsModeChanged = ftsDisabledReason !== previousFtsDisabledReason;
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (options.repairFts) {
@@ -1229,7 +1244,7 @@ async function runFullAnalysisInner(
       );
     }
     try {
-      await initLbug(lbugPath);
+      await initAnalysisLbug(lbugPath);
       // Gate on FTS availability BEFORE touching any index. createSearchFTSIndexes
       // now DROPs each index before recreating it (so schema changes reach existing
       // DBs); if the extension were unavailable, the drops would run and leave the
@@ -1774,7 +1789,8 @@ async function runFullAnalysisInner(
     existingMeta &&
     !existingMeta.embeddingCheckpoint &&
     !options.force &&
-    existingMeta.lastCommit === currentCommit
+    existingMeta.lastCommit === currentCommit &&
+    !ftsModeChanged
   ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
@@ -1896,6 +1912,7 @@ async function runFullAnalysisInner(
           repoPath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
+          ...(ftsDisabledReason ? { ftsSkipped: true, ftsSkipReason: ftsDisabledReason } : {}),
           isPrimaryBranch: !placement.branch,
         };
       }
@@ -1966,7 +1983,7 @@ async function runFullAnalysisInner(
   if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
-      await initLbug(lbugPath);
+      await initAnalysisLbug(lbugPath);
       const cached = await loadCachedEmbeddings();
       cachedEmbeddingNodeIds = cached.embeddingNodeIds;
       cachedEmbeddings = cached.embeddings;
@@ -2347,7 +2364,7 @@ async function runFullAnalysisInner(
   // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
   // Windows use `buildPath === lbugPath` in place.
   try {
-    await initLbug(buildPath);
+    await initAnalysisLbug(buildPath);
   } catch (error) {
     if (liveIndexMutationStarted) recordLiveIndexMutationRisk(error);
     throw error;
@@ -2664,7 +2681,9 @@ async function runFullAnalysisInner(
       // creates or drops an index.
       const indexCatalogRows = await readIndexCatalogSnapshot();
       const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe(indexCatalogRows);
-      const ftsRowDmlSafe = await ensureFtsRowDmlSafe(indexCatalogRows);
+      const ftsRowDmlSafe = ftsDisabledReason
+        ? await ensureFtsRowDmlSafe(indexCatalogRows, { skipFts: true })
+        : await ensureFtsRowDmlSafe(indexCatalogRows);
       const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
       // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
       // the DB, so it must never fire on the one path whose entire purpose is to
@@ -2754,7 +2773,7 @@ async function runFullAnalysisInner(
         // catalog read happened to fail still had both gates answer "safe"
         // (both extensions loaded), and claiming otherwise would trade one
         // invented cause for another.
-        if (extensionForcedRebuild && indexCatalogUnreadable) {
+        if (extensionForcedRebuild && indexCatalogUnreadable && !ftsDisabledReason) {
           const blockedExtensions = [
             !embeddingRowDmlSafe ? 'VECTOR' : undefined,
             !ftsRowDmlSafe ? 'FTS' : undefined,
@@ -2778,7 +2797,12 @@ async function runFullAnalysisInner(
             'Semantic search falls back to exact scan until VECTOR is available.',
           );
         }
-        if (!ftsRowDmlSafe) {
+        if (!ftsRowDmlSafe && ftsDisabledReason) {
+          escalationCauses.push(
+            'FTS is explicitly disabled and existing search indexes could not be ruled out; ' +
+              'a fresh graph store is required before writing rows without the extension',
+          );
+        } else if (!ftsRowDmlSafe) {
           if (!indexCatalogUnreadable) {
             // Self-contained subject (H5): `join('; and ')` used to render "…the
             // CodeEmbedding vector index exists … and THIS INDEX carries FTS
@@ -2829,7 +2853,9 @@ async function runFullAnalysisInner(
           !embeddingRowDmlSafe
             ? { reason: getExtensionCapability('VECTOR')?.reason, label: 'VECTOR' }
             : undefined,
-          !ftsRowDmlSafe ? { reason: getFtsCapability()?.reason, label: 'FTS' } : undefined,
+          !ftsRowDmlSafe && !ftsDisabledReason
+            ? { reason: getFtsCapability()?.reason, label: 'FTS' }
+            : undefined,
         ]
           .filter((e): e is { reason: string | undefined; label: string } => e !== undefined)
           .map(({ reason, label }) => diagnoseExtensionLoad(reason, label).remedy);
@@ -2912,7 +2938,7 @@ async function runFullAnalysisInner(
         await closeLbug();
         if (buildPath === lbugPath) liveIndexMutationStarted = true;
         await wipeLbugDbFiles(buildPath);
-        await initLbug(buildPath);
+        await initAnalysisLbug(buildPath);
         walCheckpointDriver = startWalCheckpointDriver();
         await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
           lbugMsgCount++;
@@ -3130,10 +3156,16 @@ async function runFullAnalysisInner(
     // analyze still produces a fully queryable graph; only full-text/BM25
     // search falls back. `--repair-fts` (whose sole job is FTS) still fails
     // loudly on its own path above.
-    progress('fts', 85, 'Creating search indexes...');
-    const ftsAvailable = await loadFTSExtension(undefined, {
-      policy: resolveAnalyzeInstallPolicy(),
-    });
+    progress(
+      'fts',
+      85,
+      ftsDisabledReason ? 'Skipping search indexes...' : 'Creating search indexes...',
+    );
+    const ftsAvailable =
+      !ftsDisabledReason &&
+      (await loadFTSExtension(undefined, {
+        policy: resolveAnalyzeInstallPolicy(),
+      }));
     // Tracks whether search indexes actually ended up usable this run — starts
     // as ftsAvailable (extension loaded) but flips to false below when the
     // build/verify step itself fails, so capabilities.fts.status / ftsSkipped
@@ -3141,9 +3173,9 @@ async function runFullAnalysisInner(
     let ftsReady = ftsAvailable;
     // Why FTS ended up skipped (#2658 review L2): extension-unavailable up front,
     // or build-failed in the degrade branch below.
-    let ftsSkipReason: 'extension-unavailable' | 'build-failed' | undefined = ftsAvailable
+    let ftsSkipReason: FtsSkipReason | undefined = ftsAvailable
       ? undefined
-      : 'extension-unavailable';
+      : (ftsDisabledReason ?? 'extension-unavailable');
     if (ftsAvailable) {
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
@@ -3184,6 +3216,9 @@ async function runFullAnalysisInner(
         );
         progress('fts', 90, 'Search indexes skipped (build failed)');
       }
+    } else if (ftsDisabledReason) {
+      log(FTS_DISABLED_MESSAGE);
+      progress('fts', 90, 'Search indexes skipped (explicitly disabled)');
     } else {
       // For a missing runtime dependency (#2374) the file is present, so the
       // generic "install it with network access" tail in FTS_UNAVAILABLE_MESSAGE

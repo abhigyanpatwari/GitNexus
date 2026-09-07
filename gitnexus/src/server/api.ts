@@ -37,6 +37,7 @@ import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-sh
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
 import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
+import { getFtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
@@ -1229,6 +1230,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       }
       const lbugPath = path.join(entry.storagePath, 'lbug');
       const parsedLimit = Number(req.body.limit ?? 10);
+      const ftsDisabledReason = getFtsDisabledReason(
+        (await loadMeta(entry.storagePath))?.capabilities?.fts,
+      );
       const limit = Number.isFinite(parsedLimit)
         ? Math.max(1, Math.min(100, Math.trunc(parsedLimit)))
         : 10;
@@ -1257,7 +1261,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               sources: ['semantic'],
             }));
           } else if (mode === 'bm25') {
-            const ftsResponse = await searchFTSFromLbug(query, limit);
+            const ftsResponse = ftsDisabledReason
+              ? await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason)
+              : await searchFTSFromLbug(query, limit);
             ftsAvailable = ftsResponse.ftsAvailable;
             searchResults = ftsResponse.results.map((r: any, i: number) => ({
               ...r,
@@ -1270,9 +1276,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (isEmbedderReady()) {
               const { semanticSearch: semSearch } =
                 await import('../core/embeddings/embedding-pipeline.js');
-              searchResults = await hybridSearch(query, limit, executeQuery, semSearch);
+              searchResults = ftsDisabledReason
+                ? await hybridSearch(query, limit, executeQuery, semSearch, ftsDisabledReason)
+                : await hybridSearch(query, limit, executeQuery, semSearch);
+              if (ftsDisabledReason) ftsAvailable = false;
             } else {
-              const ftsResponse = await searchFTSFromLbug(query, limit);
+              const ftsResponse = ftsDisabledReason
+                ? await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason)
+                : await searchFTSFromLbug(query, limit);
               ftsAvailable = ftsResponse.ftsAvailable;
               searchResults = ftsResponse.results;
             }
@@ -1366,11 +1377,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           return { searchResults: enriched, ftsAvailable };
         },
-        { readOnly: true },
+        ftsDisabledReason ? { readOnly: true, skipFts: true } : { readOnly: true },
       );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
-        response.warning = ftsDegradedWarning();
+        response.warning = ftsDegradedWarning(undefined, ftsDisabledReason);
       }
       res.json(response);
     } catch (err: any) {

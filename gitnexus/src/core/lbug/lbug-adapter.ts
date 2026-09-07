@@ -709,8 +709,8 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
   return null;
 };
 
-export const initLbug = async (dbPath: string) => {
-  return runWithSessionLock(() => ensureLbugInitialized(dbPath));
+export const initLbug = async (dbPath: string, options: { skipFts?: boolean } = {}) => {
+  return runWithSessionLock(() => ensureLbugInitialized(dbPath, false, options.skipFts === true));
 };
 
 /**
@@ -724,14 +724,14 @@ export const initLbug = async (dbPath: string) => {
 export const withLbugDb = async <T>(
   dbPath: string,
   operation: () => Promise<T>,
-  options: { readOnly?: boolean } = {},
+  options: { readOnly?: boolean; skipFts?: boolean } = {},
 ): Promise<T> => {
   let lastError: unknown;
   const readOnly = options.readOnly === true;
   for (let attempt = 1; attempt <= DB_LOCK_RETRY_ATTEMPTS; attempt++) {
     try {
       return await runWithSessionLock(async () => {
-        await ensureLbugInitialized(dbPath, readOnly);
+        await ensureLbugInitialized(dbPath, readOnly, options.skipFts === true);
         return operation();
       });
     } catch (err) {
@@ -762,15 +762,22 @@ export const withLbugDb = async <T>(
   throw lastError;
 };
 
-const ensureLbugInitialized = async (dbPath: string, readOnly: boolean = false) => {
-  if (conn && currentDbPath === dbPath && currentDbReadOnly === readOnly) {
+let currentDbSkipFts = false;
+
+const ensureLbugInitialized = async (dbPath: string, readOnly = false, skipFts = false) => {
+  if (
+    conn &&
+    currentDbPath === dbPath &&
+    currentDbReadOnly === readOnly &&
+    currentDbSkipFts === skipFts
+  ) {
     return { db, conn };
   }
-  await doInitLbug(dbPath, readOnly);
+  await doInitLbug(dbPath, readOnly, skipFts);
   return { db, conn };
 };
 
-const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
+const doInitLbug = async (dbPath: string, readOnly = false, skipFts = false) => {
   // Different database requested — close the old one first
   if (conn || db) {
     await safeClose();
@@ -942,8 +949,11 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
   // Phase 3 installs it moments later in the same run. Warning here reported a
   // degradation that never happened — the run went on to build every FTS index.
   // Phase 3 (and the read-only branch) still warn for real failures.
-  await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : { quiet: true });
+  if (!skipFts) {
+    await loadFTSExtension(undefined, readOnly ? { policy: 'load-only' } : { quiet: true });
+  }
 
+  currentDbSkipFts = skipFts;
   currentDbPath = dbPath;
   return { db, conn };
 };
@@ -3679,7 +3689,10 @@ export const ensureEmbeddingRowDmlSafe = async (
  * read once per run. {@link INDEX_CATALOG_UNREADABLE} fails closed here without
  * a second read; omitting the argument makes the gate read for itself.
  */
-export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogSnapshot): Promise<boolean> => {
+export const ensureFtsRowDmlSafe = async (
+  indexRows?: IndexCatalogSnapshot,
+  options: { skipFts?: boolean } = {},
+): Promise<boolean> => {
   // Unconditional precondition, same regression as the VECTOR twin's (#2841
   // review §5.B): a caller-supplied snapshot must not let a closed DB be
   // answered `true`.
@@ -3706,6 +3719,9 @@ export const ensureFtsRowDmlSafe = async (indexRows?: IndexCatalogSnapshot): Pro
       return indexType === undefined || indexType === 'FTS';
     });
   if (!indexGatesDml) return true;
+  // Existing/unknown native indexes still gate writes. Rebuild into a fresh
+  // database rather than loading FTS or issuing unsafe DML when opted out.
+  if (options.skipFts) return false;
   return await loadFTSExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
 };
 

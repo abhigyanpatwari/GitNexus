@@ -10,6 +10,7 @@
 
 import { searchFTSFromLbug, type BM25SearchResult } from './bm25-index.js';
 import type { SemanticSearchResult } from '../embeddings/types.js';
+import type { FtsDisabledReason } from './fts-policy.js';
 
 /**
  * RRF constant - standard value used in the literature
@@ -168,13 +169,16 @@ export const hybridSearch = async (
     query: string,
     k?: number,
   ) => Promise<SemanticSearchResult[]>,
+  disabledReason?: FtsDisabledReason,
 ): Promise<HybridSearchResult[]> => {
   // Use LadybugDB FTS for always-fresh BM25 results.
   // If FTS fails (e.g. extension not loaded in MCP process), fall back to
   // semantic-only search instead of crashing with "bm25Results is not iterable".
   let bm25Results: BM25SearchResult[] = [];
   try {
-    const ftsResponse = await searchFTSFromLbug(query, limit);
+    const ftsResponse = disabledReason
+      ? await searchFTSFromLbug(query, limit, undefined, disabledReason)
+      : await searchFTSFromLbug(query, limit);
     bm25Results = ftsResponse?.results ?? [];
   } catch {
     // FTS unavailable — continue with semantic-only search
