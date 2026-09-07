@@ -20,11 +20,12 @@ from .proposer_sandbox import (
     SANDBOX_WORKSPACE,
     ReadOnlyMount,
     SandboxError,
+    SandboxSession,
     build_sandbox_environment,
     prepare_sandbox,
 )
 from .runner_artifacts import make_worktree, remove_clone
-from .task_assets import TaskAssetCache, TaskAssetSnapshot
+from .task_assets import TaskAssetCache, TaskAssetSnapshot, _is_harness_sandbox_copy
 
 GRAPH_ASSET_PATHS = (
     ".gitnexus/gitnexus.json",
@@ -41,6 +42,12 @@ GRAPH_MARKERS = (
 )
 GRAPH_BUILD_TIMEOUT_SECONDS = 3600
 GRAPH_QUERY_TIMEOUT_SECONDS = 300
+# CLI default is 5s. Parse-worker top-of-script init loads every required
+# tree-sitter binding before it can post `{type:'ready'}`; on a loaded WSL
+# host that handshake is >15s, and a GitNexus-sized --pdg analyze can slow it
+# further. Integration tests already stub 60s; graph prep uses 120s so a
+# replacement worker is not classified as deterministic-startup (#2649).
+GRAPH_WORKER_READY_TIMEOUT_MS = 120_000
 MAX_GRAPH_SCRUB_ENTRIES = 250_000
 MAX_GRAPH_SCRUB_FILE_BYTES = 512 * 1024
 MAX_GRAPH_SCRUB_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
@@ -88,7 +95,13 @@ def validate_no_prebuilt_graph_assets(task: Mapping[str, Any]) -> None:
     if not isinstance(sandbox_copy, list):
         raise SandboxError("sandbox_copy must be a list")
     for value in sandbox_copy:
-        if isinstance(value, str) and _is_restricted_path(value):
+        if not isinstance(value, str):
+            continue
+        # Review corpus patches are harness-owned and applied in setup, then
+        # deleted with eval/workflow_bench. They are not a prebuilt graph.
+        if _is_harness_sandbox_copy(PurePosixPath(value)):
+            continue
+        if _is_restricted_path(value):
             raise SandboxError(f"sandbox_copy cannot import prebuilt graph or harness data: {value}")
 
     dependencies = task.get("sandbox_dependencies", [])
@@ -235,6 +248,7 @@ def _graph_environment() -> dict[str, str]:
             "GITNEXUS_NO_GITIGNORE": "1",
             "GITNEXUS_WORKER_POOL_SIZE": "1",
             "GITNEXUS_PARSE_CHUNK_CONCURRENCY": "1",
+            "GITNEXUS_WORKER_READY_TIMEOUT_MS": str(GRAPH_WORKER_READY_TIMEOUT_MS),
         }
     )
     return env
@@ -244,20 +258,23 @@ def _run_graph_cli(
     prefix: Sequence[str],
     arguments: Sequence[str],
     *,
+    sandbox: SandboxSession | None = None,
     timeout: int,
     capture_stdout: bool = False,
 ) -> bytes | None:
+    host_path = sandbox.host_path if sandbox is not None else str
+    host_text = sandbox.host_text if sandbox is not None else str
     command = [
         *prefix,
-        SANDBOX_NODE,
-        SANDBOX_GITNEXUS_ENTRYPOINT,
-        *arguments,
+        host_path(SANDBOX_NODE),
+        host_path(SANDBOX_GITNEXUS_ENTRYPOINT),
+        *(host_text(argument) for argument in arguments),
     ]
     result = run_managed(
         command,
         timeout=timeout,
-        env=_graph_environment(),
-        require_pid_namespace=True,
+        env={key: host_text(value) for key, value in _graph_environment().items()},
+        require_pid_namespace=(sandbox.require_pid_namespace if sandbox is not None else True),
         capture_stdout_bytes=(2 * 1024 * 1024 if capture_stdout else None),
     )
     if not result.ok:
@@ -286,12 +303,14 @@ def _parse_empty_query(raw: bytes, *, label: str) -> None:
     raise SandboxError(f"{label} found recoverable benchmark harness references")
 
 
-def _scrub_and_verify_graph(prefix: Sequence[str]) -> None:
+def _scrub_and_verify_graph(prefix: Sequence[str], sandbox: SandboxSession | None = None) -> None:
     node_predicate = _marker_predicate("n")
     relation_predicate = _marker_predicate("r")
+    sandbox_kwargs = {"sandbox": sandbox} if sandbox is not None else {}
     node_result = _run_graph_cli(
         prefix,
         ("cypher", f"MATCH (n) WHERE {node_predicate} RETURN n LIMIT 1", "-r", "benchmark-target", "--limit", "1"),
+        **sandbox_kwargs,
         timeout=GRAPH_QUERY_TIMEOUT_SECONDS,
         capture_stdout=True,
     )
@@ -305,6 +324,7 @@ def _scrub_and_verify_graph(prefix: Sequence[str]) -> None:
             "--limit",
             "1",
         ),
+        **sandbox_kwargs,
         timeout=GRAPH_QUERY_TIMEOUT_SECONDS,
         capture_stdout=True,
     )
@@ -339,6 +359,7 @@ def prepare_sanitized_graph(
     claude_bin: Path | str,
     bwrap_bin: Path | str,
     runtime_mounts: Sequence[ReadOnlyMount],
+    sandbox_backend: str = "bwrap",
 ) -> SanitizedGraphSnapshot:
     """Sanitize, index offline once, scrub, and freeze graph assets for all arms."""
 
@@ -355,8 +376,10 @@ def prepare_sanitized_graph(
             bwrap_bin=bwrap_bin,
             read_only_mounts=runtime_mounts,
             preflight=False,
+            backend=sandbox_backend,
         ) as sandbox:
             prefix = sandbox.command_prefix_for(unshare_network=True)
+            unsafe_sandbox = sandbox if getattr(sandbox, "backend", "bwrap") == "host-unsafe" else None
             _run_graph_cli(
                 prefix,
                 (
@@ -375,9 +398,10 @@ def prepare_sanitized_graph(
                     "--workers",
                     "1",
                 ),
+                **({"sandbox": unsafe_sandbox} if unsafe_sandbox is not None else {}),
                 timeout=GRAPH_BUILD_TIMEOUT_SECONDS,
             )
-            _scrub_and_verify_graph(prefix)
+            _scrub_and_verify_graph(prefix, unsafe_sandbox)
         _validate_graph_metadata(seed, sanitized_head)
         assets = cache.prepare(
             {"sandbox_copy": list(GRAPH_ASSET_PATHS)},

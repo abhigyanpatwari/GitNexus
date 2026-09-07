@@ -2,12 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import { createRequire } from 'module';
+import { packageVersion } from '../../src/core/package-version.js';
 
-// Match what setup.ts emits — read the version from the same package.json
-// so the test never goes stale on a release bump.
-const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
-  .version;
+const PKG_VERSION = packageVersion();
 const MCP_PINNED_REF = `gitnexus@${PKG_VERSION}`;
 
 /** Flatten the spied console.log calls into one searchable string. */

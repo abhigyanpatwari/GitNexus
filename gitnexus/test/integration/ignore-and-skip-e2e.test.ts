@@ -40,6 +40,36 @@ describe('ignore + language-skip E2E', () => {
       path.join(tmpDir, 'src', 'greet.ts'),
       "export function greet(): string {\n  return 'hello';\n}\n",
     );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'service.ts'),
+      'export class UserService { load(): string { return "loaded"; } }\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'service.d.ts'),
+      'export declare class UserService { load(): string; }\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'vite-env.d.ts'),
+      'declare const APP_ENV: string;\n',
+    );
+    await fs.writeFile(path.join(tmpDir, 'src', 'esm-service.mts'), 'export class EsmService {}\n');
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'esm-service.d.mts'),
+      'export declare class EsmService {}\n',
+    );
+    await fs.writeFile(path.join(tmpDir, 'src', 'cjs-service.cts'), 'export class CjsService {}\n');
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'cjs-service.d.cts'),
+      'export declare class CjsService {}\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'ambient.d.mts'),
+      'export declare class AmbientEsmService {}\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'ambient.d.cts'),
+      'export declare class AmbientCjsService {}\n',
+    );
 
     // Swift file — triggers language skip when grammar unavailable
     await fs.writeFile(
@@ -70,6 +100,15 @@ describe('ignore + language-skip E2E', () => {
 
       expect(paths).toContain('src/index.ts');
       expect(paths).toContain('src/greet.ts');
+      expect(paths).toContain('src/service.ts');
+      expect(paths).not.toContain('src/service.d.ts');
+      expect(paths).toContain('src/vite-env.d.ts');
+      expect(paths).toContain('src/esm-service.mts');
+      expect(paths).not.toContain('src/esm-service.d.mts');
+      expect(paths).toContain('src/cjs-service.cts');
+      expect(paths).not.toContain('src/cjs-service.d.cts');
+      expect(paths).toContain('src/ambient.d.mts');
+      expect(paths).toContain('src/ambient.d.cts');
     });
 
     it('includes .swift files (discovery does not filter by language)', async () => {
@@ -129,6 +168,30 @@ describe('ignore + language-skip E2E', () => {
 
       expect(functionNames).toContain('main');
       expect(functionNames).toContain('greet');
+
+      const userServiceNodes = nodes.filter(
+        (node) => node.label === 'Class' && node.properties.name === 'UserService',
+      );
+      expect(userServiceNodes).toHaveLength(1);
+      expect(userServiceNodes[0].properties.filePath).toBe('src/service.ts');
+      expect(nodes.some((node) => node.properties.filePath === 'src/service.d.ts')).toBe(false);
+
+      expect(
+        nodes.filter((node) => node.label === 'Class' && node.properties.name === 'EsmService'),
+      ).toHaveLength(1);
+      expect(
+        nodes.filter((node) => node.label === 'Class' && node.properties.name === 'CjsService'),
+      ).toHaveLength(1);
+      expect(
+        nodes.filter(
+          (node) => node.label === 'Class' && node.properties.name === 'AmbientEsmService',
+        ),
+      ).toHaveLength(1);
+      expect(
+        nodes.filter(
+          (node) => node.label === 'Class' && node.properties.name === 'AmbientCjsService',
+        ),
+      ).toHaveLength(1);
 
       // Function nodes should reference the correct source files
       const fnFilePaths = functionNodes.map((n) =>

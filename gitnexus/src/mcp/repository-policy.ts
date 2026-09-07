@@ -179,9 +179,44 @@ export class McpRepositoryPolicy {
       });
   }
 
-  async requiresExplicitRepo(backend: LocalBackend): Promise<boolean> {
-    if (this.defaultRepo) return false;
-    return (await this.listAllowedRepos(backend)).length > 1;
+  async toolSchemaRepoRequirements(backend: LocalBackend): Promise<{
+    readOnlyRequiresRepo: boolean;
+    mutatingRequiresRepo: boolean;
+  }> {
+    if (this.defaultRepo) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+
+    // Runtime selection is based on the configured allowlist, not on which
+    // entries happen to remain visible in a later registry refresh. Keep the
+    // advertised schema aligned with repoForArgs() when that listing shrinks.
+    if (this.restricted) {
+      const requiresRepo = this.allowed.length > 1;
+      return {
+        readOnlyRequiresRepo: requiresRepo,
+        mutatingRequiresRepo: requiresRepo,
+      };
+    }
+
+    // One fresh listing supplies both schema decisions. Besides keeping the
+    // advertised contract internally consistent, this avoids doing two full
+    // per-repo staleness fan-outs for every tools/list request.
+    const visibleRepos = await this.listAllowedRepos(backend);
+    if (visibleRepos.length <= 1) {
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: false };
+    }
+    try {
+      // listAllowedRepos() refreshed this backend immediately above. Resolve
+      // against that exact cache snapshot instead of racing another registry
+      // read; only read-only schemas may advertise the cwd-derived default.
+      await backend.selectToolRepository(undefined, undefined, {
+        allowCwdDefault: true,
+        refreshRegistry: false,
+      });
+      return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
+    } catch {
+      return { readOnlyRequiresRepo: true, mutatingRequiresRepo: true };
+    }
   }
 
   private async listReposPage(
@@ -238,6 +273,22 @@ export class McpRepositoryPolicy {
     if (!this.configured) return backend.resolveRepo(repo, branch);
     if (!this.restricted) return backend.resolveRepo(repo ?? this.defaultRepo?.path, branch);
     const selected = this.repoForArgs(repo === undefined ? undefined : { repo });
+    return backend.resolveRepo(selected?.path, branch);
+  }
+
+  private async selectToolRepository(
+    backend: LocalBackend,
+    repo?: string,
+    branch?: string,
+    options?: Parameters<LocalBackend['selectToolRepository']>[2],
+  ): Promise<Awaited<ReturnType<LocalBackend['selectToolRepository']>>> {
+    if (!this.configured) return backend.selectToolRepository(repo, branch, options);
+    if (!this.restricted) {
+      return backend.selectToolRepository(repo ?? this.defaultRepo?.path, branch, options);
+    }
+    const selected = this.repoForArgs(repo === undefined ? undefined : { repo });
+    // Restricted policies never allow cwd to select outside the configured
+    // set; once policy supplies an explicit path, the public resolver is enough.
     return backend.resolveRepo(selected?.path, branch);
   }
 
@@ -306,6 +357,13 @@ export class McpRepositoryPolicy {
         if (property === 'listRepos') return () => policy.listAllowedRepos(target);
         if (property === 'resolveRepo') {
           return (repo?: string, branch?: string) => policy.resolveRepo(target, repo, branch);
+        }
+        if (property === 'selectToolRepository') {
+          return (
+            repo?: string,
+            branch?: string,
+            options?: Parameters<LocalBackend['selectToolRepository']>[2],
+          ) => policy.selectToolRepository(target, repo, branch, options);
         }
         if (property === 'getContext' && policy.restricted) {
           return (repoId?: string) => {

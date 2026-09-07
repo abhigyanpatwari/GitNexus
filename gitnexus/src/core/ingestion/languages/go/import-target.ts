@@ -16,9 +16,9 @@ import { perFileSet } from '../../import-resolvers/per-file-set.js';
  * IMPORTS edge fanout AND binding materialization for every exported symbol in
  * the package.
  *
- * Strategy (first match wins):
- *   1. go.mod-based: strip module prefix, match package directory
- *   2. Non-go.mod / GOPATH: progressively shorter directory suffixes
+ * Strategy:
+ *   1. With go.mod: resolve only imports owned by that module
+ *   2. Without go.mod / GOPATH: progressively shorter directory suffixes
  */
 export function resolveGoImportTarget(
   targetRaw: string,
@@ -30,11 +30,14 @@ export function resolveGoImportTarget(
 
   const goModule = resolutionConfig as GoModuleConfig | undefined;
 
-  // 1) go.mod-based: strip module prefix, match directory
-  if (
-    goModule != null &&
-    (targetRaw === goModule.modulePath || targetRaw.startsWith(`${goModule.modulePath}/`))
-  ) {
+  // 1) go.mod is authoritative: only this module's exact path or subpackages
+  //    can name files in the workspace. Standard-library and third-party
+  //    imports must not fall through to the suffix matcher below.
+  if (goModule != null) {
+    const ownedByModule =
+      targetRaw === goModule.modulePath || targetRaw.startsWith(`${goModule.modulePath}/`);
+    if (!ownedByModule) return null;
+
     const relativePkg =
       targetRaw === goModule.modulePath ? '' : targetRaw.slice(goModule.modulePath.length + 1); // e.g. "internal/models"
     const files =
@@ -42,6 +45,7 @@ export function resolveGoImportTarget(
         ? findRootPackageFiles(allFilePaths)
         : findAllFilesInPkgDir(allFilePaths, relativePkg);
     if (files.length > 0) return files;
+    return null;
   }
 
   // 2) Non-go.mod / GOPATH: progressively shorter directory suffixes.
@@ -66,10 +70,9 @@ function isGoPackageFile(normalized: string): boolean {
  * Package index over the file set, memoized on the Set's identity (#2877).
  *
  * Every leg above used to walk all of `allFilePaths`, and the GOPATH fallback
- * walks once per path segment — so a single unresolved import (which is most of
- * them: stdlib and third-party module paths run the whole cascade to completion
- * before returning null) cost several full workspace scans, making resolution
- * O(imports × files).
+ * walks once per path segment — so without go.mod a single unresolved stdlib or
+ * third-party import ran the whole cascade before returning null and cost
+ * several full workspace scans, making resolution O(imports × files).
  *
  * The orchestrator hands the same Set to every import in a pass, so the index
  * is built once per run. `resolveGoImportTarget` must therefore never copy the

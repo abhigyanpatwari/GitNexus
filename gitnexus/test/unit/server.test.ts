@@ -34,6 +34,9 @@ function createMockBackend(overrides: Record<string, any> = {}): any {
     resolveRepo: vi
       .fn()
       .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
+    selectToolRepository: vi
+      .fn()
+      .mockResolvedValue({ name: 'test', repoPath: '/tmp/test', lastCommit: 'abc' }),
     getContext: vi.fn().mockReturnValue(null),
     queryClusters: vi.fn().mockResolvedValue({ clusters: [] }),
     queryProcesses: vi.fn().mockResolvedValue({ processes: [] }),
@@ -105,12 +108,13 @@ describe('createMCPServer', () => {
       await server.close();
     }
   });
-  it('requires repo in repo-scoped tool schemas when multiple repos are visible', async () => {
+  it('requires repo in repo-scoped tool schemas when cwd cannot resolve multiple repos', async () => {
     const backend = createMockBackend({
       listRepos: vi.fn().mockResolvedValue([
         { name: 'alpha', path: '/tmp/alpha' },
         { name: 'beta', path: '/tmp/beta' },
       ]),
+      selectToolRepository: vi.fn().mockRejectedValue(new Error('Multiple repositories indexed')),
     });
     const server = createMCPServer(backend);
     const client = new Client({ name: 'multi-repo-client', version: '0.0.0' });
@@ -127,6 +131,43 @@ describe('createMCPServer', () => {
       expect(
         GITNEXUS_TOOLS.find((tool) => tool.name === 'query')?.inputSchema.required,
       ).not.toContain('repo');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('keeps repo optional when cwd resolves one of multiple visible repos', async () => {
+    const backend = createMockBackend({
+      listRepos: vi.fn().mockResolvedValue([
+        { name: 'alpha', path: '/tmp/alpha' },
+        { name: 'beta', path: '/tmp/beta' },
+      ]),
+      selectToolRepository: vi
+        .fn()
+        .mockResolvedValue({ name: 'alpha', repoPath: '/tmp/alpha', lastCommit: 'abc' }),
+    });
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'cwd-repo-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      const tools = await client.listTools();
+      const context = tools.tools.find((tool) => tool.name === 'context');
+      const rename = tools.tools.find((tool) => tool.name === 'rename');
+
+      expect(context?.inputSchema.required).not.toContain('repo');
+      expect(rename?.inputSchema.required).toContain('repo');
+      const response = await client.callTool({ name: 'context', arguments: { name: 'Example' } });
+      expect(response.isError).not.toBe(true);
+      expect(backend.callTool).toHaveBeenCalledWith('context', { name: 'Example' });
+      expect(backend.listRepos).toHaveBeenCalledTimes(1);
+      expect(backend.selectToolRepository).toHaveBeenCalledTimes(1);
+      expect(backend.selectToolRepository).toHaveBeenCalledWith(undefined, undefined, {
+        allowCwdDefault: true,
+        refreshRegistry: false,
+      });
     } finally {
       await client.close();
       await server.close();

@@ -220,6 +220,15 @@ describe('analyzeCommand heap respawn', () => {
     expect(parseMaxOldSpaceMb('--max-old-space-size --other-flag')).toBeNull();
   });
 
+  it('preserves conventional signal exits for analyze but treats watch shutdown as clean', async () => {
+    const { forwardedSignalExitCode } = await import('../../src/cli/analyze.js');
+    expect(forwardedSignalExitCode('SIGINT', false)).toBe(130);
+    expect(forwardedSignalExitCode('SIGTERM', false)).toBe(143);
+    expect(forwardedSignalExitCode('SIGINT', true)).toBe(0);
+    expect(forwardedSignalExitCode('SIGTERM', true)).toBe(0);
+    expect(forwardedSignalExitCode('SIGABRT', false)).toBe(1);
+  });
+
   it('GITNEXUS_MEMORY=off also disables the default (unpinned) respawn (#2649 review)', async () => {
     delete process.env.NODE_OPTIONS;
     process.env.GITNEXUS_MEMORY = 'off';

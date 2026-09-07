@@ -64,7 +64,17 @@ export function extractParsedFile(
     const message = `scope extraction failed for ${filePath}: ${
       err instanceof Error ? err.message : String(err)
     }`;
-    if (onWarn !== undefined) onWarn(message);
+    if (onWarn !== undefined) {
+      try {
+        onWarn(message);
+      } catch (warnErr) {
+        logger.warn(
+          `scope extraction warning callback failed for ${filePath}: ${
+            warnErr instanceof Error ? warnErr.message : String(warnErr)
+          }`,
+        );
+      }
+    }
     logger.warn(message);
     return undefined;
   }

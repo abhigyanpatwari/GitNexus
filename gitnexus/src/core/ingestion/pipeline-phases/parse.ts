@@ -31,6 +31,7 @@ import type {
 } from '../workers/parse-worker.js';
 import { runChunkedParseAndResolve } from './parse-impl.js';
 import type { MutableSemanticModel } from '../model/index.js';
+import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
 
 export interface ParseOutput {
   /**
@@ -71,6 +72,8 @@ export interface ParseOutput {
    * is no sequential parser; the pool is the sole parse path on a cache miss.
    */
   readonly usedWorkerPool: boolean;
+  /** Files actually dispatched to parser workers after parse-cache lookup. */
+  readonly reparsedFileCount: number;
   /**
    * Per-file `ParsedFile` artifacts produced by workers' calls to
    * `extractParsedFile`. Threaded through to `scopeResolutionPhase`
@@ -80,6 +83,26 @@ export interface ParseOutput {
    * costing ~58s on a 1000-file repo).
    */
   readonly parsedFiles: readonly ParsedFile[];
+  /**
+   * Repo-wide string constants harvested by the providers that declare
+   * `extractModuleConstants`, keyed by file path and already through each
+   * provider's `prepareRouteConstants` hook.
+   *
+   * Exposed so a later phase can fold a constant reference the same way the
+   * decorator-route pass does — `springDestinations` resolves a broker address
+   * written as `Topics.ORDERS` against this table. It is a snapshot: parse does
+   * not mutate it after returning, and consumers must not either, because the
+   * preparation that made it foldable has already run.
+   *
+   * Empty when no provider in this repo harvests constants. A downstream fold
+   * against an empty table simply fails to resolve, which is a recorded refusal
+   * rather than a wrong answer.
+   */
+  readonly moduleConstants: ReadonlyMap<string, ModuleConstants>;
+  /** Files whose scope extraction failed while legacy parsing continued. */
+  readonly scopeExtractionFailures: readonly string[];
+  /** Files omitted because their non-standalone language parser was unavailable. */
+  readonly unavailableScopeLanguageFiles: number;
 }
 
 export const parsePhase: PipelinePhase<ParseOutput> = {

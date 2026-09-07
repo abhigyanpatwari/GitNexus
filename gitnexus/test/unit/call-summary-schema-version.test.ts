@@ -128,7 +128,7 @@ describe('incremental reuse gate — schema fingerprint (U-C5, #2798)', () => {
   });
 });
 
-describe('semantic (non-DDL) analyzer changes ride the runner-identity receipt (#2798)', () => {
+describe('semantic and id-shape changes ride the runner-identity receipt (#2798/#3041)', () => {
   it('run-analyze.ts still forces a full rebuild when the stamped runner identity differs', () => {
     // The invariant the INCREMENTAL_SCHEMA_VERSION ladder used to backstop. It
     // is implicit nowhere else: no other gate observes analyzer code that emits

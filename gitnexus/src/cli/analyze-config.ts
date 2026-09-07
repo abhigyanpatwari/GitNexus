@@ -30,6 +30,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { readRepoControlFile } from '../config/repo-control-file.js';
 import type { AnalyzeOptions } from './analyze-options.js';
 
 export const GITNEXUS_RC_FILENAME = '.gitnexusrc';
@@ -59,7 +60,8 @@ type ValueKind =
   | 'string-array'
   | 'numeric-string'
   | 'embeddings'
-  | 'branch';
+  | 'branch'
+  | 'path';
 
 interface KeySpec {
   /** The `AnalyzeOptions` field this config key normalizes into. */
@@ -107,6 +109,9 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
+  // Explicit local Actuator snapshot input (#2418). The path itself is safe in
+  // project config; payload contents are never copied into the graph wholesale.
+  springActuator: { target: 'springActuator', kind: 'path' },
   // Auth token AND dims are intentionally CLI/env-only — no embeddingAuthToken
   // or embeddingDims key here:
   //   - the token keeps secrets out of a committed .gitnexusrc;
@@ -225,6 +230,17 @@ const normalizeValue = (kind: ValueKind, value: unknown, key: string): unknown =
         throw new GitNexusRcError(`${source} must be a string branch name.`);
       }
       return validateBranchName(value, source);
+    case 'path': {
+      if (typeof value !== 'string') {
+        throw new GitNexusRcError(`${source} must be a file or directory path.`);
+      }
+      const trimmed = value.trim();
+      if (!trimmed) {
+        throw new GitNexusRcError(`${source} must not be empty.`);
+      }
+      assertNoHiddenChars(trimmed, source);
+      return trimmed;
+    }
     case 'string': {
       if (typeof value !== 'string') {
         throw new GitNexusRcError(`${source} must be a string.`);
@@ -370,7 +386,6 @@ const normalizeLevel = (
  */
 export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | undefined {
   const filePath = path.join(repoRoot, GITNEXUS_RC_FILENAME);
-
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
@@ -378,6 +393,25 @@ export function loadAnalyzeConfig(repoRoot: string): Partial<AnalyzeOptions> | u
     if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
     throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
   }
+
+  return parseAnalyzeConfig(raw);
+}
+
+/** Load `.gitnexusrc` through the strict bounded reader used by watch mode. */
+export async function loadAnalyzeConfigStrict(
+  repoRoot: string,
+): Promise<Partial<AnalyzeOptions> | undefined> {
+  let raw: string | null;
+  try {
+    raw = await readRepoControlFile(repoRoot, GITNEXUS_RC_FILENAME);
+  } catch (err) {
+    throw new GitNexusRcError(`Could not read ${GITNEXUS_RC_FILENAME}: ${(err as Error).message}`);
+  }
+  return raw === null ? undefined : parseAnalyzeConfig(raw);
+}
+
+function parseAnalyzeConfig(rawInput: string): Partial<AnalyzeOptions> {
+  let raw = rawInput;
 
   // Strip a leading UTF-8 BOM: Node's 'utf-8' decode keeps it, and JSON.parse
   // then fails with a confusing "Unexpected token" on an otherwise-valid file

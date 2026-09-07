@@ -33,7 +33,7 @@ tasks:
   # Overhead floor — measured 2026-07-11 (see README calibration): the
   # workflow is EXPECTED to lose here. Kept in the suite so regressions in
   # the overhead floor stay visible.
-  - id: trivial-version-alias
+  - id: trivial-status-json-alias
     class: trivial
     repo: ~/GitNexus
     ref: main
@@ -45,46 +45,45 @@ tasks:
       - source: gitnexus-shared/node_modules
         target: gitnexus-shared/node_modules
     prompt: >
-      Add -V as a short alias for --version to the gitnexus CLI
+      Add -j as a short alias for --json on the gitnexus status command
       (gitnexus/src/cli/index.ts), and cover the alias with a unit test in
-      gitnexus/test/unit/cli-commands.test.ts.
-    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/cli-commands.test.ts
+      gitnexus/test/unit/status-json-alias.test.ts.
+    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/status-json-alias.test.ts
     oracle:
       command: >-
         cd gitnexus && ./node_modules/.bin/vitest run
         --config "$GITNEXUS_BENCH_ORACLE_ROOT/vitest.config.mts"
-        "$GITNEXUS_BENCH_ORACLE_ROOT/trivial-version-alias.oracle.test.ts"
+        "$GITNEXUS_BENCH_ORACLE_ROOT/trivial-status-json-alias.oracle.test.ts"
       files:
         - source: vitest.config.mts
           target: vitest.config.mts
-        - source: trivial-version-alias.oracle.test.ts
-          target: trivial-version-alias.oracle.test.ts
+        - source: trivial-status-json-alias.oracle.test.ts
+          target: trivial-status-json-alias.oracle.test.ts
 
-  # Investigation-heavy bug: requires locating the degraded-result path in
-  # local-backend, understanding the layer probe, and changing a contract
-  # message without breaking existing consumers.
-  - id: inv-bug-pdg-note
+  # Investigation-heavy bug (#2965): requires following the C import marker
+  # through the shared scope-resolution pipeline without breaking local
+  # quoted-header resolution.
+  - id: inv-bug-c-system-include
     class: investigation-bug
     repo: ~/GitNexus
     ref: main
     sandbox_dependencies: *gitnexus_sandbox_dependencies
     prompt: >
-      When the pdg_query MCP tool returns its "no PDG layer" note, make the
-      note say WHICH sub-layer is missing (CDG vs REACHING_DEF) instead of a
-      generic message, keeping the existing degraded-result contract intact.
-      Cover both modes with unit tests in
-      gitnexus/test/unit/pdg-note-sublayer.test.ts.
-    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/pdg-note-sublayer.test.ts
+      Fix the C scope resolver so a system include such as <stdio.h> never
+      resolves to an unrelated same-named header inside the repository, while
+      quoted/local includes still resolve. Remove C from the conformance
+      suite's KNOWN_GAPS and cover the negative and positive cases there.
+    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/scope-resolution/external-import-conformance.test.ts
     oracle:
       command: >-
         cd gitnexus && ./node_modules/.bin/vitest run
         --config "$GITNEXUS_BENCH_ORACLE_ROOT/vitest.config.mts"
-        "$GITNEXUS_BENCH_ORACLE_ROOT/inv-bug-pdg-note.oracle.test.ts"
+        "$GITNEXUS_BENCH_ORACLE_ROOT/inv-bug-c-system-include.oracle.test.ts"
       files:
         - source: vitest.config.mts
           target: vitest.config.mts
-        - source: inv-bug-pdg-note.oracle.test.ts
-          target: inv-bug-pdg-note.oracle.test.ts
+        - source: inv-bug-c-system-include.oracle.test.ts
+          target: inv-bug-c-system-include.oracle.test.ts
 
   # Investigation-heavy feature: touches tool schema, backend filtering, and
   # pagination totals — three seams that must stay consistent.

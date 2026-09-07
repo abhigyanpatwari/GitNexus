@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const executeQueryMock = vi.fn();
 const executeParameterizedMock = vi.fn();
+const ensureVectorExtensionMock = vi.fn();
 const loadMetaMock = vi.fn();
 const embedQueryMock = vi.fn();
 const getEmbeddingDimsMock = vi.fn();
@@ -24,6 +25,7 @@ vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => ({
   initLbug: vi.fn(),
   executeQuery: (...args: unknown[]) => executeQueryMock(...args),
   executeParameterized: (...args: unknown[]) => executeParameterizedMock(...args),
+  ensureVectorExtension: (...args: unknown[]) => ensureVectorExtensionMock(...args),
   closeLbug: vi.fn(),
   isLbugReady: vi.fn().mockReturnValue(true),
 }));
@@ -121,6 +123,7 @@ describe('LocalBackend.query — index/server embedding width drift (#2798)', ()
   beforeEach(() => {
     vi.clearAllMocks();
     executeParameterizedMock.mockResolvedValue([]);
+    ensureVectorExtensionMock.mockResolvedValue(true);
     loadMetaMock.mockResolvedValue(null);
   });
 
@@ -225,6 +228,7 @@ describe('LocalBackend.semanticSearch — recorded query-embedding width (#2798)
   beforeEach(() => {
     vi.clearAllMocks();
     executeParameterizedMock.mockResolvedValue([]);
+    ensureVectorExtensionMock.mockResolvedValue(true);
     loadMetaMock.mockResolvedValue(null);
   });
 

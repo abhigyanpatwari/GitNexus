@@ -396,7 +396,10 @@ describe('readResource', () => {
     });
     const result = await readResource('gitnexus://repos', backend);
     expect(result).toContain('Multiple repos indexed');
-    expect(result).toContain('repo parameter');
+    expect(result).toContain('process.cwd()');
+    expect(result).toContain('unindexed nested Git checkout');
+    expect(result).toContain('mutating tools without an MCP default');
+    expect(result).toContain('pass repo explicitly');
     // The example must use a registered tool name, not the unregistered
     // `gitnexus_search` / `gitnexus_*` prefix (#2059).
     // #2175: advertise the renamed param, not the legacy "query" key.
@@ -539,6 +542,7 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
       lastCommit: 'current-head',
       indexedAt: '2026-07-18T12:00:00.000Z',
       incrementalInProgress: { startedAt: 1, toWriteCount: 2 },
+      scopeExtractionReceipt: 1,
       embeddingCheckpoint: {
         at: '2026-07-18T12:00:00.000Z',
         nodesProcessed: 1,
@@ -556,6 +560,27 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
     );
     expect(result).toContain(
       'incomplete_reasons: ["incremental-in-progress","embedding-checkpoint-pending"]',
+    );
+  });
+
+  it('exposes Spring Actuator index metadata to agents', async () => {
+    loadMetaMock.mockResolvedValue({
+      repoPath: '/tmp/test-repo',
+      lastCommit: 'current-head',
+      indexedAt: '2026-08-31T20:00:00.000Z',
+      springActuator: {
+        enabled: true,
+        repoRelativeInputs: ['runtime-actuator'],
+      },
+    });
+
+    const result = await readResource(
+      'gitnexus://repo/test-project/context',
+      createMockBackend({ context: CONTEXT }),
+    );
+
+    expect(result).toContain(
+      'spring_actuator: {"enabled":true,"repoRelativeInputs":["runtime-actuator"]}',
     );
   });
 

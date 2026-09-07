@@ -48,7 +48,9 @@ import {
   SPRING_BEAN_INVENTORY_FEATURE,
   SPRING_CONDITIONALS_FEATURE,
   SPRING_NON_HTTP_HANDLERS_FEATURE,
+  SPRING_ROUTE_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
+import { springVendorPrefixesKey } from '../../src/core/ingestion/frameworks/spring/vendor-prefixes.js';
 import {
   decodeSpringAopReason,
   SPRING_AOP_EVIDENCE_ID_PREFIX,
@@ -213,6 +215,24 @@ async function setupSpringConfigIncrementalRepo() {
   return repo;
 }
 
+async function setupKotlinSpringConfigConsumerIncrementalRepo() {
+  const repo = await setupSpringConfigIncrementalRepo();
+  const kotlin = path.join(repo.dbPath, 'src', 'main', 'kotlin', 'com', 'example');
+  await mkdir(kotlin, { recursive: true });
+  await writeFile(
+    path.join(kotlin, 'ConfigConsumer.kt'),
+    'package com.example\n' +
+      'import org.springframework.beans.factory.annotation.Value\n\n' +
+      'class ConfigConsumer {\n' +
+      '  @Value("\\${service.timeout}")\n' +
+      '  var timeout: Int = 0\n' +
+      '}\n',
+    'utf-8',
+  );
+  gitCommitAll(repo.dbPath, 'add Kotlin Spring config consumer');
+  return repo;
+}
+
 async function readWildcardServiceAnnotations(repoPath: string): Promise<string[]> {
   const adapter = await import('../../src/core/lbug/lbug-adapter.js');
   const { lbugPath } = getStoragePaths(repoPath);
@@ -241,6 +261,79 @@ async function readSpringConfigPropertyNames(repoPath: string): Promise<string[]
         'RETURN p.name AS name ORDER BY p.name',
     )) as Array<{ name?: unknown }>;
     return rows.map((row) => String(row.name));
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function readKotlinConfigConsumerState(repoPath: string): Promise<{
+  description: string;
+  bindingCount: number;
+}> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      "MATCH (p:Property) WHERE p.name = 'timeout' " +
+        'RETURN p.description AS description LIMIT 1',
+    )) as Array<{ description?: unknown }>;
+    const bindings = (await adapter.executeQuery(
+      "MATCH (p:Property {name: 'timeout'})-[r:CodeRelation]->(c:Property) " +
+        "WHERE r.type = 'USES' AND r.reason STARTS WITH 'spring-config:' " +
+        'RETURN count(r) AS count',
+    )) as Array<{ count?: number | bigint }>;
+    return {
+      description: String(rows[0]?.description ?? ''),
+      bindingCount: Number(bindings[0]?.count ?? 0),
+    };
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function readActuatorSnapshotLeakRows(
+  repoPath: string,
+  snapshotPath: string,
+  secretValue: string,
+): Promise<Array<{ filePath?: unknown; content?: unknown }>> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH (f:File) RETURN f.filePath AS filePath, f.content AS content`,
+    )) as Array<{ filePath?: unknown; content?: unknown }>;
+    return rows.filter(
+      (row) =>
+        row.filePath === snapshotPath ||
+        (typeof row.content === 'string' && row.content.includes(secretValue)),
+    );
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+async function readRuntimePropertyEvidence(repoPath: string): Promise<{
+  description: string;
+  reasons: string[];
+}> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const propertyRows = (await adapter.executeQuery(
+      `MATCH (p:Property) WHERE p.name = 'runtime.secret' ` +
+        `RETURN p.description AS description LIMIT 1`,
+    )) as Array<{ description?: unknown }>;
+    const relationshipRows = (await adapter.executeQuery(
+      `MATCH (:File)-[r:CodeRelation]->(p:Property) WHERE p.name = 'runtime.secret' ` +
+        `AND r.type = 'DECLARES' RETURN r.reason AS reason ORDER BY reason`,
+    )) as Array<{ reason?: unknown }>;
+    return {
+      description: String(propertyRows[0]?.description ?? ''),
+      reasons: relationshipRows.map((row) => String(row.reason ?? '')),
+    };
   } finally {
     await adapter.closeLbug();
   }
@@ -486,6 +579,135 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('useParseCache:false bypasses the alreadyUpToDate fast path without --force', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const logs: string[] = [];
+      const cold = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, useParseCache: false },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(cold.alreadyUpToDate).toBeUndefined();
+      expect(cold.pipelineResult?.parseCacheHitFileCount ?? 0).toBe(0);
+      expect(cold.pipelineResult?.reparsedFileCount).toBe(7);
+      expect(logs.join('\n')).toContain('Parser cache bypass requested');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('rebuilds for Actuator snapshots and once more when runtime enrichment is disabled', async () => {
+    const repo = await setupMiniRepo();
+    const runtimeInput = 'runtime-actuator';
+    const runtimeInputDir = path.join(repo.dbPath, runtimeInput);
+    const secretValue = 'ACTUATOR_META_SECRET_2418';
+    try {
+      await mkdir(runtimeInputDir, { recursive: true });
+      await writeFile(
+        path.join(runtimeInputDir, 'env.json'),
+        JSON.stringify({
+          propertySources: [
+            {
+              name: 'systemEnvironment',
+              properties: { 'runtime.secret': { value: secretValue, origin: 'env' } },
+            },
+          ],
+        }),
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add actuator runtime snapshot');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const enabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, springActuatorPath: runtimeInput },
+        { onProgress: () => {} },
+      );
+      expect(enabled.alreadyUpToDate).toBeUndefined();
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const enabledMeta = await loadMeta(storagePath);
+      if (enabledMeta === null)
+        throw new Error('Expected Actuator metadata after enabled analysis');
+      expect(enabledMeta.springActuator).toEqual({
+        enabled: true,
+        repoRelativeInputs: [runtimeInput],
+      });
+      expect(JSON.stringify(enabledMeta)).not.toContain(secretValue);
+      expect(Object.keys(enabledMeta.fileHashes ?? {})).not.toContain(`${runtimeInput}/env.json`);
+      expect(await readRuntimePropertyEvidence(repo.dbPath)).toEqual({
+        description: expect.stringContaining('Spring Actuator env runtime-confirmed'),
+        reasons: ['spring-actuator:env:runtime-confirmed'],
+      });
+      expect(
+        await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
+      ).toEqual([]);
+
+      await saveMeta(storagePath, {
+        ...enabledMeta,
+        springActuator: {
+          enabled: true,
+          repoRelativeInputs: [runtimeInput, 42],
+        },
+      } as RepoMeta);
+      await expect(
+        runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} }),
+      ).rejects.toThrow('Cannot safely disable Spring Actuator runtime enrichment');
+      await saveMeta(storagePath, enabledMeta);
+
+      const disableLogs: string[] = [];
+      const disabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => disableLogs.push(message) },
+      );
+      expect(disabled.alreadyUpToDate).toBeUndefined();
+      expect(disableLogs.join('\n')).toContain(
+        'Spring Actuator runtime enrichment disabled; rebuilding to remove runtime evidence.',
+      );
+      expect((await loadMeta(storagePath))?.springActuator).toEqual({
+        enabled: false,
+        repoRelativeInputs: [runtimeInput],
+      });
+      expect(
+        await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
+      ).toEqual([]);
+
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
+
+      const forceLogs: string[] = [];
+      const forcedSteady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, force: true },
+        { onProgress: () => {}, onLog: (message) => forceLogs.push(message) },
+      );
+      expect(forcedSteady.alreadyUpToDate).toBeUndefined();
+      expect(forceLogs.join('\n')).toContain(
+        'Rebuilt the graph and FTS while reusing cached parser output',
+      );
+      expect(forceLogs.join('\n')).toContain('increment SCHEMA_BUMP');
+      expect(
+        await readActuatorSnapshotLeakRows(repo.dbPath, `${runtimeInput}/env.json`, secretValue),
+      ).toEqual([]);
+      expect((await loadMeta(storagePath))?.springActuator).toEqual({
+        enabled: false,
+        repoRelativeInputs: [runtimeInput],
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('a same-commit v8 index missing the global Class capability rebuilds before the fast path', async () => {
     const repo = await setupMiniRepo();
     try {
@@ -604,7 +826,9 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
+        [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
+        [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
 
       await saveMeta(storagePath, withoutAnalysisFeature(meta!, SPRING_BEAN_INVENTORY_FEATURE.id));
@@ -623,8 +847,42 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
+        [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
+        [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('rebuilds a JVM index when the registered Spring vendor prefixes change', async () => {
+    const repo = await setupSpringBeanIncrementalRepo();
+    try {
+      vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      expect((await loadMeta(storagePath))?.springVendorPrefixes).toBe(springVendorPrefixesKey());
+
+      vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Acme,Win');
+      const logs: string[] = [];
+      const rebuilt = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(rebuilt.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain('Spring vendor mapping prefixes changed');
+      expect((await loadMeta(storagePath))?.springVendorPrefixes).toBe(springVendorPrefixesKey());
+
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
     } finally {
       await repo.cleanup();
     }
@@ -662,6 +920,43 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('persists Kotlin unresolved markers when a Spring config key is deleted incrementally', async () => {
+    const repo = await setupKotlinSpringConfigConsumerIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readKotlinConfigConsumerState(repo.dbPath)).toEqual({
+        description: '',
+        bindingCount: 1,
+      });
+
+      const configPath = path.join(
+        repo.dbPath,
+        'src',
+        'main',
+        'resources',
+        'application.properties',
+      );
+      await writeFile(configPath, '', 'utf-8');
+      gitCommitAll(repo.dbPath, 'delete Spring config key');
+
+      const logs: string[] = [];
+      await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(logs.join('\n')).toContain('Spring config consumer property drift');
+      expect(await readKotlinConfigConsumerState(repo.dbPath)).toEqual({
+        description: 'Spring config unresolved: service.timeout',
+        bindingCount: 0,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('adding the first JVM file re-evaluates capabilities after the pipeline and avoids a top-up', async () => {
     const repo = await setupMiniRepo();
     try {
@@ -693,7 +988,9 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_AOP_FEATURE.id]: SPRING_AOP_FEATURE.version,
         [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
         [SPRING_CONDITIONALS_FEATURE.id]: SPRING_CONDITIONALS_FEATURE.version,
+        [SPRING_CONFIG_BINDINGS_FEATURE.id]: SPRING_CONFIG_BINDINGS_FEATURE.version,
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
+        [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
     } finally {
       await repo.cleanup();
@@ -842,6 +1139,13 @@ describe('runFullAnalysis — incremental orchestration', () => {
           { onProgress: () => {} },
         );
         expect(incremental.alreadyUpToDate).toBeUndefined();
+        expect(incremental.incrementalStats).toMatchObject({
+          changedFiles: 1,
+          affectedDependents: 2,
+          deletedFiles: 0,
+          writeMode: 'incremental',
+        });
+        expect(incremental.incrementalStats?.reparsedFiles).toBe(1);
         expect(
           querySpy.mock.calls.some(
             ([query]) =>
@@ -1539,4 +1843,129 @@ describe('runFullAnalysis — escalated wipe recreates the vector index (#2409, 
       await repo.cleanup();
     }
   }, 600_000);
+});
+
+/** Document-derived destinations currently in the graph, address + provenance. */
+async function readDocumentDestinations(
+  repoPath: string,
+): Promise<Array<{ address: string; broker: string; resolution: string }>> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH (d:Destination) WHERE d.resolution = 'asyncapi-document' ` +
+        `RETURN d.address AS address, d.broker AS broker, d.resolution AS resolution ` +
+        `ORDER BY address`,
+    )) as Array<{ address?: unknown; broker?: unknown; resolution?: unknown }>;
+    return rows.map((row) => ({
+      address: String(row.address ?? ''),
+      broker: String(row.broker ?? ''),
+      resolution: String(row.resolution ?? ''),
+    }));
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+describe('runFullAnalysis — AsyncAPI document reading', () => {
+  /**
+   * Drives the REAL `runFullAnalysis` with `asyncApiSpecPath` set.
+   *
+   * Three separate things were individually deletable with the whole suite
+   * green before this existed: the forward from `run-analyze` into
+   * `PipelineOptions`, the forced rebuild while the option is enabled, and the
+   * cleanup rebuild when it is dropped. Each of them makes the feature
+   * partially or wholly inert, and none of them is visible one layer up, where
+   * the CLI test asserts on a mock's arguments.
+   *
+   * The document lives OUTSIDE the repository on purpose. That is the workflow
+   * the option is documented for — a cache written by other tooling — and it is
+   * the only one where the hazard is real: editing a tracked file dirties the
+   * tree and would force a rebuild anyway, so an in-repo fixture would pass
+   * even with the freshness fix reverted.
+   */
+  it('forces a rebuild while enabled, re-reads a changed document, and cleans up once on disable', async () => {
+    const repo = await setupMiniRepo();
+    // A SIBLING of the repository, not a child: the document must be outside
+    // the working tree, or editing it would dirty the tree and force a rebuild
+    // on its own, and the test would pass with the freshness fix reverted.
+    const specDir = path.join(repo.dbPath, '..', 'gnx-asyncapi-spec');
+    await mkdir(specDir, { recursive: true });
+    const specFile = path.join(specDir, 'orders.yaml');
+    const documentFor = (address: string): string =>
+      [
+        'asyncapi: 3.0.0',
+        'info: { title: Order Service, version: 1.0.0 }',
+        'servers: { broker: { host: "example:9092", protocol: kafka } }',
+        `channels: { c: { address: ${address}, servers: [{ $ref: "#/servers/broker" }] } }`,
+        'operations: { publishOrder: { action: send, channel: { $ref: "#/channels/c" } } }',
+        '',
+      ].join('\n');
+
+    try {
+      await writeFile(specFile, documentFor('orders.v1'), 'utf-8');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const { storagePath } = getStoragePaths(repo.dbPath);
+
+      const enabledLogs: string[] = [];
+      const enabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, asyncApiSpecPath: specDir },
+        { onProgress: () => {}, onLog: (message) => enabledLogs.push(message) },
+      );
+      expect(enabled.alreadyUpToDate).toBeUndefined();
+      expect(enabledLogs.join('\n')).toContain(
+        'AsyncAPI document reading requested; forcing a full rebuild.',
+      );
+      // The forward into PipelineOptions is what puts this node in the graph;
+      // without it the flag parses and nothing else happens.
+      expect(await readDocumentDestinations(repo.dbPath)).toEqual([
+        { address: 'orders.v1', broker: 'kafka', resolution: 'asyncapi-document' },
+      ]);
+      expect((await loadMeta(storagePath))?.asyncApiSpec).toEqual({ enabled: true });
+
+      // Same commit, clean tree, only the out-of-tree document changed. Git
+      // freshness cannot see this, so without the forced rebuild the run is a
+      // no-op that reports success and serves the previous address.
+      await writeFile(specFile, documentFor('orders.v2'), 'utf-8');
+      const rereadRun = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, asyncApiSpecPath: specDir },
+        { onProgress: () => {} },
+      );
+      expect(rereadRun.alreadyUpToDate).toBeUndefined();
+      expect(await readDocumentDestinations(repo.dbPath)).toEqual([
+        { address: 'orders.v2', broker: 'kafka', resolution: 'asyncapi-document' },
+      ]);
+
+      const disableLogs: string[] = [];
+      const disabled = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => disableLogs.push(message) },
+      );
+      expect(disabled.alreadyUpToDate).toBeUndefined();
+      expect(disableLogs.join('\n')).toContain(
+        'AsyncAPI document reading disabled; rebuilding to remove document-derived evidence.',
+      );
+      expect(await readDocumentDestinations(repo.dbPath)).toEqual([]);
+      expect((await loadMeta(storagePath))?.asyncApiSpec).toBeUndefined();
+
+      // Exactly ONE cleanup rebuild: the metadata write drops the flag, so the
+      // next run has nothing to react to. A merge-over-previous write here
+      // would rebuild forever with nothing failing.
+      const steady = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(steady.alreadyUpToDate).toBe(true);
+    } finally {
+      // The document directory is a sibling of the repository, so the repo's
+      // own cleanup does not reach it — both owners have to be called here.
+      await rm(specDir, { recursive: true, force: true });
+      await repo.cleanup();
+    }
+  }, 180_000);
 });

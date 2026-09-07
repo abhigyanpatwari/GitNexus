@@ -118,8 +118,10 @@ export function splitCalleeIds(raw: unknown): string[] {
  * Bump on any breaking change to the PDG result fields.
  * v2: `startLine` in the result is now 1-based display (#2380), matching the
  * context/query/impact tools (was 0-based).
+ * v3: error envelopes use `impactedCount: null` when a target cannot be resolved
+ * (#3074), so consumers cannot read a miss as a measured zero.
  */
-export const PDG_RESULT_VERSION = 2 as const;
+export const PDG_RESULT_VERSION = 3 as const;
 
 /** A reachable dependence block resolved to its source statement. */
 export interface PdgStatement {
@@ -742,7 +744,7 @@ export interface PdgInterproceduralImpact {
 export interface PdgImpactBaseResult extends PdgImpactParityFields {
   mode: 'pdg';
   /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
-  pdgResultVersion: 2;
+  pdgResultVersion: 3;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
   impactedCount: number;
@@ -815,11 +817,11 @@ export interface PdgImpactDegradedResult extends PdgImpactBaseResult {
 export interface PdgImpactErrorResult {
   mode?: 'pdg';
   /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
-  pdgResultVersion: 2;
+  pdgResultVersion: 3;
   error: string;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
-  impactedCount: 0;
+  impactedCount: number | null;
   risk: 'UNKNOWN';
   suggestion?: string;
   recoverySuggestion?: string;
@@ -838,6 +840,8 @@ export function makePdgImpactErrorResult(input: {
   mode?: 'pdg';
   suggestion?: string;
   recoverySuggestion?: string;
+  /** True when analysis did not obtain a measured impact count. */
+  undetermined?: boolean;
 }): PdgImpactErrorResult {
   return {
     ...(input.mode ? { mode: input.mode } : {}),
@@ -845,7 +849,10 @@ export function makePdgImpactErrorResult(input: {
     error: input.error,
     target: input.target,
     direction: input.direction,
-    impactedCount: 0,
+    // #3074 follow-up + P2 review: an unmeasured PDG result must not ship a
+    // confident-looking 0 blast radius. null marks UNDETERMINED, so a consumer
+    // testing === 0 cannot misread a miss or failed query as safe.
+    impactedCount: input.undetermined ? null : 0,
     risk: 'UNKNOWN',
     ...(input.suggestion ? { suggestion: input.suggestion } : {}),
     ...(input.recoverySuggestion ? { recoverySuggestion: input.recoverySuggestion } : {}),

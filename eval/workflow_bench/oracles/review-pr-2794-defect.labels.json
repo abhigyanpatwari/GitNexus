@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "findings": [
+    {
+      "id": "pr2794-module-global-retains-parsed-files",
+      "severity": "high",
+      "path": "gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts",
+      "line_start": 147,
+      "line_end": 147,
+      "category": "performance"
+    },
+    {
+      "id": "pr2794-benchmark-misses-receiver-regression",
+      "severity": "high",
+      "path": "gitnexus/bench/cpp-qualified-ns/measure.mjs",
+      "line_start": 142,
+      "line_end": 142,
+      "category": "tests"
+    },
+    {
+      "id": "pr2794-recursive-quadratic-namespace-walk",
+      "severity": "medium",
+      "path": "gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts",
+      "line_start": 193,
+      "line_end": 223,
+      "category": "performance"
+    },
+    {
+      "id": "pr2794-scaling-gate-not-wired",
+      "severity": "medium",
+      "path": ".github/workflows/ci-tests.yml",
+      "line_start": 509,
+      "line_end": 509,
+      "category": "tests"
+    },
+    {
+      "id": "pr2794-cross-file-dedup-coverage",
+      "severity": "medium",
+      "path": "gitnexus/test/unit/cpp-qualified-ns-index.test.ts",
+      "line_start": 78,
+      "line_end": 78,
+      "category": "tests"
+    },
+    {
+      "id": "pr2794-false-load-bearing-order-contract",
+      "severity": "low",
+      "path": "gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts",
+      "line_start": 138,
+      "line_end": 138,
+      "category": "other"
+    }
+  ]
+}

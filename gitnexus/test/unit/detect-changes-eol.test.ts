@@ -8,11 +8,12 @@ import { parseDiffHunks } from '../../src/storage/git.js';
 import { diffArgsFor } from '../helpers/detect-changes-diff-args.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
-/** The five flags every scope carries, ahead of its own ref/staging arguments. */
+/** The six flags every scope carries, ahead of its own ref/staging arguments. */
 const GUARD_FLAGS = [
   'diff',
   '--ignore-cr-at-eol',
   '--no-ext-diff',
+  '--color=never',
   '--src-prefix=a/',
   '--dst-prefix=b/',
 ];

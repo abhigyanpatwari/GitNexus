@@ -32,6 +32,7 @@ import { pathToFileURL } from 'node:url';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import { _captureLogger } from '../../src/core/logger.js';
+import { parseCacheBucketId } from '../../src/storage/parse-cache.js';
 
 // file:// URL of the BUILT production result-delivery helper, imported by the
 // ESM test worker so it exercises the REAL postResultCloneSafe wiring (the
@@ -140,10 +141,17 @@ parentPort.on('message', (msg) => {
 });
 `;
 
-const FIXTURE_FILES = {
-  'src/good_a.ts': 'export function good_a() { return 1; }\n',
-  'src/poison.ts': 'export function poison() { return 2; }\n',
-  'src/good_c.ts': 'export function good_c() { return 3; }\n',
+const POISON_PATH = 'src/poison.ts';
+/** Pinned same-bucket fixtures (sha256(path) mod 128 of poison.ts). */
+const GOOD_A_PATH = 'src/good_a_16.ts';
+const GOOD_C_PATH = 'src/good_c_51.ts';
+const GOOD_A_NAME = path.basename(GOOD_A_PATH, '.ts');
+const GOOD_C_NAME = path.basename(GOOD_C_PATH, '.ts');
+
+const FIXTURE_FILES: Record<string, string> = {
+  [GOOD_A_PATH]: 'export function good_a() { return 1; }\n',
+  [POISON_PATH]: 'export function poison() { return 2; }\n',
+  [GOOD_C_PATH]: 'export function good_c() { return 3; }\n',
 };
 
 const nodeNames = (graph: ReturnType<typeof createKnowledgeGraph>): Set<string> => {
@@ -165,6 +173,11 @@ const nodeNames = (graph: ReturnType<typeof createKnowledgeGraph>): Set<string> 
 const STRICT = process.env.GITNEXUS_STRICT_CLONE === '1';
 
 describe.skipIf(STRICT)('#2112: worker result clone-safety integration (POOL_SIZE=1)', () => {
+  it('pins survivors into the same parse-cache bucket as poison.ts', () => {
+    expect(parseCacheBucketId(GOOD_A_PATH)).toBe(parseCacheBucketId(POISON_PATH));
+    expect(parseCacheBucketId(GOOD_C_PATH)).toBe(parseCacheBucketId(POISON_PATH));
+  });
+
   let tempDir: string;
   let repoDir: string;
 
@@ -228,8 +241,8 @@ describe.skipIf(STRICT)('#2112: worker result clone-safety integration (POOL_SIZ
       const graph = await runWith(writeWorker(CLONE_SAFE_WORKER));
       const names = nodeNames(graph);
       // Survivors AND the sanitized poison file are all present — the run did not abort.
-      expect(names.has('good_a')).toBe(true);
-      expect(names.has('good_c')).toBe(true);
+      expect(names.has(GOOD_A_NAME)).toBe(true);
+      expect(names.has(GOOD_C_NAME)).toBe(true);
       // The poison node is delivered with its legitimate data intact (only the
       // leaked native `toString` was stripped), so it still lands in the graph.
       expect(names.has('poison')).toBe(true);
@@ -256,8 +269,8 @@ describe.skipIf(STRICT)('#2112: worker result clone-safety integration (POOL_SIZ
     // rejects; with it, all files (incl. the sanitized poison node) are present.
     const graph = await runWith(writeWorker(GETTER_WORKER));
     const names = nodeNames(graph);
-    expect(names.has('good_a')).toBe(true);
-    expect(names.has('good_c')).toBe(true);
+    expect(names.has(GOOD_A_NAME)).toBe(true);
+    expect(names.has(GOOD_C_NAME)).toBe(true);
     expect(names.has('poison')).toBe(true);
   });
 

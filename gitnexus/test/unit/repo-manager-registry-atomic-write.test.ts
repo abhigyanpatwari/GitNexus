@@ -8,9 +8,10 @@
  * startup (`LocalBackend.init` -> `refreshRepos`, nothing catches).
  *
  * Separate from repo-manager.test.ts: Vitest cannot vi.spyOn ESM namespace
- * exports of fs/promises, and these tests must drive `fs.rename` itself — a
- * delegating vi.mock is required (same split as repo-manager-rm-failure.test.ts
- * and repo-manager-ensure-ignore-readonly.test.ts, #1549).
+ * exports of `node:fs` promises, and these tests must drive `retryRename`'s
+ * `fsp.rename` — a delegating vi.mock is required. `writeRegistry` publishes
+ * via `writeFileAtomic` (`node:fs`), so mocking `fs/promises` never intercepts
+ * the rename (same split as repo-manager-rm-failure.test.ts, #1549).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
@@ -20,16 +21,17 @@ const fsCtx = vi.hoisted(() => ({
   realRename: null as ((src: string, dst: string) => Promise<void>) | null,
 }));
 
-vi.mock('fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs/promises')>();
-  const d = actual.default;
-  fsCtx.realRename = d.rename.bind(d) as (src: string, dst: string) => Promise<void>;
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  const promises = actual.promises;
+  fsCtx.realRename = promises.rename.bind(promises) as (src: string, dst: string) => Promise<void>;
   fsCtx.renameMock.mockImplementation((src: string, dst: string) => fsCtx.realRename!(src, dst));
   return {
-    default: new Proxy(d, {
-      get(target, prop) {
+    ...actual,
+    promises: new Proxy(promises, {
+      get(target, prop, receiver) {
         if (prop === 'rename') return fsCtx.renameMock;
-        const v = Reflect.get(target, prop, target) as unknown;
+        const v = Reflect.get(target, prop, receiver) as unknown;
         return typeof v === 'function' ? (v as (...args: unknown[]) => unknown).bind(target) : v;
       },
     }),
@@ -171,8 +173,10 @@ describe('writeRegistry — private tmp path per transaction (#2888)', () => {
   it('keeps serving a validating read when the prune write fails', async () => {
     await registerRepo(tmpRepoA.dbPath, meta, { name: 'gone' });
     fsCtx.renameMock.mockClear();
+    // EBUSY is normally retryable, but prune persistence is best-effort and
+    // must not hold the registry lock through retry backoff.
     fsCtx.renameMock.mockImplementationOnce(() =>
-      Promise.reject(Object.assign(new Error('mock read-only home'), { code: 'EROFS' })),
+      Promise.reject(Object.assign(new Error('mock busy registry'), { code: 'EBUSY' })),
     );
 
     const cap = _captureLogger();

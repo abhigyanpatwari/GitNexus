@@ -126,6 +126,31 @@ describe('Go import target resolution', () => {
     ]);
   });
 
+  it.each(['github.com/vendor/dep/internal/models', 'fmt', 'example.com/modular/internal/models'])(
+    'rejects imports outside the go.mod module: %s',
+    (targetRaw) => {
+      const result = resolveGoImportTarget(
+        targetRaw,
+        'main.go',
+        new Set(['internal/models/user.go', 'main.go']),
+        { modulePath: 'example.com/mod' },
+      );
+
+      expect(result).toBeNull();
+    },
+  );
+
+  it('treats a semantic import-version suffix as part of the module path', () => {
+    const result = resolveGoImportTarget(
+      'example.com/mod/v2/internal/models',
+      'cmd/app/main.go',
+      new Set(['internal/models/user.go']),
+      { modulePath: 'example.com/mod/v2' },
+    );
+
+    expect(result).toEqual(['internal/models/user.go']);
+  });
+
   it('rejects single-segment GOPATH suffix that collides with a local dir', () => {
     // "github.com/other/team/pkg" suffix-stripped would eventually
     // reach "pkg" which matches the local pkg/ dir — but we require

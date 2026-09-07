@@ -28,6 +28,7 @@ import {
   type LLMProvider,
 } from '../core/wiki/llm-client.js';
 import { detectCursorCLI } from '../core/wiki/cursor-client.js';
+import { detectGrokCLI } from '../core/wiki/grok-client.js';
 import { detectLocalCLI } from '../core/wiki/local-cli-client.js';
 import { logger } from '../core/logger.js';
 
@@ -68,20 +69,22 @@ function parsePositiveIntegerOption(
 
 function isLocalProvider(
   provider: LLMProvider | undefined,
-): provider is 'cursor' | 'claude' | 'codex' | 'opencode' {
+): provider is 'cursor' | 'claude' | 'codex' | 'opencode' | 'grok' {
   return (
     provider === 'cursor' ||
     provider === 'claude' ||
     provider === 'codex' ||
-    provider === 'opencode'
+    provider === 'opencode' ||
+    provider === 'grok'
   );
 }
 
-function localModelConfigKey(provider: 'cursor' | 'claude' | 'codex' | 'opencode') {
+function localModelConfigKey(provider: 'cursor' | 'claude' | 'codex' | 'opencode' | 'grok') {
   if (provider === 'cursor') return 'cursorModel';
   if (provider === 'claude') return 'claudeModel';
   if (provider === 'codex') return 'codexModel';
   if (provider === 'opencode') return 'opencodeModel';
+  if (provider === 'grok') return 'grokModel';
   throw new Error(`Unsupported local provider: ${provider satisfies never}`);
 }
 
@@ -302,7 +305,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
         console.log(
           '  Set MINIMAX_API_KEY, ATLASCLOUD_API_KEY, GITNEXUS_API_KEY, or OPENAI_API_KEY,',
         );
-        console.log('  or pass --api-key <key>, or use --provider cursor|claude|codex|opencode.\n');
+        console.log(
+          '  or pass --api-key <key>, or use --provider cursor|claude|codex|opencode|grok.\n',
+        );
         process.exitCode = 1;
         return;
       }
@@ -318,9 +323,10 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       const hasClaude = detectLocalCLI('claude');
       const hasCodex = detectLocalCLI('codex');
       const hasOpenCode = detectLocalCLI('opencode');
+      const hasGrok = detectGrokCLI();
       const localChoices: Array<{
         choice: string;
-        provider: 'cursor' | 'claude' | 'codex' | 'opencode';
+        provider: 'cursor' | 'claude' | 'codex' | 'opencode' | 'grok';
       }> = [];
 
       // Provider selection
@@ -363,6 +369,14 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           provider: 'opencode',
         });
         console.log(`  [${choice}] OpenCode CLI (local, uses your OpenCode login/config)`);
+      }
+      if (hasGrok) {
+        const choice = String(nextChoice++);
+        localChoices.push({
+          choice,
+          provider: 'grok',
+        });
+        console.log(`  [${choice}] Grok CLI (local, uses your Grok Build login)`);
       }
       console.log('');
 

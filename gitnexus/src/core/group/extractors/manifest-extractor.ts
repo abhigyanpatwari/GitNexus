@@ -1,4 +1,9 @@
-import type { ContractType, CrossLink, GroupManifestLink, StoredContract } from '../types.js';
+import type {
+  CrossLink,
+  GroupManifestLink,
+  ManifestContractType,
+  StoredContract,
+} from '../types.js';
 import type { CypherExecutor } from '../contract-extractor.js';
 
 import { logger } from '../../logger.js';
@@ -366,11 +371,11 @@ export class ManifestExtractor {
    * equality matching without requiring wildcard logic downstream.
    *
    * NOTE on exhaustiveness: the switch covers every current
-   * `ContractType` variant and falls through to a `never` assertion so
+   * manifest-declared contract type and falls through to a `never` assertion so
    * TypeScript fails the build if a new variant is added without a
    * corresponding case.
    */
-  private buildContractId(type: ContractType, contract: string): string {
+  private buildContractId(type: ManifestContractType, contract: string): string {
     switch (type) {
       case 'http': {
         // Canonicalize method casing and path separators so logically

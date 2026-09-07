@@ -153,6 +153,21 @@ describe('extends chains', () => {
 });
 
 describe('which config governs a file', () => {
+  it('prunes root artifact configs while keeping nested source directories', async () => {
+    const root = repo({
+      'generated/tsconfig.json': JSON.stringify({ compilerOptions: { baseUrl: 'root-artifact' } }),
+      'packages/api/generated/tsconfig.json': JSON.stringify({
+        compilerOptions: { baseUrl: 'src' },
+      }),
+    });
+    const index = await loadTsconfigIndex(root);
+
+    expect(tsconfigFor(index, 'generated/main.ts')).toBeNull();
+    expect(tsconfigFor(index, 'packages/api/generated/main.ts')?.baseUrl).toBe(
+      'packages/api/generated/src',
+    );
+  });
+
   it('lets a child config with no baseUrl shadow the root, rather than inheriting it', async () => {
     // The child project declares no `baseUrl`, which in TypeScript means its
     // non-relative specifiers are PACKAGE lookups. Dropping the empty child let

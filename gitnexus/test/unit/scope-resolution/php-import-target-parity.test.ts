@@ -351,6 +351,7 @@ const NESTED_PSR4 = composer([
   ['App\\Models', 'app/Domain'],
 ]);
 const ROOT_PSR4 = composer([['App', '']]);
+const CATCH_ALL_PSR4 = composer([['', 'src']]);
 const TRAILING_SLASH_PSR4 = composer([['App', 'app/']]);
 
 /**
@@ -609,18 +610,38 @@ const HAND_CASES: readonly HandCase[] = [
     expectedViaWorkspace: 'app/Models/User.php',
   },
   {
-    // KNOWN LIMITATION: an empty `dirPrefix` builds the class-style path as
-    // `'' + '/Models/User' + '.php'` = `/Models/User.php`, with a leading slash
-    // no repo-relative path has — so a root PSR-4 mapping never hits that leg,
-    // and `nsDir` comes out `/Models` which no directory bucket holds either.
-    // The answer is the suffix leg's, and only at path-part 2 (`/User.php`):
-    // `Models/User.php` is the whole path, invisible to `/Models/User.php`.
+    // An empty directory prefix maps the namespace directly to the repository
+    // root. The vendor decoy comes first so suffix fallback would choose it.
     name: 'psr-4 mapped to the repo root',
-    files: ['Models/User.php'],
+    files: ['vendor/Models/User.php', 'Models/User.php'],
     target: 'App\\Models\\User',
     composer: ROOT_PSR4,
     expected: 'Models/User.php',
-    expectedViaWorkspace: 'Models/User.php',
+    expectedViaWorkspace: 'vendor/Models/User.php',
+  },
+  {
+    name: 'leading namespace separator uses the mapped path',
+    files: ['vendor/App/Models/User.php', 'app/Models/User.php'],
+    target: '\\App\\Models\\User',
+    composer: APP_PSR4,
+    expected: 'app/Models/User.php',
+    expectedViaWorkspace: 'vendor/App/Models/User.php',
+  },
+  {
+    name: 'empty namespace prefix resolves beneath its configured directory',
+    files: ['vendor/Vendor/Ghost/Missing.php', 'src/Vendor/Ghost/Missing.php'],
+    target: 'Vendor\\Ghost\\Missing',
+    composer: CATCH_ALL_PSR4,
+    expected: 'src/Vendor/Ghost/Missing.php',
+    expectedViaWorkspace: 'vendor/Vendor/Ghost/Missing.php',
+  },
+  {
+    name: 'empty namespace prefix does not escape its configured directory',
+    files: ['legacy/Vendor/Ghost/Missing.php'],
+    target: 'Vendor\\Ghost\\Missing',
+    composer: CATCH_ALL_PSR4,
+    expected: null,
+    expectedViaWorkspace: 'legacy/Vendor/Ghost/Missing.php',
   },
   {
     // KNOWN LIMITATION: a mapping kept with its trailing slash concatenates to
@@ -996,14 +1017,14 @@ describe('PHP import-target parity with the pre-index implementation (#2901)', (
       ...workspaceHits.map((testCase) => testCase.expectedViaWorkspace),
     ]);
 
-    expect(scopeHits.length).toBe(31);
-    expect(workspaceHits.length).toBe(23);
+    expect(scopeHits.length).toBe(33);
+    expect(workspaceHits.length).toBe(26);
     expect(distinct.size).toBeGreaterThan(20);
     // The two adapters must not be the same assertion twice: `composer` and
     // `context` are visible only through the ScopeResolver one.
     expect(
       HAND_CASES.filter((testCase) => testCase.expected !== testCase.expectedViaWorkspace).length,
-    ).toBe(9);
+    ).toBe(13);
   });
 
   it('agrees on every generated target × composer configuration', () => {

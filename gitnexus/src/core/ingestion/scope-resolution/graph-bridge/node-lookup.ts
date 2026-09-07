@@ -96,6 +96,16 @@ export function positionKey(
   return `<p>:${filePath}::${label}::${startLine}::${name}`;
 }
 
+/** Exact source-position key used before the legacy line/name join. */
+export function exactPositionKey(
+  filePath: string,
+  label: NodeLabel,
+  startLine: number,
+  startColumn: number,
+): string {
+  return `<pc>:${filePath}::${label}::${startLine}:${startColumn}`;
+}
+
 /**
  * Key recording that a FUNCTION-LOCAL callable with this simple name exists in the
  * file (#2699 follow-up).
@@ -131,6 +141,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       name?: string;
       qualifiedName?: string;
       templateArguments?: readonly string[];
+      startColumn?: number;
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
@@ -139,6 +150,10 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     // ambiguous rather than letting source order decide.
     const startLine = (props as { startLine?: number }).startLine;
     if (startLine !== undefined && isPositionQualifiedLocalLabel(node.label)) {
+      if (props.startColumn !== undefined) {
+        const exactK = exactPositionKey(props.filePath, node.label, startLine, props.startColumn);
+        lookup.set(exactK, lookup.has(exactK) ? AMBIGUOUS_POSITION : node.id);
+      }
       const posK = positionKey(props.filePath, node.label, startLine, props.name);
       lookup.set(posK, lookup.has(posK) ? AMBIGUOUS_POSITION : node.id);
       // A local-identity node carries `@<row>:<col>` on its last name segment. Record
@@ -273,6 +288,15 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   // are unreachable and label-agnostic fallback can alias it to a same-named
   // Constructor or Method (#2801).
   'Record',
+  // Union is linkable because Zig wires `union` / `union(enum)` as a member
+  // container: the definition phase emits HAS_METHOD / HAS_PROPERTY edges FROM
+  // the Union node (`union_declaration` in MEMBER_OWNER_NODE_TYPES) and the
+  // scope side dispatches methods on union receivers (`main → isEnergy` in
+  // test/integration/resolvers/zig.test.ts). Without this entry the schema
+  // never declares a `FROM Union` pair and `analyze` aborts on the first Zig
+  // repo that declares a union (reproduced on the zig-basic fixture itself).
+  // Also lets `Tag{ .energy = 5 }` constructor references bridge to the node.
+  'Union',
   // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
   // defs between scope-resolution DefIds and the graph's node ids.
   // IMPLEMENTS edges from classes to traits are otherwise invisible to
@@ -288,8 +312,8 @@ export const LINKABLE_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   //
   // Covers every language that spells an alias this way — TypeScript, Kotlin,
   // Dart and Rust all emit `@declaration.type_alias`. The remaining
-  // `CLASS_KINDS` entries (Typedef, Record, Union, Delegate, Annotation,
-  // Template) plausibly have the same gap, but nothing exercises them today
+  // `CLASS_KINDS` entries (Typedef, Delegate, Annotation, Template, Namespace)
+  // plausibly have the same gap, but nothing exercises them today
   // and adding labels no test covers is how this list drifts out of sync with
   // what it claims.
   'TypeAlias',

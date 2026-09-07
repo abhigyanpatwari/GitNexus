@@ -4,6 +4,7 @@ import { providers, getProvider } from '../../src/core/ingestion/languages/index
 import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-bridge.js';
 import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { ensureAndParse } from '../../src/core/embeddings/ast-utils.js';
+import type { LanguageProvider } from '../../src/core/ingestion/language-provider.js';
 
 /**
  * Every provider that defines `preprocessSource` must produce the same
@@ -55,6 +56,20 @@ const languagesWithHook = Object.entries(providers)
   .sort();
 
 describe('LanguageProvider.preprocessSource parity', () => {
+  it('does not propagate an exception thrown by the warning callback', () => {
+    const provider = {
+      emitScopeCaptures: () => {
+        throw new Error('provider failed');
+      },
+    } as unknown as LanguageProvider;
+
+    expect(() =>
+      extractParsedFile(provider, 'const value = 1;', 'broken.ts', () => {
+        throw new Error('warning transport closed');
+      }),
+    ).not.toThrow();
+  });
+
   it('has a fixture for every provider defining the hook', () => {
     expect(Object.keys(FIXTURES).sort()).toEqual(languagesWithHook);
   });

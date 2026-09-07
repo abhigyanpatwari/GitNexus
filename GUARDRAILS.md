@@ -37,7 +37,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Index seems corrupt or "incremental" is misbehaving
 
 - **Trigger:** `analyze` produces unexpected results, or `incrementalInProgress` is set in the index metadata (`.gitnexus/gitnexus.json` / legacy `meta.json`), or the index is in a half-state after a crash.
-- **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. A dirty-flag recovery rebuild parks the interrupted run's sidecars beside the DB as `lbug.wal.dirty-recovery` / `lbug.shadow.dirty-recovery` for post-mortem debugging — harmless, and removable with `npx gitnexus clean --lbug-sidecars`. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
+- **Do:** `npx gitnexus analyze --force` to rebuild the graph and FTS indexes. This may reuse unchanged parser output; when debugging parser/capture changes, use `npx gitnexus analyze --no-parse-cache` to rebuild that output too. The dirty-flag check forces the graph rebuild automatically when a previous incremental run didn't complete cleanly. A dirty-flag recovery rebuild parks the interrupted run's sidecars beside the DB as `lbug.wal.dirty-recovery` / `lbug.shadow.dirty-recovery` for post-mortem debugging — harmless, and removable with `npx gitnexus clean --lbug-sidecars`. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
 - **Why:** Incremental writeback is selective DB row replacement; if the on-disk state is inconsistent for any reason, a full rebuild is the cheapest path back to a known-good index.
 
 ### Embeddings vanished after analyze
@@ -51,6 +51,12 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 - **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["embedding-checkpoint-pending"]` (or the human-readable "Index incomplete reasons" line); `stats.embeddings` is honest and **non-zero**, and the preceding analyze log showed a `Warning: N node(s) lost their embeddings to embedding-endpoint failures` line (#2790).
 - **Do:** Re-run plain `npx gitnexus analyze` — no `--embeddings` flag needed. A retained `embeddingCheckpoint` in the index metadata forces embedding generation for exactly the pending nodes regardless of flags, and clears once they succeed. `--drop-embeddings` abandons the pending nodes instead of retrying them; `--force` also discards the checkpoint (with a warning) and rebuilds without resuming it.
 - **Why:** A long analyze run against a flaky HTTP embedding endpoint tolerates bounded sub-batch failures instead of aborting the whole run: it deletes the affected nodes' embedding rows (so they hold zero rows, never a partial set) and records those nodes as pending in `embeddingCheckpoint`. `stats.embeddings` stays an honest, non-zero count of everything that did succeed, so this state never trips the "Embeddings vanished" Sign above — `embedding-checkpoint-pending` is the only reliable signal.
+
+### Scope extraction is incomplete
+
+- **Trigger:** `npx gitnexus status` reports `incompleteReasons: ["scope-extraction-failed"]` when files were omitted, or `incompleteReasons: ["scope-extraction-unverified"]` when the index predates the completeness receipt or its metadata is unreadable. `impact`/`context` reports the same uncertainty as `epistemic: "lower-bound"`; confirmed omissions set `causes.scopeExtractionFiles > 0`.
+- **Do:** Re-run `npx gitnexus analyze` (`--force` for a full graph rebuild). If the reason persists, inspect the scope-extraction warnings and treat impact counts as floors until the affected source is supported or corrected.
+- **Why:** Parsing continued, but scope captures for the reported file count could not be produced even after the main-thread fallback. Calls, inheritance, imports, or accesses originating there may therefore be absent from the graph.
 
 ### Analyze reports INCOMPLETE with a collapsed graph write
 
@@ -67,8 +73,8 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Wrong repo in multi-repo setups
 
 - **Trigger:** Query/impact results belong to another project.
-- **Do:** Call `list_repos`, then pass `repo` on subsequent tools.
-- **Why:** Default target is ambiguous when multiple repos are registered.
+- **Do:** Confirm an MCP default is configured or the GitNexus process was launched inside the intended registered path without crossing into an unindexed nested Git checkout. Otherwise call `list_repos`, then pass `repo` on subsequent tools; pass it for mutating tools when multiple repos are registered and no MCP default exists.
+- **Why:** Read-only tools derive their default from MCP configuration or a process cwd that stays within one registered Git boundary. Outside those paths the target remains ambiguous, and mutating tools stay explicit unless configuration supplies the target.
 
 ### LadybugDB lock / "database busy"
 

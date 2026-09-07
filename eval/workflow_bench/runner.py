@@ -5,7 +5,7 @@ Usage:
         --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
         --model claude-sonnet-4-20250514
 
-Each task runs in a fresh detached git worktree of the target repo, once per
+Each task runs in a fresh self-contained clone of the target repo, once per
 arm per run:
 
 * ``workflow`` — two headless Claude Code sessions: gitnexus-plan, then
@@ -35,6 +35,7 @@ model).
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, wait
 import hashlib
 import json
 import os
@@ -42,10 +43,14 @@ import re
 import secrets
 import stat
 import statistics
+import sys
 import tempfile
+import threading
 import time
-from collections.abc import Mapping
-from dataclasses import replace
+from collections.abc import Callable, Mapping, Sequence
+from functools import partial
+from contextvars import copy_context
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -56,24 +61,34 @@ from .evolution import (
     CANDIDATE_ARMS,
     EVIDENCE_MAX_AGE_DAYS,
     EVALUATED_ARM_SKILLS,
-    MAIN_LOOP_ONLY_METRICS,
-    MAIN_LOOP_ONLY_WARNING,
     PROMOTION_METRICS,
     apply_candidate_overlay,
     candidate_overlay_digest,
-    evaluate_candidate,
+    promotion_policy,
+    promotion_evidence,
     required_candidate_arms,
+    seed_evaluated_skills,
     skill_fingerprint,
+)
+from .model_gateway import (
+    attach_openai_gateway,
+    anthropic_api_key_from_environ,
+    credential_secrets,
+    model_session_environment,
+    openai_api_key_from_environ,
 )
 from .oracle_assets import (
     ORACLE_ENV_VAR,
     TaskOracleSnapshot,
     capture_task_oracles,
+    require_hidden_harness_absent,
     sanitize_clone_for_hidden_oracles,
     staged_task_oracle,
+    with_hidden_harness_apply_exclude,
 )
-from .process_control import ManagedProcessError
+from .process_control import cancellation_scope, ManagedProcessError
 from .promotion_apply import committed_destination_base_digests
+from .review_scoring import REVIEW_OUTPUT, expected_findings, parse_review_output, score_review
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -85,9 +100,12 @@ from .proposer_sandbox import (
     SandboxSession,
     build_sandbox_environment,
     preflight_bubblewrap,
+    preflight_unsafe_host,
     prepare_sandbox,
+    prepare_review_workspace,
     redact_text,
     require_claude_sandbox_helpers,
+    sandbox_workspace_write_boundary,
 )
 from .runner_artifacts import (
     IMPLEMENTATION_ARMS,
@@ -119,7 +137,9 @@ from .runner_sessions import (
     GITNEXUS_READ_ONLY_TOOLS as GITNEXUS_READ_ONLY_TOOLS,
     MAX_TRANSCRIPT_BYTES as MAX_TRANSCRIPT_BYTES,
     SANDBOX_GITNEXUS_ENTRYPOINT as SANDBOX_GITNEXUS_ENTRYPOINT,
+    SESSION_TIMEOUT_SECONDS,
     USAGE_FIELDS,
+    _na,
     allowed_agent_tools,
     run_claude,
     sandbox_mcp_config,
@@ -138,8 +158,8 @@ from .sanitized_graph import (
 )
 from .runtime_mounts import (
     CE_ARMS,
+    CePluginSnapshot,
     HARNESS_ROOT as HARNESS_ROOT,
-    PINNED_GITNEXUS_VERSION as PINNED_GITNEXUS_VERSION,
     ce_plugin_dir_for_arm,
     ce_plugin_mounts_for_arm,
     staged_ce_plugin_snapshot,
@@ -199,22 +219,31 @@ CE_WORK_DIRECT_PROMPT = (
     "separate planning pass — execute directly with the skill's execution "
     "discipline." + HEADLESS_VERIFY
 )
-# Review cell: the task's `setup` applies the diff under review as local
-# changes; both arms review the same working tree and write to the same file
-# so `verify` can gate on a produced review.
+# Review cell: setup applies a historical PR diff, then the model sees a
+# read-only checkout. Both arms emit the same strict artifact so quality can be
+# scored deterministically against labels that remain hidden until it exits.
+REVIEW_OUTPUT_CONTRACT = """
+Write /workspace/review-output.json as UTF-8 JSON with exactly this shape:
+{{"schema_version":1,"verdict":"approve|comment|request_changes","findings":[{{
+"id":"unique stable id","severity":"critical|high|medium|low",
+"path":"repository-relative changed file","line":1,"end_line":1,
+"category":"correctness|security|compatibility|performance|tests|other",
+"scenario":"specific failure scenario","evidence":"concrete code/graph evidence",
+"recommendation":"bounded fix","blocking":true}}]}}
+Use an empty findings list with verdict approve when there are no actionable
+defects. Do not emit Markdown and do not edit any other file.
+"""
 REVIEW_PROMPT = (
     "Use the gitnexus-review skill to review the local uncommitted changes "
     "in this repository. {task}\n"
     "Headless run: proceed without asking; do not post to GitHub or anywhere "
-    "external; write the complete review to review-output.md in the "
-    "repository root."
+    "external." + REVIEW_OUTPUT_CONTRACT
 )
 CE_REVIEW_PROMPT = (
     "Use the ce-code-review skill (compound-engineering plugin) to review "
     "the local uncommitted changes in this repository. {task}\n"
     "Headless run: proceed without asking; do not post to GitHub or anywhere "
-    "external; write the complete review to review-output.md in the "
-    "repository root."
+    "external." + REVIEW_OUTPUT_CONTRACT
 )
 
 
@@ -286,14 +315,18 @@ def _run_hidden_oracle(
     mount_point.mkdir(mode=0o700)
     primary: BaseException | None = None
     try:
-        with staged_task_oracle(sandbox.private_root, snapshot) as stage_root:
+        host_unsafe = getattr(sandbox, "backend", "bwrap") == "host-unsafe"
+        # Host mode has no bind mounts. Keep relative candidate imports valid
+        # by staging beside the candidate, still only after the model exits.
+        stage_parent = worktree if host_unsafe else sandbox.private_root
+        with staged_task_oracle(stage_parent, snapshot) as stage_root:
             oracle_env = build_sandbox_environment()
             # A private RO bind at a random workspace sibling preserves each
             # oracle's ../gitnexus import as the candidate implementation. The
             # empty mountpoint exists only post-model and is removed before the
             # credited patch is captured.
             oracle_mount = f"{SANDBOX_WORKSPACE}/{mount_name}"
-            oracle_env[ORACLE_ENV_VAR] = oracle_mount
+            oracle_env[ORACLE_ENV_VAR] = str(stage_root) if host_unsafe else oracle_mount
             passed, _output = _verification_outcome(
                 run_verify(
                     snapshot.command,
@@ -302,10 +335,12 @@ def _run_hidden_oracle(
                     command_prefix=sandbox.command_prefix_for(
                         read_only_workspace=True,
                         unshare_network=True,
-                        extra_read_only_mounts=(ReadOnlyMount(source=stage_root, target=oracle_mount),),
+                        extra_read_only_mounts=()
+                        if host_unsafe
+                        else (ReadOnlyMount(source=stage_root, target=oracle_mount),),
                     ),
                     env=oracle_env,
-                    require_pid_namespace=True,
+                    require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
                 )
             )
             # Candidate code executes in this process. Never persist its stdout
@@ -384,6 +419,10 @@ def isolated_gitnexus_registry_mount(worktree: Path, parent: Path) -> ReadOnlyMo
     return ReadOnlyMount(source=registry, target=SANDBOX_GITNEXUS_REGISTRY)
 
 
+def _unchanged(value: Any) -> Any:
+    return value
+
+
 def run_arm(
     arm: str,
     task: dict[str, Any],
@@ -399,9 +438,15 @@ def run_arm(
     oracle_snapshot: TaskOracleSnapshot | None = None,
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
-    env = build_sandbox_environment(
+    environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
+    host_text = getattr(sandbox, "host_text", _unchanged)
+    host_path = getattr(sandbox, "host_path", lambda value: str(value))
+    backend = getattr(sandbox, "backend", "bwrap")
+    env = model_session_environment(
         auth_token=args.auth_token,
         base_url=args.base_url,
+        model=args.model,
+        build_sandbox_environment=environment_builder,
     )
     # --bare hard-disables the Skill tool and every mcp__* tool — by Claude
     # Code design, not a bug (--allowedTools can't restore what --bare
@@ -410,29 +455,34 @@ def run_arm(
     # rely on ANTHROPIC_API_KEY alone (the sandboxed HOME has no OAuth/
     # keychain state to conflict with it).
     bare = arm == "baseline_nomcp"
+    progress_label = transcript_output_prefix or f"{task.get('id', 'task')}-{arm}"
     common = {
+        "progress_label": progress_label,
         "claude_bin": sandbox.claude_bin,
         "timeout": args.timeout,
         "model": args.model,
+        "effort": args.effort,
         "env": env,
-        "permission_mode": "dontAsk",
+        "permission_mode": (
+            "bypassPermissions" if backend == "host-unsafe" else "dontAsk"
+        ),
         "command_prefix": sandbox.command_prefix_for(
             read_only_paths=_evaluated_skill_roots(worktree, arm),
         ),
-        "require_pid_namespace": True,
+        "require_pid_namespace": getattr(sandbox, "require_pid_namespace", True),
         "bare": bare,
         "settings_json": sandbox.settings_json,
         "strict_mcp_config": True,
-        "mcp_config_json": sandbox_mcp_config(),
+        "mcp_config_json": host_text(sandbox_mcp_config()),
         "transcript_projects": sandbox.transcript_projects,
         "transcript_cwd": Path(SANDBOX_WORKSPACE),
         "transcript_wait_seconds": 5,
         "transcript_output_dir": transcript_output_dir,
         "transcript_output_prefix": transcript_output_prefix,
-        "transcript_secrets": tuple(secret for secret in (args.auth_token,) if secret),
+        "transcript_secrets": tuple(credential_secrets(args)),
     }
     if ce_plugin_dir is not None:
-        common["plugin_dirs"] = (ce_plugin_dir,)
+        common["plugin_dirs"] = (host_path(ce_plugin_dir),)
     expected_skills = ARM_EXPECTED_SKILLS.get(arm, ())
     plan_doc: Path | None = None
     if arm in ("workflow", "ce_workflow"):
@@ -444,7 +494,11 @@ def run_arm(
             plan_prompt.format(task=task["prompt"]),
             worktree,
             expected_skill=expected_skills[0],
-            **{**common, "allowed_tools": allowed_agent_tools(implementation=False)},
+            **{
+                **common,
+                "progress_label": f"{progress_label} plan",
+                "allowed_tools": allowed_agent_tools(implementation=False),
+            },
         )
         sessions.append(plan_session)
         if plan_session["ok"]:
@@ -471,7 +525,11 @@ def run_arm(
                     work_prompt.format(plan=plan_doc.relative_to(worktree)),
                     worktree,
                     expected_skill=expected_skills[1],
-                    **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
+                    **{
+                        **common,
+                        "progress_label": f"{progress_label} work",
+                        "allowed_tools": allowed_agent_tools(implementation=True),
+                    },
                 )
                 _require_implementation_fingerprint(
                     work_session,
@@ -496,20 +554,40 @@ def run_arm(
         sessions.append(work_session)
     elif arm in ("review", "ce_review"):
         review_prompt = REVIEW_PROMPT if arm == "review" else CE_REVIEW_PROMPT
+        review_output = prepare_review_workspace(sandbox, REVIEW_OUTPUT)
         phase_before = workspace_snapshot(worktree) if enforce_phase_boundary else None
-        review_session = run_claude(
-            review_prompt.format(task=task["prompt"]),
-            worktree,
-            expected_skill=expected_skills[0],
-            **{**common, "allowed_tools": allowed_agent_tools(implementation=False)},
-        )
+        review_common = {
+            **common,
+            "allowed_tools": allowed_agent_tools(implementation=False, allow_edit=False),
+            "command_prefix": sandbox.command_prefix_for(
+                read_only_workspace=True,
+                read_only_paths=_evaluated_skill_roots(worktree, arm),
+                extra_writable_mounts=(
+                    ReadOnlyMount(
+                        source=review_output,
+                        target=f"{SANDBOX_WORKSPACE}/{REVIEW_OUTPUT}",
+                    ),
+                ),
+            ),
+        }
+        with sandbox_workspace_write_boundary(
+            sandbox,
+            read_only_workspace=True,
+            writable=(review_output,),
+        ):
+            review_session = run_claude(
+                host_text(review_prompt.format(task=task["prompt"])),
+                worktree,
+                expected_skill=expected_skills[0],
+                **review_common,
+            )
         sessions.append(review_session)
         if review_session["ok"] and phase_before is not None:
             try:
                 enforce_phase_workspace(
                     worktree,
                     phase_before,
-                    allowed_artifact=worktree / "review-output.md",
+                    allowed_artifact=worktree / REVIEW_OUTPUT,
                 )
                 require_skill_fingerprint(
                     worktree,
@@ -574,12 +652,34 @@ def run_arm(
                 read_only_workspace=True,
                 unshare_network=True,
             ),
-            env=build_sandbox_environment(),
-            require_pid_namespace=True,
+            env=environment_builder(),
+            require_pid_namespace=getattr(sandbox, "require_pid_namespace", True),
         )
     )
+    review_score: dict[str, Any] | None = None
+    if arm in ("review", "ce_review"):
+        try:
+            verdict, findings = parse_review_output(worktree / REVIEW_OUTPUT)
+            labels = expected_findings(oracle_snapshot) if oracle_snapshot is not None else ()
+            review_score = score_review(verdict, findings, labels)
+        except (OSError, ValueError) as exc:
+            record["ok"] = False
+            record["error_kind"] = record["error_kind"] or "review-evidence-invalid"
+            record["error_detail"] = str(exc)
+        record["review_score"] = review_score
+        record["review_evidence_valid"] = review_score is not None
+        if review_score is not None:
+            record.update({f"review_{key}": value for key, value in review_score.items()})
     if oracle_snapshot is None:
         oracle_passed, oracle_output = False, "hidden oracle snapshot unavailable"
+    elif arm in ("review", "ce_review"):
+        oracle_passed = bool(
+            review_score
+            and review_score["false_positives"] == 0
+            and review_score["false_negatives"] == 0
+            and review_score["verdict_correct"]
+        )
+        oracle_output = "hidden review labels matched" if oracle_passed else "hidden review labels not fully matched"
     else:
         oracle_passed, oracle_output = _run_hidden_oracle(
             oracle_snapshot,
@@ -621,19 +721,418 @@ CHURN_FIELDS = ("diff_files", "diff_insertions", "diff_deletions")
 # Rows where the session (or the harness) died carry no measured evidence and
 # must not skew efficiency medians or resolve denominators. verify-failed and
 # skill-not-invoked rows DO count: those sessions ran and spent real tokens.
-EXCLUDED_ERROR_KINDS = frozenset({"session-error", "infra-error", "evidence-unverified", "cleanup-failure"})
+EXCLUDED_ERROR_KINDS = frozenset(
+    {"session-error", "infra-error", "evidence-unverified", "cleanup-failure", "review-evidence-invalid", "cancelled"}
+)
 
 # A sustained upstream outage shows up as a run of session/infra/cleanup
 # failures. (cleanup-failure overwrites the primary error_kind, so a
 # session-error whose worktree cleanup also failed still counts.) A task's own
 # resolved=False is real signal, not an outage, so it never trips the breaker.
-SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure"})
+SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure", "review-evidence-invalid"})
 DEFAULT_OUTAGE_STREAK = 5
+
+# A cell is a full clone plus a sandboxed agent session, so the ceiling is the
+# machine, not the flag. Past a handful of siblings the cells lose CPU to each
+# other, sessions reach their timeout, and a timed-out session is an excluded
+# run the promotion gate refuses to work with — a mistyped --workers must fail
+# at the command line rather than a quarter-day later as unusable evidence.
+MAX_WORKERS = 8
 
 
 def systemic_outage_streak(error_kind: str | None, prior_streak: int) -> int:
     """Consecutive systemic-failure count: +1 on a systemic kind, else reset to 0."""
     return prior_streak + 1 if error_kind in SYSTEMIC_ERROR_KINDS else 0
+
+
+def _run_wave(
+    wave: Sequence[tuple[int, str]],
+    *,
+    workers: int,
+    run: Callable[[int, str], dict[str, Any]],
+    cancel_event: threading.Event,
+) -> tuple[list[dict[str, Any] | BaseException], BaseException | None]:
+    """Cancel active subprocesses, join workers, and retain settled outcomes."""
+    pool = ThreadPoolExecutor(max_workers=workers)
+    futures = []
+    interruption = None
+    try:
+        for run_idx, arm in wave:
+            futures.append(pool.submit(copy_context().run, run, run_idx, arm))
+        wait(futures)
+    except (Exception, KeyboardInterrupt, SystemExit) as exc:
+        interruption = exc
+        cancel_event.set()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=interruption is not None)
+    outcomes: list[dict[str, Any] | BaseException] = []
+    for future in futures:
+        if future.cancelled():
+            outcomes.append({"resolved": False, "error_kind": "cancelled"})
+        else:
+            error = future.exception()
+            outcomes.append(error if error is not None else future.result())
+    # Submission itself can be interrupted. Preserve positional evidence for
+    # cells that never started without masking the original interruption.
+    outcomes.extend({"resolved": False, "error_kind": "cancelled"} for _ in wave[len(futures) :])
+    return outcomes, interruption
+
+
+def sweep_task_cells(
+    cells: Sequence[tuple[int, str]],
+    *,
+    workers: int,
+    run: Callable[[int, str], dict[str, Any]],
+    on_start: Callable[[int, str], None],
+    on_record: Callable[[int, str, dict[str, Any]], None],
+    outage_streak: int,
+    outage_limit: int,
+    cancel_event: threading.Event | None = None,
+) -> tuple[int, bool]:
+    """Run one task's cells in waves of ``workers``; return (streak, tripped).
+
+    Waves rather than one fan-out, because the outage breaker counts
+    CONSECUTIVE systemic failures and "consecutive" only means anything in a
+    fixed order — completion order under concurrency is not one. Each wave is
+    folded in submission order once it has fully completed, and the next wave
+    starts only if the breaker held, so the breaker overruns its limit by at
+    most ``workers - 1`` cells: the ones already in flight when it tripped.
+
+    The serial default executes directly; parallel workers copy the run
+    context so every owned subprocess observes the same cancellation signal.
+    """
+    with cancellation_scope(cancel_event) as cancel_event:
+        if workers < 1:
+            raise ValueError("workers must be positive")
+        for wave_start in range(0, len(cells), workers):
+            if cancel_event.is_set():
+                return outage_streak, True
+            wave = list(cells[wave_start : wave_start + workers])
+            for run_idx, arm in wave:
+                on_start(run_idx, arm)
+            if workers == 1:
+                records = [run(run_idx, arm) for run_idx, arm in wave]
+            else:
+                outcomes, interruption = _run_wave(wave, workers=workers, run=run, cancel_event=cancel_event)
+                failure = interruption or next(
+                    (outcome for outcome in outcomes if isinstance(outcome, BaseException)), None
+                )
+                if failure is not None:
+                    # The siblings of the failing cell have already completed and
+                    # spent their budget. Persist their rows, in submission order,
+                    # before the harness bug takes the process down — otherwise a
+                    # crash in one cell silently erases the evidence of the others.
+                    for (run_idx, arm), outcome in zip(wave, outcomes, strict=True):
+                        if not isinstance(outcome, BaseException):
+                            on_record(run_idx, arm, outcome)
+                    raise failure
+                records = [outcome for outcome in outcomes if not isinstance(outcome, BaseException)]
+            for (run_idx, arm), record in zip(wave, records, strict=True):
+                # Every future in this wave has already completed and incurred its
+                # cost. Persist all of them in canonical submission order even if
+                # an earlier row trips the breaker; only later waves are skipped.
+                on_record(run_idx, arm, record)
+            if cancel_event.is_set():
+                return outage_streak, True
+            for record in records:
+                kind = (
+                    "review-evidence-invalid"
+                    if record.get("review_evidence_valid") is False
+                    else record.get("error_kind")
+                )
+                outage_streak = systemic_outage_streak(kind, outage_streak)
+                if outage_limit and outage_streak >= outage_limit:
+                    print(
+                        f"[systemic-outage] {outage_streak} consecutive unusable-evidence "
+                        "failures — aborting the remaining sweep; report and promotion are written "
+                        "from partial evidence and the run exits non-zero."
+                    )
+                    return outage_streak, True
+        return outage_streak, False
+
+
+@dataclass(frozen=True)
+class TaskCellContext:
+    """Everything one benchmark cell needs from its task, prepared once.
+
+    A cell is one (run, arm) pair: a private clone, a sandboxed session set, and
+    the row it produces. Cells of the same task share this context read-only, so
+    it is what makes them independent of each other — every per-cell mutable is
+    local to ``run_cell``. Holding the fields explicitly, rather than closing
+    over ``main``'s scope, is what lets a cell run off the main thread without
+    dragging the whole sweep's state along with it.
+
+    ``args`` is treated as immutable: ``main`` finishes mutating it during
+    setup, well before any cell starts. ``argparse.Namespace`` cannot enforce
+    that, so it is stated here.
+    """
+
+    task: dict[str, Any]
+    oracle_snapshot: TaskOracleSnapshot
+    repo: Path
+    task_sha: str
+    graph_snapshot: SanitizedGraphSnapshot | None
+    graph_snapshot_error: BaseException | None
+    asset_snapshot: TaskAssetSnapshot | None
+    asset_snapshot_error: BaseException | None
+    args: argparse.Namespace
+    out_dir: Path
+    ce_plugin_snapshot: CePluginSnapshot | None
+    trees_dir: Path
+    bwrap_bin: Path
+    runtime_mounts: tuple[ReadOnlyMount, ...]
+    candidate_overlay: Path | None
+    overlay_digest: str | None
+    sandbox_backend: str = "bwrap"
+
+
+def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
+    """Run one (run, arm) cell end to end and return its result row.
+
+    Owns its clone for the whole call, including teardown: the ``finally``
+    removes the worktree whatever happens, and an exception outside the five
+    expected kinds is deliberately left to propagate — a harness bug must not be
+    recorded as an ordinary infra-error and averaged into the evidence.
+    """
+    args = ctx.args
+    task = ctx.task
+    worktree: Path | None = None
+    record: dict[str, Any] | None = None
+    cleanup_error: OSError | None = None
+    try:
+        if ctx.asset_snapshot_error is not None:
+            raise RuntimeError(f"task asset snapshot preparation failed: {ctx.asset_snapshot_error}")
+        if ctx.graph_snapshot_error is not None:
+            raise RuntimeError(f"sanitized graph snapshot preparation failed: {ctx.graph_snapshot_error}")
+        if ctx.graph_snapshot is None:
+            raise RuntimeError("sanitized graph snapshot is unavailable")
+        if ctx.asset_snapshot is None:
+            raise RuntimeError("task asset snapshot is unavailable")
+        worktree = make_worktree(ctx.repo, ctx.task_sha, ctx.trees_dir)
+        sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
+        ctx.graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
+        dependency_mounts = stage_task_assets(
+            task,
+            repo=ctx.repo,
+            clone=worktree,
+            snapshot=ctx.asset_snapshot,
+        )
+        registry_mount = isolated_gitnexus_registry_mount(worktree, ctx.trees_dir)
+        execution_arm = CANDIDATE_ARMS.get(arm, arm)
+        ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
+        with prepare_sandbox(
+            clone=worktree,
+            claude_bin=args.claude_bin,
+            bwrap_bin=ctx.bwrap_bin,
+            read_only_mounts=[
+                *dependency_mounts,
+                *ctx.runtime_mounts,
+                registry_mount,
+                *ce_mounts,
+            ],
+            preflight=False,
+            backend=ctx.sandbox_backend,
+        ) as sandbox:
+            # Capture the BASE (pre-overlay) skill digest — identical
+            # for the incumbent and candidate arms — then run the
+            # task's untrusted setup against those base skills. The
+            # candidate overlay is applied only afterwards, so setup
+            # can never observe candidate prose and both arms share
+            # byte-identical pre-overlay state.
+            # Historical review SHAs may predate gitnexus-review. Seed
+            # the current evaluated skill first so fingerprinting and
+            # the model see the same incumbent prose on every case.
+            if execution_arm == "review":
+                seed_evaluated_skills(
+                    HARNESS_ROOT,
+                    worktree,
+                    sandbox=sandbox,
+                    arm=execution_arm,
+                )
+            base_skill_digest = skill_fingerprint(worktree, execution_arm)
+            if task.get("setup"):
+                # Sanitization already removed eval/workflow_bench. Review
+                # cells copy the historical PR patch back under that path so
+                # `git apply` can read it. Do not overlay an empty mask on
+                # the same tree first — that hides the patch file and every
+                # cell dies with `can't open patch`. A historical patch that
+                # still edits the harness (gitignored learnings.jsonl) must
+                # skip those hunks or apply fails closed.
+                setup_command = ["/bin/sh", "-lc", with_hidden_harness_apply_exclude(str(task["setup"]))]
+                setup = sandbox.run(
+                    setup_command,
+                    timeout=600,
+                    env=build_sandbox_environment(),
+                )
+                if not setup.ok:
+                    raise ManagedProcessError(setup_command, setup)
+            # Setup (or its absence) must leave the staged harness copy gone
+            # before the model session starts. Fail closed rather than hide
+            # the tree with a mask that would also hide the patch from apply.
+            require_hidden_harness_absent(worktree)
+            # Tamper-evidence: setup must not have rewritten the base
+            # skills, verified before any candidate overlay lands.
+            require_skill_fingerprint(
+                worktree,
+                execution_arm,
+                base_skill_digest,
+                phase="task setup",
+            )
+            if arm in CANDIDATE_ARMS:
+                if ctx.candidate_overlay is None:
+                    raise RuntimeError("candidate overlay is unavailable")
+                applied_digest = apply_candidate_overlay(
+                    ctx.candidate_overlay,
+                    worktree,
+                    sandbox=sandbox,
+                )
+                if applied_digest != ctx.overlay_digest:
+                    raise RuntimeError("candidate overlay changed during the benchmark run")
+            # The digest the model must preserve during its run is the
+            # post-overlay skill surface (candidate skills for
+            # candidate arms; unchanged base skills otherwise).
+            expected_skill_digest = (
+                skill_fingerprint(worktree, execution_arm) if arm in CANDIDATE_ARMS else base_skill_digest
+            )
+            orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
+            if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
+                raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")
+            before_work_digest = (
+                implementation_diff_digest(sandbox, orig_sha) if execution_arm in IMPLEMENTATION_ARMS else ""
+            )
+            record = run_arm(
+                execution_arm,
+                task,
+                worktree,
+                args,
+                sandbox=sandbox,
+                transcript_output_dir=ctx.out_dir,
+                transcript_output_prefix=f"{task['id']}-{arm}-run{run_idx}",
+                expected_skill_digest=expected_skill_digest,
+                enforce_phase_boundary=True,
+                ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ctx.ce_plugin_snapshot),
+                oracle_snapshot=ctx.oracle_snapshot,
+            )
+            if execution_arm in ("review", "ce_review"):
+                review_source = worktree / REVIEW_OUTPUT
+                if review_source.is_file() and not review_source.is_symlink():
+                    review_artifact = ctx.out_dir / f"{task['id']}-{arm}-run{run_idx}.review.json"
+                    review_artifact.write_bytes(_bounded_regular_bytes(review_source, limit=256 * 1024))
+                    record["review_artifact"] = review_artifact.name
+            _prepare_untracked_for_diff(sandbox)
+            after_work_digest = (
+                implementation_diff_digest(
+                    sandbox,
+                    orig_sha,
+                    prepare_untracked=False,
+                )
+                if execution_arm in IMPLEMENTATION_ARMS
+                else ""
+            )
+            record.update(
+                diff_churn(
+                    sandbox,
+                    orig_sha,
+                    prepare_untracked=False,
+                )
+            )
+            enforce_work_evidence(
+                record,
+                arm=execution_arm,
+                before_digest=before_work_digest,
+                after_digest=after_work_digest,
+            )
+            patch_bytes = capture_patch(sandbox, worktree, orig_sha)
+        record["arm"] = arm
+        record.update(
+            {
+                "model": args.model,
+                "benchmark_model": args.model,
+                "proposer_model": args.proposer_model,
+                "effort": args.effort,
+                "task_ref": task.get("ref", "HEAD"),
+                "task_base_sha": ctx.task_sha,
+                "sanitized_task_sha": sanitized_head,
+                "variant_head_sha": orig_sha,
+                "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
+                "skill_digest": expected_skill_digest,
+                "candidate_overlay_digest": (ctx.overlay_digest if arm in CANDIDATE_ARMS else None),
+                "recorded_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        # Final working-tree patch — the clone is destroyed, so
+        # this is the only artifact for diagnosing verify fails.
+        patch_path = ctx.out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
+        patch_path.write_bytes(patch_bytes)
+    except (
+        ManagedProcessError,
+        SandboxError,
+        OSError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        # One hung session or failed setup must not abort the
+        # sweep — record the run as infra-error and move on so
+        # report.md/promotion.json still get written.
+        record = infra_error_record(exc)
+        if isinstance(exc, ManagedProcessError) and exc.result.state == "cancelled":
+            record["error_kind"] = "cancelled"
+        record["arm"] = arm
+        # ManagedProcessError carries up to 1000 raw bytes of stderr_tail, and
+        # this line now streams live into the CI log (run_managed echoes the
+        # sweep's stdout). Redact it like every other sink this data reaches.
+        detail = redact_text(str(exc), credential_secrets(args))
+        print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {detail}")
+    finally:
+        if worktree is not None and worktree.exists():
+            try:
+                remove_clone(worktree)
+            except OSError as exc:
+                cleanup_error = exc
+    assert record is not None
+    if cleanup_error is not None:
+        primary_kind = record.get("error_kind")
+        primary_detail = record.get("error_detail")
+        record["resolved"] = False
+        record["ok"] = False
+        record["error_kind"] = "cleanup-failure"
+        record["error_detail"] = (
+            f"primary={primary_kind}: {primary_detail}; cleanup: {type(cleanup_error).__name__}: {cleanup_error}"
+        )[:2000]
+    record.update(
+        {
+            "task": task["id"],
+            "class": task.get("class", ""),
+            "run": run_idx,
+            "sandbox_backend": ctx.sandbox_backend,
+            "task_asset_snapshot_digest": (ctx.asset_snapshot.digest if ctx.asset_snapshot is not None else None),
+            "task_asset_manifest_digest": (
+                ctx.asset_snapshot.manifest_digest if ctx.asset_snapshot is not None else None
+            ),
+            "sandbox_dependency_content_digest": (
+                ctx.asset_snapshot.dependency_content_digest if ctx.asset_snapshot is not None else None
+            ),
+            "sandbox_dependency_manifest_digest": (
+                ctx.asset_snapshot.dependency_manifest_digest if ctx.asset_snapshot is not None else None
+            ),
+            "sanitized_graph_snapshot_digest": (ctx.graph_snapshot.digest if ctx.graph_snapshot is not None else None),
+            "sanitized_graph_manifest_digest": (
+                ctx.graph_snapshot.manifest_digest if ctx.graph_snapshot is not None else None
+            ),
+            "oracle_digest": ctx.oracle_snapshot.digest,
+            "oracle_command_digest": ctx.oracle_snapshot.command_digest,
+            "oracle_manifest_digest": ctx.oracle_snapshot.manifest_digest,
+            "ce_plugin_version": (
+                ctx.ce_plugin_snapshot.version if arm in CE_ARMS and ctx.ce_plugin_snapshot is not None else None
+            ),
+            "ce_plugin_manifest_digest": (
+                ctx.ce_plugin_snapshot.manifest_digest
+                if arm in CE_ARMS and ctx.ce_plugin_snapshot is not None
+                else None
+            ),
+        }
+    )
+    return record
 
 
 def infra_error_record(exc: BaseException) -> dict[str, Any]:
@@ -667,13 +1166,74 @@ def infra_error_record(exc: BaseException) -> dict[str, Any]:
     return record
 
 
+def cell_progress_line(task_id: str, arm: str, run_idx: int, record: dict[str, Any]) -> str:
+    """The live one-line summary printed as each cell finishes.
+
+    An infra-error row carries 0.0 cost and 0.0 duration as placeholders: the
+    cell died before any session could report a number. Printed as bare zeros
+    next to real rows they read as a run that was instant and free — the exact
+    misreading ``_na`` exists to prevent — so they are rendered "n/a" instead.
+    The row on disk is untouched: results.jsonl is promotion evidence and its
+    field types stay as they are.
+    """
+    measured = record.get("error_kind") not in {"infra-error", "cleanup-failure"}
+    cost_usd = record.get("cost_usd") if measured else None
+    duration_s = record.get("duration_s") if measured else None
+    quality = record.get("review_weighted_f1")
+    quality_text = "n/a" if quality is None else f"{quality:.3f}"
+    return (
+        f"[{task_id}][{arm}][run {run_idx}] resolved={record['resolved']} "
+        f"quality={quality_text} "
+        f"in={record['input_tokens']} out={record['output_tokens']} "
+        f"cost={'n/a' if cost_usd is None else f'${cost_usd}'} "
+        f"took={'n/a' if duration_s is None else f'{duration_s}s'} "
+        # An excluded run is what actually blocks promotion, so name it here
+        # instead of leaving it to results.jsonl.
+        f"error_kind={record.get('error_kind') or 'none'}"
+    )
+
+
+# A failing cell's error_kind names the category; the detail names the cause.
+# Bounded because a session-error detail carries stdout/stderr tails.
+MAX_CELL_DETAIL_CHARS = 1200
+
+
+def cell_failure_detail_line(
+    task_id: str,
+    arm: str,
+    run_idx: int,
+    record: Mapping[str, Any],
+    secrets: Sequence[str] = (),
+) -> str | None:
+    """The redacted reason a cell failed, or None when it succeeded.
+
+    Without this the log says only ``error_kind=plan-evidence-invalid`` and the
+    reason stays locked in results.jsonl, which is an uploaded artifact rather
+    than something a watcher can read while the sweep is still running.
+    """
+    if not record.get("error_kind"):
+        return None
+    detail = record.get("error_detail")
+    if detail in (None, "", {}, []):
+        return None
+    rendered = detail if isinstance(detail, str) else json.dumps(detail, default=str, sort_keys=True)
+    rendered = redact_text(rendered, secrets).replace("\n", " ⏎ ")
+    if len(rendered) > MAX_CELL_DETAIL_CHARS:
+        rendered = f"{rendered[:MAX_CELL_DETAIL_CHARS]}…[truncated {len(rendered) - MAX_CELL_DETAIL_CHARS} chars]"
+    return f"[{task_id}][{arm}][run {run_idx}] detail: {rendered}"
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Median metrics + resolve rate across repeated runs of one task+arm.
 
     Session/infra-error rows are excluded from the medians (they measured
     nothing); ``valid_runs``/``excluded_runs`` make the exclusion visible.
     """
-    valid = [r for r in records if r.get("error_kind") not in EXCLUDED_ERROR_KINDS]
+    valid = [
+        r
+        for r in records
+        if r.get("error_kind") not in EXCLUDED_ERROR_KINDS and r.get("review_evidence_valid") is not False
+    ]
     metrics = (*USAGE_FIELDS, "duration_s", "num_turns", *CHURN_FIELDS)
     out: dict[str, Any] = {m: statistics.median(r.get(m, 0) for r in (valid or [{}])) for m in metrics}
     # cost_usd can be None (unmeasured) on an otherwise-valid run; a single
@@ -695,6 +1255,36 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         if kind:
             error_kinds[kind] = error_kinds.get(kind, 0) + 1
     out["error_kinds"] = error_kinds
+    review_metrics = (
+        "review_true_positives",
+        "review_false_positives",
+        "review_false_negatives",
+        "review_precision",
+        "review_recall",
+        "review_f1",
+        "review_weighted_precision",
+        "review_weighted_recall",
+        "review_weighted_f1",
+        "review_blocker_recall",
+        "review_severity_accuracy",
+        "review_category_accuracy",
+        "review_grounded_evidence",
+    )
+    if any("review_weighted_f1" in record for record in valid):
+        for metric in review_metrics:
+            values = [record[metric] for record in valid if record.get(metric) is not None]
+            reducer = min if metric == "review_blocker_recall" else statistics.median
+            out[metric] = reducer(values) if values and len(values) == len(valid) else None
+        verdicts = [record.get("review_verdict_correct") for record in valid]
+        out["review_verdict_correct"] = (
+            all(value is True for value in verdicts)
+            if verdicts and all(isinstance(value, bool) for value in verdicts)
+            else None
+        )
+        controls = [record["review_clean_control"] for record in valid if "review_clean_control" in record]
+        out["review_clean_control"] = all(controls) if controls and len(controls) == len(valid) else None
+        clean_passes = [record["review_clean_pass"] for record in valid if "review_clean_pass" in record]
+        out["review_clean_pass"] = all(clean_passes) if clean_passes and len(clean_passes) == len(valid) else None
     return out
 
 
@@ -738,13 +1328,12 @@ def broken_incumbent_arms(
     return sorted(arm for arm in present if all(arms[arm]["resolved"] == 0 for arms in results.values() if arm in arms))
 
 
-def _na(value: Any) -> Any:
-    """Render an unmeasured metric as ``n/a`` instead of a misleading number."""
-    return "n/a" if value is None else value
-
-
 def _cost_cell(value: Any) -> str:
     return "n/a" if value is None else f"{value:.4f}"
+
+
+def _review_metric_cell(value: Any) -> str:
+    return "n/a" if value is None else f"{value:.3f}"
 
 
 def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
@@ -790,6 +1379,29 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
                     f"| {_na(s['cost_usd'])} | {s['duration_s']} | — | — | — |"
                 )
     lines.append("")
+    if any("review_clean_control" in agg for arms in results.values() for agg in arms.values()):
+        lines.extend(
+            [
+                "## Review quality",
+                "",
+                "| case | arm | TP | FP | FN | precision | recall | blocker recall | weighted F1 | grounding |",
+                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for task_id, arms in results.items():
+            for arm, agg in arms.items():
+                if "review_clean_control" not in agg:
+                    continue
+                lines.append(
+                    f"| {task_id} | {arm} | {agg['review_true_positives']:.1f} "
+                    f"| {agg['review_false_positives']:.1f} | {agg['review_false_negatives']:.1f} "
+                    f"| {_review_metric_cell(agg['review_precision'])} "
+                    f"| {_review_metric_cell(agg['review_recall'])} "
+                    f"| {_review_metric_cell(agg['review_blocker_recall'])} "
+                    f"| {_review_metric_cell(agg['review_weighted_f1'])} "
+                    f"| {_review_metric_cell(agg['review_grounded_evidence'])} |"
+                )
+        lines.append("")
     all_aggs = [agg for arms in results.values() for agg in arms.values()]
     excluded_total = sum(agg.get("excluded_runs", 0) for agg in all_aggs)
     if excluded_total:
@@ -815,10 +1427,30 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 
+def worker_count(value: str) -> int:
+    """``--workers`` as a 1..MAX_WORKERS int, rejected at parse time."""
+    workers = int(value)
+    if not 1 <= workers <= MAX_WORKERS:
+        raise argparse.ArgumentTypeError(f"must be between 1 and {MAX_WORKERS}")
+    return workers
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument(
+        "--workers",
+        type=worker_count,
+        default=1,
+        help=f"cells of one task to run at once (default 1, fully serial; max "
+        f"{MAX_WORKERS}). Size this to the machine: a cell that loses CPU to "
+        "its siblings takes longer, and a session that reaches its timeout is "
+        "an excluded run the promotion gate refuses to work with. Above 1 the "
+        "cells run on worker threads, so Ctrl-C no longer reaches the code "
+        "owning a sandboxed process and abandons the running cells instead of "
+        "cleaning up after them.",
+    )
     parser.add_argument(
         "--outage-streak",
         type=int,
@@ -835,6 +1467,7 @@ def build_parser() -> argparse.ArgumentParser:
             "candidate_workflow",
             "workflow_direct",
             "candidate_workflow_direct",
+            "candidate_review",
             "ce_workflow",
             "ce_workflow_direct",
             "review",
@@ -855,12 +1488,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="exact Compound Engineering plugin version; required for ce_* arms",
     )
-    parser.add_argument("--timeout", type=int, default=3600, help="per session, seconds")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=SESSION_TIMEOUT_SECONDS,
+        help="per session, seconds",
+    )
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
         "--model",
         required=True,
         help="named, versioned model passed to every `claude --model` invocation",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=("low", "medium", "high", "xhigh", "max"),
+        default="xhigh",
+        help="reasoning effort passed to every `claude --effort` invocation",
     )
     parser.add_argument(
         "--proposer-model",
@@ -874,9 +1518,19 @@ def build_parser() -> argparse.ArgumentParser:
         "proxy (see free-model.litellm.yaml) to run on a free model",
     )
     parser.add_argument(
+        "--anthropic-api-key",
         "--auth-token",
-        default=os.environ.get("GITNEXUS_BENCH_AUTH_TOKEN"),
-        help="ANTHROPIC_API_KEY for the --base-url endpoint (prefer GITNEXUS_BENCH_AUTH_TOKEN env)",
+        dest="auth_token",
+        default=anthropic_api_key_from_environ(),
+        help="Anthropic API key for Claude Code sessions (prefer "
+        "GITNEXUS_BENCH_ANTHROPIC_API_KEY). Not a Claude Code OAuth token. "
+        "Legacy --auth-token / GITNEXUS_BENCH_AUTH_TOKEN is still accepted.",
+    )
+    parser.add_argument(
+        "--openai-api-key",
+        default=openai_api_key_from_environ(),
+        help="OpenAI API key; starts a loopback Anthropic-compatible proxy "
+        "(prefer GITNEXUS_BENCH_OPENAI_API_KEY). The key never enters the sandbox.",
     )
     parser.add_argument(
         "--include-expensive",
@@ -887,7 +1541,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--candidate-overlay",
         type=Path,
         default=None,
-        help="directory mirroring .claude/skills/gitnexus-{plan,work}; applied only to candidate_* arms",
+        help="directory mirroring one promotable .claude/skills/gitnexus-* tree; applied only to candidate_* arms",
     )
     parser.add_argument(
         "--promotion-metric",
@@ -902,6 +1556,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--promotion-max-task-regression", type=float, default=20.0)
     parser.add_argument("--task-bindings-json", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--promotion-target-bases-json", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--unsafe-no-bwrap", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -960,6 +1615,8 @@ def main() -> None:
     if candidate_overlay is not None:
         required_candidates = required_candidate_arms(candidate_overlay)
         required_arms = [arm for candidate in required_candidates for arm in (CANDIDATE_ARMS[candidate], candidate)]
+        if required_candidates == ["candidate_review"]:
+            required_arms.insert(0, "ce_review")
         if args.arms != required_arms:
             parser.error("candidate overlay requires exactly these paired arms: " + " ".join(required_arms))
         try:
@@ -976,13 +1633,76 @@ def main() -> None:
             parser.error("--promotion-target-bases-json requires --candidate-overlay")
         promotion_target_bases = {}
 
+    if args.unsafe_no_bwrap and os.environ.get("CI"):
+        parser.error("--unsafe-no-bwrap is forbidden when CI is set")
+    if args.unsafe_no_bwrap and args.arms != ["ce_review", "review", "candidate_review"]:
+        parser.error("--unsafe-no-bwrap is restricted to the paired review arms")
     try:
-        bwrap_bin = preflight_bubblewrap()
-        require_claude_sandbox_helpers()
+        if args.unsafe_no_bwrap:
+            bwrap_bin = preflight_unsafe_host()
+            sandbox_backend = "host-unsafe"
+            print(
+                "WARNING: --unsafe-no-bwrap runs sessions directly on the host with no "
+                "containment; model and verifier processes can access the host filesystem, "
+                "network, and credentials.",
+                file=sys.stderr,
+            )
+        else:
+            bwrap_bin = preflight_bubblewrap()
+            sandbox_backend = "bwrap"
+            require_claude_sandbox_helpers()
         runtime_mounts = trusted_gitnexus_runtime_mounts()
     except SandboxError as exc:
         parser.error(str(exc))
         raise AssertionError("ArgumentParser.error() returned unexpectedly")
+    gateway = attach_openai_gateway(args)
+    try:
+        gateway.__enter__()
+    except ValueError as exc:
+        parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
+    try:
+        with cancellation_scope(handle_signals=True) as cancel_event:
+            _run_sweep(
+                args,
+                cancel_event=cancel_event,
+                parser=parser,
+                tasks=tasks,
+                skipped_expensive=skipped_expensive,
+                oracle_snapshots=oracle_snapshots,
+                expected_task_bindings=expected_task_bindings,
+                ce_plugin_config=ce_plugin_config,
+                bwrap_bin=bwrap_bin,
+                sandbox_backend=sandbox_backend,
+                runtime_mounts=runtime_mounts,
+                candidate_arms=candidate_arms,
+                candidate_overlay=candidate_overlay,
+                overlay_digest=overlay_digest,
+                promotion_target_bases=promotion_target_bases,
+            )
+    finally:
+        gateway.__exit__(None, None, None)
+
+
+def _run_sweep(
+    args: argparse.Namespace,
+    *,
+    parser: argparse.ArgumentParser,
+    tasks: list[Any],
+    skipped_expensive: list[str],
+    oracle_snapshots: Any,
+    expected_task_bindings: Any,
+    ce_plugin_config: Any,
+    bwrap_bin: Any,
+    sandbox_backend: str,
+    runtime_mounts: Any,
+    candidate_arms: list[str],
+    candidate_overlay: Path | None,
+    overlay_digest: str | None,
+    promotion_target_bases: dict[str, str],
+    cancel_event: threading.Event | None = None,
+) -> None:
+    cancel_event = cancel_event or threading.Event()
     out_dir = args.out or Path("results") / time.strftime("wfbench-%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
@@ -996,6 +1716,12 @@ def main() -> None:
     results: dict[str, dict[str, dict[str, Any]]] = {}
     outage_streak = 0
     outage_tripped = False
+    # Progress accounting for the sweep. A generation runs for hours and each
+    # cell is a full set of agent sessions, so the log needs to say what is in
+    # flight and how much is left, not only what already finished.
+    total_cells = len(tasks) * args.runs * len(args.arms)
+    started_cells = 0
+    sweep_started = time.monotonic()
     with (
         tempfile.TemporaryDirectory(prefix="wfbench-trees-") as trees,
         TaskAssetCache(Path(trees) / ".task-assets") as task_asset_cache,
@@ -1014,9 +1740,6 @@ def main() -> None:
         except (OSError, SandboxError, ValueError) as exc:
             parser.error(str(exc))
             raise AssertionError("ArgumentParser.error() returned unexpectedly")
-        oracle_mask = Path(trees) / ".oracle-mask"
-        oracle_mask.mkdir(mode=0o500)
-        oracle_mask.chmod(0o500)
         graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot] = {}
         graph_snapshot_errors: dict[tuple[str, str], BaseException] = {}
         for task, task_binding, oracle_snapshot in zip(
@@ -1025,7 +1748,7 @@ def main() -> None:
             oracle_snapshots,
             strict=True,
         ):
-            if outage_tripped:
+            if outage_tripped or cancel_event.is_set():
                 break
             repo = Path(task_binding["repo_identity"])
             task_sha = task_binding["resolved_sha"]
@@ -1045,270 +1768,78 @@ def main() -> None:
                         cache=task_asset_cache,
                         claude_bin=args.claude_bin,
                         bwrap_bin=bwrap_bin,
+                        sandbox_backend=sandbox_backend,
                         runtime_mounts=runtime_mounts,
                     )
                     graph_snapshots[graph_key] = graph_snapshot
             except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
                 graph_snapshot_error = exc
                 graph_snapshot_errors[graph_key] = exc
+            try:
+                # Prepared here, once, rather than lazily inside the first cell:
+                # TaskAssetCache is a plain dict, so a lazy build would be a
+                # read-then-write race the moment cells stop running serially.
+                asset_snapshot = task_asset_cache.prepare(
+                    task,
+                    repo=repo,
+                    resolved_sha=task_sha,
+                    expected_dependency_binding=task_binding,
+                )
+            except (OSError, SandboxError, ValueError) as exc:
+                asset_snapshot_error = exc
+            cell_context = TaskCellContext(
+                task=task,
+                oracle_snapshot=oracle_snapshot,
+                repo=repo,
+                task_sha=task_sha,
+                graph_snapshot=graph_snapshot,
+                graph_snapshot_error=graph_snapshot_error,
+                asset_snapshot=asset_snapshot,
+                asset_snapshot_error=asset_snapshot_error,
+                args=args,
+                out_dir=out_dir,
+                ce_plugin_snapshot=ce_plugin_snapshot,
+                trees_dir=Path(trees),
+                bwrap_bin=bwrap_bin,
+                sandbox_backend=sandbox_backend,
+                runtime_mounts=runtime_mounts,
+                candidate_overlay=candidate_overlay,
+                overlay_digest=overlay_digest,
+            )
             per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
-            for run_idx in range(args.runs):
-                if outage_tripped:
-                    break
-                for arm in args.arms:
-                    if outage_tripped:
-                        break
-                    worktree: Path | None = None
-                    record: dict[str, Any] | None = None
-                    cleanup_error: OSError | None = None
-                    try:
-                        if asset_snapshot_error is not None:
-                            raise RuntimeError(f"task asset snapshot preparation failed: {asset_snapshot_error}")
-                        if graph_snapshot_error is not None:
-                            raise RuntimeError(f"sanitized graph snapshot preparation failed: {graph_snapshot_error}")
-                        if graph_snapshot is None:
-                            raise RuntimeError("sanitized graph snapshot is unavailable")
-                        if asset_snapshot is None:
-                            try:
-                                asset_snapshot = task_asset_cache.prepare(
-                                    task,
-                                    repo=repo,
-                                    resolved_sha=task_sha,
-                                    expected_dependency_binding=task_binding,
-                                )
-                            except (OSError, SandboxError, ValueError) as exc:
-                                asset_snapshot_error = exc
-                                raise
-                        worktree = make_worktree(repo, task_sha, Path(trees))
-                        sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
-                        graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
-                        dependency_mounts = stage_task_assets(
-                            task,
-                            repo=repo,
-                            clone=worktree,
-                            snapshot=asset_snapshot,
-                        )
-                        registry_mount = isolated_gitnexus_registry_mount(worktree, Path(trees))
-                        hidden_harness = worktree / "eval" / "workflow_bench"
-                        oracle_visibility_mounts: list[ReadOnlyMount] = []
-                        if hidden_harness.exists() or hidden_harness.is_symlink():
-                            hidden_metadata = hidden_harness.lstat()
-                            if stat.S_ISLNK(hidden_metadata.st_mode) or not stat.S_ISDIR(hidden_metadata.st_mode):
-                                raise SandboxError(
-                                    "benchmark harness path must be a real directory before it can be hidden"
-                                )
-                            oracle_visibility_mounts.append(
-                                ReadOnlyMount(
-                                    source=oracle_mask,
-                                    target=f"{SANDBOX_WORKSPACE}/eval/workflow_bench",
-                                )
-                            )
-                        execution_arm = CANDIDATE_ARMS.get(arm, arm)
-                        ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ce_plugin_snapshot)
-                        with prepare_sandbox(
-                            clone=worktree,
-                            claude_bin=args.claude_bin,
-                            bwrap_bin=bwrap_bin,
-                            read_only_mounts=[
-                                *dependency_mounts,
-                                *runtime_mounts,
-                                registry_mount,
-                                *ce_mounts,
-                                *oracle_visibility_mounts,
-                            ],
-                            preflight=False,
-                        ) as sandbox:
-                            # Capture the BASE (pre-overlay) skill digest — identical
-                            # for the incumbent and candidate arms — then run the
-                            # task's untrusted setup against those base skills. The
-                            # candidate overlay is applied only afterwards, so setup
-                            # can never observe candidate prose and both arms share
-                            # byte-identical pre-overlay state.
-                            base_skill_digest = skill_fingerprint(worktree, execution_arm)
-                            if task.get("setup"):
-                                setup_command = ["/bin/sh", "-lc", str(task["setup"])]
-                                setup = sandbox.run(
-                                    setup_command,
-                                    timeout=600,
-                                    env=build_sandbox_environment(),
-                                )
-                                if not setup.ok:
-                                    raise ManagedProcessError(setup_command, setup)
-                            # Tamper-evidence: setup must not have rewritten the base
-                            # skills, verified before any candidate overlay lands.
-                            require_skill_fingerprint(
-                                worktree,
-                                execution_arm,
-                                base_skill_digest,
-                                phase="task setup",
-                            )
-                            if arm in CANDIDATE_ARMS:
-                                assert candidate_overlay is not None
-                                applied_digest = apply_candidate_overlay(
-                                    candidate_overlay,
-                                    worktree,
-                                    sandbox=sandbox,
-                                )
-                                if applied_digest != overlay_digest:
-                                    raise RuntimeError("candidate overlay changed during the benchmark run")
-                            # The digest the model must preserve during its run is the
-                            # post-overlay skill surface (candidate skills for
-                            # candidate arms; unchanged base skills otherwise).
-                            expected_skill_digest = skill_fingerprint(worktree, execution_arm)
-                            orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
-                            if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
-                                raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")
-                            before_work_digest = (
-                                implementation_diff_digest(sandbox, orig_sha)
-                                if execution_arm in IMPLEMENTATION_ARMS
-                                else ""
-                            )
-                            record = run_arm(
-                                execution_arm,
-                                task,
-                                worktree,
-                                args,
-                                sandbox=sandbox,
-                                transcript_output_dir=out_dir,
-                                transcript_output_prefix=f"{task['id']}-{arm}-run{run_idx}",
-                                expected_skill_digest=expected_skill_digest,
-                                enforce_phase_boundary=True,
-                                ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ce_plugin_snapshot),
-                                oracle_snapshot=oracle_snapshot,
-                            )
-                            _prepare_untracked_for_diff(sandbox)
-                            after_work_digest = (
-                                implementation_diff_digest(
-                                    sandbox,
-                                    orig_sha,
-                                    prepare_untracked=False,
-                                )
-                                if execution_arm in IMPLEMENTATION_ARMS
-                                else ""
-                            )
-                            record.update(
-                                diff_churn(
-                                    sandbox,
-                                    orig_sha,
-                                    prepare_untracked=False,
-                                )
-                            )
-                            enforce_work_evidence(
-                                record,
-                                arm=execution_arm,
-                                before_digest=before_work_digest,
-                                after_digest=after_work_digest,
-                            )
-                            patch_bytes = capture_patch(sandbox, worktree, orig_sha)
-                        record["arm"] = arm
-                        record.update(
-                            {
-                                "model": args.model,
-                                "benchmark_model": args.model,
-                                "proposer_model": args.proposer_model,
-                                "task_ref": task.get("ref", "HEAD"),
-                                "task_base_sha": task_sha,
-                                "sanitized_task_sha": sanitized_head,
-                                "variant_head_sha": orig_sha,
-                                "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
-                                "skill_digest": expected_skill_digest,
-                                "candidate_overlay_digest": (overlay_digest if arm in CANDIDATE_ARMS else None),
-                                "recorded_at": datetime.now(UTC).isoformat(),
-                            }
-                        )
-                        # Final working-tree patch — the clone is destroyed, so
-                        # this is the only artifact for diagnosing verify fails.
-                        patch_path = out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
-                        patch_path.write_bytes(patch_bytes)
-                    except (
-                        ManagedProcessError,
-                        SandboxError,
-                        OSError,
-                        RuntimeError,
-                        ValueError,
-                    ) as exc:
-                        # One hung session or failed setup must not abort the
-                        # sweep — record the run as infra-error and move on so
-                        # report.md/promotion.json still get written.
-                        record = infra_error_record(exc)
-                        record["arm"] = arm
-                        print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {exc}")
-                    finally:
-                        if worktree is not None and worktree.exists():
-                            try:
-                                remove_clone(worktree)
-                            except OSError as exc:
-                                cleanup_error = exc
-                    assert record is not None
-                    if cleanup_error is not None:
-                        primary_kind = record.get("error_kind")
-                        primary_detail = record.get("error_detail")
-                        record["resolved"] = False
-                        record["ok"] = False
-                        record["error_kind"] = "cleanup-failure"
-                        record["error_detail"] = (
-                            f"primary={primary_kind}: {primary_detail}; cleanup: "
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        )[:2000]
-                    record.update(
-                        {
-                            "task": task["id"],
-                            "class": task.get("class", ""),
-                            "run": run_idx,
-                            "task_asset_snapshot_digest": (
-                                asset_snapshot.digest if asset_snapshot is not None else None
-                            ),
-                            "task_asset_manifest_digest": (
-                                asset_snapshot.manifest_digest if asset_snapshot is not None else None
-                            ),
-                            "sandbox_dependency_content_digest": (
-                                asset_snapshot.dependency_content_digest if asset_snapshot is not None else None
-                            ),
-                            "sandbox_dependency_manifest_digest": (
-                                asset_snapshot.dependency_manifest_digest if asset_snapshot is not None else None
-                            ),
-                            "sanitized_graph_snapshot_digest": (
-                                graph_snapshot.digest if graph_snapshot is not None else None
-                            ),
-                            "sanitized_graph_manifest_digest": (
-                                graph_snapshot.manifest_digest if graph_snapshot is not None else None
-                            ),
-                            "oracle_digest": oracle_snapshot.digest,
-                            "oracle_command_digest": oracle_snapshot.command_digest,
-                            "oracle_manifest_digest": oracle_snapshot.manifest_digest,
-                            "ce_plugin_version": (
-                                ce_plugin_snapshot.version
-                                if arm in CE_ARMS and ce_plugin_snapshot is not None
-                                else None
-                            ),
-                            "ce_plugin_manifest_digest": (
-                                ce_plugin_snapshot.manifest_digest
-                                if arm in CE_ARMS and ce_plugin_snapshot is not None
-                                else None
-                            ),
-                        }
-                    )
-                    per_arm[arm].append(record)
-                    with results_path.open("a") as fh:
-                        # Redact any API token a session-error stderr_tail
-                        # echoed into error_detail before it enters the uploaded
-                        # results.jsonl artifact (transcripts are redacted; this
-                        # sink was not).
-                        fh.write(redact_text(json.dumps(record), [args.auth_token or ""]) + "\n")
-                    print(
-                        f"[{task['id']}][{arm}][run {run_idx}] resolved={record['resolved']} "
-                        f"in={record['input_tokens']} out={record['output_tokens']} "
-                        f"cost=${_na(record['cost_usd'])}"
-                    )
-                    outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
-                    if args.outage_streak and outage_streak >= args.outage_streak:
-                        outage_tripped = True
-                        print(
-                            f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
-                            "failures — aborting the remaining sweep; report and promotion are written "
-                            "from partial evidence and the run exits non-zero."
-                        )
-                        break
+            cells = [(run_idx, arm) for run_idx in range(args.runs) for arm in args.arms]
+
+            def announce(run_idx: int, arm: str) -> None:
+                nonlocal started_cells
+                started_cells += 1
+                print(
+                    f"[{task['id']}][{arm}][run {run_idx}] starting "
+                    f"({started_cells}/{total_cells}, {(time.monotonic() - sweep_started) / 60:.0f}m elapsed)"
+                )
+
+            def keep(run_idx: int, arm: str, record: dict[str, Any]) -> None:
+                per_arm[arm].append(record)
+                with results_path.open("a") as fh:
+                    # Redact any API token a session-error stderr_tail echoed
+                    # into error_detail before it enters the uploaded
+                    # results.jsonl artifact (transcripts are redacted; this
+                    # sink was not).
+                    fh.write(redact_text(json.dumps(record), credential_secrets(args)) + "\n")
+                print(cell_progress_line(task["id"], arm, run_idx, record))
+                failure = cell_failure_detail_line(task["id"], arm, run_idx, record, credential_secrets(args))
+                if failure:
+                    print(failure)
+
+            outage_streak, outage_tripped = sweep_task_cells(
+                cells,
+                workers=args.workers,
+                run=partial(run_cell, cell_context),
+                on_start=announce,
+                on_record=keep,
+                outage_streak=outage_streak,
+                outage_limit=args.outage_streak,
+                cancel_event=cancel_event,
+            )
             results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
 
     selection_report = [
@@ -1316,6 +1847,7 @@ def main() -> None:
         "",
         f"Benchmark model: `{args.model}`",
         f"Proposer model: `{args.proposer_model}`",
+        f"Reasoning effort: `{args.effort}`",
         f"Selected tasks ({len(selected_ids)}): {', '.join(selected_ids)}",
         (
             f"Skipped expensive tasks ({len(skipped_expensive)}): "
@@ -1326,19 +1858,20 @@ def main() -> None:
         selection_report.append(
             f"Compound Engineering plugin: `{ce_plugin_snapshot.version}` (`{ce_plugin_snapshot.manifest_digest}`)"
         )
+    if cancel_event.is_set():
+        selection_report.append("Sweep cancelled: partial evidence; promotion is disabled.")
+    elif outage_tripped:
+        selection_report.append("Sweep aborted: partial evidence; promotion is disabled.")
     report = render_report(results) + "\n\n" + "\n".join(selection_report) + "\n"
     (out_dir / "report.md").write_text(report)
     if candidate_arms:
         promotion_generated_at = datetime.now(UTC)
         promotion = {
-            # Schema 3 is the first promotion evidence that requires hidden,
-            # byte-bound behavioral oracles. Older self-authored-only rows are
-            # intentionally ineligible for application.
-            "schema_version": 3,
             "generated_at": promotion_generated_at.isoformat(),
             "evidence_expires_at": (promotion_generated_at + timedelta(days=EVIDENCE_MAX_AGE_DAYS)).isoformat(),
             "benchmark_model": args.model,
             "proposer_model": args.proposer_model,
+            "effort": args.effort,
             "candidate_origin": ("model-proposer" if args.proposer_model is not None else "manual-initial-overlay"),
             "candidate_overlay": str(candidate_overlay),
             "candidate_overlay_digest": overlay_digest,
@@ -1346,32 +1879,25 @@ def main() -> None:
             "required_candidate_arms": candidate_arms,
             "selected_tasks": task_bindings,
             "ce_plugin": ce_plugin_snapshot.provenance if ce_plugin_snapshot is not None else None,
-            "policy": {
-                "metric": args.promotion_metric,
-                "metric_warning": (MAIN_LOOP_ONLY_WARNING if args.promotion_metric in MAIN_LOOP_ONLY_METRICS else None),
-                "min_runs": args.promotion_min_runs,
-                "min_improvement_pct": args.promotion_min_improvement,
-                "max_task_regression_pct": args.promotion_max_task_regression,
-                "quality_rule": "no per-task resolution-rate regression",
-                "max_age_days": EVIDENCE_MAX_AGE_DAYS,
-            },
-            "decisions": [
-                evaluate_candidate(
-                    results,
-                    incumbent_arm=CANDIDATE_ARMS[candidate_arm],
-                    candidate_arm=candidate_arm,
-                    model=args.model,
+            **promotion_evidence(
+                results,
+                model=args.model,
+                complete=not outage_tripped and not cancel_event.is_set(),
+                policy=promotion_policy(
+                    candidate_arms,
                     metric=args.promotion_metric,
                     min_runs=args.promotion_min_runs,
                     min_improvement_pct=args.promotion_min_improvement,
                     max_task_regression_pct=args.promotion_max_task_regression,
-                )
-                for candidate_arm in candidate_arms
-            ],
+                ),
+            ),
         }
         (out_dir / "promotion.json").write_text(json.dumps(promotion, indent=2) + "\n")
     print(f"\n{report}\n\nWritten to {out_dir}/")
-    broken_incumbents = broken_incumbent_arms(results, set(CANDIDATE_ARMS.values()))
+    # A reviewer may legitimately match none of a difficult hidden corpus;
+    # unlike an implementation arm, zero exact resolutions is quality signal,
+    # not proof that the harness failed.
+    broken_incumbents = broken_incumbent_arms(results, set(CANDIDATE_ARMS.values()) - {"review"})
     if broken_incumbents:
         # Fail loudly rather than let a broken environment read as a quiet
         # "no promotion, incumbent stands."
@@ -1382,6 +1908,8 @@ def main() -> None:
             "in results.jsonl. Exiting non-zero rather than reporting a quiet no-promotion."
         )
         raise SystemExit(1)
+    if cancel_event.is_set():
+        raise SystemExit(130)
     if outage_tripped:
         # Non-zero exit so a driver (evolve.py) treats the partial benchmark as a
         # failed run and halts instead of proposing from outage-truncated evidence.

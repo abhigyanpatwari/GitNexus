@@ -219,6 +219,7 @@ export default router;
       ): Promise<Record<string, unknown>[]> => {
         if (query.includes('UNION ALL'))
           return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('filePath IN $filePaths')) return [];
         if (query.includes('n.name = $name'))
           return params?.name === 'listUsers'
             ? [{ uid: 'fn-listUsers-xfile', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
@@ -227,6 +228,36 @@ export default router;
       };
       const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
       expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
+
+    it('retains unique-name fallback for a Flask handler imported from a bare module', async () => {
+      const dir = path.join(tmpDir, 'py-flask-bare-import');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from shared_handlers import list_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=list_users)
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') || query.includes('filePath IN $filePaths')) return [];
+        if (query.includes('n.name = $name') && params?.name === 'list_users') {
+          return [{ uid: 'fn-list-users', name: 'list_users', filePath: 'shared/handlers.py' }];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (contract) =>
+          contract.role === 'provider' && contract.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list-users', symbolName: 'list_users' });
     });
 
     it('leaves symbolUid empty when the repo-wide name is AMBIGUOUS (multiple matches)', async () => {
@@ -589,6 +620,49 @@ app.add_url_rule('/api/users', view_func=handle_users)
       );
       expect(provider).toMatchObject({ symbolUid: 'fn-list_users', symbolName: 'list_users' });
       expect(queriedNames).not.toContain('module:handle_users');
+    });
+
+    it('retains legacy package-prefix resolution for a Python re-export', async () => {
+      const dir = path.join(tmpDir, 'py-flask-reexport');
+      fs.mkdirSync(path.join(dir, 'app', 'handlers'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from .handlers import list_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=list_users)
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'app', 'handlers', '__init__.py'),
+        `from .users import list_users\n`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'app', 'handlers', 'users.py'),
+        `def list_users(): return []\n`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH') && String(params?.fileSlash) === 'app/handlers/') {
+          return [
+            {
+              uid: 'fn-list-users',
+              name: 'list_users',
+              filePath: 'app/handlers/users.py',
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (contract) =>
+          contract.role === 'provider' && contract.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list-users', symbolName: 'list_users' });
     });
 
     // ── Inline / closure provider handlers (#2276) ──────────────────────
@@ -2690,6 +2764,12 @@ export function updateUser(id: string, data: unknown) {
 export function listDefaults() {
   return axios({ url: '/api/defaults' });
 }
+export function ignoreJqueryTypeKey() {
+  return axios({ url: '/api/typed', type: 'POST' });
+}
+export function quotedAxiosMethod() {
+  return axios({ url: '/api/quoted-ax', "method": 'DELETE' });
+}
 `,
       );
 
@@ -2699,6 +2779,111 @@ export function listDefaults() {
       expect(consumers.find((c) => c.contractId === 'http::POST::/api/orders')).toBeDefined();
       expect(consumers.find((c) => c.contractId === 'http::PUT::/api/users/{param}')).toBeDefined();
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/defaults')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/typed')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/typed')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::DELETE::/api/quoted-ax')).toBeDefined();
+    });
+
+    it('extracts wrapped X.request({ url, method }) with shared prefix-strip and * verbs', async () => {
+      const dir = path.join(tmpDir, 'wrapped-request');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/client.ts'),
+        `
+import axios from 'axios';
+
+export function listOrders(httpClient, serviceClient, tenant, verb) {
+  return httpClient.request({ url: \`\${serviceClient}/api/v1/orders\`, method: 'post' });
+}
+export function getTenantOrder(httpClient, client, tenant) {
+  return httpClient.request({ url: \`\${client}/api/\${tenant}/orders\`, method: 'GET' });
+}
+export function rootPing(httpClient, client) {
+  return httpClient.request({ url: \`\${client}/\`, method: 'GET' });
+}
+export function dynamicVerb(httpClient) {
+  return httpClient.request({ url: '/api/orders', method: verb });
+}
+export function missingMethod(httpClient) {
+  return httpClient.request({ url: '/api/defaults' });
+}
+export function dropHostTemplate(httpClient, scheme, host) {
+  return httpClient.request({ url: \`\${scheme}://\${host}/api/x\`, method: 'GET' });
+}
+export function absTemplateParam(httpClient, id) {
+  return httpClient.request({ url: \`https://host/api/\${id}\`, method: 'GET' });
+}
+export function quotedMethod(httpClient) {
+  return httpClient.request({ url: '/api/quoted', "method": 'PATCH' });
+}
+export function spreadMethod(httpClient, config) {
+  return httpClient.request({ url: '/api/spread', ...config });
+}
+export function staticAbsolute(httpClient) {
+  return httpClient.request({ url: 'https://host/api/static', method: 'GET' });
+}
+export function protocolRelative(httpClient, proto) {
+  return httpClient.request({ url: \`\${proto}//host/api/proto\`, method: 'GET' });
+}
+export async function fetchGateway(gateway) {
+  return fetch(\`\${gateway}/api/users\`);
+}
+export function axiosGateway(gateway) {
+  return axios.get(\`\${gateway}/api/users\`);
+}
+export async function encodedBraceLiteral() {
+  return fetch('https://host/api/%7Bfoo%7D');
+}
+export async function literalSentinelSegment() {
+  return fetch('https://host/api/__gitnexus_http_param__');
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.find((c) => c.contractId === 'http::POST::/api/v1/orders')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/{param}/orders'),
+      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::*::/api/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/defaults')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/x')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/orders')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/{param}')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::PATCH::/api/quoted')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::*::/api/spread')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/static')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/proto')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/host/api/proto')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/users')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/%7bfoo%7d')).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/__gitnexus_http_param__'),
+      ).toBeDefined();
+    });
+
+    it('does not mint HTTP consumers for ungated .request({ url }) helpers', async () => {
+      const dir = path.join(tmpDir, 'wrapped-request-negative');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/misc.ts'),
+        `
+export function e2e(cy) {
+  return cy.request({ url: '/api/v1/orders', method: 'GET' });
+}
+export function enqueue(queue) {
+  return queue.request({ url: '/admin', method: 'DELETE' });
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/v1/orders')).toBeUndefined();
+      expect(consumers.find((c) => c.contractId === 'http::DELETE::/admin')).toBeUndefined();
     });
 
     it('does not emit consumers for unrelated object-literal calls (negative control)', async () => {

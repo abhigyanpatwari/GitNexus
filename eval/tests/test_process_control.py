@@ -7,7 +7,12 @@ import os
 import signal
 import sys
 import time
+import threading
+import subprocess
+import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,6 +26,100 @@ from workflow_bench.process_control import (
 
 
 PYTHON = sys.executable
+
+
+def test_cancel_before_spawn_never_starts_the_child(tmp_path):
+    event = threading.Event()
+    event.set()
+    sentinel = tmp_path / "spawned"
+    result = run_managed([PYTHON, "-c", f"open({str(sentinel)!r}, 'w').close()"], timeout=60, cancel_event=event)
+    assert result.state == "cancelled"
+    assert not sentinel.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signal escalation")
+def test_cancel_after_spawn_kills_a_term_ignoring_child():
+    event = threading.Event()
+    started = time.monotonic()
+    result = run_managed(
+        [
+            PYTHON,
+            "-c",
+            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready',flush=True); time.sleep(60)",
+        ],
+        timeout=60,
+        terminate_grace=0.1,
+        cancel_event=event,
+        stdout_observer=lambda chunk: event.set() if b"ready" in chunk else None,
+    )
+    assert result.state == "cancelled" and result.forced_kill
+    assert not result.timed_out
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX parent signals")
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_signal_cancels_active_wave_before_assets_are_released(tmp_path, signum):
+    ready = tmp_path / "child-pid"
+    assets = tmp_path / "assets"
+    assets.write_text("shared")
+    command = (
+        f"import os,time; from pathlib import Path; Path({str(ready)!r}).write_text(str(os.getpid())); time.sleep(60)"
+    )
+    script = f"""
+import json,sys
+from pathlib import Path
+from workflow_bench.process_control import cancellation_scope, run_managed
+from workflow_bench.runner import sweep_task_cells
+rows=[]
+def run(index, arm):
+    if index == 0:
+        return {{'resolved': True, 'error_kind': None}}
+    result=run_managed([sys.executable, '-c', {command!r}], timeout=60)
+    assert Path({str(assets)!r}).exists(), 'assets removed while a worker was active'
+    return {{'resolved': False, 'error_kind': result.state}}
+with cancellation_scope(handle_signals=True) as event:
+    streak, stopped=sweep_task_cells([(i, 'review') for i in range(10)], workers=2, run=run,
+        on_start=lambda *args: None, on_record=lambda i,a,r: rows.append([i,r]),
+        outage_streak=0, outage_limit=5, cancel_event=event)
+Path({str(assets)!r}).unlink()
+print(json.dumps({{'rows': rows, 'stopped': stopped}}))
+"""
+    process = subprocess.Popen(
+        [PYTHON, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        child_pid = int(ready.read_text())
+        started = time.monotonic()
+        process.send_signal(signum)
+        stdout, stderr = process.communicate(timeout=15)
+        assert process.returncode == 0, stderr
+        assert time.monotonic() - started < 15
+        report = json.loads(stdout)
+        assert report["stopped"] and [row[0] for row in report["rows"]] == [0, 1]
+        assert report["rows"][0][1]["resolved"] is True
+        assert report["rows"][1][1]["error_kind"] == "cancelled"
+        with pytest.raises(ProcessLookupError):
+            os.kill(child_pid, 0)
+        assert not assets.exists()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        if ready.exists():
+            try:
+                os.killpg(int(ready.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                # Successful cancellation has already reaped this process group.
+                pass
 
 
 def test_managed_process_captures_normal_exit() -> None:
@@ -122,6 +221,64 @@ def test_parent_stdout_capture_reports_overflow_without_stopping_drain() -> None
     assert result.stdout_capture == b"x" * 64
     assert result.stdout_capture_overflow is True
     assert result.stdout_tail.endswith("END")
+
+
+def test_echo_stdout_streams_child_progress_and_stays_off_by_default(capfd) -> None:
+    command = [PYTHON, "-c", "import os; os.write(1, b'[task][arm][run 0] starting\\n')"]
+
+    quiet = run_managed(command, timeout=5)
+    assert quiet.ok
+    assert "starting" not in capfd.readouterr().err
+
+    echoed = run_managed(command, timeout=5, echo_stdout=True)
+    assert echoed.ok
+    captured = capfd.readouterr()
+    assert "[task][arm][run 0] starting" in captured.err
+    # Echoing is a passthrough, not a redirect: the tail stays intact for the
+    # caller that reports it after the process ends.
+    assert "starting" in echoed.stdout_tail
+
+
+def test_echo_reaches_the_log_while_the_child_is_still_running(tmp_path: Path, monkeypatch) -> None:
+    """Streaming has to be prompt, not merely eventual.
+
+    A sweep emits one line every ~45 minutes. Draining with `read(8192)` still
+    delivers every byte, so the tail and the capture look correct — but nothing
+    surfaces until the pipe closes, which turns a 15-hour job into a silent one
+    and is the whole reason this passthrough exists.
+
+    The child here refuses to exit until the echoed line has been observed, so
+    an implementation that only flushes at EOF deadlocks and fails on the
+    timeout rather than passing on a technicality.
+    """
+    released = tmp_path / "echo-observed"
+
+    class Sink:
+        def write(self, data: bytes) -> int:
+            if b"first-line" in data:
+                released.write_text("go")
+            return len(data)
+
+        def flush(self) -> None:
+            pass
+
+    monkeypatch.setattr(process_control.sys, "stderr", SimpleNamespace(buffer=Sink()))
+    script = """
+import pathlib, sys, time
+sys.stdout.write('first-line\\n')
+sys.stdout.flush()
+target = pathlib.Path(%r)
+for _ in range(400):
+    if target.exists():
+        break
+    time.sleep(0.05)
+""" % str(released)
+
+    result = run_managed([PYTHON, "-c", script], timeout=15, echo_stdout=True)
+
+    assert released.exists(), "the line never reached the echo sink while the child ran"
+    assert result.ok
+    assert "first-line" in result.stdout_tail
 
 
 def test_incomplete_stdin_delivery_cannot_report_success() -> None:
@@ -453,3 +610,57 @@ def test_windows_normal_parent_with_grandchild_is_not_successful_evidence(tmp_pa
     assert result.forced_kill
     assert not result.ok
     assert not sentinel.exists()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group ownership canary")
+def test_concurrent_cells_reap_only_their_own_process_tree(tmp_path: Path) -> None:
+    """One cell timing out must not touch a sibling cell running beside it.
+
+    `run_managed` reaps by process group. Cells only ever ran one at a time
+    before, so nothing exercised what happens when a `killpg` fires while other
+    owned trees are alive — a leaked or shared pgid would take the siblings
+    down with it, and the sweep would read that as two more excluded runs.
+    """
+    survivor_sentinel = tmp_path / "survivor-finished"
+    victim_sentinel = tmp_path / "victim-escaped"
+
+    # Each cell spawns a descendant, like a sandboxed session does.
+    survivor = """
+import pathlib, subprocess, sys, time
+child = subprocess.Popen([sys.executable, '-c', "import time; time.sleep(2)"])
+time.sleep(1.0)
+pathlib.Path(%r).write_text('finished')
+child.wait()
+print('survivor-done', flush=True)
+""" % str(survivor_sentinel)
+    victim = """
+import pathlib, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+subprocess.Popen([
+    sys.executable, '-c',
+    "import signal,time,pathlib; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(1.5); pathlib.Path(%r).write_text('escaped')"
+])
+while True:
+    time.sleep(0.01)
+""" % str(victim_sentinel)
+
+    def cell(source: str, timeout: float):
+        return run_managed([PYTHON, "-c", source], timeout=timeout, terminate_grace=0.1)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = [
+            pool.submit(cell, survivor, 10.0),
+            pool.submit(cell, victim, 0.2),
+            pool.submit(cell, survivor, 10.0),
+        ]
+        first, doomed, second = (future.result() for future in futures)
+
+    time.sleep(1.8)
+
+    assert doomed.state == "forced-kill"
+    assert not victim_sentinel.exists(), "the timed-out cell leaked a descendant"
+    # The siblings were mid-flight when the killpg fired.
+    assert first.ok and second.ok
+    assert "survivor-done" in first.stdout_tail
+    assert "survivor-done" in second.stdout_tail
+    assert survivor_sentinel.exists()

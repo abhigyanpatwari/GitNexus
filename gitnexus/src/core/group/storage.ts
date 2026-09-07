@@ -1,14 +1,14 @@
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import type { ContractRegistry } from './types.js';
 import { writeFileAtomic } from '../../storage/fs-atomic.js';
+import { getGlobalDir } from '../../storage/global-dir.js';
 
-const CONTRACTS_FILE = 'contracts.json';
+export const CONTRACTS_FILE = 'contracts.json';
 
 export function getDefaultGitnexusDir(): string {
-  return process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
+  return getGlobalDir();
 }
 
 export function getGroupsBaseDir(gitnexusDir?: string): string {
@@ -28,6 +28,11 @@ export function validateGroupName(name: string): void {
 export function getGroupDir(gitnexusDir: string, groupName: string): string {
   validateGroupName(groupName);
   return path.join(gitnexusDir, 'groups', groupName);
+}
+
+/** The registry path, so callers that stat or watch the file do not respell its name. */
+export function getContractRegistryPath(groupDir: string): string {
+  return path.join(groupDir, CONTRACTS_FILE);
 }
 
 export async function writeContractRegistry(
@@ -91,15 +96,11 @@ packages: {}
 
 detect:
   http: true
+  graphql: false
   grpc: true
   topics: true
-  shared_libs: true
-  embedding_fallback: true
 
 matching:
-  bm25_threshold: 0.7
-  embedding_threshold: 0.65
-  max_candidates_per_step: 3
   # exclude_links_paths: [/ping, /health, /healthcheck]
   # exclude_links_param_only_paths: false
 `;

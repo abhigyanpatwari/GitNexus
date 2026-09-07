@@ -11,12 +11,19 @@ runs:
         cache: npm
         cache-dependency-path: gitnexus-web/package-lock.json
 
-    - name: Build gitnexus-shared
-      run: npm install && npm run build
-      shell: bash
-      working-directory: gitnexus-shared
-
     - name: Install web dependencies
       run: npm ci
       shell: bash
       working-directory: gitnexus-web
+      env:
+        # Browsers are installed explicitly by e2e. Typecheck only needs types.
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+    # Compile shared with the web package's TypeScript 5. Do not npm-ci
+    # gitnexus-shared (TypeScript 7 optional-platform install, ~7 minutes).
+    - name: Build gitnexus-shared
+      # node + lib/tsc.js — same on Windows/macOS/Linux. Do not use .bin/tsc
+      # (tsc.cmd on Windows; execFileSync cannot launch .cmd without a shell).
+      run: node ../gitnexus-web/node_modules/typescript/lib/tsc.js
+      shell: bash
+      working-directory: gitnexus-shared

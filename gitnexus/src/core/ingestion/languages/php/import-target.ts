@@ -21,9 +21,13 @@ import { resolvePhpImportInternal } from '../../import-resolvers/php.js';
 import type { SuffixIndex } from '../../import-resolvers/utils.js';
 import { perFileSet } from '../../import-resolvers/per-file-set.js';
 import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
-import type { ComposerConfig } from '../../language-config.js';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  mergeComposerConfigs,
+  parseComposerConfig,
+  type ComposerConfig,
+} from '../../language-config.js';
+import { readdirSync, readFileSync, type Dirent } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 
 export interface PhpResolveContext {
   readonly fromFile: string;
@@ -48,19 +52,18 @@ function namespaceDirectories(
 
   if (composerConfig === null) return [...directories];
 
-  const normalizedTarget = normalizePhpPath(targetRaw);
+  const normalizedTarget = normalizePhpPath(targetRaw).replace(/^\/+/, '');
   const mappings = [...composerConfig.psr4.entries()].sort((left, right) => {
     const lengthDifference = right[0].length - left[0].length;
     return lengthDifference !== 0 ? lengthDifference : left[0].localeCompare(right[0]);
   });
   for (const [namespacePrefix, directoryPrefix] of mappings) {
     const normalizedPrefix = normalizePhpPath(namespacePrefix);
-    if (
-      normalizedTarget !== normalizedPrefix &&
-      !normalizedTarget.startsWith(`${normalizedPrefix}/`)
-    ) {
-      continue;
-    }
+    const matchesNamespace =
+      normalizedPrefix === '' ||
+      normalizedTarget === normalizedPrefix ||
+      normalizedTarget.startsWith(`${normalizedPrefix}/`);
+    if (!matchesNamespace) continue;
 
     const remainder = normalizedTarget.slice(normalizedPrefix.length).replace(/^\//, '');
     const separator = remainder.lastIndexOf('/');
@@ -82,21 +85,11 @@ function parentDirectory(filePath: string): string {
 }
 
 function directoryAliases(filePath: string): string[] {
-  const normalizedPath = normalizePhpPath(filePath);
-  const separator = normalizedPath.lastIndexOf('/');
-  if (separator < 0) return [''];
-
-  const parent = normalizedPath.slice(0, separator);
-  const aliases = new Set([parent]);
-  const segments = parent.split('/').filter(Boolean);
-  for (let index = 0; index < segments.length; index++) {
-    aliases.add(segments.slice(index).join('/'));
-  }
-  return [...aliases];
+  return [parentDirectory(filePath)];
 }
 
 /**
- * Directory alias → the files under it, built once per pass.
+ * Exact repository-relative directory → the files under it, built once per pass.
  *
  * A scope-resolution pass shares one stable `parsedFiles` array across imports,
  * so the array identity is the memo key — see `perFileSet`.
@@ -302,42 +295,67 @@ const getPhpWorkspaceIndex = perFileSet((allFilePaths: ReadonlySet<string>): Php
 // ─── loadResolutionConfig ──────────────────────────────────────────────────
 
 /**
- * Load and parse `composer.json` from the repo root. Returns a
- * `ComposerConfig` object (PSR-4 namespace → directory mappings) or
- * `null` when no `composer.json` is present or it cannot be parsed.
+ * Load and parse repository and package-local `composer.json` manifests.
+ * Package mappings are rebased to repository-relative paths before merging.
  *
  * The result is threaded into each `resolvePhpImportInternal` call as
  * the `composerConfig` argument.
  */
 export function loadPhpComposerConfig(repoPath: string): ComposerConfig | null {
-  try {
-    const composerPath = join(repoPath, 'composer.json');
-    const raw = readFileSync(composerPath, 'utf8');
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== 'object' || parsed === null) return null;
+  const skipDirectories = new Set([
+    '.git',
+    '.gitnexus',
+    'node_modules',
+    'vendor',
+    'dist',
+    'build',
+    'coverage',
+  ]);
+  const pending = [repoPath];
+  const manifests: string[] = [];
+  let incomplete = false;
+  let visitedDirectories = 0;
 
-    const composer = parsed as Record<string, unknown>;
-    const autoload = composer['autoload'] as Record<string, unknown> | undefined;
-    if (autoload === undefined) return null;
-
-    const psr4Raw = (autoload['psr-4'] ?? {}) as Record<string, string | string[]>;
-    const psr4 = new Map<string, string>();
-
-    for (const [ns, dirs] of Object.entries(psr4Raw)) {
-      // namespace prefix ends with `\` — keep as-is; resolver strips it
-      const normalizedNs = ns.replace(/\\$/, '');
-      const dir = Array.isArray(dirs) ? dirs[0] : dirs;
-      if (typeof dir === 'string') {
-        // Normalize directory path (strip trailing slash)
-        const normalizedDir = dir.replace(/\/+$/, '');
-        psr4.set(normalizedNs, normalizedDir);
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    if (directory === undefined) break;
+    if (++visitedDirectories > 20_000) {
+      incomplete = true;
+      break;
+    }
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+        left.name.localeCompare(right.name),
+      );
+    } catch {
+      incomplete = true;
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name === 'composer.json') {
+        manifests.push(join(directory, entry.name));
+      } else if (entry.isDirectory() && !skipDirectories.has(entry.name)) {
+        pending.push(join(directory, entry.name));
       }
     }
-
-    return { psr4 };
-  } catch {
-    return null;
   }
+
+  const configs: ComposerConfig[] = [];
+  for (const manifest of manifests.sort()) {
+    try {
+      const baseDir = normalizePhpPath(relative(repoPath, dirname(manifest)));
+      const config = parseComposerConfig(JSON.parse(readFileSync(manifest, 'utf8')), baseDir);
+      if (config !== null) configs.push(config);
+    } catch {
+      incomplete = true;
+    }
+  }
+
+  const merged = mergeComposerConfigs(configs);
+  if (merged === null) return null;
+  if (incomplete) merged.hasUnmodeledAutoload = true;
+  return merged;
 }
 
 // ─── resolvePhpImportTarget ────────────────────────────────────────────────
@@ -434,11 +452,7 @@ export function resolvePhpImportTargetInternal(
     ...new Set(
       directories.flatMap((directory) => {
         const files = directoryIndex.get(normalizePhpPath(directory)) ?? [];
-        // A suffix alias can match directories under different roots (for
-        // example app/Models and vendor/pkg/app/Models). Picking either root
-        // would be a guess, so fail closed to the composer resolution instead.
-        const distinctParents = new Set(files.map((file) => parentDirectory(file.filePath)));
-        return distinctParents.size > 1 ? [] : files;
+        return files;
       }),
     ),
   ];

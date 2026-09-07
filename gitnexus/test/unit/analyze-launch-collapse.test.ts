@@ -149,6 +149,27 @@ describe('createLaunchAnalysisWorker — collapsed index is never published', ()
     });
   });
 
+  it('forwards the Spring Actuator snapshot path to the worker', () => {
+    const launch = createLaunchAnalysisWorker({
+      jobManager,
+      backend: { init: backendInit },
+      acquireRepoLock: () => null,
+      releaseRepoLock: () => {},
+      closeDbHandle,
+    });
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+
+    launch(job, REPO_PATH, { springActuatorPath: 'runtime/actuator' });
+
+    expect(child.send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        options: expect.objectContaining({
+          springActuatorPath: 'runtime/actuator',
+        }),
+      }),
+    );
+  });
+
   afterEach(() => {
     jobManager.dispose();
     vi.restoreAllMocks();

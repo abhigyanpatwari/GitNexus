@@ -23,7 +23,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 
-import { isHardcodedIgnoredDirectory } from '../../../../config/ignore-service.js';
+import { isHardcodedIgnoredDirectoryAtPath } from '../../../../config/ignore-service.js';
 import { logger } from '../../../logger.js';
 
 /** One `paths` entry, pattern and targets kept in declaration order. */
@@ -291,9 +291,9 @@ async function findTsconfigFiles(repoRoot: string): Promise<string[]> {
     }
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (isHardcodedIgnoredDirectory(entry.name)) continue;
-        if (depth < SCAN_MAX_DEPTH)
-          queue.push({ dir: path.join(dir, entry.name), depth: depth + 1 });
+        const childDir = path.join(dir, entry.name);
+        if (isHardcodedIgnoredDirectoryAtPath(repoRoot, childDir)) continue;
+        if (depth < SCAN_MAX_DEPTH) queue.push({ dir: childDir, depth: depth + 1 });
         continue;
       }
       if (!entry.isFile()) continue;
