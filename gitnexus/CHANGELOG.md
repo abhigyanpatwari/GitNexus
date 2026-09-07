@@ -4,34 +4,6 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-
-- **`branch` on `POST /api/analyze`** — `serve` can now index a branch other than the remote's
-  default. The field was previously accepted and silently discarded: the job returned 202 and
-  reported `complete` while indexing the default branch. It is validated with the same rules as
-  the CLI's `--branch`, and the branch is part of a job's dedup identity, so a request for a
-  second branch is no longer answered with the in-flight job for the first. A pinned request
-  also gets its own clone directory, so it neither trips over the working tree an earlier
-  analyze left dirty nor leaves its branch checked out for a later unpinned request to index as
-  the default. Omitting the field keeps the previous behavior.
-
-  **Behavior change:** `branch: null`, `branch: ""` and non-string values now return `400`.
-  They previously reached no validation at all and the request indexed the default branch, so a
-  client that sends the key unconditionally will start seeing errors instead of silently getting
-  the wrong branch.
-
-### Fixed
-
-- **`--branch` / `.gitnexusrc` `defaultBranch` now reject every ref shape `git check-ref-format`
-  rejects** — `feature.lock`, `/feature`, `feature/`, `feature//next`, `@`, `@{`, and components
-  starting with `.` or ending with `.` previously passed validation and failed later in the git
-  subprocess. No branch git can create is affected.
-- **A branch-pinned `serve` analyze no longer reports worker crashes on success** — the
-  finalization gate probed the flat `.gitnexus` slot even when the run wrote
-  `branches/<slug>/`, so it never settled; the worker's normal exit was then read as a crash and
-  a successful analysis was retried and failed. The gate now follows the placement the run
-  chose, and an exit after a terminal IPC message counts as the worker winding down.
-
 ## [1.6.11] - 2026-09-04
 
 ### Added
