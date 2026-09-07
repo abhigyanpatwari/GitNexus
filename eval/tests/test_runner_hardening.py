@@ -1005,7 +1005,7 @@ def test_progress_line_reports_the_numbers_a_real_run_measured():
 
 
 def test_review_artifact_is_mounted_as_a_writable_directory_outside_the_workspace(tmp_path):
-    """The regression that produced fifteen runs of empty evidence.
+    """A writable file inside a read-only directory is not a writable path.
 
     A writable FILE inside a read-only directory is not writable to anything
     that writes atomically. The Write tool creates `<target>.tmp.<n>.<hex>`
