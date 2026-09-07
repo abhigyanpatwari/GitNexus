@@ -309,6 +309,10 @@ def run_faithful(
 
     if window is None:
         window = max(workers * runner.PACKED_WINDOW_MULTIPLIER, workers)
+    if window < workers:
+        # Same rule sweep_packed_cells enforces. Without it a window below 1
+        # never lets the producer past its own gate and the run hangs.
+        raise ValueError("window must be at least workers, or the pool starves")
 
     cells = _flatten(plan)
     ready = [threading.Event() for _ in plan]
@@ -557,6 +561,14 @@ def main() -> int:
         help="per-task graph build; defaults to the measured per-SHA overhead, scaled",
     )
     args = parser.parse_args()
+    # Both are checked here rather than where they are used: a bad --scale
+    # divides by zero before anything runs, and a negative --graph-seconds
+    # kills the graph-builder thread, after which every scheduler waits on a
+    # readiness event nobody will ever set.
+    if args.scale <= 0:
+        parser.error("--scale must be positive")
+    if args.graph_seconds is not None and args.graph_seconds < 0:
+        parser.error("--graph-seconds must be non-negative")
     if args.graph_seconds is None:
         args.graph_seconds = SHA_OVERHEAD_SECONDS / args.scale
 

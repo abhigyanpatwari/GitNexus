@@ -5,6 +5,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ import yaml
 from typing import Any
 
 from workflow_bench import runner
+from workflow_bench.process_control import _CANCELLATION, cancellation_scope
 from workflow_bench.runner import (
     aggregate,
     broken_incumbent_arms,
@@ -592,6 +594,31 @@ def test_packed_sweep_skips_a_task_whose_assets_never_arrive():
     )
     assert set(ran) == {"t0", "t2"}
     assert "t1" not in ran
+
+
+def test_packed_sweep_workers_inherit_the_runs_cancellation_event():
+    """A worker that cannot see the event runs on after the sweep is cancelled.
+
+    The cells are submitted from a producer THREAD, and a new thread starts with
+    an empty context - so copying the context at submission copies the wrong one
+    unless the caller's is captured first. run_managed falls back to
+    _CANCELLATION when no event is passed, which is how a cell's subprocesses
+    learn the run was cancelled at all.
+    """
+
+    seen: list[threading.Event | None] = []
+    event = threading.Event()
+    with cancellation_scope(event):
+        runner.sweep_packed_cells(
+            _packed_cells(2, 1, ("review",)),
+            workers=2,
+            run=lambda *_: seen.append(_CANCELLATION.get()) or {"error_kind": None},
+            on_start=lambda *_: None,
+            on_record=lambda *_: None,
+            outage_streak=0,
+            outage_limit=0,
+        )
+    assert seen and all(observed is event for observed in seen)
 
 
 def test_packed_sweep_window_must_keep_the_pool_fed():

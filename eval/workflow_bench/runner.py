@@ -941,6 +941,12 @@ def sweep_packed_cells(
             results[index] = run(task_id, run_idx, arm)
 
         pool = ThreadPoolExecutor(max_workers=workers)
+        # cancellation_scope binds _CANCELLATION in the CALLING thread's
+        # context, and a new thread starts with an empty one - so the producer
+        # has to copy this context rather than its own, or every cell it
+        # submits loses the run's cancellation event. sweep_task_cells gets
+        # this for free by submitting from the thread that entered the scope.
+        caller_context = copy_context()
 
         def produce() -> None:
             nonlocal producing
@@ -961,7 +967,8 @@ def sweep_packed_cells(
                             gate.wait(timeout=0.5)
                         if halt.is_set() or cancel_event.is_set():
                             break
-                        submitted.append(pool.submit(copy_context().run, execute, index))
+                        worker_context = caller_context.run(copy_context)
+                        submitted.append(pool.submit(worker_context.run, execute, index))
                         gate.notify_all()
             finally:
                 with gate:
