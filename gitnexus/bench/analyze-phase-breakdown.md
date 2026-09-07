@@ -21,11 +21,28 @@ A "warm" run measured that way is a forced cold rebuild wearing a warm label. A
 37.7s figure was recorded that way during this work and was meaningless. On a
 real git repo an unchanged re-analyze short-circuits to `Already up to date`.
 
+**And the analyzer binary must not change between runs.** Rebuilding or
+re-copying `dist` changes the runner identity, and the tool then prints:
+
+> `analyzer runner identity changed ...; forcing a full rebuild so the index
+provenance matches the analyzer`
+
+Every run after a rebuild is a full rebuild. To measure the incremental path,
+run once to stamp the identity, then edit and run again **without touching
+`dist`**. An earlier revision of this document reported full-rebuild numbers as
+if they were incremental for exactly this reason; they are corrected below.
+
+That is three separate "silently fall back to full work" guards — non-git
+corpus, runner identity, and the escalation gate. Read the banner on every run
+before trusting a number.
+
 Corpus: this repository, `git archive` of HEAD into a scratch dir, then
 `git init && git add -A && git commit`. 5350 paths, 2234 parseable, ~30MB.
 16 workers, `dist` on a local overlay filesystem (see "Filesystem" below).
 Phase numbers come from the `✓ Phase: <name> (<ms>)` lines under
-`NODE_ENV=development`.
+`NODE_ENV=development`; the post-pipeline tail has no such lines and was
+measured by injecting timestamp marks into a disposable copy of the built
+`dist`.
 
 ---
 
@@ -44,23 +61,65 @@ Graph output identical throughout: 51,286 nodes / 163,092 edges / 2106 clusters
 
 ## Re-analyze after a one-file edit — the developer loop
 
-One file changed out of 5350, on a git repo. **36.5s total.**
+Leaf file (`cli/update-notice.ts`, 2 importers), stable runner identity, so the
+incremental path is genuinely taken. **31.7s total.**
 
-| phase                               |      ms | share |
-| ----------------------------------- | ------: | ----: |
-| scopeResolution                     |  14,717 |   40% |
-| unlogged — graph emit + FTS rebuild | ~18,000 |   49% |
-| parse                               |   2,832 |    8% |
-| all other phases                    |  ~1,200 |    3% |
+| step                                                  |       ms |   share |
+| ----------------------------------------------------- | -------: | ------: |
+| scopeResolution                                       |   ~13900 |     44% |
+| **FTS index rebuild** (`buildSearchIndexesOrDegrade`) | **7525** | **24%** |
+| graph write (`loadGraphToLbug`, subgraph)             |     3566 |     11% |
+| parse                                                 |    ~2800 |      9% |
+| `import('./platform/capabilities.js')`                |      845 |      3% |
+| everything else                                       |    ~3000 |      9% |
 
-The parse cache works: it replays 2231 of 2232 chunks. **Everything the parse
-work optimized is that 8%.** The other 92% is not incremental at all — the run
-banner says so directly: _"Rebuilt the graph and FTS while reusing cached
-parser output."_
+The incremental machinery works: the graph write was a 3,980-node subgraph, not
+the full 51,288. **Everything the #3194/#3196 parse work optimized is ~9% of
+this.**
 
-Note the ~18s sits **outside the phase runner**, so every `✓ Phase` line is
-blind to it. `phasesSum` and the log span agree exactly; the gap is wall-clock
-before the first phase and after the last.
+A FULL-rebuild run of the same repo is 36-39s, with the graph write at ~6.3s and
+FTS at ~9.7s. Do not quote those as edit-loop numbers.
+
+## FTS index rebuild — the largest non-resolution cost
+
+Per-index, measured on one leaf-file edit:
+
+```
+ 3531ms  File.file_fts        <- 35% of FTS on its own
+ 1558ms  Function.function_fts
+  535ms  Method     491ms  Const      466ms  Property
+  427ms  Interface  363ms  Class      280ms  TypeAlias
+  247ms  Struct     242ms  Variable   234ms  Enum     222ms  Trait   ...
+ ------
+10203ms across 20 indexes
+```
+
+Two findings.
+
+**`File.file_fts` dominates** because File nodes carry file content, so that one
+index re-tokenizes ~30MB of source. Changing one file re-tokenizes all of it.
+
+**20 indexes were rebuilt for a two-importer leaf edit.** `touchedFts` is meant
+to narrow this, and a separate run rebuilt only 8 — so the narrowing is at least
+inconsistent. It has a withdrawal path: `missingSearchFTSIndexTables` returns
+`undefined` when the index catalog cannot be read (`fts-indexes.ts:285`), and
+`tables: undefined` means rebuild everything. Pin that before optimizing, or the
+optimization targets a set that is not actually being narrowed.
+
+The code states the underlying constraint plainly: _"createSearchFTSIndexes
+re-tokenizes every stored row on every run."_ Indexes must be dropped for DML
+(#2589, #2841), and the only way back is a whole-table rebuild.
+
+Ranked next steps:
+
+1. **Take the FTS rebuild off the critical path.** Nothing in `analyze` reads
+   the index — only later searches do. Rebuild lazily on first search or in the
+   background after the swap. Removes the cost rather than shrinking it, and the
+   degraded-search state is already modelled (`ftsSkipReason`, "degrade rather
+   than throw").
+2. **Do not rebuild `File.file_fts` when no file content changed.**
+3. **Fix or delete the narrowing** — a gate that silently withdraws looks like
+   protection and is not.
 
 ## scopeResolution is memory-traffic bound, not algorithmic
 
@@ -120,7 +179,10 @@ run (73.0s vs 69.6s on overlay). Measure on a local filesystem.
 
 ## Open
 
-The ~18s of graph emit + FTS rebuild is **unprofiled**. It is the largest
-single share of the edit loop and nothing is known about it beyond the banner.
-Profile it before proposing anything — two optimizations in this document
-looked compelling until measured.
+The post-pipeline tail is now fully accounted (99.7%): FTS rebuild, the graph
+write, and a 0.8s dynamic `capabilities.js` import between them. What remains
+open is the FTS work above, and `scopeResolution` — still the single largest
+step, memory-traffic bound, and untouched.
+
+Every optimization in this document that looked compelling from the armchair
+died under measurement. Measure first, and check the banner.
