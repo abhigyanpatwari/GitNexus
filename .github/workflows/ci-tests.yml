@@ -587,6 +587,18 @@ jobs:
         run: node --import tsx bench/finalize-reexport/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Parse dispatch-round cadence guards (#3194, #3196)
+        if: ${{ !cancelled() }}
+        # Build-free: asserts parse-cache pack membership is unchanged
+        # (fingerprint — every cache key derives from it), that a fixed corpus
+        # still batches into a fixed number of dispatch rounds, and that the
+        # round budget counts UTF-8 bytes rather than UTF-16 code units. Round
+        # boundaries are deliberately invisible to graph output, so no test can
+        # see these regress. Rationale and history: see the header of
+        # bench/parse-dispatch-rounds/measure.mjs.
+        run: node --import tsx bench/parse-dispatch-rounds/measure.mjs --check
+        working-directory: gitnexus
+
       - name: C++ qualified-namespace resolution guards (#2788)
         if: ${{ !cancelled() }}
         # Build-free: asserts resolveCppQualifiedNamespaceMember resolves an
