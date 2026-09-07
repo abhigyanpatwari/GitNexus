@@ -396,7 +396,80 @@ def run_faithful(
     )
 
 
-SCHEDULERS = {"wave": run_wave, "fed": run_fed, "packed": run_packed, "faithful": run_faithful}
+def run_production_packed(
+    plan: list[list[Cell]],
+    workers: int,
+    *,
+    outage_limit: int,
+    graph_seconds: float,
+    cpu_fraction: float = 0.0,
+    burn_rate: float = 0.0,
+    window: int | None = None,
+) -> Outcome:
+    """Drive the REAL runner.sweep_packed_cells, not a prototype of it.
+
+    Same relationship run_wave has to sweep_task_cells: only the paid session is
+    stubbed. If this disagrees with the faithful prototype, the shipped function
+    is what is wrong.
+    """
+
+    cells = _flatten(plan)
+    by_key = {(f"t{c.task}", c.run, c.arm): c for c in cells}
+    order = {(f"t{c.task}", c.run, c.arm): i for i, c in enumerate(cells)}
+    ready = [threading.Event() for _ in plan]
+    stop = threading.Event()
+    _graph_builder(ready, graph_seconds, stop)
+
+    executed = 0
+    lock = threading.Lock()
+    folded: list[int] = []
+    tripped_at: int | None = None
+    streak_seen = {"streak": 0}
+
+    def run_cell(task_id: str, run_idx: int, arm: str) -> dict[str, Any]:
+        nonlocal executed
+        cell = by_key[(task_id, run_idx, arm)]
+        _execute_cell(cell, cpu_fraction, burn_rate)
+        with lock:
+            executed += 1
+        return _record(cell)
+
+    def on_record(task_id: str, run_idx: int, arm: str, rec: dict[str, Any]) -> None:
+        nonlocal tripped_at
+        index = order[(task_id, run_idx, arm)]
+        folded.append(index)
+        streak_seen["streak"] = runner.systemic_outage_streak(rec["error_kind"], streak_seen["streak"])
+        if outage_limit and streak_seen["streak"] >= outage_limit and tripped_at is None:
+            tripped_at = index
+
+    def await_ready(task_id: str) -> bool:
+        ready[int(task_id[1:])].wait()
+        return True
+
+    started = time.monotonic()
+    runner.sweep_packed_cells(
+        [(f"t{c.task}", c.run, c.arm) for c in cells],
+        workers=workers,
+        run=run_cell,
+        on_start=lambda *_: None,
+        on_record=on_record,
+        outage_streak=0,
+        outage_limit=outage_limit,
+        window=window,
+        await_ready=await_ready,
+    )
+    wall = time.monotonic() - started
+    stop.set()
+    return Outcome(wall_s=wall, executed=executed, tripped_at=tripped_at, folded=folded)
+
+
+SCHEDULERS = {
+    "wave": run_wave,
+    "fed": run_fed,
+    "packed": run_packed,
+    "faithful": run_faithful,
+    "production": run_production_packed,
+}
 
 
 def _plan_args(args: argparse.Namespace, weekly: bool, seed: int, fail_from: int | None = None):
@@ -421,7 +494,7 @@ def breaker_fidelity(args: argparse.Namespace) -> list[dict[str, Any]]:
         plan = build_plan(**kwargs)
         total = sum(len(c) for c in plan)
         row: dict[str, Any] = {"fail_from": fail_from, "limit": limit, "total_cells": total}
-        for name in ("wave", "faithful"):
+        for name in ("wave", "faithful", "production"):
             out = SCHEDULERS[name](
                 plan, args.workers, outage_limit=limit, graph_seconds=args.graph_seconds
             )
@@ -430,9 +503,11 @@ def breaker_fidelity(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "executed": out.executed,
                 "overrun": out.executed - (out.tripped_at + 1) if out.tripped_at is not None else None,
             }
-        row["same_trip_point"] = row["wave"]["tripped_at"] == row["faithful"]["tripped_at"]
+        row["same_trip_point"] = (
+            row["wave"]["tripped_at"] == row["faithful"]["tripped_at"] == row["production"]["tripped_at"]
+        )
         row["overrun_within_bound"] = (
-            row["faithful"]["overrun"] is not None and row["faithful"]["overrun"] <= args.workers - 1
+            row["production"]["overrun"] is not None and row["production"]["overrun"] <= args.workers
         )
         rows.append(row)
     return rows
@@ -472,7 +547,7 @@ def main() -> int:
                     for i in range(args.repeat)
                 ]
                 measured = {}
-                for name in ("wave", "faithful"):
+                for name in ("wave", "faithful", "production"):
                     fn = SCHEDULERS[name]
                     extra = {"window": 12} if name == "faithful" else {}
                     measured[name] = statistics.median(
