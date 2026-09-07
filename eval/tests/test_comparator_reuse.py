@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from workflow_bench import comparator_reuse
 from workflow_bench.comparator_reuse import (
     ComparatorReuseExpectation,
     TaskReuseBinding,
@@ -227,3 +228,29 @@ def test_a_changed_sandbox_dependency_is_not_the_same_baseline():
     ) is False
     # A row that predates the field is not evidence of agreement either.
     assert row_is_reusable_comparator(_row(sandbox_dependency_manifest_digest=None), _expected()) is False
+
+
+def test_reuse_directories_allow_a_symlinked_parent_but_not_a_symlinked_leaf(tmp_path: Path):
+    """Pins a deliberate difference from the sandbox's mount-root check.
+
+    proposer_sandbox refuses every symlink hop because a hop changes what an
+    untrusted session is handed. A reuse directory is data, and every file
+    inside it is validated on its own, so a symlinked parent is allowed -
+    rejecting it would break a symlinked artifacts directory or macOS's /var
+    for no gain. The leaf itself must still be a real directory.
+    """
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "inner").mkdir()
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real, target_is_directory=True)
+
+    # Reached through a symlinked parent: allowed, and resolved to the real path.
+    assert comparator_reuse._resolved_directory(
+        linked_parent / "inner", label="probe"
+    ) == (real / "inner").resolve()
+
+    # The leaf itself being a symlink is still refused.
+    with pytest.raises(SandboxError, match="must be a real directory"):
+        comparator_reuse._resolved_directory(linked_parent, label="probe")
