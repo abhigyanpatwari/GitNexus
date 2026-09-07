@@ -246,8 +246,8 @@ def materialize_reused_row(
 ) -> dict[str, Any]:
     """Copy digest-bound artifacts into this sweep's evidence dir and stamp reuse."""
 
-    source = _real_directory(source_dir, label="reuse source")
-    dest = _real_directory(dest_dir, label="reuse destination")
+    source = _resolved_directory(source_dir, label="reuse source")
+    dest = _resolved_directory(dest_dir, label="reuse destination")
     if source == dest:
         raise SandboxError("comparator reuse cannot read and write the same results directory")
 
@@ -332,7 +332,22 @@ def _transcript_metadata(metadata: Any) -> tuple[str, str, int]:
     return relative, digest, size
 
 
-def _real_directory(path: Path, *, label: str) -> Path:
+def _resolved_directory(path: Path, *, label: str) -> Path:
+    """An existing, non-symlink directory, resolved through its parents.
+
+    Deliberately weaker than proposer_sandbox's same-shaped helper, which
+    refuses every symlink hop in the path. That one guards a MOUNT ROOT, where
+    a hop changes what an untrusted session is handed. This one guards a DATA
+    directory whose contents are validated individually anyway - every file
+    read goes through ``_regular_file`` (lstat, symlinks rejected) and every
+    write through ``O_NOFOLLOW`` - so a symlinked parent grants nothing those
+    guards do not already cover, while refusing one would reject ordinary
+    setups such as a symlinked artifacts directory or macOS's /var.
+
+    Separately named because they make different promises. Do not merge them
+    without first deciding which promise the reuse path should make.
+    """
+
     resolved = path.expanduser()
     try:
         metadata = resolved.lstat()
