@@ -12,21 +12,19 @@ shape is preserved deliberately: the median cell is 826s against a 5400s
 ceiling, and that spread is the whole reason a barrier costs anything. Uniform
 random sleeps would erase the effect under test.
 
-Three schedulers run against an IDENTICAL seeded duration sequence:
+Schedulers, all consuming one identical seeded plan:
 
 ``wave``    the shipped ``sweep_task_cells`` - fixed waves of ``workers``, a
             barrier between them, one task at a time.
-``fed``     a continuously fed pool per task: a free worker takes the next cell
-            immediately instead of waiting for its wave to drain (H1).
-``packed``  one pool across every task, so a task's leftover capacity is filled
-            by the next task's cells (H2).
+``fed``     a continuously fed pool per task (H1). Naive: no breaker, no graph
+            gating. Present to price the barrier alone.
+``packed``  one pool across every task (H2). Naive, same caveat.
+``faithful``H2 carrying the invariants the shipped scheduler actually holds:
+            a global submission order, in-order folding, the outage breaker, and
+            per-task graph readiness gating. This is the one to believe.
 
-``fed`` and ``packed`` are measured here as prototypes, deliberately, before any
-production code is written - the point is to find out whether the idea is worth
-the invariants it would cost.
-
-    python3 -m workflow_bench.simulate_sweep --workers 3
     python3 -m workflow_bench.simulate_sweep --compare --repeat 5
+    python3 -m workflow_bench.simulate_sweep --breaker-fidelity
 """
 
 from __future__ import annotations
@@ -38,6 +36,7 @@ import statistics
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Any
 
 from . import runner
@@ -46,103 +45,345 @@ from .measure_evolution_cost import (
     DURATIONS_BY_ARM,
     REVIEW_ARMS,
     REVIEW_TASKS,
+    SHA_OVERHEAD_SECONDS,
     _read,
     expected_task_seconds,
     review_tasks,
 )
 
 DEFAULT_SCALE = 5000.0
-Cell = tuple[int, str, float]
+SYSTEMIC_KIND = "session-error"
+
+
+@dataclass(frozen=True)
+class Cell:
+    task: int
+    run: int
+    arm: str
+    seconds: float
+    systemic: bool = False
+
+
+@dataclass
+class Outcome:
+    wall_s: float
+    executed: int
+    tripped_at: int | None = None
+    folded: list[int] = field(default_factory=list)
 
 
 def build_plan(
-    *, task_count: int, runs: int, arms: tuple[str, ...], scale: float, seed: int
+    *,
+    task_count: int,
+    runs: int,
+    arms: tuple[str, ...],
+    scale: float,
+    seed: int,
+    fail_from: int | None = None,
 ) -> list[list[Cell]]:
-    """Per-task cells in submission order (run-major, arm-minor) with durations.
+    """Per-task cells in submission order, with durations drawn once.
 
-    Generated once and shared by every scheduler so a comparison cannot be an
-    artifact of one of them drawing luckier cells.
+    Shared by every scheduler so a comparison cannot be an artifact of one of
+    them drawing luckier cells. ``fail_from`` marks every cell at or after that
+    global index systemic, which is what the breaker-fidelity mode needs.
     """
 
     rng = random.Random(seed)
     plan: list[list[Cell]] = []
-    for _task in range(task_count):
+    index = 0
+    for task in range(task_count):
         cells: list[Cell] = []
         for run_idx in range(runs):
             for arm in arms:
                 sample = DURATIONS_BY_ARM[arm]
-                cells.append((run_idx, arm, sample[rng.randrange(len(sample))] / scale))
+                cells.append(
+                    Cell(
+                        task=task,
+                        run=run_idx,
+                        arm=arm,
+                        seconds=sample[rng.randrange(len(sample))] / scale,
+                        systemic=fail_from is not None and index >= fail_from,
+                    )
+                )
+                index += 1
         plan.append(cells)
     return plan
 
 
-def _record(run_idx: int, arm: str) -> dict[str, Any]:
+def _flatten(plan: list[list[Cell]]) -> list[Cell]:
+    return [cell for cells in plan for cell in cells]
+
+
+def _record(cell: Cell) -> dict[str, Any]:
+    kind = SYSTEMIC_KIND if cell.systemic else None
     return {
-        "run": run_idx,
-        "arm": arm,
-        "ok": True,
-        "resolved": True,
-        "error_kind": None,
-        "review_evidence_valid": True,
+        "run": cell.run,
+        "arm": cell.arm,
+        "ok": not cell.systemic,
+        "resolved": not cell.systemic,
+        "error_kind": kind,
+        "review_evidence_valid": not cell.systemic,
     }
 
 
-def run_wave(plan: list[list[Cell]], workers: int) -> float:
-    """The shipped scheduler, driven for real."""
+def _graph_builder(
+    ready: list[threading.Event], graph_seconds: float, stop: threading.Event
+) -> threading.Thread:
+    """One graph at a time, in task order - they are CPU and IO heavy."""
+
+    def build() -> None:
+        for event in ready:
+            if stop.is_set():
+                return
+            time.sleep(graph_seconds)
+            event.set()
+
+    thread = threading.Thread(target=build, name="graph-builder", daemon=True)
+    thread.start()
+    return thread
+
+
+def run_wave(plan: list[list[Cell]], workers: int, *, outage_limit: int, graph_seconds: float) -> Outcome:
+    """The shipped scheduler, driven for real, task after task."""
+
+    ready = [threading.Event() for _ in plan]
+    stop = threading.Event()
+    _graph_builder(ready, graph_seconds, stop)
+    executed = 0
+    lock = threading.Lock()
+    streak = 0
+    tripped_at: int | None = None
+    folded: list[int] = []
+    base = 0
 
     started = time.monotonic()
-    for cells in plan:
-        by_key = {(run_idx, arm): seconds for run_idx, arm, seconds in cells}
+    for task, cells in enumerate(plan):
+        ready[task].wait()
+        by_key = {(c.run, c.arm): c for c in cells}
 
         def fake_run(run_idx: int, arm: str) -> dict[str, Any]:
-            time.sleep(by_key[(run_idx, arm)])
-            return _record(run_idx, arm)
+            nonlocal executed
+            cell = by_key[(run_idx, arm)]
+            time.sleep(cell.seconds)
+            with lock:
+                executed += 1
+            return _record(cell)
 
-        _streak, tripped = runner.sweep_task_cells(
-            [(run_idx, arm) for run_idx, arm, _ in cells],
+        order = {(c.run, c.arm): base + i for i, c in enumerate(cells)}
+
+        def on_record(run_idx: int, arm: str, rec: dict[str, Any]) -> None:
+            # Mirror the breaker's own evaluation so the reported trip point is
+            # the cell that crossed the limit, not merely the last one folded -
+            # sweep_task_cells folds a whole wave before it evaluates.
+            nonlocal streak, tripped_at
+            index = order[(run_idx, arm)]
+            folded.append(index)
+            streak = runner.systemic_outage_streak(rec["error_kind"], streak)
+            if outage_limit and streak >= outage_limit and tripped_at is None:
+                tripped_at = index
+
+        streak, tripped = runner.sweep_task_cells(
+            [(c.run, c.arm) for c in cells],
             workers=workers,
             run=fake_run,
             on_start=lambda *_: None,
-            on_record=lambda *_: None,
-            outage_streak=0,
-            outage_limit=0,
+            on_record=on_record,
+            outage_streak=streak,
+            outage_limit=outage_limit,
         )
-        assert not tripped
-    return time.monotonic() - started
+        base += len(cells)
+        if tripped:
+            break
+    stop.set()
+    return Outcome(wall_s=time.monotonic() - started, executed=executed, tripped_at=tripped_at, folded=folded)
 
 
-def _drain(cells: list[Cell], workers: int) -> None:
-    lock = threading.Lock()
-    order: list[tuple[int, str]] = []
-
-    def work(cell: Cell) -> None:
-        run_idx, arm, seconds = cell
-        time.sleep(seconds)
-        with lock:
-            order.append((run_idx, arm))
-
+def _drain_naive(cells: list[Cell], workers: int) -> int:
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(work, cells))
+        list(pool.map(lambda c: time.sleep(c.seconds), cells))
+    return len(cells)
 
 
-def run_fed(plan: list[list[Cell]], workers: int) -> float:
-    """H1: continuously fed pool, still one task at a time."""
+def run_fed(plan: list[list[Cell]], workers: int, *, outage_limit: int, graph_seconds: float) -> Outcome:
+    """H1 without invariants: fed pool per task. Prices the barrier alone."""
 
     started = time.monotonic()
+    executed = 0
     for cells in plan:
-        _drain(cells, workers)
-    return time.monotonic() - started
+        time.sleep(graph_seconds)
+        executed += _drain_naive(cells, workers)
+    return Outcome(wall_s=time.monotonic() - started, executed=executed)
 
 
-def run_packed(plan: list[list[Cell]], workers: int) -> float:
-    """H2: one pool across every task."""
+def run_packed(plan: list[list[Cell]], workers: int, *, outage_limit: int, graph_seconds: float) -> Outcome:
+    """H2 without invariants. Upper bound, not a design."""
 
     started = time.monotonic()
-    _drain([cell for cells in plan for cell in cells], workers)
-    return time.monotonic() - started
+    time.sleep(graph_seconds)
+    executed = _drain_naive(_flatten(plan), workers)
+    return Outcome(wall_s=time.monotonic() - started, executed=executed)
 
 
-SCHEDULERS = {"wave": run_wave, "fed": run_fed, "packed": run_packed}
+def run_faithful(
+    plan: list[list[Cell]],
+    workers: int,
+    *,
+    outage_limit: int,
+    graph_seconds: float,
+    window: int | None = None,
+) -> Outcome:
+    """H2 carrying the invariants the shipped scheduler holds.
+
+    Global submission order is task-major, run-major, arm-minor - the same total
+    order the wave scheduler folds in, just continued across task boundaries. A
+    folder walks results in exactly that order, so "consecutive systemic
+    failures" keeps its meaning; the breaker trips on the same logical cell it
+    would have in waves. Cells already in flight when it trips are the overrun,
+    bounded by ``workers - 1`` exactly as the wave docstring promises.
+
+    A task's cells are not submitted until its graph is ready, which is what
+    makes this a schedule rather than a wish: the graph builder is serial, so
+    packing cannot outrun it.
+
+    ``window`` is the design question. Queue every cell at once and workers race
+    far ahead of the fold pointer, so a breaker trip has already paid for cells
+    nobody has looked at - measured at 5 against a bound of 2. Holding
+    submission to ``window`` cells beyond the fold point restores the wave's
+    ``workers - 1`` overrun bound while still packing across task boundaries.
+    Defaults to ``workers``, the smallest value that keeps every worker fed.
+    """
+
+    if window is None:
+        window = workers
+
+    cells = _flatten(plan)
+    ready = [threading.Event() for _ in plan]
+    stop = threading.Event()
+    _graph_builder(ready, graph_seconds, stop)
+
+    results: list[dict[str, Any] | None] = [None] * len(cells)
+    executed = 0
+    lock = threading.Lock()
+    halt = threading.Event()
+
+    def work(index: int) -> None:
+        nonlocal executed
+        if halt.is_set():
+            return
+        cell = cells[index]
+        time.sleep(cell.seconds)
+        with lock:
+            executed += 1
+            results[index] = _record(cell)
+
+    gate = threading.Condition()
+    fold_pointer = 0
+    futures: list[Any] = []
+    producer_done = threading.Event()
+
+    started = time.monotonic()
+    pool = ThreadPoolExecutor(max_workers=workers)
+
+    def produce() -> None:
+        submitted = 0
+        for task, task_cells in enumerate(plan):
+            ready[task].wait()
+            for _ in task_cells:
+                with gate:
+                    while submitted - fold_pointer >= window and not halt.is_set():
+                        gate.wait(timeout=0.5)
+                    if halt.is_set():
+                        producer_done.set()
+                        return
+                    futures.append(pool.submit(work, submitted))
+                    submitted += 1
+                    gate.notify_all()
+        producer_done.set()
+
+    producer = threading.Thread(target=produce, name="cell-producer", daemon=True)
+    producer.start()
+
+    streak = 0
+    tripped_at: int | None = None
+    folded: list[int] = []
+    try:
+        index = 0
+        while True:
+            with gate:
+                while index >= len(futures) and not producer_done.is_set():
+                    gate.wait(timeout=0.5)
+                if index >= len(futures):
+                    break
+                future = futures[index]
+            future.result()
+            record = results[index]
+            if record is not None:
+                folded.append(index)
+                streak = runner.systemic_outage_streak(record["error_kind"], streak)
+                if outage_limit and streak >= outage_limit:
+                    tripped_at = index
+                    halt.set()
+                    with gate:
+                        gate.notify_all()
+                    for pending in futures[index + 1 :]:
+                        pending.cancel()
+                    break
+            index += 1
+            with gate:
+                fold_pointer = index
+                gate.notify_all()
+    finally:
+        halt.set()
+        with gate:
+            gate.notify_all()
+        stop.set()
+        producer.join(timeout=5)
+        pool.shutdown(wait=True)
+    return Outcome(
+        wall_s=time.monotonic() - started, executed=executed, tripped_at=tripped_at, folded=folded
+    )
+
+
+SCHEDULERS = {"wave": run_wave, "fed": run_fed, "packed": run_packed, "faithful": run_faithful}
+
+
+def _plan_args(args: argparse.Namespace, weekly: bool, seed: int, fail_from: int | None = None):
+    arms = (CANDIDATE_ARM,) if weekly else REVIEW_ARMS
+    return {
+        "task_count": len(review_tasks(_read(REVIEW_TASKS))),
+        "runs": args.runs,
+        "arms": arms,
+        "scale": args.scale,
+        "seed": seed,
+        "fail_from": fail_from,
+    }, arms
+
+
+def breaker_fidelity(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """Does packing still trip where waves trip, and overrun no further?"""
+
+    rows: list[dict[str, Any]] = []
+    limit = runner.DEFAULT_OUTAGE_STREAK
+    for fail_from in (0, 4, 12):
+        kwargs, _arms = _plan_args(args, weekly=False, seed=args.seed, fail_from=fail_from)
+        plan = build_plan(**kwargs)
+        total = sum(len(c) for c in plan)
+        row: dict[str, Any] = {"fail_from": fail_from, "limit": limit, "total_cells": total}
+        for name in ("wave", "faithful"):
+            out = SCHEDULERS[name](
+                plan, args.workers, outage_limit=limit, graph_seconds=args.graph_seconds
+            )
+            row[name] = {
+                "tripped_at": out.tripped_at,
+                "executed": out.executed,
+                "overrun": out.executed - (out.tripped_at + 1) if out.tripped_at is not None else None,
+            }
+        row["same_trip_point"] = row["wave"]["tripped_at"] == row["faithful"]["tripped_at"]
+        row["overrun_within_bound"] = (
+            row["faithful"]["overrun"] is not None and row["faithful"]["overrun"] <= args.workers - 1
+        )
+        rows.append(row)
+    return rows
 
 
 def main() -> int:
@@ -153,26 +394,82 @@ def main() -> int:
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--scheduler", choices=sorted(SCHEDULERS), default="wave")
-    parser.add_argument("--compare", action="store_true", help="all schedulers, both profiles")
+    parser.add_argument("--compare", action="store_true")
+    parser.add_argument("--breaker-fidelity", action="store_true")
+    parser.add_argument("--window-sweep", action="store_true", help="wall clock vs breaker overrun")
+    parser.add_argument("--window", type=int, default=None)
+    parser.add_argument(
+        "--graph-seconds",
+        type=float,
+        default=None,
+        help="per-task graph build; defaults to the measured per-SHA overhead, scaled",
+    )
     args = parser.parse_args()
+    if args.graph_seconds is None:
+        args.graph_seconds = SHA_OVERHEAD_SECONDS / args.scale
 
-    task_count = len(review_tasks(_read(REVIEW_TASKS)))
+    if args.window_sweep:
+        total = len(review_tasks(_read(REVIEW_TASKS))) * args.runs * len(REVIEW_ARMS)
+        rows = []
+        for window in (args.workers, args.workers * 2, args.workers * 4, total):
+            kwargs, arms = _plan_args(args, weekly=False, seed=args.seed)
+            clean = [build_plan(**_plan_args(args, False, args.seed + i)[0]) for i in range(args.repeat)]
+            wall = statistics.median(
+                run_faithful(
+                    p, args.workers, outage_limit=0, graph_seconds=args.graph_seconds, window=window
+                ).wall_s
+                for p in clean
+            )
+            failing = build_plan(**_plan_args(args, weekly=False, seed=args.seed, fail_from=12)[0])
+            trip = run_faithful(
+                failing,
+                args.workers,
+                outage_limit=runner.DEFAULT_OUTAGE_STREAK,
+                graph_seconds=args.graph_seconds,
+                window=window,
+            )
+            rows.append(
+                {
+                    "window": window,
+                    "cold_wall_s": round(wall, 3),
+                    "tripped_at": trip.tripped_at,
+                    "executed": trip.executed,
+                    "overrun_cells": trip.executed - (trip.tripped_at + 1)
+                    if trip.tripped_at is not None
+                    else None,
+                }
+            )
+        print(json.dumps({"workers": args.workers, "rows": rows}, indent=2))
+        return 0
+
+    if args.breaker_fidelity:
+        print(
+            json.dumps(
+                {"workers": args.workers, "graph_seconds": round(args.graph_seconds, 4),
+                 "rows": breaker_fidelity(args)},
+                indent=2,
+            )
+        )
+        return 0
+
     names = sorted(SCHEDULERS) if args.compare else [args.scheduler]
     rows: list[dict[str, Any]] = []
     for label, weekly in (("weekly", True), ("cold", False)):
-        arms = (CANDIDATE_ARM,) if weekly else REVIEW_ARMS
-        plans = [
-            build_plan(
-                task_count=task_count, runs=args.runs, arms=arms, scale=args.scale, seed=args.seed + i
-            )
-            for i in range(args.repeat)
-        ]
-        serial = statistics.median(sum(c[2] for cells in p for c in cells) for p in plans)
-        predicted = task_count * expected_task_seconds(
-            args.runs, arms, args.workers, fed_pool=False
-        ) / args.scale
+        plans = []
+        for i in range(args.repeat):
+            kwargs, arms = _plan_args(args, weekly, args.seed + i)
+            plans.append(build_plan(**kwargs))
+        serial = statistics.median(sum(c.seconds for c in _flatten(p)) for p in plans)
+        predicted = (
+            len(plans[0])
+            * expected_task_seconds(args.runs, arms, args.workers, fed_pool=False)
+            / args.scale
+        )
         for name in names:
-            observed = statistics.median(SCHEDULERS[name](p, args.workers) for p in plans)
+            observed = statistics.median(
+                SCHEDULERS[name](p, args.workers, outage_limit=0, graph_seconds=args.graph_seconds).wall_s
+                for p in plans
+            )
             rows.append(
                 {
                     "profile": label,
@@ -182,7 +479,6 @@ def main() -> int:
                     "wave_model_s": round(predicted, 3),
                     "serial_s": round(serial, 3),
                     "speedup_vs_serial": round(serial / observed, 3) if observed else None,
-                    "cells": sum(len(cells) for cells in plans[0]),
                 }
             )
     print(json.dumps({"scale": args.scale, "repeat": args.repeat, "rows": rows}, indent=2))
