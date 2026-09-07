@@ -787,6 +787,17 @@ EXCLUDED_ERROR_KINDS = REUSE_EXCLUDED_ERROR_KINDS
 # an occasional handful of cells on an aborted sweep.
 PACKED_WINDOW_MULTIPLIER = 2
 
+# Health classification. These answer "did the harness work", which is a
+# different question from "did the agent get the right answer" - a review can be
+# wrong about a hard corpus while every process, mount and capture behaved.
+#
+# EXECUTION: the process or its tooling did not complete. Nothing was measured.
+# EVIDENCE:  it completed, but what it produced cannot be trusted or scored.
+# Everything else - including resolved=False and a zero score - is a VALID
+# NEGATIVE: an admissible measurement that the quality gate then judges.
+EXECUTION_FAILURE_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure", "cancelled"})
+EVIDENCE_FAILURE_KINDS = frozenset({"review-evidence-invalid", "evidence-unverified", "skill-not-invoked"})
+
 SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure", "review-evidence-invalid"})
 DEFAULT_OUTAGE_STREAK = 5
 
@@ -1466,6 +1477,26 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     out["cost_usd"] = (
         None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
     )
+    fresh = [r for r in records if not r.get("reused")]
+    out["fresh_attempts"] = len(fresh)
+    out["execution_failures"] = sum(1 for r in fresh if r.get("error_kind") in EXECUTION_FAILURE_KINDS)
+    out["evidence_failures"] = sum(
+        1
+        for r in fresh
+        if r.get("error_kind") in EVIDENCE_FAILURE_KINDS
+        or r.get("review_evidence_valid") is False
+        or r.get("transcript_missing") is True
+    )
+    # Admissible means the harness delivered a trustworthy measurement. It says
+    # nothing about whether the answer was right, which is the whole point.
+    out["admissible"] = out["fresh_attempts"] - out["execution_failures"] - out["evidence_failures"]
+    out["health_reasons"] = sorted(
+        {
+            str(r.get("error_kind"))
+            for r in fresh
+            if r.get("error_kind") in EXECUTION_FAILURE_KINDS or r.get("error_kind") in EVIDENCE_FAILURE_KINDS
+        }
+    )
     out["resolved"] = sum(1 for r in records if r["resolved"])
     # Reused rows are last generation's measurement. The health canary below has
     # to ask whether THIS environment worked, so it needs the freshly-run count.
@@ -1525,6 +1556,71 @@ def savings(baseline: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any
         else:
             out[metric] = round(100 * (base - arm) / base, 1) if base else 0.0
     return out
+
+
+@dataclass(frozen=True)
+class ArmHealth:
+    """What the harness observed for one arm this sweep, before any judgement."""
+
+    arm: str
+    fresh_attempts: int
+    admissible: int
+    execution_failures: int
+    evidence_failures: int
+    reasons: tuple[str, ...]
+
+    @property
+    def measured(self) -> bool:
+        """False when only reused rows exist - current health is UNKNOWN, not good."""
+
+        return self.fresh_attempts > 0
+
+    @property
+    def unhealthy(self) -> bool:
+        """Every fresh attempt failed to execute or to produce usable evidence.
+
+        Deliberately not "resolved zero tasks". A reviewer can be wrong about
+        every task in a hard corpus with the harness working perfectly; that is
+        a valid negative and belongs to the quality gate, not here.
+        """
+
+        return self.measured and self.admissible == 0 and (
+            self.execution_failures > 0 or self.evidence_failures > 0
+        )
+
+
+def arm_health(results: dict[str, dict[str, dict[str, Any]]], arms: set[str]) -> dict[str, ArmHealth]:
+    """Fold per-task aggregates into one health observation per arm."""
+
+    health: dict[str, ArmHealth] = {}
+    for arm in sorted(arms):
+        rows = [task_arms[arm] for task_arms in results.values() if arm in task_arms]
+        if not rows:
+            continue
+        reasons: set[str] = set()
+        for row in rows:
+            reasons.update(row.get("health_reasons") or ())
+        health[arm] = ArmHealth(
+            arm=arm,
+            fresh_attempts=sum(int(r.get("fresh_attempts", 0)) for r in rows),
+            admissible=sum(int(r.get("admissible", 0)) for r in rows),
+            execution_failures=sum(int(r.get("execution_failures", 0)) for r in rows),
+            evidence_failures=sum(int(r.get("evidence_failures", 0)) for r in rows),
+            reasons=tuple(sorted(reasons)),
+        )
+    return health
+
+
+def unhealthy_arms(results: dict[str, dict[str, dict[str, Any]]], arms: set[str]) -> list[ArmHealth]:
+    """Arms whose every fresh attempt failed to execute or to produce evidence."""
+
+    return [h for h in arm_health(results, arms).values() if h.unhealthy]
+
+
+def unmeasured_arms(results: dict[str, dict[str, dict[str, Any]]], arms: set[str]) -> list[str]:
+    """Arms with no fresh attempt at all - reported as unknown, never as healthy."""
+
+    return [h.arm for h in arm_health(results, arms).values() if not h.measured]
 
 
 def broken_incumbent_arms(
@@ -2457,18 +2553,34 @@ def _run_sweep(
         }
         (out_dir / "promotion.json").write_text(json.dumps(promotion, indent=2) + "\n")
     print(f"\n{report}\n\nWritten to {out_dir}/")
-    # A reviewer may legitimately match none of a difficult hidden corpus;
-    # unlike an implementation arm, zero exact resolutions is quality signal,
-    # not proof that the harness failed.
-    broken_incumbents = broken_incumbent_arms(results, set(CANDIDATE_ARMS.values()) - {"review"})
-    if broken_incumbents:
-        # Fail loudly rather than let a broken environment read as a quiet
-        # "no promotion, incumbent stands."
+    # Health is judged on whether fresh attempts EXECUTED and produced usable
+    # evidence - never on how many tasks they resolved. Review arms used to be
+    # excluded here because "resolved zero" is quality signal for a reviewer
+    # facing a hard corpus; with the inference corrected they are included
+    # again, which is what lets an all-artifacts-empty run be caught at all.
+    checked_arms = set(CANDIDATE_ARMS.values()) | {"review", "ce_review"}
+    unmeasured = unmeasured_arms(results, checked_arms)
+    if unmeasured:
         print(
-            f"[harness-health] incumbent arm(s) {', '.join(broken_incumbents)} resolved zero "
-            "tasks across every valid run — this looks like an environment/harness failure, "
-            "not a normal candidate miss. See the errors column in report.md and error_detail "
-            "in results.jsonl. Exiting non-zero rather than reporting a quiet no-promotion."
+            f"[harness-health] arm(s) {', '.join(sorted(unmeasured))} have no freshly-run cell "
+            "this sweep, so current execution health is UNKNOWN rather than good. Their rows "
+            "came from reuse; a paid cell per incumbent arm is what makes this measurable."
+        )
+    unhealthy = unhealthy_arms(results, checked_arms)
+    if unhealthy:
+        # Fail loudly rather than let a broken environment read as a quiet
+        # "no promotion, incumbent stands." A low score never reaches here.
+        detail = "; ".join(
+            f"{h.arm}: {h.execution_failures} execution / {h.evidence_failures} evidence "
+            f"failure(s) over {h.fresh_attempts} fresh attempt(s)"
+            f"{' — ' + ', '.join(h.reasons) if h.reasons else ''}"
+            for h in unhealthy
+        )
+        print(
+            f"[harness-health] {detail}. Every fresh attempt failed to execute or to produce "
+            "usable evidence, which is an environment/harness failure rather than a candidate "
+            "miss. See error_detail in results.jsonl. Exiting non-zero rather than reporting a "
+            "quiet no-promotion."
         )
         raise SystemExit(1)
     if outage_tripped:

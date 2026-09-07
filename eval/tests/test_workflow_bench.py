@@ -17,7 +17,10 @@ from workflow_bench import runner
 from workflow_bench.runner import (
     aggregate,
     GraphBuildEnv,
+    arm_health,
     broken_incumbent_arms,
+    unhealthy_arms,
+    unmeasured_arms,
     build_parser,
     infra_error_record,
     next_graph_prefetch_target,
@@ -73,6 +76,13 @@ def test_aggregate_takes_medians_and_counts_resolved():
         "resolved": 2,
         # None of these are reused, so every resolution was measured this sweep.
         "resolved_fresh": 2,
+        # Health is counted separately from resolution: all three executed and
+        # produced usable evidence, including the one that resolved nothing.
+        "fresh_attempts": 3,
+        "admissible": 3,
+        "execution_failures": 0,
+        "evidence_failures": 0,
+        "health_reasons": [],
         "runs": 3,
         "valid_runs": 3,
         "excluded_runs": 0,
@@ -758,3 +768,95 @@ def test_packed_sweep_window_must_keep_the_pool_fed():
             outage_limit=0,
             window=2,
         )
+
+
+def _cell(**overrides) -> dict[str, Any]:
+    """One results.jsonl row, healthy unless told otherwise."""
+
+    base = record(resolved=True)
+    base.update({"error_kind": None, "review_evidence_valid": True, "transcript_missing": False})
+    base.update(overrides)
+    return base
+
+
+def _arms(**by_arm) -> dict[str, dict[str, dict[str, Any]]]:
+    return {"task0": {arm: aggregate(rows) for arm, rows in by_arm.items()}}
+
+
+def test_a_reviewer_that_scores_badly_is_not_an_unhealthy_harness():
+    """Reconstructed from Actions run 33962002890's logged observations.
+
+    Every completed cell was resolved=False with error_kind=oracle-failed, at a
+    median score of 0.212 — the reviews ran, wrote artifacts and were scored.
+    That is a valid negative for the quality gate to judge. Diagnosing it as a
+    broken environment is the confusion this classification exists to end.
+    """
+
+    scored_but_wrong = [_cell(resolved=False, error_kind="oracle-failed") for _ in range(3)]
+    results = _arms(review=scored_but_wrong, ce_review=list(scored_but_wrong))
+    assert unhealthy_arms(results, {"review", "ce_review"}) == []
+    health = arm_health(results, {"review"})["review"]
+    assert health.admissible == 3 and health.fresh_attempts == 3
+    assert (health.execution_failures, health.evidence_failures) == (0, 0)
+
+
+def test_an_all_zero_score_is_still_a_valid_negative():
+    zeroed = [_cell(resolved=False, error_kind="oracle-failed", review_weighted_f1=0.0) for _ in range(3)]
+    assert unhealthy_arms(_arms(review=zeroed), {"review"}) == []
+
+
+def test_artifacts_that_were_never_written_are_an_unhealthy_harness():
+    """Reconstructed from Actions run 33912693948.
+
+    All 41 artifacts came back 0 bytes because the mount made an atomic write
+    impossible. The reviews could not produce evidence at all — the opposite of
+    the case above, and the one a health check must catch. The old caller
+    excluded review arms entirely, so it could not have.
+    """
+
+    unwritable = [_cell(resolved=False, ok=False, error_kind="review-evidence-invalid") for _ in range(3)]
+    flagged = unhealthy_arms(_arms(review=unwritable), {"review"})
+    assert [h.arm for h in flagged] == ["review"]
+    assert flagged[0].evidence_failures == 3
+    assert "review-evidence-invalid" in flagged[0].reasons
+
+
+def test_one_admissible_cell_keeps_an_arm_healthy():
+    """A mixed sweep is not a broken environment; the failures still surface."""
+
+    mixed = [
+        _cell(resolved=False, error_kind="oracle-failed"),
+        _cell(resolved=False, ok=False, error_kind="session-error"),
+        _cell(resolved=False, ok=False, error_kind="infra-error"),
+    ]
+    results = _arms(review=mixed)
+    assert unhealthy_arms(results, {"review"}) == []
+    health = arm_health(results, {"review"})["review"]
+    assert health.execution_failures == 2, "failures must stay visible, not be erased"
+    assert health.admissible == 1
+
+
+def test_reused_rows_alone_leave_current_health_unknown():
+    """Historical success cannot certify this sweep's environment."""
+
+    reused = [_cell(reused=True) for _ in range(3)]
+    results = _arms(review=reused)
+    assert unmeasured_arms(results, {"review"}) == ["review"]
+    assert unhealthy_arms(results, {"review"}) == []
+    assert arm_health(results, {"review"})["review"].measured is False
+
+
+def test_reused_successes_do_not_mask_fresh_execution_failures():
+    rows = [_cell(reused=True), _cell(reused=True), _cell(ok=False, error_kind="session-error")]
+    flagged = unhealthy_arms(_arms(review=rows), {"review"})
+    assert [h.arm for h in flagged] == ["review"]
+    assert flagged[0].fresh_attempts == 1 and flagged[0].execution_failures == 1
+
+
+def test_a_parseable_artifact_does_not_excuse_a_failed_session():
+    """Artifact parseability must not override an execution failure."""
+
+    rows = [_cell(ok=False, error_kind="session-error", review_evidence_valid=True) for _ in range(2)]
+    flagged = unhealthy_arms(_arms(review=rows), {"review"})
+    assert [h.arm for h in flagged] == ["review"]
+    assert flagged[0].execution_failures == 2
