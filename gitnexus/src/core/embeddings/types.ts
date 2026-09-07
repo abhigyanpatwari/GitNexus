@@ -174,14 +174,14 @@ export const CHUNKING_RULES: Readonly<Partial<Record<ChunkableLabel, ChunkingRul
     includePrefix: true,
     includeSuffix: false,
     groupFields: false,
-    structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_NONE,
   },
   [LABEL_CATEGORY]: {
     mode: CHUNK_MODE_AST_DECLARATION,
     includePrefix: true,
     includeSuffix: false,
     groupFields: true,
-    structuralTextMode: STRUCTURAL_TEXT_MODE_DECLARATION,
+    structuralTextMode: STRUCTURAL_TEXT_MODE_NONE,
   },
   [LABEL_STRUCT]: {
     mode: CHUNK_MODE_AST_DECLARATION,

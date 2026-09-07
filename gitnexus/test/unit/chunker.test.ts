@@ -354,6 +354,86 @@ describe('chunkNode', () => {
     },
   );
 
+  it('skips Objective-C parameterized interface arguments as declaration members', async () => {
+    const content = ['@interface Worker <Runnable>', '- (void)run;', '@end'].join('\n');
+    const nameStart = content.indexOf('Worker');
+    const argumentsStart = content.indexOf('<Runnable>');
+    const methodStart = content.indexOf('- (void)run;');
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode('identifier', nameStart, nameStart + 'Worker'.length),
+      makeFakeNode('parameterized_arguments', argumentsStart, argumentsStart + '<Runnable>'.length),
+      makeFakeNode('method_declaration', methodStart, methodStart + '- (void)run;'.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'ParameterizedWorker.m', 1, 3, 40, 0);
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ParameterizedWorker.m');
+    expect(result[0].text).toContain('- (void)run');
+  });
+
+  it('parses distinct Objective-C sources correctly through one cached parser', async () => {
+    const protocolMethods = [
+      '- (void)startWithConfiguration:(id)configuration;',
+      '- (void)stopWithCompletion:(id)completion;',
+      '- (void)reloadWithOptions:(id)options;',
+    ];
+    const categoryMethods = [
+      '- (void)traceStartWithConfiguration:(id)configuration;',
+      '- (void)traceStopWithCompletion:(id)completion;',
+      '- (void)traceReloadWithOptions:(id)options;',
+    ];
+    const protocolContent = ['@protocol Worker', ...protocolMethods, '@end'].join('\n');
+    const categoryContent = ['@interface Worker (Tracing)', ...categoryMethods, '@end'].join('\n');
+    const parser = {
+      parse: vi.fn((source: string) => {
+        if (source === protocolContent) {
+          return makeObjectiveCDeclarationTree(
+            'protocol_declaration',
+            protocolContent,
+            protocolMethods,
+          );
+        }
+        if (source === categoryContent) {
+          return makeObjectiveCDeclarationTree('class_interface', categoryContent, categoryMethods);
+        }
+        throw new Error(`Unexpected Objective-C source: ${source}`);
+      }),
+    };
+    createParserForLanguage.mockResolvedValue(parser);
+
+    const protocol = await chunkNode(
+      'Protocol',
+      protocolContent,
+      'CachedObjectiveC.m',
+      1,
+      5,
+      90,
+      0,
+    );
+    const category = await chunkNode(
+      'Category',
+      categoryContent,
+      'CachedObjectiveC.m',
+      1,
+      5,
+      90,
+      0,
+    );
+
+    expect(createParserForLanguage).toHaveBeenCalledTimes(1);
+    expect(protocol.map((chunk) => chunk.text).join('\n')).toContain(protocolMethods[2]);
+    expect(category.map((chunk) => chunk.text).join('\n')).toContain(categoryMethods[2]);
+    expect(parser.parse.mock.calls.map(([source]) => source)).toEqual([
+      protocolContent,
+      categoryContent,
+    ]);
+  });
+
   it('expands Objective-C protocol optional and required sections', async () => {
     const content = [
       '@protocol P',
@@ -437,7 +517,11 @@ describe('chunkNode', () => {
       ],
     );
     const declaration = makeFakeNode('class_interface', 0, content.length, [
-      makeFakeNode('identifier', content.indexOf('Worker'), content.indexOf('Worker') + 'Worker'.length),
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
       instanceVariables,
       makeFakeNode('method_declaration', methodStart, methodStart + method.length),
     ]);
@@ -454,9 +538,9 @@ describe('chunkNode', () => {
     expect(combined).toContain(firstIvar);
     expect(combined).toContain(secondIvar);
     expect(combined).toContain(method);
-    expect(result.some((chunk) => chunk.text.includes(firstIvar) && chunk.text.includes(secondIvar))).toBe(
-      true,
-    );
+    expect(
+      result.some((chunk) => chunk.text.includes(firstIvar) && chunk.text.includes(secondIvar)),
+    ).toBe(true);
   });
 
   it('keeps Objective-C protocol inheritance in the declaration prefix', async () => {

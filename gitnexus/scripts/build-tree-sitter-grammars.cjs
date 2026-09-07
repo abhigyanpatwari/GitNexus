@@ -26,7 +26,7 @@
  *
  * Opt-out: GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1 (strict '1') skips the OPTIONAL
  * grammars only. tree-sitter-c and tree-sitter-objc are REQUIRED (C backstops upstream's 4/6 ARM
- * prebuild gap, #2116) and is always built.
+ * prebuild gap, #2116) and are always built.
  *
  * Usage:
  *   node build-tree-sitter-grammars.cjs            # all grammars (postinstall)

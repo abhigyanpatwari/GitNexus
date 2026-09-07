@@ -1,7 +1,7 @@
-<!-- version: 1.14.0 -->
-<!-- Last updated: 2026-07-16 -->
+<!-- version: 1.15.0 -->
+<!-- Last updated: 2026-09-07 -->
 
-Last reviewed: 2026-07-16
+Last reviewed: 2026-09-07
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -91,6 +91,7 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-09-07 | 1.15.0 | Added the Objective-C provider guide as the required reference before changing Objective-C parsing or resolution. |
 | 2026-07-20 | 1.14.0 | `gitnexus-review` gains a coordinated swarm: six `ci-personas/` lanes the CI review agent dispatches as subagents (via the `Agent` tool), with a bounded critic gate and sidechain-excluded evidence. |
 | 2026-07-16 | 1.13.0 | `gitnexus-plan` asks plan depth up front (quick/standard/deep) in interactive runs; `gitnexus-lfg` gate slimmed to proceed/stop (Deepen stays as the route-back mechanism). |
 | 2026-07-16 | 1.12.0 | Renamed `gitnexus-pr-review` to `gitnexus-review`; added PR URL/number, branch/range, and local-change targets plus install migration (setup warns on a legacy `gitnexus-pr-review` dir and leaves it in place; uninstall removes it). |

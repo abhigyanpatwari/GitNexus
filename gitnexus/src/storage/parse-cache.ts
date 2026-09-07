@@ -742,7 +742,11 @@ import { copyV8CacheIfPresent, tryLoadV8Cache, writeV8CacheFile } from './v8-sid
 // alone as Objective-C syntax. A warm v94 cache can replay Objective-C worker
 // output for a C++ header during `--force`, even though the current classifier
 // routes that same header through the C++ provider.
-const SCHEMA_BUMP = 95;
+// v96: Objective-C macro-marker preprocessing recognizes all C preprocessing
+// whitespace before a directive or bare marker. A warm v95 cache can retain
+// error-recovered facts for sources that begin those lines with form feed or
+// vertical tab.
+const SCHEMA_BUMP = 96;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

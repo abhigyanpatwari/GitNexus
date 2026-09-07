@@ -112,4 +112,25 @@ describe('native parser availability — unavailable language is skipped, not cr
 
     expect(result.usedWorkerPool).toBe(true);
   });
+
+  it('skips a content-classified Objective-C header when only its parser is unavailable', async () => {
+    cap = _captureLogger();
+    vi.mocked(parserLoader.isLanguageAvailable).mockImplementation(
+      (language) => language !== SupportedLanguages.ObjectiveC,
+    );
+
+    const result = await runWithObjectiveCHeader();
+
+    expect(result.usedWorkerPool).toBe(false);
+    expect(
+      cap
+        .records()
+        .some(
+          (record) =>
+            typeof record.msg === 'string' &&
+            record.msg.includes('Skipping 1 objective-c file(s)') &&
+            record.msg.includes('objective-c parser not available'),
+        ),
+    ).toBe(true);
+  });
 });

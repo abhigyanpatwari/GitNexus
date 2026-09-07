@@ -640,6 +640,119 @@ describe('Objective-C provider integration', () => {
       fs.rmSync(categoryRepo, { recursive: true, force: true });
     }
   });
+
+  it('keeps category selector collisions as candidate evidence instead of certain calls', async () => {
+    const collisionRepo = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'gitnexus-objc-category-collision-'),
+    );
+    try {
+      fs.writeFileSync(
+        path.join(collisionRepo, 'Collision.m'),
+        `@interface CollisionWorker
+- (void)run;
+- (void)refresh;
+@end
+
+@interface CollisionWorker (Tracing)
+- (void)refresh;
+- (void)categoryOnly;
+@end
+
+@interface CollisionWorker (Metrics)
+- (void)refresh;
+@end
+
+@implementation CollisionWorker
+- (void)run {
+  [self refresh];
+  CollisionWorker *worker = self;
+  [worker refresh];
+  [self categoryOnly];
+}
+- (void)refresh {}
+@end
+
+@implementation CollisionWorker (Tracing)
+- (void)refresh {}
+- (void)categoryOnly {}
+@end
+
+@implementation CollisionWorker (Metrics)
+- (void)refresh {}
+@end
+`,
+      );
+
+      const collisionResult = await runPipelineFromRepo(collisionRepo, () => undefined, {
+        workerPoolSize: 1,
+      });
+      const node = (qualifiedName: string): GraphNode => {
+        const found = collisionResult.graph.nodes.find(
+          (item) => item.properties.qualifiedName === qualifiedName,
+        );
+        if (found === undefined)
+          throw new Error(`Missing category collision node ${qualifiedName}`);
+        return found;
+      };
+      const caller = node('objc:method:objc:class:CollisionWorker:-:run');
+      const collisionTargets = [
+        node('objc:method:objc:class:CollisionWorker:-:refresh'),
+        node('objc:method:objc:category:CollisionWorker:Tracing:-:refresh'),
+        node('objc:method:objc:category:CollisionWorker:Metrics:-:refresh'),
+      ];
+      const categoryOnly = node('objc:method:objc:category:CollisionWorker:Tracing:-:categoryOnly');
+      const collisionTargetIds = new Set(collisionTargets.map((target) => target.id));
+      const certainCollisionCalls = collisionResult.graph.relationships.filter(
+        (relationship) =>
+          relationship.type === 'CALLS' &&
+          relationship.sourceId === caller.id &&
+          collisionTargetIds.has(relationship.targetId),
+      );
+
+      expect(certainCollisionCalls).toHaveLength(0);
+
+      const evidenceNodes = collisionResult.graph.nodes.filter(
+        (item) =>
+          item.label === 'CodeElement' &&
+          String(item.properties.qualifiedName).startsWith('objc:category-dispatch-candidates:'),
+      );
+      expect(evidenceNodes).toHaveLength(2);
+
+      for (const evidence of evidenceNodes) {
+        expect(
+          collisionResult.graph.relationships.some(
+            (relationship) =>
+              relationship.type === 'USES' &&
+              relationship.sourceId === caller.id &&
+              relationship.targetId === evidence.id &&
+              relationship.confidence === 0.7,
+          ),
+        ).toBe(true);
+        for (const target of collisionTargets) {
+          expect(
+            collisionResult.graph.relationships.some(
+              (relationship) =>
+                relationship.type === 'USES' &&
+                relationship.sourceId === evidence.id &&
+                relationship.targetId === target.id &&
+                relationship.confidence === 0.5,
+            ),
+          ).toBe(true);
+        }
+      }
+
+      const categoryOnlyCalls = collisionResult.graph.relationships.filter(
+        (relationship) =>
+          relationship.type === 'CALLS' &&
+          relationship.sourceId === caller.id &&
+          relationship.targetId === categoryOnly.id,
+      );
+      expect(categoryOnlyCalls).toHaveLength(1);
+      expect(categoryOnlyCalls[0]?.confidence).toBe(0.9);
+    } finally {
+      fs.rmSync(collisionRepo, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Objective-C provider persisted index behavior', () => {

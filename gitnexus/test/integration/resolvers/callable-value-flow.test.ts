@@ -16,6 +16,8 @@ import {
   pruneAndSaveDurableParsedFileStore,
 } from '../../../src/storage/parsedfile-store.js';
 
+type CallableFlowCoverage = 'matrix' | 'dedicated' | 'not-applicable';
+
 const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.JavaScript]: 'matrix',
   [SupportedLanguages.TypeScript]: 'dedicated',
@@ -34,8 +36,10 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.Vue]: 'matrix',
   [SupportedLanguages.Cobol]: 'matrix',
   [SupportedLanguages.Zig]: 'matrix',
-  [SupportedLanguages.ObjectiveC]: 'dedicated',
-} as const satisfies Record<SupportedLanguages, 'matrix' | 'dedicated'>;
+  // Objective-C message sends are resolved by its ScopeResolver. The provider
+  // does not emit callable-value-flow captures in this MVP.
+  [SupportedLanguages.ObjectiveC]: 'not-applicable',
+} as const satisfies Record<SupportedLanguages, CallableFlowCoverage>;
 
 const PROVIDER_FLOW_CASES = [
   {
@@ -338,6 +342,13 @@ describe('callable value flow', () => {
     expect(Object.keys(CALLABLE_FLOW_PROVIDER_COVERAGE).sort()).toEqual(
       Object.keys(providers).sort(),
     );
+  });
+
+  it('does not overstate Objective-C callable-value-flow coverage', () => {
+    expect(CALLABLE_FLOW_PROVIDER_COVERAGE[SupportedLanguages.ObjectiveC]).toBe('not-applicable');
+    expect(
+      PROVIDER_FLOW_CASES.some(({ language }) => language === SupportedLanguages.ObjectiveC),
+    ).toBe(false);
   });
 
   it.each(PROVIDER_FLOW_CASES)(

@@ -262,12 +262,14 @@ describe('PARSE_CACHE_VERSION', () => {
   // parse-time fact a warm cache from an earlier head would replay without.
   // Moved 94 -> 95 for #3179: Objective-C framework-import-only header
   // classification changed parse-worker output for the same file content.
-  it('pins SCHEMA_BUMP to 95 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179)', () => {
-    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(95);
+  // Moved 95 -> 96 for #3179: Objective-C macro-marker preprocessing now
+  // recognizes form feed and vertical tab as C preprocessing whitespace.
+  it('pins SCHEMA_BUMP to 96 so concurrent bumps cannot silently collide (#2766, #3015, #3088, #2885, #3128, #2865, #3130, #1432, #3161, #3179)', () => {
+    expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).toBe(96);
     expect(PARSE_CACHE_BUCKET_COUNT).toBe(128);
     for (const taken of [
       59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81,
-      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94,
+      82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95,
     ]) {
       expect(Number(PARSE_CACHE_VERSION.split('+', 1)[0])).not.toBe(taken);
     }

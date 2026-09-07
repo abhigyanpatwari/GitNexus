@@ -37,4 +37,29 @@ describe('Objective-C parser-loader failure path', () => {
       /Objective-C parsing disabled[\s\S]*tree-sitter-objc[\s\S]*synthetic missing objc grammar/,
     );
   });
+
+  it('keeps explicit Objective-C headers out of the C++ fallback when the grammar is unavailable', async () => {
+    vi.doMock('../../src/core/tree-sitter/vendored-grammars.js', () => ({
+      requireVendoredGrammar: (name: string) => {
+        if (name === 'tree-sitter-objc') throw new Error('synthetic missing objc grammar');
+        return {};
+      },
+    }));
+
+    const { classifyObjectiveCFileContent } =
+      await import('../../src/core/ingestion/languages/objective-c.js');
+
+    expect(
+      classifyObjectiveCFileContent('ObjectiveC.h', '@interface ObjectiveC : NSObject\n@end\n'),
+    ).toBe(true);
+    expect(classifyObjectiveCFileContent('PlainCpp.h', 'class Widget { int value; };\n')).toBe(
+      false,
+    );
+    expect(
+      classifyObjectiveCFileContent(
+        'Comment.h',
+        '// @interface Comment : NSObject\nconst char *x = "@protocol";\n',
+      ),
+    ).toBe(false);
+  });
 });

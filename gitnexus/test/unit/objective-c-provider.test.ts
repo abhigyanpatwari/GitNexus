@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import path from 'path';
 import Parser from 'tree-sitter';
 import {
   getLanguageFromFilename,
@@ -85,6 +86,40 @@ function parseSource(source: string) {
   return parser.parse(source);
 }
 
+function legacyResolveObjectiveCImportTarget(
+  targetRaw: string,
+  fromFile: string,
+  allFilePaths: ReadonlySet<string>,
+): string | null {
+  const target = targetRaw.trim();
+  if (target.length === 0 || (target.startsWith('<') && target.endsWith('>'))) return null;
+  if (!(target.startsWith('.') || target.includes('/') || path.posix.extname(target).length > 0)) {
+    return null;
+  }
+  const normalize = (value: string) => value.replaceAll('\\', '/').replace(/^\.\//, '');
+  const normalizedTarget = normalize(target);
+  const fromDir = normalize(path.posix.dirname(normalize(fromFile)));
+  const candidates = new Set<string>([
+    normalize(path.posix.join(fromDir, normalizedTarget)),
+    normalizedTarget,
+  ]);
+  if (path.posix.extname(normalizedTarget).length === 0) {
+    for (const candidate of [...candidates]) {
+      candidates.add(`${candidate}.h`);
+      candidates.add(`${candidate}.m`);
+      candidates.add(`${candidate}.mm`);
+    }
+  }
+  for (const candidate of candidates) {
+    if (allFilePaths.has(candidate)) return candidate;
+  }
+  const suffixes = [...candidates].map((candidate) => `/${candidate}`);
+  for (const filePath of allFilePaths) {
+    if (suffixes.some((suffix) => normalize(filePath).endsWith(suffix))) return filePath;
+  }
+  return null;
+}
+
 describe('Objective-C provider', () => {
   it('loads the vendored grammar and maps unambiguous Objective-C extensions', () => {
     expect(isLanguageAvailable(SupportedLanguages.ObjectiveC)).toBe(true);
@@ -119,6 +154,34 @@ describe('Objective-C provider', () => {
       false,
     );
     expect(classifyObjectiveCFileContent('forward.h', '@class Widget;\n')).toBe(true);
+  });
+
+  it('preserves local Objective-C import resolution while indexing suffixes', () => {
+    const allFilePaths = new Set([
+      'Vendor/Widget.h',
+      'Headers/Widget.h',
+      'Sources/Local.h',
+      'Shared/Widget.m',
+      'Shared/Widget.mm',
+      'Nested/Shared/Widget.h',
+      'Windows\\Path\\Win.h',
+      'Sources/main.m',
+    ]);
+    const cases = [
+      ['Widget.h', 'Sources/main.m'],
+      ['./Local.h', 'Sources/main.m'],
+      ['../Shared/Widget', 'Sources/Sub/child.m'],
+      ['Widget', 'Sources/main.m'],
+      ['Windows/Path/Win.h', 'Sources/main.m'],
+      ['Missing.h', 'Sources/main.m'],
+      ['<Foundation/Foundation.h>', 'Sources/main.m'],
+    ] as const;
+
+    for (const [target, fromFile] of cases) {
+      expect(objectiveCScopeResolver.resolveImportTarget(target, fromFile, allFilePaths)).toBe(
+        legacyResolveObjectiveCImportTarget(target, fromFile, allFilePaths),
+      );
+    }
   });
 
   it('extracts nested C function declarators without claiming function pointers', () => {

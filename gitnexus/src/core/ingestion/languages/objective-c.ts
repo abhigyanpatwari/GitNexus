@@ -53,6 +53,15 @@ const OBJECTIVE_C_HEADER_NODE_TYPES = new Set([
   'protocol_declaration',
 ]);
 
+const OBJECTIVE_C_HEADER_DIRECTIVES = [
+  '@class',
+  '@compatibility_alias',
+  '@import',
+  '@implementation',
+  '@interface',
+  '@protocol',
+];
+
 function hasObjectiveCHeaderSyntax(sourceText: string): boolean {
   try {
     const tree = parseObjectiveCSource(sourceText);
@@ -67,9 +76,84 @@ function hasObjectiveCHeaderSyntax(sourceText: string): boolean {
       }
     }
   } catch {
-    // The regular parser availability path reports the actionable grammar error.
+    // Keep unambiguous Objective-C headers on the normal unavailable-parser path.
+    return hasObjectiveCHeaderDirective(sourceText);
   }
   return false;
+}
+
+function hasObjectiveCHeaderDirective(sourceText: string): boolean {
+  let index = 0;
+  let state: 'code' | 'line-comment' | 'block-comment' | 'single-quote' | 'double-quote' = 'code';
+
+  while (index < sourceText.length) {
+    const current = sourceText[index];
+    const next = sourceText[index + 1];
+
+    if (state === 'line-comment') {
+      if (current === '\n' || current === '\r') state = 'code';
+      index++;
+      continue;
+    }
+    if (state === 'block-comment') {
+      if (current === '*' && next === '/') {
+        state = 'code';
+        index += 2;
+      } else {
+        index++;
+      }
+      continue;
+    }
+    if (state === 'single-quote' || state === 'double-quote') {
+      if (current === '\\') {
+        index += 2;
+      } else if (
+        (state === 'single-quote' && current === "'") ||
+        (state === 'double-quote' && current === '"')
+      ) {
+        state = 'code';
+        index++;
+      } else {
+        index++;
+      }
+      continue;
+    }
+
+    if (current === '/' && next === '/') {
+      state = 'line-comment';
+      index += 2;
+      continue;
+    }
+    if (current === '/' && next === '*') {
+      state = 'block-comment';
+      index += 2;
+      continue;
+    }
+    if (current === "'") {
+      state = 'single-quote';
+      index++;
+      continue;
+    }
+    if (current === '"') {
+      state = 'double-quote';
+      index++;
+      continue;
+    }
+    if (current === '@') {
+      const directive = OBJECTIVE_C_HEADER_DIRECTIVES.find((candidate) =>
+        sourceText.startsWith(candidate, index),
+      );
+      if (directive !== undefined && !isIdentifierCharacter(sourceText[index + directive.length])) {
+        return true;
+      }
+    }
+    index++;
+  }
+  return false;
+}
+
+function isIdentifierCharacter(character: string | undefined): boolean {
+  return character !== undefined && /[A-Za-z0-9_]/.test(character);
 }
 
 export function classifyObjectiveCFileContent(filePath: string, sourceText: string): boolean {

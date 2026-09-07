@@ -150,7 +150,11 @@ const DECLARATION_BODY_NODE_TYPES = new Set([
 
 const DIRECT_MEMBER_DECLARATION_TYPES = new Set(['protocol_declaration', 'class_interface']);
 
-const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set(['identifier', 'protocol_reference_list']);
+const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set([
+  'identifier',
+  'parameterized_arguments',
+  'protocol_reference_list',
+]);
 
 const FIELD_LIKE_MEMBER_TYPES = new Set([
   'field_definition',

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { classifyContentLanguages } from '../../src/core/ingestion/content-language-classification.js';
+import { getLanguageForFileContent } from '../../src/core/ingestion/languages/index.js';
 
 describe('content language classification', () => {
   let repoDir = '';
@@ -35,5 +36,14 @@ describe('content language classification', () => {
     ]);
     expect(classifications.has('missing.h')).toBe(false);
     expect(classifications.get('ObjectiveC.h')).not.toContain('@interface');
+  });
+
+  it('keeps TypeScript module extensions in the provider fallback map', () => {
+    expect(getLanguageForFileContent('service.mts', 'export class EsmService {}')).toBe(
+      SupportedLanguages.TypeScript,
+    );
+    expect(getLanguageForFileContent('service.cts', 'export class CjsService {}')).toBe(
+      SupportedLanguages.TypeScript,
+    );
   });
 });

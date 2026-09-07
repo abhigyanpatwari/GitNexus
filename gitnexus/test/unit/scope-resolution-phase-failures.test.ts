@@ -130,7 +130,7 @@ describe('scopeResolutionPhase failure reconciliation', () => {
       pipelineStart: Date.now(),
     };
     const structure: StructureOutput = {
-      scannedFiles: [{ path: 'ObjectiveC.h', size: 37 }],
+      scannedFiles: [{ path: 'ObjectiveC.h', size: 38 }],
       allPaths: ['ObjectiveC.h'],
       allPathSet: new Set(['ObjectiveC.h']),
       totalFiles: 1,

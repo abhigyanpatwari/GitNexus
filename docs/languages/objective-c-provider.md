@@ -46,12 +46,13 @@ For example, `-loadData:completion:` and `+loadData:completion:` are different s
 
 Resolution must be conservative. A missing or dynamic target is evidence of uncertainty, not proof that no target exists.
 
-| Receiver case | Required result |
-| --- | --- |
-| Explicit class name, `self`, or `super` | Resolve when the owner is statically known. |
-| Local, parameter, property, or ivar with known static type | Resolve to matching owner and selector. |
-| Protocol-typed receiver | Link the protocol method and identify possible implementations as candidates. |
-| `id`, `Class`, macros, reflection, `performSelector:`, `NSInvocation`, runtime injection, or unknown type | Store selector/location with `resolution=unresolved`; do not emit a certain call edge. |
+| Receiver case                                                                                             | Required result                                                                                                        |
+| --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Explicit class name, `self`, or `super`                                                                   | Resolve when the owner is statically known.                                                                            |
+| Local, parameter, property, or ivar with known static type                                                | Resolve to matching owner and selector.                                                                                |
+| Protocol-typed receiver                                                                                   | Link the protocol method and identify possible implementations as candidates.                                          |
+| Multiple host-class/category implementations of one selector                                              | Record all static candidates as evidence; do not emit a certain call edge because runtime image-load order is unknown. |
+| `id`, `Class`, macros, reflection, `performSelector:`, `NSInvocation`, runtime injection, or unknown type | Store selector/location with `resolution=unresolved`; do not emit a certain call edge.                                 |
 
 The provider should first collect file-local declarations, imports, and types, then resolve across the repository. It must use structured Tree-sitter captures or AST traversal, not regular expressions over source text. Multi-part selectors, block arguments, nullability annotations, generics, macros, and multiline declarations make a regex-only extractor unsafe.
 
@@ -104,4 +105,5 @@ Known limits of this MVP:
 
 - The first version does not perform full Objective-C runtime dispatch, swizzling, dynamic selector construction, macro expansion, or `id` flow inference. Bare file-scope marker macros are elided only to preserve parser recovery; their expansion semantics are not interpreted.
 - Protocol receiver handling records the protocol method and candidate implementation evidence, but candidate implementations are not emitted as certain call edges.
+- When a host class and one or more named categories define the same selector, the provider records candidate evidence rather than choosing a runtime winner or emitting multiple certain call edges.
 - Objective-C++ `.mm` files are parsed with the Objective-C grammar path for this MVP; deep C++ semantic extraction inside Objective-C++ bodies remains outside this provider.

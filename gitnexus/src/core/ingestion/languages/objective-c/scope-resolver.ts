@@ -407,6 +407,10 @@ function emitObjectiveCMessageEdges(
   for (const message of facts.messages) {
     const targets = resolveMessageTargets(message, workspace);
     if (targets.kind === 'none') continue;
+    if (targets.kind === 'category-collision') {
+      emitCategoryDispatchEvidence(graph, facts, message, targets.candidates);
+      continue;
+    }
     if (targets.kind === 'protocol') {
       emitProtocolMessageEvidence(graph, facts, message, targets.protocolName, targets.candidates);
     }
@@ -429,12 +433,19 @@ function emitObjectiveCMessageEdges(
 type MessageTargets =
   | { readonly kind: 'none'; readonly methods: readonly ObjCMethodFact[] }
   | { readonly kind: 'direct'; readonly methods: readonly ObjCMethodFact[] }
+  | { readonly kind: 'category-collision'; readonly candidates: readonly ObjCMethodFact[] }
   | {
       readonly kind: 'protocol';
       readonly protocolName: string;
       readonly methods: readonly ObjCMethodFact[];
       readonly candidates: readonly ObjCMethodFact[];
     };
+
+function messageTargetsFromDispatchLookup(lookup: DispatchMethodLookup): MessageTargets {
+  return lookup.categoryCollision
+    ? { kind: 'category-collision', candidates: lookup.methods }
+    : { kind: 'direct', methods: lookup.methods };
+}
 
 function resolveMessageTargets(
   message: ObjCMessageFact,
@@ -446,20 +457,28 @@ function resolveMessageTargets(
 
   if (message.receiverKind === 'class') {
     const className = message.receiverType?.name ?? message.receiverText;
-    return {
-      kind: 'direct',
-      methods: findDispatchMethods(workspace, className, '+', message.selector),
-    };
+    return messageTargetsFromDispatchLookup(
+      findDispatchMethods(workspace, className, '+', message.selector),
+    );
   }
 
   if (message.receiverKind === 'self') {
     const owner = workspace.containersByQualifiedName.get(message.sourceOwnerQualifiedName);
     const className = owner?.hostClass ?? owner?.name ?? message.sourceOwnerName;
-    const methods =
-      owner?.kind === 'protocol'
-        ? findProtocolMethods(workspace, owner.name, message.sourceMethodKind, message.selector)
-        : findDispatchMethods(workspace, className, message.sourceMethodKind, message.selector);
-    return { kind: 'direct', methods };
+    if (owner?.kind === 'protocol') {
+      return {
+        kind: 'direct',
+        methods: findProtocolMethods(
+          workspace,
+          owner.name,
+          message.sourceMethodKind,
+          message.selector,
+        ),
+      };
+    }
+    return messageTargetsFromDispatchLookup(
+      findDispatchMethods(workspace, className, message.sourceMethodKind, message.selector),
+    );
   }
 
   if (message.receiverKind === 'super') {
@@ -468,15 +487,9 @@ function resolveMessageTargets(
     const superclass = workspace.superclassByClass.get(className);
     return superclass === undefined
       ? { kind: 'none', methods: [] }
-      : {
-          kind: 'direct',
-          methods: findDispatchMethods(
-            workspace,
-            superclass,
-            message.sourceMethodKind,
-            message.selector,
-          ),
-        };
+      : messageTargetsFromDispatchLookup(
+          findDispatchMethods(workspace, superclass, message.sourceMethodKind, message.selector),
+        );
   }
 
   const receiverType = message.receiverType ?? resolveMemberReceiverType(message, workspace);
@@ -487,10 +500,9 @@ function resolveMessageTargets(
     return { kind: 'none', methods: [] };
   }
   if (receiverType?.kind === 'class' && receiverType.name !== undefined) {
-    return {
-      kind: 'direct',
-      methods: findDispatchMethods(workspace, receiverType.name, '-', message.selector),
-    };
+    return messageTargetsFromDispatchLookup(
+      findDispatchMethods(workspace, receiverType.name, '-', message.selector),
+    );
   }
 
   if (receiverType?.kind === 'protocol' && receiverType.name !== undefined) {
@@ -529,19 +541,35 @@ function findDispatchMethods(
   className: string,
   methodKind: '-' | '+',
   selector: string,
-): readonly ObjCMethodFact[] {
+): DispatchMethodLookup {
   const seen = new Set<string>();
   let currentClass: string | undefined = className;
   while (currentClass !== undefined && !seen.has(currentClass)) {
     seen.add(currentClass);
     const ownerQn = objcClassQualifiedName(currentClass);
-    const methods = (workspace.methodsByDispatchOwner.get(ownerQn) ?? []).filter(
-      (method) => method.methodKind === methodKind && method.selector === selector,
+    const methods = uniqueMethods(
+      (workspace.methodsByDispatchOwner.get(ownerQn) ?? []).filter(
+        (method) => method.methodKind === methodKind && method.selector === selector,
+      ),
     );
-    if (methods.length > 0) return methods;
+    if (methods.length > 0) {
+      return {
+        methods,
+        // Named categories can replace a host-class implementation at runtime,
+        // but image-load order is not statically knowable. Preserve all targets
+        // as evidence instead of claiming that each is a certain CALLS edge.
+        categoryCollision:
+          methods.length > 1 && methods.some((method) => method.ownerKind === 'category'),
+      };
+    }
     currentClass = workspace.superclassByClass.get(currentClass);
   }
-  return [];
+  return { methods: [], categoryCollision: false };
+}
+
+interface DispatchMethodLookup {
+  readonly methods: readonly ObjCMethodFact[];
+  readonly categoryCollision: boolean;
 }
 
 function findExactOwnerMethods(
@@ -613,9 +641,63 @@ function findProtocolImplementationCandidates(
   const out: ObjCMethodFact[] = [];
   for (const [className, protocols] of workspace.classProtocols) {
     if (!classConformsToProtocol(workspace, protocols, protocolName)) continue;
-    out.push(...findDispatchMethods(workspace, className, '-', selector));
+    out.push(...findDispatchMethods(workspace, className, '-', selector).methods);
   }
   return uniqueMethods(out);
+}
+
+function emitCategoryDispatchEvidence(
+  graph: KnowledgeGraph,
+  facts: ObjCFileFacts,
+  message: ObjCMessageFact,
+  candidates: readonly ObjCMethodFact[],
+): void {
+  if (candidates.length === 0) return;
+  const qualifiedName =
+    `objc:category-dispatch-candidates:${facts.filePath}:` +
+    `${message.startLine}:${message.startCol}:${message.selector}`;
+  const nodeId = graphNodeId('CodeElement', qualifiedName);
+  graph.addNode({
+    id: nodeId,
+    label: 'CodeElement',
+    properties: {
+      name: `[${message.receiverText} ${message.selector}] category dispatch candidates`,
+      qualifiedName,
+      filePath: facts.filePath,
+      startLine: message.startLine,
+      endLine: message.startLine,
+      language: SupportedLanguages.ObjectiveC,
+      isExported: false,
+      objectiveCKind: 'category-dispatch-candidates',
+    },
+  });
+  addRelationship(
+    graph,
+    'DEFINES',
+    graphNodeId('File', facts.filePath),
+    nodeId,
+    `objc: category dispatch candidate evidence: ${message.selector}`,
+    1,
+  );
+  addRelationship(
+    graph,
+    'USES',
+    message.sourceMethodId,
+    nodeId,
+    `objc-message: category dispatch candidates: ${message.selector}`,
+    0.7,
+  );
+  for (const candidate of candidates) {
+    if (graph.getNode(candidate.nodeId) === undefined) continue;
+    addRelationship(
+      graph,
+      'USES',
+      nodeId,
+      candidate.nodeId,
+      `objc-category-dispatch-candidate: ${message.selector}`,
+      0.5,
+    );
+  }
 }
 
 function emitProtocolMessageEvidence(
@@ -687,14 +769,25 @@ function resolveObjectiveCImportTarget(
 }
 
 interface ObjectiveCImportIndex {
-  readonly filePaths: readonly string[];
   readonly filePathSet: ReadonlySet<string>;
+  readonly suffixMatches: ReadonlyMap<
+    string,
+    { readonly filePath: string; readonly order: number }
+  >;
 }
 
 const getObjectiveCImportIndex = perFileSet(
   (allFilePaths: ReadonlySet<string>): ObjectiveCImportIndex => {
     const filePaths = [...allFilePaths];
-    return { filePaths, filePathSet: new Set(filePaths) };
+    const suffixMatches = new Map<string, { readonly filePath: string; readonly order: number }>();
+    for (const [order, filePath] of filePaths.entries()) {
+      const segments = normalizeRepoPath(filePath).split('/');
+      for (let start = 1; start < segments.length; start++) {
+        const suffix = segments.slice(start).join('/');
+        if (!suffixMatches.has(suffix)) suffixMatches.set(suffix, { filePath, order });
+      }
+    }
+    return { filePathSet: new Set(filePaths), suffixMatches };
   },
 );
 
@@ -720,12 +813,14 @@ function findImportCandidate(
   for (const candidate of spelledCandidates) {
     if (importIndex.filePathSet.has(candidate)) return candidate;
   }
-  const suffixes = [...spelledCandidates].map((candidate) => `/${candidate}`);
-  for (const filePath of importIndex.filePaths) {
-    const normalizedFilePath = normalizeRepoPath(filePath);
-    if (suffixes.some((suffix) => normalizedFilePath.endsWith(suffix))) return filePath;
+  let suffixMatch: { readonly filePath: string; readonly order: number } | undefined;
+  for (const candidate of spelledCandidates) {
+    const match = importIndex.suffixMatches.get(candidate);
+    if (match !== undefined && (suffixMatch === undefined || match.order < suffixMatch.order)) {
+      suffixMatch = match;
+    }
   }
-  return null;
+  return suffixMatch?.filePath ?? null;
 }
 
 function normalizeRepoPath(value: string): string {

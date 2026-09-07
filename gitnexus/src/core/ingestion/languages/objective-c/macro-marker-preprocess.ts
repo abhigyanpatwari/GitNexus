@@ -23,13 +23,15 @@ interface ScanState {
   braceDepth: number;
 }
 
-function isAsciiHorizontalWhitespace(code: number): boolean {
-  return code === 0x20 || code === 0x09;
+function isPreprocessorWhitespace(code: number): boolean {
+  // C preprocessing whitespace includes space, horizontal tab, vertical tab,
+  // and form feed. Newlines are split before this scanner sees a line.
+  return code === 0x20 || code === 0x09 || code === 0x0b || code === 0x0c;
 }
 
 function isBareMarkerIdentifier(line: string): boolean {
   let index = 0;
-  while (index < line.length && isAsciiHorizontalWhitespace(line.charCodeAt(index))) index++;
+  while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
 
   const identifierStart = index;
   let hasUppercaseLetter = false;
@@ -48,7 +50,7 @@ function isBareMarkerIdentifier(line: string): boolean {
   }
   if (index === identifierStart || !hasUppercaseLetter) return false;
 
-  while (index < line.length && isAsciiHorizontalWhitespace(line.charCodeAt(index))) index++;
+  while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
   return index === line.length;
 }
 
@@ -62,7 +64,7 @@ function hasEscapedLineEnding(line: string): boolean {
 
 function startsPreprocessorDirective(line: string): boolean {
   let index = 0;
-  while (index < line.length && isAsciiHorizontalWhitespace(line.charCodeAt(index))) index++;
+  while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
   return line.charCodeAt(index) === 0x23;
 }
 

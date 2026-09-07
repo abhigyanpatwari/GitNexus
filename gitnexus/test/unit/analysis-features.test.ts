@@ -13,7 +13,6 @@ import {
   OBJECTIVE_C_PROVIDER_VERSION,
 } from '../../src/core/ingestion/languages/objective-c/facts.js';
 
-
 describe('analysis feature versions', () => {
   it('separates the global Class schema capability from JVM-only Bean evidence', () => {
     expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/app.ts'])).toEqual({
@@ -110,9 +109,9 @@ describe('analysis feature versions', () => {
       [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version,
     });
 
-    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['include/plain.hpp'])).not.toHaveProperty(
-      OBJECTIVE_C_PROVIDER_FEATURE.id,
-    );
+    expect(
+      resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['include/plain.hpp']),
+    ).not.toHaveProperty(OBJECTIVE_C_PROVIDER_FEATURE.id);
     expect(
       findAnalysisFeatureMismatches(
         { [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version - 1 },

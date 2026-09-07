@@ -63,4 +63,25 @@ describe('preprocessObjectiveCMacroMarkers', () => {
     expect(normalized).toContain('RCT_EXTERN_C_END');
     expect(normalized.split('\n')[2]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
   });
+
+  it('recognizes form feed and vertical tab as preprocessing whitespace', () => {
+    const source = [
+      '\f#define RCT_EXTERN_C_BEGIN',
+      '\v#define RCT_EXTERN_C_END',
+      '\fRCT_EXTERN_C_BEGIN',
+      '\vRCT_EXTERN_C_END',
+      '@protocol RCTBridgeModule <NSObject>',
+      '@end',
+      '',
+    ].join('\n');
+
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'WhitespaceMarkers.h');
+
+    expect(normalized).toHaveLength(source.length);
+    expect(normalized).toContain('\f#define RCT_EXTERN_C_BEGIN');
+    expect(normalized).toContain('\v#define RCT_EXTERN_C_END');
+    expect(normalized.split('\n')[2]).toBe(' '.repeat('\fRCT_EXTERN_C_BEGIN'.length));
+    expect(normalized.split('\n')[3]).toBe(' '.repeat('\vRCT_EXTERN_C_END'.length));
+    expect(normalized).toContain('@protocol RCTBridgeModule <NSObject>');
+  });
 });

@@ -36,12 +36,7 @@ import type { VariableExtractor } from './variable-types.js';
 import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
-import type {
-  GraphNode,
-  NodeLabel,
-  ParameterTypeClass,
-  RelationshipType,
-} from 'gitnexus-shared';
+import type { GraphNode, NodeLabel, ParameterTypeClass, RelationshipType } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type {
