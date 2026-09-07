@@ -33,6 +33,8 @@ import argparse
 import json
 import random
 import statistics
+import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -53,6 +55,46 @@ from .measure_evolution_cost import (
 
 DEFAULT_SCALE = 5000.0
 SYSTEMIC_KIND = "session-error"
+
+# A cell is mostly a model session waiting on the network, but its tool calls -
+# git, vitest, analyze - burn real CPU in real subprocesses. Sleeping threads
+# model the wait and nothing else, so every speedup measured that way is an
+# upper bound. This burns WORK, not wall clock: a fixed number of sha256 rounds
+# in a subprocess, which takes longer when cores are contended. That is the
+# effect under test, and it has to be a subprocess - Python threads burning
+# Python would measure the GIL rather than the machine.
+_BURN_SRC = (
+    "import hashlib,sys\n"
+    "n=int(sys.argv[1]); b=b'x'*4096; h=hashlib.sha256()\n"
+    "for _ in range(n): h.update(b)\n"
+    "sys.stdout.write(h.hexdigest()[:8])\n"
+)
+
+
+def calibrate_burn(probe_rounds: int = 400_000) -> float:
+    """sha256 rounds per second, one uncontended subprocess. Measured, not assumed."""
+
+    started = time.monotonic()
+    subprocess.run(
+        [sys.executable, "-c", _BURN_SRC, str(probe_rounds)],
+        check=True,
+        capture_output=True,
+    )
+    return probe_rounds / (time.monotonic() - started)
+
+
+def _execute_cell(cell: Cell, cpu_fraction: float, burn_rate: float) -> None:
+    """The stub session: wait for the API, then do the tool-call work."""
+
+    if cpu_fraction <= 0:
+        time.sleep(cell.seconds)
+        return
+    time.sleep(cell.seconds * (1.0 - cpu_fraction))
+    rounds = int(cell.seconds * cpu_fraction * burn_rate)
+    if rounds > 0:
+        subprocess.run(
+            [sys.executable, "-c", _BURN_SRC, str(rounds)], check=True, capture_output=True
+        )
 
 
 @dataclass(frozen=True)
@@ -143,7 +185,15 @@ def _graph_builder(
     return thread
 
 
-def run_wave(plan: list[list[Cell]], workers: int, *, outage_limit: int, graph_seconds: float) -> Outcome:
+def run_wave(
+    plan: list[list[Cell]],
+    workers: int,
+    *,
+    outage_limit: int,
+    graph_seconds: float,
+    cpu_fraction: float = 0.0,
+    burn_rate: float = 0.0,
+) -> Outcome:
     """The shipped scheduler, driven for real, task after task."""
 
     ready = [threading.Event() for _ in plan]
@@ -164,7 +214,7 @@ def run_wave(plan: list[list[Cell]], workers: int, *, outage_limit: int, graph_s
         def fake_run(run_idx: int, arm: str) -> dict[str, Any]:
             nonlocal executed
             cell = by_key[(run_idx, arm)]
-            time.sleep(cell.seconds)
+            _execute_cell(cell, cpu_fraction, burn_rate)
             with lock:
                 executed += 1
             return _record(cell)
@@ -231,6 +281,8 @@ def run_faithful(
     outage_limit: int,
     graph_seconds: float,
     window: int | None = None,
+    cpu_fraction: float = 0.0,
+    burn_rate: float = 0.0,
 ) -> Outcome:
     """H2 carrying the invariants the shipped scheduler holds.
 
@@ -271,7 +323,7 @@ def run_faithful(
         if halt.is_set():
             return
         cell = cells[index]
-        time.sleep(cell.seconds)
+        _execute_cell(cell, cpu_fraction, burn_rate)
         with lock:
             executed += 1
             results[index] = _record(cell)
@@ -397,6 +449,7 @@ def main() -> int:
     parser.add_argument("--compare", action="store_true")
     parser.add_argument("--breaker-fidelity", action="store_true")
     parser.add_argument("--window-sweep", action="store_true", help="wall clock vs breaker overrun")
+    parser.add_argument("--contention-sweep", action="store_true", help="does the gain survive real CPU?")
     parser.add_argument("--window", type=int, default=None)
     parser.add_argument(
         "--graph-seconds",
@@ -407,6 +460,51 @@ def main() -> int:
     args = parser.parse_args()
     if args.graph_seconds is None:
         args.graph_seconds = SHA_OVERHEAD_SECONDS / args.scale
+
+    if args.contention_sweep:
+        burn_rate = statistics.median(calibrate_burn() for _ in range(3))
+        rows = []
+        for cpu_fraction in (0.0, 0.25, 0.5):
+            for workers in (3, 6):
+                kwargs, _arms = _plan_args(args, weekly=False, seed=args.seed)
+                plans = [
+                    build_plan(**_plan_args(args, False, args.seed + i)[0])
+                    for i in range(args.repeat)
+                ]
+                measured = {}
+                for name in ("wave", "faithful"):
+                    fn = SCHEDULERS[name]
+                    extra = {"window": 12} if name == "faithful" else {}
+                    measured[name] = statistics.median(
+                        fn(
+                            plan,
+                            workers,
+                            outage_limit=0,
+                            graph_seconds=args.graph_seconds,
+                            cpu_fraction=cpu_fraction,
+                            burn_rate=burn_rate,
+                            **extra,
+                        ).wall_s
+                        for plan in plans
+                    )
+                serial = statistics.median(
+                    sum(c.seconds for c in _flatten(plan)) for plan in plans
+                )
+                rows.append(
+                    {
+                        "cpu_fraction": cpu_fraction,
+                        "workers": workers,
+                        "wave_s": round(measured["wave"], 2),
+                        "faithful_s": round(measured["faithful"], 2),
+                        "packing_gain_pct": round(
+                            (measured["faithful"] - measured["wave"]) / measured["wave"] * 100, 1
+                        ),
+                        "wave_speedup": round(serial / measured["wave"], 2),
+                        "faithful_speedup": round(serial / measured["faithful"], 2),
+                    }
+                )
+        print(json.dumps({"burn_rate": round(burn_rate), "nproc": __import__("os").cpu_count(), "rows": rows}, indent=2))
+        return 0
 
     if args.window_sweep:
         total = len(review_tasks(_read(REVIEW_TASKS))) * args.runs * len(REVIEW_ARMS)
