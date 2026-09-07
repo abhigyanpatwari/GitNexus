@@ -86,6 +86,41 @@ describe('parsedfile-store', () => {
     }
   });
 
+  it('repeated loads with different wantPaths each see their own files (shard-listing memo)', async () => {
+    // Scope resolution calls loadParsedFilesForPaths once per LANGUAGE over the
+    // same store, so the second and later passes reuse the shard path listings
+    // the first pass authenticated instead of re-reading every shard. The
+    // failure mode that memo introduces is a FALSE SKIP: pass 2 concludes a
+    // shard holds nothing it wants, and those files silently never reach the
+    // graph — an exit-0 wrong answer, not a crash. Each pass below wants files
+    // the previous pass did not, so a listing carried over from the wrong shard
+    // shows up as a missing file here.
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      await persistParsedFileChunk(dir, 'chunk-0', [makeParsedFile('a.c'), makeParsedFile('b.c')]);
+      await persistParsedFileChunk(dir, 'chunk-1', [makeParsedFile('c.c')]);
+      await persistParsedFileChunk(dir, 'chunk-2', [makeParsedFile('d.c')]);
+
+      const first = await loadParsedFilesForPaths(dir, new Set(['a.c']));
+      const second = await loadParsedFilesForPaths(dir, new Set(['c.c', 'd.c']));
+      const third = await loadParsedFilesForPaths(dir, new Set(['b.c']));
+      const fourth = await loadParsedFilesForPaths(dir, new Set(['a.c', 'b.c', 'c.c', 'd.c']));
+
+      expect([...first.keys()].sort()).toEqual(['a.c']);
+      expect([...second.keys()].sort()).toEqual(['c.c', 'd.c']);
+      expect([...third.keys()].sort()).toEqual(['b.c']);
+      expect([...fourth.keys()].sort()).toEqual(['a.c', 'b.c', 'c.c', 'd.c']);
+
+      // A shard written AFTER the memo was populated is still found: the memo
+      // holds listings, not the shard roster, and the roster is re-read per call.
+      await persistParsedFileChunk(dir, 'chunk-3', [makeParsedFile('e.c')]);
+      const fifth = await loadParsedFilesForPaths(dir, new Set(['e.c', 'a.c']));
+      expect([...fifth.keys()].sort()).toEqual(['a.c', 'e.c']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('writes no shard for an empty chunk', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
