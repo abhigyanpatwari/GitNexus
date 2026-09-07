@@ -672,6 +672,99 @@ describe('git-clone', () => {
       }
     });
 
+    // `assertRemoteMatchesRequestedUrl` runs REAL git (it is not injectable), so
+    // these fixtures are real repositories with a matching origin; only the
+    // branch logic under test is driven through `runGitForTest`.
+    const REMOTE = 'https://github.com/owner/repo.git';
+    const makeExistingClone = async (root: string, branch: string) => {
+      const target = path.join(root, 'repo');
+      await fs.mkdir(target, { recursive: true });
+      await runGit(['init', `--initial-branch=${branch}`], target);
+      await runGit(['remote', 'add', 'origin', REMOTE], target);
+      return target;
+    };
+
+    it('re-indexing the SAME pinned branch pulls instead of refusing a dirty tree', async () => {
+      // Analyze writes AGENTS.md / CLAUDE.md / .claude/ into the clone, so the
+      // tree is dirty from its own first run. Routing a same-branch request
+      // through the checkout path made every pinned RE-index fail asking for
+      // `overwrite_local_changes` — a flag the route will not pass because it
+      // would `git clean --force -d` the directory (#3199 review).
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      try {
+        const target = await makeExistingClone(root, 'develop');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse') return 'develop\n';
+          if (args[0] === 'status') return ' M AGENTS.md\n?? .claude/\n'; // dirty, as analyze leaves it
+          return '';
+        });
+        await cloneOrPull(REMOTE, target, undefined, {
+          allowedCloneRoot: root,
+          expectedRepoName: 'repo',
+          branch: 'develop',
+          runGitForTest,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      const verbs = calls.map((c) => c[0]);
+      expect(verbs).toContain('pull'); // took the unpinned path
+      expect(verbs).not.toContain('checkout'); // nothing to switch
+      expect(verbs).not.toContain('status'); // so the dirty check never ran
+    });
+
+    it('still switches — and still refuses a dirty tree — for a DIFFERENT branch', async () => {
+      // The refusal must survive where it matters: a real switch can discard
+      // local work, so the fast path above must not weaken it.
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      try {
+        const target = await makeExistingClone(root, 'main');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          if (args[0] === 'rev-parse') return 'main\n'; // on a different branch
+          if (args[0] === 'status') return ' M src/index.ts\n';
+          return '';
+        });
+        await expect(
+          cloneOrPull(REMOTE, target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            branch: 'develop',
+            runGitForTest,
+          }),
+        ).rejects.toThrow(/local changes detected/);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('treats a detached HEAD as needing the checkout path', async () => {
+      // `rev-parse --abbrev-ref HEAD` reports `HEAD` when detached; that matches
+      // no branch name, so the run must not be mistaken for "already there".
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      try {
+        const target = await makeExistingClone(root, 'main');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse') return 'HEAD\n';
+          if (args[0] === 'status') return ''; // clean, so the checkout proceeds
+          return '';
+        });
+        await cloneOrPull(REMOTE, target, undefined, {
+          allowedCloneRoot: root,
+          expectedRepoName: 'repo',
+          branch: 'develop',
+          runGitForTest,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+      expect(calls.map((c) => c[0])).toContain('checkout');
+    });
+
     it('allows auto-sync SSH SCP clone URLs with a per-repo timeout', async () => {
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const target = path.join(root, 'repo');

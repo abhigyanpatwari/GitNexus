@@ -1672,7 +1672,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // would fail with RegistryNameCollisionError. Register the pinned
               // clone under its directory name instead: unique per branch, and
               // it re-derives through getCloneDir for DELETE /api/repo.
-              ...(analyzeBranch && repoUrl ? { registryName: path.basename(targetPath) } : {}),
+              //
+              // Gated on the SAME condition as the clone above: when a caller
+              // supplies both `url` and `path` nothing is cloned, and renaming
+              // the operator's own local repo after its directory would be a
+              // surprise unrelated to branch pinning.
+              ...(analyzeBranch && repoUrl && !repoLocalPath
+                ? { registryName: path.basename(targetPath) }
+                : {}),
             });
           } catch (err: any) {
             if (targetPath) releaseRepoLock(getStoragePath(targetPath));

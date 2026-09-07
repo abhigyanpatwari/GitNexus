@@ -85,10 +85,11 @@ export function extractWebRepoName(url: string): string {
   return safeName;
 }
 
-/** Get the clone target directory for a repo name. */
 /**
  * Longest single path component the supported filesystems accept (ext4, APFS,
- * NTFS all cap at 255).
+ * NTFS all cap at 255). Compared against `.length`, which equals the byte
+ * count here because every name this guards is ASCII by construction
+ * (REPO_NAME_PATTERN and sanitizeRepoName both restrict to `[a-zA-Z0-9._-]`).
  */
 const MAX_PATH_COMPONENT_BYTES = 255;
 
@@ -117,6 +118,7 @@ const boundedBranchSegment = (repoName: string, branch: string): string => {
   return `${slug.slice(0, Math.max(0, budget))}${hash}`;
 };
 
+/** Get the clone target directory for a repo name, optionally pinned to a branch. */
 export function getCloneDir(repoName: string, branch?: string): string {
   // Re-validate at the boundary even though extractRepoName already checked —
   // callers may pass a repoName from another source (test fixtures, scripts).
@@ -464,7 +466,30 @@ export async function cloneOrPull(
     await assertRemoteMatchesRequestedUrl(safeTarget, url, options?.timeoutMs);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
     const runGitImpl = options?.runGitForTest ?? runGit;
-    if (options?.branch) {
+    // Already on the requested branch? Then there is no switch to make, and this
+    // is precisely the operation an unpinned request performs — so take that
+    // path. Going through the checkout path below would run the porcelain check
+    // against a tree ANALYZE ITSELF dirtied (it writes AGENTS.md / CLAUDE.md /
+    // .claude/ into the clone), which made a pinned RE-index impossible: the
+    // first pin succeeded and every later one failed asking for
+    // `overwrite_local_changes`, a flag this route deliberately does not pass
+    // because it would `git clean --force -d` the directory (#3199 review).
+    //
+    // Safe precisely because nothing moves: the refusal exists to stop a switch
+    // from silently discarding local work, and there is no switch here.
+    // A detached HEAD reports `HEAD`, matches no branch name, and so still takes
+    // the checkout path below.
+    const alreadyOnRequestedBranch =
+      !!options?.branch &&
+      (
+        await runGitImpl(['rev-parse', '--abbrev-ref', 'HEAD'], safeTarget, {
+          token: options?.token,
+          url,
+          timeoutMs: options?.timeoutMs,
+        })
+      ).trim() === options.branch;
+
+    if (options?.branch && !alreadyOnRequestedBranch) {
       if (!options.overwriteLocalChanges) {
         const status = await runGitImpl(['status', '--porcelain'], safeTarget, {
           token: options?.token,
