@@ -673,10 +673,16 @@ def test_proposer_session_cannot_outlive_the_remaining_instance_window(monkeypat
 
     --timeout is sized for a whole generation, so a proposer started with the
     minimum left would run far past --max-runtime-seconds and the box would take
-    the evidence with it.
+    the evidence with it. The budget is sampled after the clone, the sanitize
+    pass and the sandbox setup, because a reading taken before them is already
+    stale by the time the session it bounds actually starts.
     """
 
     captured: dict[str, object] = {}
+    # Pinned clock: real setup duration would make this assert on scheduling.
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(evolve.time, "monotonic", lambda: clock["now"])
+    setup_seconds = 100.0
 
     @contextmanager
     def fake_prepare_sandbox(**_kwargs):
@@ -691,9 +697,15 @@ def test_proposer_session_cannot_outlive_the_remaining_instance_window(monkeypat
         captured.update(kwargs)
         return {"ok": False, "error_kind": "session-error"}
 
+    def slow_sanitize(_clone):
+        # Stands in for the clone, the sanitize pass and the sandbox build —
+        # all of which run between the caller's decision and the session.
+        clock["now"] += setup_seconds
+        return "0" * 40
+
     monkeypatch.setattr(evolve.runner, "make_worktree", lambda _repo, _ref, destination: destination)
     monkeypatch.setattr(evolve.runner, "remove_clone", lambda _clone: None)
-    monkeypatch.setattr(evolve, "sanitize_clone_for_hidden_oracles", lambda _clone: "0" * 40)
+    monkeypatch.setattr(evolve, "sanitize_clone_for_hidden_oracles", slow_sanitize)
     monkeypatch.setattr(evolve, "prepare_sandbox", fake_prepare_sandbox)
     monkeypatch.setattr(evolve.runner, "run_claude", fake_run_claude)
     args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "model"])
@@ -705,10 +717,18 @@ def test_proposer_session_cannot_outlive_the_remaining_instance_window(monkeypat
         "evidence_bundle": tmp_path / "evidence",
         "bwrap_bin": tmp_path / "bwrap",
     }
-    evolve.run_proposer("prompt", args, **common, remaining_seconds=evolve.MIN_INSTANCE_SWEEP_SECONDS + 1)
-    assert captured["timeout"] == evolve.MIN_INSTANCE_SWEEP_SECONDS + 1
+    budget = evolve.MIN_INSTANCE_SWEEP_SECONDS + 1
+    args.max_runtime_seconds = budget
+    started = clock["now"]
+    evolve.run_proposer("prompt", args, **common, started_monotonic=started)
+    # The setup time is charged, not handed back: a value sampled at `started`
+    # would have allowed the whole budget.
+    assert captured["timeout"] == budget - setup_seconds
 
     # No cap configured means no budget to overrun: the session keeps its own.
+    args.max_runtime_seconds = None
+    evolve.run_proposer("prompt", args, **common, started_monotonic=started)
+    assert captured["timeout"] == args.timeout
     evolve.run_proposer("prompt", args, **common)
     assert captured["timeout"] == args.timeout
 
@@ -1277,8 +1297,6 @@ def test_the_runtime_cap_is_derived_where_its_clock_starts(monkeypatch, tmp_path
     own clock, so no interval exists to lose.
     """
 
-    uptime = tmp_path / "uptime"
-    uptime.write_text("3600.00 8000.00\n")
     monkeypatch.setenv("EVENTBRIDGE_INSTANCE_WINDOW_SECONDS", "20000")
     monkeypatch.setenv("EVENTBRIDGE_STOP_RESERVE_SECONDS", "1000")
     monkeypatch.setattr(evolve, "read_instance_uptime_seconds", lambda: 3600.0)

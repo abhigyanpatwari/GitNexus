@@ -587,9 +587,10 @@ exit 1`);
     expect(script).not.toContain('instance_window_budget_from_proc');
     expect(script).toContain('export RUNTIME_DIGEST');
     // The workflow's half of that contract is calling the entrypoint, not
-    // naming the flag: its only occurrence in the YAML is the explanatory
-    // comment above, so asserting on it would reject a correct comment edit
-    // while passing a loop step that had stopped invoking the script at all.
+    // naming the flag. The YAML never mentions --max-runtime-from-instance-window
+    // at all — only the prose at gitnexus-skill-evolution.yml:179-184 describing
+    // the cap — so an assertion on flag text there would test a comment, and a
+    // loop step that had stopped invoking the script would still pass it.
     expect(stepRun('Run the propose → benchmark → gate loop')).toContain(
       './workflow_bench/run-evolution.sh --apply',
     );

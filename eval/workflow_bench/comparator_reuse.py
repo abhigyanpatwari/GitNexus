@@ -379,16 +379,19 @@ def _copy_transcript_artifact(source_fd: int, dest_fd: int, metadata: Mapping[st
         _open_real_directory("transcripts", dir_fd=source_fd, label="transcript source") as source_dir_fd,
     ):
         os.fchmod(dest_dir_fd, 0o700)
-        # One descriptor for the size check, the digest and the copy. Re-opening
-        # the name between them is what let a writer swap the checked file for a
-        # symlink and have the copy follow it.
+        # One descriptor for the whole transfer, and ONE read of it. Hashing the
+        # source and then reading it again to copy leaves the recorded digest
+        # describing bytes that are not the bytes written: the descriptor stops
+        # the pathname being substituted, not the inode being rewritten, and
+        # this directory belongs to a sweep that may still be writing. Digest
+        # what is copied, then judge it.
         with _open_regular(name, dir_fd=source_dir_fd, label="transcript") as artifact_fd:
-            if os.fstat(artifact_fd).st_size != expected_size:
-                raise SandboxError(f"reused transcript size drifted: {relative}")
-            digest = _sha256_descriptor(artifact_fd)
-            if digest != expected_digest:
-                raise SandboxError(f"reused transcript digest drifted: {relative}")
-            _copy_owner_only(artifact_fd, name, dir_fd=dest_dir_fd)
+            digest, copied_bytes = _copy_owner_only(artifact_fd, name, dir_fd=dest_dir_fd)
+            if copied_bytes != expected_size or digest != expected_digest:
+                # The destination now holds bytes no expectation vouches for.
+                os.unlink(name, dir_fd=dest_dir_fd)
+                drift = "size" if copied_bytes != expected_size else "digest"
+                raise SandboxError(f"reused transcript {drift} drifted: {relative}")
     return {"path": relative, "sha256": digest, "bytes": expected_size, "source": PARENT_EVENT_STREAM_SOURCE}
 
 
@@ -397,6 +400,7 @@ def _copy_named_artifact(source_fd: int, dest_fd: int, name: str, *, label: str)
     if relative.is_absolute() or len(relative.parts) != 1 or relative.parts[0] in {"", ".", ".."}:
         raise SandboxError(f"unsafe {label} path: {name!r}")
     with _open_regular(name, dir_fd=source_fd, label=label) as artifact_fd:
+        # No expectation is recorded for these, so the digest is discarded.
         _copy_owner_only(artifact_fd, name, dir_fd=dest_fd)
 
 
@@ -447,6 +451,10 @@ def _open_real_directory(
         try:
             os.mkdir(path, 0o700, dir_fd=dir_fd)
         except FileExistsError:
+            # Already there is the ordinary case — a second artifact from the
+            # same row. What it already IS still has to be proven, and the
+            # O_DIRECTORY|O_NOFOLLOW open below is what proves it, so there is
+            # nothing to do here.
             pass
         except OSError as exc:
             raise SandboxError(f"{label} cannot be created: {path}: {exc}") from exc
@@ -505,7 +513,13 @@ def _open_regular(name: str, *, dir_fd: int, label: str) -> Iterator[int]:
         os.close(descriptor)
 
 
-def _copy_owner_only(source: int, name: str, *, dir_fd: int) -> None:
+def _copy_owner_only(source: int, name: str, *, dir_fd: int) -> tuple[str, int]:
+    """Copy one open file into the pinned directory; return what was written.
+
+    The digest is taken from the same buffers that are written, so it describes
+    the copy rather than a state the source was in at some earlier read.
+    """
+
     # O_CREAT|O_EXCL is the existence check, and unlike a stat beforehand it is
     # atomic: a file appearing between check and open cannot slip through.
     try:
@@ -520,19 +534,16 @@ def _copy_owner_only(source: int, name: str, *, dir_fd: int) -> None:
     try:
         os.fchmod(descriptor, 0o600)
         os.lseek(source, 0, os.SEEK_SET)
+        digest = hashlib.sha256()
+        written = 0
         while True:
             chunk = os.read(source, COPY_CHUNK_BYTES)
             if not chunk:
                 break
+            digest.update(chunk)
+            written += len(chunk)
             _write_all(descriptor, chunk)
         os.fsync(descriptor)
+        return digest.hexdigest(), written
     finally:
         os.close(descriptor)
-
-
-def _sha256_descriptor(descriptor: int) -> str:
-    os.lseek(descriptor, 0, os.SEEK_SET)
-    # dup so hashlib owns a file object it may close; the duplicate shares the
-    # offset, which is why every reader here seeks to 0 before it starts.
-    with os.fdopen(os.dup(descriptor), "rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()

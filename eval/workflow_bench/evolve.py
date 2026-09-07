@@ -699,17 +699,17 @@ def run_proposer(
     bwrap_bin: Path,
     sandbox_backend: str = "bwrap",
     progress_label: str | None = None,
-    remaining_seconds: int | None = None,
+    started_monotonic: float | None = None,
 ) -> dict[str, Any]:
     """Run one proposer in confinement and copy only validated outputs out.
 
-    ``remaining_seconds`` is what is left of ``--max-runtime-seconds``. The
+    ``started_monotonic`` is the sweep clock, not a precomputed budget. The
     per-session ``--timeout`` is sized for a whole generation, so a proposer
-    started with only the sweep minimum left would otherwise be allowed to run
-    far past the instance window the caller just checked.
+    started with only the sweep minimum left would otherwise run far past the
+    instance window; the clock is passed rather than the leftover because the
+    clone, the sanitize pass and the sandbox setup below all happen before the
+    session starts, and a number sampled by the caller is already stale by then.
     """
-
-    session_timeout = args.timeout if remaining_seconds is None else max(1, min(args.timeout, remaining_seconds))
 
     with tempfile.TemporaryDirectory(prefix="wfevolve-") as tmp:
         clone = runner.make_worktree(REPO_ROOT, "HEAD", Path(tmp))
@@ -742,11 +742,24 @@ def run_proposer(
                 host_text = getattr(sandbox, "host_text", lambda value: value)
                 environment_builder = getattr(sandbox, "environment", build_sandbox_environment)
                 backend = getattr(sandbox, "backend", "bwrap")
+                # Sampled here, after the setup above: this is the last
+                # moment before the session starts, so it is the only reading
+                # the session's own timeout can honestly be clamped to.
+                remaining_seconds = (
+                    None
+                    if started_monotonic is None
+                    else remaining_runtime_seconds(
+                        max_runtime_seconds=args.max_runtime_seconds,
+                        started_monotonic=started_monotonic,
+                    )
+                )
                 record = runner.run_claude(
                     host_text(prompt),
                     clone,
                     claude_bin=sandbox.claude_bin,
-                    timeout=session_timeout,
+                    timeout=(
+                        args.timeout if remaining_seconds is None else max(1, min(args.timeout, remaining_seconds))
+                    ),
                     model=args.proposer_model,
                     effort=args.effort,
                     env=model_session_environment(
@@ -1674,11 +1687,11 @@ def _run_generations(
                     bwrap_bin=bwrap_bin,
                     sandbox_backend=sandbox_backend,
                     progress_label=f"gen {generation} proposer",
-                    # Clearing the minimum is not a licence to run for a whole
-                    # generation: the session timeout is the larger number, so
-                    # without this a proposer started with 601s left could still
-                    # burn the full --timeout past the instance window.
-                    remaining_seconds=before_proposer,
+                    # The clock, not the reading taken above: run_proposer clones,
+                    # sanitizes and builds a sandbox before the session starts, so
+                    # before_proposer is stale by then. It still decides whether to
+                    # start at all — it just cannot decide how long to allow.
+                    started_monotonic=started_monotonic,
                 )
             # Redact any API token echoed into the session record (e.g. an
             # error_detail stderr_tail) before it enters the uploaded artifact.

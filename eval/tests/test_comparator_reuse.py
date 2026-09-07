@@ -281,6 +281,47 @@ def test_a_renamed_transcripts_directory_cannot_redirect_a_copy(tmp_path: Path) 
 
 
 @requires_openat
+def test_a_transcript_rewritten_mid_copy_is_refused_not_recorded(tmp_path: Path, monkeypatch) -> None:
+    """The digest has to describe the bytes that were written.
+
+    A held descriptor stops the pathname being substituted; it does not stop the
+    inode being rewritten, and the prior sweep's directory is one this sweep
+    treats as concurrently writable. Hashing the source and then reading it
+    again to copy let the row keep the expected digest while the destination
+    held different bytes.
+    """
+
+    payload = b'{"type":"result"}\n'
+    source = tmp_path / "prior"
+    (source / "transcripts").mkdir(parents=True)
+    transcript = source / "transcripts" / "session-1.jsonl"
+    transcript.write_bytes(payload)
+    dest = tmp_path / "fresh"
+    dest.mkdir()
+    row = _row(transcript_artifacts=[_artifact(payload=payload)])
+
+    # Rewrite the inode in the window the copy reads through — same length, so
+    # only the digest can tell, which is the point.
+    real_read = comparator_reuse.os.read
+    rewritten = {"done": False}
+
+    def rewrite_then_read(fd: int, size: int) -> bytes:
+        if not rewritten["done"]:
+            rewritten["done"] = True
+            with open(transcript, "r+b") as handle:
+                handle.write(b'{"type":"TAMPER"}')
+        return real_read(fd, size)
+
+    monkeypatch.setattr(comparator_reuse.os, "read", rewrite_then_read)
+    with pytest.raises(SandboxError, match="drifted"):
+        materialize_reused_row(row, source_dir=source, dest_dir=dest)
+    monkeypatch.undo()
+
+    # And nothing unvouched-for is left behind for the proposer to read.
+    assert not (dest / "transcripts" / "session-1.jsonl").exists()
+
+
+@requires_openat
 def test_materialize_rejects_same_directory_and_missing_transcript(tmp_path: Path) -> None:
     source = tmp_path / "prior"
     source.mkdir()
