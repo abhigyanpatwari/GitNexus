@@ -1576,6 +1576,26 @@ class ArmHealth:
         return self.fresh_attempts > 0
 
     @property
+    def status(self) -> str:
+        """UNKNOWN / OBSERVED_OK / DEGRADED / UNUSABLE.
+
+        DEGRADED is the distinction that matters: an arm with both admissible
+        measurements and observed failures produced usable evidence but did not
+        run reliably. Reporting that as healthy is how a partly-broken sweep
+        looks fine. It is diagnostic here - only UNUSABLE is fatal - so this
+        patch changes what is reported, not what is eligible.
+        """
+
+        if not self.measured:
+            return "UNKNOWN"
+        failures = self.execution_failures + self.evidence_failures
+        if self.admissible == 0 and failures > 0:
+            return "UNUSABLE"
+        if failures > 0:
+            return "DEGRADED"
+        return "OBSERVED_OK"
+
+    @property
     def unhealthy(self) -> bool:
         """Every fresh attempt failed to execute or to produce usable evidence.
 
@@ -1584,9 +1604,7 @@ class ArmHealth:
         a valid negative and belongs to the quality gate, not here.
         """
 
-        return self.measured and self.admissible == 0 and (
-            self.execution_failures > 0 or self.evidence_failures > 0
-        )
+        return self.status == "UNUSABLE"
 
 
 def arm_health(results: dict[str, dict[str, dict[str, Any]]], arms: set[str]) -> dict[str, ArmHealth]:
@@ -1623,11 +1641,52 @@ def unmeasured_arms(results: dict[str, dict[str, dict[str, Any]]], arms: set[str
     return [h.arm for h in arm_health(results, arms).values() if not h.measured]
 
 
+def enforce_measurement_health(
+    results: dict[str, dict[str, dict[str, Any]]], arms: set[str]
+) -> dict[str, ArmHealth]:
+    """Report every arm's measurement status; abort only on UNUSABLE.
+
+    Runs after report.md and promotion.json are written, so a failing sweep
+    still leaves its evidence behind. Reports cause as undetermined: an empty
+    artifact establishes that evidence is unusable, not why - naming a mount
+    failure here would be a guess the recorded rows do not support.
+    """
+
+    health = arm_health(results, arms)
+    for arm in sorted(health):
+        observed = health[arm]
+        reasons = f" reason={','.join(observed.reasons)}" if observed.reasons else ""
+        print(
+            f"[measurement-health] {arm}: {observed.status} "
+            f"fresh_attempts={observed.fresh_attempts} admissible={observed.admissible} "
+            f"execution_failures={observed.execution_failures} "
+            f"evidence_failures={observed.evidence_failures}{reasons}"
+        )
+    unusable = [h for h in health.values() if h.unhealthy]
+    if unusable:
+        detail = "; ".join(f"{h.arm} ({h.fresh_attempts} fresh attempt(s))" for h in unusable)
+        print(
+            f"[measurement-health] {detail} produced no usable measurement this sweep. "
+            "cause=undetermined — see error_detail in results.jsonl. Exiting non-zero rather "
+            "than reporting a quiet no-promotion."
+        )
+        raise SystemExit(1)
+    return health
+
+
 def broken_incumbent_arms(
     results: dict[str, dict[str, dict[str, Any]]],
     incumbent_arms: set[str],
 ) -> list[str]:
-    """Incumbent arms that resolved nothing across every task they ran.
+    """LEGACY, NON-AUTHORITATIVE. Superseded by ``enforce_measurement_health``.
+
+    Kept only so its historical behaviour stays documented and testable while
+    the replacement settles; it has no production caller. Do not wire it into a
+    health decision - it infers a broken environment from a resolution count,
+    which a reviewer facing a hard corpus falsifies. Remove once the
+    measurement-health path has run in CI.
+
+    Incumbent arms that resolved nothing across every task they ran.
 
     An incumbent arm is the currently-shipped, presumably-working skill: if it
     resolves NOTHING across every task it ran, that reads as an environment or
@@ -2558,31 +2617,9 @@ def _run_sweep(
     # excluded here because "resolved zero" is quality signal for a reviewer
     # facing a hard corpus; with the inference corrected they are included
     # again, which is what lets an all-artifacts-empty run be caught at all.
-    checked_arms = set(CANDIDATE_ARMS.values()) | {"review", "ce_review"}
-    unmeasured = unmeasured_arms(results, checked_arms)
-    if unmeasured:
-        print(
-            f"[harness-health] arm(s) {', '.join(sorted(unmeasured))} have no freshly-run cell "
-            "this sweep, so current execution health is UNKNOWN rather than good. Their rows "
-            "came from reuse; a paid cell per incumbent arm is what makes this measurable."
-        )
-    unhealthy = unhealthy_arms(results, checked_arms)
-    if unhealthy:
-        # Fail loudly rather than let a broken environment read as a quiet
-        # "no promotion, incumbent stands." A low score never reaches here.
-        detail = "; ".join(
-            f"{h.arm}: {h.execution_failures} execution / {h.evidence_failures} evidence "
-            f"failure(s) over {h.fresh_attempts} fresh attempt(s)"
-            f"{' — ' + ', '.join(h.reasons) if h.reasons else ''}"
-            for h in unhealthy
-        )
-        print(
-            f"[harness-health] {detail}. Every fresh attempt failed to execute or to produce "
-            "usable evidence, which is an environment/harness failure rather than a candidate "
-            "miss. See error_detail in results.jsonl. Exiting non-zero rather than reporting a "
-            "quiet no-promotion."
-        )
-        raise SystemExit(1)
+    # ce_review is named explicitly: it is a comparator, not a candidate, so it
+    # is absent from CANDIDATE_ARMS and would otherwise go unclassified.
+    enforce_measurement_health(results, set(CANDIDATE_ARMS.values()) | {"review", "ce_review"})
     if outage_tripped:
         # Non-zero exit so a driver (evolve.py) treats the partial benchmark as a
         # failed run and halts instead of proposing from outage-truncated evidence.

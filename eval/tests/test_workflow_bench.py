@@ -14,6 +14,7 @@ import yaml
 from typing import Any
 
 from workflow_bench import runner
+from workflow_bench.evolution import CANDIDATE_ARMS
 from workflow_bench.runner import (
     aggregate,
     GraphBuildEnv,
@@ -821,8 +822,12 @@ def test_artifacts_that_were_never_written_are_an_unhealthy_harness():
     assert "review-evidence-invalid" in flagged[0].reasons
 
 
-def test_one_admissible_cell_keeps_an_arm_healthy():
-    """A mixed sweep is not a broken environment; the failures still surface."""
+def test_one_admissible_cell_leaves_an_arm_degraded_not_healthy():
+    """Mixed outcomes are DEGRADED. One usable measurement does not erase two failures.
+
+    Not fatal - the sweep still produced evidence - but calling it healthy is
+    how a partly-broken environment passes review.
+    """
 
     mixed = [
         _cell(resolved=False, error_kind="oracle-failed"),
@@ -830,8 +835,9 @@ def test_one_admissible_cell_keeps_an_arm_healthy():
         _cell(resolved=False, ok=False, error_kind="infra-error"),
     ]
     results = _arms(review=mixed)
-    assert unhealthy_arms(results, {"review"}) == []
     health = arm_health(results, {"review"})["review"]
+    assert health.status == "DEGRADED"
+    assert unhealthy_arms(results, {"review"}) == [], "degraded is diagnostic, not fatal"
     assert health.execution_failures == 2, "failures must stay visible, not be erased"
     assert health.admissible == 1
 
@@ -860,3 +866,80 @@ def test_a_parseable_artifact_does_not_excuse_a_failed_session():
     flagged = unhealthy_arms(_arms(review=rows), {"review"})
     assert [h.arm for h in flagged] == ["review"]
     assert flagged[0].execution_failures == 2
+
+
+def test_a_single_unusable_review_is_caught_below_the_breaker_threshold():
+    """The decisive regression for the finalization guard.
+
+    A fixture of 41 empty artifacts would abort through the outage breaker -
+    review-evidence-invalid is systemic and the limit is 5 - so it proves
+    nothing about this path. One fresh unusable cell is under that threshold,
+    which leaves the finalization check as the only thing that can catch it.
+    """
+
+    streak = 0
+    for _ in range(1):
+        streak = runner.systemic_outage_streak("review-evidence-invalid", streak)
+    assert streak < runner.DEFAULT_OUTAGE_STREAK, "fixture must not reach the breaker"
+
+    results = _arms(review=[_cell(resolved=False, ok=False, error_kind="review-evidence-invalid")])
+    with pytest.raises(SystemExit) as exc:
+        runner.enforce_measurement_health(results, {"review"})
+    assert exc.value.code == 1
+
+
+def test_finalization_reports_every_arm_and_names_no_cause(capsys):
+    """Status for each arm; an empty artifact does not become an EROFS diagnosis."""
+
+    results = _arms(
+        review=[_cell(resolved=False, ok=False, error_kind="review-evidence-invalid")],
+        ce_review=[_cell(resolved=False, error_kind="oracle-failed")],
+    )
+    with pytest.raises(SystemExit):
+        runner.enforce_measurement_health(results, {"review", "ce_review"})
+    out = capsys.readouterr().out
+    assert "review: UNUSABLE" in out
+    assert "ce_review: OBSERVED_OK" in out
+    assert "cause=undetermined" in out
+    assert "EROFS" not in out and "mount" not in out
+
+
+def test_valid_negatives_do_not_abort_finalization(capsys):
+    """The 16h run's shape must survive the real guard, not just the classifier."""
+
+    scored_but_wrong = [_cell(resolved=False, error_kind="oracle-failed") for _ in range(3)]
+    health = runner.enforce_measurement_health(
+        _arms(review=scored_but_wrong, ce_review=list(scored_but_wrong)), {"review", "ce_review"}
+    )
+    assert {h.status for h in health.values()} == {"OBSERVED_OK"}
+    assert "UNUSABLE" not in capsys.readouterr().out
+
+
+def test_reused_only_arm_is_reported_unknown_by_finalization(capsys):
+    runner.enforce_measurement_health(_arms(review=[_cell(reused=True)]), {"review"})
+    assert "review: UNKNOWN" in capsys.readouterr().out
+
+
+def test_run_sweep_calls_the_health_guard_and_not_the_legacy_helper():
+    """Pins the wiring the caller correction exposed.
+
+    Reads the compiled code object's global references rather than the source
+    text: deleting the call removes the name and fails this test, which is the
+    mutation check. It does NOT prove the guard runs end to end - _run_sweep
+    needs bwrap and a sandbox, so no test here drives it.
+    """
+
+    referenced = runner._run_sweep.__code__.co_names
+    assert "enforce_measurement_health" in referenced
+    assert "broken_incumbent_arms" not in referenced
+
+
+def test_ce_review_is_classified_even_though_it_is_not_a_candidate_arm():
+    """ce_review is a comparator, absent from CANDIDATE_ARMS.
+
+    Dropping the `- {"review"}` exclusion alone would have left it unchecked.
+    """
+
+    assert "ce_review" not in set(CANDIDATE_ARMS.values())
+    health = arm_health(_arms(ce_review=[_cell()]), {"review", "ce_review"})
+    assert "ce_review" in health
