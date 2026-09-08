@@ -851,6 +851,204 @@ def sweep_task_cells(
         return outage_streak, False
 
 
+# A sustained upstream outage shows up as a run of session/infra/cleanup
+# failures. (cleanup-failure overwrites the primary error_kind, so a
+# session-error whose worktree cleanup also failed still counts.) A task's own
+# resolved=False is real signal, not an outage, so it never trips the breaker.
+# How far ahead of the in-order fold pointer cells may be submitted, as a
+# multiple of the worker count. This is the wall-clock/wasted-cell trade, and it
+# is a real one - measured against the review corpus at workers=3, with failures
+# injected at four different positions:
+#
+#   window  wall vs waves   worst overrun
+#     3         -8%              2  (the wave scheduler's own bound)
+#     6        -27%              4
+#    12        -42%              9
+#    54        -44%             11
+#
+# Overrun is wasted paid sessions when the breaker trips, at roughly $70 each.
+# 2 is the default because it keeps the worst case within 2x the wave bound
+# while taking most of the gain; raise it if a run's wall clock costs more than
+# an occasional handful of cells on an aborted sweep.
+PACKED_WINDOW_MULTIPLIER = 2
+
+
+def sweep_packed_cells(
+    cells: Sequence[tuple[str, int, str]],
+    *,
+    workers: int,
+    run: Callable[[str, int, str], dict[str, Any]],
+    on_start: Callable[[str, int, str], None],
+    on_record: Callable[[str, int, str, dict[str, Any]], None],
+    outage_streak: int,
+    outage_limit: int,
+    window: int | None = None,
+    await_ready: Callable[[str], bool] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[int, bool]:
+    """Run cells from EVERY task through one pool; return (streak, tripped).
+
+    ``sweep_task_cells`` finishes one task before starting the next and drains a
+    wave before refilling it, so a task with fewer cells than ``workers`` leaves
+    workers idle and a slow cell stalls its whole wave. Packing every task's
+    cells into one continuously fed pool removes both, which is worth about 40%
+    of a cold sweep's wall clock and is the only thing that moves a seeded
+    weekly run at all - there, a task is three cells and a wave is never full.
+
+    The breaker keeps its exact meaning. ``cells`` is a total submission order
+    (task-major, run-major, arm-minor - the same order waves fold in, continued
+    across task boundaries), a folder walks results in precisely that order, and
+    "consecutive systemic failures" is evaluated there. So the run aborts on the
+    same logical cell it would have aborted on under waves.
+
+    ``window`` is what bounds the overrun, and it is load-bearing. The halt flag
+    alone is not enough: the folder walks in order, so a slow early cell lets
+    workers race ahead, and by the time the breaker trips those cells have
+    already paid for their sessions. Measured, an unbounded queue overran by 11
+    cells at ``workers=3`` where the wave scheduler overruns by 2. Holding
+    submission to ``window`` cells beyond the fold point caps it, trading
+    packing for wasted cells - see ``PACKED_WINDOW_MULTIPLIER`` for the curve.
+
+    ``await_ready`` gates a task's first cell on whatever that task still needs
+    (a sanitized clone, a graph). It returns False to abandon the task, whose
+    cells are then skipped rather than run against missing assets. Cells are
+    submitted as their task becomes ready, so a later task's graph builds while
+    earlier cells are still paying for sessions.
+    """
+
+    with cancellation_scope(cancel_event) as cancel_event:
+        if workers < 1:
+            raise ValueError("workers must be positive")
+        if not cells:
+            return outage_streak, False
+        if window is None:
+            window = max(workers * PACKED_WINDOW_MULTIPLIER, workers)
+        if window < workers:
+            raise ValueError("window must be at least workers, or the pool starves")
+
+        halt = threading.Event()
+        results: list[dict[str, Any] | None] = [None] * len(cells)
+        submitted: list[Any] = []
+        gate = threading.Condition()
+        producing = True
+        fold_pointer = 0
+
+        def execute(index: int) -> None:
+            if halt.is_set() or cancel_event.is_set():
+                return
+            task_id, run_idx, arm = cells[index]
+            on_start(task_id, run_idx, arm)
+            results[index] = run(task_id, run_idx, arm)
+
+        pool = ThreadPoolExecutor(max_workers=workers)
+        # cancellation_scope binds _CANCELLATION in the CALLING thread's
+        # context, and a new thread starts with an empty one - so the producer
+        # has to copy this context rather than its own, or every cell it
+        # submits loses the run's cancellation event. sweep_task_cells gets
+        # this for free by submitting from the thread that entered the scope.
+        caller_context = copy_context()
+
+        def produce() -> None:
+            nonlocal producing
+            ready_tasks: dict[str, bool] = {}
+            try:
+                for index, (task_id, _run_idx, _arm) in enumerate(cells):
+                    if halt.is_set() or cancel_event.is_set():
+                        break
+                    if task_id not in ready_tasks:
+                        ready_tasks[task_id] = True if await_ready is None else await_ready(task_id)
+                    if not ready_tasks[task_id]:
+                        with gate:
+                            submitted.append(None)
+                            gate.notify_all()
+                        continue
+                    with gate:
+                        while index - fold_pointer >= window and not halt.is_set():
+                            gate.wait(timeout=0.5)
+                        if halt.is_set() or cancel_event.is_set():
+                            break
+                        worker_context = caller_context.run(copy_context)
+                        submitted.append(pool.submit(worker_context.run, execute, index))
+                        gate.notify_all()
+            finally:
+                with gate:
+                    producing = False
+                    gate.notify_all()
+
+        producer = threading.Thread(target=produce, name="packed-cell-producer", daemon=False)
+        producer.start()
+
+        tripped = False
+        try:
+            index = 0
+            while True:
+                with gate:
+                    while index >= len(submitted) and producing:
+                        gate.wait(timeout=0.5)
+                    if index >= len(submitted):
+                        break
+                    future = submitted[index]
+                if future is not None:
+                    try:
+                        future.result()
+                    except BaseException:
+                        # Same contract as sweep_task_cells: the cells submitted
+                        # after this one have already run and spent their budget,
+                        # so persist their rows in submission order before the
+                        # harness bug takes the process down. Without this, one
+                        # crashing cell silently erases the paid evidence of
+                        # every sibling that had already finished. The failing
+                        # index itself has no row - execute() only assigns on
+                        # success - so folding forward cannot duplicate it.
+                        with gate:
+                            settled = list(submitted)
+                        for later in range(index + 1, len(settled)):
+                            pending = settled[later]
+                            if pending is not None and not pending.done():
+                                continue
+                            row = results[later]
+                            if row is not None:
+                                on_record(*cells[later], row)
+                        raise
+                record = results[index]
+                if record is not None:
+                    task_id, run_idx, arm = cells[index]
+                    on_record(task_id, run_idx, arm, record)
+                    kind = (
+                        "review-evidence-invalid"
+                        if record.get("review_evidence_valid") is False
+                        else record.get("error_kind")
+                    )
+                    outage_streak = systemic_outage_streak(kind, outage_streak)
+                    if outage_limit and outage_streak >= outage_limit:
+                        print(
+                            f"[systemic-outage] {outage_streak} consecutive unusable-evidence "
+                            "failures — aborting the remaining sweep; report and promotion are "
+                            "written from partial evidence and the run exits non-zero."
+                        )
+                        tripped = True
+                        halt.set()
+                        cancel_event.set()
+                        break
+                index += 1
+                with gate:
+                    fold_pointer = index
+                    gate.notify_all()
+                if cancel_event.is_set():
+                    tripped = True
+                    break
+        finally:
+            halt.set()
+            with gate:
+                gate.notify_all()
+            producer.join()
+            for pending in submitted[index + 1 :]:
+                if pending is not None:
+                    pending.cancel()
+            pool.shutdown(wait=True)
+        return outage_streak, tripped
+
+
 @dataclass(frozen=True)
 class TaskCellContext:
     """Everything one benchmark cell needs from its task, prepared once.
