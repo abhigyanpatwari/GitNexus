@@ -25,7 +25,7 @@ from typing import Any
 
 from litellm.integrations.custom_logger import CustomLogger
 
-from .provider_usage import CELL_ID_ENV_VAR, SWEEP_ID_ENV_VAR, USAGE_LOG_ENV_VAR, canonical_provider
+from .provider_usage import SWEEP_ID_ENV_VAR, USAGE_LOG_ENV_VAR, canonical_provider
 
 SCHEMA_VERSION = 1
 _LOCK = threading.Lock()
@@ -86,7 +86,11 @@ class ProviderUsageLogger(CustomLogger):
                 "response_id": getattr(response_obj, "id", None),
                 "call_type": call_type,
                 "sweep_id": os.environ.get(SWEEP_ID_ENV_VAR),
-                "cell_id": os.environ.get(CELL_ID_ENV_VAR),
+                # The per-request half of identity, and the only thing that can
+                # attribute a request to a cell: one proxy serves the whole
+                # sweep, so anything read from the environment is the same for
+                # every event. Recorded even when absent, because knowing the
+                # attribution is unavailable is itself a fact about the run.
                 "session_id": metadata.get("litellm_session_id") or metadata.get("session_id"),
                 "started_at": str(start_time),
                 "completed_at": str(end_time),

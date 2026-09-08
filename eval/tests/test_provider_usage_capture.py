@@ -61,7 +61,6 @@ NATIVE = {
 def logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     log = tmp_path / "provider_usage.jsonl"
     monkeypatch.setenv(USAGE_LOG_ENV_VAR, str(log))
-    monkeypatch.setenv("GITNEXUS_BENCH_CELL_ID", "review-pr-2718-defect:review:0")
 
     def emit(usage: dict) -> dict:
         ProviderUsageLogger()._append(
@@ -92,7 +91,7 @@ def test_the_actual_model_is_recorded_separately_from_the_requested_role(logged)
     event = logged(NATIVE)
     assert event["requested_model"] == "claude-sonnet-4-5"
     assert event["actual_model"] == "gpt-5.6-sol-2026-08-01"
-    assert event["cell_id"] == "review-pr-2718-defect:review:0"
+    assert "cell_id" not in event, "a proxy-wide variable cannot identify a cell"
 
 
 def test_the_captured_event_normalizes_with_openai_arithmetic(logged) -> None:
@@ -208,3 +207,26 @@ def test_an_unresolvable_provider_is_refused_rather_than_guessed() -> None:
     assert canonical_provider("openai", "completion") is None
     assert canonical_provider("openai", None) is None
     assert canonical_provider("anthropic", "completion") == ANTHROPIC
+
+
+def test_request_identity_cannot_come_from_the_proxy_environment() -> None:
+    """One proxy serves the whole sweep, so its environment identifies the sweep.
+
+    attach_openai_gateway wraps all of _run_sweep, and cells run concurrently
+    under --workers, interleaving requests through that single process. Any
+    variable forwarded at launch is therefore constant for every event it ever
+    records. Pinned so a future change does not reintroduce a per-cell
+    environment variable that would silently stamp one value on every request.
+    """
+
+    assert USAGE_ENV_VARS == (
+        "GITNEXUS_BENCH_PROVIDER_USAGE",
+        "GITNEXUS_BENCH_SWEEP_ID",
+    ), "a per-cell variable here would be constant across concurrent cells"
+
+
+def test_a_request_records_its_session_so_attribution_stays_possible(logged) -> None:
+    """The per-request half of identity, recorded even when the provider omits it."""
+
+    event = logged(NATIVE)
+    assert "session_id" in event, "absent attribution is still a fact about the run"

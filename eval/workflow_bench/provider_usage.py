@@ -35,10 +35,18 @@ SCHEMA_VERSION = 1
 # Read by the in-proxy callback and forwarded by the gateway that launches it.
 # Defined here because this module is pure stdlib: model_gateway can import the
 # name without importing litellm, which only the callback needs.
+#
+# Both are SWEEP-scoped, and that is a constraint rather than an oversight.
+# attach_openai_gateway wraps the whole sweep (runner.py), so one proxy serves
+# every cell and its environment is fixed for that proxy's lifetime - while
+# cells run concurrently under --workers and interleave requests through it. An
+# environment variable therefore cannot carry a per-cell identity: it would
+# record one constant against every event. Attributing a request to a cell
+# needs an identifier that travels WITH the request; see the session fields the
+# callback records for the intended hook.
 USAGE_LOG_ENV_VAR = "GITNEXUS_BENCH_PROVIDER_USAGE"
 SWEEP_ID_ENV_VAR = "GITNEXUS_BENCH_SWEEP_ID"
-CELL_ID_ENV_VAR = "GITNEXUS_BENCH_CELL_ID"
-USAGE_ENV_VARS = (USAGE_LOG_ENV_VAR, SWEEP_ID_ENV_VAR, CELL_ID_ENV_VAR)
+USAGE_ENV_VARS = (USAGE_LOG_ENV_VAR, SWEEP_ID_ENV_VAR)
 
 ANTHROPIC = "anthropic"
 OPENAI_RESPONSES = "openai-responses"
