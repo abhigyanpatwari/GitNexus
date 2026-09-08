@@ -20,7 +20,13 @@ import { requireVendoredGrammar } from '../../../tree-sitter/vendored-grammars.j
  *     container and import bindings — `emitZigScopeCaptures` filters those
  *     groups out so a name binds exactly once.
  */
-const ZIG_SCOPE_QUERY = `
+/**
+ * Exported for `value-ref-dispatchability.test.ts`, which reads every language's
+ * scope query to enforce the keyed/unkeyed partition that
+ * `callableValueReferenceBoundaries`' dispatch exclusion depends on. Not part of
+ * the provider surface — nothing else should import it.
+ */
+export const ZIG_SCOPE_QUERY = `
 ;; Scopes
 (source_file) @scope.module
 (struct_declaration) @scope.class

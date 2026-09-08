@@ -113,6 +113,32 @@ pub fn shadowsTheModuleHandle(dom_utils: u8) u8 {
     return dom_utils;
 }
 
+// A LOCAL declaration shadowing a CONTAINER name — the class-owner half of the
+// same failure. `Ticker` here is a `u8` parameter, and this file neither
+// declares nor imports the `Ticker` container that `Ticker.zig` defines.
+// `findClassBindingInScope` filters the scope chain by `isClassLike`, so it
+// walks straight past the parameter and its qualified-name fallback answers
+// with a struct from a file this one never named. Resolving `Ticker.fire`
+// through that is a confident edge to a function the source did not write.
+pub fn shadowsAContainerName(Ticker: u8) u8 {
+    register(Ticker.fire);
+    return Ticker;
+}
+
+// The positive half of the same guard: here the LOCAL declaration IS the
+// container the registration names. A shadow test that only asked "is this name
+// bound nearer than the module scope" would answer yes and decline — reading the
+// declaration as its own shadow — and this whole class of local container would
+// stop registering anything.
+pub fn registersALocalContainer() u8 {
+    const Local = struct {
+        pub fn go() u8 {
+            return 3;
+        }
+    };
+    return bridge.accessor(Local.go, null, .{});
+}
+
 // ── Const binding initialiser ───────────────────────────────────────────────
 
 fn onReset(self: *Element) u8 {

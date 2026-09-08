@@ -972,13 +972,35 @@ async function callableValueReferenceBoundaries(
   // excluded here; the exclusion exists to keep TypeScript/JavaScript hook
   // tables that ARE followed from being downgraded.
   //
-  // Symbol-level, not per-edge: the graph does not record which registration
-  // produced which synthesized call. A target with a mix of followed and
-  // unfollowed registrations is therefore NOT hedged, which is the one place
-  // this errs toward confidence. Preferred over the alternative — hedging every
-  // property-value registration in every JS/TS codebase — because a signal that
-  // fires on everything stops carrying information, and the unfollowed half
-  // still has the `property-dispatch` fan-out cap warning behind it.
+  // SYMBOL-LEVEL, NOT PER-EDGE, and that is only sound because of an invariant
+  // that lives nowhere near this line. The graph does not record which
+  // registration produced which synthesized call, so if one symbol could carry
+  // both a followed and an unfollowed registration, this would zero the note
+  // over a gap the analyzer provably did not close — #3399 returning through a
+  // side door. Today no symbol can:
+  //
+  //   - sweep 2 synthesizes CALLS only for a registration whose site carried a
+  //     `propertyKey` (sweep 1 skips the index when it is undefined);
+  //   - every JS/TS `@reference.value-ref` rule also captures
+  //     `@reference.property-key` — both are object-literal shapes;
+  //   - no Zig `@reference.value-ref` rule captures one.
+  //
+  // So a dispatchable registration is always a JS/TS one, an undispatchable
+  // registration is always a Zig one, and the two never meet on one symbol.
+  // `test/unit/scope-resolution/value-ref-dispatchability.test.ts` FAILS the day
+  // that stops holding — a JS/TS rule for a bare callback argument
+  // (`register(handler)`), a Zig rule that grows a key. When it does, the
+  // choice to make here is between (a) splitting the edge `reason` into
+  // dispatchable / undispatchable so this probe can count them apart, and
+  // (b) hedging any symbol with an undispatchable registration regardless of
+  // dispatch. (a) is precise and costs a graph-content change; (b) is cheap and
+  // over-hedges. What is NOT acceptable is leaving this as-is, because a signal
+  // that quietly stops firing is the defect this whole feature removes.
+  //
+  // Given the invariant, the residual today is only the coarseness of the
+  // exclusion within JS/TS, and hedging every property-value registration in
+  // every JS/TS codebase is worse: a signal that fires on everything stops
+  // carrying information, and the fan-out cap warning still sits behind it.
   const dispatched = await executeParameterized(
     lbugPath,
     `MATCH (other)-[r:CodeRelation]->(sym)

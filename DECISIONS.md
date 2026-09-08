@@ -447,3 +447,93 @@ exists for. Documented in the code at the exclusion site.
 - `tsc --noEmit -p tsconfig.json` — clean. `npm run build` — clean.
 - `resolvers/zig.test.ts` — 98 passed / 1 skipped, including the three new
   module-owner cases.
+
+---
+
+## Review round 3 — `gitnexus-check` bot on PR #3219 (head `cf53bbaa`)
+
+Three findings: one Error, one Warning, one Nit. Each reproduced against the
+code before deciding; two were valid, one is correct about the mechanism but
+unreachable in the current rule set.
+
+**R3-1 (valid, REPRODUCED, fixed) — a CLASS receiver could resolve through a
+shadowing value binding.** R1-2 resolves a written receiver with
+`findClassBindingInScope`, which is a class-ONLY walk: `walkScopeChain` filters
+by `isClassLike`, so it steps over a nearer binding that is a value and keeps
+climbing — and past the scope chain entirely, into a qualified-name fallback
+that answers with the unique workspace definition of the name. So:
+
+    // Ticker.zig  — a file-struct `Element.zig` never imports
+    const Ticker = @This();
+    pub fn fire(self: *Ticker) u8 { … }
+
+    // Element.zig
+    pub fn shadowsAContainerName(Ticker: u8) u8 {
+        register(Ticker.fire);      // ← USES → Ticker.zig's `fire`
+    }
+
+emitted a confident edge to a function from a file this one neither declares nor
+imports. That is precisely the wrong-edge failure R1-2 exists to prevent,
+arriving through the class channel instead of the lexical one. Reproduced with
+the fixture above before any fix; the test fails without the guard.
+
+Fixed with `isOwnerNameShadowedBySomethingElse` in `scope/walkers.ts` — a
+sibling of `isNamespaceNameShadowed` with one extra clause. The plain namespace
+guard could NOT be reused: a container is often its own local declaration
+(`fn make() { const Local = struct {…}; register(Local.go); }`), and reading that
+binding as its own shadow suppresses exactly the resolutions the path exists to
+make. So a scope that binds the name answers immediately, and the answer is "not
+shadowed" only when one of that scope's own bindings IS the def just resolved.
+Both halves are pinned, and both were verified to fail when the guard is
+weakened: the parameter case fails with no guard, the local-container case fails
+with the plain `isNamespaceNameShadowed`.
+
+**R3-2 (mechanism correct, not reachable today; fragility fixed instead) — the
+dispatch exclusion could suppress an unfollowed registration.** The bot is right
+about the code: sweep 2 synthesizes CALLS only for a registration whose site
+carried a `propertyKey`, so an unkeyed registration can never be followed, while
+the exclusion zeroes the note on ANY inbound `property-dispatch` CALLS edge.
+
+It is not reachable in the current rule set, and the reason is measured rather
+than assumed: `@reference.value-ref` is emitted by exactly three languages —
+JavaScript (2 rules), TypeScript (2), Zig (3) — and every JS/TS rule also
+captures `@reference.property-key` (both are object-literal shapes) while no Zig
+rule does (Zig has no object-literal key). So a dispatchable registration is
+always a JS/TS one, an undispatchable registration is always a Zig one, and the
+two cannot meet on one symbol.
+
+*Rejected:* splitting the edge `reason` into dispatchable / undispatchable now.
+It is the precise fix, but it is a graph-content change that churns whichever
+side keeps the old literal — the Zig, TypeScript and probe suites all pin
+`'scope-resolution: value-ref'` by hand as a drift canary — and it buys nothing
+against a case no rule can produce.
+
+*What was actually wrong* is that the exclusion's soundness rested on a
+coincidence recorded nowhere, in files that no one reading `local-backend.ts`
+would open. Fixed at both ends: the exclusion site now states the invariant, the
+three facts it rests on, and the two options for when it breaks; and
+`test/unit/scope-resolution/value-ref-dispatchability.test.ts` FAILS the day it
+does — a JS/TS rule for a bare callback argument, a Zig rule that grows a key, or
+a fourth language emitting `value-ref` at all. Verified to fire: adding a
+property key to a Zig value-ref rule fails the Zig case, and the splitter has its
+own guard test so it cannot pass vacuously. `ZIG_SCOPE_QUERY` is exported for
+that test only.
+
+**R3-3 (valid, fixed) — a test comment claimed the wrong epistemic result.**
+The `declines a qualified reference whose receiver cannot be resolved` case said
+the shortfall shows up as `lower-bound`. It does not: with no edge there is no
+evidence, and the target stays `exact`. The pass docstring was corrected in round
+2 and the test comment was missed. It now states that the decline costs the
+reference AND the hedge, and why that is still the right trade.
+
+### Gates after review round 3
+
+- `tsc --noEmit` clean, `npm run build` clean, `prettier --check` clean.
+- `test/integration/resolvers` — 3,632 passed / 3 skipped (70 files).
+- `test/unit/scope-resolution` — 2,015 passed (120 files).
+- `impact-callable-value-references` under `lbug-db` — 7 passed.
+- Bench `--check`: `receiver-resolution`, `zig-cross-file-resolution`,
+  `scope-capture` (15 languages), `scope-emission` PASS, no baseline edited.
+  `callable-value-flow` failed once on its TIMING budget (widening overhead
+  2.006 > 1.9) with a byte-identical fingerprint, then passed twice at 1.788 /
+  1.813 — machine load, not a regression.

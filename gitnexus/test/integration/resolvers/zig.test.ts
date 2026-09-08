@@ -327,9 +327,14 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
     it('declines a qualified reference whose receiver cannot be resolved', () => {
       // `bridge.accessor(unresolvable_ns.tick, …)` names an owner this index
       // does not have, while a file-level `tick` sits in the lexical chain
-      // waiting to be mis-bound. Emitting nothing is the safe direction: the
-      // shortfall then shows up as `epistemic: "lower-bound"` rather than as a
-      // confident edge pointing at the wrong function.
+      // waiting to be mis-bound. Emitting nothing is the safe direction, but be
+      // exact about what it buys: no edge means no evidence, and `impact` on
+      // `tick` therefore stays `epistemic: "exact"` — this decline costs the
+      // reference AND the hedge. It is still the right trade, because the
+      // alternative is a confident edge to a function the source did not name,
+      // and a wrong edge is worse than a missing one. See
+      // `resolveValueRefTarget`'s docstring for the same distinction, and the
+      // module-owner case below for the half of it that IS recoverable.
       expect(valueRefTargetIds.filter((id) => id.includes('.tick#'))).toEqual([]);
       expect(valueRefs).not.toContain('JsApi → tick');
     });
@@ -365,6 +370,25 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       // the reason the module channel is guarded rather than merely added.
       expect(valueRefs).not.toContain('shadowsTheModuleHandle → normalize');
       expect(valueRefTargetIds.filter((id) => id.includes('normalize'))).toEqual([]);
+    });
+
+    it('declines a container-qualified reference whose owner name is locally shadowed', () => {
+      // `shadowsAContainerName(Ticker: u8)` names a PARAMETER. This file neither
+      // declares nor imports `Ticker.zig`'s container, so
+      // `findClassBindingInScope` walks past the parameter (it filters by
+      // `isClassLike`) and its qualified-name fallback answers with the unique
+      // workspace `Ticker` — a struct the source never named at this site.
+      // Verified to emit `shadowsAContainerName → fire` without the guard.
+      expect(valueRefs).not.toContain('shadowsAContainerName → fire');
+      expect(valueRefTargetIds.filter((id) => id.includes('Ticker'))).toEqual([]);
+    });
+
+    it('still binds a reference whose container IS the local declaration', () => {
+      // `registersALocalContainer` declares `Local` in its own body and registers
+      // `Local.go`. The shadow guard above must exempt the container it just
+      // resolved, or the nearer binding — which is that container — reads as its
+      // own shadow and every function-local registry stops registering.
+      expect(valueRefs).toContain('registersALocalContainer → go');
     });
 
     it('does not mint a value reference for the CALLEE of an ordinary call', () => {

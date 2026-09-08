@@ -351,6 +351,65 @@ export function isNamespaceNameShadowed(
   return true;
 }
 
+/**
+ * Does something between `inScope` and its module scope bind `name` to
+ * ANYTHING other than `def`?
+ *
+ * `isNamespaceNameShadowed` asks the same question for a namespace handle,
+ * where any local binding of the name is by definition not the import. A
+ * CONTAINER receiver needs the extra clause: the container may itself be the
+ * local declaration (`fn make() { const Local = struct {…}; … Local.go … }`),
+ * and reading that as its own shadow would suppress exactly the resolutions it
+ * is meant to permit — the #2723 mistake, one channel over.
+ *
+ * So a scope that binds the name answers immediately, and the answer is "not
+ * shadowed" only when one of that scope's bindings IS `def`. A name bound in a
+ * nearer scope to something else — a parameter, a local, a type binding — wins
+ * the lexical race, which is the whole point: `findClassBindingInScope` filters
+ * the chain by `isClassLike` and therefore cannot see that it lost it.
+ *
+ * Same floor and the same fail-closed posture as `isNamespaceNameShadowed`: the
+ * module scope is not inspected (a container declared there IS the binding, and
+ * the caller already resolved it), and a missing scope or a parent cycle answers
+ * `true`, because suppressing a resolution costs a missing edge while trusting a
+ * corrupt chain costs a wrong one.
+ */
+export function isOwnerNameShadowedBySomethingElse(
+  name: string,
+  def: SymbolDefinition,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = inScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return true;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return true;
+    if (scope.kind === 'Module') return false;
+    if (scope.kind !== 'Object') {
+      const bindsHere =
+        scope.bindings.has(name) ||
+        scope.typeBindings.has(name) ||
+        scope.lexicalNames?.has(name) === true ||
+        scope.ownedDefs.some((d) => {
+          const qualifiedName = d.qualifiedName;
+          if (qualifiedName === undefined) return false;
+          const dot = qualifiedName.lastIndexOf('.');
+          return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === name;
+        });
+      if (bindsHere) {
+        if ((scope.bindings.get(name) ?? []).some((b) => b.def.nodeId === def.nodeId)) return false;
+        if (scope.ownedDefs.some((d) => d.nodeId === def.nodeId)) return false;
+        return true;
+      }
+    }
+    currentId = scope.parent;
+  }
+  return true;
+}
+
 export function findReceiverTypeBinding(
   startScope: ScopeId,
   receiverName: string,

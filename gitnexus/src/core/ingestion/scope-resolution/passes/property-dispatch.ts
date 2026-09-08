@@ -49,6 +49,7 @@ import {
   findClassBindingInScope,
   findOwnedMember,
   isNamespaceNameShadowed,
+  isOwnerNameShadowedBySomethingElse,
 } from '../scope/walkers.js';
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -131,6 +132,25 @@ function resolveValueRefTarget(
   }
   const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
   if (owner !== undefined) {
+    // The container lookup is a CLASS-ONLY walk: `walkScopeChain` filters by
+    // `isClassLike`, so it steps over a nearer binding that is a value and keeps
+    // climbing — and past the scope chain entirely, into a qualified-name
+    // fallback that answers with the unique workspace definition of the name.
+    // `fn f(Ticker: u8) { register(Ticker.fire) }` in a file that neither
+    // declares nor imports `Ticker` therefore resolves to some other file's
+    // `Ticker` container. That is the wrong-edge failure R1-2 exists to prevent,
+    // arriving through the class channel instead of the lexical one, and a
+    // registration pointing at a function the source never named is worse than
+    // no registration at all.
+    //
+    // So the name has to still MEAN that container at this site. The namespace
+    // channel below asks the same question through `isNamespaceNameShadowed`;
+    // a container needs the variant that exempts the container ITSELF, because
+    // `fn make() { const Local = struct {…}; register(Local.go); }` binds the
+    // name locally to the very def we resolved, and reading that as its own
+    // shadow would suppress the resolutions this path exists to make.
+    if (isOwnerNameShadowedBySomethingElse(receiverName, owner, site.inScope, scopes))
+      return undefined;
     const member = findOwnedMember(owner.nodeId, site.name, model);
     if (member === undefined || !CALL_TARGET_TYPES.has(member.type)) return undefined;
     return member;
