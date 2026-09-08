@@ -26,7 +26,7 @@
     </a>
   </p>
 
-  <p><strong>The nervous system for agent context.</strong></p>
+  <p><strong>The context engine for Enterprise Codebases</strong></p>
 
   <p>
     Indexes any codebase into a knowledge graph — every dependency, call chain, cluster, and execution flow —
