@@ -253,10 +253,7 @@ export const dispatchChunkParse = async (
  * owns it.
  */
 export const dispatchChunkParseRound = async (
-  groups: ReadonlyArray<{
-    items: { path: string; content: string }[];
-    chunkHash?: string;
-  }>,
+  groups: ReadonlyArray<DispatchGroup<{ path: string; content: string }>>,
   workerPool: WorkerPool,
   onFileProgress?: FileProgressCallback,
 ): Promise<ParseWorkerResult[][]> => {
