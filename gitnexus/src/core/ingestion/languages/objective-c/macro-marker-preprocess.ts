@@ -18,10 +18,12 @@
 interface ScanState {
   inBlockComment: boolean;
   inLineCommentContinuation: boolean;
+  inCodeLineContinuation: boolean;
   inPreprocessorDirective: boolean;
   quote: '"' | "'" | undefined;
   braceDepth: number;
   parenDepth: number;
+  objcDeclDepth: number;
 }
 
 function isPreprocessorWhitespace(code: number): boolean {
@@ -56,6 +58,30 @@ function isBareMarkerIdentifier(line: string): boolean {
 
   while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
   return index === line.length;
+}
+
+function isIdentifierContinue(line: string, index: number): boolean {
+  if (index >= line.length) return false;
+  const code = line.charCodeAt(index);
+  return (
+    (code >= 0x41 && code <= 0x5a) ||
+    (code >= 0x61 && code <= 0x7a) ||
+    (code >= 0x30 && code <= 0x39) ||
+    code === 0x5f
+  );
+}
+
+function leadingObjCDeclKeyword(line: string): 'begin' | 'end' | null {
+  let index = 0;
+  while (index < line.length && isPreprocessorWhitespace(line.charCodeAt(index))) index++;
+  if (line.startsWith('//', index) || line.startsWith('/*', index)) return null;
+  if (line.startsWith('@end', index) && !isIdentifierContinue(line, index + 4)) return 'end';
+  for (const keyword of ['@interface', '@protocol', '@implementation'] as const) {
+    if (line.startsWith(keyword, index) && !isIdentifierContinue(line, index + keyword.length)) {
+      return 'begin';
+    }
+  }
+  return null;
 }
 
 function hasEscapedLineEnding(line: string): boolean {
@@ -172,9 +198,25 @@ function scanLine(line: string, state: ScanState): void {
     return;
   }
 
+  if (state.inCodeLineContinuation) {
+    scanLineBody(line, state, 0, true);
+    if (state.quote !== undefined && !hasEscapedLineEnding(line)) state.quote = undefined;
+    state.inCodeLineContinuation =
+      !state.inLineCommentContinuation && !state.inBlockComment && hasEscapedLineEnding(line);
+    return;
+  }
+
+  const keyword = leadingObjCDeclKeyword(line);
+  if (keyword === 'begin') state.objcDeclDepth++;
+  else if (keyword === 'end') state.objcDeclDepth = Math.max(0, state.objcDeclDepth - 1);
+
   scanLineBody(line, state, 0, true);
 
   if (state.quote !== undefined && !hasEscapedLineEnding(line)) state.quote = undefined;
+  // Line-comment `\` continuation is not a C splice; it must not suppress
+  // the next physical line's file-scope marker test.
+  state.inCodeLineContinuation =
+    !state.inLineCommentContinuation && !state.inBlockComment && hasEscapedLineEnding(line);
 }
 
 /**
@@ -188,10 +230,12 @@ export function preprocessObjectiveCMacroMarkers(source: string, _filePath?: str
   const state: ScanState = {
     inBlockComment: false,
     inLineCommentContinuation: false,
+    inCodeLineContinuation: false,
     inPreprocessorDirective: false,
     quote: undefined,
     braceDepth: 0,
     parenDepth: 0,
+    objcDeclDepth: 0,
   };
   const segments = source.split(/(\r\n|\n|\r)/);
   let changed = false;
@@ -201,10 +245,12 @@ export function preprocessObjectiveCMacroMarkers(source: string, _filePath?: str
     if (
       !state.inBlockComment &&
       !state.inLineCommentContinuation &&
+      !state.inCodeLineContinuation &&
       !state.inPreprocessorDirective &&
       state.quote === undefined &&
       state.braceDepth === 0 &&
       state.parenDepth === 0 &&
+      state.objcDeclDepth === 0 &&
       isBareMarkerIdentifier(line)
     ) {
       segments[index] = ' '.repeat(line.length);

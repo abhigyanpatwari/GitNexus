@@ -192,6 +192,9 @@ const DECLARATION_MEMBER_WRAPPER_TYPES = new Set([
   'instance_variables',
 ]);
 
+/** Named prefixes the ObjC grammar allows immediately before each ivar. */
+const IVAR_ATTRIBUTE_PREFIX_TYPES = new Set(['attribute_specifier', 'attribute_declaration']);
+
 const declarationChunk = async (
   content: string,
   filePath: string,
@@ -393,6 +396,7 @@ const collectDeclarationUnits = (
     includeNodePrefixOnFirstMember = false,
   ): void => {
     const firstMemberIndex = members.length;
+    let ivarAttributePrefixStart: number | undefined;
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (!child) continue;
@@ -401,11 +405,16 @@ const collectDeclarationUnits = (
         continue;
       }
       if (skipHeaderChildren && DIRECT_MEMBER_HEADER_NODE_TYPES.has(child.type)) continue;
+      if (node.type === 'instance_variables' && IVAR_ATTRIBUTE_PREFIX_TYPES.has(child.type)) {
+        ivarAttributePrefixStart ??= child.startIndex;
+        continue;
+      }
       members.push({
-        startIndex: child.startIndex,
+        startIndex: ivarAttributePrefixStart ?? child.startIndex,
         endIndex: child.endIndex,
         groupable: groupFields && FIELD_LIKE_MEMBER_TYPES.has(child.type),
       });
+      ivarAttributePrefixStart = undefined;
     }
 
     const firstMember = members[firstMemberIndex];

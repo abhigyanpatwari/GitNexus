@@ -627,6 +627,70 @@ describe('chunkNode', () => {
     ).toBe(true);
   });
 
+  it('keeps ivar attributes attached to the following instance variable', async () => {
+    const extraMethods = ['- (void)alpha;', '- (void)bravo;', '- (void)charlie;'];
+    const content = [
+      '@interface Worker {',
+      '  __attribute__((unused)) id _first;',
+      '}',
+      ...extraMethods,
+      '@end',
+    ].join('\n');
+    const attribute = '__attribute__((unused))';
+    const firstIvar = 'id _first;';
+    const attrStart = content.indexOf(attribute);
+    const firstIvarStart = content.indexOf(firstIvar);
+    const instanceVariables = makeFakeNode(
+      'instance_variables',
+      content.indexOf('{'),
+      content.indexOf('}') + 1,
+      [
+        makeFakeNode('attribute_specifier', attrStart, attrStart + attribute.length),
+        makeFakeNode('instance_variable', firstIvarStart, firstIvarStart + firstIvar.length),
+      ],
+    );
+    const methodNodes = extraMethods.map((method) => {
+      const methodStart = content.indexOf(method);
+      return makeFakeNode('method_declaration', methodStart, methodStart + method.length);
+    });
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
+      instanceVariables,
+      ...methodNodes,
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    // First-chunk prefix starts at `@interface`, so size must cover that
+    // prefix plus the ivar unit. Smaller sizes fall into characterChunk and
+    // can split the attribute token itself.
+    const chunkSize = content.indexOf('}') + 2;
+    const result = await chunkNode(
+      'Class',
+      content,
+      'WorkerAttr.m',
+      1,
+      extraMethods.length + 4,
+      chunkSize,
+      0,
+    );
+
+    expect(content.length).toBeGreaterThan(chunkSize);
+    expect(
+      result.some((chunk) => chunk.text.includes(attribute) && !chunk.text.includes(firstIvar)),
+    ).toBe(false);
+    expect(
+      result.some((chunk) => chunk.text.includes(attribute) && chunk.text.includes(firstIvar)),
+    ).toBe(true);
+  });
+
   it('keeps Objective-C declaration modifiers in the class prefix', async () => {
     const content = ['NS_ROOT_CLASS @interface Worker', '- (void)run;', '@end'].join('\n');
     const modifier = 'NS_ROOT_CLASS';
