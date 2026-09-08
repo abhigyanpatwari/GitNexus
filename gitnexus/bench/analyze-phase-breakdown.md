@@ -32,6 +32,13 @@ run once to stamp the identity, then edit and run again **without touching
 `dist`**. An earlier revision of this document reported full-rebuild numbers as
 if they were incremental for exactly this reason; they are corrected below.
 
+**And a mark on an `await` is not a mark on that call.** The post-pipeline tail
+was timed by injecting timestamp marks into a disposable `dist`. An `await` that
+directly follows native work also absorbs whatever libuv still had queued, so
+the cost lands on the wrong line — that is how 845ms ended up attributed to a
+dynamic import that actually costs 0.035ms. Sanity-check any mark that lands on
+a call with no plausible work in it.
+
 That is three separate "silently fall back to full work" guards — non-git
 corpus, runner identity, and the escalation gate. Read the banner on every run
 before trusting a number.
@@ -70,8 +77,15 @@ incremental path is genuinely taken. **31.7s total.**
 | **FTS index rebuild** (`buildSearchIndexesOrDegrade`) | **7525** | **24%** |
 | graph write (`loadGraphToLbug`, subgraph)             |     3566 |     11% |
 | parse                                                 |    ~2800 |      9% |
-| `import('./platform/capabilities.js')`                |      845 |      3% |
+| post-FTS event-loop drain (see below)                 |      845 |      3% |
 | everything else                                       |    ~3000 |      9% |
+
+The 845ms was originally recorded against `import('./platform/capabilities.js')`.
+That import is not the cost: the CLI already imports the module statically, so a
+cached dynamic import measures 0.035ms and `getRuntimeCapabilities()` 0.1ms. The
+`await` there is the first yield after the native FTS build, so it absorbs
+whatever libuv work was still queued. Any mark placed on an `await` immediately
+after native work charges that work to the wrong line.
 
 The incremental machinery works: the graph write was a 3,980-node subgraph, not
 the full 51,288. **Everything the #3194/#3196 parse work optimized is ~9% of
@@ -80,46 +94,80 @@ this.**
 A FULL-rebuild run of the same repo is 36-39s, with the graph write at ~6.3s and
 FTS at ~9.7s. Do not quote those as edit-loop numbers.
 
-## FTS index rebuild — the largest non-resolution cost
+## FTS index rebuild — the largest non-resolution cost, and it is a floor
 
-Per-index, measured on one leaf-file edit:
+A true incremental leaf edit rebuilds **8** of the 20 configured indexes — the
+tables the writeback actually DMLs. Per-index cost (measured against a copy of
+the corpus index, `bench/` probe, reproduced within 2% of the in-analyze number):
 
 ```
- 3531ms  File.file_fts        <- 35% of FTS on its own
- 1558ms  Function.function_fts
-  535ms  Method     491ms  Const      466ms  Property
-  427ms  Interface  363ms  Class      280ms  TypeAlias
-  247ms  Struct     242ms  Variable   234ms  Enum     222ms  Trait   ...
+ 3541ms  File.file_fts        <- 47% of the incremental FTS cost on its own
+ 1696ms  Function.function_fts
+  521ms  Method     506ms  Const      486ms  Property
+  403ms  Interface  324ms  Class      291ms  TypeAlias
  ------
-10203ms across 20 indexes
+ 7769ms  8 indexes   (in-analyze: 7525ms)
 ```
 
-Two findings.
+A FULL rebuild does all 20 and costs ~10.2s; the extra 12 indexes are only
+~2.5s, so **the narrowing is already doing its job**. An earlier revision of
+this document called the narrowing "inconsistent" because one run rebuilt 8 and
+another 20 — the 20-index run was a forced full rebuild (the runner-identity
+trap above), not a leaf edit. There is nothing to fix there.
 
-**`File.file_fts` dominates** because File nodes carry file content, so that one
-index re-tokenizes ~30MB of source. Changing one file re-tokenizes all of it.
+`File.file_fts` dominates because File rows carry whole-file content: 2442 rows,
+32.9 MB, and Ladybug tokenizes at ~9.8 MB/s.
 
-**20 indexes were rebuilt for a two-importer leaf edit.** `touchedFts` is meant
-to narrow this, and a separate run rebuilt only 8 — so the narrowing is at least
-inconsistent. It has a withdrawal path: `missingSearchFTSIndexTables` returns
-`undefined` when the index catalog cannot be read (`fts-indexes.ts:285`), and
-`tables: undefined` means rebuild everything. Pin that before optimizing, or the
-optimization targets a set that is not actually being narrowed.
+### Four ways out, all measured, all closed
 
-The code states the underlying constraint plainly: _"createSearchFTSIndexes
-re-tokenizes every stored row on every run."_ Indexes must be dropped for DML
-(#2589, #2841), and the only way back is a whole-table rebuild.
+**Narrow further — no.** The 8 tables are exactly the ones holding rows for the
+6 files in the write set (1 changed + 5 importers). There is no fat.
 
-Ranked next steps:
+**Build the indexes concurrently — impossible.** A second connection issuing
+`CREATE_FTS_INDEX` fails immediately:
 
-1. **Take the FTS rebuild off the critical path.** Nothing in `analyze` reads
-   the index — only later searches do. Rebuild lazily on first search or in the
-   background after the swap. Removes the cost rather than shrinking it, and the
-   degraded-search state is already modelled (`ftsSkipReason`, "degrade rather
-   than throw").
-2. **Do not rebuild `File.file_fts` when no file content changed.**
-3. **Fix or delete the narrowing** — a gate that silently withdraws looks like
-   protection and is not.
+> `Cannot start a new write transaction in the system. Only one write transaction at a time is allowed in the system.`
+
+Eight builds on one connection serialize exactly (7886ms concurrent vs 7769ms
+serial).
+
+**Raise the connection's thread count — no effect.** min-of-3 wall time at
+4 / 8 / 16 / default(24) threads: 7298 / 7133 / 7109 / 7345 ms, inside the ~400ms
+per-config spread. CPU burned does move — 8.8s / 9.7s / 11.8s / 13.6s — so the
+default over-subscribes ~60% for nothing, but wall time is flat.
+
+**Skip `File.file_fts` when content did not change — cannot happen.** Any file
+edit changes a File row, and Ladybug's FTS is not incremental: an index built
+before an insert does not see the new row, so a changed row forces a whole-table
+rebuild. Dropping `content` from the index takes it 3541ms → **241ms**, but that
+is deleting full-file keyword search (#2317/#2323), not optimizing it. Capping
+the indexed content is a bad trade — the size distribution is flat, so a 64 KB
+cap still indexes 90% of the bytes while truncating the 72 largest files.
+
+### The one lever left: overlap
+
+The FTS build runs on a libuv thread, not the main thread, and fully overlaps
+blocking JS:
+
+```
+index alone                    3859ms
+index + 3000ms of JS burn      3337ms      (serial would be ~6859ms)
+```
+
+So the 3.5s File index could hide entirely behind the pipeline's ~17s of
+main-thread JS. File rows are the only ones that make this possible: they are
+`{ name, filePath }` from `processStructure`, with content lazy-read from disk at
+CSV time, so they are fully determined by the file scan — before parsing, before
+resolution.
+
+Two things block it today, and neither is small:
+
+1. The DB is **closed** for the whole pipeline (`closeLbug` before
+   `runPipelineFromRepo`, `initLbug` after). An early File write means holding a
+   write handle across the pipeline.
+2. It moves `liveIndexMutationStarted` before the pipeline. A pipeline failure
+   would then leave the live index with fresh File content and stale symbols,
+   instead of untouched.
 
 ## scopeResolution is memory-traffic bound, not algorithmic
 
@@ -179,10 +227,13 @@ run (73.0s vs 69.6s on overlay). Measure on a local filesystem.
 
 ## Open
 
-The post-pipeline tail is now fully accounted (99.7%): FTS rebuild, the graph
-write, and a 0.8s dynamic `capabilities.js` import between them. What remains
-open is the FTS work above, and `scopeResolution` — still the single largest
-step, memory-traffic bound, and untouched.
+The post-pipeline tail is fully accounted (99.7%): FTS rebuild, the graph write,
+and 0.8s of post-FTS event-loop drain between them.
+
+FTS is closed as an optimization target except for the overlap above, which is a
+scheduling change to `run-analyze.ts`'s open/close discipline rather than
+anything about FTS. `scopeResolution` is the single largest step, memory-traffic
+bound, and still untouched.
 
 Every optimization in this document that looked compelling from the armchair
 died under measurement. Measure first, and check the banner.
