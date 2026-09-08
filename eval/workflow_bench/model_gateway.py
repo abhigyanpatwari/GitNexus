@@ -31,6 +31,8 @@ from typing import Any
 
 import yaml
 
+from .provider_usage import USAGE_ENV_VARS
+
 ANTHROPIC_API_KEY_ENV = "GITNEXUS_BENCH_ANTHROPIC_API_KEY"
 LEGACY_ANTHROPIC_API_KEY_ENV = "GITNEXUS_BENCH_AUTH_TOKEN"
 OPENAI_API_KEY_ENV = "GITNEXUS_BENCH_OPENAI_API_KEY"
@@ -330,6 +332,17 @@ class OpenAIGateway(AbstractContextManager["OpenAIGateway"]):
             "OPENAI_API_KEY": self.openai_api_key,
             "LITELLM_MASTER_KEY": self.auth_token,
         }
+        # The proxy is a separate process and Popen(env=...) REPLACES the
+        # parent environment rather than extending it, so anything the usage
+        # callback reads has to be forwarded by name. Without this the callback
+        # loads, finds no destination, and returns silently on every request -
+        # the accounting looks configured and records nothing. Forwarded
+        # individually rather than by inheriting the environment, because the
+        # allowlist above is the gateway's credential boundary.
+        for name in USAGE_ENV_VARS:
+            value = os.environ.get(name)
+            if value:
+                env[name] = value
         if os.name == "nt":
             # Windows subprocess DLL/socket initialization needs SystemRoot.
             # Keep the rest of the gateway's credential boundary explicit.

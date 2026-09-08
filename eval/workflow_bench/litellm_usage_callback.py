@@ -25,7 +25,8 @@ from typing import Any
 
 from litellm.integrations.custom_logger import CustomLogger
 
-USAGE_LOG_ENV_VAR = "GITNEXUS_BENCH_PROVIDER_USAGE"
+from .provider_usage import CELL_ID_ENV_VAR, SWEEP_ID_ENV_VAR, USAGE_LOG_ENV_VAR, canonical_provider
+
 SCHEMA_VERSION = 1
 _LOCK = threading.Lock()
 
@@ -63,6 +64,8 @@ class ProviderUsageLogger(CustomLogger):
             return
         try:
             params = kwargs.get("litellm_params") or {}
+            call_type = kwargs.get("call_type")
+            provider_label = kwargs.get("custom_llm_provider") or params.get("custom_llm_provider")
             metadata = params.get("metadata") or {}
             event = {
                 "schema_version": SCHEMA_VERSION,
@@ -72,11 +75,18 @@ class ProviderUsageLogger(CustomLogger):
                 # because several roles map onto one upstream model here.
                 "requested_model": kwargs.get("model"),
                 "actual_model": getattr(response_obj, "model", None),
-                "provider": kwargs.get("custom_llm_provider") or params.get("custom_llm_provider"),
+                # Two fields, because they answer different questions. The raw
+                # label is what LiteLLM said; "provider" is the adapter key,
+                # which needs the call type too - LiteLLM reports "openai" for
+                # both Chat Completions and Responses and those report usage
+                # differently. Unresolvable stays None so normalize_usage
+                # refuses rather than guessing token semantics.
+                "provider_label": provider_label,
+                "provider": canonical_provider(provider_label, call_type),
                 "response_id": getattr(response_obj, "id", None),
-                "call_type": kwargs.get("call_type"),
-                "sweep_id": os.environ.get("GITNEXUS_BENCH_SWEEP_ID"),
-                "cell_id": os.environ.get("GITNEXUS_BENCH_CELL_ID"),
+                "call_type": call_type,
+                "sweep_id": os.environ.get(SWEEP_ID_ENV_VAR),
+                "cell_id": os.environ.get(CELL_ID_ENV_VAR),
                 "session_id": metadata.get("litellm_session_id") or metadata.get("session_id"),
                 "started_at": str(start_time),
                 "completed_at": str(end_time),

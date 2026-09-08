@@ -32,6 +32,14 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 
+# Read by the in-proxy callback and forwarded by the gateway that launches it.
+# Defined here because this module is pure stdlib: model_gateway can import the
+# name without importing litellm, which only the callback needs.
+USAGE_LOG_ENV_VAR = "GITNEXUS_BENCH_PROVIDER_USAGE"
+SWEEP_ID_ENV_VAR = "GITNEXUS_BENCH_SWEEP_ID"
+CELL_ID_ENV_VAR = "GITNEXUS_BENCH_CELL_ID"
+USAGE_ENV_VARS = (USAGE_LOG_ENV_VAR, SWEEP_ID_ENV_VAR, CELL_ID_ENV_VAR)
+
 ANTHROPIC = "anthropic"
 OPENAI_RESPONSES = "openai-responses"
 
@@ -133,6 +141,24 @@ def _normalize_anthropic(usage: Mapping[str, Any]) -> NormalizedUsage:
         output_tokens=_int_or_none(usage, "output_tokens"),
         reasoning_output_tokens=None,
     )
+
+
+def canonical_provider(label: str | None, call_type: str | None) -> str | None:
+    """Map LiteLLM's provider label onto an adapter key, or None if unsure.
+
+    LiteLLM reports ``custom_llm_provider`` as "openai" for both Chat
+    Completions and Responses, and those two report usage differently, so the
+    label alone cannot pick an adapter. The call type is what distinguishes
+    them. Returning None when it does not is deliberate: normalize_usage
+    refuses an unknown provider rather than guessing token semantics, which is
+    the whole point of keeping the native object authoritative.
+    """
+
+    if label == "openai" and call_type and "responses" in call_type:
+        return OPENAI_RESPONSES
+    if label in _ADAPTERS:
+        return label
+    return None
 
 
 _ADAPTERS = {
