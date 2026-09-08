@@ -164,6 +164,14 @@ const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set([
   // tree-sitter-objc `_type_params` hides itself and exposes this named child
   // for `(T)` generics and category-shaped argument lists.
   'generic_arguments',
+  // `_class_interface_header` / `_class_implementation_header` expose these
+  // named children before members (`NS_ROOT_CLASS @interface …`).
+  'attribute_declaration',
+  'attribute_specifier',
+  'availability_attribute_specifier',
+  'ms_declspec_modifier',
+  'storage_class_specifier',
+  'type_qualifier',
 ]);
 
 const FIELD_LIKE_MEMBER_TYPES = new Set([
@@ -175,6 +183,8 @@ const FIELD_LIKE_MEMBER_TYPES = new Set([
   'lexical_declaration',
   'pair',
   'enum_assignment',
+  // tree-sitter-objc wraps each ivar as `instance_variable`, not field_definition.
+  'instance_variable',
 ]);
 
 const DECLARATION_MEMBER_WRAPPER_TYPES = new Set([

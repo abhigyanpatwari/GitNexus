@@ -102,7 +102,12 @@ function scanBalancedDelimiters(code: number, state: ScanState): void {
   else if (code === 0x7d) state.braceDepth = Math.max(0, state.braceDepth - 1);
 }
 
-function scanLineBody(line: string, state: ScanState, startIndex: number): void {
+function scanLineBody(
+  line: string,
+  state: ScanState,
+  startIndex: number,
+  trackDelimiters: boolean,
+): void {
   for (let index = startIndex; index < line.length; index++) {
     const code = line.charCodeAt(index);
     const next = line.charCodeAt(index + 1);
@@ -137,8 +142,18 @@ function scanLineBody(line: string, state: ScanState, startIndex: number): void 
       state.quote = line[index] as '"' | "'";
       continue;
     }
-    scanBalancedDelimiters(code, state);
+    // Directive replacement text is tokens, not C scopes. `{` in
+    // `#define WRAP {` must not pin braceDepth for later file-scope markers.
+    if (trackDelimiters) scanBalancedDelimiters(code, state);
   }
+}
+
+function scanDirectiveLine(line: string, state: ScanState): void {
+  const continued = hasEscapedLineEnding(line);
+  scanLineBody(line, state, 0, false);
+  state.inPreprocessorDirective = continued;
+  // A quote opened in replacement text does not survive past the directive.
+  if (!continued) state.quote = undefined;
 }
 
 function scanLine(line: string, state: ScanState): void {
@@ -147,20 +162,17 @@ function scanLine(line: string, state: ScanState): void {
     return;
   }
   if (state.inPreprocessorDirective) {
-    state.inPreprocessorDirective = hasEscapedLineEnding(line);
-    scanLineBody(line, state, 0);
+    scanDirectiveLine(line, state);
     return;
   }
   if (startsPreprocessorDirective(line, state)) {
-    state.inPreprocessorDirective = hasEscapedLineEnding(line);
     // Directives can open a block comment (`#define X /*`) that continues
-    // onto the next physical line. Scan the rest of this line so that
-    // comment stays protected.
-    scanLineBody(line, state, 0);
+    // onto the next physical line. Scan comment/quote state only.
+    scanDirectiveLine(line, state);
     return;
   }
 
-  scanLineBody(line, state, 0);
+  scanLineBody(line, state, 0, true);
 
   if (state.quote !== undefined && !hasEscapedLineEnding(line)) state.quote = undefined;
 }

@@ -106,6 +106,15 @@ describe('preprocessObjectiveCMacroMarkers', () => {
     expect(normalized.split('\n')[3]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
   });
 
+  it('does not treat directive replacement braces as file-scope nesting', () => {
+    const source = ['#define WRAP {', 'RCT_EXTERN_C_BEGIN', 'RCT_EXTERN_C_END', ''].join('\n');
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'DirectiveBrace.h');
+
+    expect(normalized.split('\n')[0]).toBe('#define WRAP {');
+    expect(normalized.split('\n')[1]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
+    expect(normalized.split('\n')[2]).toBe(' '.repeat('RCT_EXTERN_C_END'.length));
+  });
+
   it('does not rewrite markers inside a block comment opened on a directive line', () => {
     const source = ['#define X /*', 'RCT_EXTERN_C_BEGIN', '*/', 'RCT_EXTERN_C_END', ''].join('\n');
     const normalized = preprocessObjectiveCMacroMarkers(source, 'DirectiveComment.h');

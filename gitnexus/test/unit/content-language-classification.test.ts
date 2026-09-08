@@ -46,4 +46,13 @@ describe('content language classification', () => {
       SupportedLanguages.TypeScript,
     );
   });
+
+  it('keeps extensionless Ruby filenames when content classification misses', () => {
+    expect(getLanguageForFileContent('Rakefile', 'task :default do\nend\n')).toBe(
+      SupportedLanguages.Ruby,
+    );
+    expect(getLanguageForFileContent('Gemfile', 'source "https://rubygems.org"\n')).toBe(
+      SupportedLanguages.Ruby,
+    );
+  });
 });

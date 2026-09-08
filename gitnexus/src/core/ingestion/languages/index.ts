@@ -8,7 +8,11 @@
  * 4. Run `tsc --noEmit` to verify
  */
 
-import { SupportedLanguages, isBladeTemplateFilename } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  getLanguageFromFilename,
+  isBladeTemplateFilename,
+} from 'gitnexus-shared';
 import type { LanguageProvider } from '../language-provider.js';
 
 import { typescriptProvider, javascriptProvider } from './typescript.js';
@@ -83,7 +87,12 @@ export function getProviderForFileContent(
   for (const provider of Object.values(providers)) {
     if (provider.classifyFileContent?.(filePath, content) === true) return provider;
   }
-  return getProviderForFile(filePath);
+  const byExtension = getProviderForFile(filePath);
+  if (byExtension) return byExtension;
+  // Filename-only languages (Rakefile, Gemfile, …) live in
+  // getLanguageFromFilename, not provider.extensions.
+  const filenameLang = getLanguageFromFilename(filePath);
+  return filenameLang === null ? null : providers[filenameLang];
 }
 
 /** True when at least one provider wants source text before language bucketing. */

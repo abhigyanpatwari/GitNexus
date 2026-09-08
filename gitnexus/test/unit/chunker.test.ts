@@ -592,8 +592,8 @@ describe('chunkNode', () => {
       content.indexOf('{'),
       content.indexOf('}') + 1,
       [
-        makeFakeNode('field_definition', firstIvarStart, firstIvarStart + firstIvar.length),
-        makeFakeNode('field_definition', secondIvarStart, secondIvarStart + secondIvar.length),
+        makeFakeNode('instance_variable', firstIvarStart, firstIvarStart + firstIvar.length),
+        makeFakeNode('instance_variable', secondIvarStart, secondIvarStart + secondIvar.length),
       ],
     );
     const declaration = makeFakeNode('class_interface', 0, content.length, [
@@ -625,6 +625,32 @@ describe('chunkNode', () => {
     expect(
       result.some((chunk) => chunk.text.includes(secondIvar) && chunk.text.includes('}')),
     ).toBe(true);
+  });
+
+  it('keeps Objective-C declaration modifiers in the class prefix', async () => {
+    const content = ['NS_ROOT_CLASS @interface Worker', '- (void)run;', '@end'].join('\n');
+    const modifier = 'NS_ROOT_CLASS';
+    const method = '- (void)run;';
+    const methodStart = content.indexOf(method);
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode('storage_class_specifier', 0, modifier.length),
+      makeFakeNode(
+        'identifier',
+        content.indexOf('Worker'),
+        content.indexOf('Worker') + 'Worker'.length,
+      ),
+      makeFakeNode('method_declaration', methodStart, methodStart + method.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'RootClass.m', 1, 3, 80, 0);
+
+    expect(result[0].text).toContain(method);
+    expect(result.some((chunk) => chunk.text.trim() === modifier)).toBe(false);
   });
 
   it('keeps Objective-C protocol inheritance in the declaration prefix', async () => {
