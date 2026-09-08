@@ -14,18 +14,26 @@ import yaml
 from typing import Any
 
 from workflow_bench import runner
+from workflow_bench.evolution import CANDIDATE_ARMS
 from workflow_bench.process_control import _CANCELLATION, cancellation_scope
 from workflow_bench.runner import (
     aggregate,
+    GraphBuildEnv,
+    arm_health,
     broken_incumbent_arms,
+    unhealthy_arms,
+    unmeasured_arms,
     build_parser,
     infra_error_record,
+    next_graph_prefetch_target,
     normalized_model_identifier,
     parse_shortstat,
+    prefetch_next_graph,
     render_report,
     savings,
     select_tasks,
     systemic_outage_streak,
+    task_has_planned_paid_cells,
 )
 
 
@@ -68,6 +76,15 @@ def test_aggregate_takes_medians_and_counts_resolved():
         "diff_deletions": 5,
         "class": "demo",
         "resolved": 2,
+        # None of these are reused, so every resolution was measured this sweep.
+        "resolved_fresh": 2,
+        # Health is counted separately from resolution: all three executed and
+        # produced usable evidence, including the one that resolved nothing.
+        "fresh_attempts": 3,
+        "admissible": 3,
+        "execution_failures": 0,
+        "evidence_failures": 0,
+        "health_reasons": [],
         "runs": 3,
         "valid_runs": 3,
         "excluded_runs": 0,
@@ -250,6 +267,9 @@ def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_asset
     assert skipped == ["cross-module-parse-retry"]
     assert all(not task.get("sandbox_copy") for task in tasks)
     assert all(task["sandbox_dependencies"] for task in tasks)
+    assert all(
+        any(dep.get("source") == "gitnexus-shared/dist" for dep in task["sandbox_dependencies"]) for task in tasks
+    )
     assert all(task["oracle"]["command"] and task["oracle"]["files"] for task in tasks)
     assert all("./node_modules/.bin/vitest run" in task["oracle"]["command"] for task in tasks)
     assert all("npx vitest" not in task["oracle"]["command"] for task in tasks)
@@ -517,6 +537,369 @@ def test_run_evolution_script_is_the_shared_ci_and_local_entrypoint():
     assert "--include-expensive" in argv
     assert "claude-sonnet-5" not in argv
     assert printed.stderr  # rewrite notice goes to stderr
+
+
+def test_planned_paid_cells_treat_missing_reuse_as_paid():
+    task = {"id": "review-pr-2718-defect"}
+    assert task_has_planned_paid_cells(
+        task,
+        arms=["ce_review", "review", "candidate_review"],
+        runs=3,
+        reusable_rows={},
+        reuse_source=None,
+    )
+    reuse_source = Path("/tmp/seed")
+    rows = {
+        (task["id"], arm, run_idx): {}
+        for run_idx in range(3)
+        for arm in ("ce_review", "review", "candidate_review")
+    }
+    assert not task_has_planned_paid_cells(
+        task,
+        arms=["ce_review", "review", "candidate_review"],
+        runs=3,
+        reusable_rows=rows,
+        reuse_source=reuse_source,
+    )
+    del rows[(task["id"], "candidate_review", 0)]
+    assert task_has_planned_paid_cells(
+        task,
+        arms=["ce_review", "review", "candidate_review"],
+        runs=3,
+        reusable_rows=rows,
+        reuse_source=reuse_source,
+    )
+
+
+def test_next_graph_prefetch_skips_ready_shas_and_fully_reused_tasks(tmp_path: Path):
+    first = {"id": "review-a"}
+    second = {"id": "review-b"}
+    third = {"id": "review-c"}
+    reuse_source = tmp_path / "seed"
+    reused_second = {
+        (second["id"], arm, 0): {} for arm in ("ce_review", "review", "candidate_review")
+    }
+    target = next_graph_prefetch_target(
+        [
+            (first, {"repo_identity": "/repo", "resolved_sha": "aaa"}),
+            (second, {"repo_identity": "/repo", "resolved_sha": "bbb"}),
+            (third, {"repo_identity": "/repo", "resolved_sha": "ccc"}),
+        ],
+        arms=["ce_review", "review", "candidate_review"],
+        runs=1,
+        reusable_rows=reused_second,
+        reuse_source=reuse_source,
+        ready_keys={("/repo", "aaa")},
+    )
+    assert target is not None
+    task, binding, key = target
+    assert task["id"] == "review-c"
+    assert key == ("/repo", "ccc")
+    assert binding["resolved_sha"] == "ccc"
+
+
+def test_prefetch_next_graph_runs_ensure_on_a_background_thread(monkeypatch):
+    started = threading.Event()
+    seen: list[tuple[str, str]] = []
+
+    def fake_ensure(**kwargs):
+        seen.append(kwargs["graph_key"])
+        started.set()
+
+    monkeypatch.setattr("workflow_bench.runner.ensure_task_graph", fake_ensure)
+    cancel = threading.Event()
+    job = prefetch_next_graph(
+        task={"id": "review-b"},
+        binding={"repo_identity": "/repo", "resolved_sha": "bbb"},
+        graph_key=("/repo", "bbb"),
+        env=GraphBuildEnv(
+            trees=Path("/tmp"),
+            task_asset_cache=None,
+            claude_bin="claude",
+            bwrap_bin="bwrap",
+            sandbox_backend="bwrap",
+            runtime_mounts=(),
+            clone_templates={},
+            clone_template_errors={},
+            graph_snapshots={},
+            graph_snapshot_errors={},
+        ),
+        cancel_event=cancel,
+    )
+    assert job.key == ("/repo", "bbb")
+    assert started.wait(timeout=2)
+    job.join()
+    assert seen == [("/repo", "bbb")]
+
+
+def test_a_reused_resolution_does_not_count_as_this_sweeps_health():
+    """resolved counts evidence; resolved_fresh counts evidence measured today.
+
+    broken_incumbent_arms reads resolved_fresh because a reused row proves last
+    generation's environment worked. Counting it would make an arm whose cells
+    were all reused look healthy in exactly the run where a broken environment
+    should have been caught.
+    """
+
+    reused = [record(resolved=True, reused=True), record(resolved=True, reused=True)]
+    agg = aggregate(reused)
+    assert agg["resolved"] == 2
+    assert agg["resolved_fresh"] == 0
+    assert broken_incumbent_arms({"t": {"review": agg}}, {"review"}) == ["review"]
+
+    mixed = aggregate([record(resolved=True, reused=True), record(resolved=True)])
+    assert mixed["resolved_fresh"] == 1
+    assert broken_incumbent_arms({"t": {"review": mixed}}, {"review"}) == []
+
+
+def test_graph_build_env_ready_keys_covers_successes_and_failures():
+    """A key that failed is attempted, not pending.
+
+    next_graph_prefetch_target skips keys already in ready_keys. If a failed
+    build were omitted, the sweep would prefetch it again every iteration and
+    pay a full clone and offline index each time for a build that cannot
+    succeed.
+    """
+
+    env = GraphBuildEnv(
+        trees=Path("/tmp"),
+        task_asset_cache=None,
+        claude_bin="claude",
+        bwrap_bin="bwrap",
+        sandbox_backend="bwrap",
+        runtime_mounts=(),
+        clone_templates={("/repo", "aaa"): (Path("/tmp/a"), "aaa")},
+        clone_template_errors={("/repo", "bbb"): OSError("clone failed")},
+        graph_snapshots={("/repo", "ccc"): object()},
+        graph_snapshot_errors={("/repo", "ddd"): OSError("index failed")},
+    )
+    assert env.ready_keys() == {
+        ("/repo", "aaa"),
+        ("/repo", "bbb"),
+        ("/repo", "ccc"),
+        ("/repo", "ddd"),
+    }
+
+
+def _cell(**overrides) -> dict[str, Any]:
+    """One results.jsonl row, healthy unless told otherwise."""
+
+    base = record(resolved=True)
+    base.update({"error_kind": None, "review_evidence_valid": True, "transcript_missing": False})
+    base.update(overrides)
+    return base
+
+
+def _arms(**by_arm) -> dict[str, dict[str, dict[str, Any]]]:
+    return {"task0": {arm: aggregate(rows) for arm, rows in by_arm.items()}}
+
+
+def test_a_reviewer_that_scores_badly_is_not_an_unhealthy_harness():
+    """Reconstructed from Actions run 33962002890's logged observations.
+
+    Every completed cell was resolved=False with error_kind=oracle-failed, at a
+    median score of 0.212 — the reviews ran, wrote artifacts and were scored.
+    That is a valid negative for the quality gate to judge. Diagnosing it as a
+    broken environment is the confusion this classification exists to end.
+    """
+
+    scored_but_wrong = [_cell(resolved=False, error_kind="oracle-failed") for _ in range(3)]
+    results = _arms(review=scored_but_wrong, ce_review=list(scored_but_wrong))
+    assert unhealthy_arms(results, {"review", "ce_review"}) == []
+    health = arm_health(results, {"review"})["review"]
+    assert health.admissible == 3 and health.fresh_attempts == 3
+    assert (health.execution_failures, health.evidence_failures) == (0, 0)
+
+
+def test_an_all_zero_score_is_still_a_valid_negative():
+    zeroed = [_cell(resolved=False, error_kind="oracle-failed", review_weighted_f1=0.0) for _ in range(3)]
+    assert unhealthy_arms(_arms(review=zeroed), {"review"}) == []
+
+
+def test_artifacts_that_were_never_written_are_an_unhealthy_harness():
+    """Reconstructed from Actions run 33912693948.
+
+    All 41 artifacts came back 0 bytes because the mount made an atomic write
+    impossible. The reviews could not produce evidence at all — the opposite of
+    the case above, and the one a health check must catch. The old caller
+    excluded review arms entirely, so it could not have.
+    """
+
+    unwritable = [_cell(resolved=False, ok=False, error_kind="review-evidence-invalid") for _ in range(3)]
+    flagged = unhealthy_arms(_arms(review=unwritable), {"review"})
+    assert [h.arm for h in flagged] == ["review"]
+    assert flagged[0].evidence_failures == 3
+    assert "review-evidence-invalid" in flagged[0].reasons
+
+
+def test_one_admissible_cell_leaves_an_arm_degraded_not_healthy():
+    """Mixed outcomes are DEGRADED. One usable measurement does not erase two failures.
+
+    Not fatal - the sweep still produced evidence - but calling it healthy is
+    how a partly-broken environment passes review.
+    """
+
+    mixed = [
+        _cell(resolved=False, error_kind="oracle-failed"),
+        _cell(resolved=False, ok=False, error_kind="session-error"),
+        _cell(resolved=False, ok=False, error_kind="infra-error"),
+    ]
+    results = _arms(review=mixed)
+    health = arm_health(results, {"review"})["review"]
+    assert health.status == "DEGRADED"
+    assert unhealthy_arms(results, {"review"}) == [], "degraded is diagnostic, not fatal"
+    assert health.execution_failures == 2, "failures must stay visible, not be erased"
+    assert health.admissible == 1
+
+
+def test_a_row_that_fails_both_ways_is_only_subtracted_once():
+    """run_arm can produce a row that is an execution AND an evidence failure.
+
+    It keeps the first error_kind — a session-error survives — and still sets
+    review_evidence_valid=False when the artifact will not parse. Counting that
+    row against admissible twice zeroed an arm that held a real measurement,
+    which arm_health reports as UNUSABLE and the measurement gate then fails on.
+    """
+
+    both = _cell(resolved=False, ok=False, error_kind="session-error", review_evidence_valid=False)
+    results = _arms(review=[both, _cell(resolved=True, error_kind="oracle-failed")])
+    health = arm_health(results, {"review"})["review"]
+    assert (health.execution_failures, health.evidence_failures) == (1, 1)
+    assert health.fresh_attempts == 2
+    assert health.admissible == 1
+    assert health.status == "DEGRADED"
+    assert unhealthy_arms(results, {"review"}) == []
+
+
+def test_reused_rows_alone_leave_current_health_unknown():
+    """Historical success cannot certify this sweep's environment."""
+
+    reused = [_cell(reused=True) for _ in range(3)]
+    results = _arms(review=reused)
+    assert unmeasured_arms(results, {"review"}) == ["review"]
+    assert unhealthy_arms(results, {"review"}) == []
+    assert arm_health(results, {"review"})["review"].measured is False
+
+
+def test_the_paid_canary_survives_a_prior_run_with_more_run_indices():
+    """The canary counts planned cells, not every key reuse selection returned.
+
+    Reuse selection accepts any non-negative prior `run`, so a results directory
+    produced with --runs 5 leaves keys this sweep never plans. Comparing against
+    those made the "arm is fully reused" test false exactly when it was true,
+    and the incumbent went a whole sweep without one measured cell.
+    """
+
+    tasks = [{"id": "task0"}, {"id": "task1"}]
+    reusable = {(task["id"], "review", run): {} for task in tasks for run in range(5)}
+
+    dropped = runner.drop_canary_reuse_key(reusable, arm="review", tasks=tasks, runs=3)
+
+    assert dropped == ("task0", "review", 0)
+    assert dropped not in reusable
+    # A second call is a no-op: the arm now has its paid cell.
+    assert runner.drop_canary_reuse_key(reusable, arm="review", tasks=tasks, runs=3) is None
+
+
+def test_an_arm_with_a_planned_paid_cell_keeps_every_reusable_row():
+    tasks = [{"id": "task0"}]
+    reusable = {("task0", "review", 0): {}}
+
+    assert runner.drop_canary_reuse_key(reusable, arm="review", tasks=tasks, runs=2) is None
+    assert len(reusable) == 1
+
+
+def test_reused_successes_do_not_mask_fresh_execution_failures():
+    rows = [_cell(reused=True), _cell(reused=True), _cell(ok=False, error_kind="session-error")]
+    flagged = unhealthy_arms(_arms(review=rows), {"review"})
+    assert [h.arm for h in flagged] == ["review"]
+    assert flagged[0].fresh_attempts == 1 and flagged[0].execution_failures == 1
+
+
+def test_a_parseable_artifact_does_not_excuse_a_failed_session():
+    """Artifact parseability must not override an execution failure."""
+
+    rows = [_cell(ok=False, error_kind="session-error", review_evidence_valid=True) for _ in range(2)]
+    flagged = unhealthy_arms(_arms(review=rows), {"review"})
+    assert [h.arm for h in flagged] == ["review"]
+    assert flagged[0].execution_failures == 2
+
+
+def test_a_single_unusable_review_is_caught_below_the_breaker_threshold():
+    """The decisive regression for the finalization guard.
+
+    A fixture of 41 empty artifacts would abort through the outage breaker -
+    review-evidence-invalid is systemic and the limit is 5 - so it proves
+    nothing about this path. One fresh unusable cell is under that threshold,
+    which leaves the finalization check as the only thing that can catch it.
+    """
+
+    streak = 0
+    for _ in range(1):
+        streak = runner.systemic_outage_streak("review-evidence-invalid", streak)
+    assert streak < runner.DEFAULT_OUTAGE_STREAK, "fixture must not reach the breaker"
+
+    results = _arms(review=[_cell(resolved=False, ok=False, error_kind="review-evidence-invalid")])
+    with pytest.raises(SystemExit) as exc:
+        runner.enforce_measurement_health(results, {"review"})
+    assert exc.value.code == 1
+
+
+def test_finalization_reports_every_arm_and_names_no_cause(capsys):
+    """Status for each arm; an empty artifact does not become an EROFS diagnosis."""
+
+    results = _arms(
+        review=[_cell(resolved=False, ok=False, error_kind="review-evidence-invalid")],
+        ce_review=[_cell(resolved=False, error_kind="oracle-failed")],
+    )
+    with pytest.raises(SystemExit):
+        runner.enforce_measurement_health(results, {"review", "ce_review"})
+    out = capsys.readouterr().out
+    assert "review: UNUSABLE" in out
+    assert "ce_review: OBSERVED_OK" in out
+    assert "cause=undetermined" in out
+    assert "EROFS" not in out and "mount" not in out
+
+
+def test_valid_negatives_do_not_abort_finalization(capsys):
+    """The 16h run's shape must survive the real guard, not just the classifier."""
+
+    scored_but_wrong = [_cell(resolved=False, error_kind="oracle-failed") for _ in range(3)]
+    health = runner.enforce_measurement_health(
+        _arms(review=scored_but_wrong, ce_review=list(scored_but_wrong)), {"review", "ce_review"}
+    )
+    assert {h.status for h in health.values()} == {"OBSERVED_OK"}
+    assert "UNUSABLE" not in capsys.readouterr().out
+
+
+def test_reused_only_arm_is_reported_unknown_by_finalization(capsys):
+    runner.enforce_measurement_health(_arms(review=[_cell(reused=True)]), {"review"})
+    assert "review: UNKNOWN" in capsys.readouterr().out
+
+
+def test_run_sweep_calls_the_health_guard_and_not_the_legacy_helper():
+    """Pins the wiring the caller correction exposed.
+
+    Reads the compiled code object's global references rather than the source
+    text: deleting the call removes the name and fails this test, which is the
+    mutation check. It does NOT prove the guard runs end to end - _run_sweep
+    needs bwrap and a sandbox, so no test here drives it.
+    """
+
+    referenced = runner._run_sweep.__code__.co_names
+    assert "enforce_measurement_health" in referenced
+    assert "broken_incumbent_arms" not in referenced
+
+
+def test_ce_review_is_classified_even_though_it_is_not_a_candidate_arm():
+    """ce_review is a comparator, absent from CANDIDATE_ARMS.
+
+    Dropping the `- {"review"}` exclusion alone would have left it unchecked.
+    """
+
+    assert "ce_review" not in set(CANDIDATE_ARMS.values())
+    health = arm_health(_arms(ce_review=[_cell()]), {"review", "ce_review"})
+    assert "ce_review" in health
 
 
 def _packed_cells(tasks: int, runs: int, arms: tuple[str, ...]) -> list[tuple[str, int, str]]:
