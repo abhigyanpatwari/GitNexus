@@ -15,6 +15,7 @@ from typing import Any
 
 from workflow_bench import runner
 from workflow_bench.evolution import CANDIDATE_ARMS
+from workflow_bench.process_control import _CANCELLATION, cancellation_scope
 from workflow_bench.runner import (
     aggregate,
     GraphBuildEnv,
@@ -899,3 +900,155 @@ def test_ce_review_is_classified_even_though_it_is_not_a_candidate_arm():
     assert "ce_review" not in set(CANDIDATE_ARMS.values())
     health = arm_health(_arms(ce_review=[_cell()]), {"review", "ce_review"})
     assert "ce_review" in health
+
+
+def _packed_cells(tasks: int, runs: int, arms: tuple[str, ...]) -> list[tuple[str, int, str]]:
+    return [(f"t{t}", r, a) for t in range(tasks) for r in range(runs) for a in arms]
+
+
+def test_packed_sweep_runs_every_cell_and_folds_in_submission_order():
+    """Fold order is the contract the breaker rests on.
+
+    Cells finish in whatever order the pool returns them, but the breaker counts
+    CONSECUTIVE systemic failures, which only means something in a fixed order.
+    """
+
+    cells = _packed_cells(3, 2, ("review", "candidate_review"))
+    folded: list[tuple[str, int, str]] = []
+    streak, tripped = runner.sweep_packed_cells(
+        cells,
+        workers=4,
+        run=lambda task, run_idx, arm: {"error_kind": None, "review_evidence_valid": True},
+        on_start=lambda *_: None,
+        on_record=lambda task, run_idx, arm, _rec: folded.append((task, run_idx, arm)),
+        outage_streak=0,
+        outage_limit=0,
+    )
+    assert folded == cells
+    assert (streak, tripped) == (0, False)
+
+
+def test_packed_sweep_trips_the_breaker_on_the_same_cell_waves_would():
+    """Packing must not change WHEN a doomed run aborts, only how it is fed."""
+
+    cells = _packed_cells(3, 3, ("review",))
+    fail_from = 2
+    folded: list[int] = []
+
+    def run(task: str, run_idx: int, arm: str) -> dict[str, Any]:
+        index = cells.index((task, run_idx, arm))
+        systemic = index >= fail_from
+        return {
+            "error_kind": "session-error" if systemic else None,
+            "review_evidence_valid": not systemic,
+        }
+
+    streak, tripped = runner.sweep_packed_cells(
+        cells,
+        workers=2,
+        run=run,
+        on_start=lambda *_: None,
+        on_record=lambda t, r, a, _rec: folded.append(cells.index((t, r, a))),
+        outage_streak=0,
+        outage_limit=runner.DEFAULT_OUTAGE_STREAK,
+    )
+    assert tripped is True
+    assert streak == runner.DEFAULT_OUTAGE_STREAK
+    # Five consecutive systemic failures starting at index 2 -> trips on index 6.
+    assert folded[-1] == fail_from + runner.DEFAULT_OUTAGE_STREAK - 1
+    assert folded == sorted(folded), "records must fold in submission order"
+
+
+def test_packed_sweep_skips_a_task_whose_assets_never_arrive():
+    """A task that cannot be prepared is skipped, not run against nothing."""
+
+    cells = _packed_cells(3, 2, ("review",))
+    ran: list[str] = []
+    runner.sweep_packed_cells(
+        cells,
+        workers=3,
+        run=lambda task, run_idx, arm: ran.append(task)
+        or {"error_kind": None, "review_evidence_valid": True},
+        on_start=lambda *_: None,
+        on_record=lambda *_: None,
+        outage_streak=0,
+        outage_limit=0,
+        await_ready=lambda task: task != "t1",
+    )
+    assert set(ran) == {"t0", "t2"}
+    assert "t1" not in ran
+
+
+def test_packed_sweep_workers_inherit_the_runs_cancellation_event():
+    """A worker that cannot see the event runs on after the sweep is cancelled.
+
+    The cells are submitted from a producer THREAD, and a new thread starts with
+    an empty context - so copying the context at submission copies the wrong one
+    unless the caller's is captured first. run_managed falls back to
+    _CANCELLATION when no event is passed, which is how a cell's subprocesses
+    learn the run was cancelled at all.
+    """
+
+    seen: list[threading.Event | None] = []
+    event = threading.Event()
+    with cancellation_scope(event):
+        runner.sweep_packed_cells(
+            _packed_cells(2, 1, ("review",)),
+            workers=2,
+            run=lambda *_: seen.append(_CANCELLATION.get()) or {"error_kind": None},
+            on_start=lambda *_: None,
+            on_record=lambda *_: None,
+            outage_streak=0,
+            outage_limit=0,
+        )
+    assert seen and all(observed is event for observed in seen)
+
+
+def test_packed_sweep_window_must_keep_the_pool_fed():
+    with pytest.raises(ValueError, match="window must be at least workers"):
+        runner.sweep_packed_cells(
+            _packed_cells(1, 1, ("review",)),
+            workers=4,
+            run=lambda *_: {"error_kind": None},
+            on_start=lambda *_: None,
+            on_record=lambda *_: None,
+            outage_streak=0,
+            outage_limit=0,
+            window=2,
+        )
+
+
+def test_a_raising_packed_cell_still_persists_its_settled_siblings():
+    """A crash in one cell must not erase the evidence of cells that finished.
+
+    run_cell deliberately lets unexpected harness exceptions propagate, and the
+    wave scheduler answers that by folding every non-failing sibling before it
+    re-raises. The packed scheduler has to hold the same contract: the later
+    cells already ran and already cost money, so losing their rows would mean
+    paying for evidence the sweep then throws away.
+    """
+
+    folded: list[tuple[int, str]] = []
+    started = threading.Event()
+
+    def run(task_id: str, run_idx: int, arm: str) -> dict[str, Any]:
+        if run_idx == 0:
+            # Let the later cell finish first, so there is settled evidence to
+            # lose at the moment this one raises.
+            started.wait(timeout=5)
+            raise RuntimeError("harness bug in cell 0")
+        started.set()
+        return {"error_kind": None}
+
+    with pytest.raises(RuntimeError, match="harness bug in cell 0"):
+        runner.sweep_packed_cells(
+            _packed_cells(1, 2, ("review",)),
+            workers=2,
+            run=run,
+            on_start=lambda *_: None,
+            on_record=lambda task_id, run_idx, arm, _rec: folded.append((run_idx, arm)),
+            outage_streak=0,
+            outage_limit=0,
+        )
+
+    assert (1, "review") in folded, "the sibling that completed was never recorded"
