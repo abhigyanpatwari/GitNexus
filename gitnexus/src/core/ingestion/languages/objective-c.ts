@@ -51,6 +51,10 @@ const OBJECTIVE_C_HEADER_NODE_TYPES = new Set([
   'compatibility_alias_declaration',
   'module_import',
   'protocol_declaration',
+  // Embedding chunks a Method node's snippet, not the enclosing @interface.
+  // tree-sitter-objc only emits these for +/- declarators, not C++ functions.
+  'method_declaration',
+  'method_definition',
 ]);
 
 const OBJECTIVE_C_HEADER_DIRECTIVES = [
@@ -77,9 +81,20 @@ function hasObjectiveCHeaderSyntax(sourceText: string): boolean {
     }
   } catch {
     // Keep unambiguous Objective-C headers on the normal unavailable-parser path.
-    return hasObjectiveCHeaderDirective(sourceText);
+    return hasObjectiveCHeaderDirective(sourceText) || hasObjectiveCMethodDeclarator(sourceText);
   }
-  return false;
+  // Bare method snippets (`- (void)run;`) are not `method_declaration` at
+  // translation-unit scope; the grammar only emits that under @interface.
+  return hasObjectiveCMethodDeclarator(sourceText);
+}
+
+/**
+ * Line-leading `+/- (Type)selector` used when the tree has no @interface and
+ * when the grammar cannot load. `-(x);` does not match: `)` is not followed
+ * by a selector identifier.
+ */
+function hasObjectiveCMethodDeclarator(sourceText: string): boolean {
+  return /(?:^|[\r\n])[ \t]*[+-][ \t]*\([^;\n]+\)[ \t]*[A-Za-z_]/.test(sourceText);
 }
 
 function hasObjectiveCHeaderDirective(sourceText: string): boolean {

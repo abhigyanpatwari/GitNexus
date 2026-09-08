@@ -47,6 +47,18 @@ describe('content language classification', () => {
     );
   });
 
+  it('parses Objective-C header snippets with the Objective-C language', () => {
+    expect(
+      getLanguageForFileContent('Worker.h', '@protocol Worker <NSObject>\n- (void)run;\n@end\n'),
+    ).toBe(SupportedLanguages.ObjectiveC);
+    expect(getLanguageForFileContent('Worker.h', '- (void)run;\n')).toBe(
+      SupportedLanguages.ObjectiveC,
+    );
+    expect(getLanguageForFileContent('widget.h', 'class Widget { int value; };\n')).toBe(
+      SupportedLanguages.CPlusPlus,
+    );
+  });
+
   it('keeps extensionless Ruby filenames when content classification misses', () => {
     expect(getLanguageForFileContent('Rakefile', 'task :default do\nend\n')).toBe(
       SupportedLanguages.Ruby,

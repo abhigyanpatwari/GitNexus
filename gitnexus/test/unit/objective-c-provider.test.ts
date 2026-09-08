@@ -154,6 +154,9 @@ describe('Objective-C provider', () => {
       false,
     );
     expect(classifyObjectiveCFileContent('forward.h', '@class Widget;\n')).toBe(true);
+    expect(classifyObjectiveCFileContent('MethodSnippet.h', '- (void)run;\n')).toBe(true);
+    expect(classifyObjectiveCFileContent('ClassSnippet.h', '+ (instancetype)shared;\n')).toBe(true);
+    expect(classifyObjectiveCFileContent('unary.h', '-(x);\n')).toBe(false);
   });
 
   it('preserves local Objective-C import resolution while indexing suffixes', () => {
