@@ -720,9 +720,9 @@ describe('git-clone', () => {
       ]);
       expect(calls).toContainEqual(['checkout', '-B', 'develop', 'origin/develop']);
       // Never a raw `origin <branch>` pull — `+develop` would be a force-fetch.
-      expect(calls.some((c) => c[0] === 'pull' && c.includes('origin') && c.includes('develop'))).toBe(
-        false,
-      );
+      expect(
+        calls.some((c) => c[0] === 'pull' && c.includes('origin') && c.includes('develop')),
+      ).toBe(false);
       expect(verbs).not.toContain('status'); // so the dirty check never ran
       expect(calls.some((c) => c[0] === 'merge')).toBe(false);
       // Must not fall back to a bare `git pull --ff-only` — that follows
@@ -791,13 +791,15 @@ describe('git-clone', () => {
         'origin',
         '+refs/heads/+develop:refs/remotes/origin/+develop',
       ]);
-      expect(calls.some((c) => c[0] === 'pull' && c.some((a) => a === '+develop' || a.startsWith('+')))).toBe(
-        false,
-      );
+      expect(
+        calls.some((c) => c[0] === 'pull' && c.some((a) => a === '+develop' || a.startsWith('+'))),
+      ).toBe(false);
       // Force prefix is on the mapping, not a force-update of `develop`.
-      expect(calls.some((c) => c[0] === 'fetch' && c.includes('+refs/heads/develop:refs/remotes/origin/develop'))).toBe(
-        false,
-      );
+      expect(
+        calls.some(
+          (c) => c[0] === 'fetch' && c.includes('+refs/heads/develop:refs/remotes/origin/develop'),
+        ),
+      ).toBe(false);
     });
 
     it('restores a dirty AGENTS.md on the same branch without taking the switch refuse path', async () => {
@@ -826,7 +828,14 @@ describe('git-clone', () => {
 
       expect(calls).toContainEqual(['ls-files', '--', './AGENTS.md']);
       expect(calls).toContainEqual(['checkout', 'HEAD', '--', './AGENTS.md']);
-      expect(calls).toContainEqual(['clean', '-fdx', '--', './AGENTS.md', './CLAUDE.md', './.claude']);
+      expect(calls).toContainEqual([
+        'clean',
+        '-fdx',
+        '--',
+        './AGENTS.md',
+        './CLAUDE.md',
+        './.claude',
+      ]);
       expect(calls.some((c) => c[0] === 'status')).toBe(false);
       expect(calls).toContainEqual(['checkout', '-B', 'develop', 'origin/develop']);
       expect(calls.some((c) => c[0] === 'clean' && c.includes('/.gitnexus'))).toBe(false);
@@ -853,7 +862,14 @@ describe('git-clone', () => {
         await fs.rm(root, { recursive: true, force: true });
       }
 
-      expect(calls).toContainEqual(['clean', '-fdx', '--', './AGENTS.md', './CLAUDE.md', './.claude']);
+      expect(calls).toContainEqual([
+        'clean',
+        '-fdx',
+        '--',
+        './AGENTS.md',
+        './CLAUDE.md',
+        './.claude',
+      ]);
       expect(calls.some((c) => c[0] === 'checkout' && c.includes('HEAD'))).toBe(false);
       expect(calls).toContainEqual(['checkout', '-B', 'develop', 'origin/develop']);
     });
@@ -892,7 +908,8 @@ describe('git-clone', () => {
         const runGitForTest = vi.fn(async (args: string[]) => {
           calls.push(args);
           if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'HEAD\n';
-          if (args[0] === 'rev-parse' && args[1] === 'HEAD') return 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1\n';
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD')
+            return 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1\n';
           if (args[0] === 'rev-parse') return 'bbb222bbb222bbb222bbb222bbb222bbb222bbb2\n';
           if (args[0] === 'status') return ''; // clean, so the checkout proceeds
           return '';
@@ -986,7 +1003,8 @@ describe('git-clone', () => {
         const runGitForTest = vi.fn(async (args: string[]) => {
           calls.push(args);
           if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'HEAD\n';
-          if (args[0] === 'rev-parse' && args[1] === 'HEAD') return 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1\n';
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD')
+            return 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1\n';
           if (args[0] === 'rev-parse') return 'bbb222bbb222bbb222bbb222bbb222bbb222bbb2\n';
           if (args[0] === 'status') return ' M src/index.ts\n';
           return '';

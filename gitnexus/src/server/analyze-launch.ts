@@ -263,12 +263,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // so it still waits.
           const settle = msg.result.alreadyUpToDate
             ? Promise.resolve()
-            : waitForSettledIndex(
-                targetPath,
-                jobStartMs,
-                opts.branch,
-                msg.result.isPrimaryBranch,
-              );
+            : waitForSettledIndex(targetPath, jobStartMs, opts.branch, msg.result.isPrimaryBranch);
           settle
             .then(() => closeDbHandle())
             .catch(() => {}) // best-effort: eviction failure must not fail the job

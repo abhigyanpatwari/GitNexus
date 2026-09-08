@@ -461,11 +461,7 @@ async function fetchAndCheckoutRequestedBranch(
   // history). `checkout -B` points the local branch at the fetched tip —
   // same as the switch path, no ancestry walk. No `--force`: leftover
   // non-overlay dirt still refuses.
-  await runGitImpl(
-    ['fetch', '--depth', '1', 'origin', branchFetchRefspec(branch)],
-    cwd,
-    gitOpts,
-  );
+  await runGitImpl(['fetch', '--depth', '1', 'origin', branchFetchRefspec(branch)], cwd, gitOpts);
   await runGitImpl(['checkout', '-B', branch, `origin/${branch}`], cwd, gitOpts);
 }
 
