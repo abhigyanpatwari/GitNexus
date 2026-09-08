@@ -1010,6 +1010,13 @@ export const startAnalyze = async (request: {
   force?: boolean;
   embeddings?: boolean;
   token?: string;
+  /**
+   * Index-branch selector. Omitted: a `url` with no existing clone takes the
+   * remote's default branch, an existing clone updates whichever branch it
+   * already has checked out, and a `path` request is not cloned at all and
+   * indexes that working tree as it stands.
+   */
+  branch?: string;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze`,
