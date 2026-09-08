@@ -25,7 +25,6 @@ from workflow_bench.model_gateway import (
 from workflow_bench.provider_usage import (
     ANTHROPIC,
     LITELLM_NORMALIZED,
-    OPENAI_RESPONSES,
     USAGE_ENV_VARS,
     normalize_usage,
 )
