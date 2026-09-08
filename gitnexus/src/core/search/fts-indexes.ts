@@ -335,10 +335,19 @@ export async function createSearchFTSIndexes(
     // the old name+content index would silently persist. `dropFTSIndex` no-ops
     // when the index is absent (first-ever analyze) and clears the per-connection
     // memo so the create below actually runs.
-    // ponytail: this rebuilds every FTS index on every analyze instead of
-    // skipping when present; FTS build is proportional to symbol-table size and
-    // runs inside the existing FTS phase. Gate on a stored schema fingerprint if
-    // this rebuild cost ever shows up in analyze profiles.
+    // The cost DID show up in analyze profiles — 7.5s of a 31.7s edit loop on a
+    // 5350-file repo, `bench/analyze-phase-breakdown.md` — and a "skip when the
+    // index is already present" gate is NOT the answer, so don't reach for it.
+    // Every caller that reaches this loop has already dropped the indexes it
+    // passes in `tables`: the incremental writeback drops them because Ladybug
+    // cannot DML a table with a live FTS index (#2589), and a full rebuild
+    // builds into a fresh staging DB that never had one. A presence gate would
+    // therefore never fire. The cost is inherent — Ladybug's FTS is not
+    // incremental, so one changed row means re-tokenizing the whole table, and
+    // `File` alone is ~33MB of file content at ~10MB/s. The measured floor and
+    // the four exits that were tried and closed (narrow further, build
+    // concurrently, raise the connection thread count, drop `content`) are in
+    // that document.
     try {
       await dropFTSIndex(table, indexName);
       await createFTSIndex(table, indexName, [...properties], stemmer);
