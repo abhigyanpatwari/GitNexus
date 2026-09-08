@@ -421,6 +421,20 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => validateBranchName('a'.repeat(256), 'src')).toThrow(/too long/);
   });
 
+  it('validateBranchName rejects HEAD (case-sensitive) and accepts head (#3199)', () => {
+    expect(() => validateBranchName('HEAD', 'src')).toThrow(GitNexusRcError);
+    expect(() => validateBranchName('HEAD', 'src')).toThrow(/must not be "HEAD"/);
+    expect(() => validateBranchName('  HEAD  ', 'src')).toThrow(GitNexusRcError);
+    expect(validateBranchName('head', 'src')).toBe('head');
+  });
+
+  it('validateBranchName rejects a force-refspec "+" prefix (#3199)', () => {
+    expect(() => validateBranchName('+main', 'src')).toThrow(GitNexusRcError);
+    expect(() => validateBranchName('+main', 'src')).toThrow(/must not start with "\+"/);
+    expect(() => validateBranchName('+develop', 'src')).toThrow(GitNexusRcError);
+    expect(() => validateBranchName('+develop', 'src')).toThrow(/must not start with "\+"/);
+  });
+
   it('rejects Markdown-significant characters in a config name, allows real names (#1996)', async () => {
     await writeRc(JSON.stringify({ name: '**evil**' }));
     expect(() => loadAnalyzeConfig(dir)).toThrow(/Markdown-significant/);

@@ -65,10 +65,10 @@ import {
   GITHUB_TOKEN_HOSTS,
 } from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
-// Branch-name validation is shared with the CLI's `--branch` so an HTTP caller
-// and a CLI caller accept exactly the same refs (core/run-analyze.ts already
-// reaches into cli/analyze-config.js for sanitizeDetectedBranch).
-import { GitNexusRcError, validateBranchName } from '../cli/analyze-config.js';
+// Shared with the CLI's `--branch` (via the analyze-config wrapper) so both
+// entry points accept the same refs. Imported from core — not cli/ — so
+// createServer does not close a cycle with cli/serve.ts.
+import { InvalidBranchError, validateBranchName } from '../core/git-ref.js';
 import {
   assertServeAuthForPublicOrigin,
   createPublicOriginMatcher,
@@ -1569,7 +1569,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           try {
             analyzeBranch = validateBranchName(repoBranch, '"branch"');
           } catch (err) {
-            if (err instanceof GitNexusRcError) {
+            if (err instanceof InvalidBranchError) {
               res.status(400).json({ error: err.message });
               return;
             }
@@ -1640,7 +1640,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
               jobManager.updateJob(job.id, {
                 status: 'cloning',
-                repoName,
+                // url+branch: same value as registryName (dir basename), not
+                // the extractWebRepoName stem used only as getCloneDir's first arg.
+                repoName: analyzeBranch ? path.basename(targetPath) : repoName,
                 progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
               });
 

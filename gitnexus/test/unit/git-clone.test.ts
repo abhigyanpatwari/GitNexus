@@ -684,7 +684,7 @@ describe('git-clone', () => {
       return target;
     };
 
-    it('re-indexing the SAME pinned branch pulls instead of refusing a dirty tree', async () => {
+    it('re-indexing the SAME pinned branch fetches via a safe refspec instead of refusing a dirty tree', async () => {
       // Analyze writes AGENTS.md / CLAUDE.md / .claude/ into the clone, so the
       // tree is dirty from its own first run. Routing a same-branch request
       // through the checkout path made every pinned RE-index fail asking for
@@ -711,12 +711,151 @@ describe('git-clone', () => {
       }
 
       const verbs = calls.map((c) => c[0]);
-      expect(calls).toContainEqual(['pull', '--ff-only', 'origin', 'develop']);
-      expect(verbs).not.toContain('checkout'); // nothing to switch
+      expect(calls).toContainEqual([
+        'fetch',
+        '--depth',
+        '1',
+        'origin',
+        '+refs/heads/develop:refs/remotes/origin/develop',
+      ]);
+      expect(calls).toContainEqual(['checkout', '-B', 'develop', 'origin/develop']);
+      // Never a raw `origin <branch>` pull — `+develop` would be a force-fetch.
+      expect(calls.some((c) => c[0] === 'pull' && c.includes('origin') && c.includes('develop'))).toBe(
+        false,
+      );
       expect(verbs).not.toContain('status'); // so the dirty check never ran
+      expect(calls.some((c) => c[0] === 'merge')).toBe(false);
       // Must not fall back to a bare `git pull --ff-only` — that follows
       // `branch.<name>.merge`, which is not verified (only origin.url is).
       expect(calls.some((c) => c[0] === 'pull' && c.length === 2)).toBe(false);
+    });
+
+    it('same-branch argv uses +refs/heads/develop:refs/remotes/origin/develop, never raw develop as a pull dest', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      try {
+        const target = await makeExistingClone(root, 'develop');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'develop\n';
+          return '';
+        });
+        await cloneOrPull(REMOTE, target, undefined, {
+          allowedCloneRoot: root,
+          expectedRepoName: 'repo',
+          branch: 'develop',
+          runGitForTest,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      const fetchCall = calls.find((c) => c[0] === 'fetch');
+      expect(fetchCall).toEqual([
+        'fetch',
+        '--depth',
+        '1',
+        'origin',
+        '+refs/heads/develop:refs/remotes/origin/develop',
+      ]);
+      expect(fetchCall?.[4]).not.toBe('develop');
+      expect(calls.some((c) => c[0] === 'pull' && c[3] === 'develop')).toBe(false);
+    });
+
+    it('does not treat a leading-plus branch as a force-fetch pull refspec', async () => {
+      // If `+develop` somehow reached cloneOrPull, the heads/ mapping keeps
+      // the `+` inside the ref name. It is not git's force-fetch prefix.
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      try {
+        const target = await makeExistingClone(root, 'main');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return '+develop\n';
+          return '';
+        });
+        await cloneOrPull(REMOTE, target, undefined, {
+          allowedCloneRoot: root,
+          expectedRepoName: 'repo',
+          branch: '+develop',
+          runGitForTest,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      expect(calls).toContainEqual([
+        'fetch',
+        '--depth',
+        '1',
+        'origin',
+        '+refs/heads/+develop:refs/remotes/origin/+develop',
+      ]);
+      expect(calls.some((c) => c[0] === 'pull' && c.some((a) => a === '+develop' || a.startsWith('+')))).toBe(
+        false,
+      );
+      // Force prefix is on the mapping, not a force-update of `develop`.
+      expect(calls.some((c) => c[0] === 'fetch' && c.includes('+refs/heads/develop:refs/remotes/origin/develop'))).toBe(
+        false,
+      );
+    });
+
+    it('restores a dirty AGENTS.md on the same branch without taking the switch refuse path', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      try {
+        const target = await makeExistingClone(root, 'develop');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'develop\n';
+          if (args[0] === 'ls-files' && args.includes('./AGENTS.md')) return 'AGENTS.md\n';
+          if (args[0] === 'status') return ' M AGENTS.md\n?? .claude/\n';
+          return '';
+        });
+        await expect(
+          cloneOrPull(REMOTE, target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            branch: 'develop',
+            runGitForTest,
+          }),
+        ).resolves.toBe(target);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      expect(calls).toContainEqual(['ls-files', '--', './AGENTS.md']);
+      expect(calls).toContainEqual(['checkout', 'HEAD', '--', './AGENTS.md']);
+      expect(calls).toContainEqual(['clean', '-fdx', '--', './AGENTS.md', './CLAUDE.md', './.claude']);
+      expect(calls.some((c) => c[0] === 'status')).toBe(false);
+      expect(calls).toContainEqual(['checkout', '-B', 'develop', 'origin/develop']);
+      expect(calls.some((c) => c[0] === 'clean' && c.includes('/.gitnexus'))).toBe(false);
+    });
+
+    it('removes untracked AGENTS.md on the same branch so merge is not blocked', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      try {
+        const target = await makeExistingClone(root, 'develop');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'develop\n';
+          if (args[0] === 'ls-files') return ''; // untracked analyze output
+          return '';
+        });
+        await cloneOrPull(REMOTE, target, undefined, {
+          allowedCloneRoot: root,
+          expectedRepoName: 'repo',
+          branch: 'develop',
+          runGitForTest,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      expect(calls).toContainEqual(['clean', '-fdx', '--', './AGENTS.md', './CLAUDE.md', './.claude']);
+      expect(calls.some((c) => c[0] === 'checkout' && c.includes('HEAD'))).toBe(false);
+      expect(calls).toContainEqual(['checkout', '-B', 'develop', 'origin/develop']);
     });
 
     it('still switches — and still refuses a dirty tree — for a DIFFERENT branch', async () => {
@@ -744,15 +883,17 @@ describe('git-clone', () => {
     });
 
     it('treats a detached HEAD as needing the checkout path', async () => {
-      // `rev-parse --abbrev-ref HEAD` reports `HEAD` when detached; that matches
-      // no branch name, so the run must not be mistaken for "already there".
+      // `rev-parse --abbrev-ref HEAD` reports `HEAD` when detached. A SHA that
+      // does not match the requested ref is a real switch, not "already there".
       const root = await mkControlledRoot('gitnexus-controlled-root-');
       const calls: string[][] = [];
       try {
         const target = await makeExistingClone(root, 'main');
         const runGitForTest = vi.fn(async (args: string[]) => {
           calls.push(args);
-          if (args[0] === 'rev-parse') return 'HEAD\n';
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'HEAD\n';
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD') return 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1\n';
+          if (args[0] === 'rev-parse') return 'bbb222bbb222bbb222bbb222bbb222bbb222bbb2\n';
           if (args[0] === 'status') return ''; // clean, so the checkout proceeds
           return '';
         });
@@ -766,6 +907,104 @@ describe('git-clone', () => {
         await fs.rm(root, { recursive: true, force: true });
       }
       expect(calls.map((c) => c[0])).toContain('checkout');
+      expect(calls.some((c) => c[0] === 'checkout' && c.includes('-B'))).toBe(true);
+    });
+
+    it('does not switch or fetch when a detached HEAD SHA matches the requested ref', async () => {
+      // Tag / SHA pin: already at the commit. Fetching refs/heads/<name> would
+      // follow a same-named branch past the pin (#3199 review).
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      const sha = 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1';
+      try {
+        const target = await makeExistingClone(root, 'main');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'HEAD\n';
+          if (args[0] === 'rev-parse') return `${sha}\n`;
+          if (args[0] === 'status') return ' M AGENTS.md\n';
+          if (args[0] === 'ls-files' && args.includes('./AGENTS.md')) return 'AGENTS.md\n';
+          return '';
+        });
+        await cloneOrPull(REMOTE, target, undefined, {
+          allowedCloneRoot: root,
+          expectedRepoName: 'repo',
+          branch: 'develop',
+          runGitForTest,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      expect(calls.some((c) => c[0] === 'status')).toBe(false);
+      expect(calls.some((c) => c[0] === 'checkout' && c.includes('-B'))).toBe(false);
+      expect(calls).toContainEqual(['checkout', 'HEAD', '--', './AGENTS.md']);
+      expect(calls.map((c) => c[0])).not.toContain('fetch');
+      expect(calls.map((c) => c[0])).not.toContain('merge');
+    });
+
+    it('peels an annotated tag so a tag pin is not treated as a switch', async () => {
+      // `rev-parse v1.0` is the tag object; HEAD is the peeled commit. Without
+      // `^{commit}` the SHA match misses and re-index porcelain-refuses.
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      const commit = 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1';
+      const tagObject = 'cccccccccccccccccccccccccccccccccccccccc';
+      try {
+        const target = await makeExistingClone(root, 'main');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'HEAD\n';
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD') return `${commit}\n`;
+          if (args[0] === 'rev-parse' && args[1] === 'v1.0^{commit}') return `${commit}\n`;
+          if (args[0] === 'rev-parse' && args[1] === 'v1.0') return `${tagObject}\n`;
+          if (args[0] === 'rev-parse') throw new Error('unknown ref');
+          if (args[0] === 'status') return ' M AGENTS.md\n';
+          return '';
+        });
+        await cloneOrPull(REMOTE, target, undefined, {
+          allowedCloneRoot: root,
+          expectedRepoName: 'repo',
+          branch: 'v1.0',
+          runGitForTest,
+        });
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      expect(calls).toContainEqual(['rev-parse', 'v1.0^{commit}']);
+      expect(calls.some((c) => c[0] === 'status')).toBe(false);
+      expect(calls.some((c) => c[0] === 'checkout' && c.includes('-B'))).toBe(false);
+      expect(calls.map((c) => c[0])).not.toContain('fetch');
+    });
+
+    it('still refuses a dirty tree when a detached HEAD SHA does not match the requested ref', async () => {
+      const root = await mkControlledRoot('gitnexus-controlled-root-');
+      const calls: string[][] = [];
+      try {
+        const target = await makeExistingClone(root, 'main');
+        const runGitForTest = vi.fn(async (args: string[]) => {
+          calls.push(args);
+          if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'HEAD\n';
+          if (args[0] === 'rev-parse' && args[1] === 'HEAD') return 'aaa111aaa111aaa111aaa111aaa111aaa111aaa1\n';
+          if (args[0] === 'rev-parse') return 'bbb222bbb222bbb222bbb222bbb222bbb222bbb2\n';
+          if (args[0] === 'status') return ' M src/index.ts\n';
+          return '';
+        });
+        await expect(
+          cloneOrPull(REMOTE, target, undefined, {
+            allowedCloneRoot: root,
+            expectedRepoName: 'repo',
+            branch: 'develop',
+            runGitForTest,
+          }),
+        ).rejects.toThrow(/local changes detected/);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+
+      expect(calls.some((c) => c[0] === 'status')).toBe(true);
+      expect(calls.some((c) => c[0] === 'checkout')).toBe(false);
     });
 
     it('allows auto-sync SSH SCP clone URLs with a per-repo timeout', async () => {
@@ -1504,6 +1743,16 @@ describe('getCloneDir — a branch-pinned analyze gets its own working tree', ()
     // registered under this basename, so the two must agree.
     const dir = getCloneDir('Hello-World', 'development');
     expect(getCloneDir(path.basename(dir))).toBe(dir);
+  });
+
+  it('pinned basename differs from the GitHub stem (mid-job repoName / registerRepo)', () => {
+    // POST /api/analyze must set job.repoName and registryName to
+    // path.basename(targetPath), not extractWebRepoName(url). The stem is
+    // only getCloneDir's first argument (#3199 review).
+    const stem = 'Hello-World';
+    const basename = path.basename(getCloneDir(stem, 'development'));
+    expect(basename).not.toBe(stem);
+    expect(basename.startsWith(`${stem}__`)).toBe(true);
   });
 
   it('keeps the directory name inside the 255-byte filesystem limit', () => {

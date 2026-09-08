@@ -81,12 +81,16 @@ import type { CompleteMessage } from '../../src/server/analyze-worker.js';
 const BRANCH = 'feature/settle';
 
 /** The `complete` message the worker really sends, via the production projection. */
-const completeMessage = (isPrimaryBranch: boolean): CompleteMessage => {
+const completeMessage = (
+  isPrimaryBranch: boolean,
+  extras?: { alreadyUpToDate?: boolean },
+): CompleteMessage => {
   const result = {
     repoName: 'settle-fixture',
     repoPath: REPO_PATH,
     stats: { files: 3, nodes: 9, edges: 12 },
     isPrimaryBranch,
+    ...(extras?.alreadyUpToDate ? { alreadyUpToDate: true } : {}),
   } satisfies Partial<AnalyzeResult> as AnalyzeResult;
   return { type: 'complete', result: projectAnalyzeResultForIpc(result) };
 };
@@ -161,6 +165,41 @@ describe('finalization gate follows the placement the run chose', () => {
 
     await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('complete'));
     expect(backendInit).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles a first-pin (branch SET, isPrimaryBranch true) against the flat slot', async () => {
+    // Fresh clone: first pin adopts the flat slot. The slug dir is stale, so a
+    // gate that does `branch ? slugDir : flat` would spin the 60s timeout here.
+    H.settledDir = H.STORAGE_PATH;
+
+    const job = jobManager.createJob({ repoPath: REPO_PATH, branch: BRANCH });
+    launcher()(job, REPO_PATH, { branch: BRANCH });
+
+    child.emit('message', completeMessage(true));
+
+    await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('complete'));
+    expect(jobManager.getJob(job.id)?.error).toBeUndefined();
+    expect(backendInit).toHaveBeenCalledTimes(1);
+  });
+
+  it('completes alreadyUpToDate quickly even when the slot is stale, without retrying', async () => {
+    // No directory looks freshly written. Without the alreadyUpToDate skip the
+    // mtime gate would hold the analyze slot for the full 60s settle timeout.
+    H.settledDir = '';
+
+    const job = jobManager.createJob({ repoPath: REPO_PATH });
+    launcher()(job, REPO_PATH, {});
+
+    child.emit('message', completeMessage(true, { alreadyUpToDate: true }));
+    child.emit('exit', 0);
+
+    await vi.waitFor(() => expect(jobManager.getJob(job.id)?.status).toBe('complete'), {
+      timeout: 2_000,
+    });
+    expect(jobManager.getJob(job.id)?.error).toBeUndefined();
+    expect(backendInit).toHaveBeenCalledTimes(1);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(jobManager.getJob(job.id)?.retryCount).toBe(0);
   });
 
   it('does not fork a retry when the worker exits 0 after reporting complete', async () => {

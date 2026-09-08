@@ -82,17 +82,6 @@ const FINALIZE_SETTLE_TIMEOUT_MS = 60_000;
 const FINALIZE_SETTLE_POLL_MS = 200;
 
 /**
- * Resolve once the analyzed repo's index is settled at `storagePath`: the
- * LadybugDB file and metadata both exist AND were (re)written by THIS job
- * (mtime >= jobStartMs — bare existence is not enough, a re-analysis leaves
- * the previous index in place while it works), and no transient WAL/shadow/
- * checkpoint sidecars remain (the worker's native close has finished).
- *
- * Never rejects. Timing out logs and proceeds (pre-gate behavior) rather
- * than failing a job whose analysis genuinely succeeded — e.g. a no-op
- * non-force analyze legitimately rewrites nothing.
- */
-/**
  * Look up the analyzed repo's registered storage path. The request's
  * user-provided path is used only as a comparison key; the filesystem probes
  * below run against the registry's own `storagePath` — the server-owned
@@ -129,6 +118,18 @@ const settleDirFor = (
     ? path.join(registryStoragePath, BRANCHES_DIR, branchSlug(branch))
     : registryStoragePath;
 
+/**
+ * Resolve once the analyzed repo's index is settled at `storagePath`: the
+ * LadybugDB file and metadata both exist AND were (re)written by THIS job
+ * (mtime >= jobStartMs — bare existence is not enough, a re-analysis leaves
+ * the previous index in place while it works), and no transient WAL/shadow/
+ * checkpoint sidecars remain (the worker's native close has finished).
+ *
+ * Never rejects. Timing out logs and proceeds (pre-gate behavior) rather
+ * than failing a job whose analysis genuinely succeeded. The `alreadyUpToDate`
+ * fast path never rewrites `lbug` (see `run-analyze.ts`) and skips this wait
+ * at the `complete` handler so it does not hold the analyze slot for 60s.
+ */
 const waitForSettledIndex = async (
   targetPath: string,
   jobStartMs: number,
@@ -254,7 +255,21 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // below true in practice: the repo is actually queryable when the
           // client receives the SSE complete event, and an index this run knows
           // to be incomplete is never published at all.
-          waitForSettledIndex(targetPath, jobStartMs, opts.branch, msg.result.isPrimaryBranch)
+          //
+          // alreadyUpToDate never opens LadybugDB and never rewrites `lbug`
+          // (run-analyze.ts early-return; CLI notes the same). The mtime gate
+          // would spin the full 60s and hold the single global analyze slot.
+          // ftsRepairedOnly DOES rewrite `lbug` (initLbug + createSearchFTSIndexes)
+          // so it still waits.
+          const settle = msg.result.alreadyUpToDate
+            ? Promise.resolve()
+            : waitForSettledIndex(
+                targetPath,
+                jobStartMs,
+                opts.branch,
+                msg.result.isPrimaryBranch,
+              );
+          settle
             .then(() => closeDbHandle())
             .catch(() => {}) // best-effort: eviction failure must not fail the job
             .then(() => {
