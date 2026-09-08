@@ -16,6 +16,9 @@ const Element = @This();
 // file's own methods.
 const dom_utils = @import("dom_utils.zig");
 
+// A hub module that re-exports `dom_utils`' members without declaring any.
+const hub = @import("hub.zig");
+
 _namespace: u8 = 0,
 
 // ── Registered accessors ────────────────────────────────────────────────────
@@ -101,7 +104,21 @@ pub const JsApi = struct {
     // callable gate as container receivers — a registration table full of
     // constants must keep emitting nothing.
     pub const defaultNs = bridge.accessor(dom_utils.DEFAULT_NS, null, .{});
+
+    // Through a HUB, whose published names are all imported ones. The CALL form
+    // resolves — `namespaceExportsIncludeImportedNames` is what makes a Zig hub
+    // work at all — so the REGISTRATION form has to resolve to the same def, or
+    // one name means two things depending on whether it is followed by `(`.
+    pub const scaled = bridge.accessor(hub.scale, null, .{});
+
+    // …and the callable gate still applies through the hub.
+    pub const hubNs = bridge.accessor(hub.DEFAULT_NS, null, .{});
 };
+
+// The CALL form of the same hub member, so the two are pinned side by side.
+pub fn callsThroughTheHub(v: u8) u8 {
+    return hub.scale(v);
+}
 
 // A LOCAL declaration shadowing the module handle. `dom_utils` here is a `u8`
 // parameter with no member of its own; resolving `dom_utils.normalize` through

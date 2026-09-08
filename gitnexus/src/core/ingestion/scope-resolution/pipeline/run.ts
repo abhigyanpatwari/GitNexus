@@ -1212,6 +1212,10 @@ export function runScopeResolution(
         postHeritageNodeLookup,
         readonlyModel,
         calleeIdAccumulator,
+        // Same provider hook the receiver-bound pass consults for a namespace
+        // member (Case 1). Without it a hub module's re-exported callable
+        // resolves when CALLED and declines when REGISTERED.
+        provider.namespaceExportsIncludeImportedNames === true,
       );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the

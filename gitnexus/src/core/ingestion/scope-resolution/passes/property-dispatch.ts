@@ -38,7 +38,13 @@
  * emits the capture participates) and generic member-call sites.
  */
 
-import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  BindingRef,
+  ParsedFile,
+  ReferenceSite,
+  ScopeId,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { tryEmitEdge, type CalleeIdCaptureCtx } from '../graph-bridge/edges.js';
@@ -50,6 +56,7 @@ import {
   findOwnedMember,
   isNamespaceNameShadowed,
   isOwnerNameShadowedBySomethingElse,
+  lookupBindingsAt,
 } from '../scope/walkers.js';
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -135,6 +142,7 @@ function resolveValueRefTarget(
   filePath: string,
   scopes: ScopeResolutionIndexes,
   model: SemanticModel,
+  publishesImportedNames: boolean,
 ): SymbolDefinition | undefined {
   const receiverName = site.explicitReceiver?.name;
   if (receiverName === undefined) {
@@ -156,7 +164,13 @@ function resolveValueRefTarget(
   // strongest statement about what the name means here, so it outranks a global
   // guess — and when the handle is not an import of this file, this answers
   // nothing and the container channel runs exactly as before.
-  const viaNamespace = findNamespaceValueRefTarget(site, filePath, receiverName, scopes);
+  const viaNamespace = findNamespaceValueRefTarget(
+    site,
+    filePath,
+    receiverName,
+    scopes,
+    publishesImportedNames,
+  );
   if (viaNamespace !== undefined) return viaNamespace;
 
   const owner = findClassBindingInScope(site.inScope, receiverName, scopes);
@@ -209,9 +223,15 @@ function resolveValueRefTarget(
  *     (`isNamespaceNameShadowed`) — `fn f(utils: Decoy) { register(utils.compare) }`
  *     names the parameter's member, and resolving through the import would be a
  *     wrong edge rather than a missing one;
- *   - `origin === 'local'` only, so a name the target file merely IMPORTED is
- *     not published as its own member here (the `namespaceExportsIncludeImportedNames`
- *     hub opt-in is a provider decision this language-neutral pass does not make);
+ *   - a locally declared member wins, and a name the target file merely IMPORTED
+ *     counts only when the provider says its imports ARE its exports
+ *     (`ScopeResolver.namespaceExportsIncludeImportedNames`). That opt-in is not
+ *     a detail to skip: a Zig HUB — a file made only of re-exports, ghostty's
+ *     `src/terminal/`, tigerbeetle's `stdx` — declares nothing, so requiring a
+ *     local declaration declines every member reached through one. `hub.fn()`
+ *     resolves and `register(hub.fn)` would not, and one name would mean two
+ *     things depending on whether a `(` followed it. In languages that do not
+ *     opt in, a module's imports are not its exports and this stays closed;
  *   - two distinct defs under one name resolve NOTHING. Never guess a namespace
  *     member — the whole point of reading the written receiver is precision.
  *
@@ -224,6 +244,7 @@ function findNamespaceValueRefTarget(
   filePath: string,
   receiverName: string,
   scopes: ScopeResolutionIndexes,
+  publishesImportedNames: boolean,
 ): SymbolDefinition | undefined {
   const moduleScopeId = scopes.moduleScopes.get(filePath);
   if (moduleScopeId === undefined) return undefined;
@@ -236,19 +257,44 @@ function findNamespaceValueRefTarget(
   if (targetFiles.length === 0) return undefined;
   if (isNamespaceNameShadowed(receiverName, site.inScope, scopes)) return undefined;
 
-  let picked: SymbolDefinition | undefined;
-  for (const targetFile of targetFiles) {
-    const targetScopeId = scopes.moduleScopes.get(targetFile);
-    if (targetScopeId === undefined) continue;
-    const refs = scopes.bindings.get(targetScopeId)?.get(site.name);
-    if (refs === undefined) continue;
-    for (const ref of refs) {
-      if (ref.origin !== 'local' || !CALL_TARGET_TYPES.has(ref.def.type)) continue;
-      if (picked !== undefined && picked.nodeId !== ref.def.nodeId) return undefined;
-      picked = ref.def;
+  /** The unique callable `select` finds across every target file, or nothing. */
+  const uniqueMember = (
+    select: (moduleScope: ScopeId) => readonly BindingRef[],
+  ): SymbolDefinition | undefined | 'ambiguous' => {
+    let picked: SymbolDefinition | undefined;
+    for (const targetFile of targetFiles) {
+      const targetScopeId = scopes.moduleScopes.get(targetFile);
+      if (targetScopeId === undefined) continue;
+      for (const ref of select(targetScopeId)) {
+        if (!CALL_TARGET_TYPES.has(ref.def.type)) continue;
+        if (picked !== undefined && picked.nodeId !== ref.def.nodeId) return 'ambiguous';
+        picked = ref.def;
+      }
     }
-  }
-  return picked;
+    return picked;
+  };
+
+  // A locally declared member first — same precedence `findExportedDef` states
+  // and `walkScopeChain` applies: what the target file DECLARED beats what it
+  // merely re-published.
+  const local = uniqueMember((scope) =>
+    (scopes.bindings.get(scope)?.get(site.name) ?? []).filter((ref) => ref.origin === 'local'),
+  );
+  if (local === 'ambiguous') return undefined;
+  if (local !== undefined) return local;
+  if (!publishesImportedNames) return undefined;
+
+  // Then a name the target file publishes but did not declare — the hub case.
+  // `lookupBindingsAt`, not `scopes.bindings`, because a hub's module scope owns
+  // no local binding for these names and the finalized/augmented channel is the
+  // only place they exist; the same read `findExportedDefIncludingImportedNames`
+  // does for the CALL form.
+  const published = uniqueMember((scope) =>
+    lookupBindingsAt(scope, site.name, scopes).filter(
+      (ref) => ref.origin === 'import' || ref.origin === 'namespace' || ref.origin === 'reexport',
+    ),
+  );
+  return published === 'ambiguous' ? undefined : published;
 }
 
 export function emitPropertyDispatchCalls(
@@ -258,6 +304,13 @@ export function emitPropertyDispatchCalls(
   nodeLookup: GraphNodeLookup,
   model: SemanticModel,
   calleeIdSink?: CalleeIdSink,
+  /**
+   * `ScopeResolver.namespaceExportsIncludeImportedNames`, forwarded rather than
+   * re-derived. The pass names no language; it asks the provider the same
+   * question `receiver-bound-calls` asks before resolving a namespace member,
+   * so the CALL and the REGISTRATION forms of `hub.fn` cannot disagree.
+   */
+  publishesImportedNames = false,
 ): {
   usesEmitted: number;
   callsEmitted: number;
@@ -273,7 +326,13 @@ export function emitPropertyDispatchCalls(
   for (const parsed of parsedFiles) {
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'value-ref') continue;
-      const def = resolveValueRefTarget(site, parsed.filePath, scopes, model);
+      const def = resolveValueRefTarget(
+        site,
+        parsed.filePath,
+        scopes,
+        model,
+        publishesImportedNames,
+      );
       if (def === undefined) continue;
 
       const ok = tryEmitEdge(graph, scopes, nodeLookup, site, def, VALUE_REF_EDGE_REASON, seen);

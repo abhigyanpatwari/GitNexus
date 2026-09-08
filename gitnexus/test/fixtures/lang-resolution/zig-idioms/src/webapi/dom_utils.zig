@@ -16,3 +16,9 @@ pub fn compare(a: u8, b: u8) u8 {
 pub fn normalize(v: u8) u8 {
     return v;
 }
+
+// Republished by `hub.zig`, and by nothing else — so an assertion about the
+// hub cannot be satisfied by an edge some other case emitted.
+pub fn scale(v: u8) u8 {
+    return v +% 1;
+}

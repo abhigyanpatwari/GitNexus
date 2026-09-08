@@ -621,3 +621,74 @@ guarantee it does not give.
 - Bench `--check`: `receiver-resolution`, `zig-cross-file-resolution`,
   `scope-capture` (15 languages), `scope-emission`, `callable-value-flow` all
   PASS, no baseline edited.
+
+---
+
+## Review round 5 — `gitnexus-check` bot on PR #3219 (head `1c7c05ff`)
+
+One finding, valid and reproduced.
+
+**R5-1 (valid, REPRODUCED, fixed) — a hub module's re-exports resolved for the
+CALL form and declined for the REGISTRATION form.** `findNamespaceValueRefTarget`
+accepted only `ref.origin === 'local'`. R2-2 recorded that as deliberate — "the
+`namespaceExportsIncludeImportedNames` hub opt-in is a provider decision this
+language-neutral pass does not make" — and that reasoning was wrong twice over.
+Zig sets the flag (`languages/zig/scope-resolver.ts:41`, measured on ghostty and
+tigerbeetle before it landed), and the pass DOES have the provider in scope:
+`runScopeResolution` takes one and already forwards several of its hooks.
+
+The result was the exact asymmetry R2-2 argued against in its own first
+paragraph. A Zig hub declares nothing — every name it publishes it imported —
+so requiring a local declaration declines every member reached through one:
+
+    // hub.zig
+    pub const scale = @import("dom_utils.zig").scale;
+
+    // Element.zig
+    const hub = @import("hub.zig");
+    pub fn callsThroughTheHub(v: u8) u8 { return hub.scale(v); }   // resolved
+    pub const scaled = bridge.accessor(hub.scale, null, .{});      // declined
+
+One name meaning two different things depending on whether a `(` follows it.
+Reproduced with that fixture before any fix.
+
+Fixed by forwarding `provider.namespaceExportsIncludeImportedNames` into the pass
+and consulting the published channel when it is set — the same question
+`receiver-bound-calls` Case 1 asks, through the same `lookupBindingsAt` read that
+`findExportedDefIncludingImportedNames` performs for the CALL form. Precedence is
+unchanged where it mattered: a locally declared member still wins, ambiguity
+still resolves nothing, and `CALL_TARGET_TYPES` still gates the answer — pinned
+by `hub.DEFAULT_NS`, a re-exported CONSTANT, which stays unregistered. Languages
+that do not opt in are unaffected: the parameter defaults to `false`. Verified
+load-bearing — passing `false` fails the hub test.
+
+The fixture uses a member (`scale`) republished by nothing else, so the hub
+assertion cannot be satisfied by an edge another case emitted.
+
+### Gates after review round 5
+
+- `tsc --noEmit` clean, `npm run build` clean, `prettier --check` clean.
+- `test/integration/resolvers` — 3,634 passed / 3 skipped (70 files).
+- `test/unit/scope-resolution` — 2,015 passed (120 files).
+- `impact-callable-value-references` under `lbug-db` — 7 passed.
+- Bench `--check`: `receiver-resolution`, `zig-cross-file-resolution`,
+  `scope-capture` (15 languages), `scope-emission`, `callable-value-flow` all
+  PASS, no baseline edited.
+
+### Note on `/autofix` (not a code issue)
+
+`/autofix` answered "No successful autofix run found for this PR's current head
+SHA" three times. The cause is not the branch and not a bot refusal: the
+`PR Autofix` run on `1c7c05ff` (34253581982) FAILED at its last step —
+`actions/upload-artifact` returned `Failed to FinalizeArtifact: (403) Forbidden`
+from GitHub's artifact storage. `pr-autofix-apply.yml:243` selects only runs with
+`conclusion == "success"` for the head SHA, so there was nothing to apply.
+The same workflow succeeded on `cf53bbaa`, `3bd1337a` and `bd6e577e` with
+identical permissions, so it is transient infrastructure, not configuration.
+
+Two things worth knowing: re-running that workflow needs admin rights on the
+upstream repo (a fork contributor gets `Must have admin rights to Repository`),
+and the run's own output was `"changed_lines": 0` — ESLint reported 0 errors
+(6868 pre-existing warnings) and Prettier reported every file `(unchanged)`, so
+a successful run would have produced an empty patch anyway. Pushing this commit
+triggers a fresh run, after which `/autofix` will answer normally.

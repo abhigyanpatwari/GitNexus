@@ -360,6 +360,25 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       ]);
     });
 
+    it('resolves a value reference through a HUB the same way a call through it resolves', () => {
+      // `hub.zig` declares nothing: every name it publishes it imported
+      // (`pub const normalize = @import("dom_utils.zig").normalize;`). That is
+      // the shape `ScopeResolver.namespaceExportsIncludeImportedNames` exists
+      // for, and `receiver-bound-calls` honours it — so `hub.scale(v)`
+      // resolves. Accepting only locally-declared members here would make
+      // `bridge.accessor(hub.scale, …)` decline, and one name would mean
+      // two different things depending on whether a `(` followed it.
+      expect(calls).toContain('callsThroughTheHub → scale');
+      expect(valueRefs).toContain('JsApi → scale');
+      expect(valueRefTargetIds.filter((id) => id.includes('scale'))).toEqual([
+        'Function:src/webapi/dom_utils.zig:scale',
+      ]);
+    });
+
+    it('applies the callable gate through a HUB too', () => {
+      expect(valueRefs).not.toContain('JsApi → DEFAULT_NS');
+    });
+
     it('applies the callable gate to a MODULE owner too', () => {
       // `dom_utils.DEFAULT_NS` is a module-scope constant. Widening the owner
       // channel must not widen what counts as a registration, or every
