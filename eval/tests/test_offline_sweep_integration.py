@@ -262,12 +262,9 @@ def test_a_review_that_never_invoked_its_skill_is_not_a_measurement(bench, monke
     assert row["error_kind"] == "skill-not-invoked"
     assert code not in (None, 0), "the sweep must not report success on unusable evidence"
 
-    # Recorded here as the behaviour actually is, not as I first assumed. The
-    # row still carries a score, and aggregate() still counts it toward the arm
-    # median: its filter drops EXCLUDED_ERROR_KINDS and evidence_valid=False,
-    # and "skill-not-invoked" is neither. The health guard is what stops the
-    # sweep, so a single-run sweep cannot promote on it - but in a mixed run the
-    # median for an arm would include a cell whose skill never ran. Pinned so
-    # the behaviour cannot change silently either way.
+    # The row still carries its own score - the artifact was well formed - but
+    # aggregate() now keeps it out of the arm's QUALITY median, since a cell
+    # whose skill never ran did not measure that skill. It still counts for
+    # cost, because the session ran and was billed.
     assert row["review_weighted_f1"] == 1.0
     assert row["review_evidence_valid"] is True

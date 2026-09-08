@@ -1052,3 +1052,26 @@ def test_a_raising_packed_cell_still_persists_its_settled_siblings():
         )
 
     assert (1, "review") in folded, "the sibling that completed was never recorded"
+
+
+def test_an_uninvoked_skill_does_not_move_the_quality_median_but_still_costs():
+    """An arm measures a SKILL; a cell where the skill never ran did not measure it.
+
+    The row's evidence is well formed, so the old filter kept it and its score
+    moved the arm's quality median - an arm could be credited for a review it
+    never performed with the skill under test. Cost and duration still count:
+    that session really ran and really was billed.
+    """
+
+    good = record(review_weighted_f1=1.0, cost_usd=2.0)
+    uninvoked = record(
+        review_weighted_f1=0.0, cost_usd=4.0, error_kind="skill-not-invoked", skill_invoked=False
+    )
+    agg = aggregate([good, uninvoked])
+
+    assert agg["review_weighted_f1"] == 1.0, "the uninvoked cell must not drag quality"
+    assert agg["cost_usd"] == 3.0, "but it was still billed, so it counts for cost"
+
+    # A wrong-but-valid review is a quality result and must still count.
+    wrong = record(review_weighted_f1=0.0, cost_usd=2.0, resolved=False, error_kind="oracle-failed")
+    assert aggregate([good, wrong])["review_weighted_f1"] == 0.5

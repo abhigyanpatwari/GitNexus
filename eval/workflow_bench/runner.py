@@ -1591,11 +1591,17 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
         "review_category_accuracy",
         "review_grounded_evidence",
     )
-    if any("review_weighted_f1" in record for record in valid):
+    # QUALITY metrics only: a cell whose skill never ran did not measure the
+    # skill, so its score must not move the arm's quality median. It stays in
+    # `valid` for cost and duration, because that session really did run and
+    # really was billed - and it stays visible to the promotion gate, which has
+    # its own vocabulary for a candidate that never loaded its skill.
+    scored = [record for record in valid if record.get("error_kind") != "skill-not-invoked"]
+    if any("review_weighted_f1" in record for record in scored):
         for metric in review_metrics:
-            values = [record[metric] for record in valid if record.get(metric) is not None]
+            values = [record[metric] for record in scored if record.get(metric) is not None]
             reducer = min if metric == "review_blocker_recall" else statistics.median
-            out[metric] = reducer(values) if values and len(values) == len(valid) else None
+            out[metric] = reducer(values) if values and len(values) == len(scored) else None
         verdicts = [record.get("review_verdict_correct") for record in valid]
         out["review_verdict_correct"] = (
             all(value is True for value in verdicts)
