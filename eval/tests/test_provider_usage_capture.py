@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from workflow_bench import litellm_usage_callback, provider_usage
 from workflow_bench.litellm_usage_callback import USAGE_LOG_ENV_VAR, ProviderUsageLogger
 from workflow_bench.model_gateway import (
     OpenAIGateway,
@@ -230,3 +231,49 @@ def test_a_request_records_its_session_so_attribution_stays_possible(logged) -> 
 
     event = logged(NATIVE)
     assert "session_id" in event, "absent attribution is still a fact about the run"
+
+
+def test_the_callback_imports_the_way_litellm_actually_loads_it(tmp_path: Path) -> None:
+    """By path, as a top-level module, with no parent package and no sys.path entry.
+
+    LiteLLM resolves a dotted callback through spec_from_file_location against
+    the config directory, so the copied file is not part of workflow_bench when
+    it runs. A relative or sibling import therefore raises ImportError and the
+    proxy exits before becoming ready - which the in-package tests cannot see,
+    because they import it as workflow_bench.litellm_usage_callback.
+    """
+
+    import importlib.util
+    import shutil
+
+    source = Path(litellm_usage_callback.__file__)
+    installed = tmp_path / f"{USAGE_CALLBACK_MODULE}.py"
+    shutil.copy(source, installed)
+
+    spec = importlib.util.spec_from_file_location(USAGE_CALLBACK_MODULE, installed)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # ImportError here is the proxy refusing to start
+    assert hasattr(module, "handler")
+
+
+def test_the_callbacks_copied_constants_match_the_canonical_ones() -> None:
+    """The copies are deliberate; drifting apart silently is not.
+
+    The callback cannot import from the package (see the test above), so it
+    carries its own literals. These assertions are what keep the duplication
+    honest.
+    """
+
+    assert litellm_usage_callback.USAGE_LOG_ENV_VAR == provider_usage.USAGE_LOG_ENV_VAR
+    assert litellm_usage_callback.SWEEP_ID_ENV_VAR == provider_usage.SWEEP_ID_ENV_VAR
+    for label, call_type in (
+        ("openai", "responses"),
+        ("openai", "completion"),
+        ("openai", None),
+        ("anthropic", "completion"),
+        ("mystery", "responses"),
+    ):
+        assert litellm_usage_callback.canonical_provider(label, call_type) == provider_usage.canonical_provider(
+            label, call_type
+        ), f"resolver drifted for {label!r}/{call_type!r}"

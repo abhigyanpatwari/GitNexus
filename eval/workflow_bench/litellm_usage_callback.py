@@ -25,7 +25,28 @@ from typing import Any
 
 from litellm.integrations.custom_logger import CustomLogger
 
-from .provider_usage import SWEEP_ID_ENV_VAR, USAGE_LOG_ENV_VAR, canonical_provider
+# Literals, not imports. LiteLLM loads this file BY PATH from the config
+# directory via spec_from_file_location, so it has no parent package and the
+# directory is not on sys.path - a relative or sibling import raises
+# ImportError and the proxy refuses to start. workflow_bench.provider_usage
+# holds the canonical copies and a test asserts these agree with them, which
+# catches drift without coupling at import time.
+USAGE_LOG_ENV_VAR = "GITNEXUS_BENCH_PROVIDER_USAGE"
+SWEEP_ID_ENV_VAR = "GITNEXUS_BENCH_SWEEP_ID"
+
+
+def canonical_provider(label, call_type):  # noqa: ANN001, ANN201
+    """Adapter key for the usage shape, or None when it cannot be resolved.
+
+    Mirrors workflow_bench.provider_usage.canonical_provider; see the note
+    above for why this is a copy rather than an import.
+    """
+
+    if label == "openai" and call_type and "responses" in call_type:
+        return "openai-responses"
+    if label == "anthropic":
+        return "anthropic"
+    return None
 
 SCHEMA_VERSION = 1
 _LOCK = threading.Lock()
