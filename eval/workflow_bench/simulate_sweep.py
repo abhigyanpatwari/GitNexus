@@ -55,6 +55,9 @@ from .measure_evolution_cost import (
 )
 
 DEFAULT_SCALE = 5000.0
+# --contention-sweep measures both of these regardless of --workers, so the
+# window has to be valid for the LARGEST of them, not for the parsed value.
+CONTENTION_WORKERS = (3, 6)
 SYSTEMIC_KIND = "session-error"
 
 # A cell is mostly a model session waiting on the network, but its tool calls -
@@ -256,12 +259,24 @@ def _drain_naive(cells: list[Cell], workers: int) -> int:
 
 
 def run_fed(plan: list[list[Cell]], workers: int, *, outage_limit: int, graph_seconds: float) -> Outcome:
-    """H1 without invariants: fed pool per task. Prices the barrier alone."""
+    """H1 without invariants: fed pool per task. Prices the barrier alone.
 
-    started = time.monotonic()
+    Graph building is deliberately identical to ``run_wave`` - the same
+    background builder, started before the clock - because that is what makes
+    the claim in the first line true. Sleeping ``graph_seconds`` serially before
+    each task instead, as this did, charged fed for overlap that wave gets for
+    free: the wave builder prepares task N+1 while task N's cells run. The
+    fed-versus-wave delta then mixed the loss of that overlap into what was
+    reported as the price of the barrier.
+    """
+
+    ready = [threading.Event() for _ in plan]
+    stop = threading.Event()
+    _graph_builder(ready, graph_seconds, stop)
     executed = 0
-    for cells in plan:
-        time.sleep(graph_seconds)
+    started = time.monotonic()
+    for task, cells in enumerate(plan):
+        ready[task].wait()
         executed += _drain_naive(cells, workers)
     return Outcome(wall_s=time.monotonic() - started, executed=executed)
 
@@ -586,10 +601,19 @@ def main() -> int:
         parser.error("--repeat must be at least 1")
     if args.runs < 1:
         parser.error("--runs must be at least 1")
-    # A window of zero admits no cell at all: the producer waits for the fold
-    # pointer to advance past a cell it was never allowed to submit.
-    if args.window is not None and args.window < 1:
-        parser.error("--window must be at least 1")
+    # run_faithful and sweep_packed_cells both refuse a window below the worker
+    # count - a smaller one starves the pool, because the producer waits for a
+    # fold pointer to pass a cell it was never allowed to submit. Enforcing it
+    # here turns an uncaught ValueError partway through a measurement into an
+    # argument error before anything runs. Checked against the largest worker
+    # count this invocation will actually use: --contention-sweep runs its own
+    # counts irrespective of --workers, so validating against --workers alone
+    # let the 3-worker measurements finish and then raised on the 6-worker one.
+    window_workers = args.workers
+    if args.contention_sweep:
+        window_workers = max(window_workers, max(CONTENTION_WORKERS))
+    if args.window is not None and args.window < window_workers:
+        parser.error(f"--window must be at least the worker count ({window_workers}); a smaller window starves the pool")
     if args.graph_seconds is None:
         args.graph_seconds = SHA_OVERHEAD_SECONDS / args.scale
 
@@ -597,7 +621,7 @@ def main() -> int:
         burn_rate = statistics.median(calibrate_burn() for _ in range(3))
         rows = []
         for cpu_fraction in (0.0, 0.25, 0.5):
-            for workers in (3, 6):
+            for workers in CONTENTION_WORKERS:
                 plans = [
                     build_plan(**_plan_args(args, False, args.seed + i)[0])
                     for i in range(args.repeat)
