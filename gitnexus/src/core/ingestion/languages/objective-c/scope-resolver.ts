@@ -25,7 +25,6 @@ interface ObjCWorkspaceFacts {
   readonly containersByQualifiedName: ReadonlyMap<string, ObjCContainerFact>;
   readonly classByName: ReadonlyMap<string, ObjCContainerFact>;
   readonly protocolsByName: ReadonlyMap<string, ObjCContainerFact>;
-  readonly categoriesByHost: ReadonlyMap<string, readonly ObjCContainerFact[]>;
   readonly methodsByDispatchOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
   readonly methodsByExactOwner: ReadonlyMap<string, readonly ObjCMethodFact[]>;
   readonly memberTypesByOwner: ReadonlyMap<string, ReadonlyMap<string, ObjCTypeInfo>>;
@@ -113,7 +112,6 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
   const containersByQualifiedName = new Map<string, ObjCContainerFact>();
   const classByName = new Map<string, ObjCContainerFact>();
   const protocolsByName = new Map<string, ObjCContainerFact>();
-  const categoriesByHost = new Map<string, ObjCContainerFact[]>();
   const methodsByExactOwner = new Map<string, ObjCMethodFact[]>();
   const methodsByDispatchOwner = new Map<string, ObjCMethodFact[]>();
   const memberTypesByOwner = new Map<string, Map<string, ObjCTypeInfo>>();
@@ -151,12 +149,6 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
           for (const protocol of container.protocols) parents.add(protocol);
         }
       } else if (container.hostClass !== undefined) {
-        let categories = categoriesByHost.get(container.hostClass);
-        if (categories === undefined) {
-          categories = [];
-          categoriesByHost.set(container.hostClass, categories);
-        }
-        categories.push(container);
         if (container.protocols.length > 0) {
           let protocols = classProtocols.get(container.hostClass);
           if (protocols === undefined) {
@@ -188,7 +180,6 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
     containersByQualifiedName,
     classByName,
     protocolsByName,
-    categoriesByHost,
     methodsByDispatchOwner,
     methodsByExactOwner,
     memberTypesByOwner,

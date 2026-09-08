@@ -161,6 +161,9 @@ const DIRECT_MEMBER_HEADER_NODE_TYPES = new Set([
   'identifier',
   'parameterized_arguments',
   'protocol_reference_list',
+  // tree-sitter-objc `_type_params` hides itself and exposes this named child
+  // for `(T)` generics and category-shaped argument lists.
+  'generic_arguments',
 ]);
 
 const FIELD_LIKE_MEMBER_TYPES = new Set([
@@ -398,6 +401,9 @@ const collectDeclarationUnits = (
     const firstMember = members[firstMemberIndex];
     if (includeNodePrefixOnFirstMember && firstMember) {
       firstMember.startIndex = node.startIndex;
+      if (node.type === 'instance_variables') {
+        members[members.length - 1].endIndex = node.endIndex;
+      }
     }
   };
 

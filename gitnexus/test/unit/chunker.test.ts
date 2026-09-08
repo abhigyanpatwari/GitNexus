@@ -376,6 +376,29 @@ describe('chunkNode', () => {
     expect(result[0].text).toContain('- (void)run');
   });
 
+  it('skips Objective-C generic argument lists as declaration members', async () => {
+    const content = ['@interface Worker(Tracing)', '- (void)run;', '@end'].join('\n');
+    const nameStart = content.indexOf('Worker');
+    const argumentsStart = content.indexOf('(Tracing)');
+    const methodStart = content.indexOf('- (void)run;');
+    const declaration = makeFakeNode('class_interface', 0, content.length, [
+      makeFakeNode('identifier', nameStart, nameStart + 'Worker'.length),
+      makeFakeNode('generic_arguments', argumentsStart, argumentsStart + '(Tracing)'.length),
+      makeFakeNode('method_declaration', methodStart, methodStart + '- (void)run;'.length),
+    ]);
+    createParserForLanguage.mockResolvedValue({
+      parse: vi.fn().mockReturnValue({
+        rootNode: makeFakeNode('program', 0, content.length, [declaration]),
+      }),
+    });
+
+    const result = await chunkNode('Class', content, 'GenericCategoryWorker.m', 1, 3, 40, 0);
+
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'GenericCategoryWorker.m');
+    expect(result[0].text).toContain('- (void)run');
+    expect(result.some((chunk) => chunk.text === '(Tracing)')).toBe(false);
+  });
+
   it('chunks an Objective-C implementation at method boundaries', async () => {
     const content = [
       '@implementation Worker',
@@ -595,8 +618,12 @@ describe('chunkNode', () => {
     expect(combined).toContain(firstIvar);
     expect(combined).toContain(secondIvar);
     expect(combined).toContain(method);
+    expect(combined).toContain('}');
     expect(
       result.some((chunk) => chunk.text.includes(firstIvar) && chunk.text.includes(secondIvar)),
+    ).toBe(true);
+    expect(
+      result.some((chunk) => chunk.text.includes(secondIvar) && chunk.text.includes('}')),
     ).toBe(true);
   });
 
@@ -620,8 +647,9 @@ describe('chunkNode', () => {
       }),
     });
 
-    const result = await chunkNode('Protocol', content, 'Worker.m', 1, 3, 50, 0);
+    const result = await chunkNode('Protocol', content, 'ProtocolInheritance.m', 1, 3, 50, 0);
 
+    expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ProtocolInheritance.m');
     expect(result[0].text).toContain('- (void)');
     expect(result[0].text).not.toBe('@protocol Worker <Runnable, Observable>');
   });

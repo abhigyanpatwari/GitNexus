@@ -21,6 +21,7 @@ interface ScanState {
   inPreprocessorDirective: boolean;
   quote: '"' | "'" | undefined;
   braceDepth: number;
+  parenDepth: number;
 }
 
 function isPreprocessorWhitespace(code: number): boolean {
@@ -94,21 +95,15 @@ function startsPreprocessorDirective(line: string, state: ScanState): boolean {
   return false;
 }
 
-function scanLine(line: string, state: ScanState): void {
-  if (state.inLineCommentContinuation) {
-    state.inLineCommentContinuation = hasEscapedLineEnding(line);
-    return;
-  }
-  if (state.inPreprocessorDirective) {
-    state.inPreprocessorDirective = hasEscapedLineEnding(line);
-    return;
-  }
-  if (startsPreprocessorDirective(line, state)) {
-    state.inPreprocessorDirective = hasEscapedLineEnding(line);
-    return;
-  }
+function scanBalancedDelimiters(code: number, state: ScanState): void {
+  if (code === 0x28) state.parenDepth++;
+  else if (code === 0x29) state.parenDepth = Math.max(0, state.parenDepth - 1);
+  else if (code === 0x7b) state.braceDepth++;
+  else if (code === 0x7d) state.braceDepth = Math.max(0, state.braceDepth - 1);
+}
 
-  for (let index = 0; index < line.length; index++) {
+function scanLineBody(line: string, state: ScanState, startIndex: number): void {
+  for (let index = startIndex; index < line.length; index++) {
     const code = line.charCodeAt(index);
     const next = line.charCodeAt(index + 1);
 
@@ -142,9 +137,30 @@ function scanLine(line: string, state: ScanState): void {
       state.quote = line[index] as '"' | "'";
       continue;
     }
-    if (code === 0x7b) state.braceDepth++;
-    else if (code === 0x7d) state.braceDepth = Math.max(0, state.braceDepth - 1);
+    scanBalancedDelimiters(code, state);
   }
+}
+
+function scanLine(line: string, state: ScanState): void {
+  if (state.inLineCommentContinuation) {
+    state.inLineCommentContinuation = hasEscapedLineEnding(line);
+    return;
+  }
+  if (state.inPreprocessorDirective) {
+    state.inPreprocessorDirective = hasEscapedLineEnding(line);
+    scanLineBody(line, state, 0);
+    return;
+  }
+  if (startsPreprocessorDirective(line, state)) {
+    state.inPreprocessorDirective = hasEscapedLineEnding(line);
+    // Directives can open a block comment (`#define X /*`) that continues
+    // onto the next physical line. Scan the rest of this line so that
+    // comment stays protected.
+    scanLineBody(line, state, 0);
+    return;
+  }
+
+  scanLineBody(line, state, 0);
 
   if (state.quote !== undefined && !hasEscapedLineEnding(line)) state.quote = undefined;
 }
@@ -163,6 +179,7 @@ export function preprocessObjectiveCMacroMarkers(source: string, _filePath?: str
     inPreprocessorDirective: false,
     quote: undefined,
     braceDepth: 0,
+    parenDepth: 0,
   };
   const segments = source.split(/(\r\n|\n|\r)/);
   let changed = false;
@@ -175,6 +192,7 @@ export function preprocessObjectiveCMacroMarkers(source: string, _filePath?: str
       !state.inPreprocessorDirective &&
       state.quote === undefined &&
       state.braceDepth === 0 &&
+      state.parenDepth === 0 &&
       isBareMarkerIdentifier(line)
     ) {
       segments[index] = ' '.repeat(line.length);

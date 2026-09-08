@@ -98,6 +98,22 @@ describe('preprocessObjectiveCMacroMarkers', () => {
     expect(preprocessObjectiveCMacroMarkers(source, 'CommentDirective.h')).toBe(source);
   });
 
+  it('does not rewrite markers inside a multiline function-like macro invocation', () => {
+    const source = ['SOME_MACRO(', 'RCT_EXTERN_C_END', ')', 'RCT_EXTERN_C_BEGIN', ''].join('\n');
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'MultilineMacro.m');
+
+    expect(normalized.split('\n')[1]).toBe('RCT_EXTERN_C_END');
+    expect(normalized.split('\n')[3]).toBe(' '.repeat('RCT_EXTERN_C_BEGIN'.length));
+  });
+
+  it('does not rewrite markers inside a block comment opened on a directive line', () => {
+    const source = ['#define X /*', 'RCT_EXTERN_C_BEGIN', '*/', 'RCT_EXTERN_C_END', ''].join('\n');
+    const normalized = preprocessObjectiveCMacroMarkers(source, 'DirectiveComment.h');
+
+    expect(normalized.split('\n')[1]).toBe('RCT_EXTERN_C_BEGIN');
+    expect(normalized.split('\n')[3]).toBe(' '.repeat('RCT_EXTERN_C_END'.length));
+  });
+
   it('requires a valid identifier start for a bare marker', () => {
     const source = ['123_RCT_EXTERN_C_END', 'RCT_EXTERN_C_END', ''].join('\n');
     const normalized = preprocessObjectiveCMacroMarkers(source, 'NumericMarker.h');
