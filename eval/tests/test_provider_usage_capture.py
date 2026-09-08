@@ -123,11 +123,34 @@ def test_usage_without_details_normalizes_to_unknown_rather_than_zero(logged) ->
 def test_a_failed_request_is_still_accounted_for(logged, tmp_path: Path) -> None:
     """The money was spent whether or not the cell produced an artifact."""
 
-    ProviderUsageLogger()._append(
-        "failure", {"model": "claude-sonnet-4-5"}, _openai_response(NATIVE), 0.0, 1.0
-    )
+    import asyncio
+
+    logger = ProviderUsageLogger()
+    args = ({"model": "claude-sonnet-4-5"}, _openai_response(NATIVE), 0.0, 1.0)
+    # Every hook LiteLLM can call, not the private helper underneath them: the
+    # sync failure hook was missing entirely and _append could never show that.
+    logger.log_failure_event(*args)
+    asyncio.run(logger.async_log_failure_event(*args))
     events = [json.loads(line) for line in (tmp_path / "provider_usage.jsonl").read_text().splitlines()]
-    assert events[-1]["status"] == "failure"
+    assert len(events) == 2, "both failure hooks must record"
+    assert all(e["status"] == "failure" for e in events)
+
+
+def test_every_public_outcome_hook_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Overriding a subset silently drops whichever path LiteLLM actually uses."""
+
+    import asyncio
+
+    monkeypatch.setenv(USAGE_LOG_ENV_VAR, str(tmp_path / "usage.jsonl"))
+    logger = ProviderUsageLogger()
+    args = ({"model": "m"}, _openai_response(NATIVE), 0.0, 1.0)
+    logger.log_success_event(*args)
+    logger.log_failure_event(*args)
+    asyncio.run(logger.async_log_success_event(*args))
+    asyncio.run(logger.async_log_failure_event(*args))
+
+    events = [json.loads(line) for line in (tmp_path / "usage.jsonl").read_text().splitlines()]
+    assert [e["status"] for e in events] == ["success", "failure", "success", "failure"]
 
 
 def test_the_logger_never_raises_into_the_proxy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -79,6 +79,13 @@ class ProviderUsageLogger(CustomLogger):
     def log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ANN001
         self._append("success", kwargs, response_obj, start_time, end_time)
 
+    def log_failure_event(self, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ANN001
+        # The synchronous counterpart. Overriding only the success hook here
+        # recorded successes and let failures fall through to the base class,
+        # which accounts for nothing - and a failed request is still billed, so
+        # a sweep missing them understates what it spent.
+        self._append("failure", kwargs, response_obj, start_time, end_time)
+
     def _append(self, status, kwargs, response_obj, start_time, end_time) -> None:  # noqa: ANN001
         path = os.environ.get(USAGE_LOG_ENV_VAR)
         if not path:
