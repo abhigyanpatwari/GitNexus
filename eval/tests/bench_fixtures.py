@@ -28,6 +28,7 @@ def scored_review_row(**overrides: Any) -> dict[str, Any]:
         "review_false_negatives": 0,
         "review_precision": 0.5,
         "review_recall": 0.5,
+        "review_f1": 0.5,
         "review_weighted_precision": 0.5,
         "review_weighted_recall": 0.5,
         "review_blocker_recall": 1.0,

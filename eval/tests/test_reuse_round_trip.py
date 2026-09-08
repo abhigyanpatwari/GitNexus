@@ -205,7 +205,7 @@ def emitted_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, An
     return runner.run_cell(ctx, 0, "review")
 
 
-def _expectation(row: dict[str, Any], **overrides: Any) -> ComparatorReuseExpectation:
+def _expectation(**overrides: Any) -> ComparatorReuseExpectation:
     """Bindings from the sweep's own configuration, not copied out of the row.
 
     Copying the emitted values back in would make producer and consumer agree
@@ -246,7 +246,7 @@ def test_a_row_the_runner_emitted_survives_serialization_and_qualifies(
     rows = load_result_rows(results)
     assert len(rows) == 1, "the production row must survive the reader"
 
-    assert row_is_reusable_comparator(rows[0], _expectation(rows[0])) is True
+    assert row_is_reusable_comparator(rows[0], _expectation()) is True
 
 
 def test_a_changed_binding_rejects_the_same_emitted_row(
@@ -265,4 +265,4 @@ def test_a_changed_binding_rejects_the_same_emitted_row(
         task_asset_manifest_digest="asset-manifest",
         sandbox_dependency_manifest_digest="DIFFERENT-dependencies",
     )
-    assert row_is_reusable_comparator(row, _expectation(row, tasks={TASK_ID: binding})) is False
+    assert row_is_reusable_comparator(row, _expectation(tasks={TASK_ID: binding})) is False
