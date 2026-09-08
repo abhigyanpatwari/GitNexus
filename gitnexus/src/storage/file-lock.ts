@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { isProcessAlive, readProcessStartTime } from '../utils/process-identity.js';
+import { isProcessAlive, readProcessStartTimeCached } from '../utils/process-identity.js';
 
 const HOSTNAME = os.hostname();
 
@@ -46,7 +46,9 @@ export async function acquireFileLock(
     pid,
     ownerId: crypto.randomUUID(),
     processStartTime:
-      options.processStartTime ?? (options.readProcessStartTime ?? readProcessStartTime)(pid) ?? '',
+      options.processStartTime ??
+      (options.readProcessStartTime ?? readProcessStartTimeCached)(pid) ??
+      '',
     hostname: options.hostname ?? HOSTNAME,
   };
   if (!owner.processStartTime) {
@@ -69,7 +71,7 @@ export async function acquireFileLock(
             resolvedPath,
             owner,
             options.isProcessAlive ?? isProcessAlive,
-            options.readProcessStartTime ?? readProcessStartTime,
+            options.readProcessStartTime ?? readProcessStartTimeCached,
           )
         ) {
           continue;
