@@ -46,7 +46,9 @@ export async function acquireFileLock(
     pid,
     ownerId: crypto.randomUUID(),
     processStartTime:
-      options.processStartTime ?? (options.readProcessStartTime ?? readProcessStartTimeCached)(pid) ?? '',
+      options.processStartTime ??
+      (options.readProcessStartTime ?? readProcessStartTimeCached)(pid) ??
+      '',
     hostname: options.hostname ?? HOSTNAME,
   };
   if (!owner.processStartTime) {
