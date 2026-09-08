@@ -182,9 +182,16 @@ describe('tsconfig paths', () => {
   });
 
   it('substitutes a repo-root target written as the bare `*`', () => {
-    // `"baseUrl": "."` with `"*": ["./*"]` rebases to an EMPTY repo-relative
-    // prefix, so the encoding the loader emits for the suffix is the whole
-    // target. This is the pair that says why it must be `*` and not `/*`.
+    // A `"*": ["./*"]` target resolves to the repo root, so `rebaseTarget`
+    // leaves an EMPTY repo-relative prefix and the suffix is the whole
+    // encoding. This is the pair that says why it must be `*` and not `/*`.
+    //
+    // `baseUrl` is `null` — no baseUrl declared — rather than the `''` the
+    // loader emits for a real `"baseUrl": "."`, and deliberately so: `''`
+    // resolves `packages/utils/src/index` through the baseUrl arm on its own,
+    // which would answer the negative case for a reason that has nothing to do
+    // with the target encoding. `paths` is tried first either way, so cutting
+    // the fallback is what leaves this asserting only what it names.
     const rootWildcard = (target: string): TsconfigIndex => ({
       scopes: [{ dir: '', baseUrl: null, paths: [{ pattern: '*', targets: [target] }] }],
     });
