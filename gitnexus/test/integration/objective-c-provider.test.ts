@@ -317,12 +317,17 @@ describe('Objective-C provider integration', () => {
     const hFile = result.graph.nodes.find(
       (node) => node.label === 'File' && node.properties.filePath === 'SYModuleCaller.h',
     );
+    const supportFile = result.graph.nodes.find(
+      (node) => node.label === 'File' && node.properties.filePath === 'SYModuleSupport.h',
+    );
     expect(mFile).toBeDefined();
     expect(hFile).toBeDefined();
-    if (mFile === undefined || hFile === undefined) {
+    expect(supportFile).toBeDefined();
+    if (mFile === undefined || hFile === undefined || supportFile === undefined) {
       throw new Error('Missing Objective-C fixture file nodes');
     }
     expect(hasRelationship('IMPORTS', mFile.id, hFile.id)).toBe(true);
+    expect(hasRelationship('IMPORTS', mFile.id, supportFile.id)).toBe(true);
   });
 
   it('records implementation evidence for merged declarations', () => {

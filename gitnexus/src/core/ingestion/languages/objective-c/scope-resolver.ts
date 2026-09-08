@@ -1,11 +1,18 @@
-import path from 'path';
-import { SupportedLanguages, type SymbolDefinition, type Callsite } from 'gitnexus-shared';
-import type { GraphNode, RelationshipType } from 'gitnexus-shared';
+import {
+  SupportedLanguages,
+  type ParsedFile,
+  type SymbolDefinition,
+  type Callsite,
+} from 'gitnexus-shared';
+import type { RelationshipType } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { generateId } from '../../../../lib/utils.js';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import { objectiveCProvider } from '../objective-c.js';
+import { populateObjectiveCCompilationUnitSiblings } from './compilation-unit-siblings.js';
+import { resolveObjectiveCImportTarget } from './import-target.js';
+import { loadObjectiveCResolutionConfig } from './resolution-config.js';
 import {
   applyObjectiveCCaptureSideChannel,
   objcClassQualifiedName,
@@ -31,6 +38,19 @@ interface ObjCWorkspaceFacts {
   readonly classProtocols: ReadonlyMap<string, ReadonlySet<string>>;
   readonly protocolParents: ReadonlyMap<string, ReadonlySet<string>>;
   readonly superclassByClass: ReadonlyMap<string, string>;
+  /** Class names that conform to each protocol, including inherited protocols. */
+  readonly classesByProtocol: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Per-(protocol, selector) implementer methods. Filled on first query so
+   * N messages to the same protocol do not rescan the class set.
+   */
+  readonly protocolImplementationBySelector: Map<string, readonly ObjCMethodFact[]>;
+  /**
+   * Shared implementer-evidence nodes already written. The implementer
+   * USES fan-out is emitted once; later messages only add the
+   * source→shared hop (C# workspaceTypeBindings analog).
+   */
+  readonly emittedProtocolCandidateSets: Set<string>;
 }
 
 export const objectiveCScopeResolver: ScopeResolver = {
@@ -38,8 +58,10 @@ export const objectiveCScopeResolver: ScopeResolver = {
   languageProvider: objectiveCProvider,
   importEdgeReason: 'objective-c-scope: import',
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths) =>
-    resolveObjectiveCImportTarget(targetRaw, fromFile, allFilePaths),
+  loadResolutionConfig: (repoPath) => loadObjectiveCResolutionConfig(repoPath),
+
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
+    resolveObjectiveCImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
 
   mergeBindings: (existing, incoming) => [...existing, ...incoming],
 
@@ -51,7 +73,8 @@ export const objectiveCScopeResolver: ScopeResolver = {
   buildMro: () => new Map(),
 
   applyCaptureSideChannel: applyObjectiveCCaptureSideChannel,
-  populateOwners: () => {},
+  populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateNamespaceSiblings: populateObjectiveCCompilationUnitSiblings,
   isSuperReceiver: (receiverText) => receiverText.trim() === 'super',
 
   fieldFallbackOnMethodLookup: false,
@@ -176,6 +199,38 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
     }
   }
 
+  const hierarchyWorkspace = { protocolParents };
+  const classNames = new Set([...classByName.keys(), ...classProtocols.keys()]);
+  const classesByProtocol = new Map<string, string[]>();
+  for (const className of classNames) {
+    const seenClasses = new Set<string>();
+    let currentClass: string | undefined = className;
+    while (currentClass !== undefined && !seenClasses.has(currentClass)) {
+      seenClasses.add(currentClass);
+      const directProtocols = classProtocols.get(currentClass);
+      if (directProtocols !== undefined) {
+        for (const directProtocol of directProtocols) {
+          for (const protocolName of protocolHierarchy(hierarchyWorkspace, directProtocol)) {
+            let implementers = classesByProtocol.get(protocolName);
+            if (implementers === undefined) {
+              implementers = [];
+              classesByProtocol.set(protocolName, implementers);
+            }
+            implementers.push(className);
+          }
+        }
+      }
+      currentClass = superclassByClass.get(currentClass);
+    }
+  }
+  const classesByProtocolFrozen = new Map<string, readonly string[]>();
+  for (const [protocolName, implementers] of classesByProtocol) {
+    classesByProtocolFrozen.set(
+      protocolName,
+      Object.freeze([...new Set(implementers)].sort((left, right) => left.localeCompare(right))),
+    );
+  }
+
   return {
     containersByQualifiedName,
     classByName,
@@ -186,6 +241,9 @@ function buildObjectiveCWorkspaceFacts(facts: readonly ObjCFileFacts[]): ObjCWor
     classProtocols,
     protocolParents,
     superclassByClass,
+    classesByProtocol: classesByProtocolFrozen,
+    protocolImplementationBySelector: new Map(),
+    emittedProtocolCandidateSets: new Set(),
   };
 }
 
@@ -403,7 +461,14 @@ function emitObjectiveCMessageEdges(
       continue;
     }
     if (targets.kind === 'protocol') {
-      emitProtocolMessageEvidence(graph, facts, message, targets.protocolName, targets.candidates);
+      emitProtocolMessageEvidence(
+        graph,
+        facts,
+        message,
+        targets.protocolName,
+        targets.candidates,
+        workspace,
+      );
     }
     for (const target of targets.methods) {
       if (graph.getNode(target.nodeId) === undefined) continue;
@@ -592,7 +657,10 @@ function findProtocolMethods(
   return [];
 }
 
-function protocolHierarchy(workspace: ObjCWorkspaceFacts, protocolName: string): readonly string[] {
+function protocolHierarchy(
+  workspace: Pick<ObjCWorkspaceFacts, 'protocolParents'>,
+  protocolName: string,
+): readonly string[] {
   const seen = new Set<string>();
   const pending = [protocolName];
   const hierarchy: string[] = [];
@@ -614,43 +682,22 @@ function uniqueMethods(methods: readonly ObjCMethodFact[]): readonly ObjCMethodF
   );
 }
 
-function classConformsToProtocol(
-  workspace: ObjCWorkspaceFacts,
-  className: string,
-  protocolName: string,
-): boolean {
-  const seen = new Set<string>();
-  let currentClass: string | undefined = className;
-
-  while (currentClass !== undefined && !seen.has(currentClass)) {
-    seen.add(currentClass);
-    const directProtocols = workspace.classProtocols.get(currentClass);
-    if (
-      directProtocols !== undefined &&
-      [...directProtocols].some((directProtocol) =>
-        protocolHierarchy(workspace, directProtocol).includes(protocolName),
-      )
-    ) {
-      return true;
-    }
-    currentClass = workspace.superclassByClass.get(currentClass);
-  }
-
-  return false;
-}
-
 function findProtocolImplementationCandidates(
   workspace: ObjCWorkspaceFacts,
   protocolName: string,
   selector: string,
 ): readonly ObjCMethodFact[] {
+  const cacheKey = `${protocolName}\0${selector}`;
+  const cached = workspace.protocolImplementationBySelector.get(cacheKey);
+  if (cached !== undefined) return cached;
+
   const out: ObjCMethodFact[] = [];
-  const classNames = new Set([...workspace.classByName.keys(), ...workspace.classProtocols.keys()]);
-  for (const className of classNames) {
-    if (!classConformsToProtocol(workspace, className, protocolName)) continue;
+  for (const className of workspace.classesByProtocol.get(protocolName) ?? []) {
     out.push(...findDispatchMethods(workspace, className, '-', selector).methods);
   }
-  return uniqueMethods(out);
+  const result = uniqueMethods(out);
+  workspace.protocolImplementationBySelector.set(cacheKey, result);
+  return result;
 }
 
 function emitCategoryDispatchEvidence(
@@ -713,32 +760,52 @@ function emitProtocolMessageEvidence(
   message: ObjCMessageFact,
   protocolName: string,
   candidates: readonly ObjCMethodFact[],
+  workspace: ObjCWorkspaceFacts,
 ): void {
   if (candidates.length === 0) return;
-  const qualifiedName = `objc:protocol-candidates:${facts.filePath}:${message.startLine}:${message.startCol}:${message.selector}`;
+  const setKey = `${protocolName}\0${message.selector}`;
+  const qualifiedName = `objc:protocol-candidates:${protocolName}:${message.selector}`;
   const nodeId = graphNodeId('CodeElement', qualifiedName);
-  const node: GraphNode = {
-    id: nodeId,
-    label: 'CodeElement',
-    properties: {
-      name: `[${message.receiverText} ${message.selector}] protocol ${protocolName} candidates`,
-      qualifiedName,
-      filePath: facts.filePath,
-      startLine: message.startLine,
-      endLine: message.startLine,
-      language: SupportedLanguages.ObjectiveC,
-      isExported: false,
-    },
-  };
-  graph.addNode(node);
-  addRelationship(
-    graph,
-    'DEFINES',
-    graphNodeId('File', facts.filePath),
-    nodeId,
-    `objc: protocol receiver candidate evidence: ${protocolName} ${message.selector}`,
-    1,
-  );
+  const protocol = workspace.protocolsByName.get(protocolName);
+  const evidenceFilePath = protocol?.filePath ?? facts.filePath;
+
+  if (!workspace.emittedProtocolCandidateSets.has(setKey)) {
+    workspace.emittedProtocolCandidateSets.add(setKey);
+    graph.addNode({
+      id: nodeId,
+      label: 'CodeElement',
+      properties: {
+        name: `[id<${protocolName}> ${message.selector}] protocol implementers`,
+        qualifiedName,
+        filePath: evidenceFilePath,
+        startLine: protocol?.startLine ?? message.startLine,
+        endLine: protocol?.endLine ?? message.startLine,
+        language: SupportedLanguages.ObjectiveC,
+        isExported: false,
+        objectiveCKind: 'protocol-implementers',
+      },
+    });
+    addRelationship(
+      graph,
+      'DEFINES',
+      graphNodeId('File', evidenceFilePath),
+      nodeId,
+      `objc: protocol receiver candidate evidence: ${protocolName} ${message.selector}`,
+      1,
+    );
+    for (const candidate of candidates) {
+      if (graph.getNode(candidate.nodeId) === undefined) continue;
+      addRelationship(
+        graph,
+        'USES',
+        nodeId,
+        candidate.nodeId,
+        `objc-protocol-candidate: ${protocolName} ${message.selector}`,
+        0.5,
+      );
+    }
+  }
+
   addRelationship(
     graph,
     'USES',
@@ -747,89 +814,4 @@ function emitProtocolMessageEvidence(
     `objc-message: protocol receiver candidates: ${protocolName} ${message.selector}`,
     0.7,
   );
-  for (const candidate of candidates) {
-    if (graph.getNode(candidate.nodeId) === undefined) continue;
-    addRelationship(
-      graph,
-      'USES',
-      nodeId,
-      candidate.nodeId,
-      `objc-protocol-candidate: ${protocolName} ${message.selector}`,
-      0.5,
-    );
-  }
-}
-
-function resolveObjectiveCImportTarget(
-  targetRaw: string,
-  fromFile: string,
-  allFilePaths: ReadonlySet<string>,
-): string | null {
-  const importIndex = getObjectiveCImportIndex(allFilePaths);
-  const target = targetRaw.trim();
-  if (target.length === 0) return null;
-  if (target.startsWith('<') && target.endsWith('>')) return null;
-  const looksLikeFileImport =
-    target.startsWith('.') || target.includes('/') || path.posix.extname(target).length > 0;
-  if (!looksLikeFileImport) return null;
-  return findImportCandidate(target, fromFile, importIndex);
-}
-
-interface ObjectiveCImportIndex {
-  readonly filePathSet: ReadonlySet<string>;
-  readonly suffixMatches: ReadonlyMap<
-    string,
-    { readonly filePath: string; readonly order: number }
-  >;
-}
-
-const getObjectiveCImportIndex = perFileSet(
-  (allFilePaths: ReadonlySet<string>): ObjectiveCImportIndex => {
-    const filePaths = [...allFilePaths];
-    const suffixMatches = new Map<string, { readonly filePath: string; readonly order: number }>();
-    for (const [order, filePath] of filePaths.entries()) {
-      const segments = normalizeRepoPath(filePath).split('/');
-      for (let start = 1; start < segments.length; start++) {
-        const suffix = segments.slice(start).join('/');
-        if (!suffixMatches.has(suffix)) suffixMatches.set(suffix, { filePath, order });
-      }
-    }
-    return { filePathSet: new Set(filePaths), suffixMatches };
-  },
-);
-
-function findImportCandidate(
-  targetRaw: string,
-  fromFile: string,
-  importIndex: ObjectiveCImportIndex,
-): string | null {
-  const normalizedTarget = normalizeRepoPath(targetRaw);
-  const fromDir = normalizeRepoPath(path.posix.dirname(normalizeRepoPath(fromFile)));
-  const spelledCandidates = new Set<string>([
-    normalizeRepoPath(path.posix.join(fromDir, normalizedTarget)),
-    normalizedTarget,
-  ]);
-  const ext = path.posix.extname(normalizedTarget);
-  if (ext.length === 0) {
-    for (const base of [...spelledCandidates]) {
-      spelledCandidates.add(`${base}.h`);
-      spelledCandidates.add(`${base}.m`);
-      spelledCandidates.add(`${base}.mm`);
-    }
-  }
-  for (const candidate of spelledCandidates) {
-    if (importIndex.filePathSet.has(candidate)) return candidate;
-  }
-  let suffixMatch: { readonly filePath: string; readonly order: number } | undefined;
-  for (const candidate of spelledCandidates) {
-    const match = importIndex.suffixMatches.get(candidate);
-    if (match !== undefined && (suffixMatch === undefined || match.order < suffixMatch.order)) {
-      suffixMatch = match;
-    }
-  }
-  return suffixMatch?.filePath ?? null;
-}
-
-function normalizeRepoPath(value: string): string {
-  return value.replaceAll('\\', '/').replace(/^\.\//, '');
 }

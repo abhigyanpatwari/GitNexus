@@ -19,10 +19,12 @@ import {
   objcClassQualifiedName,
   objcFunctionQualifiedName,
   objcMethodQualifiedName,
+  objcProtocolQualifiedName,
 } from '../../src/core/ingestion/languages/objective-c/facts.js';
 import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/objective-c/scope-resolver.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 
 const FIXTURE = `#import "SYModuleCaller.h"
 #include "SYModuleSupport.h"
@@ -557,6 +559,182 @@ static int helper(void) { return 1; }
         }),
       ]),
     );
+  });
+
+  it('emits protocol implementer evidence once per protocol selector', () => {
+    const classCount = 8;
+    const protocolQn = objcProtocolQualifiedName('Runnable');
+    const protocolPath = 'Runnable.h';
+    const protocol = {
+      kind: 'protocol' as const,
+      declarationRole: 'interface' as const,
+      name: 'Runnable',
+      qualifiedName: protocolQn,
+      nodeId: `Protocol:${protocolQn}`,
+      label: 'Protocol' as const,
+      filePath: protocolPath,
+      startLine: 1,
+      endLine: 3,
+      protocols: [] as string[],
+    };
+    const protocolRunQn = objcMethodQualifiedName(protocolQn, '-', 'run');
+    const factsList = [
+      {
+        providerVersion: '0',
+        grammarPackage: 'tree-sitter-objc',
+        grammarVersion: '0',
+        filePath: protocolPath,
+        containers: [protocol],
+        methods: [
+          {
+            name: 'run',
+            selector: 'run',
+            methodKind: '-' as const,
+            ownerQualifiedName: protocolQn,
+            ownerName: 'Runnable',
+            ownerKind: 'protocol' as const,
+            qualifiedName: protocolRunQn,
+            nodeId: `Method:${protocolRunQn}`,
+            filePath: protocolPath,
+            startLine: 2,
+            endLine: 2,
+            declarationRole: 'implementation' as const,
+            parameterTypes: [] as string[],
+            parameterNames: [] as string[],
+          },
+        ],
+        members: [],
+        functions: [],
+        imports: [],
+        messages: [],
+        unresolvedMessages: [],
+      },
+    ];
+    for (let i = 0; i < classCount; i++) {
+      const filePath = `Class${i}.m`;
+      const classQn = objcClassQualifiedName(`Class${i}`);
+      const runQn = objcMethodQualifiedName(classQn, '-', 'run');
+      const tickQn = objcMethodQualifiedName(classQn, '-', 'tick:');
+      const owner = {
+        kind: 'class' as const,
+        declarationRole: 'implementation' as const,
+        name: `Class${i}`,
+        qualifiedName: classQn,
+        nodeId: `Class:${classQn}`,
+        label: 'Class' as const,
+        filePath,
+        startLine: 1,
+        endLine: 12,
+        protocols: ['Runnable'],
+      };
+      const run = {
+        name: 'run',
+        selector: 'run',
+        methodKind: '-' as const,
+        ownerQualifiedName: classQn,
+        ownerName: `Class${i}`,
+        ownerKind: 'class' as const,
+        qualifiedName: runQn,
+        nodeId: `Method:${runQn}`,
+        filePath,
+        startLine: 4,
+        endLine: 4,
+        declarationRole: 'implementation' as const,
+        parameterTypes: [] as string[],
+        parameterNames: [] as string[],
+      };
+      const tick = {
+        name: 'tick:',
+        selector: 'tick:',
+        methodKind: '-' as const,
+        ownerQualifiedName: classQn,
+        ownerName: `Class${i}`,
+        ownerKind: 'class' as const,
+        qualifiedName: tickQn,
+        nodeId: `Method:${tickQn}`,
+        filePath,
+        startLine: 8,
+        endLine: 10,
+        declarationRole: 'implementation' as const,
+        parameterTypes: [] as string[],
+        parameterNames: [] as string[],
+      };
+      factsList.push({
+        providerVersion: '0',
+        grammarPackage: 'tree-sitter-objc',
+        grammarVersion: '0',
+        filePath,
+        containers: [owner],
+        methods: [run, tick],
+        members: [],
+        functions: [],
+        imports: [],
+        messages: [
+          {
+            selector: 'run',
+            receiverText: 'runner',
+            receiverKind: 'local',
+            receiverType: { kind: 'protocol', name: 'Runnable', raw: 'id<Runnable>' },
+            sourceMethodQualifiedName: tickQn,
+            sourceMethodId: tick.nodeId,
+            sourceOwnerQualifiedName: classQn,
+            sourceOwnerName: `Class${i}`,
+            sourceMethodKind: '-',
+            filePath,
+            startLine: 9,
+            startCol: 2,
+          },
+        ],
+        unresolvedMessages: [],
+      });
+    }
+
+    const graph = createKnowledgeGraph();
+    const parsedFiles = factsList.map((facts) => ({
+      filePath: facts.filePath,
+      moduleScope: 0,
+      scopes: [],
+      parsedImports: [],
+      localDefs: [],
+      referenceSites: [],
+      captureSideChannel: { kind: 'objective-c', facts },
+    }));
+    for (const facts of factsList) {
+      graph.addNode({
+        id: `File:${facts.filePath}`,
+        label: 'File',
+        properties: { filePath: facts.filePath, qualifiedName: facts.filePath },
+      });
+      for (const container of facts.containers) {
+        graph.addNode({
+          id: container.nodeId,
+          label: container.label,
+          properties: { filePath: facts.filePath, qualifiedName: container.qualifiedName },
+        });
+      }
+      for (const method of facts.methods) {
+        graph.addNode({
+          id: method.nodeId,
+          label: 'Method',
+          properties: { filePath: facts.filePath, qualifiedName: method.qualifiedName },
+        });
+      }
+    }
+
+    objectiveCScopeResolver.emitPostResolutionEdges?.(graph, parsedFiles);
+
+    let implementerUses = 0;
+    let receiverUses = 0;
+    for (const rel of graph.iterRelationships()) {
+      if (rel.type !== 'USES') continue;
+      if (String(rel.reason).startsWith('objc-protocol-candidate:')) implementerUses++;
+      if (String(rel.reason).startsWith('objc-message: protocol receiver candidates:')) {
+        receiverUses++;
+      }
+    }
+    expect(implementerUses).toBe(classCount);
+    expect(receiverUses).toBe(classCount);
+    expect(graph.getNode('CodeElement:objc:protocol-candidates:Runnable:run')).toBeDefined();
   });
 
   it('uses owner, selector, and method kind in stable method identities', () => {

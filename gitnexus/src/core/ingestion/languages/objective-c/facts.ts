@@ -160,6 +160,11 @@ export function getObjectiveCFileFacts(filePath: string): ObjCFileFacts | undefi
   return factsByFile.get(filePath);
 }
 
+/** Drop process-local facts before a new workspace pass (Java/Kotlin analog). */
+export function clearObjectiveCFileFacts(): void {
+  factsByFile.clear();
+}
+
 export function collectObjectiveCCaptureSideChannel(
   filePath: string,
 ): ObjCCaptureSideChannel | undefined {
