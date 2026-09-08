@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,10 +152,22 @@ def test_the_generated_config_loads_the_callback_from_beside_itself(tmp_path: Pa
     ]
     installed = config.parent / f"{USAGE_CALLBACK_MODULE}.py"
     assert installed.is_file(), "the proxy cannot import a callback that was never placed"
-    assert "class ProviderUsageLogger" in installed.read_text()
+    # Importing it, not grepping it: a text search passes even when the module
+    # cannot load, which is exactly how a package-relative import survived
+    # review here. This is the deployment configuration, so load it the way the
+    # proxy does - by path, as a top-level module.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(USAGE_CALLBACK_MODULE, installed)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert isinstance(module.handler, module.ProviderUsageLogger)
 
 
-def test_the_gateway_forwards_the_usage_environment_into_the_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_the_gateway_forwards_the_usage_environment_into_the_proxy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The proxy is a separate process with a constructed environment.
 
     Popen(env=...) replaces the parent environment rather than extending it, so
@@ -186,7 +197,7 @@ def test_the_gateway_forwards_the_usage_environment_into_the_proxy(monkeypatch: 
     gateway = OpenAIGateway(
         openai_api_key="sk-test",
         model_names=["gpt-5.6-sol"],
-        work_dir=Path(tempfile.mkdtemp()),
+        work_dir=tmp_path,
     )
     with contextlib.suppress(Exception):
         gateway.__enter__()
