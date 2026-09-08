@@ -74,7 +74,13 @@ def main() -> int:
     tool_results = []
     for block in blocks:
         if block.get("type") == "tool_use":
-            output = _run_tool(block["name"], block.get("input", {}))
+            # A refused write is a tool ERROR the session reports and carries
+            # on from, not a crash. Letting it kill the process would lose the
+            # result event and misreport a working boundary as a broken run.
+            try:
+                output = _run_tool(block["name"], block.get("input", {}))
+            except OSError as exc:
+                output = f"error: {type(exc).__name__}: {exc}"
             tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": output})
     if tool_results:
         emit({"type": "user", "message": {"role": "user", "content": tool_results}})

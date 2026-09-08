@@ -50,6 +50,14 @@ USAGE_ENV_VARS = (USAGE_LOG_ENV_VAR, SWEEP_ID_ENV_VAR)
 
 ANTHROPIC = "anthropic"
 OPENAI_RESPONSES = "openai-responses"
+# What the gateway's callback actually receives. LiteLLM does not hand a logger
+# the upstream body: it normalises usage into its own Chat-Completions-shaped
+# object first, so an OpenAI Responses reply arrives as prompt_tokens /
+# prompt_tokens_details even though the wire carried input_tokens /
+# input_tokens_details. Measured against a real proxy, not assumed - the
+# Responses adapter below found none of its keys and reported every field
+# unknown. The arithmetic is still OpenAI's (the whole, with subsets).
+LITELLM_NORMALIZED = "litellm-normalized"
 
 
 class UsageSemanticsError(ValueError):
@@ -131,6 +139,35 @@ def _normalize_openai_responses(usage: Mapping[str, Any]) -> NormalizedUsage:
     )
 
 
+def _normalize_litellm(usage: Mapping[str, Any]) -> NormalizedUsage:
+    """prompt_tokens is the WHOLE; the details are subsets of it."""
+
+    total = _int_or_none(usage, "prompt_tokens")
+    details = usage.get("prompt_tokens_details")
+    cache_read = _int_or_none(details, "cached_tokens")
+    cache_write = _int_or_none(details, "cache_write_tokens")
+    if cache_write is None:
+        cache_write = _int_or_none(details, "cache_creation_tokens")
+    output_details = usage.get("completion_tokens_details")
+
+    ordinary: int | None = None
+    if total is not None and cache_read is not None and cache_write is not None:
+        ordinary = total - cache_read - cache_write
+        if ordinary < 0:
+            raise UsageSemanticsError(
+                f"LiteLLM cached ({cache_read}) + cache_write ({cache_write}) "
+                f"exceed prompt_tokens ({total})"
+            )
+    return NormalizedUsage(
+        ordinary_input_tokens=ordinary,
+        cache_read_input_tokens=cache_read,
+        cache_write_input_tokens=cache_write,
+        total_input_tokens=total,
+        output_tokens=_int_or_none(usage, "completion_tokens"),
+        reasoning_output_tokens=_int_or_none(output_details, "reasoning_tokens"),
+    )
+
+
 def _normalize_anthropic(usage: Mapping[str, Any]) -> NormalizedUsage:
     """input_tokens is the uncached REMAINDER; the cache fields add to it."""
 
@@ -162,8 +199,13 @@ def canonical_provider(label: str | None, call_type: str | None) -> str | None:
     the whole point of keeping the native object authoritative.
     """
 
-    if label == "openai" and call_type and "responses" in call_type:
-        return OPENAI_RESPONSES
+    if label == "openai":
+        # Anything reaching a proxy callback has already been normalised by
+        # LiteLLM, whichever endpoint the caller used - the observed call_type
+        # for a Claude Code request through this gateway is "anthropic_messages",
+        # not a Responses one. The adapter has to match the object in hand, not
+        # the protocol on the wire.
+        return LITELLM_NORMALIZED
     if label in _ADAPTERS:
         return label
     return None
@@ -172,6 +214,7 @@ def canonical_provider(label: str | None, call_type: str | None) -> str | None:
 _ADAPTERS = {
     ANTHROPIC: _normalize_anthropic,
     OPENAI_RESPONSES: _normalize_openai_responses,
+    LITELLM_NORMALIZED: _normalize_litellm,
 }
 
 

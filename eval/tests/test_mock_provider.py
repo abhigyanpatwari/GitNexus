@@ -6,7 +6,12 @@ import json
 import urllib.request
 
 from workflow_bench.mock_provider import MockProvider, Reply
-from workflow_bench.provider_usage import ANTHROPIC, OPENAI_RESPONSES, normalize_usage
+from workflow_bench.provider_usage import (
+    ANTHROPIC,
+    LITELLM_NORMALIZED,
+    OPENAI_RESPONSES,
+    normalize_usage,
+)
 
 
 def _post(url: str, payload: dict) -> tuple[int, bytes]:
@@ -169,10 +174,20 @@ def test_a_request_through_the_real_gateway_records_native_usage(tmp_path, monke
     assert usage_log.exists(), "the callback never wrote - the env did not reach the proxy"
     events = [json.loads(line) for line in usage_log.read_text().splitlines()]
     assert events, "the proxy started but recorded nothing"
-    native = events[-1]["native_usage"]
-    # The provider's own arithmetic survived the Anthropic-shaped translation.
-    assert native["input_tokens_details"]["cached_tokens"] == 7_000
-    assert native["input_tokens_details"]["cache_write_tokens"] == 1_000
-    usage = normalize_usage(events[-1]["provider"], native)
+    event = events[-1]
+    native = event["native_usage"]
+    # LiteLLM hands a callback its OWN normalised object, not the upstream body:
+    # an OpenAI Responses reply arrives as prompt_tokens / prompt_tokens_details.
+    # Asserting the wire shape here is what proved the shipped adapter read keys
+    # that are never present.
+    assert native["prompt_tokens_details"]["cached_tokens"] == 7_000
+    assert native["prompt_tokens_details"]["cache_write_tokens"] == 1_000
+    assert event["provider"] == LITELLM_NORMALIZED
+    assert event["call_type"] == "anthropic_messages", "the observed call type, not a Responses one"
+
+    usage = normalize_usage(event["provider"], native)
     assert usage.total_input_tokens == 10_000
+    assert usage.cache_read_input_tokens == 7_000
+    assert usage.cache_write_input_tokens == 1_000
     assert usage.ordinary_input_tokens == 2_000
+    assert usage.complete, "a run that cannot interpret its own usage measured nothing"

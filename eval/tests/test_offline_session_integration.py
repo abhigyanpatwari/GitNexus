@@ -15,7 +15,11 @@ from pathlib import Path
 import pytest
 
 from workflow_bench.mock_provider import MockProvider, Reply
-from workflow_bench.proposer_sandbox import prepare_sandbox, prepare_review_workspace
+from workflow_bench.proposer_sandbox import (
+    host_workspace_write_boundary,
+    prepare_review_workspace,
+    prepare_sandbox,
+)
 from workflow_bench.review_scoring import REVIEW_OUTPUT, parse_review_output
 from workflow_bench.runner_sessions import run_claude
 
@@ -105,3 +109,43 @@ def test_a_provider_failure_surfaces_as_a_failed_session_not_a_silent_pass(clone
 
     assert record["ok"] is False
     assert record["error_kind"] is not None
+
+
+def test_the_write_boundary_refuses_the_workspace_and_permits_the_artifact(clone: Path, tmp_path: Path) -> None:
+    """The contract the empty-artifact run violated, on the backend available here.
+
+    A review must not change the workspace, and must still be able to write its
+    artifact ATOMICALLY - temp file beside the target, then rename - which is
+    what needs a writable parent DIRECTORY rather than a writable file. Both
+    halves are asserted through the real session, with the real boundary
+    applied, and the model scripted to attempt each one.
+
+    Scope: this is the host-unsafe boundary, which its own docstring calls
+    best-effort because a session that can chmod can undo it. The kernel-enforced
+    version is bubblewrap's --ro-bind, which needs namespaces this machine cannot
+    create; that half stays with the real-sandbox canary in CI.
+    """
+
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    target = artifacts / REVIEW_OUTPUT
+    protected = clone / "source.ts"
+    before = protected.read_text()
+
+    write_artifact = {"name": "Write", "input": {"file_path": str(target), "content": REVIEW_JSON}}
+    tamper = {"name": "Write", "input": {"file_path": str(protected), "content": "tampered"}}
+
+    # No writable= entry: the boundary only governs paths INSIDE the workspace
+    # (it refuses one that escapes), and the artifact directory deliberately
+    # lives outside it - that relocation is the fix for the empty-artifact run.
+    with host_workspace_write_boundary(clone):
+        with MockProvider(default=Reply(text="writing", tools=[write_artifact, tamper])) as provider:
+            record = _session(clone, provider)
+
+    assert record["ok"] is True, record.get("error_detail")
+    # The artifact landed, written the way the agent's Write tool does it.
+    verdict, _findings = parse_review_output(target)
+    assert verdict == "approve"
+    assert not list(artifacts.glob("*.tmp.*")), "the rename landed rather than a copy"
+    # The workspace did not move.
+    assert protected.read_text() == before, "the read-only workspace was modified"

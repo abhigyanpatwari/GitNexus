@@ -42,8 +42,8 @@ def canonical_provider(label, call_type):  # noqa: ANN001, ANN201
     above for why this is a copy rather than an import.
     """
 
-    if label == "openai" and call_type and "responses" in call_type:
-        return "openai-responses"
+    if label == "openai":
+        return "litellm-normalized"
     if label == "anthropic":
         return "anthropic"
     return None
