@@ -45,7 +45,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { TYPESCRIPT_SCOPE_QUERY } from '../../../src/core/ingestion/languages/typescript/query.js';
+import {
+  TSX_JSX_QUERY_SUFFIX,
+  TYPESCRIPT_SCOPE_QUERY,
+} from '../../../src/core/ingestion/languages/typescript/query.js';
 import { JAVASCRIPT_SCOPE_QUERY } from '../../../src/core/ingestion/languages/javascript/query.js';
 import { ZIG_SCOPE_QUERY } from '../../../src/core/ingestion/languages/zig/query.js';
 
@@ -124,7 +127,10 @@ describe('value-ref dispatchability partition', () => {
   });
 
   it('every TypeScript value-ref rule is DISPATCHABLE (carries a property key)', () => {
-    const rules = valueRefRules(TYPESCRIPT_SCOPE_QUERY);
+    // The BASE query plus the TSX suffix, because `getTsScopeQuery` concatenates
+    // them for a `.tsx` file: a value-ref rule added to the suffix alone would
+    // be emitted in TSX analysis while a base-only check stayed green.
+    const rules = valueRefRules(TYPESCRIPT_SCOPE_QUERY + TSX_JSX_QUERY_SUFFIX);
     expect(rules.length).toBeGreaterThan(0);
     expect(rules.filter((r) => !r.includes(PROPERTY_KEY))).toEqual([]);
   });

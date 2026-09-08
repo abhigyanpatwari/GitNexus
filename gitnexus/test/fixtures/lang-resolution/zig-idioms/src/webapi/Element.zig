@@ -19,6 +19,21 @@ const dom_utils = @import("dom_utils.zig");
 // A hub module that re-exports `dom_utils`' members without declaring any.
 const hub = @import("hub.zig");
 
+// A MODULE-LEVEL binding whose name collides with the container `Gauge.zig`
+// declares, bound to something that is NOT a container. This file never imports
+// `Gauge.zig`. `findClassBindingInScope` filters the scope chain by
+// `isClassLike`, so it walks past this binding, and its workspace-wide
+// qualified-name fallback answers with the other file's struct — while the
+// shadow guard used to permit exactly this, treating the module scope as a floor
+// it need not inspect.
+//
+// The name is bound by IMPORT rather than by a local `const Gauge: u8 = 3`,
+// and that detail is the difference between a live case and a self-defeating
+// one: a local declaration would also claim the workspace qualified name
+// `Gauge`, leaving two candidates, and the fallback refuses to guess between
+// two. An imported alias claims nothing, so the fallback stays unique and fires.
+const Gauge = @import("dom_utils.zig").DEFAULT_NS;
+
 _namespace: u8 = 0,
 
 // ── Registered accessors ────────────────────────────────────────────────────
@@ -113,6 +128,9 @@ pub const JsApi = struct {
 
     // …and the callable gate still applies through the hub.
     pub const hubNs = bridge.accessor(hub.DEFAULT_NS, null, .{});
+
+    // `Gauge` names this file's `const Gauge: u8`, not `Gauge.zig`'s container.
+    pub const level = bridge.accessor(Gauge.read, null, .{});
 };
 
 // The CALL form of the same hub member, so the two are pinned side by side.

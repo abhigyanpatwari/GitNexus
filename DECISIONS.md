@@ -692,3 +692,63 @@ and the run's own output was `"changed_lines": 0` — ESLint reported 0 errors
 (6868 pre-existing warnings) and Prettier reported every file `(unchanged)`, so
 a successful run would have produced an empty patch anyway. Pushing this commit
 triggers a fresh run, after which `/autofix` will answer normally.
+
+---
+
+## Review round 6 — the `bd6e577e` bot pass I had skipped
+
+Three findings. I answered the `1c7c05ff` pass (round 5) without noticing that
+the pass on `bd6e577e` carried its own, one of them an Error. Recorded as a
+process failure as much as a code one: reviews are per-head and a later pass does
+not necessarily repeat an earlier one's findings.
+
+**R6-1 (Error, valid, REPRODUCED, fixed) — the shadow guard stopped one rung
+short.** `isOwnerNameShadowedBySomethingElse` returned `false` on reaching the
+module scope, justified as "a container declared there IS the binding, and the
+caller already resolved it". That holds when the owner came from the scope chain
+and fails when it came from the workspace fallback:
+
+    // Gauge.zig — never imported by Element.zig
+    const Gauge = @This();
+    pub fn read(self: *Gauge) u8 { … }
+
+    // Element.zig
+    const Gauge = @import("dom_utils.zig").DEFAULT_NS;   // NOT a container
+    pub const level = bridge.accessor(Gauge.read, null, .{});   // → Gauge.zig's read
+
+`findClassBindingInScope` steps over the module-scope binding (not class-like)
+and answers from `scopes.qualifiedNames`; the guard then waved it through.
+
+The first fixture attempt did NOT reproduce, and the reason is worth keeping: a
+local `const Gauge: u8 = 3;` also claims the workspace qualified name `Gauge`,
+leaving two candidates, and the fallback refuses to guess between two. Binding
+the name by IMPORT claims no qualified name, so the fallback stays unique and
+fires. A negative result on the first shape was not evidence the finding was
+wrong.
+
+Fixed by inspecting the module scope as the last rung rather than skipping it.
+The identity exemption is what makes that safe where `isNamespaceNameShadowed`
+could not do it (#2723: a namespace import writes its own name into the module
+scope and would read as its own shadow) — the binding that IS the owner exempts
+itself, and only a binding to something else answers `true`. `lookupBindingsAt`
+is consulted at that scope and only there, because an imported alias lives in the
+finalized channel rather than in `scope.bindings`.
+
+**R6-2 — the hub finding, already fixed in round 5** (same defect, restated on
+the later head).
+
+**R6-3 (valid, fixed) — the dispatchability canary omitted the TSX suffix.**
+`getTsScopeQuery` analyzes a `.tsx` file with `TYPESCRIPT_SCOPE_QUERY +
+TSX_JSX_QUERY_SUFFIX`, and the test read only the base, so a `value-ref` rule
+added to the suffix would be emitted in TSX analysis with the canary green. The
+suffix is now exported and concatenated into the check; verified load-bearing by
+adding an unkeyed `jsx_expression` value-ref rule to the suffix, which fails the
+TypeScript case.
+
+### Gates after review round 6
+
+- `tsc --noEmit` clean, `npm run build` clean, `prettier --check` clean.
+- `test/integration/resolvers` — 3,635 passed / 3 skipped (70 files).
+- `test/unit/scope-resolution` — 2,015 passed (120 files).
+- `impact-callable-value-references` under `lbug-db` — 7 passed.
+- Bench `--check`: all five PASS, no baseline edited.

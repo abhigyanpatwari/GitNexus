@@ -417,6 +417,17 @@ describe.skipIf(!zigAvailable)('Zig idioms (zig-idioms fixture)', () => {
       expect(valueRefs).toContain('registersALocalContainer → go');
     });
 
+    it('declines a container-qualified reference shadowed at MODULE scope', () => {
+      // `Element.zig` declares `const Gauge: u8 = 3;` at module scope and never
+      // imports `Gauge.zig`, which declares the container. The class walk filters
+      // by `isClassLike`, steps over the `const`, and its workspace-wide
+      // qualified-name fallback answers with the other file's struct. The shadow
+      // guard has to inspect the MODULE scope to catch it — stopping one rung
+      // short, as it did, permitted precisely this case.
+      expect(valueRefs).not.toContain('JsApi → read');
+      expect(valueRefTargetIds.filter((id) => id.includes('Gauge'))).toEqual([]);
+    });
+
     it('does not mint a value reference for the CALLEE of an ordinary call', () => {
       // `register(onTick)` must produce ONE value reference (the argument), not
       // two: without binding the callee to the `function:` field the same rule
