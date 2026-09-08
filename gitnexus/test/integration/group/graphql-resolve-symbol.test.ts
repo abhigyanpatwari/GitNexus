@@ -7,9 +7,10 @@ import { closeLbug, executeParameterized } from '../../../src/core/lbug/pool-ada
 import type { GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
 import { withTestLbugDB } from '../../helpers/test-indexed-db.js';
 
+// Graph Method.startLine is 0-based (tree-sitter row). `health()` is source line 5.
 const SEED = [
-  `CREATE (:Method {id:'method:health', name:'health', filePath:'src/health.resolver.ts', startLine:5, endLine:5, content:'', description:''})`,
-  `CREATE (:Const {id:'const:health-document', name:'HealthDocument', filePath:'src/generated.ts', startLine:1, endLine:1, content:'', description:''})`,
+  `CREATE (:Method {id:'method:health', name:'health', filePath:'src/health.resolver.ts', startLine:4, endLine:4, content:'', description:''})`,
+  `CREATE (:Const {id:'const:health-document', name:'HealthDocument', filePath:'src/generated.ts', startLine:0, endLine:0, content:'', description:''})`,
 ];
 
 withTestLbugDB(

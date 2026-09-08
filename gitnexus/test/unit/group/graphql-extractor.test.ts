@@ -499,4 +499,152 @@ export const TwoDocument = ${generatedDocument('query', 'Two', ['two'])};
     ]);
     expect(parseSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('binds NestJS providers at the 0-based graph startLine (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/health.resolver.ts': `import { Query, Mutation, Resolver } from '@nestjs/graphql';
+@Resolver()
+class HealthResolver {
+  @Query()
+  health() { return 'ok'; }
+
+  @Mutation()
+  save = async () => true;
+}`,
+    });
+    const startLines: Array<{ name: string; startLine: number }> = [];
+    const run: CypherExecutor = async (_query, params = {}) => {
+      startLines.push({ name: String(params.name), startLine: Number(params.startLine) });
+      return [
+        {
+          uid: `sym:${String(params.name)}`,
+          name: String(params.name),
+          filePath: 'src/health.resolver.ts',
+        },
+      ];
+    };
+
+    const contracts = await new GraphqlExtractor().extract(run, root, repo);
+
+    expect(startLines).toEqual([
+      { name: 'health', startLine: 4 },
+      { name: 'save', startLine: 7 },
+    ]);
+    expect(contracts.map((contract) => contract.contractId)).toEqual([
+      'graphql::query::health',
+      'graphql::mutation::save',
+    ]);
+  });
+
+  it('tries the PascalCased Document name graphql-codegen emits (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/timeline.graphql': `query widgetTimeline { getWidget }`,
+      'src/generated.ts': `export const WidgetTimelineDocument = ${generatedDocument(
+        'query',
+        'widgetTimeline',
+        ['getWidget'],
+      )};`,
+    });
+    const lookedUp: string[] = [];
+    const run: CypherExecutor = async (_query, params = {}) => {
+      const name = String(params.name ?? '');
+      lookedUp.push(name);
+      return name === 'WidgetTimelineDocument'
+        ? [
+            {
+              uid: 'const:timeline',
+              name: 'WidgetTimelineDocument',
+              filePath: 'src/generated.ts',
+            },
+          ]
+        : [];
+    };
+
+    const contracts = await new GraphqlExtractor().extract(run, root, repo);
+
+    expect(lookedUp).toEqual(['widgetTimelineDocument', 'WidgetTimelineDocument']);
+    expect(contracts).toEqual([
+      expect.objectContaining({
+        contractId: 'graphql::query::getWidget',
+        role: 'consumer',
+        symbolUid: 'const:timeline',
+      }),
+    ]);
+  });
+
+  it('inlines sibling ${FragmentDoc} interpolations to prove generated documents (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/get-widget.graphql': `
+fragment widget on Widget { id }
+query GetWidget { getWidget { ...widget } }
+`,
+      'src/root-spread.graphql': `
+fragment MoreRoots on Query { gadget }
+query GetWidgets { ...MoreRoots }
+`,
+      'src/generated.ts': `
+export const WidgetFragmentDoc = /*#__PURE__*/ \`
+    fragment widget on Widget { id }
+    \`;
+export const GetWidgetDocument = /*#__PURE__*/ \`
+    query GetWidget {
+  getWidget {
+    ...widget
+  }
+}
+    \${WidgetFragmentDoc}\`;
+export const MoreRootsFragmentDoc = /*#__PURE__*/ \`
+    fragment MoreRoots on Query { gadget }
+    \`;
+export const GetWidgetsDocument = gql\`
+    query GetWidgets { ...MoreRoots }
+    \${MoreRootsFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        GetWidgetDocument: [
+          { uid: 'const:widget', name: 'GetWidgetDocument', filePath: 'src/generated.ts' },
+        ],
+        GetWidgetsDocument: [
+          { uid: 'const:widgets', name: 'GetWidgetsDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts.map((contract) => [contract.contractId, contract.symbolUid]).sort()).toEqual([
+      ['graphql::query::gadget', 'const:widgets'],
+      ['graphql::query::getWidget', 'const:widget'],
+    ]);
+  });
+
+  it('fails closed for dynamic or cyclic generated interpolations (#3201)', async () => {
+    const { root, repo } = await makeRepo({
+      'src/dynamic.graphql': `query Dynamic { dynamic }`,
+      'src/cycle.graphql': `query Cycle { cycle }`,
+      'src/generated.ts': `
+export const DynamicDocument = \`query Dynamic { dynamic }\${foo.bar}\`;
+export const CycleFragmentDoc = \`\${CycleDocument}\`;
+export const CycleDocument = \`query Cycle { cycle }\${CycleFragmentDoc}\`;
+`,
+    });
+
+    const contracts = await new GraphqlExtractor().extract(
+      executor({
+        DynamicDocument: [
+          { uid: 'const:dynamic', name: 'DynamicDocument', filePath: 'src/generated.ts' },
+        ],
+        CycleDocument: [
+          { uid: 'const:cycle', name: 'CycleDocument', filePath: 'src/generated.ts' },
+        ],
+      }),
+      root,
+      repo,
+    );
+
+    expect(contracts).toEqual([]);
+  });
 });

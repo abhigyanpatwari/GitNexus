@@ -92,6 +92,59 @@ function unquote(text: string): string | null {
   return value.includes('${') ? null : value;
 }
 
+/** Graph Method/Property `startLine` is the 0-based tree-sitter row (see line-base.ts). */
+function providerMemberStartLine(member: Parser.SyntaxNode): number {
+  if (member.type === 'public_field_definition') {
+    return (member.childForFieldName('value') ?? member).startPosition.row;
+  }
+  return member.startPosition.row;
+}
+
+function substitutionIdentifier(substitution: Parser.SyntaxNode): string | null {
+  if (substitution.namedChildren.length !== 1) return null;
+  const expr = unwrapExpression(substitution.namedChildren[0]);
+  return expr.type === 'identifier' ? expr.text : null;
+}
+
+function uniqueStaticSource(
+  name: string,
+  declarators: GeneratedSymbolIndex,
+  resolving: Set<string>,
+): string | null {
+  if (resolving.has(name) || resolving.size >= MAX_GRAPHQL_TRAVERSAL_DEPTH) return null;
+  resolving.add(name);
+  const sources = new Set<string>();
+  for (const value of declarators.get(name) ?? []) {
+    const source = staticGraphqlSource(value, declarators, resolving);
+    if (source !== null) sources.add(source);
+  }
+  resolving.delete(name);
+  return sources.size === 1 ? [...sources][0]! : null;
+}
+
+function interpolatedTemplateSource(
+  template: Parser.SyntaxNode,
+  declarators: GeneratedSymbolIndex,
+  resolving: Set<string>,
+): string | null {
+  let out = '';
+  for (const child of template.namedChildren) {
+    if (child.type === 'string_fragment' || child.type === 'escape_sequence') {
+      out += child.text;
+    } else if (child.type === 'template_substitution') {
+      const name = substitutionIdentifier(child);
+      if (!name) return null;
+      const inlined = uniqueStaticSource(name, declarators, resolving);
+      if (inlined === null) return null;
+      out += inlined;
+    } else {
+      return null;
+    }
+    if (out.length > MAX_GRAPHQL_TOKENS) return null;
+  }
+  return out;
+}
+
 function unwrapExpression(node: Parser.SyntaxNode): Parser.SyntaxNode {
   let current = node;
   while (
@@ -214,7 +267,11 @@ function parsedDocumentProof(
   return false;
 }
 
-function staticGraphqlSource(initializer: Parser.SyntaxNode): string | null {
+function staticGraphqlSource(
+  initializer: Parser.SyntaxNode,
+  declarators?: GeneratedSymbolIndex,
+  resolving: Set<string> = new Set(),
+): string | null {
   const value = unwrapExpression(initializer);
   if (value.type === 'string') {
     if (value.text.startsWith('"')) {
@@ -226,11 +283,17 @@ function staticGraphqlSource(initializer: Parser.SyntaxNode): string | null {
     }
     return unquote(value.text);
   }
-  if (value.type === 'template_string') return unquote(value.text);
+  if (value.type === 'template_string') {
+    const hasSubstitution = value.namedChildren.some(
+      (child) => child.type === 'template_substitution',
+    );
+    if (!hasSubstitution) return unquote(value.text);
+    return declarators ? interpolatedTemplateSource(value, declarators, resolving) : null;
+  }
 
   if (value.type === 'call_expression') {
     const template = value.namedChildren.find((child) => child.type === 'template_string');
-    return template ? unquote(template.text) : null;
+    return template ? staticGraphqlSource(template, declarators, resolving) : null;
   }
 
   if (value.type !== 'new_expression') return null;
@@ -238,7 +301,7 @@ function staticGraphqlSource(initializer: Parser.SyntaxNode): string | null {
   if (!constructor || !constructor.text.endsWith('TypedDocumentString')) return null;
   const args = value.childForFieldName('arguments');
   const first = args?.namedChildren[0];
-  return first ? staticGraphqlSource(first) : null;
+  return first ? staticGraphqlSource(first, declarators, resolving) : null;
 }
 
 export function hasGeneratedDocumentProof(
@@ -246,9 +309,10 @@ export function hasGeneratedDocumentProof(
   operationKind: GraphqlOperationKind,
   operationName: string,
   requiredFields: readonly string[],
+  declarators?: GeneratedSymbolIndex,
 ): boolean {
   if (!withinGeneratedAstBudget(initializer)) return false;
-  const staticSource = staticGraphqlSource(initializer);
+  const staticSource = staticGraphqlSource(initializer, declarators);
   if (staticSource !== null) {
     return parsedDocumentProof(staticSource, operationKind, operationName, requiredFields);
   }
@@ -430,7 +494,10 @@ function rootFields(
 
 function generatedCandidates(operation: OperationDefinitionNode): string[] {
   const name = operation.name?.value;
-  return name ? [`${name}Document`] : [];
+  if (!name) return [];
+  const exact = `${name}Document`;
+  const pascal = `${name[0]!.toUpperCase()}${name.slice(1)}Document`;
+  return exact === pascal ? [exact] : [exact, pascal];
 }
 
 async function generatedDocumentMatches(
@@ -450,7 +517,13 @@ async function generatedDocumentMatches(
   const index = await pendingIndex;
   const values = index?.get(symbol.name) ?? [];
   return values.some((value) =>
-    hasGeneratedDocumentProof(value, operationKind, operationName, requiredFields),
+    hasGeneratedDocumentProof(
+      value,
+      operationKind,
+      operationName,
+      requiredFields,
+      index ?? undefined,
+    ),
   );
 }
 
@@ -593,11 +666,7 @@ export class GraphqlExtractor implements ContractExtractor {
               await dbExecutor(RESOLVE_METHOD_QUERY, {
                 name: methodName,
                 filePath,
-                startLine:
-                  member.type === 'public_field_definition'
-                    ? (member.childForFieldName('value')?.startPosition.row ??
-                        member.startPosition.row) + 1
-                    : member.startPosition.row + 1,
+                startLine: providerMemberStartLine(member),
               }),
             );
             if (!symbol) continue;
