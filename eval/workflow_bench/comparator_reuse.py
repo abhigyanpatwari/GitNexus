@@ -193,6 +193,13 @@ def row_is_reusable_comparator(row: Mapping[str, Any], expected: ComparatorReuse
     if arm in {"review", "ce_review"}:
         if row.get("review_evidence_valid") is not True:
             return False
+        # The artifact, not just the score derived from it. materialize_reused_row
+        # copies it only when the name is present, so without this a row whose
+        # artifact copy never happened could be carried forward as a scored
+        # review that a proposer then cannot read - evidence by assertion.
+        review_artifact = row.get("review_artifact")
+        if not isinstance(review_artifact, str) or not review_artifact:
+            return False
         if not isinstance(row.get("review_score"), dict):
             return False
         if row.get("review_weighted_f1") is None:
@@ -386,7 +393,9 @@ def _copy_transcript_artifact(source_fd: int, dest_fd: int, metadata: Mapping[st
         # this directory belongs to a sweep that may still be writing. Digest
         # what is copied, then judge it.
         with _open_regular(name, dir_fd=source_dir_fd, label="transcript") as artifact_fd:
-            digest, copied_bytes = _copy_owner_only(artifact_fd, name, dir_fd=dest_dir_fd)
+            digest, copied_bytes = _copy_owner_only(
+                artifact_fd, name, dir_fd=dest_dir_fd, max_bytes=expected_size
+            )
             if copied_bytes != expected_size or digest != expected_digest:
                 # The destination now holds bytes no expectation vouches for.
                 os.unlink(name, dir_fd=dest_dir_fd)
@@ -400,8 +409,15 @@ def _copy_named_artifact(source_fd: int, dest_fd: int, name: str, *, label: str)
     if relative.is_absolute() or len(relative.parts) != 1 or relative.parts[0] in {"", ".", ".."}:
         raise SandboxError(f"unsafe {label} path: {name!r}")
     with _open_regular(name, dir_fd=source_fd, label=label) as artifact_fd:
-        # No expectation is recorded for these, so the digest is discarded.
-        _copy_owner_only(artifact_fd, name, dir_fd=dest_fd)
+        # No expectation is recorded for these, so the digest is discarded - but
+        # "no recorded size" is not "no limit". The source is a prior sweep
+        # directory that can change between sweeps, so a replaced artifact could
+        # be arbitrarily large; MAX_TRANSCRIPT_BYTES is the ceiling the capture
+        # path already enforces on evidence of this kind.
+        _, copied = _copy_owner_only(artifact_fd, name, dir_fd=dest_fd, max_bytes=MAX_TRANSCRIPT_BYTES)
+        if copied > MAX_TRANSCRIPT_BYTES:
+            os.unlink(name, dir_fd=dest_fd)
+            raise SandboxError(f"reused {label} exceeds {MAX_TRANSCRIPT_BYTES} bytes: {name}")
 
 
 def _require_openat() -> None:
@@ -513,11 +529,19 @@ def _open_regular(name: str, *, dir_fd: int, label: str) -> Iterator[int]:
         os.close(descriptor)
 
 
-def _copy_owner_only(source: int, name: str, *, dir_fd: int) -> tuple[str, int]:
+def _copy_owner_only(source: int, name: str, *, dir_fd: int, max_bytes: int | None = None) -> tuple[str, int]:
     """Copy one open file into the pinned directory; return what was written.
 
     The digest is taken from the same buffers that are written, so it describes
     the copy rather than a state the source was in at some earlier read.
+
+    ``max_bytes`` bounds the copy itself. The source is a prior sweep directory
+    this module already treats as concurrently writable, so a transcript
+    appended to after its metadata was recorded would otherwise be streamed to
+    EOF and only then compared against its declared size - filling the
+    destination, or never reaching EOF at all, long before the drift check could
+    reject it. Stopping one byte past the ceiling keeps that comparison
+    meaningful while bounding the work.
     """
 
     # O_CREAT|O_EXCL is the existence check, and unlike a stat beforehand it is
@@ -536,8 +560,12 @@ def _copy_owner_only(source: int, name: str, *, dir_fd: int) -> tuple[str, int]:
         os.lseek(source, 0, os.SEEK_SET)
         digest = hashlib.sha256()
         written = 0
+        limit = None if max_bytes is None else max_bytes + 1
         while True:
-            chunk = os.read(source, COPY_CHUNK_BYTES)
+            want = COPY_CHUNK_BYTES if limit is None else min(COPY_CHUNK_BYTES, limit - written)
+            if want <= 0:
+                break
+            chunk = os.read(source, want)
             if not chunk:
                 break
             digest.update(chunk)

@@ -753,12 +753,33 @@ def run_proposer(
                         started_monotonic=started_monotonic,
                     )
                 )
+                # An exhausted cap must stop the run, not buy one more second.
+                # remaining_runtime_seconds floors at 0, and max(1, ...) turned
+                # that 0 into a one-second paid session: the admission check
+                # happens before cloning, sanitizing and sandbox setup, so those
+                # unbounded steps can spend the rest of the window and leave
+                # nothing for the upload reserve this cap exists to protect.
+                if remaining_seconds is not None and remaining_seconds < 1:
+                    # The caller stops the run on a not-ok record, which is the
+                    # right outcome: an exhausted cap should end the generation,
+                    # not start a session it cannot afford to finish.
+                    return {
+                        "ok": False,
+                        "error_kind": "runtime-cap-exhausted",
+                        "error_detail": (
+                            "the wall-clock cap elapsed during proposer setup "
+                            "(clone, sanitize, sandbox), before the session started"
+                        ),
+                        "duration_s": 0.0,
+                        "num_turns": 0,
+                        "cost_usd": None,
+                    }
                 record = runner.run_claude(
                     host_text(prompt),
                     clone,
                     claude_bin=sandbox.claude_bin,
                     timeout=(
-                        args.timeout if remaining_seconds is None else max(1, min(args.timeout, remaining_seconds))
+                        args.timeout if remaining_seconds is None else min(args.timeout, remaining_seconds)
                     ),
                     model=args.proposer_model,
                     effort=args.effort,

@@ -733,6 +733,62 @@ def test_proposer_session_cannot_outlive_the_remaining_instance_window(monkeypat
     assert captured["timeout"] == args.timeout
 
 
+def test_a_budget_spent_during_setup_stops_the_proposer_rather_than_buying_a_second(
+    monkeypatch, tmp_path
+):
+    """An exhausted cap must end the generation, not start a one-second session.
+
+    remaining_runtime_seconds floors at 0, and the call site wrapped it in
+    max(1, ...) - so a cap fully consumed by the clone, the sanitize pass and
+    the sandbox build produced a paid session with a one-second allowance
+    instead of stopping before the upload reserve the cap exists to protect.
+    """
+
+    captured: dict[str, object] = {}
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(evolve.time, "monotonic", lambda: clock["now"])
+
+    @contextmanager
+    def fake_prepare_sandbox(**_kwargs):
+        yield SimpleNamespace(
+            claude_bin="claude",
+            command_prefix=[],
+            settings_json="{}",
+            transcript_projects=tmp_path / "transcript-projects",
+        )
+
+    def fake_run_claude(*_args, **kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    def setup_that_spends_the_whole_budget(_clone):
+        clock["now"] += budget
+        return "0" * 40
+
+    monkeypatch.setattr(evolve.runner, "make_worktree", lambda _repo, _ref, destination: destination)
+    monkeypatch.setattr(evolve.runner, "remove_clone", lambda _clone: None)
+    monkeypatch.setattr(evolve, "sanitize_clone_for_hidden_oracles", setup_that_spends_the_whole_budget)
+    monkeypatch.setattr(evolve, "prepare_sandbox", fake_prepare_sandbox)
+    monkeypatch.setattr(evolve.runner, "run_claude", fake_run_claude)
+
+    args = build_parser().parse_args(["--tasks", "tasks.yaml", "--model", "model"])
+    budget = evolve.MIN_INSTANCE_SWEEP_SECONDS + 1
+    args.max_runtime_seconds = budget
+    record = evolve.run_proposer(
+        "prompt",
+        args,
+        overlay_dir=tmp_path / "overlay",
+        proposal_path=tmp_path / "proposal.md",
+        evidence_bundle=tmp_path / "evidence",
+        bwrap_bin=tmp_path / "bwrap",
+        started_monotonic=clock["now"],
+    )
+
+    assert not captured, "no session may start once the cap is exhausted"
+    assert record["ok"] is False
+    assert record["error_kind"] == "runtime-cap-exhausted"
+
+
 def test_parser_defaults_match_the_gate_minimums():
     args = build_parser().parse_args(["--tasks", "t.yaml", "--model", "pinned"])
     assert args.runs == 3

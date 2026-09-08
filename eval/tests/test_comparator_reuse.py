@@ -59,6 +59,9 @@ def _row(**overrides) -> dict:
         "skill_digest": _digest("skill"),
         "candidate_overlay_digest": None,
         "review_evidence_valid": True,
+        # Production sets this whenever the review source exists, which is the
+        # normal path for a valid review; the fixture predated the requirement.
+        "review_artifact": "review-pr-2718-defect-review-run0.review.json",
         "review_score": {"weighted_f1": 0.4},
         "review_weighted_f1": 0.4,
         "transcript_missing": False,
@@ -403,3 +406,19 @@ def test_reuse_directories_allow_a_symlinked_parent_but_not_a_symlinked_leaf(tmp
     # The leaf itself being a symlink is still refused.
     with pytest.raises(SandboxError, match="must be a real directory"):
         comparator_reuse._resolved_directory(linked_parent, label="probe")
+
+
+def test_a_review_row_without_its_artifact_is_not_reusable() -> None:
+    """A score is a claim about evidence, not the evidence itself.
+
+    materialize_reused_row copies the review artifact only when the row names
+    one, so accepting a row without it would carry a scored review forward with
+    nothing for a proposer to read.
+    """
+
+    row = _row()
+    assert row_is_reusable_comparator(row, _expected()) is True
+    without = {**row, "review_artifact": ""}
+    assert row_is_reusable_comparator(without, _expected()) is False
+    missing = {k: v for k, v in row.items() if k != "review_artifact"}
+    assert row_is_reusable_comparator(missing, _expected()) is False

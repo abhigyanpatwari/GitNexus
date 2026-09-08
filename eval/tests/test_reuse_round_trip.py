@@ -26,6 +26,8 @@ from typing import Any
 import pytest
 
 from workflow_bench import runner
+from workflow_bench.proposer_sandbox import redact_text
+from workflow_bench.model_gateway import credential_secrets
 from workflow_bench.runner_sessions import PARENT_EVENT_STREAM_SOURCE
 from workflow_bench.comparator_reuse import (
     ComparatorReuseExpectation,
@@ -47,6 +49,23 @@ def _snapshot(prefix: str) -> SimpleNamespace:
         command_digest=f"{prefix}-command",
         materialize=lambda *a, **k: None,
     )
+
+
+def _write_like_the_sweep(tmp_path: Path, row: dict[str, Any]) -> Path:
+    """Serialize exactly as ``keep`` does in _run_sweep, redaction included.
+
+    json.dumps + write_text would skip the redaction the real writer applies,
+    so a change there could break reusable rows without failing this test - and
+    redaction is not cosmetic here, since it rewrites the row's own bytes.
+    """
+
+    results = tmp_path / "results.jsonl"
+    secrets = credential_secrets(
+        SimpleNamespace(auth_token="sk-ant-should-never-appear", base_url=None)
+    )
+    with results.open("a") as handle:
+        handle.write(redact_text(json.dumps(row), secrets) + "\n")
+    return results
 
 
 @pytest.fixture
@@ -176,6 +195,13 @@ def emitted_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, An
     (tmp_path / "out").mkdir(exist_ok=True)
     (tmp_path / "trees").mkdir(exist_ok=True)
     (tmp_path / "private").mkdir(exist_ok=True)
+    # run_cell records review_artifact only when the review source exists, and
+    # reuse now requires it - a scored review with no artifact is a claim about
+    # evidence rather than the evidence. Production writes this file; the
+    # fixture has to as well, or the emitted row is one production never emits.
+    review_dir = tmp_path / "private" / "review-output"
+    review_dir.mkdir(exist_ok=True)
+    (review_dir / "review-output.json").write_text('{"schema_version": 1, "verdict": "approve", "findings": []}')
     return runner.run_cell(ctx, 0, "review")
 
 
@@ -216,8 +242,7 @@ def test_a_row_the_runner_emitted_survives_serialization_and_qualifies(
 ) -> None:
     """The producer/consumer contract, end to end through the real writer."""
 
-    results = tmp_path / "results.jsonl"
-    results.write_text(json.dumps(emitted_row) + "\n")
+    results = _write_like_the_sweep(tmp_path, emitted_row)
     rows = load_result_rows(results)
     assert len(rows) == 1, "the production row must survive the reader"
 
@@ -229,9 +254,7 @@ def test_a_changed_binding_rejects_the_same_emitted_row(
 ) -> None:
     """Fails closed on drift, so the positive case is not vacuous."""
 
-    results = tmp_path / "results.jsonl"
-    results.write_text(json.dumps(emitted_row) + "\n")
-    row = load_result_rows(results)[0]
+    row = load_result_rows(_write_like_the_sweep(tmp_path, emitted_row))[0]
 
     binding = TaskReuseBinding(
         task_base_sha=SHA,

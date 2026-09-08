@@ -57,12 +57,18 @@ def scored_review_row(**overrides: Any) -> dict[str, Any]:
 def unusable_review_row(**overrides: Any) -> dict[str, Any]:
     """A cell that ran but produced evidence nothing can be scored from."""
 
+    # Merged into one mapping rather than passed as explicit keywords beside
+    # **overrides: Python rejects a duplicate keyword in the call expression
+    # itself, so unusable_review_row(error_kind=...) raised TypeError before
+    # scored_review_row could apply the override this helper advertises.
     return scored_review_row(
-        ok=False,
-        resolved=False,
-        review_evidence_valid=False,
-        error_kind="review-evidence-invalid",
-        review_score=None,
-        review_weighted_f1=None,
-        **overrides,
+        **{
+            "ok": False,
+            "resolved": False,
+            "review_evidence_valid": False,
+            "error_kind": "review-evidence-invalid",
+            "review_score": None,
+            "review_weighted_f1": None,
+            **overrides,
+        }
     )

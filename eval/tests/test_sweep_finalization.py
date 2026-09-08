@@ -65,7 +65,8 @@ def _sweep(
     runs: int = 1,
     cancel_event: threading.Event | None = None,
     candidate_arms: list[str] | None = None,
-    after_cell: Callable[[int], None] | None = None,
+    arms: list[str] | None = None,
+    after_cell: Callable[[int, str], None] | None = None,
 ):
     """Drive the real _run_sweep; only cell execution and setup are scripted.
 
@@ -79,14 +80,13 @@ def _sweep(
         row = dict(record(run_idx) if callable(record) else record)
         row.update({"task": TASK["id"], "arm": arm, "run": run_idx, "class": TASK["class"]})
         if after_cell is not None:
-            after_cell(run_idx)
+            after_cell(run_idx, arm)
         return row
 
     monkeypatch.setattr(runner, "run_cell", scripted_cell)
     monkeypatch.setattr(runner, "ensure_task_graph", lambda **k: k["env"].graph_snapshots.__setitem__(
         k["graph_key"], _snapshot("graph")))
     monkeypatch.setattr(runner.TaskAssetCache, "prepare", lambda self, *a, **k: _snapshot("asset"))
-    monkeypatch.setattr(runner, "prepare_ce_plugin_snapshot", lambda *a, **k: None, raising=False)
     # Binding resolution clones the repo and verifies the ref; that is expensive
     # setup, and the bindings it would return are supplied directly instead.
     monkeypatch.setattr(
@@ -95,7 +95,7 @@ def _sweep(
     )
 
     return runner._run_sweep(
-        _args(out, runs=runs),
+        _args(out, runs=runs, arms=arms or ["review"]),
         parser=SimpleNamespace(error=lambda m: (_ for _ in ()).throw(SystemExit(2))),
         tasks=[TASK],
         skipped_expensive=[],
@@ -176,7 +176,7 @@ def test_cancellation_without_an_outage_exits_130(
         _sweep(
             tmp_path, monkeypatch, lambda _run: scored_review_row(),
             runs=3, cancel_event=cancel_event,
-            after_cell=lambda run_idx: cancel_event.set() if run_idx == 0 else None,
+            after_cell=lambda run_idx, _arm: cancel_event.set() if run_idx == 0 else None,
         )
     stdout = capsys.readouterr().out
     report = (tmp_path / "out" / "report.md").read_text()
@@ -224,7 +224,7 @@ def test_an_interrupted_sweep_keeps_the_evidence_it_already_paid_for(
         _sweep(
             tmp_path, monkeypatch, lambda _run: scored_review_row(review_weighted_f1=0.42),
             runs=3, cancel_event=cancel_event,
-            after_cell=lambda run_idx: cancel_event.set() if run_idx == 0 else None,
+            after_cell=lambda run_idx, _arm: cancel_event.set() if run_idx == 0 else None,
         )
     rows = [
         json.loads(line)
@@ -249,9 +249,28 @@ def test_an_interrupted_sweep_emits_nothing_that_authorizes_promotion(
     with pytest.raises(SystemExit):
         _sweep(
             tmp_path, monkeypatch, lambda _run: scored_review_row(),
-            runs=3, cancel_event=cancel_event, candidate_arms=["candidate_review"],
-            after_cell=lambda run_idx: cancel_event.set() if run_idx == 0 else None,
+            runs=3, cancel_event=cancel_event,
+            # The candidate arm has to RUN, not merely appear in promotion
+            # metadata: _run_sweep builds cells only from args.arms, so naming it
+            # in candidate_arms alone left the candidate with no results at all -
+            # and then "insufficient_evidence" would hold because nothing ran,
+            # not because partial evidence is barred from promoting.
+            arms=["review", "candidate_review"],
+            candidate_arms=["candidate_review"],
+            after_cell=(
+                lambda run_idx, arm: cancel_event.set()
+                if run_idx == 0 and arm == "candidate_review"
+                else None
+            ),
         )
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "out" / "results.jsonl").read_text().splitlines()
+    ]
+    assert any(r["arm"] == "candidate_review" for r in rows), (
+        "the candidate must have produced evidence, or insufficient_evidence "
+        "would hold merely because nothing ran"
+    )
     promotion = json.loads((tmp_path / "out" / "promotion.json").read_text())
     assert promotion["run_status"] == "aborted"
     assert promotion["decisions"], "an aborted run still has to say what it decided"
